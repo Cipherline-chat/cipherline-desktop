@@ -43,6 +43,8 @@ standard well-reviewed constructions throughout.
 
 - **[cipherline.chat](https://cipherline.chat)** — the full site, including a deep-dive
   on the security model and how the encryption actually works.
+- **[cipherline-mobile](https://github.com/Cipherline-chat/cipherline-mobile)** — the iOS
+  and Android client's repo, same warming-up status as this one.
 - Star this repo if you'd like to know when the code lands.
 
 ---
