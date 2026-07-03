@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="380" viewBox="0 0 1200 380">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1200" y2="380" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#0B0F1E"/>
+      <stop offset="55%" stop-color="#0A1120"/>
+      <stop offset="100%" stop-color="#0B0F1E"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#25E0C8" stop-opacity="0.32"/>
+      <stop offset="45%" stop-color="#12B79F" stop-opacity="0.12"/>
+      <stop offset="100%" stop-color="#0B0F1E" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="markGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#3BEAD6"/>
+      <stop offset="100%" stop-color="#25E0C8"/>
+    </linearGradient>
+    <filter id="softBlur" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="18"/>
+    </filter>
+  </defs>
+
+  <rect width="1200" height="380" fill="url(#bg)"/>
+
+  <!-- ambient glow behind the mark -->
+  <circle cx="185" cy="190" r="220" fill="url(#glow)"/>
+
+  <!-- faint bubble/signal-field texture -->
+  <g fill="#25E0C8">
+    <circle cx="880" cy="70" r="3" opacity="0.28"/>
+    <circle cx="960" cy="140" r="2" opacity="0.20"/>
+    <circle cx="1040" cy="90" r="4" opacity="0.22"/>
+    <circle cx="1110" cy="200" r="2.5" opacity="0.26"/>
+    <circle cx="820" cy="260" r="3" opacity="0.18"/>
+    <circle cx="1000" cy="300" r="2" opacity="0.24"/>
+    <circle cx="1140" cy="320" r="3.5" opacity="0.20"/>
+    <circle cx="740" cy="150" r="2" opacity="0.16"/>
+    <circle cx="1080" cy="260" r="2" opacity="0.22"/>
+  </g>
+
+  <!-- the mark: four signal-bar "legs" + dome + W-brow eyes, scaled + repositioned -->
+  <g transform="translate(90,124) scale(1.65)">
+    <rect x="22.5" y="44" width="13" height="34" rx="6.5" fill="url(#markGrad)"/>
+    <rect x="39.8" y="44" width="13" height="34" rx="6.5" fill="url(#markGrad)"/>
+    <rect x="57.1" y="44" width="13" height="34" rx="6.5" fill="url(#markGrad)"/>
+    <rect x="74.4" y="44" width="13" height="34" rx="6.5" fill="url(#markGrad)"/>
+    <path d="M21 48 A34 34 0 0 1 89 48 L89 53 L21 53 Z" fill="url(#markGrad)"/>
+    <path d="M33.5 40 l3.75 -5 l3.75 5 l3.75 -5 l3.75 5" fill="none" stroke="#0B0F1E" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M61.5 40 l3.75 -5 l3.75 5 l3.75 -5 l3.75 5" fill="none" stroke="#0B0F1E" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+
+  <!-- wordmark -->
+  <text x="330" y="200" font-family="Segoe UI, Helvetica Neue, Arial, sans-serif" font-weight="800" font-size="72" letter-spacing="-1.5" fill="#F4F6FB">cipherline</text>
+
+  <!-- tagline -->
+  <text x="332" y="244" font-family="Segoe UI, Helvetica Neue, Arial, sans-serif" font-weight="600" font-size="21" fill="#9AA4B8">End-to-end encrypted messaging &amp; calling</text>
+
+  <!-- status pill -->
+  <g transform="translate(332,268)">
+    <rect x="0" y="0" width="248" height="34" rx="17" fill="#1C2542" stroke="#2A3558"/>
+    <circle cx="20" cy="17" r="5" fill="#25E0C8"/>
+    <text x="34" y="22" font-family="Segoe UI, Helvetica Neue, Arial, sans-serif" font-weight="700" font-size="14" fill="#C7CEDD">Actively in development</text>
+  </g>
+</svg>
