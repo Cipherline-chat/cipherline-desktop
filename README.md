@@ -6,7 +6,7 @@
 
 <div align="center">
 
-**The privacy-first alternative to Discord, Slack, and Teams — fully end-to-end encrypted.**
+**The privacy-first alternative to Discord, Slack, and Teams — end-to-end encrypted.**
 
 [Website](https://cipherline.chat) · [Security](https://cipherline.chat/security) · [Report a vulnerability](SECURITY.md)
 
@@ -16,10 +16,11 @@
 
 ## What Cipherline is
 
-Your own servers, roles, channels, HD video, and studio voice — everything Discord
-does — except the server is mathematically incapable of reading any of it. All
-content is encrypted on your device before it ever leaves your machine; the server
-only ever sees ciphertext, account identity, and where a packet is headed.
+Your own servers, roles, channels, voice and video calls, and screen share. Your
+messages, files and calls are encrypted on your device before they leave it, so our
+server relays them without being able to read them. It still has to see some things
+to deliver them (who you're connected with, when, and how big a file is); the full,
+honest list is at [cipherline.chat/security](https://cipherline.chat/security).
 
 ## Status: this repo is public, the source isn't published yet
 
@@ -60,5 +61,5 @@ rather than hiding anything it could read.
 ---
 
 <div align="center">
-<sub>Cipherline — built so we can't betray you.</sub>
+<sub>Cipherline — encrypted chat for your people.</sub>
 </div>
