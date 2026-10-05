@@ -1,0 +1,168 @@
+/* ============================================================
+   "Dry Dock" — server settings.
+   Concept: settings organized as a working shipyard — the nav is
+   the row of berths ("stations") the sidebar already grouped by
+   the kind of work they do (Command / Crew / Records), and the
+   content pane is the drafting table: a lit work surface washed in
+   the same light as the rail, not its own separate treatment. (v1
+   gave the content pane a blueprint grid instead — it read as its
+   own separate concept and buried the light in a 240px sidebar;
+   round 2 replaced that with blurred solid-colour blobs, which read
+   as smudges rather than actual light and never satisfied. The rail
+   and content pane now share ONE real mote field — DockBackdrop.tsx,
+   the same canvas-particle technique the sibling "Descent" settings
+   already uses for its own water — so the two read as one room with
+   light actually drifting through it, not two boxes glued together
+   with decoration painted on.)
+   Sibling to "The Descent" (settings-descent.css) — shares its
+   tokens and its "entrances spring, exits are fast and plain,
+   translate-only" doctrine — but is its own place, not a copy of
+   the water. All classes are dock- prefixed to stay out of
+   Tailwind's way, imported locally (not globally) by its two
+   consumers: ServerSettingsModal.tsx (the settings shell) and
+   ChannelSettingsDialog.tsx (the Create/Edit Channel & Calls dialog
+   reachable from the channel sidebar's right-click menu) — same
+   identity, smaller room. The dialog keeps its own smaller blurred-
+   blob treatment (`.dock-caustic--m1`/`--m2` below) — a full mote
+   canvas is overkill for a 672px card; only the settings shell's own
+   rail+content room moved to DockBackdrop.
+
+   Shell open/close and pane-switch motion stay on framer-motion
+   (initial/animate/exit props in the component), NOT raw CSS
+   animations here — Dashboard.tsx wraps this component in a bare
+   <AnimatePresence>, which delays real unmount until nested
+   motion.div `exit` props finish; a plain CSS animation gives it
+   nothing to wait for and the exit would never play. This file is
+   the LOOK — static positioning, backgrounds, the rail, the mote
+   canvas, the bead — the framer-motion props carry the motion.
+   ============================================================ */
+
+/* ---- shell ---- */
+.dock-veil{position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;
+  padding:44px 36px 36px} /* top padding clears the 32px Electron drag strip (App.tsx) */
+
+.dock-root{position:relative;display:flex;flex-direction:column;
+  background:var(--cl-deep);color:var(--cl-text);overflow:hidden}
+.dock-root--full{position:fixed;inset:0;z-index:50}
+.dock-root--win{width:min(1180px,100%);height:min(820px,100%);
+  border:1px solid var(--cl-border);border-radius:20px;box-shadow:0 24px 80px rgba(0,0,0,.6)}
+
+/* Fullscreen only (--full: the window is too small to float the card away
+   from the edges — see dockWindowed's threshold): a plain dark strip,
+   height-matched to the app's own titlebar (Dashboard.tsx's 34px
+   .drag-region), pinned above the masthead. Windows' native window-controls
+   overlay already paints a same-colour 34px strip ABOVE the whole page, so
+   without this the masthead's bright banner/gradient — and the "Back to
+   deck" close button sitting in it — started immediately underneath with
+   no buffer, reading as cramped and putting our close button right beside
+   the OS's own. Windowed mode doesn't need it: the veil's 44px top padding
+   already floats the card clear of the overlay. Still draggable, so the
+   window can be moved from here same as the real titlebar. */
+.dock-root--full > .dock-topbar{flex:none;height:34px;background:var(--cl-abyss)}
+
+/* ---- masthead ---- */
+.dock-masthead{position:relative;height:88px;flex:none;overflow:hidden}
+
+/* ---- rail: berths, grouped by the work they do ---- */
+.dock-rail{position:relative;width:240px;flex:none;overflow:hidden;background:var(--cl-sink)}
+.dock-rail-scroll{position:relative;z-index:2;height:100%;display:flex;flex-direction:column;
+  padding:16px 12px 12px;overflow-y:auto}
+
+/* Rail/content seam — a soft glowing hairline instead of a flat border,
+   so the two panes read as one lit surface rather than two boxes glued
+   together (the specific complaint behind this redesign's round 2). */
+.dock-rail::after{content:'';position:absolute;top:0;right:0;bottom:0;width:1px;z-index:3;
+  background:linear-gradient(180deg,transparent,rgba(37,224,200,.3) 12%,rgba(37,224,200,.3) 88%,transparent);
+  pointer-events:none}
+
+/* Caustics base — kept for ChannelSettingsDialog's own small-card treatment
+   (`.dock-caustic--m1`/`--m2` further below) only. The settings shell's
+   rail+content room no longer uses these; see .dock-workspace/.dock-motes. */
+.dock-caustics{position:absolute;inset:0;z-index:0;overflow:hidden;pointer-events:none}
+.dock-caustic{position:absolute;border-radius:50%;filter:blur(20px);opacity:.4}
+
+/* ---- the settings shell's own light: DockBackdrop.tsx's mote canvas ----
+   One canvas spans the whole rail+content row (.dock-workspace establishes
+   the positioning context DockBackdrop's absolutely-positioned wrap needs),
+   so motes drift continuously across the seam between the two panes rather
+   than two independently-seeded fields that merely happened to line up.
+   z-index:0 + pointer-events:none so it never intercepts clicks and always
+   sits behind the rail/content's own real content, both of which keep their
+   own solid background colours (--cl-sink / --cl-deep) — the canvas paints
+   over them with alpha only, same as SeaBackdrop.tsx does for the Descent. */
+.dock-workspace{position:relative}
+.dock-motes-wrap{position:absolute;inset:0;z-index:0;overflow:hidden;pointer-events:none}
+.dock-motes{position:absolute;inset:0;width:100%;height:100%}
+
+/* Create/Edit Channel & Calls dialog — the settings shell's own blurred-blob
+   look, kept here for this smaller 672px card even though the shell itself
+   moved to DockBackdrop's mote canvas (see the file header and
+   .dock-workspace above): two blobs, faint enough to sit behind form
+   fields, gradient-fill + drift + fade (round 5) rather than a flat disc. */
+.dock-caustic--m1{left:58%;top:-20%;width:260px;height:170px;filter:blur(22px);
+  background:radial-gradient(ellipse,rgba(37,224,200,.45) 0%,rgba(37,224,200,0) 72%);
+  animation:dock-caustic-driftm1 13s ease-in-out infinite}
+.dock-caustic--m2{left:-10%;top:52%;width:220px;height:150px;filter:blur(20px);
+  background:radial-gradient(ellipse,rgba(88,101,242,.4) 0%,rgba(88,101,242,0) 72%);
+  animation:dock-caustic-driftm2 16s ease-in-out infinite}
+@keyframes dock-caustic-driftm1{
+  0%,100%{transform:translate(0,0) scale(1);opacity:0}
+  15%{opacity:.8}
+  30%{transform:translate(20px,-14px) scale(1.1);opacity:.8}
+  55%{transform:translate(6px,-26px) scale(.92);opacity:.35}
+  80%{transform:translate(-16px,-4px) scale(1.06);opacity:.7}
+  92%{opacity:.25}
+}
+@keyframes dock-caustic-driftm2{
+  0%,100%{transform:translate(0,0) scale(1.05);opacity:0}
+  20%{opacity:.7}
+  35%{transform:translate(-18px,12px) scale(.9)}
+  55%{transform:translate(-4px,24px) scale(1.08);opacity:.75}
+  80%{transform:translate(14px,8px) scale(.96);opacity:.3}
+}
+
+/* The berth beacon — one element measured against the active button, the
+   vertical sibling of ClSegment's .sind (cl-kit.css) and of .sd-bead. round 1
+   shipped this as a barely-visible 2.5px bar with a single glow layer; it
+   read as inert next to the Descent's bead (a proper glowing dot). This is
+   a beacon instead — brighter two-layer glow (matches the Descent's
+   tight-core/soft-halo recipe, pushed a little further since it needs to
+   read on its own without a stray focus ring accidentally propping it up),
+   plus a slow breathing pulse — a beacon for a harbor, not the Descent's
+   glow borrowed wholesale. */
+.dock-bead{position:absolute;left:2px;width:3px;border-radius:3px;z-index:4;
+  background:var(--cl-lume);
+  box-shadow:0 0 10px rgba(37,224,200,.9),0 0 28px rgba(37,224,200,.4);
+  transition:top var(--cl-spring-dur) var(--cl-spring),height var(--cl-spring-dur) var(--cl-spring),opacity .25s;
+  animation:dock-beacon-pulse 2.8s ease-in-out infinite;
+  pointer-events:none}
+.dock-bead--hidden{opacity:0}
+@keyframes dock-beacon-pulse{
+  0%,100%{box-shadow:0 0 10px rgba(37,224,200,.9),0 0 28px rgba(37,224,200,.4)}
+  50%{box-shadow:0 0 14px rgba(37,224,200,1),0 0 38px rgba(37,224,200,.55)}
+}
+
+/* ---- content pane: the drafting table, lit by DockBackdrop's mote canvas
+   (.dock-workspace above) instead of a blueprint grid ---- */
+.dock-content{position:relative;flex:1;display:flex;flex-direction:column;min-width:0;overflow:hidden}
+
+/* Header seam — a fading lume hairline instead of a flat border-cl-border
+   line, so the header reads as lit (same idea as the rail/content seam)
+   rather than just a plain title bar sitting on top of the room. */
+.dock-header{position:relative}
+.dock-header::after{content:'';position:absolute;left:40px;right:40px;bottom:0;height:1px;
+  background:linear-gradient(90deg,rgba(37,224,200,.32),rgba(37,224,200,.05) 65%,transparent)}
+
+/* Card — the app's established grouped-row convention (rounded-[14px]
+   border-cl-border/40 bg-cl-surface/40, set as Tailwind utilities directly
+   on each card so the base colors stay exactly what they already were
+   elsewhere in the app) gets one thing added here: a soft top highlight +
+   a faint lume glow, so cards read as catching the room's light rather
+   than sitting as flat, inert boxes on top of it — the gap between the
+   rail's glow/beacon/active-state and the content pane's plain cards. */
+.dock-card{box-shadow:inset 0 1px 0 rgba(255,255,255,.05),0 0 22px -6px rgba(37,224,200,.12)}
+
+@media (prefers-reduced-motion:reduce){
+  .dock-caustic{animation:none}
+  .dock-bead{transition:opacity .25s;animation:none;box-shadow:0 0 10px rgba(37,224,200,.9),0 0 28px rgba(37,224,200,.4)}
+}

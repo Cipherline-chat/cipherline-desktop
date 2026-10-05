@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!--
+    Cipherline app icon — the bare signal-bars + arc mascot in lume (#25E0C8),
+    centred on a transparent square canvas (no background plate). The wave-notch
+    "eyes" are drawn over the lume so they read on any light or dark surface.
+  -->
+  <g transform="translate(-203,-86) scale(13)">
+    <rect x="22.5" y="44" width="13" height="34" rx="6.5" fill="#25E0C8"/>
+    <rect x="39.8" y="44" width="13" height="34" rx="6.5" fill="#25E0C8"/>
+    <rect x="57.1" y="44" width="13" height="34" rx="6.5" fill="#25E0C8"/>
+    <rect x="74.4" y="44" width="13" height="34" rx="6.5" fill="#25E0C8"/>
+    <path d="M21 48 A34 34 0 0 1 89 48 L89 53 L21 53 Z" fill="#25E0C8"/>
+    <path d="M33.5 40 l3.75 -5 l3.75 5 l3.75 -5 l3.75 5" fill="none" stroke="#0B0F1E" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M61.5 40 l3.75 -5 l3.75 5 l3.75 -5 l3.75 5" fill="none" stroke="#0B0F1E" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+</svg>

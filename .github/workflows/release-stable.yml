@@ -1,0 +1,449 @@
+name: Release Stable Desktop
+
+# STABLE desktop releases, built and signed in THIS public repository.
+#
+# The code here is a snapshot of an already-released stable version (exported from the private development
+# repo by its promote-stable workflow); it is never a work in progress. What this workflow does:
+#
+#   * a push of a tag vX.Y.Z (the export pushes it) builds Windows, macOS and Linux, signs them, smoke-tests
+#     the unpacked apps, uploads installers + update manifests to the update feed, and records a build
+#     provenance attestation for every installer ("this file was built from this public commit").
+#   * Run manually on a BRANCH it is a DRY RUN: it builds, signs (and notarizes) and smoke-tests, and publishes
+#     nothing. Use it to prove a change to this workflow before a real release.
+#
+# SAFETY, in order of importance:
+#   1. Every job uses the `production` environment: its secrets exist only there, and GitHub makes the
+#      configured reviewer approve each run before any job can read them. Never move these secrets to
+#      repository-level secrets.
+#   2. GitHub-hosted runners only. Never add a self-hosted runner to a public repo: anyone's pull request
+#      could run code on it.
+#   3. Installers are NEVER uploaded as workflow artifacts or GitHub release assets. In a public repo those
+#      are downloadable by any signed-in GitHub user, which would bypass the website's download code.
+#      The only thing recorded publicly is each installer's SHA-256 inside the provenance attestation.
+#   4. Stable builds are always signed. A missing signing secret fails the job; it never ships unsigned.
+#
+#   5. CLIENT_ATTEST_SECRET is OPTIONAL: it is only needed once the API enforces client attestation
+#      (CLIENT_ATTEST_SECRETS on the server; it is empty today, and the private builds ship without it too).
+#      Add it to the production environment when that is switched on.
+#
+# Verify a download:  gh attestation verify <installer> --repo Cipherline-chat/cipherline-desktop
+
+on:
+  push:
+    tags: ['v[0-9]+.[0-9]+.[0-9]+']
+  workflow_dispatch:
+
+concurrency:
+  group: release-stable
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      publish: ${{ steps.v.outputs.publish }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - name: Resolve version and mode
+        id: v
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(node -p "require('./apps/desktop/package.json').version")"
+          case "$VERSION" in
+            *[!0-9.]*|''|*..*|.*|*.) echo "::error::version '$VERSION' is not a plain x.y.z; stable releases never carry a pre-release suffix"; exit 1 ;;
+          esac
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            if [ "${GITHUB_REF_NAME}" != "v${VERSION}" ]; then
+              echo "::error::tag ${GITHUB_REF_NAME} does not match apps/desktop/package.json version v${VERSION}"; exit 1
+            fi
+            PUBLISH=true
+          else
+            PUBLISH=false
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "publish=$PUBLISH" >> "$GITHUB_OUTPUT"
+          echo "Version $VERSION, publish=$PUBLISH" | tee -a "$GITHUB_STEP_SUMMARY"
+
+  windows:
+    needs: prepare
+    runs-on: windows-latest
+    environment: production
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    env:
+      CLIENT_ATTEST_SECRET: ${{ secrets.CLIENT_ATTEST_SECRET }}
+      GOOGLE_DRIVE_CLIENT_ID: ${{ secrets.GOOGLE_DRIVE_CLIENT_ID }}
+      GOOGLE_DRIVE_CLIENT_SECRET: ${{ secrets.GOOGLE_DRIVE_CLIENT_SECRET }}
+      VITE_GOOGLE_PICKER_API_KEY: ${{ secrets.VITE_GOOGLE_PICKER_API_KEY }}
+      VITE_KLIPY_API_KEY: ${{ secrets.VITE_KLIPY_API_KEY }}
+      # Cloudflare Turnstile SITE key: public by design (it ships in every browser), so a VARIABLE, not a secret.
+      # Unset -> the sign-in form renders no captcha widget.
+      VITE_TURNSTILE_SITE_KEY: ${{ vars.TURNSTILE_SITE_KEY }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '20'
+          cache: npm
+      - name: Require the signing secrets
+        shell: bash
+        run: |
+          for v in AZURE_TENANT_ID AZURE_CLIENT_ID AZURE_CLIENT_SECRET GOOGLE_DRIVE_CLIENT_ID GOOGLE_DRIVE_CLIENT_SECRET VITE_GOOGLE_PICKER_API_KEY VITE_KLIPY_API_KEY; do
+            if [ -z "${!v}" ]; then echo "::error::secret $v is missing from the production environment; refusing to build an unsigned stable release"; exit 1; fi
+          done
+      - name: Install deps
+        shell: bash
+        run: npm ci --legacy-peer-deps
+      - name: Audit dependencies (warn-only)
+        shell: bash
+        run: npm audit --omit=dev --audit-level=high || true
+      - name: Rebuild native modules
+        shell: bash
+        run: |
+          cd apps/desktop
+          npm run rebuild-native
+      # Azure Artifact Signing's PowerShell module runs `dotnet tool install sign ...`.
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Package Windows installer (signed)
+        shell: bash
+        run: |
+          cd apps/desktop
+          npm run build
+          npx electron-builder --win --publish never \
+            --config.publish.channel=latest \
+            --config.extraMetadata.clientAttestSecret="$CLIENT_ATTEST_SECRET" \
+            --config.extraMetadata.googleDriveClientId="$GOOGLE_DRIVE_CLIENT_ID" \
+            --config.extraMetadata.googleDriveClientSecret="$GOOGLE_DRIVE_CLIENT_SECRET" \
+            --config.win.azureSignOptions.publisherName="Cipherline LLC" \
+            --config.win.azureSignOptions.endpoint="https://eus.codesigning.azure.net" \
+            --config.win.azureSignOptions.codeSigningAccountName="Cipherline" \
+            --config.win.azureSignOptions.certificateProfileName="cipherline-public"
+      - name: Verify Windows code signature
+        shell: powershell
+        run: |
+          $bad = @()
+          $files = Get-ChildItem apps/desktop/release -Filter *.exe
+          if (-not $files) { Write-Error 'No .exe found in apps/desktop/release'; exit 1 }
+          foreach ($f in $files) {
+            $sig = Get-AuthenticodeSignature $f.FullName
+            $subject = if ($sig.SignerCertificate) { $sig.SignerCertificate.Subject } else { '(none)' }
+            Write-Host "$($f.Name): $($sig.Status) $subject"
+            if ($sig.Status -ne 'Valid' -or $subject -notmatch 'CN=Cipherline LLC') { $bad += $f.Name }
+          }
+          if ($bad.Count -gt 0) { Write-Error ('Unsigned or wrongly signed: ' + ($bad -join ', ')); exit 1 }
+      - name: Smoke test (Windows unpacked)
+        shell: bash
+        run: |
+          cd apps/desktop
+          npm install --no-save playwright-core@^1.49.0
+          node scripts/smoke-test.mjs
+      - name: Upload smoke screenshot (failures only)
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: smoke-screenshot-windows
+          path: apps/desktop/release/smoke-*.png
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Attest build provenance
+        if: needs.prepare.outputs.publish == 'true'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
+        with:
+          subject-path: |
+            apps/desktop/release/*.exe
+      - name: Install mc (MinIO client)
+        if: needs.prepare.outputs.publish == 'true'
+        shell: bash
+        run: |
+          # dl.min.io is gone (410); the last release is pinned on GitHub.
+          curl -fsSL -o mc.exe https://github.com/minio/mc/releases/download/RELEASE.2025-08-13T08-35-41Z/mc.windows-amd64.RELEASE.2025-08-13T08-35-41Z.exe
+      - name: Upload installer + manifest to the update feed
+        if: needs.prepare.outputs.publish == 'true'
+        shell: bash
+        env:
+          MINIO_ACCESS_KEY: ${{ secrets.MINIO_ACCESS_KEY }}
+          MINIO_SECRET_KEY: ${{ secrets.MINIO_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          MC="$(pwd)/mc.exe"
+          "$MC" alias set cipherline https://media.cipherline.chat "$MINIO_ACCESS_KEY" "$MINIO_SECRET_KEY"
+          # installers first, the manifest LAST: clients only move once the manifest points at a file that exists
+          for f in apps/desktop/release/*.exe apps/desktop/release/*.exe.blockmap apps/desktop/release/latest.yml; do
+            if [ -f "$f" ]; then echo "Uploading $(basename "$f")"; "$MC" cp --quiet "$f" cipherline/cipherline-updates/; fi
+          done
+      - name: Verify the update feed
+        if: needs.prepare.outputs.publish == 'true'
+        shell: bash
+        run: |
+          set -e
+          V="${{ needs.prepare.outputs.version }}"
+          BODY="$(curl -fsS https://updates.cipherline.chat/latest.yml)"
+          echo "$BODY" | head -3
+          echo "$BODY" | grep -q "^version: $V\$" || { echo "::error::latest.yml does not advertise $V"; exit 1; }
+
+  macos:
+    needs: prepare
+    runs-on: macos-latest
+    environment: production
+    # Apple's notary queue can take hours for a new account's first submissions.
+    timeout-minutes: 240
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    env:
+      CLIENT_ATTEST_SECRET: ${{ secrets.CLIENT_ATTEST_SECRET }}
+      GOOGLE_DRIVE_CLIENT_ID: ${{ secrets.GOOGLE_DRIVE_CLIENT_ID }}
+      GOOGLE_DRIVE_CLIENT_SECRET: ${{ secrets.GOOGLE_DRIVE_CLIENT_SECRET }}
+      VITE_GOOGLE_PICKER_API_KEY: ${{ secrets.VITE_GOOGLE_PICKER_API_KEY }}
+      VITE_KLIPY_API_KEY: ${{ secrets.VITE_KLIPY_API_KEY }}
+      # Cloudflare Turnstile SITE key: public by design (it ships in every browser), so a VARIABLE, not a secret.
+      # Unset -> the sign-in form renders no captcha widget.
+      VITE_TURNSTILE_SITE_KEY: ${{ vars.TURNSTILE_SITE_KEY }}
+      MAC_CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+      MAC_CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '20'
+          cache: npm
+      - name: Require the signing secrets
+        shell: bash
+        run: |
+          for v in MAC_CSC_LINK MAC_CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID GOOGLE_DRIVE_CLIENT_ID GOOGLE_DRIVE_CLIENT_SECRET VITE_GOOGLE_PICKER_API_KEY VITE_KLIPY_API_KEY; do
+            if [ -z "${!v}" ]; then echo "::error::secret $v is missing from the production environment; refusing to build an unsigned stable release"; exit 1; fi
+          done
+      - name: Install deps
+        shell: bash
+        run: npm ci --legacy-peer-deps
+      - name: Build renderer + Electron main
+        shell: bash
+        run: |
+          cd apps/desktop
+          npm run build
+      - name: Package macOS (signed + notarized)
+        shell: bash
+        run: |
+          cd apps/desktop
+          # Import the certificate into OUR OWN keychain instead of letting electron-builder do it:
+          # electron-builder 26.8.1 hands the .p12 password to set-key-partition-list for a keychain it created
+          # with a different random password, and the current macos-latest image rejects that.
+          KC="$RUNNER_TEMP/cl-build.keychain-db"
+          KC_PW="$(openssl rand -base64 24)"
+          echo "$MAC_CSC_LINK" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KC_PW" "$KC"
+          security set-keychain-settings -lut 3600 "$KC"
+          security unlock-keychain -p "$KC_PW" "$KC"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KC" -P "$MAC_CSC_KEY_PASSWORD" -T /usr/bin/codesign -T /usr/bin/productbuild
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KC_PW" "$KC"
+          security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
+          rm -f "$RUNNER_TEMP/cert.p12"
+          security find-identity -v -p codesigning "$KC"
+          export CSC_KEYCHAIN="$KC"
+          unset CSC_LINK CSC_KEY_PASSWORD
+          npx electron-builder --mac --publish never \
+            --config.publish.channel=latest \
+            --config.extraMetadata.clientAttestSecret="$CLIENT_ATTEST_SECRET" \
+            --config.extraMetadata.googleDriveClientId="$GOOGLE_DRIVE_CLIENT_ID" \
+            --config.extraMetadata.googleDriveClientSecret="$GOOGLE_DRIVE_CLIENT_SECRET"
+      - name: Smoke test (macOS unpacked)
+        shell: bash
+        run: |
+          cd apps/desktop
+          npm install --no-save playwright-core@^1.49.0
+          node scripts/smoke-test.mjs
+      - name: Upload smoke screenshot (failures only)
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: smoke-screenshot-macos
+          path: apps/desktop/release/smoke-*.png
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Attest build provenance
+        if: needs.prepare.outputs.publish == 'true'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
+        with:
+          subject-path: |
+            apps/desktop/release/*.dmg
+            apps/desktop/release/*-mac.zip
+      - name: Install mc (MinIO client)
+        if: needs.prepare.outputs.publish == 'true'
+        shell: bash
+        run: |
+          ARCH=$(uname -m)
+          if [ "$ARCH" = "arm64" ]; then
+            URL=https://github.com/minio/mc/releases/download/RELEASE.2025-08-13T08-35-41Z/mc.darwin-arm64.RELEASE.2025-08-13T08-35-41Z
+          else
+            URL=https://github.com/minio/mc/releases/download/RELEASE.2025-08-13T08-35-41Z/mc.darwin-amd64.RELEASE.2025-08-13T08-35-41Z
+          fi
+          curl -fsSL -o /usr/local/bin/mc "$URL"
+          chmod +x /usr/local/bin/mc
+      - name: Upload installers + manifest to the update feed
+        if: needs.prepare.outputs.publish == 'true'
+        shell: bash
+        env:
+          MINIO_ACCESS_KEY: ${{ secrets.MINIO_ACCESS_KEY }}
+          MINIO_SECRET_KEY: ${{ secrets.MINIO_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          mc alias set cipherline https://media.cipherline.chat "$MINIO_ACCESS_KEY" "$MINIO_SECRET_KEY"
+          for f in apps/desktop/release/*.dmg apps/desktop/release/*.dmg.blockmap \
+                   apps/desktop/release/*-mac.zip apps/desktop/release/*-mac.zip.blockmap \
+                   apps/desktop/release/latest-mac.yml; do
+            if [ -f "$f" ]; then echo "Uploading $(basename "$f")"; mc cp --quiet "$f" cipherline/cipherline-updates/; fi
+          done
+      - name: Verify the mac update feed
+        if: needs.prepare.outputs.publish == 'true'
+        shell: bash
+        run: |
+          set -e
+          V="${{ needs.prepare.outputs.version }}"
+          BODY="$(curl -fsS https://updates.cipherline.chat/latest-mac.yml)"
+          echo "$BODY" | head -3
+          echo "$BODY" | grep -q "^version: $V\$" || { echo "::error::latest-mac.yml does not advertise $V"; exit 1; }
+
+  linux:
+    needs: prepare
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    env:
+      CLIENT_ATTEST_SECRET: ${{ secrets.CLIENT_ATTEST_SECRET }}
+      GOOGLE_DRIVE_CLIENT_ID: ${{ secrets.GOOGLE_DRIVE_CLIENT_ID }}
+      GOOGLE_DRIVE_CLIENT_SECRET: ${{ secrets.GOOGLE_DRIVE_CLIENT_SECRET }}
+      VITE_GOOGLE_PICKER_API_KEY: ${{ secrets.VITE_GOOGLE_PICKER_API_KEY }}
+      VITE_KLIPY_API_KEY: ${{ secrets.VITE_KLIPY_API_KEY }}
+      # Cloudflare Turnstile SITE key: public by design (it ships in every browser), so a VARIABLE, not a secret.
+      # Unset -> the sign-in form renders no captcha widget.
+      VITE_TURNSTILE_SITE_KEY: ${{ vars.TURNSTILE_SITE_KEY }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '20'
+          cache: npm
+      - name: Require the feature secrets
+        shell: bash
+        run: |
+          for v in GOOGLE_DRIVE_CLIENT_ID GOOGLE_DRIVE_CLIENT_SECRET VITE_GOOGLE_PICKER_API_KEY VITE_KLIPY_API_KEY; do
+            if [ -z "${!v}" ]; then echo "::error::secret $v is missing from the production environment; refusing to ship a build with that feature silently absent"; exit 1; fi
+          done
+      - name: Install deps
+        shell: bash
+        run: npm ci --legacy-peer-deps
+      - name: Install Linux build deps
+        shell: bash
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libarchive-tools rpm fakeroot xvfb
+      - name: Build renderer + Electron main
+        shell: bash
+        run: |
+          cd apps/desktop
+          npm run build
+      - name: Package Linux (AppImage + deb)
+        shell: bash
+        run: |
+          cd apps/desktop
+          # x64 only, from package.json build.linux.target (AppImage + deb)
+          npx electron-builder --linux --x64 --publish never \
+            --config.publish.channel=latest \
+            --config.extraMetadata.clientAttestSecret="$CLIENT_ATTEST_SECRET" \
+            --config.extraMetadata.googleDriveClientId="$GOOGLE_DRIVE_CLIENT_ID" \
+            --config.extraMetadata.googleDriveClientSecret="$GOOGLE_DRIVE_CLIENT_SECRET"
+          ls -la release/
+      - name: Smoke test (Linux unpacked)
+        shell: bash
+        run: |
+          cd apps/desktop
+          npm install --no-save playwright-core@^1.49.0
+          xvfb-run --auto-servernum node scripts/smoke-test.mjs
+      - name: Upload smoke screenshot (failures only)
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: smoke-screenshot-linux
+          path: apps/desktop/release/smoke-*.png
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Attest build provenance
+        if: needs.prepare.outputs.publish == 'true'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
+        with:
+          subject-path: |
+            apps/desktop/release/*.AppImage
+            apps/desktop/release/*.deb
+      - name: Install mc (MinIO client)
+        if: needs.prepare.outputs.publish == 'true'
+        shell: bash
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/mc" https://github.com/minio/mc/releases/download/RELEASE.2025-08-13T08-35-41Z/mc.linux-amd64.RELEASE.2025-08-13T08-35-41Z
+          chmod +x "$RUNNER_TEMP/mc"
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+      - name: Upload installers + manifest to the update feed
+        if: needs.prepare.outputs.publish == 'true'
+        shell: bash
+        env:
+          MINIO_ACCESS_KEY: ${{ secrets.MINIO_ACCESS_KEY }}
+          MINIO_SECRET_KEY: ${{ secrets.MINIO_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          mc alias set cipherline https://media.cipherline.chat "$MINIO_ACCESS_KEY" "$MINIO_SECRET_KEY"
+          for f in apps/desktop/release/*.AppImage apps/desktop/release/*.AppImage.blockmap \
+                   apps/desktop/release/*.deb apps/desktop/release/latest-linux.yml; do
+            if [ -f "$f" ]; then echo "Uploading $(basename "$f")"; mc cp --quiet "$f" cipherline/cipherline-updates/; fi
+          done
+      - name: Verify the Linux update feed
+        if: needs.prepare.outputs.publish == 'true'
+        shell: bash
+        run: |
+          set -e
+          V="${{ needs.prepare.outputs.version }}"
+          BODY="$(curl -fsS https://updates.cipherline.chat/latest-linux.yml)"
+          echo "$BODY" | head -6
+          echo "$BODY" | grep -q "^version: $V\$" || { echo "::error::latest-linux.yml does not advertise $V"; exit 1; }
+
+  report:
+    needs: [prepare, windows, macos, linux]
+    if: always() && needs.prepare.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report what each platform's feed advertises
+        shell: bash
+        run: |
+          V="${{ needs.prepare.outputs.version }}"
+          STALE=0
+          echo "## Stable release v$V" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          for pair in "Windows:${{ needs.windows.result }}:latest.yml" "macOS:${{ needs.macos.result }}:latest-mac.yml" "Linux:${{ needs.linux.result }}:latest-linux.yml"; do
+            PLATFORM="${pair%%:*}"; REST="${pair#*:}"; JOB="${REST%%:*}"; MANIFEST="${REST#*:}"
+            PUB="$(curl -fsS "https://updates.cipherline.chat/$MANIFEST" 2>/dev/null | sed -n 's/^version:[[:space:]]*//p' | head -1 | tr -d "\r'\"")"
+            if [ "$PUB" = "$V" ]; then MARK="shipped"; else MARK="NOT shipped"; STALE=1; echo "::error::$PLATFORM did not ship v$V (job: $JOB, feed advertises: ${PUB:-unreachable})"; fi
+            echo "- $PLATFORM: job \`$JOB\`, feed \`${PUB:-unreachable}\` ($MARK)" >> "$GITHUB_STEP_SUMMARY"
+          done
+          exit "$STALE"

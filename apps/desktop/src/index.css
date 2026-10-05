@@ -1,0 +1,2064 @@
+/* ── Cipherline "glow in the deep" design system fonts ──────────────── */
+/* Loaded from script (src/utils/webFonts.ts), NOT with an @import here: an
+   @import'd remote stylesheet blocks first paint AND the app's scripts until
+   Google answers — a blank window for as long as the network takes to come
+   back after the PC wakes. Never re-add a remote @import (bundleBoot.test.ts). */
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── Design system CSS custom properties ─────────────────────────────── */
+:root {
+  /* Surfaces */
+  --cl-abyss:   #0B0F1E;
+  --cl-deep:    #131A30;
+  --cl-surface: #1C2542;
+  --cl-raise:   #243056;
+  --cl-border:  #2A3558;
+  --cl-sink:    #0A1120;
+
+  /* Lume — you & secure */
+  --cl-lume:        #25E0C8;
+  --cl-lume-hi:     #3BEAD6;
+  --cl-lume-press:  #12B79F;
+  --cl-lume-deep:   #0E8F7C;
+  --cl-lume-tint:   rgba(37,224,200,.12);
+  --cl-on-lume:     #06251F;
+
+  /* Flash — others & careful */
+  --cl-flash:       #FF6B5E;
+  --cl-flash-press: #D14A3F;
+  --cl-flash-deep:  #B23A30;
+  --cl-flash-tint:  rgba(255,107,94,.12);
+  --cl-on-flash:    #3A0E0A;
+
+  /* Status & warmth */
+  --cl-glow:    #FFC94D;
+  --cl-on-glow: #4A3406;
+  --cl-ok:      #4ADE80;
+  --cl-danger:  #FF5C7A;
+
+  /* Text hierarchy */
+  --cl-text:  #F4F7FF;
+  --cl-muted: #A7B3D4;
+  --cl-faint: #5E6B8F;
+
+  /* Semantic aliases */
+  --surface-page:    var(--cl-abyss);
+  --surface-panel:   var(--cl-deep);
+  --surface-card:    var(--cl-deep);
+  --surface-input:   var(--cl-surface);
+  --surface-hover:   var(--cl-raise);
+  --border-hairline: var(--cl-border);
+  --text-body:       var(--cl-text);
+  --text-secondary:  var(--cl-muted);
+  --text-tertiary:   var(--cl-faint);
+  --accent:          var(--cl-lume);
+  --accent-on:       var(--cl-on-lume);
+  --careful:         var(--cl-flash);
+  --careful-on:      var(--cl-on-flash);
+  --warm:            var(--cl-glow);
+  --online:          var(--cl-ok);
+
+  /* Typography */
+  --cl-font-display: 'Fredoka', sans-serif;
+  --cl-font-body:    'Nunito', sans-serif;
+  --cl-font-mono:    'JetBrains Mono', monospace;
+
+  --cl-w-display:       500;
+  --cl-w-display-bold:  600;
+  --cl-w-label:         800;
+
+  /* Motion — one spring everywhere */
+  --cl-spring:     cubic-bezier(.34, 1.56, .64, 1);
+  --cl-spring-dur: 520ms;
+  --cl-ease-enter: cubic-bezier(.3, 1.4, .4, 1);
+  --cl-press-dur:  80ms;
+
+  /* Shape */
+  --cl-r-sm:    11px;
+  --cl-r-md:    14px;
+  --cl-r-lg:    16px;
+  --cl-r-xl:    20px;
+  --cl-r-pill:  99px;
+  --cl-hairline: 1.5px solid var(--cl-border);
+
+  /* Depth */
+  --cl-shadow-menu:  0 14px 34px rgba(0,0,0,.5);
+  --cl-shadow-press: inset 0 3px 7px rgba(0,0,0,.45);
+  --cl-glow-lume:    0 0 14px rgba(37,224,200,.22);
+  --cl-glow-lume-hot:0 0 14px rgba(37,224,200,.6);
+}
+
+::selection { background: var(--cl-lume); color: var(--cl-on-lume); }
+
+@layer base {
+  html,
+  body,
+  #root {
+    @apply h-full w-full overflow-hidden;
+    font-family: var(--cl-font-body);
+    color: var(--cl-text);
+  }
+
+  body {
+    background-color: var(--cl-abyss);
+  }
+}
+
+/* ── Solid surface utility classes ─────────────────────────── */
+.surface {
+  background: var(--cl-deep);
+}
+
+.surface-raised {
+  background: var(--cl-surface);
+}
+
+.surface-elevated {
+  background: var(--cl-raise);
+  border: 1px solid var(--cl-border);
+}
+
+/* ── Prevent image dragging app-wide ───────────────────────── */
+img {
+  -webkit-user-drag: none;
+  user-drag: none;
+}
+
+/* ── Custom Webkit Scrollbars ───────────────────────────────── */
+::-webkit-scrollbar {
+  width: 4px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+/* ── Drag region ────────────────────────────────────────────── */
+.drag-region {
+  -webkit-app-region: drag;
+}
+
+.no-drag {
+  -webkit-app-region: no-drag;
+}
+
+/* ── Resize handle indicator ────────────────────────────────── */
+[data-panel-resize-handle-id]:hover .resize-handle-indicator,
+[data-resize-handle-active] .resize-handle-indicator {
+  background: rgba(37, 224, 200, 0.5) !important;
+  box-shadow: 0 0 8px rgba(37, 224, 200, 0.3);
+}
+
+/* Ensure panels always fill their allocated space */
+[data-panel] {
+  min-width: 0;
+  min-height: 0;
+}
+
+/* Incoming-call avatar glow moved to cl-kit-ext.css as a continuous
+   multi-ring pulse (was a single 0.8s one-shot that went static while the
+   call kept ringing for up to 15s) — see .cl-incall-ring there. */
+
+/* ── Screenshare control animations (actively used, kept) ───────────────── */
+@keyframes ss-stop-btn-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(37, 224, 200, 0.55); }
+  50%       { box-shadow: 0 0 0 6px rgba(37, 224, 200, 0); }
+}
+.ss-stop-btn-pulse { animation: ss-stop-btn-pulse 2s ease-in-out infinite; }
+
+@keyframes ss-gate-enter {
+  0%   { opacity: 0; transform: scale(0.88) translateY(14px); }
+  60%  { opacity: 1; transform: scale(1.025) translateY(-3px); }
+  100% { opacity: 1; transform: scale(1)    translateY(0); }
+}
+.ss-gate-enter { animation: ss-gate-enter 0.52s cubic-bezier(0.22, 1, 0.36, 1) forwards; }
+
+/* Screen-share "Apply" — flatten the kit's stacked-depth treatment.
+ *
+ * A non-ghost ClButton renders two depth sheets (<i class="l l1">, <i class="l
+ * l2">) at inset:0 behind the .cap, offset down 2px and 4px. On a wide
+ * fullWidth button those sheets read as a separate dark slab peeking out under
+ * the face and around its bottom corners — and for variant="ok" they are
+ * #15803a / #0f5132, which against this panel's dark navy is effectively black.
+ * That slab is the "black box around the Apply button".
+ *
+ * The flattening itself is cl-kit-ext.css's `.clb--flat` modifier — the same
+ * one the Invites "Generate" button uses, which was added for this exact
+ * artifact. Only the glow is local.
+ *
+ * The confirm glow lives on .cap rather than arriving as a `shadow-[...]`
+ * utility, because ClButton applies className to the outer .clb WRAPPER, which
+ * is a square, unrounded box — a shadow there painted a square halo around a
+ * rounded button. On .cap it follows the actual 11px radius. */
+.cl-ss-apply .cap { box-shadow: 0 0 12px rgba(74, 222, 128, 0.25); }
+
+@keyframes ss-start-flash {
+  0%   { box-shadow: 0 0 0 0  rgba(37, 224, 200, 0.8); }
+  40%  { box-shadow: 0 0 0 10px rgba(37, 224, 200, 0.0); }
+  100% { box-shadow: none; }
+}
+.ss-start-flash { animation: ss-start-flash 0.6s ease-out forwards; }
+
+/* ── "Someone wants to draw on your share" dock ──────────────────────────
+   The one annotation event that arrives while the owner is, by definition,
+   looking at the thing they are presenting rather than at Cipherline — and it
+   expires unanswered in 60s. So the dock arrives with a real entrance and then
+   keeps a slow ring going for as long as anyone is waiting, rather than the
+   single 0.6s flash it used to share with the screenshare cue (which was over
+   before a presenter mid-sentence could possibly have noticed it). */
+@keyframes annot-req-enter {
+  0%   { opacity: 0; transform: translateY(16px) scale(0.94); }
+  62%  { opacity: 1; transform: translateY(-3px) scale(1.02); }
+  100% { opacity: 1; transform: translateY(0)    scale(1); }
+}
+@keyframes annot-req-attn {
+  0%, 100% { box-shadow: 0 10px 30px rgba(0,0,0,.45), 0 0 0 0   rgba(37, 224, 200, 0.55); }
+  50%      { box-shadow: 0 10px 30px rgba(0,0,0,.45), 0 0 0 9px rgba(37, 224, 200, 0); }
+}
+.annot-req-row {
+  animation:
+    annot-req-enter 0.42s cubic-bezier(0.22, 1, 0.36, 1) both,
+    annot-req-attn  2.4s ease-in-out 0.42s infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  /* Keep the ring (it is the "still waiting" signal, not decoration); drop
+     the movement. */
+  .annot-req-row { animation: annot-req-attn 2.4s ease-in-out infinite; }
+}
+
+@keyframes btn-click-glow {
+  0%   { box-shadow: inset 0 0 0 1.5px rgba(255,255,255,0.55), 0 0 10px rgba(255,255,255,0.15); }
+  100% { box-shadow: inset 0 0 0 1.5px rgba(255,255,255,0),   0 0 0   rgba(255,255,255,0); }
+}
+.btn-click-glow { animation: btn-click-glow 0.3s ease-out forwards; }
+
+/* ── Focus banner (click-to-focus video stream) ─────────────────────────── */
+@keyframes focus-banner-fade-in {
+  from { opacity: 0; transform: translateY(-6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.focus-banner-enter { animation: focus-banner-fade-in 0.28s cubic-bezier(0.22, 1, 0.36, 1) forwards; }
+
+/* ── Pinned messages panel (DM + server context panel) ────────────────────
+ * PinnedMessagesPanel.tsx portals into #pinned-panel-root inside both the
+ * DM right-hand panel (Dashboard.tsx) and ServerContextPanel.tsx. Both hosts
+ * already fade+collapse height (framer-motion AnimatePresence, 220ms) around
+ * that portal root when it's toggled — but the portalled content itself used
+ * to mount/unmount the instant `pinnedSidebarExpanded` flipped, with no
+ * transition of its own: opening popped straight to full content (the
+ * `animate-in fade-in slide-in-from-top-2` Tailwind utility classes
+ * previously on its root did nothing — this app does not have the
+ * `tailwindcss-animate` plugin installed), and closing made the rows vanish
+ * instantly while the host spent the next 220ms collapsing an already-empty
+ * box. ChatPane.tsx now keeps the panel mounted ~200ms after close (shorter
+ * than the host's 220ms collapse, so the content is always gone before the
+ * host unmounts the portal root out from under it) and swaps this class for
+ * `.pinned-panel-exit` for that stretch — see PINNED_PANEL_EXIT_MS. */
+@keyframes pinned-panel-enter {
+  from { opacity: 0; transform: translateY(-6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes pinned-panel-exit {
+  from { opacity: 1; transform: translateY(0); }
+  to   { opacity: 0; transform: translateY(-6px); }
+}
+.pinned-panel-enter { animation: pinned-panel-enter 0.2s cubic-bezier(0.22, 1, 0.36, 1) both; }
+.pinned-panel-exit {
+  /* The toggle already considers this closed — never eat a click meant for
+     whatever is underneath while the fade plays out. */
+  pointer-events: none;
+  animation: pinned-panel-exit 0.18s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@media (prefers-reduced-motion: reduce) {
+  .pinned-panel-enter { animation: none; }
+  .pinned-panel-exit { animation: none; opacity: 0; }
+}
+
+/* ── Shared enter/exit vocabulary (modals, dropdowns, tab panels) ─────────
+ * Replaces the `animate-in fade-in slide-in-from-*` / `animate-out fade-out
+ * zoom-out-95` Tailwind-plugin utility names that were sprinkled across ~15
+ * components — this app never installed `tailwindcss-animate`, but those
+ * exact literal class names ALSO happen to be re-implemented generically
+ * a few hundred lines up (the "animate-in shim", `.animate-in`/`.fade-in`/
+ * `.zoom-in-95`/etc. below `@keyframes cl-enter`) for the ~20 OTHER modals
+ * that go through `useModalExit` and its documented recipe — so those
+ * literal names are NOT dead and that shim must stay. This block is a
+ * separate, deliberately small set of named classes for call sites that
+ * warranted individual review (list-flicker risk, dead components, mismatched
+ * fade/zoom combos) rather than the shim's one-size-fits-all activation.
+ *
+ * Four shapes cover every combination actually in use: a plain fade, a fade
+ * that rises from below (slide-in-from-bottom-*), a fade that drops from
+ * above (slide-in-from-top-*), and a fade+zoom pop for dialogs/popovers —
+ * the last one reuses the house `cl-pop` keyframe + `--cl-spring` easing
+ * (see ConfirmDialog's "House pop idiom" comment) instead of inventing a
+ * second springy curve. Exits use the settle curve, never the spring —
+ * overshoot reads right arriving, wrong leaving. */
+@keyframes cl-fade-in  { from { opacity: 0; } to { opacity: 1; } }
+@keyframes cl-fade-out { from { opacity: 1; } to { opacity: 0; } }
+.fade-enter { animation: cl-fade-in 200ms cubic-bezier(0.22, 1, 0.36, 1) both; }
+.fade-exit  {
+  pointer-events: none; /* closed already — never eat a click meant for what's underneath */
+  animation: cl-fade-out 180ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes cl-fade-rise-in  { from { opacity: 0; transform: translateY(8px);  } to { opacity: 1; transform: translateY(0); } }
+@keyframes cl-fade-rise-out { from { opacity: 1; transform: translateY(0);    } to { opacity: 0; transform: translateY(8px); } }
+.fade-rise-enter { animation: cl-fade-rise-in 220ms cubic-bezier(0.22, 1, 0.36, 1) both; }
+.fade-rise-exit  {
+  pointer-events: none;
+  animation: cl-fade-rise-out 180ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes cl-fade-drop-in { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }
+.fade-drop-enter { animation: cl-fade-drop-in 200ms cubic-bezier(0.22, 1, 0.36, 1) both; }
+
+.fade-pop-enter { animation: cl-pop 220ms var(--cl-spring) both; }
+@keyframes cl-fade-pop-out { from { opacity: 1; transform: scale(1); } to { opacity: 0; transform: scale(0.96); } }
+.fade-pop-exit {
+  pointer-events: none;
+  animation: cl-fade-pop-out 180ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fade-enter, .fade-rise-enter, .fade-drop-enter, .fade-pop-enter { animation: none; }
+  .fade-exit, .fade-rise-exit, .fade-pop-exit { animation: none; opacity: 0; }
+}
+
+/* ── View settle-in — every pane on a tab / server / chat switch ──────── */
+@keyframes view-fade-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+/* 0.22s on the same curve as the framer presets (BackupSection /
+   NotificationsTab: ease [0.16, 1, 0.3, 1]) so pane switches move like the
+   rest of the app. The previous 0.14s opacity-only fade was too quick and
+   too flat to register as a transition at all. No fill-mode on purpose: the
+   transform must be gone once it lands, or this node stays a containing
+   block for any position:fixed popover inside it. */
+.view-enter { animation: view-fade-in 0.22s cubic-bezier(0.16, 1, 0.3, 1); }
+@media (prefers-reduced-motion: reduce) {
+  .view-enter { animation: none; }
+}
+
+/* ── App entry curtain — fades out over the Dashboard on login ───────────── */
+@keyframes app-curtain-out {
+  from { opacity: 1; }
+  to   { opacity: 0; }
+}
+
+/* ── Update rail tile — ready-to-install pulse (brand lume, not the generic
+   green status-online-pulse uses below) ─────────────────────────────────── */
+/* Ring on a pseudo-element, transform + opacity only, so the compositor runs
+   it (see .status-online below for why box-shadow keyframes were replaced).
+   It can sit there for days if nobody restarts, so it pulses for ~12 s when
+   the update becomes ready (and again whenever the rail re-mounts), then
+   rests — the lume-tinted icon and its tooltip stay — and it stops with the
+   other decorative loops while the window is in the background. */
+@keyframes update-ready-pulse {
+  0%, 100% { transform: scale(0.94); opacity: 0; }
+  25%       { transform: scale(1);    opacity: 1; }
+  50%       { transform: scale(1.12); opacity: 0; }
+}
+.update-ready-pulse::after {
+  content: ''; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
+  box-shadow: 0 0 0 2px rgba(37, 224, 200, 0.45); opacity: 0;
+  animation: update-ready-pulse 2s ease-in-out 6;
+}
+:root[data-cl-motion="idle"] .update-ready-pulse::after { animation: none; opacity: 0; }
+
+/* ── Status dot — online pulse ───────────────────────────────────────────── */
+/* The ring is a pseudo-element animated with transform + opacity — properties
+   the compositor animates on its own thread. It used to animate box-shadow on
+   the dot itself, which cannot be composited: every frame of every visible
+   online dot was a main-thread style recalc + repaint, ~55 full frames a
+   second for as long as the app sat open (measured: 3 dots on screen = ~60% of
+   a core in the renderer, the app's entire idle cost). Same look: a disc the
+   dot's own colour (#22c55e), invisible where it overlaps the dot, read as a
+   ring growing 3px past a 10px dot's edge while it fades out.
+   Three breaths, then rest: even a composited loop keeps Chromium producing a
+   frame every vsync (measured ~55 frames/s and ~15% of a core in the
+   renderer plus the GPU process, for three dots sitting still). The dot pulses
+   whenever it appears — opening a member list, a DM, someone coming online —
+   and then sits still instead of costing a frame per vsync forever. */
+@keyframes status-online-pulse {
+  0%, 100% { transform: scale(1);   opacity: 0.55; }
+  50%       { transform: scale(1.6); opacity: 0;    }
+}
+.status-online { position: relative; }
+.status-online::after {
+  content: ''; position: absolute; inset: 0; border-radius: 50%;
+  background: rgb(34, 197, 94); pointer-events: none; opacity: 0;
+  animation: status-online-pulse 2.2s ease-in-out 3;
+}
+/* Idle-motion gate (utils/idleMotion.ts). This one lives in the always-mounted
+   sidebar, so unlike the home-deck decoration it runs on EVERY view — a DM, a
+   channel, anywhere. Even composited it keeps the GPU producing a frame every
+   vsync. Purely decorative: the dot stays green, it just stops pulsing while
+   the window is in the background. */
+:root[data-cl-motion="idle"] .status-online::after { animation: none; opacity: 0; }
+/* Occlusion gate (utils/idleMotion.ts, setOccluded): same frames, stopped
+   while the Descent covers it. Scoped so a status dot shown INSIDE
+   settings keeps pulsing. */
+:root[data-cl-occluded="on"] .status-online:not(.sd-root *)::after { animation: none; opacity: 0; }
+
+/* ── Fullscreen call overlay ─────────────────────────────────────────────── */
+@keyframes fullscreen-fade-in {
+  from { opacity: 0; transform: scale(0.98); }
+  to   { opacity: 1; transform: scale(1); }
+}
+
+.fullscreen-overlay-enter {
+  animation: fullscreen-fade-in 0.2s ease-out forwards;
+}
+
+/* Exit mirror of the above — the plain cinema-black ghost CallProvider
+ * (contexts/CallContext.tsx) keeps mounted for one call after the real
+ * FullscreenOverlay is gone, purely so leaving a call while fullscreen
+ * dissolves rather than snapping away. Same duration, reversed curve. */
+@keyframes fullscreen-fade-out {
+  from { opacity: 1; transform: scale(1); }
+  to   { opacity: 0; transform: scale(0.98); }
+}
+
+.fullscreen-overlay-exit {
+  /* Unlike the real overlay, this is purely decorative — the call already
+   * ended and whatever is underneath (docked call view, or no call at all)
+   * is the live, interactive surface now. Never eat its clicks. */
+  pointer-events: none;
+  animation: fullscreen-fade-out 0.2s ease-in forwards;
+}
+
+/* The stage tile is keyed on the stream it shows, so switching focus remounts
+ * it. A short enter fade is all the transition that needs — the previous
+ * version ran a stateful 160ms "fade the old one out, then swap" timer, which
+ * meant the overlay carried a second, lagging copy of `focusedStream` purely
+ * for animation. */
+@keyframes fs-stage-in {
+  from { opacity: 0; transform: scale(0.985); }
+  to   { opacity: 1; transform: none; }
+}
+.fs-stage-enter { animation: fs-stage-in 0.18s cubic-bezier(0.22, 1, 0.36, 1) both; }
+
+/* Where the app's real <ControlBar> lands while fullscreen is up (see
+ * Dashboard.tsx's #call-fullscreen-controls-root and SidebarConference's
+ * activeControlsRoot). Inert and invisible unless FullscreenOverlay has set
+ * the flag on <html>.
+ *
+ * ── Bottom-RIGHT, double-stacked
+ *
+ * Direct owner request: "I wish the call controls were smaller and to the
+ * bottom right" / "make them in a more square format like double stacked ... so
+ * they fit like another video would." So instead of a 560px capsule centred
+ * across the bottom, this is a small COLS x ROWS block parked in the corner,
+ * sized like one more tile in the grid.
+ *
+ * The explicit `width` is NOT decoration and must never become `auto`:
+ * `.cl-console` is `container-type: inline-size`, i.e. `contain: inline-size`,
+ * which makes the box's inline size independent of its contents — a
+ * shrink-to-fit fixed-position parent would resolve it to ZERO. The value comes
+ * from `fullscreenConsoleBox()` (utils/fullscreenCallLayout.ts), published by
+ * FullscreenOverlay along with --cl-fs-console-cs/cg/cp/cols, so the TS side
+ * (which also derives the annotation dock's clearance from the same box) and
+ * this rule cannot drift apart. The fallbacks below are only what a browser
+ * would paint in the impossible case that the overlay is up without having
+ * published them.
+ *
+ * --cl-fs-console-bottom, computed by FullscreenOverlay's
+ * `fullscreenConsoleBottom`, DOCKS the block inside the participant strip,
+ * vertically centred in it — ALWAYS, at every strip height, because the owner
+ * said so in those words ("IT SHOULD ALWAYS BE DOWN THERE"). A strip too short
+ * to hold the block at full size does not push it out over the video any more;
+ * `fullscreenConsoleScale` shrinks --cl-fs-console-cs/cg/cp/w to fit instead,
+ * which is why those four are republished on every strip-height change rather
+ * than once per session. The only case with no strip to dock into is
+ * grid/people mode, where the block sits 20px above the viewport bottom. */
+#call-fullscreen-controls-root {
+  display: none;
+  position: fixed;
+  right: 20px;
+  bottom: var(--cl-fs-console-bottom, 24px);
+  width: var(--cl-fs-console-w, 168px);
+  z-index: 10000;
+  pointer-events: none;   /* .cl-console-inner re-enables it on the capsule */
+  transition: opacity 0.28s ease;
+}
+:root[data-cl-fullscreen="on"] #call-fullscreen-controls-root { display: block; }
+
+/* ControlBar's own outer wrapper carries `px-1 pt-1.5 pb-2` for the docked
+ * pane. Here that padding would make the block's real footprint disagree with
+ * `fullscreenConsoleBox()` — which the annotation dock's clearance is computed
+ * from — so it is zeroed. The portal root only ever holds that one element. */
+:root[data-cl-fullscreen="on"] #call-fullscreen-controls-root > * { padding: 0; }
+
+/* The capsule becomes a block.
+ *
+ * `.cl-console-inner`'s base rule sizes every control in cqi of its own
+ * container and divides by the SIX controls in a single row — a formula that
+ * means nothing once they are on two rows, and which would bottom out at its
+ * 31px floor inside a container this narrow. So --cs/--cg/--cp are replaced
+ * outright with the flat pixel values the geometry is derived from. Everything
+ * else — the glass wash, the blur, the hairline rim, the per-control hover and
+ * press veils, the breathing pulse — is inherited from the base rules
+ * untouched. This changes where the controls sit, never what they do. */
+:root[data-cl-fullscreen="on"] #call-fullscreen-controls-root .cl-console-inner,
+:root[data-cl-fullscreen="on"] #call-fullscreen-controls-root .cl-console-inner[data-live-share] {
+  --cs: var(--cl-fs-console-cs, 44px);
+  --cg: var(--cl-fs-console-cg, 8px);
+  --cp: var(--cl-fs-console-cp, 10px);
+  display: grid;
+  grid-template-columns: repeat(var(--cl-fs-console-cols, 3), var(--cs));
+  grid-auto-rows: var(--cs);
+  /* The base rule's `max-width: 100%` stops the docked capsule overflowing a
+   * narrow pane. Here the container is sized to fit this block EXACTLY, so the
+   * same declaration would let a subpixel rounding difference squeeze a column
+   * instead of simply hanging one pixel over. */
+  max-width: none;
+  justify-content: center;
+  align-content: center;
+  justify-items: center;
+  /* Tile-shaped, not a pill: it now sits beside video tiles that are
+   * `rounded-xl` (20px in this project's Tailwind scale, NOT the stock 12px),
+   * and a 999px capsule around a 3x2 block reads as a stray lozenge. 22px is
+   * that same radius plus the capsule's own 10px padding ring, so the OUTER
+   * curve matches a tile's. */
+  border-radius: 22px;
+}
+/* The group dividers are a one-row device: between rows they would be a
+ * horizontal rule through the middle of a block, and inside a row they would
+ * eat a grid cell. The block's own two rows already do the grouping work —
+ * mic/deafen/camera over share/fullscreen/leave. */
+:root[data-cl-fullscreen="on"] #call-fullscreen-controls-root .cl-console-sep { display: none; }
+/* Leave is a circle here like everything else. The `@container (min-width:
+ * 430px)` rule that grows it a "Leave" label already cannot match at this
+ * width, but stating it keeps the cell from depending on that coincidence. */
+:root[data-cl-fullscreen="on"] #call-fullscreen-controls-root .cl-ctrlbtn--wide {
+  width: var(--cs);
+  padding: 0;
+}
+:root[data-cl-fullscreen="on"] #call-fullscreen-controls-root .cl-ctrl-label { display: none; }
+/* A live share swaps one plain control for the stop+chevron segment, which
+ * costs ~1.56 controls of width. In a row that just re-divided the budget; in a
+ * fixed grid it would overflow its cell and shove the column out, resizing the
+ * whole block the instant a share goes live. Scaled to fit one cell instead, so
+ * the block never changes size — it is parked over video, where a jump is
+ * worse than a slightly smaller stop face. Both halves stay full height and
+ * keep their joined-segment radii. */
+:root[data-cl-fullscreen="on"] #call-fullscreen-controls-root .cl-share-live { width: var(--cs); }
+:root[data-cl-fullscreen="on"] #call-fullscreen-controls-root .cl-share-live .cl-share-stop {
+  width: calc(var(--cs) * 0.68);
+}
+:root[data-cl-fullscreen="on"] #call-fullscreen-controls-root .cl-share-live .cl-share-chev {
+  width: calc(var(--cs) * 0.30);
+}
+
+/* Cinema idle: the console steps out of the way once the pointer has been
+ * still for a few seconds, and ANY input (move, click, key, wheel) brings it
+ * straight back — see FullscreenOverlay's idle effect. This is what lets it
+ * float over the corner of a screen share without permanently covering it. The
+ * annotation request dock is deliberately NOT in this selector: an unanswered
+ * request must not quietly vanish while the presenter presents. Neither is
+ * `.cl-fs-titlestrip` (the window's only drag handle while the overlay is up)
+ * nor `.cl-fs-strip-handle` (the only way to resize the strip). */
+:root[data-cl-fs-idle="on"] #call-fullscreen-controls-root {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* ── The participant strip's resize handle ──────────────────────────────────
+ * The handle IS the strip's top border: a 7px grab band sitting on the same
+ * hairline the strip used to draw with `border-t`, so there is no second line
+ * to explain. The grip pips only appear on hover/focus/drag — at rest this
+ * reads as the hairline it replaced. See FullscreenOverlay's "four owner
+ * complaints" note 4 for why dragging is back and what stops it clipping. */
+.cl-fs-strip-handle {
+  cursor: ns-resize;
+  touch-action: none;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  background: linear-gradient(to bottom, rgba(255, 255, 255, 0.06) 0 1px, transparent 1px);
+  transition: background 0.15s ease;
+}
+.cl-fs-strip-handle:hover,
+.cl-fs-strip-handle:focus-visible,
+.cl-fs-strip-handle.is-dragging {
+  background: linear-gradient(to bottom, rgba(37, 224, 200, 0.55) 0 1px, rgba(255, 255, 255, 0.04) 1px);
+  outline: none;
+}
+.cl-fs-strip-grip {
+  display: block;
+  width: 34px;
+  height: 3px;
+  margin-top: 2px;
+  border-radius: 99px;
+  background: rgba(255, 255, 255, 0.28);
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.cl-fs-strip-handle:hover .cl-fs-strip-grip,
+.cl-fs-strip-handle:focus-visible .cl-fs-strip-grip,
+.cl-fs-strip-handle.is-dragging .cl-fs-strip-grip { opacity: 1; }
+
+/* ── The participant strip's scrollable row ─────────────────────────────────
+ * Owner: "Also if there's too many have a scroll bar."
+ *
+ * The row is left-aligned (STRIP_JUSTIFY_CONTENT) and has always been
+ * `overflow-x: auto`. What changes here is the AFFORDANCE, and why it is not
+ * the app's usual `.custom-scrollbar`:
+ *
+ * A horizontal scrollbar is laid out INSIDE its scroll container, so it eats
+ * ~11px off the `height: 100%` cards — and it appears only once the row
+ * overflows, which means the cards would visibly shrink the instant one more
+ * person joins. This band now also hosts the docked control console and its
+ * floor is 100px, so that is height the cards cannot spare, and a
+ * layout-shifting scrollbar is a worse answer than none.
+ *
+ * So the bar is hidden and the cue is a pair of scroll shadows instead —
+ * Lea Verou's `background-attachment` technique. Two `local` covers travel
+ * WITH the content and sit on top of two `scroll` shadows pinned to the
+ * container, so each edge's vignette is revealed exactly when there is content
+ * past it and hidden when there is not. It is pure CSS, driven by the real
+ * scroll offset, so the cue can never disagree with `scrollLeft` the way a
+ * JS-managed class would — and being a background, it paints BEHIND the cards
+ * and costs zero layout.
+ *
+ * Reachability does not depend on any of this: wheel and keyboard are handled
+ * explicitly in FullscreenOverlay (onStripWheel / onStripKey) and the row is a
+ * focusable `role="group"`. The colour is the overlay's own cinema black
+ * (`bg-[#05070F]`), so the fade resolves into the strip rather than onto it. */
+.cl-fs-strip-row {
+  scrollbar-width: none;            /* Firefox */
+  -ms-overflow-style: none;
+  scroll-behavior: smooth;
+  background:
+    linear-gradient(to right, #05070F 40%, rgba(5, 7, 15, 0)) left center / 32px 100% no-repeat local,
+    linear-gradient(to left,  #05070F 40%, rgba(5, 7, 15, 0)) right center / 32px 100% no-repeat local,
+    linear-gradient(to right, rgba(5, 7, 15, 0.92), rgba(5, 7, 15, 0)) left center / 32px 100% no-repeat scroll,
+    linear-gradient(to left,  rgba(5, 7, 15, 0.92), rgba(5, 7, 15, 0)) right center / 32px 100% no-repeat scroll;
+}
+.cl-fs-strip-row::-webkit-scrollbar { display: none; }   /* Chromium / WebKit */
+/* The row is a tab stop (it has to be, to be keyboard-scrollable), so it needs
+ * a visible focus ring — an invisible one is how a focusable element becomes a
+ * trap for anyone tabbing through. Inset, because an outline on a scroll
+ * container is clipped on the scrolling axis. */
+.cl-fs-strip-row:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px rgba(37, 224, 200, 0.55);
+  border-radius: 12px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fs-stage-enter { animation: none; }
+  #call-fullscreen-controls-root { transition: none; }
+  .cl-fs-strip-handle, .cl-fs-strip-grip { transition: none; }
+  /* Keyboard/wheel scrolling still works; it just jumps instead of gliding. */
+  .cl-fs-strip-row { scroll-behavior: auto; }
+  /* The ghost still mounts for FULLSCREEN_EXIT_FADE_MS (CallContext.tsx) to
+   * clean itself up on the same timer either way — this just makes it an
+   * instant disappearance instead of a visible dissolve. */
+  .fullscreen-overlay-exit { animation: none; opacity: 0; }
+}
+
+/* ── "Ask to draw", on hover only ──────────────────────────────────────────
+ * Owner: "request annotation button should only appear when hovering over a
+ * video, and this goes for both full screen and a normal focused window."
+ *
+ * Scoped to the REQUEST button alone. The AnnotationToolbar (you already hold
+ * a grant — an armed tool you must be able to see) and AnnotationRequestsMenu
+ * (someone is waiting on your answer) both stay put: hiding either would hide
+ * state, not chrome.
+ *
+ * Pointer-events, not opacity, is what actually withholds the control — an
+ * invisible-but-clickable button in the corner of a video is worse than a
+ * visible one. It is done on the CHILD rather than this wrapper because the
+ * cluster above is `pointer-events: none` with each child re-enabling itself,
+ * and a wrapper that turned interaction back on would swallow clicks meant for
+ * the video. Keyboard users are not locked out: an `opacity: 0` element is
+ * still focusable, and `:focus-within` reveals it before it is used. */
+.cl-annot-reveal { opacity: 0; transition: opacity 0.15s ease; }
+.cl-annot-reveal > * { pointer-events: none; }
+.cl-tile-hover:hover .cl-annot-reveal,
+.cl-annot-reveal:focus-within { opacity: 1; }
+.cl-tile-hover:hover .cl-annot-reveal > *,
+.cl-annot-reveal:focus-within > * { pointer-events: auto; }
+
+/* `.cl-tile-focus-hint` (the decorative click-to-focus Maximize2 glyph) used to
+   be defined here, including its own prefers-reduced-motion entry below.
+   Removed with the markup in VideoTile.tsx on direct owner instruction —
+   "remove that". `.cl-tile-hover` stays: it is still the hover scope for
+   `.cl-annot-reveal` above. */
+@media (prefers-reduced-motion: reduce) {
+  .cl-annot-reveal { transition: none; }
+}
+
+/* ── Chat message hover-action menu ─────────────────────────────────────── */
+@keyframes msg-menu-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.msg-menu-enter {
+  animation: msg-menu-fade-in 0.18s ease-out forwards;
+}
+
+/* ── Message hover toolbar (.msgbar) ─────────────────────────────────────
+ * The quiet micro-toolbar that floats over a hovered message. Deliberately
+ * NOT built from kit buttons: seven ringed 40px capsules read as a wall of
+ * chrome — this is the menu vocabulary instead (deep panel, flat 28px icons
+ * that tint on hover, flash reserved for hovering the destructive action).
+ * Unscoped on purpose: it renders inline inside overflow-clipped rows.  */
+@keyframes msgbar-in {
+  from { opacity: 0; transform: translateY(5px); }
+  to   { opacity: 1; transform: none; }
+}
+.msgbar {
+  display: flex; align-items: center; gap: 2px;
+  background: var(--cl-deep);
+  border: 1px solid var(--cl-border);
+  border-radius: 12px; padding: 3px;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.45);
+  animation: msgbar-in 0.22s var(--cl-spring, cubic-bezier(.34,1.56,.64,1)) both;
+}
+.msgbar-btn {
+  position: relative; display: flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; border: none; background: none; border-radius: 9px;
+  color: var(--cl-muted); cursor: pointer; padding: 0;
+  transition: background .15s, color .15s, transform .2s var(--cl-spring, ease);
+}
+.msgbar-btn svg { width: 16px; height: 16px; }
+.msgbar-btn:hover { background: rgba(37, 224, 200, 0.12); color: var(--cl-lume); }
+.msgbar-btn:active { transform: translateY(1px); }
+.msgbar-btn.on { color: var(--cl-lume); background: rgba(37, 224, 200, 0.14); }
+.msgbar-btn.warm.on { color: var(--cl-glow); background: rgba(255, 201, 77, 0.16); }
+.msgbar-btn.danger:hover { background: rgba(255, 107, 94, 0.12); color: var(--cl-flash); }
+.msgbar-btn.disabled { opacity: .55; cursor: default; }
+.msgbar-btn.disabled:hover { background: rgba(255, 201, 77, 0.16); color: var(--cl-glow); }
+.msgbar-btn.disabled:active { transform: none; }
+/* pill tooltip above the button — same recipe as the kit button tooltip */
+.msgbar-btn .mtip {
+  position: absolute; left: 50%; bottom: calc(100% + 8px); transform: translate(-50%, 4px);
+  background: var(--cl-surface); border: 1px solid var(--cl-border); color: var(--cl-text);
+  font-size: 11px; font-weight: 700; padding: 4px 10px; border-radius: 99px;
+  white-space: nowrap; opacity: 0; pointer-events: none;
+  transition: opacity .15s, transform .3s var(--cl-spring, ease); z-index: 6;
+}
+.msgbar-btn:hover .mtip { opacity: 1; transform: translate(-50%, 0); transition-delay: .35s; }
+@media (prefers-reduced-motion: reduce) {
+  .msgbar { animation: none; }
+  .msgbar-btn:active { transform: none; }
+}
+
+/* ── Jump-to-reply highlight flash ──────────────────────────────────────── */
+@keyframes reply-flash {
+  0%   { background-color: rgba(37, 224, 200, 0.13); }
+  55%  { background-color: rgba(37, 224, 200, 0.13); }
+  100% { background-color: transparent; }
+}
+
+.msg-reply-highlight {
+  animation: reply-flash 1.8s ease-out forwards;
+}
+
+/* ── Call console ─────────────────────────────────────────────────────────
+ * One continuous capsule holding every call control. Earlier revisions used
+ * separate trays of squares that wrapped independently, which produced a
+ * stranded hang-up button at some widths and never read as a single object.
+ * This is deliberately ONE row that never wraps, so the whole console always
+ * moves as one piece.
+ *
+ * Scaling is continuous rather than stepped: sizes are expressed in cqi
+ * (percent of the console's own inline size) inside a clamp, so dragging the
+ * panel grows the controls smoothly between a floor and a ceiling instead of
+ * snapping at breakpoints. Past the ceiling the extra room goes into the
+ * leave button's label rather than inflating circles further.
+ *
+ * The panel is user-resizable from 280px to max(500px, 35vw) — at the 280px
+ * floor the six controls still fit the capsule with room to spare. */
+.cl-console {
+  container-type: inline-size;
+  display: flex;
+  justify-content: center;
+}
+.cl-console-inner {
+  /* Control size is derived from the room actually left over, not a flat
+   * percentage. A percentage left the row using ~70% of a narrow pane, so
+   * the controls sat small with wide dead margins either side — the space
+   * was there, it just wasn't being spent on them.
+   *
+   * The overhead is expressed proportionally, not as a fixed px constant: the
+   * gaps, dividers and capsule padding are themselves cqi-based, so they grow
+   * with the pane. A constant sized for the narrow end under-filled the wide
+   * end and vice versa — 84cqi leaves room for that ~14cqi of overhead, and
+   * the 8px is flat safety. Divided by the six controls, so they grow to fill
+   * a narrow pane and stop at the 46px ceiling; past that the surplus becomes
+   * the side margin, which is what should absorb extra width.
+   *
+   * The floor matters as much: the pane bottoms out at 280px and the control
+   * root adds padding, so the capsule can see ~248px. At the old 34px floor
+   * the row cost ~253px there and the leave button hung outside the capsule. */
+  --cs: clamp(31px, calc((84cqi - 8px) / 6), 46px);   /* control diameter */
+  --cg: clamp(3px,  1.2cqi,  7px);   /* gap between controls */
+  --cp: clamp(4px,  1.4cqi,  8px);   /* capsule padding    */
+  display: flex;
+  align-items: center;
+  gap: var(--cg);
+  padding: var(--cp);
+  max-width: 100%;
+  border-radius: 999px;
+  /* Glass, flat. No gradient and no top highlight — a lighter top edge reads
+   * as a reflection, which makes it a rendered object rather than a piece of
+   * glass. An even wash plus a hairline rim is all it needs.
+   *
+   * The wash matters more than the blur: the pane behind is a flat colour, so
+   * a backdrop-filter alone has nothing to refract. The blur earns its keep
+   * once something textured (video, a share) is behind it.
+   * -webkit- prefix matches .mod / .cl-mod elsewhere in this file.
+   *
+   * Reverted here after two commits (00c5d5c7, 1e786f51) chased the wrong
+   * element — direct owner correction: "you're changing the wrong thing...
+   * change that back... I want what is behind that and to the side of it."
+   * The pill itself was never the actual complaint. */
+  background: rgba(255, 255, 255, 0.05);
+  backdrop-filter: blur(16px) saturate(160%);
+  -webkit-backdrop-filter: blur(16px) saturate(160%);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.10);
+  /* #call-controlbar-root (Dashboard.tsx) is now pointer-events:none so the
+   * empty margin either side of this centered pill lets clicks fall through
+   * to whatever's scrolled underneath, now that the control bar floats as
+   * an overlay instead of reserving its own strip. Restored here since
+   * pointer-events:none is inherited — without this the actual buttons
+   * would stop receiving clicks too. */
+  pointer-events: auto;
+}
+/* Live share replaces one plain control with the stop+chevron segment
+ * (.cl-share-live below), which costs ~1.56x a normal control's width
+ * (1x stop + 1px gap + 0.56x chevron) rather than 1x — so the six-way
+ * division above under-budgets by that difference and pushed the leave
+ * button past the island's edge the moment a share went live. Re-divide by
+ * 6.56 "control units" instead of 6 while live, so the row's real cost
+ * matches what it's actually budgeted for. Only --cs changes; every other
+ * declaration is inherited from the base rule above. */
+.cl-console-inner[data-live-share] {
+  --cs: clamp(31px, calc((84cqi - 8px) / 6.56), 46px);
+}
+/* Hairline between control groups, so the row reads as audio / video / leave
+ * rather than six interchangeable circles.
+ * Height is an explicit fraction of the control, NOT a percentage margin —
+ * percentage margins resolve against the container's WIDTH, which collapsed
+ * this to nothing and made the divider invisible. */
+.cl-console-sep {
+  flex: 0 0 1px;
+  align-self: center;
+  height: calc(var(--cs) * 0.5);
+  margin: 0 calc(var(--cg) * 0.75);
+  background: rgba(255, 255, 255, 0.16);
+  border-radius: 1px;
+}
+/* Leave sits a little further out than the group gaps — it's a different
+ * kind of action, not just another group. */
+.cl-console-sep--leave { margin-left: calc(var(--cg) * 1.6); margin-right: calc(var(--cg) * 1.2); }
+
+.cl-ctrlbtn {
+  position: relative;
+  flex: 0 0 auto;
+  width: var(--cs);
+  height: var(--cs);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: .45em;
+  border: none;
+  border-radius: 999px;
+  cursor: pointer;
+  user-select: none;
+  /* See-through controls have no fill, so this hairline is their whole
+   * shape. Scoped away from the filled tones by data-tone — on solid red or
+   * lume the same ring reads as an outline rather than an edge. Kept in CSS
+   * rather than the inline tone so :focus-visible can still outrank it;
+   * inline would win the cascade and swallow the focus indicator. */
+  box-shadow: none;
+}
+.cl-ctrlbtn[data-tone="neutral"],
+.cl-ctrlbtn[data-tone="off"] {
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.13);
+  /* No transform in the transition list, deliberately — see the feedback
+   * note below. Only size (tier changes) and colour move. */
+  transition: background-color .18s ease, color .18s ease, box-shadow .18s ease,
+              width .22s ease, height .22s ease, padding .22s ease;
+}
+/* Leave earns a label once the console has room for one; below that it stays
+ * a circle like its neighbours. */
+.cl-ctrlbtn .cl-ctrl-label {
+  display: none;
+  font-family: var(--cl-font-body, inherit);
+  font-size: clamp(12px, 2.6cqi, 14px);
+  font-weight: 700;
+  letter-spacing: .01em;
+  white-space: nowrap;
+  padding-right: .15em;
+}
+@container (min-width: 430px) {
+  .cl-ctrlbtn--wide { width: auto; padding: 0 clamp(11px, 2.2cqi, 16px); }
+  .cl-ctrlbtn--wide .cl-ctrl-label { display: inline; }
+}
+
+/* Live screen share — stop face + options chevron joined into one capsule
+ * segment, so an active share still reads as a single control in the row. */
+.cl-share-live { display: flex; align-items: center; gap: 1px; }
+.cl-share-live .cl-share-stop {
+  width: var(--cs);
+  border-radius: 999px 6px 6px 999px;
+}
+.cl-share-live .cl-share-chev {
+  width: calc(var(--cs) * 0.56);
+  border-radius: 6px 999px 999px 6px;
+}
+.cl-share-live .cl-share-chev svg { width: 42%; height: auto; }
+/* NOTE: no mount/unmount animation here on purpose — the bar is portaled
+ * and gets reparented repeatedly during join/leave layout shifts, which
+ * restarts CSS animations and made any entrance/exit cascade stutter. */
+/* ── Feedback: light, not motion ──────────────────────────────────────────
+ * Nothing here moves. Successive attempts at this bar leaned on movement —
+ * a hover lift, a press bounce, icons drooping to signal "off" — and every
+ * one of them read as fidgety rather than subtle, because on a small control
+ * in a dark UI, geometry is the loud channel and light is the quiet one.
+ *
+ * So: hover lifts a translucent white veil, press replaces it with a dark
+ * one, and state is carried entirely by colour. Both veils are overlays
+ * (::before / ::after) rather than background-color, because the tone
+ * colours are set inline per state and would otherwise win the cascade.
+ * ───────────────────────────────────────────────────────────────────────── */
+.cl-ctrlbtn::before,
+.cl-ctrlbtn::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity .16s ease;
+}
+.cl-ctrlbtn::before { background: #fff; }                 /* hover veil  */
+.cl-ctrlbtn::after  { background: rgba(0, 0, 0, .55); }   /* press veil  */
+
+.cl-ctrlbtn:hover:not(:disabled)::before  { opacity: .08; }
+.cl-ctrlbtn:active:not(:disabled)::before { opacity: 0; }
+.cl-ctrlbtn:active:not(:disabled)::after  { opacity: .28; transition-duration: .06s; }
+
+/* Standing states breathe. This is the one place motion earns its keep: it
+ * marks a condition that persists (you are muted / you are sharing) rather
+ * than decorating a click, and it moves light rather than geometry.
+ * 0% and 100% are identical, so the restart when the portaled bar reparents
+ * is seamless — the same hazard that made every keyframe here a bug before. */
+@keyframes ctrl-breathe-flash {
+  0%, 100% { box-shadow: 0 0 6px 0 rgba(255, 107, 94, .22); }
+  50%      { box-shadow: 0 0 13px 0 rgba(255, 107, 94, .55); }
+}
+@keyframes ctrl-breathe-lume {
+  0%, 100% { box-shadow: 0 0 6px 0 rgba(37, 224, 200, .20); }
+  50%      { box-shadow: 0 0 13px 0 rgba(37, 224, 200, .48); }
+}
+.cl-ctrlbtn[data-pulse="off"]  { animation: ctrl-breathe-flash 3.2s ease-in-out infinite; }
+.cl-ctrlbtn[data-pulse="live"] { animation: ctrl-breathe-lume  3.2s ease-in-out infinite; }
+
+.cl-ctrlbtn:disabled { cursor: not-allowed; }
+/* Focus must win over the breathing glow, hence the higher specificity. */
+.cl-ctrlbtn:focus-visible,
+.cl-ctrlbtn[data-pulse]:focus-visible {
+  outline: none;
+  animation: none;
+  box-shadow: 0 0 0 2.5px rgba(37, 224, 200, .55);
+}
+
+/* Icon rides in .cl-ico sized as a share of the button, so it grows and
+ * shrinks with it; springy zoom on hover, squash while pressed. */
+/* Sized off --cs, not a percentage: the leave control becomes width:auto once
+ * it gains a label, and a percentage would blow the glyph up with it. */
+.cl-ctrlbtn .cl-ico {
+  position: relative;
+  z-index: 1;
+  width: calc(var(--cs) * 0.44);
+  flex: 0 0 auto;
+  aspect-ratio: 1;
+  align-items: center;
+  justify-content: center;
+}
+.cl-ctrlbtn .cl-ico svg { width: 100%; height: 100%; }
+
+
+/* ── State, carried by colour ─────────────────────────────────────────────
+ * The "off" glyphs (MicOff, VideoOff, HeadphoneOff) are drawn with a gap
+ * where the slash crosses, so they read cleanly at 20px. An earlier revision
+ * overlaid its own slash on the intact glyph instead, which smeared a line
+ * across it — that's why drawing the slash looked wrong, not the idea.
+ *
+ * The two glyphs cross-fade on opacity ONLY. No rotation, no scale: at this
+ * size any geometry change is noise, and it's the colour shift (neutral →
+ * flash) that already tells you the control is off.
+ * ───────────────────────────────────────────────────────────────────────── */
+.cl-ico--tog { position: relative; }
+.cl-ico--tog > svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  transition: opacity .17s ease;
+}
+.cl-ico--tog > .ico-on  { opacity: 1; }
+.cl-ico--tog > .ico-off { opacity: 0; }
+.cl-ico--tog[data-off="true"] > .ico-on  { opacity: 0; }
+.cl-ico--tog[data-off="true"] > .ico-off { opacity: 1; }
+
+/* Legacy two-glyph cross-fade, still used where a control swaps icons.
+ *
+ * Deliberately a TRANSITION, not a keyframe. A keyframe (or a keyed remount)
+ * replays every time the element mounts, and this bar is portaled and gets
+ * reparented on every call layout shift — so the icons would spin in at
+ * apparently random moments. Transitions only run on an actual value change,
+ * never on first paint. Both glyphs are always in the DOM, stacked. */
+.cl-ctrlbtn .cl-ico--swap > svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  transition: opacity .18s ease, transform .3s var(--cl-spring, ease);
+}
+.cl-ctrlbtn .cl-ico--swap > .ico-on  { opacity: 0; transform: scale(.55) rotate(-35deg); }
+.cl-ctrlbtn .cl-ico--swap > .ico-off { opacity: 1; transform: none; }
+.cl-ctrlbtn .cl-ico--swap[data-on="true"] > .ico-on  { opacity: 1; transform: none; }
+.cl-ctrlbtn .cl-ico--swap[data-on="true"] > .ico-off { opacity: 0; transform: scale(.55) rotate(35deg); }
+
+/* ── Spam easter eggs ─────────────────────────────────────────────────────
+ * Rapid repeat clicks escalate: a wobble at first, then a full barrel roll,
+ * with a floating combo counter. Purely decorative — never applied to the
+ * leave button, and never gates the underlying action. */
+@keyframes ctrl-wobble {
+  0%,100% { transform: rotate(0deg); }
+  20% { transform: rotate(-9deg); }
+  45% { transform: rotate(7deg); }
+  70% { transform: rotate(-4deg); }
+}
+.cl-ctrlbtn.ctrl-wobble .cl-ico { animation: ctrl-wobble .45s ease-in-out; }
+
+@keyframes ctrl-roll {
+  0%   { transform: rotate(0deg) scale(1); }
+  55%  { transform: rotate(360deg) scale(1.22); }
+  100% { transform: rotate(360deg) scale(1); }
+}
+.cl-ctrlbtn.ctrl-roll .cl-ico { animation: ctrl-roll .7s var(--cl-spring, ease); }
+
+/* Rainbow shimmer at max combo. */
+@keyframes ctrl-party {
+  0%   { filter: hue-rotate(0deg) saturate(1.6); }
+  100% { filter: hue-rotate(360deg) saturate(1.6); }
+}
+.cl-ctrlbtn.ctrl-party { animation: ctrl-party 1.1s linear 2; }
+
+/* Combo badge — floats up off the button and fades. */
+.ctrl-combo {
+  position: absolute;
+  left: 50%;
+  top: -2px;
+  transform: translateX(-50%);
+  font-family: var(--cl-font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--cl-lume, #25E0C8);
+  text-shadow: 0 1px 4px rgba(0,0,0,.65);
+  pointer-events: none;
+  white-space: nowrap;
+  z-index: 3;
+  animation: ctrl-combo-float .75s ease-out forwards;
+}
+@keyframes ctrl-combo-float {
+  0%   { opacity: 0; transform: translate(-50%, 4px) scale(.7); }
+  25%  { opacity: 1; transform: translate(-50%, -6px) scale(1.15); }
+  100% { opacity: 0; transform: translate(-50%, -22px) scale(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cl-ctrlbtn.ctrl-wobble .cl-ico,
+  .cl-ctrlbtn.ctrl-roll .cl-ico,
+  .cl-ctrlbtn.ctrl-party,
+  .ctrl-combo { animation: none; }
+  .cl-ctrlbtn .cl-ico--swap > svg,
+  .cl-ico--tog > svg { transition: none; }
+  .cl-ctrlbtn::before, .cl-ctrlbtn::after { transition: none; }
+  .cl-ctrlbtn[data-pulse] { animation: none; }
+  .cl-ctrlbtn:hover:not(:disabled) { transform: none; }
+}
+
+/* ── Message entrance animations ──────────────────────────────────────────
+ * Platform-wide feel for a message appearing in a feed. Applied once to a
+ * row when it's a genuinely-new message (just-sent or freshly-arrived) and
+ * stripped on animationend (see ChatPane onAnimationEnd) so no lingering
+ * transform sticks around. `both` holds the from-state before the first
+ * frame paints, preventing a one-frame flash at full opacity.
+ *   • received — a calm rise + fade, eased out (settles, no overshoot)
+ *   • sent     — a slightly springier pop so your own message feels tactile
+ * Respects prefers-reduced-motion: a plain fade, no movement. */
+@keyframes cl-msg-in-recv {
+  from { opacity: 0; transform: translateY(7px) scale(.992); }
+  to   { opacity: 1; transform: translateY(0)   scale(1); }
+}
+@keyframes cl-msg-in-sent {
+  0%   { opacity: 0; transform: translateY(8px) scale(.97); }
+  55%  { opacity: 1; }
+  100% { opacity: 1; transform: translateY(0)   scale(1); }
+}
+.cl-msg-enter-recv {
+  animation: cl-msg-in-recv .38s cubic-bezier(.22, 1, .36, 1) both;
+  transform-origin: left center;
+  will-change: transform, opacity;
+}
+.cl-msg-enter-sent {
+  animation: cl-msg-in-sent .44s cubic-bezier(.34, 1.4, .5, 1) both;
+  transform-origin: left center;
+  will-change: transform, opacity;
+}
+@media (prefers-reduced-motion: reduce) {
+  .cl-msg-enter-recv, .cl-msg-enter-sent {
+    animation: cl-msg-in-recv .2s ease-out both;
+    transform: none;
+  }
+}
+
+/* ── Banner component — bulletproof image-fill ────────────────────────────
+ * Every rule uses !important to immunize against Tailwind preflight
+ * (img { max-width: 100%; height: auto; }) and any other cascade battles.
+ * This is the only place in the codebase that renders profile banners.
+ * min-*: 100% is a second fence so the img cannot shrink below container
+ * size even if some other rule forces height/width to auto. */
+.cipherline-banner {
+  position: relative !important;
+  width: 100% !important;
+  flex-shrink: 0 !important;
+  overflow: hidden !important;
+  /* height applied via inline style */
+}
+.cipherline-banner-fallback {
+  position: absolute !important;
+  inset: 0 !important;
+  background: linear-gradient(135deg, rgba(37, 224, 200, 0.2), var(--cl-deep)) !important;
+}
+.cipherline-banner-img {
+  position: absolute !important;
+  top: 0 !important;
+  left: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  max-width: none !important;
+  max-height: none !important;
+  min-width: 100% !important;
+  min-height: 100% !important;
+  object-fit: cover !important;
+  object-position: center center !important;
+  display: block !important;
+  pointer-events: none !important;
+}
+.cipherline-banner-fade {
+  position: absolute !important;
+  inset: 0 !important;
+  pointer-events: none !important;
+}
+/* When the user has no banner set, their avatar is rendered here with a heavy
+ * blur + darken so it reads as ambient background, not as a profile picture.
+ * `scale(1.18)` hides the soft edges the blur filter creates at the image boundary. */
+.cipherline-banner-img-blurred {
+  filter: blur(6px) brightness(0.78) saturate(1.1) !important;
+  transform: scale(1.06) !important;
+}
+/* When the fallback uses a user's avatar-color (no banner, no avatar), darken
+ * the flat color heavily and overlay a subtle radial highlight so the banner
+ * reads as ambient background rather than a big paint chip. The background
+ * color itself is applied inline via React so !important here doesn't fight it. */
+.cipherline-banner-fallback-colored {
+  position: absolute !important;
+  inset: 0 !important;
+  filter: brightness(0.42) saturate(0.9) !important;
+}
+/* ── animate-in shim ──────────────────────────────────────────────────────
+ * Minimal re-implementation of the `tailwindcss-animate` plugin for the
+ * utility classes already used throughout the app
+ *   (animate-in, fade-in, zoom-in-{50,95,100}, slide-in-from-{top,bottom}-{1,2,4,8},
+ *    duration-{100,150,200,300})
+ * so modals, dropdowns, and tooltips visibly animate in without adding an npm
+ * dependency. Each modifier class only sets a CSS custom property; the single
+ * `@keyframes cl-enter` reads those properties to build a from-state that
+ * animates toward the element's natural rendered state. */
+@keyframes cl-enter {
+  from {
+    opacity: var(--cl-enter-opacity, 1);
+    transform: translate3d(0, var(--cl-enter-ty, 0), 0) scale(var(--cl-enter-scale, 1));
+  }
+}
+.animate-in {
+  animation-name: cl-enter;
+  animation-duration: 150ms;
+  animation-fill-mode: both;
+  animation-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+}
+.fade-in        { --cl-enter-opacity: 0; }
+.fade-in-0      { --cl-enter-opacity: 0; }
+.zoom-in        { --cl-enter-scale: 0.85; }
+.zoom-in-50     { --cl-enter-scale: 0.5; }
+.zoom-in-95     { --cl-enter-scale: 0.95; }
+.zoom-in-100    { --cl-enter-scale: 1; }
+.slide-in-from-top-1    { --cl-enter-ty: -0.25rem; }
+.slide-in-from-top-2    { --cl-enter-ty: -0.5rem; }
+.slide-in-from-top-4    { --cl-enter-ty: -1rem; }
+.slide-in-from-top-8    { --cl-enter-ty: -2rem; }
+.slide-in-from-bottom-1 { --cl-enter-ty: 0.25rem; }
+.slide-in-from-bottom-2 { --cl-enter-ty: 0.5rem; }
+.slide-in-from-bottom-4 { --cl-enter-ty: 1rem; }
+/* Tailwind already emits transition-duration for these; we additively set
+ * animation-duration so `animate-in duration-200` times the animation too. */
+.duration-100 { animation-duration: 100ms; }
+.duration-150 { animation-duration: 150ms; }
+.duration-200 { animation-duration: 200ms; }
+.duration-300 { animation-duration: 300ms; }
+
+/* Exit counterpart — animates toward the user-configured `to` state while
+ * using the element's natural style as the implicit `from`. */
+@keyframes cl-exit {
+  to {
+    opacity: var(--cl-exit-opacity, 1);
+    transform: translate3d(0, var(--cl-exit-ty, 0), 0) scale(var(--cl-exit-scale, 1));
+  }
+}
+.animate-out {
+  animation-name: cl-exit;
+  animation-duration: 150ms;
+  animation-fill-mode: both;
+  animation-timing-function: cubic-bezier(0.4, 0, 1, 1);
+}
+.fade-out         { --cl-exit-opacity: 0; }
+.zoom-out         { --cl-exit-scale: 0.85; }
+.zoom-out-95      { --cl-exit-scale: 0.95; }
+.slide-out-to-top-1    { --cl-exit-ty: -0.25rem; }
+.slide-out-to-top-2    { --cl-exit-ty: -0.5rem; }
+.slide-out-to-top-4    { --cl-exit-ty: -1rem; }
+.slide-out-to-bottom-2 { --cl-exit-ty: 0.5rem; }
+.slide-out-to-bottom-4 { --cl-exit-ty: 1rem; }
+
+
+/* The animate-in/animate-out shim above had NO reduced-motion gate, so every
+ * surface using it (roughly 35 call sites: modals, dropdowns, tooltips,
+ * toasts) animated regardless of the OS setting. Every other animation in this
+ * file is gated; this one was simply missed, and being a shim for a third-party
+ * plugin's class names it is easy to overlook.
+ *
+ * `animation: none` rather than a zero duration: `cl-enter`/`cl-exit` use
+ * animation-fill-mode:both with a from-state, so a 0s animation would still
+ * paint that from-state (an invisible or scaled element) and stick there. */
+@media (prefers-reduced-motion: reduce) {
+  .animate-in,
+  .animate-out { animation: none !important; }
+}
+
+/* ── Kit scrollbar ────────────────────────────────────────────────────────
+ * Thin thumb on a transparent track, same recipe as the settings scroller —
+ * applied app-wide so no surface ever shows the chunky OS scrollbar.
+ * Chromium 121+ honors the standard properties (and disables per-element
+ * ::-webkit-scrollbar styling where they're set). The universal selector has
+ * zero specificity, so intentional overrides (e.g. the gauge's
+ * scrollbar-width:none) still win. .custom-scrollbar is kept as an explicit
+ * alias for surfaces that want to declare the intent. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--cl-border) transparent;
+}
+.custom-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: var(--cl-border) transparent;
+}
+
+/* ── ProfileModal popover entrance ─────────────────────────────────────── */
+@keyframes profile-popover-drop {
+  from { opacity: 0; transform: scale(0.94) translateY(-8px); }
+  to   { opacity: 1; transform: scale(1)    translateY(0);    }
+}
+.profile-popover-anim {
+  animation: profile-popover-drop 180ms cubic-bezier(0.22, 1, 0.36, 1);
+  transform-origin: top center;
+}
+
+.cipherline-banner-fallback-colored::after {
+  content: '' !important;
+  position: absolute !important;
+  inset: 0 !important;
+  background: radial-gradient(
+    ellipse at 30% 20%,
+    rgba(255, 255, 255, 0.18) 0%,
+    rgba(255, 255, 255, 0) 55%
+  ) !important;
+  pointer-events: none !important;
+}
+
+/* ── Call panels: no text selection, no image drag ──────────────────────────
+ * Applied to the sidebar-conference root, the focused-stream banner portal,
+ * and the fullscreen overlay. Covers every participant tile, name plate,
+ * status badge, and avatar across both views. We still allow click events
+ * on buttons/images — only selection + drag are disabled. Form controls
+ * that LEGITIMATELY need text selection (volume slider value, stream-res
+ * readout inside the popover menu) are not under these roots; the popover
+ * is portalled to document.body outside the `call-no-select` subtree. */
+.call-no-select,
+.call-no-select * {
+    user-select: none !important;
+    -webkit-user-select: none !important;
+    -moz-user-select: none !important;
+    -ms-user-select: none !important;
+}
+.call-no-select img,
+.call-no-select video {
+    -webkit-user-drag: none !important;
+    user-drag: none !important;
+}
+
+/* ══════════════════════════════════════════════════════════════
+   Cipherline design system — component styles
+   Source: _ds/cipherline-design-system/styles/components.css
+   ══════════════════════════════════════════════════════════════ */
+
+/* UI chrome text is never selectable */
+button,.cl-btn,.cl-toggle,.cl-check,.cl-radio,.cl-seg,.cl-selt,.cl-selm,.cl-pill,.cl-role,.cl-avx,.cl-tip,.cl-sbub,.cl-slider,.cl-fmsg,.cl-fld>label,.cl-ldots,.cl-egg{user-select:none;-webkit-user-select:none}
+
+/* ── Button (layered spring depth) ── */
+.cl-btn{position:relative;display:inline-block;--_o1:2px;--_o2:4px;--_cr:14px;padding-bottom:var(--_o2)}
+.cl-l{position:absolute;inset:0;border-radius:var(--_cr);transform:translateY(var(--_o1));transition:transform var(--cl-spring-dur) var(--cl-spring),background .25s}
+.cl-l1{background:var(--cl-lume-press)}
+.cl-l2{background:var(--cl-lume-deep);transform:translateY(var(--_o2))}
+.cl-btn.is-down .cl-l1{transform:translateY(var(--_o1)) scale(1.025,1)}
+.cl-btn.is-down .cl-l2{transform:translateY(var(--_o2)) scale(1.045,1)}
+.cl-cap{position:relative;display:inline-flex;align-items:center;justify-content:center;line-height:1;border:none;cursor:pointer;border-radius:var(--_cr);padding:13px 25px;font-family:var(--cl-font-body);font-weight:800;font-size:15px;color:var(--cl-on-lume);overflow:hidden;transform:translateY(0);transition:transform var(--cl-spring-dur) var(--cl-spring),background-color .35s,box-shadow .3s,color .3s;background-color:var(--cl-lume);background-image:radial-gradient(46px 34px at var(--mx,-60px) var(--my,-60px),rgba(255,255,255,.4),rgba(255,255,255,0) 75%)}
+.cl-cap>span{position:relative;z-index:1;display:inline-flex;align-items:center;justify-content:center;gap:8px;line-height:1}
+.cl-cap>span svg{display:block}
+.cl-btn:not(.is-disabled):not(.is-loading) .cl-cap:active{transform:translateY(2px);transition-duration:80ms}
+.cl-cap:focus-visible{outline:3px solid var(--cl-lume);outline-offset:3px}
+.cl-bloom{position:absolute;width:12px;height:12px;border-radius:50%;background:rgba(255,255,255,.65);filter:blur(3px);transform:scale(0);pointer-events:none}
+.cl-bloom.go{animation:cl-bloom-go .55s ease-out forwards}
+@keyframes cl-bloom-go{0%{transform:scale(.4);opacity:1}100%{transform:scale(11);opacity:0}}
+
+/* icon animations */
+.cl-ico{display:inline-flex;transition:transform .3s var(--cl-spring)}
+.cl-ico.play-send{animation:cl-icofly .55s ease-in 1}
+@keyframes cl-icofly{0%{transform:none;opacity:1}45%{transform:translate(16px,-16px) rotate(-14deg);opacity:0}50%{transform:translate(-12px,12px) rotate(-14deg);opacity:0}100%{transform:none;opacity:1}}
+.cl-ico.play-leave{animation:cl-icohang .6s var(--cl-spring) 1}
+@keyframes cl-icohang{0%{transform:rotate(0)}22%{transform:rotate(-18deg) translateY(-2px)}55%{transform:rotate(34deg) translateY(3px)}75%{transform:rotate(24deg) translateY(2px)}100%{transform:rotate(0) translateY(0)}}
+.cl-ico.play-mute{animation:cl-icomute .45s ease 1}
+@keyframes cl-icomute{20%{transform:rotate(-11deg)}50%{transform:rotate(9deg)}75%{transform:rotate(-5deg)}100%{transform:rotate(0)}}
+.cl-ico.play-unmute{animation:cl-icounmute .45s var(--cl-spring) 1}
+@keyframes cl-icounmute{40%{transform:scale(1.3)}100%{transform:scale(1)}}
+.cl-ico.play-crash{animation:cl-icocrash .85s ease-in 1}
+@keyframes cl-icocrash{0%{transform:none;opacity:1}20%{transform:translate(3px,-3px) rotate(-8deg)}45%{transform:translate(5px,2px) rotate(40deg)}75%{transform:translate(3px,12px) rotate(110deg);opacity:1}88%{transform:translate(2px,17px) rotate(125deg);opacity:0}96%{transform:none;opacity:0}100%{transform:none;opacity:1}}
+.cl-ico.play-dizzy{animation:cl-icodizzy .8s var(--cl-spring) 1}
+@keyframes cl-icodizzy{0%{transform:rotate(0)}55%{transform:rotate(380deg)}75%{transform:rotate(350deg)}100%{transform:rotate(360deg)}}
+.cl-ico.play-scared{animation:cl-icoscared .55s ease 1}
+@keyframes cl-icoscared{0%,100%{transform:none}12%{transform:translate(-1px,1px) rotate(-4deg)}28%{transform:translate(1px,-1px) rotate(3deg)}44%{transform:translate(-1px,0) rotate(-3deg)}60%{transform:translate(1px,1px) rotate(4deg)}78%{transform:translate(-1px,-1px) rotate(-2deg)}}
+.cl-ico.play-trash{animation:cl-icoshake .4s ease 1}
+@keyframes cl-icoshake{0%,100%{transform:rotate(0)}25%{transform:rotate(-9deg)}60%{transform:rotate(8deg)}}
+.cl-ico.play-star{animation:cl-icostar .5s var(--cl-spring) 1}
+@keyframes cl-icostar{40%{transform:rotate(-22deg) scale(1.25)}100%{transform:rotate(0) scale(1)}}
+
+/* sizes */
+[class~="cl-btn--sm"]{--_cr:11px}.cl-btn--sm .cl-cap{padding:9px 18px;font-size:13.5px}
+[class~="cl-btn--lg"]{--_cr:16px;--_o1:3px;--_o2:5px}.cl-btn--lg .cl-cap{padding:16px 32px;font-size:16.5px}
+[class~="cl-btn--icon"]{--_cr:50%}.cl-btn--icon .cl-cap{width:46px;height:46px;padding:0;border-radius:50%}
+.cl-btn--icon.cl-btn--sm .cl-cap{width:40px;height:40px}
+
+/* ghost / secondary */
+.cl-btn--ghost{transform:translateY(calc(var(--_o2)/2))}
+.cl-btn--ghost .cl-l{display:none}
+.cl-btn--ghost .cl-cap{background-color:var(--cl-surface);background-image:radial-gradient(46px 34px at var(--mx,-60px) var(--my,-60px),rgba(37,224,200,.16),rgba(37,224,200,0) 75%);color:var(--cl-text);box-shadow:inset 0 0 0 1.5px var(--cl-border)}
+.cl-btn--ghost .cl-cap:hover{box-shadow:inset 0 0 0 1.5px var(--cl-lume);color:var(--cl-lume)}
+.cl-btn--ghost .cl-cap:active{transform:scale(.96);box-shadow:inset 0 0 0 1.5px var(--cl-lume),inset 0 5px 14px rgba(0,0,0,.7),inset 0 0 0 999px rgba(0,0,0,.18);transition-duration:80ms}
+
+/* danger */
+.cl-btn--danger .cl-l1{background:var(--cl-flash-press)}
+.cl-btn--danger .cl-l2{background:var(--cl-flash-deep)}
+.cl-btn--danger .cl-cap{background-color:var(--cl-flash);background-image:radial-gradient(46px 34px at var(--mx,-60px) var(--my,-60px),rgba(255,255,255,.35),rgba(255,255,255,0) 75%);color:var(--cl-on-flash)}
+/* ok / green variant — used for call answer, confirmations */
+.cl-btn--ok .cl-l1{background:rgba(22,163,74,.7)}
+.cl-btn--ok .cl-l2{background:rgba(15,118,54,.85)}
+.cl-btn--ok .cl-cap{background-color:#22c55e;background-image:radial-gradient(46px 34px at var(--mx,-60px) var(--my,-60px),rgba(255,255,255,.3),rgba(255,255,255,0) 75%);color:#000}
+
+/* disabled */
+.cl-btn.is-disabled{cursor:not-allowed}
+.cl-btn.is-disabled .cl-cap{background-color:rgba(37,224,200,.08);background-image:none;box-shadow:inset 0 0 0 1.5px rgba(37,224,200,.22),inset 0 3px 7px rgba(0,0,0,.45);color:rgba(37,224,200,.45);transform:translateY(2px);cursor:not-allowed}
+.cl-btn.is-disabled .cl-l1{background:rgba(37,224,200,.06);transform:translateY(var(--_o1)) scale(1.025,1)}
+.cl-btn.is-disabled .cl-l2{background:rgba(37,224,200,.04);transform:translateY(var(--_o2)) scale(1.045,1)}
+
+/* wake — disabled → enabled pop (guide verbatim) */
+.cl-btn.wake .cl-cap{animation:cl-wakepop .6s var(--cl-spring) 1}
+@keyframes cl-wakepop{0%{transform:translateY(2px)}45%{transform:translateY(-3px) scale(1.03)}100%{transform:translateY(0) scale(1)}}
+.cl-btn.wake .cl-l1{animation:cl-wakes1 .6s var(--cl-spring) 1}
+@keyframes cl-wakes1{0%{transform:translateY(var(--_o1)) scale(1.025,1)}100%{transform:translateY(var(--_o1)) scale(1,1)}}
+.cl-btn.wake .cl-l2{animation:cl-wakes2 .6s var(--cl-spring) 1}
+@keyframes cl-wakes2{0%{transform:translateY(var(--_o2)) scale(1.045,1)}100%{transform:translateY(var(--_o2)) scale(1,1)}}
+
+/* loading */
+.cl-btn.is-loading .cl-cap{cursor:progress}
+.cl-btn.is-loading .cl-l1{animation:cl-breath 2.2s ease-in-out infinite}
+.cl-btn.is-loading .cl-l2{animation:cl-breath2 2.2s ease-in-out infinite}
+@keyframes cl-breath{50%{transform:translateY(var(--_o1)) scale(1.02,1)}}
+@keyframes cl-breath2{50%{transform:translateY(var(--_o2)) scale(1.035,1)}}
+.cl-ldots{display:inline-flex;gap:5px}
+.cl-ldots i{width:7px;height:7px;border-radius:50%;background:var(--cl-on-lume);animation:cl-lbob 1.1s ease-in-out infinite}
+.cl-ldots i:nth-child(2){animation-delay:.15s}.cl-ldots i:nth-child(3){animation-delay:.3s}
+@keyframes cl-lbob{0%,60%,100%{transform:translateY(0)}30%{transform:translateY(-4px)}}
+
+/* hero / celebration sweep */
+[class~="cl-btn--hero"]{--_cr:16px;--_o1:3px;--_o2:5px}
+.cl-btn--hero .cl-cap{padding:17px 34px;font-size:17px}
+.cl-btn--hero .cl-cap::after{content:"";position:absolute;top:-20%;bottom:-20%;left:-45%;width:30%;background:linear-gradient(105deg,transparent,rgba(255,255,255,.45),transparent);transform:skewX(-18deg);animation:cl-sweep 6.5s ease-in-out infinite}
+@keyframes cl-sweep{0%{left:-45%}9%{left:120%}100%{left:120%}}
+.cl-cap.settle{animation:cl-settle .55s var(--cl-spring) 1}
+@keyframes cl-settle{0%{transform:translateY(2px)}45%{transform:translateY(-2.5px)}100%{transform:translateY(0)}}
+.cl-conf{position:absolute;width:8px;height:8px;border-radius:3px;pointer-events:none;z-index:5;animation:cl-confgo .8s ease-out forwards}
+@keyframes cl-confgo{0%{transform:translate(0,0) rotate(0);opacity:1}100%{transform:translate(var(--dx),var(--dy)) rotate(var(--rot));opacity:0}}
+
+/* full-width button */
+.cl-btn.w-full{display:block}.cl-btn.w-full .cl-cap{width:100%;box-sizing:border-box}
+
+/* ── Toggle ── */
+.cl-toggle{position:relative;display:inline-block;width:52px;height:30px;border:none;background:none;cursor:pointer;padding:0}
+.cl-tsh{position:absolute;inset:0;border-radius:99px;background:#0A1120;transform:translateY(2px);transition:transform .25s var(--cl-spring),background .3s}
+.cl-trk{position:absolute;inset:0;border-radius:99px;background:var(--cl-surface);box-shadow:inset 0 0 0 1.5px var(--cl-border);transition:background .3s,box-shadow .3s,transform .25s var(--cl-spring)}
+.cl-knob{position:absolute;left:5px;top:5px;width:20px;height:20px;border-radius:50%;background:var(--cl-faint);transition:transform var(--cl-spring-dur) var(--cl-spring),background .25s;z-index:2}
+.cl-toggle.is-on .cl-trk{background:var(--cl-lume);box-shadow:inset 0 0 0 1.5px var(--cl-lume)}
+.cl-toggle.is-on .cl-tsh{background:var(--cl-lume-deep)}
+.cl-toggle.is-on .cl-knob{transform:translateX(22px);background:#F4F7FF}
+.cl-toggle:active .cl-knob{transform:scale(.85)}
+.cl-toggle.is-on:active .cl-knob{transform:translateX(22px) scale(.85)}
+.cl-toggle:active .cl-trk{transform:translateY(1px);transition-duration:80ms}
+.cl-toggle:active .cl-tsh{transform:translateY(2px) scale(1.04,1);transition-duration:80ms}
+.cl-knob.jig{animation:cl-jig .55s var(--cl-spring) 1}
+@keyframes cl-jig{0%,100%{transform:translateX(22px)}25%{transform:translateX(17px)}55%{transform:translateX(26px)}80%{transform:translateX(20px)}}
+
+/* ── Slider ── */
+.cl-slider{position:relative;width:100%;height:30px;touch-action:none;cursor:pointer;-webkit-user-select:none;user-select:none}
+.cl-sbody{position:absolute;inset:0}
+.cl-slider.snap .cl-sbody{transition:transform .5s var(--cl-spring)}
+.cl-strk{position:absolute;left:0;right:0;top:13px;height:6px;border-radius:99px;background:#0A1120;box-shadow:inset 0 1px 2px rgba(0,0,0,.6);pointer-events:none}
+.cl-sfill{position:absolute;left:0;top:13px;height:6px;border-radius:99px;background:linear-gradient(90deg,var(--cl-lume-deep),var(--cl-lume));transition:box-shadow .2s;pointer-events:none}
+.cl-slider.grab .cl-sfill{box-shadow:0 0 10px rgba(37,224,200,.45)}
+.cl-sthw{position:absolute;top:5px;width:20px;height:20px;transform:translateX(-50%);pointer-events:none}
+.cl-ssh{position:absolute;inset:0;border-radius:50%;background:var(--cl-lume-deep);transform:translateY(2px);transition:transform .2s var(--cl-spring)}
+.cl-sth{position:absolute;inset:0;border-radius:50%;background:var(--cl-lume);transition:transform .2s var(--cl-spring),box-shadow .2s}
+.cl-slider:hover .cl-sth{box-shadow:0 0 12px rgba(37,224,200,.4)}
+.cl-slider.grab .cl-sth{transform:translateY(1px) scale(1.15,.95);box-shadow:0 0 14px rgba(37,224,200,.6)}
+.cl-slider.grab .cl-ssh{transform:translateY(2px) scale(1.15,1)}
+.cl-sbub{position:absolute;top:-26px;transform:translateX(-50%) scale(.6);background:var(--cl-surface);border:1px solid var(--cl-border);border-radius:99px;padding:3px 11px;font-family:var(--cl-font-body);font-size:11.5px;font-weight:800;color:var(--cl-lume);opacity:0;transition:opacity .15s,transform .25s var(--cl-spring);pointer-events:none;white-space:nowrap;z-index:3}
+.cl-slider.grab .cl-sbub{opacity:1;transform:translateX(-50%) scale(1)}
+.cl-slider--disabled{opacity:.4;pointer-events:none;cursor:default}
+
+/* ── Text input (focus glow) ── */
+.cl-fld{display:flex;flex-direction:column;gap:6px}
+.cl-fld>label{font-family:var(--cl-font-body);font-size:12.5px;font-weight:800;color:var(--cl-muted)}
+.cl-inp{box-sizing:border-box;background:var(--cl-surface);border:1.5px solid var(--cl-border);border-radius:13px;color:var(--cl-text);font-family:var(--cl-font-body);font-size:14px;padding:11px 15px;transition:border-color .25s,box-shadow .25s;width:100%}
+.cl-inp::placeholder{color:var(--cl-faint)}
+.cl-inp:focus{outline:none;border-color:var(--cl-lume);box-shadow:0 0 14px rgba(37,224,200,.22);animation:cl-focusin .45s ease-out}
+.cl-composer .cl-inp:focus{border-color:transparent;box-shadow:none;animation:none}
+@keyframes cl-focusin{0%{box-shadow:0 0 0 rgba(37,224,200,0)}55%{box-shadow:0 0 20px rgba(37,224,200,.3)}100%{box-shadow:0 0 14px rgba(37,224,200,.22)}}
+.cl-inp.loud{transform:scale(1.012);border-color:var(--cl-glow)!important;box-shadow:0 0 14px rgba(255,201,77,.28)!important;transition:border-color .25s,box-shadow .25s,transform .2s var(--cl-spring)}
+.cl-fld:focus-within>label{color:var(--cl-lume);transition:color .2s}
+.cl-fld.is-error .cl-inp{border-color:var(--cl-flash);animation:cl-fshake .35s ease}
+@keyframes cl-fshake{0%,100%{transform:none}30%{transform:translateX(-4px)}70%{transform:translateX(4px)}}
+/* Flat composer icon buttons — clean icons that sit INSIDE the message pill
+   (no chunky kit-button chrome), evenly spaced, with a subtle hover wash. */
+.cmp-ico{border:none;background:none;color:var(--cl-faint);cursor:pointer;display:flex;align-items:center;justify-content:center;padding:6px;border-radius:10px;flex:none;transition:color .18s,background .18s,transform .18s}
+.cmp-ico:hover:not(:disabled){color:var(--cl-text);background:rgba(255,255,255,.06)}
+.cmp-ico:active:not(:disabled){transform:scale(.92)}
+.cmp-ico:disabled{opacity:.4;cursor:not-allowed}
+.cmp-ico--send{color:var(--cl-lume)}
+.cmp-ico--send:hover:not(:disabled){color:var(--cl-lume-hi,#3BEAD6);background:rgba(37,224,200,.12)}
+.cmp-ico--send:disabled{color:var(--cl-faint);opacity:.5}
+/* Composer send — filled lume disc when there's something to send, quiet ghost when empty. */
+.cl-send-btn{display:flex;align-items:center;justify-content:center;width:34px;height:34px;border:none;border-radius:50%;background:var(--cl-lume);color:var(--cl-on-lume);cursor:pointer;flex:none;transition:transform .18s var(--cl-spring),background .2s,color .2s}
+.cl-send-btn:hover:not(:disabled){background:var(--cl-lume-hi);transform:scale(1.07)}
+.cl-send-btn:active:not(:disabled){transform:scale(.9)}
+.cl-send-btn:disabled{background:var(--cl-lume);color:var(--cl-on-lume);cursor:default;opacity:.45}
+/* Chat-header action icons — bare at rest, soft hover. Scoped override of ClButton
+   ghost-icon so the header reads as a clean icon row instead of bordered discs. */
+.cl-hdr-actions .clb--icon .cap{width:38px;height:38px}
+.cl-hdr-actions .clb--ghost .cap{background-color:transparent;background-image:none;box-shadow:none;color:var(--cl-muted)}
+.cl-hdr-actions .clb--ghost .cap:hover{background-color:rgba(255,255,255,.06);box-shadow:none;color:var(--cl-lume)}
+.cl-hdr-actions .clb--ghost .cap:active{background-color:rgba(255,255,255,.09);box-shadow:none;transform:scale(.92)}
+.cl-hdr-actions .clb--ghost.muted .cap{background-color:rgba(37,224,200,.12);box-shadow:none;color:var(--cl-lume)}
+.cl-hdr-actions .clb--ghost.dis .cap{background-color:transparent;background-image:none;box-shadow:none;color:var(--cl-faint);opacity:.5;transform:none}
+/* Auth backdrop — a slow-drifting gradient wash + flat rising bubbles. */
+.auth-aurora{position:absolute;inset:-15%;background:radial-gradient(45% 40% at 28% 32%,rgba(37,224,200,.10),transparent 60%),radial-gradient(42% 38% at 74% 66%,rgba(88,101,242,.09),transparent 60%),radial-gradient(40% 40% at 60% 18%,rgba(255,201,77,.05),transparent 58%);background-size:170% 170%;background-position:0% 50%;animation:auth-aurora 34s ease-in-out infinite;will-change:background-position,transform}
+@keyframes auth-aurora{0%,100%{background-position:0% 50%}50%{background-position:100% 50%}}
+.auth-bubble{position:absolute;top:100%;border-radius:50%;background:radial-gradient(circle,rgba(37,224,200,.42),rgba(37,224,200,.32) 60%,transparent 74%);animation:auth-rise var(--dur,22s) linear infinite;animation-delay:var(--delay,0s);will-change:transform,opacity}
+@keyframes auth-rise{0%{transform:translateY(0) translateX(0);opacity:0}8%{opacity:.6}92%{opacity:.6}100%{transform:translateY(-118vh) translateX(var(--sway,20px));opacity:0}}
+/* Mascot: gentle float on the wrapper, glow-pulse on the image. */
+.auth-mascot-float{animation:auth-bob 4.4s ease-in-out infinite}
+@keyframes auth-bob{0%,100%{transform:translateY(0)}50%{transform:translateY(-11px)}}
+.auth-mascot-img{filter:drop-shadow(0 0 22px rgba(37,224,200,.45));animation:auth-mascot-glow 3.6s ease-in-out infinite}
+@keyframes auth-mascot-glow{0%,100%{filter:drop-shadow(0 0 20px rgba(37,224,200,.42))}50%{filter:drop-shadow(0 0 34px rgba(37,224,200,.62))}}
+/* Card shake when a form errors. */
+.auth-shake{animation:auth-cardshake .5s cubic-bezier(.36,.07,.19,.97)}
+@keyframes auth-cardshake{10%,90%{transform:translateX(-2px)}20%,80%{transform:translateX(4px)}30%,50%,70%{transform:translateX(-8px)}40%,60%{transform:translateX(8px)}}
+/* Banner slide+fade in (card height transition supplies the expand). */
+.auth-bannerin{animation:auth-bannerin .34s cubic-bezier(.22,1,.36,1)}
+@keyframes auth-bannerin{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:translateY(0)}}
+@media (prefers-reduced-motion: reduce){.auth-aurora,.auth-bubble,.auth-mascot-float,.auth-mascot-img,.auth-shake,.auth-bannerin{animation:none}}
+/* ── AuthScreen entrance — "Deep Awaken" ──────────────────────────────────── */
+/* 1. Background layer fades in over the solid abyss */
+@keyframes auth-scene-fade{from{opacity:0}to{opacity:1}}
+.auth-scene-fade{animation:auth-scene-fade .55s ease both}
+/* 2. Lume bloom: a radial pulse that expands from center and fades — the
+      first visible thing, like bioluminescence switching on in the dark */
+@keyframes auth-lume-bloom{0%{opacity:0;transform:translate(-50%,-50%)scale(.08)}25%{opacity:.72}100%{opacity:0;transform:translate(-50%,-50%)scale(5)}}
+.auth-lume-bloom{position:absolute;top:42%;left:50%;width:640px;height:640px;border-radius:50%;background:radial-gradient(circle,rgba(37,224,200,.58) 0%,rgba(37,224,200,.22) 38%,transparent 68%);pointer-events:none;animation:auth-lume-bloom 1.1s cubic-bezier(.22,.61,.36,1) .04s both}
+/* 3. Brand block: drops in from above with spring bounce + blur-to-sharp */
+@keyframes auth-brand-drop{0%{opacity:0;transform:translateY(-24px)scale(.78);filter:blur(12px)}52%{filter:blur(0)}70%{opacity:1;transform:translateY(5px)scale(1.05)}86%{transform:translateY(-2px)scale(.99)}100%{opacity:1;transform:translateY(0)scale(1)}}
+.auth-brand-drop{animation:auth-brand-drop .82s cubic-bezier(.34,1.56,.64,1) .16s both}
+/* 4. Bubbles container fades in after the card rise completes (~1.02 s) */
+.auth-bubbles-enter{animation:auth-scene-fade 2.2s ease 1.05s both}
+/* 5. Card rises up from below */
+@keyframes auth-card-rise{from{opacity:0;transform:translateY(30px)scale(.97)}to{opacity:1;transform:translateY(0)scale(1)}}
+.auth-card-rise{animation:auth-card-rise .58s cubic-bezier(.22,1,.36,1) .44s both}
+@media(prefers-reduced-motion:reduce){.auth-scene-fade,.auth-lume-bloom,.auth-brand-drop,.auth-bubbles-enter,.auth-card-rise{animation:none!important}}
+/* ── Auth returning-user "Welcome back" */
+@keyframes auth-returning-pop{0%{opacity:0;transform:scale(.45)}55%{transform:scale(1.1)}80%{transform:scale(.97)}100%{opacity:1;transform:scale(1)}}
+.auth-returning-enter{animation:auth-scene-fade .4s ease both}
+.auth-returning-check{animation:auth-returning-pop .68s cubic-bezier(.34,1.56,.64,1) .12s both}
+@media(prefers-reduced-motion:reduce){.auth-returning-enter,.auth-returning-check{animation:none!important}}
+/* ── Code-slot input: per-digit spring pop-in + lume sweep after auto-fill ── */
+@keyframes code-digit-pop{0%{transform:scale(.3) translateY(-10px);opacity:0}65%{transform:scale(1.18) translateY(2px);opacity:1}100%{transform:scale(1) translateY(0);opacity:1}}
+.code-digit-pop{animation:code-digit-pop .22s cubic-bezier(.34,1.56,.64,1) both}
+@keyframes code-row-shimmer{from{background-position:-200% 0}to{background-position:300% 0}}
+.code-row-shimmer{position:absolute;inset:0;background:linear-gradient(90deg,transparent 0%,rgba(37,224,200,.45) 50%,transparent 100%);background-size:200% 100%;animation:code-row-shimmer .38s ease both;pointer-events:none;z-index:10;border-radius:12px}
+@media (prefers-reduced-motion:reduce){.code-digit-pop,.code-row-shimmer{animation:none}}
+.cl-fmsg{font-family:var(--cl-font-body);font-size:12px;font-weight:700;color:var(--cl-flash);min-height:17px;margin:0}
+.cl-fmsg.note{color:var(--cl-lume);animation:cl-pop .3s var(--cl-spring)}
+.cl-srch{position:relative}
+.cl-srch .cl-inp{padding-left:38px}
+.cl-srch>svg{position:absolute;left:13px;top:50%;transform:translateY(-50%);pointer-events:none;transition:stroke .2s}
+.cl-srch:focus-within>svg{stroke:var(--cl-lume)}
+
+/* ── Checkbox ── */
+.cl-check{position:relative;display:inline-flex;align-items:center;gap:11px;font-family:var(--cl-font-body);font-weight:700;font-size:14px;color:var(--cl-muted);cursor:pointer}
+.cl-check .cl-cwrap{position:relative;width:22px;height:22px;flex:none}
+.cl-check .cl-csh{position:absolute;inset:0;border-radius:7px;background:#0A1120;transform:translateY(2px);transition:transform var(--cl-spring-dur) var(--cl-spring),background .25s}
+.cl-check .cl-cbox{position:absolute;inset:0;border-radius:7px;background:var(--cl-surface);box-shadow:inset 0 0 0 1.5px var(--cl-border);display:flex;align-items:center;justify-content:center;transition:background .2s,box-shadow .2s,transform var(--cl-spring-dur) var(--cl-spring)}
+.cl-check:hover .cl-cbox{box-shadow:inset 0 0 0 1.5px var(--cl-lume)}
+.cl-check:active .cl-cbox{transform:translateY(2px);transition-duration:80ms}
+.cl-check:active .cl-csh{transform:translateY(2px) scale(1.1,1);transition-duration:80ms}
+.cl-check.is-on .cl-cbox{background:var(--cl-lume);box-shadow:inset 0 0 0 1.5px var(--cl-lume)}
+.cl-check.is-on .cl-csh{background:var(--cl-lume-deep)}
+.cl-check .cl-chk{stroke:var(--cl-on-lume);stroke-width:3;fill:none;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:16;stroke-dashoffset:16}
+.cl-check.is-on .cl-chk{animation:cl-draw .28s ease-out .05s forwards}
+.cl-check.is-on{color:var(--cl-text)}
+.cl-check.is-disabled{opacity:.4;cursor:not-allowed;pointer-events:none}
+@keyframes cl-draw{to{stroke-dashoffset:0}}
+
+/* ── Radio ── */
+.cl-radio{position:relative;display:inline-flex;align-items:center;gap:11px;font-family:var(--cl-font-body);font-weight:700;font-size:14px;color:var(--cl-muted);cursor:pointer}
+.cl-radio .cl-rwrap{position:relative;width:22px;height:22px;flex:none}
+.cl-radio .cl-rsh{position:absolute;inset:0;border-radius:50%;background:#0A1120;transform:translateY(2px);transition:transform var(--cl-spring-dur) var(--cl-spring),background .25s}
+.cl-radio .cl-rbox{position:absolute;inset:0;border-radius:50%;background:var(--cl-surface);box-shadow:inset 0 0 0 1.5px var(--cl-border);display:flex;align-items:center;justify-content:center;transition:background .2s,box-shadow .2s,transform var(--cl-spring-dur) var(--cl-spring)}
+.cl-radio:hover .cl-rbox{box-shadow:inset 0 0 0 1.5px var(--cl-lume)}
+.cl-radio:active .cl-rbox{transform:translateY(2px);transition-duration:80ms}
+.cl-radio:active .cl-rsh{transform:translateY(2px) scale(1.1,1);transition-duration:80ms}
+.cl-radio.is-on .cl-rbox{background:var(--cl-lume);box-shadow:inset 0 0 0 1.5px var(--cl-lume)}
+.cl-radio.is-on .cl-rsh{background:var(--cl-lume-deep)}
+.cl-radio.is-on{color:var(--cl-text)}
+.cl-radio .cl-rdot{width:9px;height:9px;border-radius:50%;background:var(--cl-on-lume);transform:scale(0);transition:transform .4s var(--cl-spring)}
+.cl-radio.is-on .cl-rdot{transform:scale(1)}
+.cl-radio.is-disabled{opacity:.4;cursor:not-allowed;pointer-events:none}
+
+/* ── Segmented control ── */
+.cl-seg{position:relative;display:inline-flex;background:var(--cl-surface);border:1.5px solid var(--cl-border);border-radius:13px;padding:4px}
+.cl-sind{position:absolute;top:4px;bottom:4px;left:4px;width:60px;border-radius:9px;background:var(--cl-lume);transition:left .36s cubic-bezier(.3,1.32,.45,1),width .36s cubic-bezier(.3,1.32,.45,1)}
+/* NOTE: `.cl-seg` is NOT what ClSegment renders — that component emits
+   `.cl-kit > .seg > button` and is styled by cl-kit.css / cl-kit-fallback.css.
+   Nothing in apps/desktop/src uses `.cl-seg` at all (the website does). This
+   inline-flex centring was added here in the belief that it fixed the Friends
+   tabs; it did not, because it never matched them. The real fix lives in
+   cl-kit-ext.css as `.seg button`. Left in place so the two stay consistent
+   if anything ever does use this class. */
+.cl-seg button{display:inline-flex;align-items:center;justify-content:center;position:relative;z-index:1;border:none;background:none;cursor:pointer;border-radius:9px;padding:7px 16px;font-family:var(--cl-font-body);font-weight:800;font-size:13px;color:var(--cl-muted);transition:color .25s}
+.cl-seg button.is-on{color:var(--cl-on-lume)}
+.cl-seg button:not(.is-on):hover{color:var(--cl-text)}
+
+/* ── Select ── */
+.cl-sel{position:relative;display:inline-block;min-width:190px}
+.cl-selt{box-sizing:border-box;display:flex;align-items:center;justify-content:space-between;gap:10px;width:100%;border:none;cursor:pointer;background:var(--cl-surface);box-shadow:inset 0 0 0 1.5px var(--cl-border);border-radius:13px;padding:10px 14px;font-family:var(--cl-font-body);font-weight:700;font-size:14px;color:var(--cl-text);transition:box-shadow .2s}
+.cl-selt:hover{box-shadow:inset 0 0 0 1.5px var(--cl-lume)}
+.cl-chev{transition:transform .35s var(--cl-spring);flex:none}
+.cl-sel.is-open .cl-chev{transform:rotate(180deg)}
+.cl-selm{position:absolute;top:calc(100% + 8px);left:0;right:0;background:var(--cl-deep);border:1px solid var(--cl-border);border-radius:14px;padding:6px;opacity:0;transform:translateY(-10px);pointer-events:none;transition:opacity .18s,transform var(--cl-spring-dur) var(--cl-spring);z-index:20;box-shadow:0 14px 34px rgba(0,0,0,.5)}
+.cl-sel.is-open .cl-selm{opacity:1;transform:none;pointer-events:auto}
+.cl-selm button{display:flex;align-items:center;justify-content:space-between;width:100%;border:none;background:none;cursor:pointer;text-align:left;padding:9px 12px;border-radius:9px;font-family:var(--cl-font-body);font-weight:700;font-size:13.5px;color:var(--cl-muted);transition:background .15s,color .15s}
+.cl-selm button:hover{background:rgba(37,224,200,.1);color:var(--cl-text)}
+.cl-selm button.is-on{color:var(--cl-lume)}
+.cl-mchk{opacity:0;transform:scale(.5);transition:opacity .15s,transform .3s var(--cl-spring)}
+.cl-selm button.is-on .cl-mchk{opacity:1;transform:scale(1)}
+.cl-selm button.picked{animation:cl-mflash .4s ease 1}
+@keyframes cl-mflash{0%{background:rgba(37,224,200,.28)}100%{background:transparent}}
+
+/* ── Badges, roles, presence ── */
+.cl-pill{display:inline-flex;align-items:center;justify-content:center;min-width:20px;height:20px;padding:0 6px;border-radius:99px;background:var(--cl-flash);color:var(--cl-on-flash);font-family:var(--cl-font-body);font-size:11px;font-weight:800}
+.cl-pill.popin{animation:cl-pop .35s var(--cl-spring)}
+.cl-pill.jiggle{animation:cl-pjig .55s var(--cl-spring) 1}
+@keyframes cl-pjig{25%{transform:translateX(-3px) rotate(-6deg)}55%{transform:translateX(3px) rotate(5deg)}80%{transform:translateX(-1px)}}
+.cl-role{display:inline-flex;align-items:center;gap:5px;border-radius:7px;padding:2px 8px;font-family:var(--cl-font-body);font-size:11.5px;font-weight:800;background:rgba(37,224,200,.13);color:var(--cl-lume)}
+.cl-role--gold{background:rgba(255,201,77,.14);color:var(--cl-glow)}
+.cl-role--coral{background:rgba(255,107,94,.14);color:var(--cl-flash)}
+.cl-avx{position:relative;width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-family:var(--cl-font-body);font-weight:800;font-size:12px;transition:transform .35s var(--cl-spring)}
+.cl-avx:hover{transform:scale(1.1)}
+.cl-dot{position:absolute;right:-2px;bottom:-2px;width:12px;height:12px;border-radius:50%;border:3px solid var(--cl-deep)}
+.cl-dot--online{background:var(--cl-ok);animation:cl-ping 2.4s ease-out infinite}
+@keyframes cl-ping{0%{box-shadow:0 0 0 0 rgba(74,222,128,.45)}70%,100%{box-shadow:0 0 0 7px rgba(74,222,128,0)}}
+.cl-dot--idle{background:var(--cl-glow)}
+.cl-dot--dnd{background:var(--cl-flash)}
+.cl-dot--off{background:var(--cl-faint)}
+
+/* ── Progress bar ── */
+.cl-prog{width:240px;height:8px;border-radius:99px;background:#0A1120;box-shadow:inset 0 1px 2px rgba(0,0,0,.6);overflow:hidden}
+.cl-prog .cl-pf{height:100%;border-radius:99px;background:linear-gradient(90deg,var(--cl-lume-deep),var(--cl-lume));width:0%;transition:width .25s ease}
+.cl-prog.is-done{animation:cl-pglow .6s ease 1}
+@keyframes cl-pglow{40%{box-shadow:inset 0 1px 2px rgba(0,0,0,.6),0 0 16px rgba(37,224,200,.55)}}
+
+/* ── Skeleton shimmer ── */
+.cl-sk{background:linear-gradient(90deg,var(--cl-surface) 25%,var(--cl-raise) 50%,var(--cl-surface) 75%);background-size:200% 100%;animation:cl-shimmer 1.4s linear infinite;border-radius:8px}
+@keyframes cl-shimmer{to{background-position:-200% 0}}
+
+/* ── Modal ── */
+/* The app-wide modal scrim. NO backdrop-filter — see the long note on
+   .sd-veil in styles/settings-descent.css, which carried the byte-identical
+   declaration (position:fixed; inset:0; rgba(5,8,18,.62); blur(3px)) and was
+   measured at 529.6 ms/frame at 1920x1080 and 2124.9 ms/frame at 3840x2160,
+   against a 16.9 ms floor. 18x, scaling exactly linearly with viewport area
+   because the element is full-screen and Chromium re-evaluates the filter
+   every compositor frame rather than when the backdrop changes.
+
+   That made it worse here than in settings: EVERY kit modal in the app used
+   this, including the ones the settings screen itself opens, and unlike the
+   Descent the content behind a modal is live — so any animation, hover or
+   keystroke anywhere on screen forced a full-viewport blur pass.
+
+   Radius is not the knob: blur(1px) through blur(24px) all measured ~500 ms,
+   and even brightness(.8) cost 189 ms. The full-viewport pass IS the expense.
+
+   Scrim alpha lifted .62 -> .70 to compensate, the value measured closest to
+   the blurred original for the Descent (0.698% whole-frame RMSE vs 0.731% at
+   .62). Carried over rather than re-measured for this backdrop, so if a modal
+   reads too dark or too light it is this one number to tune — not a reason to
+   put the filter back. */
+.cl-mod{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(5,8,18,.70);opacity:0;pointer-events:none;transition:opacity .22s;z-index:50}
+.cl-mod.is-open{opacity:1;pointer-events:auto}
+.cl-mcard{background:var(--cl-deep);border:1px solid var(--cl-border);border-radius:20px;padding:26px;max-width:400px;width:calc(100% - 48px);transform:translateY(28px);opacity:0;transition:transform .18s ease,opacity .14s ease}
+.cl-mod.is-open .cl-mcard{transform:translateY(0);opacity:1;transition:transform .42s cubic-bezier(.3,1.4,.4,1),opacity .2s ease}
+
+/* ── Misc ── */
+.cl-egg{font-family:var(--cl-font-body);font-size:13px;font-weight:700;color:var(--cl-lume);animation:cl-pop .3s var(--cl-spring)}
+@keyframes cl-pop{from{transform:scale(.85);opacity:0}to{transform:scale(1);opacity:1}}
+
+/* RailTrack animated nav indicator */
+.cl-rail-track{position:relative;display:flex;flex-direction:column;gap:6px;padding:6px;background:rgba(0,0,0,.28);border-radius:16px;box-shadow:inset 0 0 0 1px rgba(255,255,255,.06);flex:none}
+/* The rail indicator is a MEMBRANE, driven frame-by-frame by the spring in
+   components/rail/railMembrane.ts — top/left/width/height are set inline from
+   it on every frame.
+
+   Two things here are load-bearing:
+
+   1. `transition` names transform, opacity and box-shadow ONLY. It must never
+      cover top/left/width/height: a transition on those fights the spring and
+      reintroduces lag the instant a transition is interrupted (click a tile
+      mid-flight and it lurches). The spring owns the geometry.
+   2. `border-radius` is a CONSTANT 12px. The mobile nav bubble morphs its radii
+      as percentages to stay circular while it stretches; this one is a rounded
+      SQUARE and must stay one at every point in the travel, so it does not.
+      Do not port that percentage machinery here.
+
+   The literal 6px/44px below are the resting values, kept so the element is
+   still correct for one frame before the spring's first inline write and under
+   reduced motion. The transform is only ever used for the fade-out when the
+   track has nothing active — never for travel (scaling a rounded rect flattens
+   its corners, which is the whole thing this shape cannot afford). */
+.cl-rail-indicator{position:absolute;left:6px;top:6px;width:44px;height:44px;border-radius:12px;background:rgba(37,224,200,.14);box-shadow:0 0 0 1.5px rgba(37,224,200,.45),0 0 22px rgba(37,224,200,.18);transition:transform var(--cl-spring-dur) var(--cl-spring),opacity .22s,box-shadow .3s;pointer-events:none}
+
+@media (prefers-reduced-motion: reduce) {
+  .cl-l,.cl-knob,.cl-trk,.cl-tsh,.cl-cap,.cl-sind,.cl-rail-indicator{transition:none!important;animation:none!important}
+}
+
+/* ── Server channel topic (chat header) ───────────────────────────────────
+ * A one-line description sitting under the channel name, so it must read as
+ * secondary to it. Plain button rather than a kit ClButton on purpose: the
+ * kit's `.cap` fixes 15px/800 weight, generous padding, a surface fill and a
+ * 1.5px ring, and ClButton applies its `style` prop to the outer wrapper, so
+ * the inner cap can't be toned down from the call site — the topic ended up
+ * a bold pill louder than the channel name above it.
+ * Clickable because long topics open a full-text dialog.
+ * ───────────────────────────────────────────────────────────────────────── */
+.cl-chan-topic {
+  display: block;
+  max-width: 100%;
+  margin: 1px 0 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  font-family: var(--cl-font-body);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.25;
+  color: var(--cl-faint);
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  transition: color .16s ease;
+}
+.cl-chan-topic:hover { color: var(--cl-muted); }
+.cl-chan-topic:focus-visible {
+  outline: none;
+  color: var(--cl-muted);
+  /* Underline rather than a ring — a ring around a full-width single line of
+   * text in a 54px header reads as a text input. */
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-color: var(--cl-lume);
+}
+
+/* ── "Create New Group" CTA (AddToGroupModal) ────────────────────────────────
+ * Plain markup, not ClButton — see the comment at the call site for why.
+ * Icon-chip + title/subtitle row, left-aligned, single clean border. Distinct
+ * from the plain hover-highlight rows below it (existing groups) since this
+ * is the one primary action in the list, not a target to pick.
+ * ───────────────────────────────────────────────────────────────────────── */
+.cl-newgroup-cta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  margin-bottom: 20px;
+  padding: 12px 14px;
+  border: 1px solid rgba(37, 224, 200, 0.22);
+  border-radius: 14px;
+  background: rgba(37, 224, 200, 0.07);
+  cursor: pointer;
+  text-align: left;
+  transition: background-color .16s ease, border-color .16s ease, transform .16s var(--cl-spring, ease);
+}
+.cl-newgroup-cta:hover {
+  background: rgba(37, 224, 200, 0.11);
+  border-color: rgba(37, 224, 200, 0.38);
+  transform: translateY(-1px);
+}
+.cl-newgroup-cta:active { transform: translateY(0); }
+.cl-newgroup-cta:focus-visible { outline: 2px solid var(--cl-lume); outline-offset: 2px; }
+
+.cl-newgroup-cta-icon {
+  display: flex; align-items: center; justify-content: center;
+  flex: 0 0 auto; width: 36px; height: 36px;
+  border-radius: 10px;
+  background: rgba(37, 224, 200, 0.16);
+  color: var(--cl-lume);
+}
+.cl-newgroup-cta-text { display: flex; flex-direction: column; min-width: 0; }
+.cl-newgroup-cta-title {
+  font-family: var(--cl-font-body); font-weight: 800; font-size: 14px;
+  color: var(--cl-text); line-height: 1.25;
+}
+.cl-newgroup-cta-sub {
+  font-family: var(--cl-font-body); font-weight: 500; font-size: 11.5px;
+  color: rgba(37, 224, 200, 0.65); line-height: 1.3; margin-top: 1px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cl-newgroup-cta { transition: none; }
+  .cl-newgroup-cta:hover { transform: none; }
+}
+
+/* ── "Create Group Chat" avatar picker ────────────────────────────────────
+ * Plain buttons throughout — see the comment at the call site in
+ * CreateGroupModal.tsx for why ClButton doesn't work here.
+ * ───────────────────────────────────────────────────────────────────────── */
+.cl-newgroup-avatar-picker {
+  position: relative;
+  display: flex; align-items: center; justify-content: center;
+  width: 76px; height: 76px;
+  border-radius: 50%;
+  overflow: hidden;
+  background: var(--cl-surface);
+  border: 2px solid var(--cl-border);
+  cursor: pointer;
+  transition: border-color .18s ease;
+}
+.cl-newgroup-avatar-picker:hover { border-color: rgba(37, 224, 200, 0.45); }
+.cl-newgroup-avatar-picker:focus-visible {
+  outline: none;
+  border-color: var(--cl-lume);
+  box-shadow: 0 0 0 3px rgba(37, 224, 200, 0.25);
+}
+.cl-newgroup-avatar-hint {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0, 0, 0, 0.5);
+  opacity: 0;
+  transition: opacity .16s ease;
+}
+.cl-newgroup-avatar-picker:hover .cl-newgroup-avatar-hint,
+.cl-newgroup-avatar-picker:focus-visible .cl-newgroup-avatar-hint { opacity: 1; }
+
+.cl-newgroup-avatar-remove {
+  position: absolute; bottom: -2px; right: -2px;
+  display: flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px;
+  border-radius: 50%;
+  background: var(--cl-flash);
+  color: #fff;
+  border: 2px solid var(--cl-deep);
+  cursor: pointer;
+  transition: filter .16s ease;
+}
+.cl-newgroup-avatar-remove:hover { filter: brightness(1.1); }
+.cl-newgroup-avatar-remove:focus-visible { outline: 2px solid var(--cl-lume); outline-offset: 2px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .cl-newgroup-avatar-picker,
+  .cl-newgroup-avatar-hint,
+  .cl-newgroup-avatar-remove { transition: none; }
+}
+
+/* ── GIF save / bookmark badges — plain <button>, not ClButton: the kit's
+   .cap fixes its own size and ClButton's `style` prop lands on the outer
+   wrapper span (not .cap), so a small badge asking for <46px silently
+   rendered at the kit's default icon-button size. Sized directly on the
+   real button element instead (same fix as .cl-newgroup-avatar-remove
+   above). Hover-reveal (opacity 0→1) is centralized here; each component's
+   own local <style> tag still supplies its distinct hover accent color. ── */
+.img-gif-save-btn,
+.gif-msg-save-btn,
+.gif-bookmark-btn {
+  position: absolute;
+  display: flex; align-items: center; justify-content: center;
+  border: none;
+  cursor: pointer;
+  color: #e5e7eb;
+  opacity: 0;
+  transition: opacity .15s ease, background .15s ease;
+}
+.img-link-wrap:hover .img-gif-save-btn,
+.gif-msg-wrapper:hover .gif-msg-save-btn,
+.gif-cell:hover .gif-bookmark-btn { opacity: 1; }
+
+.img-gif-save-btn {
+  top: 6px; right: 6px;
+  width: 28px; height: 28px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.55);
+}
+.img-gif-save-btn.saved { background: rgba(99, 102, 241, 0.85); color: #fff; }
+.img-gif-save-btn.saving { cursor: wait; }
+
+.gif-msg-save-btn {
+  top: 7px; right: 7px;
+  width: 28px; height: 28px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(4px);
+  color: #fff;
+  z-index: 10;
+}
+.gif-msg-save-btn.saved { background: rgba(99, 102, 241, 0.85); cursor: default; }
+.gif-msg-save-btn:disabled { cursor: wait; }
+
+.gif-bookmark-btn {
+  top: 4px; right: 4px;
+  width: 22px; height: 22px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(4px);
+  color: #fff;
+}
+/* :hover accent color is set in GifPicker.tsx's local <style> (red tint,
+   signals the "remove" action) — not duplicated here. */
+.gif-bookmark-btn:disabled { opacity: .5; cursor: default; }
+
+/* ── Video-preview "turn off" close badge (VoiceVideoSettings) — same
+   ClButton-style-on-wrapper fix as above. ── */
+.cl-video-preview-close-btn {
+  position: absolute;
+  top: 8px; right: 8px;
+  display: flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px;
+  border: none; border-radius: 50%;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  cursor: pointer;
+  transition: background .15s ease;
+}
+.cl-video-preview-close-btn:hover { background: rgba(0, 0, 0, 0.8); }
+
+@media (prefers-reduced-motion: reduce) {
+  .img-gif-save-btn,
+  .gif-msg-save-btn,
+  .gif-bookmark-btn,
+  .cl-video-preview-close-btn { transition: none; }
+}
+
+/* ── Small circular "change photo" badge stuck to an avatar's corner ─────
+ * Plain button, not ClButton — same reason as cl-newgroup-avatar-picker
+ * above: ClButton's `style` prop lands on the kit's outer wrapper, not
+ * the `.cap` surface that actually renders, so a custom size/position
+ * here would just produce a second, wrongly-sized circle behind the
+ * kit's default 46px one. Used e.g. by GroupSettingsModal's group photo.
+ * ───────────────────────────────────────────────────────────────────────── */
+.cl-avatar-corner-badge {
+  position: absolute; bottom: 0; right: 0;
+  display: flex; align-items: center; justify-content: center;
+  width: 32px; height: 32px;
+  border-radius: 50%;
+  background: var(--cl-lume);
+  color: var(--cl-on-lume);
+  border: none;
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  transition: transform .15s ease, background-color .15s ease;
+}
+.cl-avatar-corner-badge:hover { background: var(--cl-lume-hi); transform: scale(1.06); }
+.cl-avatar-corner-badge:active { transform: scale(0.94); }
+.cl-avatar-corner-badge:focus-visible { outline: 2px solid var(--cl-lume); outline-offset: 2px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .cl-avatar-corner-badge { transition: none; }
+  .cl-avatar-corner-badge:hover, .cl-avatar-corner-badge:active { transform: none; }
+}
+
+/* ── Seasonal: marine snow ────────────────────────────────────────────────────
+   A date-windowed ambient layer (utils/seasonal.ts decides when). Marine snow
+   is the real deep-sea phenomenon — detritus drifting down from the water
+   above — so it belongs in this app's world rather than being winter decor
+   bolted onto it.
+
+   PERF CONTRACT, learned the expensive way on the invite landing page: this
+   animates TRANSFORM AND OPACITY ONLY. No filter, no box-shadow, no
+   background-position — those repaint every frame at full element size, and a
+   field of 15 such elements measured ~30fps with 60+ long frames there before
+   it was collapsed to a single static gradient. No `will-change` either: a
+   layer-count budget is finite and spending it on background particles is what
+   starved the foreground animation in that same investigation. These are tiny
+   solid-colour dots, which composite cheaply without any of that help. */
+.season-layer {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;   /* rule 5 — an egg may never cost a click */
+  overflow: hidden;
+  z-index: 3;             /* above app chrome, far below every overlay (9998+) */
+  contain: strict;        /* the field can never invalidate app layout */
+}
+.season-flake {
+  position: absolute;
+  top: -8px;
+  border-radius: 50%;
+  background: var(--cl-lume, #25E0C8);
+  animation: season-fall var(--dur, 32s) linear var(--delay, 0s) infinite;
+}
+/* Idle-motion gate (utils/idleMotion.ts) — decorative, mounted app-wide for the
+   whole seasonal window, so it is gated on the same terms as the home deck's
+   ambient motes. */
+:root[data-cl-motion="idle"] .season-flake { animation: none; opacity: 0; }
+/* Occlusion gate (utils/idleMotion.ts, setOccluded) — app-wide decoration,
+   fully covered while the Descent is open. */
+:root[data-cl-occluded="on"] .season-flake:not(.sd-root *) { animation: none; opacity: 0; }
+@keyframes season-fall {
+  0%   { transform: translate3d(0, 0, 0); opacity: 0; }
+  6%   { opacity: var(--peak, .45); }
+  94%  { opacity: var(--peak, .45); }
+  100% { transform: translate3d(var(--drift, 20px), 106vh, 0); opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  /* Rule 9. The component also declines to mount, so this is belt-and-braces
+     for a mid-session preference change. */
+  .season-layer { display: none; }
+}
+
+/* Composer paperclip, after attaching and un-attaching a few times in a row.
+   Visual-only on purpose (rule 1): the shrug IS the joke, so it needs no
+   words. Transform-only, and .cmp-ico already declares transform in its
+   transition so nothing new is promoted. */
+.cmp-ico.cmp-shrug { animation: cmp-shrug .5s ease 1; }
+@keyframes cmp-shrug {
+  20% { transform: rotate(-14deg); }
+  55% { transform: rotate(11deg); }
+  80% { transform: rotate(-5deg); }
+  100% { transform: rotate(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cmp-ico.cmp-shrug { animation: none; }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+ * Opportunistic "glassy" polish pass (2026-09-11)
+ *
+ * Echoes .cl-console-inner's transparent-glass recipe (flat wash, no
+ * gradient/top-highlight, blur+saturate, hairline rim — see that rule's own
+ * comment for why) on OTHER floating chrome that genuinely sits over
+ * varied/textured content, per the same judgment call: the blur only earns
+ * its keep when something textured is actually behind the element. Kept to
+ * a short, deliberately narrow list — see the per-rule comments for why each
+ * one qualifies. NOT applied to modals/menus/pickers/toasts/tooltips
+ * surveyed alongside these: they either sit over a flat/solid area (a
+ * sidebar, a settings panel, an inconsistent screen corner) or are dense
+ * enough (search inputs, member-name lists, emoji grids) that a translucent
+ * wash would cost real legibility for no visual gain — full survey in the
+ * PR/commit description.
+ * ═══════════════════════════════════════════════════════════════════════ */
+
+/* ChatPane's "Jump to latest" pill (top-centre over the scrolled-up message
+ * feed) is the cleanest match in the app for the console pill's own
+ * situation: a small, sparse-content pill that floats directly over
+ * genuinely varied content (scrolling text, avatars, embeds, images) and
+ * nothing else. Targeted via its own animation class combined with the kit's
+ * ghost-button class (.clb--ghost.msg-menu-enter, 3-class compound —
+ * outranks the kit's own `.clb--ghost .cap` and `.clb--ghost .cap:hover`
+ * rules in cl-kit-ext.css, loaded after this file, without needing
+ * !important) rather than editing ChatPane.tsx, which is off-limits while
+ * another session works in it. background-image:none drops the ghost cap's
+ * default cursor-follow teal glow — consistent with the console's own "no
+ * gradient, it reads as a rendered object otherwise" rule — and the kit's
+ * own :hover/:active rules (lume ring, press scale) still apply untouched
+ * since they're more specific per-state and load after this rule. */
+.clb--ghost.msg-menu-enter .cap {
+  background-color: rgba(255, 255, 255, 0.05);
+  background-image: none;
+  backdrop-filter: blur(16px) saturate(160%);
+  -webkit-backdrop-filter: blur(16px) saturate(160%);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.10);
+}
+
+/* VoiceVideoSettings' camera-preview close badge sits directly over the
+ * user's own live self-view feed — literally a video backdrop, the same
+ * situation the console pill's own comment describes. Unlike the pill this
+ * button has no separate solid button-face of its own behind its icon, so
+ * it keeps its existing dark scrim (needed so the icon stays legible over
+ * an arbitrary bright/dark camera frame — the light wash above would wash
+ * out against a bright feed) and only gains the blur/saturate/rim half of
+ * the recipe it was missing. Same treatment already exists elsewhere for
+ * the analogous case of a badge over an image thumbnail (.gif-msg-save-btn,
+ * .gif-bookmark-btn) — this brings the video-preview badge in line with
+ * that existing pattern rather than inventing a new one. */
+.cl-video-preview-close-btn {
+  backdrop-filter: blur(10px) saturate(150%);
+  -webkit-backdrop-filter: blur(10px) saturate(150%);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
+}

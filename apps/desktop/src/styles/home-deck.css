@@ -1,0 +1,613 @@
+/* ============================================================================
+   Home deck — the bento home screen (HomePanel.tsx).
+   Prefixed `.hd-*`, same convention as settings-descent.css's `.sd-*`.
+
+   Sizing is driven by CONTAINER queries, not viewport ones: the home pane is
+   a drag-resized flex child, so its own inline size is the only width that
+   matters. `.hd-host` is the container; every breakpoint below is keyed to it.
+
+   Layout intentionally does NOT use `grid-auto-flow: dense`. Source order is
+   attention-first (alerts → call → pinned → missed/friends → recent) and dense
+   packing reorders it — it pulled the 2×2 tiles up beside a lone half-width
+   alert and stranded a tile alone in a row with empty columns beside it.
+   ============================================================================ */
+
+.hd-host {
+  container-type: inline-size;
+  flex: 1;
+  overflow-y: auto;
+  /* overflow-y:auto makes overflow-x compute to auto, and the deck's visible
+     tile overflow (pin popover) + rig ink can nudge past the edge — never a
+     reason for a horizontal scrollbar here. */
+  overflow-x: hidden;
+  padding: 30px 26px 34px;
+  /* Atmosphere: surface light falling into the deep. All STATIC gradients —
+     zero animation cost (doctrine rule 11), and they scroll with content so
+     the "surface" stays at the top of the page, not the viewport. */
+  background:
+    radial-gradient(56% 320px at 32% -40px, rgba(37, 224, 200, .075), transparent 70%),
+    radial-gradient(40% 260px at 78% -60px, rgba(37, 224, 200, .05), transparent 70%),
+    linear-gradient(160deg, transparent 0 30%, rgba(37, 224, 200, .012) 42%, transparent 54%),
+    linear-gradient(180deg, color-mix(in oklab, var(--cl-deep) 94%, #1b3a4a) 0, var(--cl-deep) 420px);
+  background-color: var(--cl-deep);
+}
+/* Soft ultrawide cap only — the deck is full-bleed at every realistic window
+   size (it used to stop growing at 1080px and float in a sea of margin on a
+   maximised monitor). 1760px keeps rows readable on a 3440px display. */
+.hd-inner { max-width: 1760px; margin: 0 auto; }
+
+/* ── Greeting ─────────────────────────────────────────────────────────────── */
+.hd-greet {
+  display: flex; align-items: flex-end; justify-content: space-between;
+  gap: 20px; margin-bottom: 24px; padding-top: 6px;
+}
+.hd-eyebrow {
+  display: block; margin: 0 0 7px;
+  font-family: var(--cl-font-mono); font-size: 10px; font-weight: 600;
+  letter-spacing: .16em; text-transform: uppercase; color: var(--cl-faint);
+}
+.hd-greet h1 {
+  font-family: var(--cl-font-display); font-weight: 600;
+  font-size: 30px; line-height: 1.12; letter-spacing: .005em;
+  color: var(--cl-text); margin: 0;
+  /* Faint bioluminescent halo on the display type — static, sub-perceptual
+     until you look for it, but it lifts the headline off the page. */
+  text-shadow: 0 0 34px rgba(37, 224, 200, .18);
+}
+@container (min-width: 880px) {
+  .hd-greet h1 { font-size: 36px; }
+}
+.hd-greet p {
+  margin: 7px 0 0; font-size: 13.5px; color: var(--cl-muted);
+  font-family: var(--cl-font-body);
+}
+
+/* Keys sits in a soft spotlight so it reads as part of the scene rather than
+   a sticker floating in the corner. Static radial; the button's own motion
+   (framer hover/tap) is unchanged. */
+.hd-mascotbtn { position: relative; }
+.hd-mascotbtn::before {
+  content: ''; position: absolute; inset: -22% -28%; pointer-events: none;
+  background: radial-gradient(closest-side, rgba(37, 224, 200, .11), transparent 72%);
+  border-radius: 50%;
+}
+/* Keys scales with the pane: the slot width steps per container tier and the
+   <Keys fluid> rig fills it — no JS sizing. */
+.hd-mascotslot { width: 76px; flex-shrink: 0; transition: transform .3s var(--cl-spring); }
+.hd-mascotslot:hover { transform: translateY(-3px); }
+@container (min-width: 560px)  { .hd-mascotslot { width: 88px; } }
+@container (min-width: 880px)  { .hd-mascotslot { width: 96px; } }
+@container (min-width: 1200px) { .hd-mascotslot { width: 112px; } }
+@container (min-width: 1600px) { .hd-mascotslot { width: 128px; } }
+
+/* ── Deck ─────────────────────────────────────────────────────────────────── */
+.hd-deck { display: grid; gap: 12px; grid-template-columns: 1fr; }
+
+@container (min-width: 560px) {
+  .hd-deck { grid-template-columns: repeat(2, 1fr); }
+  .hd-t--wide, .hd-t--full { grid-column: span 2; }
+}
+@container (min-width: 880px) {
+  .hd-deck { grid-template-columns: repeat(4, 1fr); }
+  .hd-t--primary { grid-column: span 2; grid-row: span 2; }
+  .hd-t--full { grid-column: span 4; }
+  /* Alerts pair two-across; a lone one takes the whole row instead of
+     sitting half-width with dead space beside it. */
+  .hd-deck[data-alerts="1"] .hd-t--wide { grid-column: span 4; }
+  .hd-cards { grid-template-columns: repeat(auto-fill, minmax(164px, 1fr)); }
+}
+
+/* ≥1200 / ≥1600 — the full-bleed tiers. The deck used to stop growing at
+   880px, so a maximised monitor got the 4-col layout floating in margin.
+   Same attention-first source order, NO dense packing (see the header
+   comment) — six columns simply let the two primaries sit 3-wide side by
+   side and everything breathe. */
+@container (min-width: 1200px) {
+  .hd-host { padding: 36px 40px 40px; }
+  .hd-deck { grid-template-columns: repeat(6, 1fr); gap: 14px; }
+  .hd-t--primary { grid-column: span 3; grid-row: span 2; }
+  .hd-t--wide { grid-column: span 3; }
+  .hd-t--full { grid-column: span 6; }
+  .hd-deck[data-alerts="1"] .hd-t--wide { grid-column: span 6; }
+  .hd-tile { padding: 18px 20px; }
+  .hd-greet h1 { font-size: 40px; }
+  .hd-greet p { font-size: 14.5px; }
+  .hd-cards { grid-template-columns: repeat(auto-fill, minmax(176px, 1fr)); }
+}
+@container (min-width: 1600px) {
+  .hd-host { padding: 44px 56px 48px; }
+  .hd-deck { gap: 16px; }
+  .hd-greet h1 { font-size: 44px; }
+  .hd-greet p { font-size: 15px; }
+  .hd-cards { grid-template-columns: repeat(auto-fill, minmax(192px, 1fr)); }
+  .hd-name { font-size: 14.5px; }
+  .hd-cardname { font-size: 13.5px; }
+}
+
+.hd-tile {
+  /* overflow VISIBLE, deliberately: the Pinned tile's add-popover drops below
+     its button and must escape the tile (overflow:hidden used to clip the
+     dropdown mid-list). The corner bloom ::before keeps its rounded corners
+     via border-radius:inherit instead of relying on clipping. */
+  position: relative;
+  /* Per-tile accent identity — set by the hd-a--* classes below, defaulting
+     to lume. Drives the porthole chip, count tint, corner bloom, and hover
+     border, the same --tile-accent mechanism as the website bento. Hues
+     outside the core tokens come from AVATAR_PALETTE (utils/avatarColor.ts)
+     — sanctioned, already app-wide on avatarless users; not a new palette. */
+  --hd-accent: var(--cl-lume);
+  padding: 15px 16px;
+  border: 1px solid var(--cl-border); border-radius: 16px;
+  /* Not a flat box: a whisper of top-light + a hairline inner highlight, the
+     same "lit from above" grammar as the rest of the deep. */
+  background:
+    linear-gradient(180deg, color-mix(in oklab, var(--cl-sink) 90%, var(--cl-raise)) 0, var(--cl-sink) 86px);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .035);
+  /* --hd-d is this tile's entrance delay (set by the nth-child ladder below).
+     Rows and numbers INSIDE the tile add to it, so the whole load sequence is
+     one delay system with no JS. */
+  animation: hd-tile-in .5s var(--cl-spring) both;
+  animation-delay: var(--hd-d, 0s);
+  transition: border-color .2s;
+}
+/* Every tile gets a corner bloom in its own accent (generalizes what the
+   attn/call tiles used to hand-roll). Static paint. */
+.hd-tile::before {
+  content: ''; position: absolute; inset: 0; pointer-events: none;
+  border-radius: inherit;
+  background: radial-gradient(130px 84px at 100% 0, color-mix(in srgb, var(--hd-accent) 9%, transparent), transparent 70%);
+}
+.hd-tile:hover { border-color: color-mix(in srgb, var(--hd-accent) 30%, var(--cl-border)); }
+/* While the pin popover is open, its tile outranks every sibling — the
+   popover's own z-index gets trapped in whatever local stacking context the
+   entrance animations create, so the certain fix is to lift the tile. */
+.hd-tile:has(.hd-pinpop) { z-index: 40; }
+
+.hd-a--glow     { --hd-accent: var(--cl-glow); }
+.hd-a--lume     { --hd-accent: var(--cl-lume); }
+.hd-a--lavender { --hd-accent: #9B84EC; } /* AVATAR_PALETTE lavender */
+.hd-a--cyan     { --hd-accent: #5CDBF0; } /* AVATAR_PALETTE cyan */
+.hd-a--ok       { --hd-accent: var(--cl-ok); }
+.hd-a--orange   { --hd-accent: #FF8C42; } /* AVATAR_PALETTE orange */
+/* Entrance stagger — the deck surfaces one tile at a time instead of popping
+   in as a wall. 70ms/tile, capped at the 6th; the var (not animation-delay
+   directly) lets rows and counts inside each tile cascade off the SAME clock. */
+.hd-deck > .hd-tile:nth-child(1) { --hd-d: .12s; }
+.hd-deck > .hd-tile:nth-child(2) { --hd-d: .19s; }
+.hd-deck > .hd-tile:nth-child(3) { --hd-d: .26s; }
+.hd-deck > .hd-tile:nth-child(4) { --hd-d: .33s; }
+.hd-deck > .hd-tile:nth-child(5) { --hd-d: .40s; }
+.hd-deck > .hd-tile:nth-child(n+6) { --hd-d: .47s; }
+@keyframes hd-tile-in {
+  from { opacity: 0; transform: translateY(18px) scale(.97); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* Rows cascade within their tile: each row lands 40ms after the previous,
+   starting 100ms after its tile begins surfacing. Capped at the 5th row. */
+.hd-rows > .hd-row, .hd-cards > * {
+  animation: hd-row-in .38s var(--cl-spring) both;
+  animation-delay: calc(var(--hd-d, 0s) + .1s);
+}
+.hd-rows > .hd-row:nth-child(2), .hd-cards > *:nth-child(2) { animation-delay: calc(var(--hd-d, 0s) + .14s); }
+.hd-rows > .hd-row:nth-child(3), .hd-cards > *:nth-child(3) { animation-delay: calc(var(--hd-d, 0s) + .18s); }
+.hd-rows > .hd-row:nth-child(4), .hd-cards > *:nth-child(4) { animation-delay: calc(var(--hd-d, 0s) + .22s); }
+.hd-rows > .hd-row:nth-child(n+5), .hd-cards > *:nth-child(n+5) { animation-delay: calc(var(--hd-d, 0s) + .26s); }
+@keyframes hd-row-in {
+  from { opacity: 0; transform: translateY(7px); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* Numbers land last — a small pop once their tile and rows have settled. */
+.hd-count, .hd-pill {
+  animation: hd-num-in .3s var(--cl-spring) both;
+  animation-delay: calc(var(--hd-d, 0s) + .25s);
+}
+@keyframes hd-num-in {
+  from { opacity: 0; transform: translateY(4px) scale(.9); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* Atmosphere veil: the whole host starts a shade deeper and "surfaces" over
+   the first 450ms. A one-shot opacity fade on an overlay that then becomes
+   inert (opacity 0 + no pointer events); not a continuous effect. */
+.hd-host { position: relative; }
+.hd-host::after {
+  content: ''; position: absolute; inset: 0; pointer-events: none; z-index: 5;
+  background: var(--cl-abyss);
+  animation: hd-veil .45s ease-out both;
+}
+@keyframes hd-veil {
+  from { opacity: .55; }
+  to   { opacity: 0; }
+}
+
+.hd-head { display: flex; align-items: center; gap: 9px; margin-bottom: 12px; }
+.hd-head h2 {
+  flex: 1 1 auto; min-width: 0; margin: 0;
+  font-family: var(--cl-font-mono); font-size: 10.5px; font-weight: 600;
+  letter-spacing: .13em; text-transform: uppercase; color: var(--cl-faint);
+}
+/* Section icon gets a lit porthole chip in the tile's OWN accent — each tile
+   earns a point of light, and each light has its own colour. */
+.hd-head .hd-ic {
+  flex: 0 0 auto; display: flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; border-radius: 7px;
+  background: color-mix(in srgb, var(--hd-accent) 13%, transparent);
+  color: var(--hd-accent);
+}
+.hd-count {
+  flex: 0 0 auto; font-family: var(--cl-font-mono); font-size: 10.5px;
+  font-weight: 600; font-variant-numeric: tabular-nums;
+  color: color-mix(in srgb, var(--hd-accent) 55%, var(--cl-faint));
+}
+
+/* ── Rows ─────────────────────────────────────────────────────────────────── */
+.hd-rows { display: flex; flex-direction: column; gap: 2px; margin: 0 -6px; }
+.hd-row {
+  display: flex; align-items: center; gap: 11px; width: 100%;
+  padding: 8px 6px; border: 0; border-radius: 10px;
+  background: transparent; cursor: pointer; text-align: left;
+  font-family: var(--cl-font-body); color: inherit;
+  transition: background .16s;
+}
+.hd-row:hover { background: rgba(255, 255, 255, .035); }
+.hd-row:focus-visible { outline: 2px solid var(--cl-lume); outline-offset: -2px; }
+
+.hd-av { position: relative; flex: 0 0 auto; width: 32px; height: 32px; }
+.hd-av > * { width: 100%; height: 100%; border-radius: 99px; overflow: hidden; }
+.hd-chip {
+  display: flex; align-items: center; justify-content: center;
+  width: 32px; height: 32px; border-radius: 9px; flex: 0 0 auto;
+  background: var(--cl-surface); color: var(--cl-faint);
+  font-family: var(--cl-font-mono); font-size: 14px; font-weight: 600;
+}
+.hd-dot {
+  position: absolute; right: -1px; bottom: -1px;
+  width: 11px; height: 11px; border-radius: 99px;
+  box-shadow: 0 0 0 2.5px var(--cl-sink);
+}
+/* "On mobile": the shared phone glyph (StatusDot → MobileStatusGlyph) in
+   place of the dot, on a small pill of the deck's sink colour so it punches
+   out of the avatar the way the dot's ring does. Two classes so it beats
+   `.hd-av > *` (which would stretch it to the avatar's size and clip it). */
+.hd-dot.hd-dot--mobile {
+  display: flex; align-items: center; justify-content: center;
+  width: auto; height: auto; padding: 1.5px;
+  right: -3px; bottom: -3px;
+  border-radius: 4px; overflow: visible;
+  background: var(--cl-sink); box-shadow: none;
+}
+
+.hd-body { flex: 1 1 auto; min-width: 0; }
+.hd-top { display: flex; align-items: baseline; gap: 7px; }
+.hd-name {
+  font-size: 13.5px; font-weight: 700; color: var(--cl-text);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.hd-time {
+  flex: 0 0 auto; font-family: var(--cl-font-mono); font-size: 10px;
+  color: var(--cl-faint); font-variant-numeric: tabular-nums;
+}
+.hd-sub {
+  display: flex; align-items: center; gap: 5px; min-width: 0;
+  font-size: 12px; color: var(--cl-muted);
+}
+.hd-sub > span {
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+/* "Playing X" is the only friend signal accented — it's the one that reads as
+   an invitation rather than a state. */
+.hd-sub--game { color: var(--cl-lume); font-weight: 700; }
+.hd-sub--quiet { color: var(--cl-faint); }
+
+/* Unread weight is encoded in shape as well as number. */
+.hd-pill {
+  flex: 0 0 auto; min-width: 20px; padding: 1px 6px; border-radius: 99px;
+  font-family: var(--cl-font-mono); font-size: 10.5px; font-weight: 600;
+  text-align: center; font-variant-numeric: tabular-nums;
+  background: var(--cl-lume); color: var(--cl-on-lume);
+}
+.hd-pill--named { background: var(--cl-flash); color: #fff; }
+.hd-tag {
+  flex: 0 0 auto; padding: 1px 6px; border-radius: 5px;
+  font-family: var(--cl-font-mono); font-size: 9.5px; font-weight: 600;
+  letter-spacing: .05em; text-transform: uppercase;
+  background: var(--cl-flash-tint); color: var(--cl-flash);
+}
+.hd-live {
+  flex: 0 0 auto; display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 7px; border-radius: 99px;
+  font-family: var(--cl-font-mono); font-size: 9.5px; font-weight: 600;
+  letter-spacing: .05em; text-transform: uppercase;
+  background: var(--cl-lume-tint); color: var(--cl-lume);
+}
+/* Mini avatar cluster inside a Friends-row .hd-live pill — who a friend is
+   actually on the call WITH, not just that they're on one. Same overlap
+   idiom as .hd-stack (the "Happening now" call card's avatar row) at a
+   smaller size to fit an inline pill; capped at 3 with a "+N" chip for the
+   rest (see HomePanel's callRoster, built via utils/serverCallPresence's
+   summarizeCallRoster). */
+.hd-live-stack { display: flex; align-items: center; flex: 0 0 auto; }
+.hd-live-stack > * {
+  width: 14px; height: 14px; border-radius: 99px; overflow: hidden;
+  margin-left: -5px; box-shadow: 0 0 0 1.5px var(--cl-sink);
+}
+.hd-live-stack > *:first-child { margin-left: 0; }
+.hd-live-more {
+  flex: 0 0 auto; margin-left: -5px; width: 14px; height: 14px; border-radius: 99px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--cl-surface); color: var(--cl-faint); font-size: 7px; font-weight: 700;
+  box-shadow: 0 0 0 1.5px var(--cl-sink);
+}
+.hd-more {
+  margin: 9px 0 0; padding-top: 9px;
+  border-top: 1px solid rgba(42, 53, 88, .5);
+  font-size: 11.5px; color: var(--cl-faint); font-family: var(--cl-font-body);
+}
+
+/* ── Card grid (pinned + recent) ──────────────────────────────────────────── */
+/* A wrapping grid rather than a list so a wide pane fills out instead of
+   leaving a dead column. */
+.hd-cards {
+  display: grid; gap: 8px;
+  grid-template-columns: repeat(auto-fill, minmax(158px, 1fr));
+}
+.hd-card {
+  position: relative;
+  display: flex; align-items: center; gap: 9px; min-width: 0;
+  padding: 10px 11px; border-radius: 12px;
+  border: 1px solid var(--cl-border);
+  /* Per-identity tint: --hd-hue is set inline from the same id-derived hue the
+     avatars use, so every card carries a whisper of its owner's colour — the
+     grid stops being a wall of identical grey pills. Falls back to the flat
+     surface when no hue is set. */
+  background:
+    linear-gradient(125deg, hsl(var(--hd-hue, 190) 65% 55% / .14), transparent 46%),
+    var(--cl-surface);
+  cursor: pointer; text-align: left; font-family: var(--cl-font-body);
+  color: inherit;
+  transition: border-color .16s, background .16s, transform .16s var(--cl-spring);
+}
+.hd-card::after {
+  /* Identity hairline along the top edge — invisible at rest, lights up in
+     the card's own hue on hover. */
+  content: ''; position: absolute; top: 0; left: 10px; right: 10px; height: 2px;
+  border-radius: 0 0 2px 2px;
+  background: hsl(var(--hd-hue, 172) 65% 55% / .55);
+  opacity: 0; transition: opacity .16s;
+}
+.hd-card:hover {
+  border-color: hsl(var(--hd-hue, 172) 65% 55% / .6);
+  transform: translateY(-1px);
+}
+.hd-card:hover::after { opacity: 1; }
+.hd-card:focus-visible { outline: 2px solid var(--cl-lume); outline-offset: 1px; }
+.hd-card .hd-av, .hd-card .hd-chip { width: 28px; height: 28px; }
+.hd-cardbody { min-width: 0; flex: 1 1 auto; }
+.hd-cardname {
+  display: block; font-size: 12.5px; font-weight: 700; color: var(--cl-text);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.hd-cardsub {
+  display: block; font-family: var(--cl-font-mono); font-size: 10px;
+  color: var(--cl-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+/* Unpin — only on hover/focus so the grid stays calm at rest. */
+.hd-unpin {
+  position: absolute; top: 3px; right: 3px;
+  width: 18px; height: 18px; border: 0; border-radius: 6px; padding: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--cl-deep); color: var(--cl-faint);
+  cursor: pointer; opacity: 0;
+  transition: opacity .14s, color .14s, background .14s;
+}
+.hd-card:hover .hd-unpin, .hd-unpin:focus-visible { opacity: 1; }
+.hd-unpin:hover { color: var(--cl-flash); background: var(--cl-flash-tint); }
+
+.hd-addcard {
+  display: flex; align-items: center; justify-content: center; gap: 7px;
+  padding: 9px 10px; border-radius: 11px;
+  border: 1px dashed var(--cl-border); background: transparent;
+  color: var(--cl-faint); cursor: pointer;
+  font-family: var(--cl-font-body); font-size: 12.5px; font-weight: 700;
+  transition: color .16s, border-color .16s;
+}
+.hd-addcard:hover { color: var(--cl-lume); border-color: var(--cl-lume); }
+.hd-addcard:focus-visible { outline: 2px solid var(--cl-lume); outline-offset: 1px; }
+
+/* ── Attention tile ───────────────────────────────────────────────────────── */
+/* Severity reads from border + chip + corner bloom together, so it's legible
+   without relying on colour alone. */
+/* Attention/call tiles ride the generic accent bloom, just louder: a tinted
+   resting border and a stronger corner glow than ordinary tiles. */
+.hd-t--attn { border-color: color-mix(in srgb, var(--hd-accent) 34%, var(--cl-border)); }
+.hd-t--attn::before {
+  background: radial-gradient(130px 84px at 100% 0, color-mix(in srgb, var(--hd-accent) 14%, transparent), transparent 70%);
+}
+.hd-t--attn.is-critical { --hd-accent: var(--cl-flash); }
+.hd-attnchip {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 2px 8px; border-radius: 99px; margin-bottom: 9px;
+  font-family: var(--cl-font-mono); font-size: 9.5px; font-weight: 600;
+  letter-spacing: .09em; text-transform: uppercase;
+  background: rgba(255, 201, 77, .14); color: var(--cl-glow);
+}
+.is-critical .hd-attnchip { background: var(--cl-flash-tint); color: var(--cl-flash); }
+.hd-attntitle {
+  font-family: var(--cl-font-display); font-weight: 600; font-size: 15.5px;
+  line-height: 1.25; color: var(--cl-text); margin: 0 0 4px;
+}
+.hd-attnbody {
+  margin: 0 0 13px; font-size: 12.5px; color: var(--cl-muted);
+  max-width: 58ch; font-family: var(--cl-font-body);
+}
+.hd-acts { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+
+/* ── Live call tile ───────────────────────────────────────────────────────── */
+.hd-t--call { border-color: color-mix(in srgb, var(--hd-accent) 32%, var(--cl-border)); }
+.hd-t--call::before {
+  background: radial-gradient(130px 84px at 100% 0, color-mix(in srgb, var(--hd-accent) 14%, transparent), transparent 70%);
+}
+.hd-callrow { display: flex; align-items: center; gap: 12px; }
+.hd-callinfo { flex: 1 1 auto; min-width: 0; }
+.hd-callname {
+  font-family: var(--cl-font-display); font-weight: 600; font-size: 15px;
+  color: var(--cl-text); margin: 0 0 2px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.hd-callwhere { margin: 0; font-size: 11.5px; color: var(--cl-faint); font-family: var(--cl-font-body); }
+.hd-stack { display: flex; flex: 0 0 auto; }
+.hd-stack > * {
+  width: 27px; height: 27px; border-radius: 99px; overflow: hidden;
+  margin-left: -7px; box-shadow: 0 0 0 2px var(--cl-sink);
+}
+.hd-stack > *:first-child { margin-left: 0; }
+.hd-wave { display: inline-flex; align-items: flex-end; gap: 2px; height: 11px; flex: 0 0 auto; }
+.hd-wave i { width: 2.5px; border-radius: 2px; background: var(--cl-lume); animation: hd-bounce 1.05s ease-in-out infinite; }
+.hd-wave i:nth-child(1) { height: 5px;  animation-delay: 0s; }
+.hd-wave i:nth-child(2) { height: 10px; animation-delay: .13s; }
+.hd-wave i:nth-child(3) { height: 7px;  animation-delay: .26s; }
+@keyframes hd-bounce { 0%, 100% { transform: scaleY(.5); } 50% { transform: scaleY(1); } }
+
+/* ── Caught-up state ──────────────────────────────────────────────────────── */
+.hd-clear {
+  position: relative;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  text-align: center; padding: 26px 10px 22px; gap: 3px;
+}
+/* Becalmed water: a still horizon line with a soft mote of light resting on
+   it. Pure CSS, static — empty is a state of calm, not an absence of design. */
+.hd-clear::before {
+  content: ''; width: 76px; height: 22px; margin-bottom: 10px;
+  background:
+    radial-gradient(9px 9px at 50% 6px, rgba(37, 224, 200, .55), rgba(37, 224, 200, .12) 60%, transparent 75%),
+    linear-gradient(90deg, transparent, rgba(37, 224, 200, .35) 30%, rgba(37, 224, 200, .35) 70%, transparent) 50% calc(100% - 6px) / 100% 1.5px no-repeat;
+}
+.hd-clear strong {
+  font-family: var(--cl-font-display); font-weight: 600; font-size: 15px; color: var(--cl-text);
+}
+.hd-clear span { font-size: 12.5px; color: var(--cl-faint); font-family: var(--cl-font-body); }
+
+/* ── Buttons ──────────────────────────────────────────────────────────────── */
+.hd-btn {
+  appearance: none; border: 0; cursor: pointer;
+  padding: 7px 14px; border-radius: 10px;
+  font-family: var(--cl-font-body); font-size: 12.5px; font-weight: 800;
+  background: var(--cl-lume); color: var(--cl-on-lume);
+  transition: filter .16s, transform .16s var(--cl-spring);
+}
+.hd-btn:hover { filter: brightness(1.08); }
+.hd-btn:active { transform: scale(.97); }
+.hd-btn--link {
+  background: transparent; color: var(--cl-faint); padding: 7px 4px;
+  font-weight: 700; text-decoration: underline; text-underline-offset: 2px;
+}
+.hd-btn--link:hover { color: var(--cl-muted); filter: none; }
+.hd-btn:focus-visible { outline: 2px solid var(--cl-lume); outline-offset: 2px; }
+
+/* ── The seabed — glanceable closing strip ───────────────────────────────────
+   The deck's floor: the encryption statement (factual, never ceremonial),
+   live counts, backup freshness, and the version. Mono, faint, quiet. */
+.hd-floor {
+  display: flex; align-items: center; gap: 18px; flex-wrap: wrap;
+  margin-top: 18px; padding: 13px 4px 0;
+  border-top: 1px solid rgba(42, 53, 88, .55);
+  font-family: var(--cl-font-mono); font-size: 10.5px; font-weight: 600;
+  letter-spacing: .06em; color: var(--cl-faint);
+  animation: hd-row-in .38s var(--cl-spring) both; animation-delay: .55s;
+}
+.hd-floor-sec { display: inline-flex; align-items: center; gap: 7px; color: var(--cl-muted); }
+.hd-floor-dot {
+  width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto;
+  background: var(--cl-lume);
+}
+.hd-host[data-ambient="on"] .hd-floor-dot { animation: hd-breathe 4s ease-in-out infinite; }
+.hd-floor-stats { display: inline-flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+.hd-floor-stats i { font-style: normal; opacity: .5; }
+.hd-floor-warn { color: var(--cl-glow); }
+.hd-floor-ver { margin-left: auto; font-variant-numeric: tabular-nums; }
+
+/* ── Ambient layer — rising bioluminescent motes ─────────────────────────────
+   PERF CONTRACT (personality doctrine rule 11, same as the seasonal layer):
+   transform + opacity ONLY — no filter, no box-shadow, no will-change.
+   contain:strict + pointer-events:none: can never intercept a click or
+   invalidate app layout. Deterministic field (utils/homeAmbient.ts), count
+   clamped by pane width, negative delays = mid-drift on frame 1. Off switch:
+   Settings → Appearance → Home ambience (useAmbientMotion). */
+.hd-ambient {
+  position: absolute; inset: 0; z-index: 0;
+  pointer-events: none; contain: strict; overflow: hidden;
+}
+.hd-inner { position: relative; z-index: 1; }
+.hd-mote {
+  position: absolute; bottom: -8px; border-radius: 50%;
+  background: radial-gradient(circle, rgba(37, 224, 200, .9) 0%, rgba(37, 224, 200, .25) 55%, transparent 75%);
+  opacity: 0;
+  animation: hd-rise var(--dur, 40s) linear infinite;
+  animation-delay: var(--delay, 0s);
+}
+@keyframes hd-rise {
+  0%   { opacity: 0; transform: translate3d(0, 0, 0); }
+  12%  { opacity: var(--peak, .35); }
+  88%  { opacity: var(--peak, .35); }
+  100% { opacity: 0; transform: translate3d(var(--drift, 0px), -104cqh, 0); }
+}
+
+/* Living micro-states — tiny decorative loops, gated by the SAME switch via
+   [data-ambient]. The call equalizer (.hd-wave) stays outside the gate: it
+   conveys live information, not decoration. */
+.hd-host[data-ambient="on"] .hd-dot { animation: hd-breathe 4s ease-in-out infinite; }
+@keyframes hd-breathe { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.15); } }
+.hd-host[data-ambient="on"] .hd-live { animation: hd-shimmer 2.4s ease-in-out infinite; }
+@keyframes hd-shimmer { 0%, 100% { opacity: .78; } 50% { opacity: 1; } }
+.hd-host[data-ambient="on"] .hd-mascotbtn::before { animation: hd-spot 6s ease-in-out infinite; }
+@keyframes hd-spot { 0%, 100% { opacity: .8; } 50% { opacity: 1; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .hd-mote { animation: none; opacity: 0; }
+  .hd-floor { animation: none; }
+  .hd-host[data-ambient="on"] .hd-floor-dot { animation: none; }
+  .hd-host[data-ambient="on"] .hd-dot,
+  .hd-host[data-ambient="on"] .hd-live,
+  .hd-host[data-ambient="on"] .hd-mascotbtn::before { animation: none; }
+  .hd-tile { animation: none; }
+  .hd-rows > .hd-row, .hd-cards > * { animation: none; }
+  .hd-count, .hd-pill { animation: none; }
+  .hd-host::after { animation: none; opacity: 0; }
+  .hd-wave i { animation: none; }
+  .hd-card:hover { transform: none; }
+  .hd-btn:active { transform: none; }
+}
+
+/* ── Idle-motion gate (utils/idleMotion.ts) ───────────────────────────────────
+   Same list as the reduced-motion block above, minus anything that carries
+   live information, applied while the window is blurred or hidden. The ambient
+   field plus these micro-loops measured ~47 points of the Home panel's idle
+   CPU (84.6% of a core with them running, 2.3% with all decoration stopped).
+
+   `.hd-wave` is deliberately NOT gated: it is the live call equalizer, and a
+   background window still needs to show that a call is running.
+
+   ONLY `infinite` animations belong below. The one-shot entry animations
+   (hd-veil, hd-tile-in, hd-row-in, hd-count/hd-pill) all use `both` fill, so
+   their *resting* appearance IS the animation's end frame — killing the
+   animation reverts them to their start frame instead. `.hd-host::after` is
+   the sharpest example: it is a full-deck opaque veil (inset:0, z-index:5)
+   that only exists to fade out on entry, so gating it painted the whole deck
+   over in --cl-abyss. They cost nothing at idle (long since finished) and
+   must stay out of this block. */
+:root[data-cl-motion="idle"] .hd-mote { animation: none; opacity: 0; }
+:root[data-cl-motion="idle"] .hd-host[data-ambient="on"] .hd-floor-dot,
+:root[data-cl-motion="idle"] .hd-host[data-ambient="on"] .hd-dot,
+:root[data-cl-motion="idle"] .hd-host[data-ambient="on"] .hd-live,
+:root[data-cl-motion="idle"] .hd-host[data-ambient="on"] .hd-mascotbtn::before { animation: none; }
+
+/* Occlusion gate (utils/idleMotion.ts, setOccluded) — the home deck is never
+   rendered inside the Descent, but the `:not(.sd-root *)` guard is kept
+   uniform with the other gated blocks so the rule stays true if it ever is. */
+:root[data-cl-occluded="on"] .hd-mote:not(.sd-root *) { animation: none; opacity: 0; }
+:root[data-cl-occluded="on"] .hd-host[data-ambient="on"] .hd-floor-dot:not(.sd-root *),
+:root[data-cl-occluded="on"] .hd-host[data-ambient="on"] .hd-dot:not(.sd-root *),
+:root[data-cl-occluded="on"] .hd-host[data-ambient="on"] .hd-live:not(.sd-root *),
+:root[data-cl-occluded="on"] .hd-host[data-ambient="on"] .hd-mascotbtn:not(.sd-root *)::before { animation: none; }

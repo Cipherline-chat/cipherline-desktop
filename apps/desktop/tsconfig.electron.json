@@ -1,0 +1,20 @@
+{
+    "compilerOptions": {
+        "target": "ESNext",
+        "module": "NodeNext",
+        "moduleResolution": "NodeNext",
+        "strict": true,
+        "esModuleInterop": true,
+        "skipLibCheck": true,
+        "forceConsistentCasingInFileNames": true,
+        "rootDir": "./electron",
+        "outDir": "./dist-electron"
+    },
+    "include": [
+        "electron/**/*.ts"
+    ],
+    "exclude": [
+        "electron/test-*.ts",
+        "electron/**/*.test.ts"
+    ]
+}

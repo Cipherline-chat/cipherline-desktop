@@ -1,0 +1,420 @@
+/* ============================================================
+   “The Descent” — full-screen settings.
+   Concept: settings organized as four depth zones (Surface →
+   Twilight → Midnight → Abyss); the nav is a working depth
+   gauge and the water darkens as you go down. Composes the
+   locked cl-* kit (index.css) — never restyles it.
+   All classes are sd- prefixed to stay out of Tailwind's way.
+   ============================================================ */
+
+.sd-root{position:fixed;inset:0;z-index:100;display:flex;flex-direction:column;
+  background:var(--cl-abyss);color:var(--cl-text);font-family:var(--cl-font-body);overflow:hidden;
+  animation:sd-rootin .35s ease both}
+@keyframes sd-rootin{from{opacity:0}to{opacity:1}}
+/* Exit: the Descent sinks away — a short downward drop while it fades, still
+   fast and one-directional per the motion doctrine (no scale, no bounce).
+   Implemented as an ANIMATION, not a transition: the resting state is held by
+   the entrance animation's fill, and Chromium won't start a transition from
+   animation-derived values — it snaps. An exit animation always plays.
+   (The .sd-win selector keeps this winning over .sd-win's entrance shorthand.) */
+.sd-root.sd-closing,.sd-root.sd-win.sd-closing{animation:sd-rootout 260ms cubic-bezier(.4,0,.7,1) both}
+@keyframes sd-rootout{from{opacity:1;transform:none}to{opacity:0;transform:translateY(28px)}}
+
+/* ---- windowed mode ----
+   When the viewport comfortably fits it (SettingsScreen decides), the Descent
+   floats as a centered window over a dimmed veil instead of taking the whole
+   screen; below the threshold it stays the fullscreen takeover above. The
+   veil element only exists (with this class) in windowed mode. */
+/* The veil is a PLAIN scrim. It deliberately has no `backdrop-filter`, and a
+   blur must not be put back here — this was the Descent's whole performance
+   problem, and the cost is in the full-viewport filter pass, not in the blur.
+   Measured (Chromium 153, two real windows on two Xvfb displays, a 16px
+   transform-only pacer as the only animation, median of 3 interleaved rounds,
+   mean rAF frame interval):
+
+                                  1920x1080      3840x2160
+     Descent hidden (floor)          16.9 ms        16.7 ms
+     veil with backdrop-filter      529.6 ms      2124.9 ms
+     veil with none                  28.6 ms       118.2 ms
+
+   That is 18x either way, and 4.01x for 4.0x the pixels — the cost is exactly
+   linear in viewport area, which is why the report was "especially on high res
+   screens". Nothing else on the screen mattered: with the filter on, removing
+   the mote canvas, the water gradient, the vignette or the window's box-shadow
+   each moved the number by less than the run-to-run noise.
+
+   Three things were measured and are worth not re-deriving:
+   - The radius is irrelevant. blur(1px), blur(3px), blur(8px) and blur(24px)
+     all cost the same ~500 ms/frame at 1080p, and even a plain
+     `backdrop-filter: brightness(.8)` — no neighbourhood sampling at all —
+     cost 189 ms. It is the full-viewport render pass that is expensive, so
+     "just use a smaller radius" saves nothing.
+   - It is charged per FRAME, not per change. A 16px square animating in a
+     corner is enough to make the compositor redraw the whole filtered quad, so
+     every hover, every toggle, every drifting mote, and every keystroke in the
+     search box paid for a full-screen blur. That is the "laggy to use" half of
+     the report, and no amount of gating our own idle animation would have
+     fixed it.
+   - Scaling the filtered element down and blowing it back up with a transform
+     does not reduce the work (Chromium filters in device space), and
+     `clip-path`-ing the window's own rectangle out of the veil made it
+     measurably WORSE.
+
+   What it costs us: the frozen dashboard behind the veil is sharp instead of
+   softened by 3px. Whole-frame RMSE between the two at 4K is 0.7%. The scrim
+   is nudged .62 -> .70 because that was the alpha that minimised that RMSE
+   (0.698% vs 0.731% at .62) — a blur lowers local contrast, and a slightly
+   deeper scrim is the zero-cost way to buy the same read. Anything heavier
+   (.74, .78) measured further from the original, not closer. */
+.sd-veil{position:fixed;inset:0;z-index:100;display:flex;align-items:center;justify-content:center;
+  padding:44px 36px 36px; /* top padding clears the 32px window drag strip (App.tsx) */
+  background:rgba(5,8,18,.70);
+  animation:sd-rootin .35s ease both}
+.sd-veil.sd-closing{animation:sd-veilout 240ms ease both}
+@keyframes sd-veilout{from{opacity:1}to{opacity:0}}
+.sd-root.sd-win{position:relative;inset:auto;z-index:auto;width:min(1180px,100%);height:min(820px,100%);
+  border:1px solid var(--cl-border);border-radius:20px;box-shadow:0 24px 80px rgba(0,0,0,.6);
+  animation:sd-winin .55s var(--cl-spring) both}
+/* translateY-only entrance (no scale — text stays crisp), same spring as the kit modal */
+@keyframes sd-winin{from{opacity:0;transform:translateY(38px)}to{opacity:1;transform:none}}
+.sd-root.sd-win .sd-deck{padding-top:10px} /* the veil owns the drag-strip clearance now */
+.sd-root.sd-win .sd-exit{top:14px;right:14px}
+
+/* Fullscreen only (no .sd-win): a plain dark strip, height-matched to the
+   app's own titlebar (Dashboard.tsx's 34px .drag-region), pinned above the
+   deck. Windows' native window-controls overlay already paints a same-
+   colour 34px strip ABOVE the whole page, so without this the sea/gauge
+   started immediately underneath with no buffer and the "Return to
+   surface" close button (at top:44px, just 10px past the overlay) read as
+   cramped, sitting right beside the OS's own close button. Rendered after
+   SeaBackdrop in the DOM so it paints over it without needing its own
+   z-index; .sd-exit's fullscreen top is bumped by this bar's own height
+   below so the two stay in the same relative position, just shifted down.
+   Windowed mode doesn't need it: the veil's 44px top padding already
+   floats the card clear of the overlay. Still draggable, so the window
+   can be moved from here same as the real titlebar. */
+.sd-topbar{position:relative;flex:none;height:34px;background:var(--cl-abyss)}
+
+/* ---- the water column ---- */
+.sd-sea{position:absolute;inset:0;overflow:hidden;pointer-events:none}
+.sd-sea-grad{position:absolute;left:0;right:0;top:0;height:260vh;
+  background:linear-gradient(180deg,
+    #101830 0%, #0C1226 22%, #0B0F1E 45%, #080B17 72%, #05070F 100%);
+  transition:transform 1100ms cubic-bezier(.45,.05,.2,1)}
+.sd-sea-vignette{position:absolute;inset:0;
+  background:radial-gradient(120% 90% at 50% 110%,rgba(255,107,94,.10),transparent 55%);
+  opacity:0;transition:opacity 900ms ease}
+.sd-root.sd-z-abyss .sd-sea-vignette{opacity:1}
+/* `<canvas>` is a replaced element, like <img> — for an absolutely
+   positioned replaced element with width/height left `auto`, `inset:0` alone
+   does NOT stretch the box to fill its containing block; per the CSS sizing
+   algorithm the box falls back to the element's intrinsic size, which for a
+   canvas is the HTML default of 300x150. That silently capped both the CSS
+   box AND (since SeaBackdrop.tsx sized the backing store off this box's own
+   offsetWidth/offsetHeight) the drawing buffer to 300x150, so every mote
+   drew inside that top-left corner. Explicit width/height:100% makes the box
+   actually fill `.sd-sea` like every other absolutely-positioned
+   non-replaced layer here already does implicitly. */
+.sd-motes{position:absolute;inset:0;width:100%;height:100%}
+
+.sd-deck{position:relative;flex:1;display:flex;min-height:0;
+  padding-top:32px /* the window drag strip (App.tsx) owns the top 32px */}
+
+/* ---- the depth gauge (nav) ---- */
+.sd-gauge{flex:none;width:272px;display:flex;flex-direction:column;min-height:0;
+  padding:14px 10px 14px 22px;position:relative}
+.sd-gauge::before{content:"";position:absolute;left:30px;top:88px;bottom:76px;width:2px;
+  background:linear-gradient(180deg,var(--cl-border),rgba(42,53,88,.25));
+  transform-origin:top;transform:scaleY(0);transition:transform 900ms cubic-bezier(.3,1,.4,1) 150ms}
+.sd-root.sd-arrived .sd-gauge::before{transform:scaleY(1)}
+
+.sd-search{margin:0 12px 16px 0;position:relative}
+/* the kit input renders as .cl-kit > .inp; cover the cl- spelling too */
+.sd-search .inp,.sd-search .cl-inp{padding:9px 13px 9px 34px;font-size:13px;border-radius:11px}
+.sd-search>svg{position:absolute;left:11px;top:16px;color:var(--cl-faint);pointer-events:none;z-index:1}
+.sd-search .cl-fmsg{margin-top:5px;font-size:11.5px;min-height:0}
+
+.sd-gscroll{flex:1;overflow-y:auto;overflow-x:hidden;scrollbar-width:none;position:relative;padding-bottom:8px}
+.sd-gscroll::-webkit-scrollbar{display:none}
+
+/* the glowing “you are here” bead */
+.sd-bead{position:absolute;left:5px;top:0;width:10px;height:10px;border-radius:50%;
+  background:var(--cl-lume);box-shadow:0 0 10px rgba(37,224,200,.8),0 0 26px rgba(37,224,200,.35);
+  transform:translateY(-20px);transition:transform var(--cl-spring-dur) var(--cl-spring),background .4s,box-shadow .4s,opacity .25s;
+  z-index:2;pointer-events:none}
+.sd-root.sd-z-abyss .sd-bead{background:var(--cl-flash);box-shadow:0 0 10px rgba(255,107,94,.8),0 0 26px rgba(255,107,94,.35)}
+
+.sd-zone+.sd-zone{margin-top:16px}
+.sd-zlab{display:flex;align-items:baseline;gap:8px;padding:0 0 7px 22px;opacity:0;transform:translateX(-8px);
+  transition:opacity .5s ease,transform .6s var(--cl-spring)}
+.sd-root.sd-arrived .sd-zlab{opacity:1;transform:none}
+.sd-zlab b{font-family:var(--cl-font-display);font-weight:600;font-size:12.5px;letter-spacing:1.6px;text-transform:uppercase;color:var(--cl-muted)}
+.sd-zlab span{font-family:var(--cl-font-mono);font-size:10.5px;color:var(--cl-faint)}
+.sd-zone--abyss .sd-zlab b{color:var(--cl-flash)}
+
+.sd-nitem{display:flex;align-items:center;gap:11px;width:calc(100% - 12px);border:none;background:none;cursor:pointer;
+  padding:8px 10px 8px 22px;border-radius:11px;color:var(--cl-muted);font-family:var(--cl-font-body);
+  font-weight:700;font-size:13.5px;text-align:left;position:relative;
+  transition:color .2s,background .2s,transform .5s var(--cl-spring),opacity .4s ease}
+.sd-nitem svg{flex:none;opacity:.75;transition:opacity .2s}
+.sd-nitem:hover{color:var(--cl-text);background:rgba(37,224,200,.06)}
+.sd-nitem.sd-on{color:var(--cl-lume);background:rgba(37,224,200,.10)}
+.sd-nitem.sd-on svg{opacity:1}
+.sd-zone--abyss .sd-nitem.sd-on{color:var(--cl-flash);background:rgba(255,107,94,.10)}
+.sd-zone--abyss .sd-nitem:hover{background:rgba(255,107,94,.07)}
+.sd-nitem.sd-hidden{display:none}
+.sd-nitem{opacity:0;transform:translateY(10px)}
+.sd-root.sd-arrived .sd-nitem{opacity:1;transform:none}
+.sd-gempty{display:none;padding:14px 0 0 22px;font-size:12.5px;color:var(--cl-faint);font-weight:700}
+.sd-gempty.sd-show{display:block}
+
+.sd-gfoot{flex:none;padding:12px 12px 0;display:flex;align-items:center;gap:10px}
+/* Hover lift only — the footer mascot is the shared Keys (mascot/Keys.tsx),
+   which brings its own wiggle/sleep rig; the old sd-mwig/sd-msleep copies
+   are gone. Keys animates inner groups, so a transform here can't collide. */
+.sd-gfoot svg{transition:transform .4s var(--cl-spring)}
+.sd-gfoot svg:hover{transform:translateY(-2px)}
+.sd-gfoot small{font-family:var(--cl-font-mono);font-size:10px;color:var(--cl-faint);line-height:1.5;user-select:none}
+
+/* ---- content column ---- */
+.sd-main{flex:1;min-width:0;overflow-y:auto;padding:20px 48px 80px;scrollbar-width:thin;scrollbar-color:var(--cl-border) transparent}
+.sd-col{max-width:720px;margin:0 auto}
+
+.sd-chead{margin:0 0 22px;opacity:0;transform:translateY(14px);transition:opacity .45s ease,transform .55s var(--cl-spring)}
+.sd-root.sd-arrived .sd-chead{opacity:1;transform:none}
+.sd-eyebrow{display:flex;align-items:center;gap:10px;margin:0 0 8px}
+.sd-eyebrow b{font-family:var(--cl-font-mono);font-weight:600;font-size:11.5px;letter-spacing:1.2px;color:var(--cl-faint);text-transform:uppercase}
+.sd-depth{font-family:var(--cl-font-mono);font-size:11.5px;color:var(--cl-lume);font-variant-numeric:tabular-nums}
+.sd-root.sd-z-abyss .sd-depth{color:var(--cl-flash)}
+.sd-chead h1{margin:0;font-family:var(--cl-font-display);font-weight:600;font-size:30px;letter-spacing:.2px;color:var(--cl-text)}
+.sd-chead h1.sd-pop{animation:sd-hpop .55s var(--cl-spring) 1}
+@keyframes sd-hpop{0%{opacity:0;transform:translateY(12px)}100%{opacity:1;transform:none}}
+/* the title mirrors the pane's travel direction */
+.sd-chead h1.sd-pop--up{animation-name:sd-hpop-up}
+@keyframes sd-hpop-up{0%{opacity:0;transform:translateY(-12px)}100%{opacity:1;transform:none}}
+.sd-chead h1.sd-pop--left{animation-name:sd-hpop-left}
+@keyframes sd-hpop-left{0%{opacity:0;transform:translateX(-14px)}100%{opacity:1;transform:none}}
+.sd-chead h1.sd-pop--right{animation-name:sd-hpop-right}
+@keyframes sd-hpop-right{0%{opacity:0;transform:translateX(14px)}100%{opacity:1;transform:none}}
+.sd-chead p{margin:8px 0 0;color:var(--cl-muted);font-size:14px;max-width:56ch;line-height:1.55}
+
+/* pane content springs in as staggered cards; exit is a fast plain fade.
+   .sd-card is the unit of stagger — panes wrap their sections in it.
+   No scale() anywhere: translate only (text stays crisp).
+
+   Entrances are DIRECTION-AWARE — motion mirrors travel through the gauge:
+     (default)          descending one zone → cards rise from below
+     .sd-pane--plunge   descending 2+ zones → same, longer travel
+     .sd-pane--up       ascending one zone  → cards drop from above
+     .sd-pane--surface  ascending 2+ zones  → same, longer travel
+     .sd-pane--left/right  same zone        → lateral drift toward movement */
+.sd-pane{display:block}
+/* fill-mode `backwards`, not `both`: the entrance still shows its hidden
+   from-state before each (staggered) card starts, but we DON'T retain the
+   animation forwards after it ends. The to-keyframe is transform:none /
+   opacity:1 — the card's natural resting state — so nothing changes visually,
+   but the card is released from animation control once done. `forwards`/`both`
+   here kept every settings card permanently under animation-transform control,
+   which in Electron's Chromium left it persistently composited and FLATTENED
+   the toggle knob's transform transition inside it (the toggles "snapped" on
+   instead of sliding). Server-settings toggles animate fine precisely because
+   they aren't inside an animated .sd-card. */
+.sd-pane .sd-card{animation:sd-cardin .62s var(--cl-spring) backwards}
+.sd-pane .sd-card:nth-child(2){animation-delay:60ms}
+.sd-pane .sd-card:nth-child(3){animation-delay:120ms}
+.sd-pane .sd-card:nth-child(4){animation-delay:180ms}
+.sd-pane .sd-card:nth-child(5){animation-delay:240ms}
+@keyframes sd-cardin{from{opacity:0;transform:translateY(22px)}to{opacity:1;transform:none}}
+.sd-pane--plunge .sd-card{animation-name:sd-cardin-plunge;animation-duration:.72s}
+@keyframes sd-cardin-plunge{from{opacity:0;transform:translateY(46px)}to{opacity:1;transform:none}}
+.sd-pane--up .sd-card{animation-name:sd-cardin-up}
+@keyframes sd-cardin-up{from{opacity:0;transform:translateY(-22px)}to{opacity:1;transform:none}}
+.sd-pane--surface .sd-card{animation-name:sd-cardin-surface;animation-duration:.72s}
+@keyframes sd-cardin-surface{from{opacity:0;transform:translateY(-46px)}to{opacity:1;transform:none}}
+.sd-pane--left .sd-card{animation-name:sd-cardin-left}
+@keyframes sd-cardin-left{from{opacity:0;transform:translateX(-28px)}to{opacity:1;transform:none}}
+.sd-pane--right .sd-card{animation-name:sd-cardin-right}
+@keyframes sd-cardin-right{from{opacity:0;transform:translateX(28px)}to{opacity:1;transform:none}}
+.sd-main.sd-leaving .sd-chead,.sd-main.sd-leaving .sd-pane{opacity:0;transition:opacity 90ms ease}
+
+.sd-card{background:var(--cl-deep);border:1px solid var(--cl-border);border-radius:20px;padding:22px;margin:0 0 16px}
+.sd-card--bare{background:none;border:none;padding:0}
+.sd-card--danger{border-color:rgba(255,107,94,.4);
+  background:linear-gradient(180deg,rgba(255,107,94,.05),transparent 55%),var(--cl-deep)}
+.sd-card--danger h3{color:var(--cl-flash)}
+.sd-card>h3{margin:0 0 4px;font-family:var(--cl-font-display);font-weight:500;font-size:16.5px;color:var(--cl-text)}
+.sd-card>.sd-sub{margin:0 0 16px;font-size:12.5px;color:var(--cl-faint);font-weight:600}
+
+/* ---- Phase 1 · Profile: the identity card ---- */
+.sd-id{background:var(--cl-deep);border:1px solid var(--cl-border);border-radius:20px;overflow:hidden}
+.sd-id-banner{position:relative;height:150px;cursor:pointer}
+.sd-id-banner .sd-id-bactions{position:absolute;top:10px;right:10px;z-index:12;display:flex;gap:8px;
+  opacity:0;transform:translateY(-4px);transition:opacity .2s ease,transform .35s var(--cl-spring)}
+.sd-id-banner:hover .sd-id-bactions{opacity:1;transform:none}
+.sd-id-bhint{position:absolute;inset:0;z-index:10;display:flex;align-items:center;justify-content:center;
+  background:rgba(5,8,18,.42);opacity:0;transition:opacity .2s ease;pointer-events:none}
+.sd-id-banner:hover .sd-id-bhint{opacity:1}
+.sd-id-bhint span{display:inline-flex;align-items:center;gap:7px;font-size:11.5px;font-weight:800;
+  letter-spacing:1.2px;text-transform:uppercase;color:#fff}
+
+.sd-id-head{position:relative;display:flex;align-items:flex-end;gap:16px;padding:0 22px;margin-top:-36px;z-index:15}
+.sd-id-av{position:relative;cursor:pointer;flex:none;border-radius:50%;
+  transition:transform .35s var(--cl-spring)}
+.sd-id-av:hover{transform:translateY(-3px)}
+.sd-id-av .sd-id-avhint{position:absolute;inset:0;border-radius:50%;background:rgba(5,8,18,.55);
+  display:flex;align-items:center;justify-content:center;color:#fff;opacity:0;transition:opacity .2s ease;z-index:5;pointer-events:none}
+.sd-id-av:hover .sd-id-avhint{opacity:1}
+/* Remove-avatar badge. Sits just off the top-right of the circle rather than
+   on it, so it never covers a face, and reveals on hover like the banner's
+   equivalent. `:focus-within` is not decoration: the button stays in the tab
+   order while the badge is transparent, so without it a keyboard user would
+   focus a control they cannot see. */
+.sd-id-av .sd-id-avactions{position:absolute;top:-4px;right:-4px;z-index:12;
+  opacity:0;transform:scale(.82);transition:opacity .18s ease,transform .3s var(--cl-spring)}
+.sd-id-av:hover .sd-id-avactions,
+.sd-id-av .sd-id-avactions:focus-within{opacity:1;transform:none}
+.sd-id-av .sd-id-avactions .cap{width:26px;height:26px;background:var(--cl-deep);
+  box-shadow:0 0 0 1px var(--cl-border),0 4px 12px rgba(0,0,0,.5)}
+.sd-id-av .sd-id-avactions .cap:hover{color:var(--cl-flash)}
+.sd-id-who{padding-bottom:4px;min-width:0}
+.sd-id-who b{display:block;font-family:var(--cl-font-display);font-weight:600;font-size:20px;color:var(--cl-text);line-height:1.2}
+.sd-id-who .sd-id-tag{font-family:var(--cl-font-mono);font-size:12.5px;font-weight:600;color:var(--cl-faint)}
+
+.sd-id-fields{display:flex;flex-direction:column;gap:16px;padding:18px 22px 20px}
+/* bio counter lives in the field-message slot; color encodes remaining room */
+.sd-bio-count{text-align:right;font-family:var(--cl-font-mono);font-size:11px;color:var(--cl-faint);
+  font-variant-numeric:tabular-nums;transition:color .25s}
+.sd-bio-count.sd-warm{color:var(--cl-glow)}
+.sd-bio-count.sd-full{color:var(--cl-flash)}
+
+/* dirty-state save bar — springs up inside the card when there’s anything to save */
+.sd-savebar{display:flex;align-items:center;gap:12px;padding:12px 22px;margin-top:-4px;
+  background:rgba(37,224,200,.05);border-top:1px solid var(--cl-border)}
+.sd-savebar p{flex:1;margin:0;font-size:12.5px;font-weight:700;color:var(--cl-muted)}
+.sd-savebar-wrap{overflow:hidden;max-height:0;transition:max-height .45s var(--cl-spring)}
+.sd-savebar-wrap.sd-open{max-height:80px}
+
+/* unified security rows */
+.sd-secrow{display:flex;align-items:center;gap:14px;padding:14px 0}
+.sd-secrow+.sd-secrow{border-top:1px solid rgba(42,53,88,.5)}
+.sd-secrow .sd-sic{flex:none;width:36px;height:36px;border-radius:10px;display:flex;align-items:center;justify-content:center;
+  background:rgba(37,224,200,.1);border:1px solid rgba(37,224,200,.2);color:var(--cl-lume)}
+.sd-secrow .sd-smeta{flex:1;min-width:0}
+.sd-secrow .sd-smeta b{display:block;font-size:14px;font-weight:800;color:var(--cl-text)}
+.sd-secrow .sd-smeta span{display:block;margin-top:2px;font-size:12.5px;color:var(--cl-muted);line-height:1.45}
+
+/* ---- shared pane vocabulary (phases 2–4) ---- */
+/* settings rows: label + description left, control right.
+   Direct-child selectors ONLY — descendant b/span (chips, icons inside the
+   title) must keep their own display, or they render as stacked bars. */
+.sd-row{display:flex;align-items:center;justify-content:space-between;gap:22px;padding:13px 0}
+.sd-row+.sd-row{border-top:1px solid rgba(42,53,88,.5)}
+.sd-row .sd-rl{min-width:0;flex:1}
+.sd-row .sd-rl>b{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:14px;font-weight:800;color:var(--cl-text)}
+.sd-row .sd-rl>span{display:block;margin-top:2px;font-size:12.5px;color:var(--cl-muted);line-height:1.45}
+.sd-row .sd-rc{flex:none;display:flex;align-items:center;gap:12px}
+
+/* inline chips (device platform, “this device”, status tags) */
+.sd-chip{display:inline-flex;align-items:center;height:18px;padding:0 7px;border-radius:6px;
+  font-size:10.5px;font-weight:800;letter-spacing:.4px;background:rgba(255,255,255,.06);color:var(--cl-muted)}
+.sd-chip--lume{background:rgba(37,224,200,.14);color:var(--cl-lume);text-transform:uppercase;letter-spacing:.8px;font-size:9.5px}
+.sd-chip--flash{background:rgba(255,107,94,.14);color:var(--cl-flash);text-transform:uppercase;letter-spacing:.8px;font-size:9.5px}
+
+/* option cards (update channel) — a kit-radio face on a selectable card */
+.sd-opts{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.sd-opt{position:relative;text-align:left;cursor:pointer;border-radius:14px;padding:14px 16px;
+  background:var(--cl-surface);border:none;box-shadow:inset 0 0 0 1.5px var(--cl-border);
+  transition:box-shadow .2s,background .2s,transform .3s var(--cl-spring)}
+.sd-opt:hover{box-shadow:inset 0 0 0 1.5px var(--cl-lume)}
+.sd-opt:active{transform:translateY(1px)}
+.sd-opt.sd-on{background:rgba(37,224,200,.08);box-shadow:inset 0 0 0 1.5px var(--cl-lume)}
+.sd-opt:disabled{opacity:.6;cursor:default}
+.sd-opt .sd-opt-head{display:flex;align-items:center;gap:9px;margin:0 0 5px}
+.sd-opt .sd-opt-dot{position:relative;width:18px;height:18px;border-radius:50%;flex:none;
+  background:var(--cl-abyss);box-shadow:inset 0 0 0 1.5px var(--cl-border);transition:box-shadow .2s}
+.sd-opt.sd-on .sd-opt-dot{background:var(--cl-lume);box-shadow:inset 0 0 0 1.5px var(--cl-lume)}
+.sd-opt .sd-opt-dot::after{content:"";position:absolute;inset:5px;border-radius:50%;
+  background:var(--cl-on-lume);transform:scale(0);transition:transform .4s var(--cl-spring)}
+.sd-opt.sd-on .sd-opt-dot::after{transform:scale(1)}
+.sd-opt .sd-opt-head b{font-size:14px;font-weight:800;color:var(--cl-text)}
+.sd-opt p{margin:0;font-size:12px;line-height:1.5;color:var(--cl-muted)}
+.sd-opt.sd-on p{color:var(--cl-muted)}
+
+/* vertical EQ band sliders — center-zero fill on an inset track */
+.sd-eq{display:flex;align-items:flex-end;justify-content:space-between;gap:10px;padding:6px 2px 0}
+.sd-eq-band{flex:1;display:flex;flex-direction:column;align-items:center;gap:7px;min-width:0}
+.sd-eq-val{font-family:var(--cl-font-mono);font-size:10px;color:var(--cl-muted);font-variant-numeric:tabular-nums}
+.sd-eq-band.sd-active .sd-eq-val{color:var(--cl-lume)}
+.sd-eq-track{position:relative;width:26px;height:96px;cursor:pointer;touch-action:none}
+.sd-eq-rail{position:absolute;left:50%;top:0;bottom:0;width:7px;transform:translateX(-50%);
+  border-radius:99px;background:#0A1120;box-shadow:inset 0 1px 2px rgba(0,0,0,.6)}
+.sd-eq-mid{position:absolute;left:50%;top:50%;width:14px;height:1.5px;transform:translate(-50%,-50%);
+  background:var(--cl-border);border-radius:1px}
+.sd-eq-fill{position:absolute;left:50%;width:7px;transform:translateX(-50%);border-radius:99px;
+  background:linear-gradient(180deg,var(--cl-lume),var(--cl-lume-deep))}
+.sd-eq-thumb{position:absolute;left:50%;width:15px;height:15px;border-radius:50%;
+  background:var(--cl-lume);transform:translate(-50%,-50%);
+  transition:box-shadow .2s,transform .2s var(--cl-spring)}
+.sd-eq-track:hover .sd-eq-thumb{box-shadow:0 0 10px rgba(37,224,200,.45)}
+.sd-eq-track.sd-grab .sd-eq-thumb{transform:translate(-50%,-50%) scale(1.15);box-shadow:0 0 14px rgba(37,224,200,.6)}
+.sd-eq-freq{font-family:var(--cl-font-mono);font-size:9.5px;color:var(--cl-faint)}
+.sd-eq-wrap.sd-disabled{opacity:.35;pointer-events:none}
+.sd-card>.sd-row:first-of-type{padding-top:4px}
+.sd-card>.sd-row:last-of-type{padding-bottom:4px}
+
+/* icon tile (matches the security rows / recovery card) */
+.sd-tile{flex:none;width:36px;height:36px;border-radius:10px;display:flex;align-items:center;justify-content:center;
+  background:rgba(37,224,200,.1);border:1px solid rgba(37,224,200,.2);color:var(--cl-lume)}
+.sd-tile--dim{background:var(--cl-raise);border-color:var(--cl-border);color:var(--cl-faint)}
+.sd-tile--warm{background:rgba(255,201,77,.1);border-color:rgba(255,201,77,.25);color:var(--cl-glow)}
+.sd-tile--flash{background:rgba(255,107,94,.1);border-color:rgba(255,107,94,.25);color:var(--cl-flash)}
+
+/* keycap chips */
+.sd-kbd{display:inline-flex;gap:5px}
+.sd-kbd i{font-style:normal;font-family:var(--cl-font-mono);font-size:11.5px;font-weight:600;color:var(--cl-text);
+  background:var(--cl-surface);border:1px solid var(--cl-border);border-bottom-width:2.5px;border-radius:7px;padding:3px 8px;
+  transition:transform .2s var(--cl-spring),border-color .2s}
+.sd-kbd:hover i{border-color:var(--cl-lume)}
+/* recording state: caps breathe while listening for the new combo */
+.sd-kbd.sd-rec i{border-color:var(--cl-lume);color:var(--cl-lume);animation:sd-kbreathe 1.2s ease-in-out infinite}
+@keyframes sd-kbreathe{50%{transform:translateY(1px)}}
+
+/* list rows that arrive after an async load stagger in */
+.sd-listin>*{animation:sd-cardin .5s var(--cl-spring) both}
+.sd-listin>*:nth-child(2){animation-delay:45ms}
+.sd-listin>*:nth-child(3){animation-delay:90ms}
+.sd-listin>*:nth-child(4){animation-delay:135ms}
+.sd-listin>*:nth-child(5){animation-delay:180ms}
+.sd-listin>*:nth-child(n+6){animation-delay:225ms}
+
+/* mono metadata (fingerprints, timestamps, versions) */
+.sd-mono{font-family:var(--cl-font-mono);font-variant-numeric:tabular-nums;font-size:11.5px;color:var(--cl-faint);letter-spacing:.4px}
+
+.sd-empty{padding:22px 0;text-align:center;font-size:13px;font-weight:700;color:var(--cl-faint)}
+
+/* live mic level meter (Voice & Video) */
+.sd-vu{position:relative;width:100%;height:8px;border-radius:99px;background:#0A1120;box-shadow:inset 0 1px 2px rgba(0,0,0,.6);overflow:hidden}
+.sd-vu i{position:absolute;inset:0;right:auto;border-radius:99px;background:linear-gradient(90deg,var(--cl-lume-deep),var(--cl-lume));
+  width:0%;transition:width 90ms linear}
+.sd-vu.sd-hot i{background:linear-gradient(90deg,var(--cl-lume-deep),var(--cl-glow))}
+
+/* confetti piece for the one ceremony button (Go Pro) */
+.sd-conf{position:absolute;width:8px;height:8px;border-radius:3px;pointer-events:none;z-index:5;animation:sd-confgo .8s ease-out forwards}
+@keyframes sd-confgo{0%{transform:translate(0,0) rotate(0);opacity:1}100%{transform:translate(var(--dx),var(--dy)) rotate(var(--rot));opacity:0}}
+
+/* exit control */
+.sd-exit{position:absolute;top:78px;right:26px;z-index:10;display:flex;flex-direction:column;align-items:center;gap:6px}
+.sd-exit small{font-family:var(--cl-font-mono);font-size:10px;color:var(--cl-faint);letter-spacing:1px;user-select:none}
+
+@media (prefers-reduced-motion:reduce){
+  .sd-root{animation:none}
+  .sd-veil,.sd-root.sd-win{animation:none}
+  /* Reduced motion: exit is a plain fast fade, no sink. */
+  .sd-root.sd-closing,.sd-root.sd-win.sd-closing{animation:sd-veilout 120ms ease both}
+  .sd-sea-grad{transition:none}
+  .sd-root .sd-nitem,.sd-root .sd-zlab,.sd-root .sd-chead{opacity:1;transform:none;transition:none}
+  .sd-gauge::before{transform:scaleY(1);transition:none}
+  .sd-pane .sd-card,.sd-chead h1{animation:none}
+  .sd-listin>*,.sd-kbd.sd-rec i,.sd-conf{animation:none}
+  .sd-savebar-wrap{transition:none}
+}

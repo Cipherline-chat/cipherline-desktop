@@ -1,0 +1,12 @@
+{
+  "name": "cipherline-desktop-public",
+  "private": true,
+  "packageManager": "npm@10.9.4",
+  "workspaces": [
+    "apps/desktop",
+    "packages/shared"
+  ],
+  "overrides": {
+    "builder-util-runtime": "^9.7.0"
+  }
+}

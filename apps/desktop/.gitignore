@@ -1,0 +1,42 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+dist-electron
+release
+*.local
+
+# Build / packaging artifacts & caches (electron-builder signing cache, etc.)
+.cache/
+build/
+
+# Local secrets, identity DBs, and dev scratch — NEVER commit these.
+# test-user-data/ is a live Electron profile (plaintext messages + tokens);
+# *.db are Signal identity stores with private prekeys.
+.env
+.env.*
+test-user-data/
+*.db
+*.txt
+stitch_ui.html
+copy_deps.js
+package_custom.js
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?

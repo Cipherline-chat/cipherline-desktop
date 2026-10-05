@@ -1,0 +1,71 @@
+/* ============================================================================
+   “Drift” — the workspace composition. The only one; there is no setting.
+
+   Selected by data-layout="drift" on the Dashboard root, set there
+   unconditionally (Dashboard.tsx). The rail, conversation list, chat, and
+   call panel detach from the window chrome and float as rounded cards over
+   open water, with the abyss (and a faint lume glow from the surface)
+   visible in the seams.
+
+   `!important` is required where these rules override containers' own
+   inline styles (rail background/border, divider widths, pane corner radii).
+   ============================================================================ */
+
+/* The row that holds everything — breathe at the edges, and let a faint
+   surface-light gradient tint the water behind the cards. */
+[data-layout="drift"] .app-mainrow {
+  padding: 6px 10px 10px 2px;
+  background:
+    radial-gradient(120% 90% at 18% 0%, rgba(37, 224, 200, 0.05), transparent 55%),
+    var(--cl-abyss);
+}
+
+/* Rail: no wall — the sunk tracks float directly on the water. */
+[data-layout="drift"] .app-rail {
+  background: transparent !important;
+  border-right: none !important;
+}
+
+/* Conversation / channel list: full card. */
+[data-layout="drift"] .app-pane2-sheet {
+  border-radius: 18px !important;
+  border: 1px solid var(--cl-border) !important;
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.35) !important;
+}
+
+/* Chat: its own card (the classic sheet is edge-to-edge abyss). */
+[data-layout="drift"] .app-pane3 {
+  border-radius: 18px !important;
+}
+[data-layout="drift"] .app-pane3-sheet {
+  border-radius: 18px;
+  border: 1px solid var(--cl-border);
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.35);
+}
+
+/* Call/context panel (pane 4): card. */
+[data-layout="drift"] .app-pane4 {
+  border-radius: 18px !important;
+  border: 1px solid var(--cl-border);
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.35);
+}
+
+/* Full-width panes (Friends, Home): card. */
+[data-layout="drift"] .app-pane-solo {
+  border-radius: 18px;
+  border: 1px solid var(--cl-border);
+  overflow: hidden;
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.35);
+}
+
+/* Dividers become the water between cards — wider hit target, no hairline.
+   The lume hover pill they already render keeps the drag affordance. */
+[data-layout="drift"] .app-div1 {
+  width: 10px !important;
+}
+[data-layout="drift"] .app-div1 > .w-full {
+  background: transparent !important;
+}
+[data-layout="drift"] .app-div2 {
+  width: 10px !important;
+}

@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Hardened-runtime entitlements for the non-Mac-App-Store, notarized build.
+  Required for `mac.hardenedRuntime: true` (itself required for
+  notarization) — without these, the packaged app either fails to launch
+  (Electron's V8 needs the JIT entitlements) or the OS silently denies mic/
+  camera/native-module access the app already declares intent to use via
+  NSMicrophoneUsageDescription etc. in package.json's `mac.extendInfo`.
+
+  Not a sandbox profile — this is a Developer ID (outside-the-App-Store)
+  build, so `com.apple.security.app-sandbox` is deliberately absent.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <!-- Electron/V8 need JIT + unsigned executable memory even under the
+         hardened runtime, or the app crashes on launch. -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+    <true/>
+
+    <!-- Native .node addons (e.g. rnnoise-wasm's loader, any future native
+         module) aren't necessarily signed by the same Team ID as the app
+         itself — library validation would block loading them. -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+
+    <!-- Matches the NSMicrophoneUsageDescription / NSCameraUsageDescription
+         purpose strings already declared in package.json's mac.extendInfo —
+         those explain WHY to the user; these grant the OS-level capability. -->
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
+    <key>com.apple.security.device.camera</key>
+    <true/>
+
+    <!-- WS/HTTPS to the API, LiveKit SFU, MinIO attachments, and the
+         auto-updater's MinIO manifest fetch. -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+  </dict>
+</plist>

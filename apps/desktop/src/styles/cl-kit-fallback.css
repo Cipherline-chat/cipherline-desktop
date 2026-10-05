@@ -1,0 +1,105 @@
+/* ============================================================================
+   GENERATED — do not hand-edit. node scripts/gen-kit-fallback.cjs
+   Global (unscoped) duplicates of the kit's primitive rulesets, byte-identical
+   to the @scope(.cl-kit) rules in cl-kit.css. Chromium has been observed to
+   drop @scope matches when the scope root is display:contents inside an
+   overflow-clipped ancestor (see cl-kit-ext.css, which hand-maintains the same
+   fallback for .clt/.clb); this file covers the remaining primitives
+   (select, slider, input, checkbox, radio, segment, misc). When @scope works,
+   the scoped rules win the cascade silently; when it fails, these carry it.
+   Import order: after cl-kit.css, before cl-kit-ext.css (ext overrides win).
+   ============================================================================ */
+
+.clc,.clr,.seg,.selt,.selm,.pill,.rolet,.avx,.sbub,.cls,.fld>label,.fmsg{user-select:none;-webkit-user-select:none}
+.clc{position:relative;display:inline-flex;align-items:center;gap:11px;font-weight:700;font-size:14px;color:var(--muted)}
+.clc .cwrap{position:relative;width:22px;height:22px;flex:0 0 22px}
+.clc .csh{position:absolute;inset:0;border-radius:7px;background:#0A1120;transform:translateY(2px);transition:transform var(--dur) var(--spr),background .25s}
+.clc .cbox{position:absolute;inset:0;border-radius:7px;background:var(--surface);box-shadow:inset 0 0 0 1.5px var(--border);display:flex;align-items:center;justify-content:center;transition:background .2s,box-shadow .2s,transform var(--dur) var(--spr)}
+.clc:hover .cbox{box-shadow:inset 0 0 0 1.5px var(--lume)}
+.clc:active .cbox{transform:translateY(2px);transition-duration:80ms}
+.clc:active .csh{transform:translateY(2px) scale(1.1,1);transition-duration:80ms}
+.clc.on .cbox{background:var(--lume);box-shadow:inset 0 0 0 1.5px var(--lume)}
+.clc.on .csh{background:var(--lume-deep)}
+.clc .chk{stroke:var(--on-lume);stroke-width:3;fill:none;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:16;stroke-dashoffset:16}
+.clc.on .chk{animation:draw .28s ease-out .05s forwards}
+.clc.on{color:var(--text)}
+.clc:focus-visible,.clr:focus-visible{outline:none}
+.clc:focus-visible .cbox{box-shadow:inset 0 0 0 1.5px var(--lume),0 0 0 3px rgba(37,224,200,.3)}
+.clc.on:focus-visible .cbox{background:var(--lume);box-shadow:inset 0 0 0 1.5px var(--lume),0 0 0 3px rgba(37,224,200,.3)}
+.clr:focus-visible .rbox{box-shadow:inset 0 0 0 1.5px var(--lume),0 0 0 3px rgba(37,224,200,.3)}
+.cls{position:relative;width:240px;height:30px;touch-action:none;cursor:pointer}
+.sbody{position:absolute;inset:0}
+.cls.snap .sbody{transition:transform .5s var(--spr)}
+.cls .strk{position:absolute;left:0;right:0;top:13px;height:6px;border-radius:99px;background:#0A1120;box-shadow:inset 0 1px 2px rgba(0,0,0,.6)}
+.cls .sfill{position:absolute;left:0;top:13px;height:6px;border-radius:99px;background:linear-gradient(90deg,var(--lume-deep),var(--lume));transition:box-shadow .2s}
+.cls.grab .sfill{box-shadow:0 0 10px rgba(37,224,200,.45)}
+.cls .sthw{position:absolute;top:5px;width:20px;height:20px;transform:translateX(-50%)}
+.cls .ssh{position:absolute;inset:0;border-radius:50%;background:var(--lume-deep);transform:translateY(2px);transition:transform .2s var(--spr)}
+.cls .sth{position:absolute;inset:0;border-radius:50%;background:var(--lume);transition:transform .2s var(--spr),box-shadow .2s}
+.cls:hover .sth{box-shadow:0 0 12px rgba(37,224,200,.4)}
+.cls.grab .sth{transform:translateY(1px) scale(1.15,.95);box-shadow:0 0 14px rgba(37,224,200,.6)}
+.cls.grab .ssh{transform:translateY(2px) scale(1.15,1)}
+.cls .sbub{position:absolute;top:-26px;transform:translateX(-50%) scale(.6);background:var(--surface);border:1px solid var(--border);border-radius:99px;padding:3px 11px;font-size:11.5px;font-weight:800;color:var(--lume);opacity:0;transition:opacity .15s,transform .25s var(--spr);pointer-events:none;white-space:nowrap;z-index:3}
+.cls.grab .sbub{opacity:1;transform:translateX(-50%) scale(1)}
+.fld{display:flex;flex-direction:column;gap:6px;min-width:240px}
+.fld>label{font-size:12.5px;font-weight:800;color:var(--muted)}
+.inp{background:var(--surface);border:1.5px solid var(--border);border-radius:13px;color:var(--text);font-family:var(--body);font-size:14px;padding:11px 15px;transition:border-color .25s,box-shadow .25s;width:100%}
+.inp::placeholder{color:var(--faint)}
+.inp:focus{outline:none;border-color:var(--lume);box-shadow:0 0 14px rgba(37,224,200,.22);animation:focusin .45s ease-out}
+.fld:focus-within>label{color:var(--lume);transition:color .2s}
+.srch:focus-within>svg{stroke:var(--lume)}
+.fld.errd .inp{border-color:var(--flash);animation:fshake .35s ease}
+.fmsg{font-size:12px;font-weight:700;color:var(--flash);min-height:17px;margin:0}
+.fmsg.note{color:var(--lume);animation:pop .3s var(--spr)}
+.srch{position:relative}
+.srch .inp{padding-left:38px}
+.srch>svg{position:absolute;left:13px;top:50%;transform:translateY(-50%);pointer-events:none}
+.clr{position:relative;display:inline-flex;align-items:center;gap:11px;font-weight:700;font-size:14px;color:var(--muted)}
+.clr .rwrap{position:relative;width:22px;height:22px;flex:0 0 22px}
+.clr .rsh{position:absolute;inset:0;border-radius:50%;background:#0A1120;transform:translateY(2px);transition:transform var(--dur) var(--spr),background .25s}
+.clr .rbox{position:absolute;inset:0;border-radius:50%;background:var(--surface);box-shadow:inset 0 0 0 1.5px var(--border);display:flex;align-items:center;justify-content:center;transition:background .2s,box-shadow .2s,transform var(--dur) var(--spr)}
+.clr:hover .rbox{box-shadow:inset 0 0 0 1.5px var(--lume)}
+.clr:active .rbox{transform:translateY(2px);transition-duration:80ms}
+.clr:active .rsh{transform:translateY(2px) scale(1.1,1);transition-duration:80ms}
+.clr.on .rbox{background:var(--lume);box-shadow:inset 0 0 0 1.5px var(--lume)}
+.clr.on .rsh{background:var(--lume-deep)}
+.clr.on{color:var(--text)}
+.clr .rdot{width:9px;height:9px;border-radius:50%;background:var(--on-lume);transform:scale(0);transition:transform .4s var(--spr)}
+.clr.on .rdot{transform:scale(1)}
+.seg{position:relative;display:inline-flex;background:var(--surface);border:1.5px solid var(--border);border-radius:13px;padding:4px}
+.seg .sind{position:absolute;top:4px;bottom:4px;left:4px;width:60px;border-radius:9px;background:var(--lume);transition:left .36s cubic-bezier(.3,1.32,.45,1),width .36s cubic-bezier(.3,1.32,.45,1)}
+.seg button{position:relative;z-index:1;border-radius:9px;padding:7px 16px;font-weight:800;font-size:13px;color:var(--muted);transition:color .25s}
+.seg button.on{color:var(--on-lume)}
+.seg button:not(.on):hover{color:var(--text)}
+.sel{position:relative;display:inline-block;min-width:190px}
+.selt{display:flex;align-items:center;justify-content:space-between;gap:10px;width:100%;background:var(--surface);box-shadow:inset 0 0 0 1.5px var(--border);border-radius:13px;padding:10px 14px;font-weight:700;font-size:14px;color:var(--text);transition:box-shadow .2s}
+.selt:hover{box-shadow:inset 0 0 0 1.5px var(--lume)}
+.selt .chev{transition:transform .35s var(--spr);flex:none}
+.sel.open .selt .chev{transform:rotate(180deg)}
+.selt .chev.shrug{animation:shrug .55s ease 1}
+.selm{position:absolute;top:calc(100% + 8px);left:0;right:0;background:var(--deep);border:1px solid var(--border);border-radius:14px;padding:6px;opacity:0;transform:translateY(-10px);pointer-events:none;transition:opacity .18s,transform var(--dur) var(--spr);z-index:20;box-shadow:0 14px 34px rgba(0,0,0,.5)}
+.sel.open .selm{opacity:1;transform:none;pointer-events:auto}
+.selm button{display:flex;align-items:center;justify-content:space-between;width:100%;text-align:left;padding:9px 12px;border-radius:9px;font-weight:700;font-size:13.5px;color:var(--muted);transition:background .15s,color .15s}
+.selm button:hover{background:rgba(37,224,200,.1);color:var(--text)}
+.selm button.on{color:var(--lume)}
+.selm .mchk{opacity:0;transform:scale(.5);transition:opacity .15s,transform .3s var(--spr)}
+.selm button.on .mchk{opacity:1;transform:scale(1)}
+.selm button.picked{animation:mflash .4s ease 1}
+.selt .swap{display:inline-block;animation:pop .3s var(--spr) 1}
+.pill{display:inline-flex;align-items:center;justify-content:center;min-width:20px;height:20px;padding:0 6px;border-radius:99px;background:var(--flash);color:var(--on-flash);font-size:11px;font-weight:800}
+.pill.popin{animation:pop .35s var(--spr)}
+.pill.jiggle{animation:pjig .55s var(--spr) 1}
+.rolet{display:inline-flex;align-items:center;gap:5px;border-radius:7px;padding:2px 8px;font-size:11.5px;font-weight:800;background:rgba(37,224,200,.13);color:var(--lume)}
+.rolet.gold{background:rgba(255,201,77,.14);color:var(--glow)}
+.rolet.coral{background:rgba(255,107,94,.14);color:var(--flash)}
+.avx{position:relative;width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:12px;transition:transform .35s var(--spr)}
+.avx:hover{transform:scale(1.1)}
+.avx.shakeno{animation:avshake .5s ease 1}
+.avx.boing{animation:avboing .45s var(--spr) 1}
+.avx .dot{position:absolute;right:-2px;bottom:-2px;width:12px;height:12px;border-radius:50%;border:3px solid var(--deep)}
+.prog{width:240px;height:8px;border-radius:99px;background:#0A1120;box-shadow:inset 0 1px 2px rgba(0,0,0,.6);overflow:hidden}
+.prog .pf{height:100%;border-radius:99px;background:linear-gradient(90deg,var(--lume-deep),var(--lume));width:0%;transition:width .25s ease}
+.prog.done{animation:pglow .6s ease 1}
+.sk{background:linear-gradient(90deg,var(--surface) 25%,var(--raise) 50%,var(--surface) 75%);background-size:200% 100%;animation:shimmer 1.4s linear infinite;border-radius:8px}
+.sk.avt{width:34px;height:34px;border-radius:50%;flex:none}
+.sk.ln{height:12px}

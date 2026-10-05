@@ -1,0 +1,565 @@
+/* ── Loading scene (AppLoadingScreen.tsx) ────────────────────────────────────
+   Keys hangs in a small 3D scene while the app hydrates — a dot-matrix seabed
+   lit beneath him, plankton at two depths, two orbits of light — and the
+   scene turns toward the pointer. Then he surfaces.
+
+   PERF CONTRACT. This animates during the app's single heaviest moment, with
+   the Dashboard mounting and fetching on the main thread right behind it, so
+   NOTHING here may need the main thread to keep moving:
+
+   1. Every animated property is transform or opacity, and every animated
+      element is an HTML element. Chromium runs those on the compositor.
+      Animations on SVG *children* (<rect>, <path>, <g>) are not a reliable
+      compositor path, so every SVG here is static art inside an animated
+      <div>.
+   2. No keyframe references a custom property. An untyped custom property in
+      a keyframe stop forces the animation back onto the main thread (the bug
+      apps/website's brand.css documents on .bb-dot). Custom properties appear
+      only in static values (which transitions then ease toward) and in
+      animation durations/delays — never inside @keyframes.
+   3. The pointer writes --mx / --my (−1..1 from Keys) and --md (0..1, how
+      close to Keys) — a few times a second — onto the six `.ls-p` elements
+      ONLY, and the three are registered below as NON-inheriting. Never put
+      them on a container of animated elements: an inherited variable change
+      makes Chromium re-sync every compositor animation underneath, every
+      write (measured: main thread pegged while the pointer moved). Everything
+      that follows the pointer does so through a CSS TRANSITION on transform,
+      so the easing runs on the compositor and stays smooth even when the
+      next pointer event is stuck behind a long task.
+   4. No render surfaces in steady state. The scene is FLAT layers in paint
+      order; the 3D pieces (orbits, Keys' own rig) each sit under
+      their own `perspective` and never intersect one another, so the
+      compositor never has to split or sort planes. Containers that hold
+      animated children never get opacity, filter, mask or clipping (any of
+      those would force an offscreen buffer redrawn every frame); opacity
+      lives on leaf layers only. Intro animations use fill-mode `backwards`
+      (their end state IS the resting style) so a finished intro does not
+      keep its element on a compositor layer.
+   5. Large things never move or pulse (see "Everything that never moves").
+
+   --ls-el is how far into the wait we already are when this screen mounts
+   (App.tsx's screen hands over to HydrationGate's), subtracted from every
+   loop's delay so the handoff remount continues mid-stride instead of
+   restarting. --u is one unit of the logo's 110×90 viewBox. */
+
+@property --mx { syntax: '<number>'; inherits: false; initial-value: 0; }
+@property --my { syntax: '<number>'; inherits: false; initial-value: 0; }
+@property --md { syntax: '<number>'; inherits: false; initial-value: 0; }
+
+.ls-root {
+  --u: 2px;
+  --ls-el: 0s;
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  background:
+    radial-gradient(90% 70% at 50% 46%, rgba(19, 26, 48, 0) 40%, rgba(5, 8, 18, .55) 100%),
+    linear-gradient(180deg, #131A30 0%, #0F1526 45%, #0B0F1E 100%);
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.ls-scene,
+.ls-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+/* ── The pointer's light ───────────────────────────────────────────────────── */
+.ls-glow {
+  position: absolute;
+  left: 50%;
+  top: 46%;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+  transform: translate3d(calc(var(--mx) * 50vw), calc(var(--my) * 54vh), 0);
+  transition: transform 650ms cubic-bezier(.2, .8, .3, 1);
+  will-change: transform;
+}
+.ls-glow-in {
+  position: absolute;
+  left: -210px;
+  top: -210px;
+  width: 420px;
+  height: 420px;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, rgba(37, 224, 200, .12), rgba(37, 224, 200, .045) 52%, rgba(37, 224, 200, 0));
+}
+
+/* ── Everything that never moves ───────────────────────────────────────────────
+   The seabed (a dot matrix pre-projected to 2D — see seabedPaths in
+   loadingScene.ts), the pool of light Keys throws on it, and his halo. None
+   of these has will-change, an animation or a 3D transform, and all come
+   BEFORE every moving layer in paint order, so they are painted once into
+   the base layer and cost nothing per frame. Large things that move or
+   pulse are redrawn every frame; measured, a CSS-3D seabed swinging with the
+   pointer plus a breathing light pool cut the frames a software-composited
+   window could draw by about a third. */
+.ls-still {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+/* The SVG's origin (x 0, y 0) is the vanishing point: Keys' eye line. */
+.ls-floor {
+  position: absolute;
+  left: 50%;
+  top: 46%;
+  margin: -300px 0 0 -1600px;
+  display: block;
+}
+/* The pool of light under him: the patch of seabed at his depth, seen in
+   perspective (250px below the eye line, squashed to a quarter). */
+.ls-floor-pool {
+  position: absolute;
+  left: calc(50% - 460px);
+  top: calc(46% + 250px - 130px);
+  width: 920px;
+  height: 260px;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, rgba(37, 224, 200, .16), rgba(37, 224, 200, .05) 55%, rgba(37, 224, 200, 0));
+}
+.ls-k-halo {
+  position: absolute;
+  left: 50%;
+  top: 46%;
+  width: 480px;
+  height: 480px;
+  margin: -240px 0 0 -240px;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, rgba(37, 224, 200, .18), rgba(37, 224, 200, .06) 50%, rgba(37, 224, 200, 0));
+}
+
+/* ── Plankton, near and far ────────────────────────────────────────────────────
+   Rising plankton at two depths. The pointer moves the far layer a little
+   WITH it and the near layer a lot AGAINST it — motion parallax, most of the
+   3D feeling. The far layer's dimness is baked into each dot (opacity on the
+   layer would make it a full-screen offscreen buffer). Oversized so a
+   shifted edge never shows.
+
+   STRIPS, not one animation per dot (the website's DOM-strip technique,
+   kit/65-ocean.js): each column holds a few static dots, painted twice, and
+   ONE loop slides it up by exactly one copy, so the wrap is seamless. That
+   matters because every loop restart of every CSS animation wakes the main
+   thread (React listens for animationiteration at its root, so Chromium must
+   dispatch it): the old screen's 42 independently looping bubbles woke it
+   dozens of times a second — measured, more than half of its idle
+   main-thread frames. Nine strips with long loops wake it about once every
+   two seconds. The same rule shapes every loop below: short cycles are
+   written three-to-an-iteration so they restart a third as often. */
+.ls-plankton--far {
+  inset: -6%;
+  transform: translate3d(calc(var(--mx) * 16px), calc(var(--my) * 10px), 0);
+  transition: transform 1100ms cubic-bezier(.16, .84, .3, 1);
+  will-change: transform;
+}
+.ls-plankton--near {
+  inset: -6%;
+  transform: translate3d(calc(var(--mx) * -46px), calc(var(--my) * -30px), 0);
+  transition: transform 1100ms cubic-bezier(.16, .84, .3, 1);
+  will-change: transform;
+}
+.ls-strip {
+  position: absolute;
+  top: 0;
+  width: 40px;
+  height: 200%;
+  animation-name: ls-strip;
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+  animation-duration: var(--ls-dur, 16s);
+  animation-delay: calc(var(--ls-delay, 0s) - var(--ls-el));
+  will-change: transform;
+}
+@keyframes ls-strip {
+  from { transform: translateY(0); }
+  to   { transform: translateY(-50%); }
+}
+.ls-bub {
+  position: absolute;
+  border-radius: 50%;
+  box-shadow: 0 0 9px rgba(37, 224, 200, .5);
+}
+
+/* ── Orbits ────────────────────────────────────────────────────────────────────
+   Each orbit is a static SVG of dots (.ls-orbit-spin turns it in its own
+   plane) inside a tilt that the pointer tips. They are painted BEHIND Keys
+   and tilted so their near arc always passes below his legs, which makes
+   plain paint order the correct occlusion — no 3D sorting needed. The inner
+   orbit is a comet, a bright head with a fading tail: the loading spinner. */
+.ls-orbits {
+  perspective: 1000px;
+  perspective-origin: 50% 46%;
+}
+.ls-orbit {
+  position: absolute;
+  left: 50%;
+  top: calc(46% + 34px);
+  width: 0;
+  height: 0;
+  transform: rotateZ(calc(-9deg + var(--mx) * 7deg)) rotateX(calc(66deg + var(--my) * -5deg));
+  transition: transform 1000ms cubic-bezier(.2, .8, .3, 1);
+  will-change: transform;
+}
+/* The orbits unfurl out of Keys once. */
+.ls-orbit-in {
+  position: absolute;
+  animation: ls-orbit-in 950ms cubic-bezier(.2, .8, .3, 1) backwards;
+  animation-delay: calc(.12s - var(--ls-el));
+}
+@keyframes ls-orbit-in {
+  from { transform: scale(.12); }
+  to   { transform: scale(1); }
+}
+.ls-orbit-spin {
+  position: absolute;
+  left: 0;
+  top: 0;
+  animation: ls-spin 7.2s linear infinite;
+  animation-delay: calc(0s - var(--ls-el));
+  will-change: transform;
+}
+.ls-orbit-spin svg { display: block; }
+/* Three 2.4s turns per iteration. */
+@keyframes ls-spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(1080deg); }
+}
+
+/* ── Keys ──────────────────────────────────────────────────────────────────────
+   The mark, rebuilt from HTML so every part animates on the compositor, in
+   the logo's own units (--u). He is a tiny real-3D rig: the eyes sit in
+   front of the dome and the legs behind it (preserve-3d from .ls-k-look
+   down), so ONE pointer-driven head turn moves them against each other the
+   way a real head would — no extra pointer-following elements. The rig's
+   planes are parallel and never intersect anything else, so the compositor
+   only has to order them, never split them. */
+.ls-keys {
+  perspective: 1000px;
+  perspective-origin: 50% 46%;
+}
+/* He swims up out of the deep once; later, he surfaces from here. */
+.ls-k-pos {
+  position: absolute;
+  inset: 0;
+  perspective: 800px;
+  perspective-origin: 50% 46%;
+  animation: ls-swim-in 950ms cubic-bezier(.22, 1.2, .36, 1) backwards;
+  animation-delay: calc(0s - var(--ls-el));
+}
+@keyframes ls-swim-in {
+  from { transform: translate3d(0, 70px, -520px); }
+  to   { transform: translate3d(0, 0, 0); }
+}
+
+/* He turns to face the pointer and drifts a little toward it. */
+.ls-k-look {
+  position: absolute;
+  left: calc(50% - 55 * var(--u));
+  top: calc(46% - 45 * var(--u));
+  width: calc(110 * var(--u));
+  height: calc(90 * var(--u));
+  transform-origin: 50% 45%;
+  transform-style: preserve-3d;
+  transform:
+    translate3d(calc(var(--mx) * 20px), calc(var(--my) * 14px), 0)
+    rotateY(calc(var(--mx) * 24deg))
+    rotateX(calc(var(--my) * -16deg));
+  transition: transform 850ms cubic-bezier(.2, .8, .25, 1);
+  will-change: transform;
+}
+.ls-k-bob,
+.ls-k-boop,
+.ls-k-legs {
+  position: absolute;
+  inset: 0;
+  transform-style: preserve-3d;
+}
+.ls-k-bob {
+  animation: ls-bob 10.2s ease-in-out infinite;
+  animation-delay: calc(0s - var(--ls-el));
+  will-change: transform;
+}
+/* Three 3.4s bobs per iteration. */
+@keyframes ls-bob {
+  0%, 33.333%, 66.667%, 100% { transform: translateY(5px)  rotate(-1.2deg); }
+  16.667%, 50%, 83.333%      { transform: translateY(-9px) rotate(1.2deg); }
+}
+.ls-k-boop { transform-origin: 50% 90%; }
+.ls-k-boop.ls-boop-a { animation: ls-boop-a 620ms cubic-bezier(.3, .7, .3, 1); }
+.ls-k-boop.ls-boop-b { animation: ls-boop-b 620ms cubic-bezier(.3, .7, .3, 1); }
+@keyframes ls-boop-a {
+  0%   { transform: none; }
+  16%  { transform: translateY(6px)   scale(1.1, .86); }
+  44%  { transform: translateY(-34px) scale(.92, 1.1); }
+  72%  { transform: translateY(-4px)  scale(1.04, .96); }
+  100% { transform: none; }
+}
+@keyframes ls-boop-b {
+  0%   { transform: none; }
+  16%  { transform: translateY(6px)   scale(1.1, .86); }
+  44%  { transform: translateY(-34px) scale(.92, 1.1); }
+  72%  { transform: translateY(-4px)  scale(1.04, .96); }
+  100% { transform: none; }
+}
+
+/* The legs hang behind the dome and reach toward the pointer together —
+   harder the closer it is (--md), swinging from where they meet the body.
+   (Each leg keeps its own idle sway, a beat apart, so the reach never
+   looks like a block.) */
+.ls-k-legs {
+  transform-origin: 50% 50%;
+  transform:
+    translateZ(-12px)
+    rotate(calc(var(--mx) * -1 * (4deg + var(--md) * 14deg)))
+    scaleY(calc(1 + var(--md) * .12 + var(--my) * .04));
+  transition: transform 800ms cubic-bezier(.25, .9, .3, 1);
+  will-change: transform;
+}
+.ls-k-reach {
+  position: absolute;
+  top: calc(44 * var(--u));
+  width: calc(13 * var(--u));
+  height: calc(34 * var(--u));
+}
+.ls-k-reach-1 { left: calc(22.5 * var(--u)); }
+.ls-k-reach-2 { left: calc(39.8 * var(--u)); }
+.ls-k-reach-3 { left: calc(57.1 * var(--u)); }
+.ls-k-reach-4 { left: calc(74.4 * var(--u)); }
+
+/* The idle ripple: each leg swings from the dome a beat behind the last. */
+.ls-k-leg {
+  position: absolute;
+  inset: 0;
+  border-radius: calc(6.5 * var(--u));
+  background: var(--cl-lume, #25E0C8);
+  transform-origin: 50% 0%;
+  animation: ls-leg-sway 7.8s ease-in-out infinite;
+  animation-delay: calc(0s - var(--ls-el));
+  will-change: transform;
+}
+.ls-k-leg-2 { animation-delay: calc(-.22s - var(--ls-el)); }
+.ls-k-leg-3 { animation-delay: calc(-.44s - var(--ls-el)); }
+.ls-k-leg-4 { animation-delay: calc(-.66s - var(--ls-el)); }
+/* Three 2.6s sways per iteration (see "STRIPS" above for why). */
+@keyframes ls-leg-sway {
+  0%, 33.333%, 66.667%, 100% { transform: rotate(-7deg)  scaleY(1); }
+  11.667%, 45%, 78.333%      { transform: rotate(3deg)   scaleY(.94); }
+  23.333%, 56.667%, 90%      { transform: rotate(7.5deg) scaleY(1.03); }
+}
+
+/* The loading pulse: a light runs along the legs left to right, over and
+   over — his four signal bars filling up. */
+.ls-k-leg-lit {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(180deg, rgba(240, 255, 252, .95) 0%, rgba(150, 250, 234, .75) 100%);
+  box-shadow: 0 0 16px 2px rgba(120, 255, 236, .5);
+  opacity: 0;
+  animation: ls-lit 6.6s ease-in-out infinite;
+  animation-delay: calc(0s - var(--ls-el));
+  will-change: opacity;
+}
+.ls-k-leg-2 .ls-k-leg-lit { animation-delay: calc(.2s - var(--ls-el)); }
+.ls-k-leg-3 .ls-k-leg-lit { animation-delay: calc(.4s - var(--ls-el)); }
+.ls-k-leg-4 .ls-k-leg-lit { animation-delay: calc(.6s - var(--ls-el)); }
+/* Three 2.2s pulses per iteration. */
+@keyframes ls-lit {
+  0%, 12.667%, 33.333%, 46%, 66.667%, 79.333%, 100% { opacity: 0; }
+  4.667%, 38%, 71.333%                               { opacity: .8; }
+}
+
+/* The dome: the logo's half-disc on a short band, pulsing from its base. */
+.ls-k-dome {
+  position: absolute;
+  left: calc(21 * var(--u));
+  top: calc(14 * var(--u));
+  width: calc(68 * var(--u));
+  height: calc(39 * var(--u));
+  border-radius: calc(34 * var(--u)) calc(34 * var(--u)) 0 0;
+  background: var(--cl-lume, #25E0C8);
+  transform-origin: 50% 100%;
+  animation: ls-pulse 10.2s ease-in-out infinite;
+  animation-delay: calc(0s - var(--ls-el));
+  will-change: transform;
+}
+/* Three 3.4s pulses per iteration, in step with the bob. */
+@keyframes ls-pulse {
+  0%, 33.333%, 66.667%, 100% { transform: scale(1, 1); }
+  14%, 47.333%, 80.667%      { transform: scale(1.05, .92); }
+  20.667%, 54%, 87.333%      { transform: scale(.98, 1.03); }
+}
+/* A soft sheen, lit from the upper left. (It used to slide toward the
+   pointer; every pointer follower costs main-thread time on each input
+   frame, so only the six that carry the effect remain.) */
+.ls-k-shine {
+  position: absolute;
+  left: calc(12 * var(--u));
+  top: calc(4 * var(--u));
+  width: calc(36 * var(--u));
+  height: calc(22 * var(--u));
+  border-radius: 50%;
+  background: radial-gradient(closest-side, rgba(255, 255, 255, .4), rgba(255, 255, 255, 0));
+  transform: translateX(calc(4 * var(--u)));
+}
+
+/* The eyes float in front of the dome, so when his head turns toward the
+   pointer they slide further than the dome does: he looks at you. */
+.ls-k-eyes {
+  position: absolute;
+  inset: 0;
+  transform: translateZ(26px);
+}
+.ls-k-blink {
+  position: absolute;
+  inset: 0;
+  transform-origin: 50% 41.5%;
+  animation: ls-blink 6.4s ease-in-out infinite;
+  animation-delay: calc(-1.4s - var(--ls-el));
+  will-change: transform;
+}
+.ls-k-blink svg { display: block; }
+@keyframes ls-blink {
+  0%, 92%, 100% { transform: scaleY(1); }
+  95%           { transform: scaleY(.15); }
+}
+
+/* ── Status line ───────────────────────────────────────────────────────────────
+   Flat and still, so it stays crisp and readable. It waits a beat before
+   appearing so a fast start never flashes text. */
+.ls-status {
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  top: calc(46% + 162px);
+  text-align: center;
+  pointer-events: none;
+  font-family: var(--cl-font-display, 'Fredoka', 'Nunito', system-ui, sans-serif);
+  text-shadow: 0 1px 14px rgba(11, 15, 30, .95);
+  animation: ls-fade-in 600ms ease-out backwards;
+  animation-delay: calc(.45s - var(--ls-el));
+}
+@keyframes ls-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+.ls-status-line {
+  font-weight: 500;
+  font-size: 15px;
+  letter-spacing: .02em;
+  color: rgba(244, 247, 255, .8);
+}
+.ls-ellipsis i {
+  font-style: normal;
+  display: inline-block;
+  animation: ls-dot 4.2s ease-in-out infinite;
+  animation-delay: calc(0s - var(--ls-el));
+}
+.ls-ellipsis i:nth-child(2) { animation-delay: calc(.18s - var(--ls-el)); }
+.ls-ellipsis i:nth-child(3) { animation-delay: calc(.36s - var(--ls-el)); }
+/* Three 1.4s blinks per iteration. */
+@keyframes ls-dot {
+  0%, 20%, 33.333%, 53.333%, 66.667%, 86.667%, 100% { opacity: .25; }
+  8.333%, 41.667%, 75%                              { opacity: 1; }
+}
+.ls-status-slow {
+  margin-top: 8px;
+  font-family: var(--cl-font-body, 'Nunito', system-ui, sans-serif);
+  font-weight: 600;
+  font-size: 13px;
+  color: rgba(244, 247, 255, .55);
+  opacity: 0;
+  transform: translateY(4px);
+  transition: opacity 800ms ease-out, transform 800ms ease-out;
+}
+.ls-root.is-slow .ls-status-slow { opacity: 1; transform: none; }
+
+/* ── Surfacing ──────────────────────────────────────────────────────────────────
+   Kept short on purpose: this fires when the app is ALREADY ready, so every
+   extra millisecond is the user waiting on an animation rather than on data.
+   He winds up and kicks for the surface; the orbits let go and fly apart;
+   the plankton streams down past the rising camera, near faster than far;
+   daylight comes up; the scene is gone in 620ms. (The seabed stays put and
+   fades with the rest: moving it would promote a window-sized layer at the
+   worst possible moment.)
+   The "to"-only keyframes start from wherever the pointer left each layer,
+   so nothing jumps on the first frame. */
+.ls-root.is-surfacing { animation: ls-leave 620ms cubic-bezier(.33, 0, .2, 1) forwards; }
+@keyframes ls-leave {
+  0%   { opacity: 1; }
+  46%  { opacity: 1; }
+  100% { opacity: 0; }
+}
+.ls-root.is-surfacing .ls-status { animation: ls-fade-out 160ms ease-out forwards; }
+@keyframes ls-fade-out {
+  from { opacity: 1; }
+  to   { opacity: 0; }
+}
+
+.ls-root.is-surfacing .ls-k-pos { animation: ls-ascend 620ms cubic-bezier(.4, 0, .25, 1) forwards; }
+@keyframes ls-ascend {
+  0%   { transform: translate3d(0, 0, 0)      scale(1); }
+  16%  { transform: translate3d(0, 16px, 0)   scale(.96); }
+  100% { transform: translate3d(0, -110vh, 0) scale(1.15); }
+}
+.ls-root.is-surfacing .ls-k-leg { animation: ls-leg-stream 620ms ease-in forwards; }
+@keyframes ls-leg-stream {
+  0%   { transform: rotate(0deg) scaleY(1); }
+  100% { transform: rotate(0deg) scaleY(1.5); }
+}
+.ls-root.is-surfacing .ls-k-leg-lit { animation: ls-lit-all 620ms ease-out forwards; }
+@keyframes ls-lit-all {
+  0%   { opacity: .9; }
+  100% { opacity: 0; }
+}
+.ls-root.is-surfacing .ls-k-dome { animation: ls-dome-stream 620ms ease-in forwards; }
+@keyframes ls-dome-stream {
+  0%   { transform: scale(1, 1); }
+  100% { transform: scale(.9, 1.12); }
+}
+/* Opacity on .ls-orbit-in (it holds the spinning ring) costs a small
+   offscreen buffer — for these 520ms only. */
+.ls-root.is-surfacing .ls-orbit-in { animation: ls-orbit-out 520ms cubic-bezier(.3, 0, .2, 1) forwards; }
+@keyframes ls-orbit-out {
+  from { transform: scale(1);   opacity: 1; }
+  to   { transform: scale(2.6); opacity: 0; }
+}
+.ls-root.is-surfacing .ls-plankton--near { animation: ls-stream-near 620ms cubic-bezier(.5, 0, .7, 1) forwards; }
+@keyframes ls-stream-near {
+  to { transform: translate3d(0, 75vh, 0); }
+}
+.ls-root.is-surfacing .ls-plankton--far { animation: ls-stream-far 620ms cubic-bezier(.5, 0, .7, 1) forwards; }
+@keyframes ls-stream-far {
+  to { transform: translate3d(0, 30vh, 0); }
+}
+
+/* Daylight, arriving from above. */
+.ls-light {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0;
+  will-change: opacity;
+  background:
+    radial-gradient(120% 70% at 50% -18%, rgba(198, 255, 248, .92) 0%, rgba(96, 226, 214, .34) 34%, rgba(11, 15, 30, 0) 68%),
+    linear-gradient(180deg, rgba(140, 248, 232, .30) 0%, rgba(37, 224, 200, .07) 42%, rgba(11, 15, 30, 0) 76%);
+}
+.ls-root.is-surfacing .ls-light { animation: ls-light-up 620ms cubic-bezier(.4, 0, .3, 1) forwards; }
+@keyframes ls-light-up {
+  0%   { opacity: 0; }
+  100% { opacity: 1; }
+}
+
+/* ── Reduced motion ──────────────────────────────────────────────────────────
+   A still, readable scene — Keys, the seabed, the orbits, the status line —
+   with nothing drifting, spinning or following the pointer (the component
+   attaches no pointer listeners at all), and a plain cross-fade out. The JS
+   fires onSurfaced after REDUCED_MS, so the gate lifts on schedule. */
+@media (prefers-reduced-motion: reduce) {
+  .ls-root *,
+  .ls-root.is-surfacing * { animation: none !important; transition: none !important; }
+  .ls-root.is-surfacing { animation: none; opacity: 0; transition: opacity 260ms ease-out; }
+}

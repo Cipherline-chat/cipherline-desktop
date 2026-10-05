@@ -1,0 +1,20 @@
+/* RailBadge (components/RailBadge.tsx) motion.
+   Appear: a springy pop from nothing, so a new unread is noticed without a
+   sound. Count change: a smaller bump on the number only, so 1 -> 2 reads as
+   "more" rather than a re-appearance. Both are transform-only. */
+.cl-rail-badge { animation: cl-rail-badge-in .55s both; transform-origin: 50% 50%; }
+@keyframes cl-rail-badge-in {
+  0%   { transform: scale(0);    animation-timing-function: cubic-bezier(.2, .7, .3, 1); }
+  45%  { transform: scale(1.28); animation-timing-function: ease-in-out; }
+  68%  { transform: scale(.88);  animation-timing-function: ease-in-out; }
+  86%  { transform: scale(1.06); animation-timing-function: ease-out; }
+  100% { transform: scale(1); }
+}
+/* text-box trims the number's box to cap-height over the baseline so the
+   parent flex centres the digits themselves, independent of the platform's
+   font metrics. See RailBadge.tsx. */
+.cl-rail-badge-num { display: inline-block; text-box: trim-both cap alphabetic; animation: cl-rail-badge-bump .32s cubic-bezier(.34, 1.56, .64, 1) both; }
+@keyframes cl-rail-badge-bump { 0% { transform: scale(.6); } 100% { transform: scale(1); } }
+@media (prefers-reduced-motion: reduce) {
+  .cl-rail-badge, .cl-rail-badge-num { animation: none; }
+}

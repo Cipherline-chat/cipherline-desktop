@@ -1,0 +1,213 @@
+/* ============================================================================
+   Keys 2.0 — the articulated mascot rig (components/mascot/Keys.tsx).
+   Ported from the website's 40-keys.js injectKeysCSS, re-prefixed `.k2-*`.
+   Pure CSS: React only toggles classes and swaps brow path data.
+
+   Divergences from the website version, on purpose:
+   - NO drop-shadow/filter glow: a filter over a continuously-transforming SVG
+     repaints every frame (personality doctrine rule 11). The host provides a
+     static spotlight instead (.hd-mascotbtn::before on the home deck).
+   - Color rides `currentColor` so the alert state can tint the whole body
+     amber from one `color` property.
+   - Speech bubble sits BELOW the mascot (.k2-speech) — on the home deck Keys
+     lives at the top edge of the pane, and the website's above-placement
+     would clip.
+   ============================================================================ */
+
+.k2-svg .k2-brow { transition: d .25s var(--cl-spring), transform .25s var(--cl-spring); }
+.k2-tilt { transition: transform .5s var(--cl-spring); transform-origin: 50% 90%; }
+.k2-wiggle { animation: k2-wig .6s var(--cl-spring); }
+@keyframes k2-wig { 0%,100%{transform:rotate(0)} 22%{transform:rotate(-9deg)} 55%{transform:rotate(7deg)} 82%{transform:rotate(-2deg)} }
+
+/* Poke reaction ladder (pokeReaction in keysBrain.ts) — each poke earns a
+   DIFFERENT one-shot: wiggle above, then a squash-and-stretch hop, a limb
+   flail, a full dizzy spin, and a barely-awake stir once he's sleepy. All
+   transform-only one-shots on the wrapper (flail targets the limbs). */
+.k2-hop { animation: k2-hopA .55s var(--cl-spring); transform-origin: 50% 92%; }
+@keyframes k2-hopA {
+  0%   { transform: translateY(0) scale(1, 1); }
+  22%  { transform: translateY(2px) scale(1.07, .9); }
+  55%  { transform: translateY(-13px) scale(.95, 1.07); }
+  80%  { transform: translateY(0) scale(1.05, .93); }
+  100% { transform: none; }
+}
+.k2-spin { animation: k2-spinA .8s var(--cl-spring); }
+@keyframes k2-spinA {
+  0%   { transform: rotate(0); }
+  72%  { transform: rotate(372deg); }
+  100% { transform: rotate(360deg); }
+}
+.k2-stir { animation: k2-stirA .5s ease-in-out; }
+@keyframes k2-stirA { 0%,100%{transform:rotate(0)} 40%{transform:rotate(-2.5deg)} 75%{transform:rotate(1.5deg)} }
+/* Squish: pressed flat from above, held a beat, springs back — the ladder's
+   big payoff, paired with the ink cloud below. */
+.k2-squish { animation: k2-squishA .9s var(--cl-spring); transform-origin: 50% 96%; }
+@keyframes k2-squishA {
+  0%   { transform: scale(1, 1); }
+  18%  { transform: scale(1.28, .55); }
+  38%  { transform: scale(1.22, .6); }
+  60%  { transform: scale(.92, 1.12); }
+  78%  { transform: scale(1.06, .95); }
+  100% { transform: none; }
+}
+/* Ink — he's a cuttlefish. Three dark blobs puff out low and drift away,
+   expanding and fading. Transform + opacity only; the blobs are plain
+   circles, no filters. */
+.k2-ink circle { opacity: 0; transform-box: view-box; }
+.k2-ink circle:nth-child(1) { transform-origin: 38px 80px; animation: k2-inkA 1.1s ease-out .12s; }
+.k2-ink circle:nth-child(2) { transform-origin: 58px 84px; animation: k2-inkB 1.2s ease-out .16s; }
+.k2-ink circle:nth-child(3) { transform-origin: 74px 79px; animation: k2-inkC 1s ease-out .2s; }
+@keyframes k2-inkA { 0%{opacity:0;transform:scale(.2)} 18%{opacity:.75} 100%{opacity:0;transform:translate(-14px,10px) scale(2.6)} }
+@keyframes k2-inkB { 0%{opacity:0;transform:scale(.2)} 18%{opacity:.8} 100%{opacity:0;transform:translate(2px,14px) scale(3)} }
+@keyframes k2-inkC { 0%{opacity:0;transform:scale(.2)} 18%{opacity:.7} 100%{opacity:0;transform:translate(13px,9px) scale(2.4)} }
+
+/* Idle perk — an occasional autonomous flicker of life between interactions
+   (scheduled by the component, gated by the host's ambience switch): one leg
+   kicks, the body tips a hair toward it. */
+.k2-perk .k2-leg-2 { animation: k2-perkleg .7s var(--cl-spring); }
+.k2-perk .k2-fore-2 { animation: k2-perkfore .7s var(--cl-spring); }
+.k2-perk .k2-tilt { animation: k2-perktilt .7s var(--cl-spring); }
+@keyframes k2-perkleg { 0%,100%{transform:rotate(0)} 35%{transform:rotate(-16deg)} 70%{transform:rotate(4deg)} }
+@keyframes k2-perkfore { 0%,100%{transform:rotate(0)} 40%{transform:rotate(18deg)} 75%{transform:rotate(-5deg)} }
+@keyframes k2-perktilt { 0%,100%{transform:rotate(0)} 40%{transform:rotate(-2deg)} }
+/* Flail lives on the SVG: every limb kicks out at once. The shorthand resets
+   each segment's idle negative delay for the one-shot's duration; the sway
+   resumes when the class drops. */
+.k2-flail .k2-leg  { animation: k2-kickA .55s ease-in-out; }
+.k2-flail .k2-fore { animation: k2-kickB .55s ease-in-out; }
+.k2-flail .k2-foot { animation: k2-kickC .55s ease-in-out; }
+@keyframes k2-kickA { 0%,100%{transform:rotate(0)} 30%{transform:rotate(-13deg)} 65%{transform:rotate(11deg)} }
+@keyframes k2-kickB { 0%,100%{transform:rotate(0)} 30%{transform:rotate(16deg)} 65%{transform:rotate(-14deg)} }
+@keyframes k2-kickC { 0%,100%{transform:rotate(0)} 30%{transform:rotate(-12deg)} 65%{transform:rotate(10deg)} }
+
+/* Jointed legs — each bends at an elbow, segments overlap so the round-capped
+   ends hide inside the limb: a seamless bend, no ball-joint. */
+.k2-leg, .k2-fore, .k2-foot { transform-box: view-box; }
+.k2-leg-1 { transform-origin: 29px 54px; } .k2-fore-1 { transform-origin: 29px 63px; } .k2-foot-1 { transform-origin: 29px 70px; }
+.k2-leg-2 { transform-origin: 46.3px 54px; } .k2-fore-2 { transform-origin: 46.3px 63px; } .k2-foot-2 { transform-origin: 46.3px 70px; }
+.k2-leg-3 { transform-origin: 63.6px 54px; } .k2-fore-3 { transform-origin: 63.6px 63px; } .k2-foot-3 { transform-origin: 63.6px 70px; }
+.k2-leg-4 { transform-origin: 80.9px 54px; } .k2-fore-4 { transform-origin: 80.9px 63px; } .k2-foot-4 { transform-origin: 80.9px 70px; }
+/* SAFETY NET — without transform-box: view-box these px origins resolve
+   against each segment's own tiny bounding box and rotations fling the limb
+   apart (confirmed on the website port — see 40-keys.js's long comment).
+   Browsers without support get a still mascot, never a glitching one. */
+@supports not (transform-box: view-box) {
+  .k2-leg, .k2-fore, .k2-foot { animation: none !important; transform: none !important; }
+}
+
+/* Idle: a gentle, slow living sway — coprime periods (8 / 6.4 / 7.2s) and 12
+   distinct negative delays so the loop never visibly repeats. */
+.k2-leg { animation: k2LegSway 8s ease-in-out infinite; }
+.k2-fore { animation: k2ForeBend 6.4s ease-in-out infinite; }
+.k2-foot { animation: k2FootBend 7.2s ease-in-out infinite; }
+.k2-leg-1 { animation-delay: -.4s } .k2-fore-1 { animation-delay: -.3s } .k2-foot-1 { animation-delay: -1.1s }
+.k2-leg-2 { animation-delay: -2.3s } .k2-fore-2 { animation-delay: -1.6s } .k2-foot-2 { animation-delay: -3.4s }
+.k2-leg-3 { animation-delay: -4.1s } .k2-fore-3 { animation-delay: -3.2s } .k2-foot-3 { animation-delay: -5.5s }
+.k2-leg-4 { animation-delay: -1.4s } .k2-fore-4 { animation-delay: -4.6s } .k2-foot-4 { animation-delay: -2.7s }
+@keyframes k2LegSway { 0%,100%{transform:rotate(-2deg)} 50%{transform:rotate(2deg)} }
+@keyframes k2ForeBend { 0%,100%{transform:rotate(-5deg)} 50%{transform:rotate(6deg)} }
+@keyframes k2FootBend { 0%,100%{transform:rotate(4deg)} 50%{transform:rotate(-5deg)} }
+
+/* Signal cadences — same keyframes, different tempo. `pulse` = unreads
+   waiting (lively); `alert` = mentions (urgent, and the component tints the
+   body amber via `color`). */
+.k2-pulse .k2-leg { animation-duration: 3.6s; }
+.k2-pulse .k2-fore { animation-duration: 2.9s; }
+.k2-pulse .k2-foot { animation-duration: 3.2s; }
+.k2-alert .k2-leg { animation-duration: 1.6s; }
+.k2-alert .k2-fore { animation-duration: 1.3s; }
+.k2-alert .k2-foot { animation-duration: 1.45s; }
+
+/* Asleep: limbs settle to stillness (he's napping, not treading water). */
+.k2-asleep .k2-leg, .k2-asleep .k2-fore, .k2-asleep .k2-foot { animation-play-state: paused; }
+
+/* Sad (OfflineScreen): the sway drags at roughly half speed — heavy limbs,
+   nothing playful. The brows + tear come from the component. */
+.k2-sad .k2-leg { animation-duration: 14s; }
+.k2-sad .k2-fore { animation-duration: 11.6s; }
+.k2-sad .k2-foot { animation-duration: 12.8s; }
+
+/* Wave — an excited hello: body leans in, arm 4 shoots up with overshoot,
+   waves with the hand lagging by amplitude (not phase — see 40-keys.js's
+   cadence note), holds, eases back. The other legs keep their idle sway. */
+.k2-wave .k2-tilt { animation: k2-bodytilt 3.2s ease-in-out; }
+@keyframes k2-bodytilt { 0%{transform:rotate(0)} 9%{transform:rotate(-15deg)} 14%{transform:rotate(-13deg)} 80%{transform:rotate(-14deg)} 100%{transform:rotate(0)} }
+.k2-wave .k2-leg-4 { animation: k2-armraise 3.2s ease-in-out; }
+.k2-wave .k2-fore-4 { animation: k2-forewave 3.2s ease-in-out; }
+.k2-wave .k2-foot-4 { animation: k2-footwave 3.2s ease-in-out; }
+@keyframes k2-armraise {
+  0%{transform:rotate(0)} 9%{transform:rotate(-70deg)} 13%{transform:rotate(-80deg)}
+  17%{transform:rotate(-74deg)} 80%{transform:rotate(-74deg)} 90%{transform:rotate(-48deg)} 100%{transform:rotate(0)}
+}
+@keyframes k2-forewave {
+  0%{transform:rotate(0)} 10%{transform:rotate(14deg)}
+  17%{transform:rotate(8deg)} 23%{transform:rotate(-30deg)}
+  29%{transform:rotate(8deg)} 35%{transform:rotate(-30deg)}
+  41%{transform:rotate(8deg)} 47%{transform:rotate(-30deg)}
+  53%{transform:rotate(8deg)} 59%{transform:rotate(-30deg)}
+  65%{transform:rotate(8deg)} 71%{transform:rotate(-22deg)}
+  80%{transform:rotate(4deg)} 100%{transform:rotate(0)}
+}
+@keyframes k2-footwave {
+  0%{transform:rotate(0)} 10%{transform:rotate(9deg)}
+  17%{transform:rotate(5deg)} 23%{transform:rotate(-18deg)}
+  29%{transform:rotate(5deg)} 35%{transform:rotate(-18deg)}
+  41%{transform:rotate(5deg)} 47%{transform:rotate(-18deg)}
+  53%{transform:rotate(5deg)} 59%{transform:rotate(-18deg)}
+  65%{transform:rotate(5deg)} 71%{transform:rotate(-13deg)}
+  80%{transform:rotate(2deg)} 100%{transform:rotate(0)}
+}
+
+.k2-zzz text { animation: k2-z 2.6s ease-in-out infinite; }
+@keyframes k2-z { 0%{opacity:0;transform:translate(0,0) scale(.6)} 30%{opacity:1} 100%{opacity:0;transform:translate(8px,-20px) scale(1.1)} }
+
+.k2-speech {
+  position: absolute; top: 100%; right: 0; transform: translateY(6px);
+  background: var(--cl-raise); border: 1.5px solid var(--cl-border); color: var(--cl-text);
+  font-family: var(--cl-font-body); font-weight: 700; font-size: 12.5px;
+  max-width: 240px; line-height: 1.5;
+  padding: 8px 13px; border-radius: var(--cl-r-md); pointer-events: none;
+  box-shadow: var(--cl-shadow-menu); animation: k2-pop .3s var(--cl-spring); z-index: 10;
+}
+.k2-speech::after {
+  content: ''; position: absolute; bottom: 100%; right: 22px;
+  border: 6px solid transparent; border-bottom-color: var(--cl-raise);
+}
+@keyframes k2-pop { from { opacity: 0; transform: translateY(6px) scale(.85); } to { opacity: 1; transform: translateY(6px) scale(1); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .k2-wiggle, .k2-hop, .k2-spin, .k2-stir, .k2-squish,
+  .k2-ink circle,
+  .k2-perk .k2-leg-2, .k2-perk .k2-fore-2, .k2-perk .k2-tilt,
+  .k2-flail .k2-leg, .k2-flail .k2-fore, .k2-flail .k2-foot,
+  .k2-leg, .k2-fore, .k2-foot,
+  .k2-wave .k2-tilt, .k2-zzz text, .k2-speech { animation: none !important; }
+  .k2-ink circle { opacity: 0; }
+}
+
+/* Idle-motion gate (utils/idleMotion.ts). The sway animates `transform` on
+   twelve SVG children, and SVG children cannot get their own compositing
+   layer — so every frame is a main-thread style recalc + repaint. Measured at
+   ~10 percentage points of renderer main-thread CPU, burned continuously for
+   as long as the mascot is mounted.
+
+   Nobody is watching a mascot breathe in a window they have alt-tabbed away
+   from, so stop it there. `animation: none` rather than `animation-play-state:
+   paused` on purpose: pausing freezes the animation but keeps the layer live
+   and the compositor ticking (measured 21% vs 2.3% of a core), so it reclaims
+   only the main-thread half of the cost. The one-shot reaction animations
+   (k2-wiggle/hop/spin/…) are NOT gated — they only ever play in response to a
+   user action, which implies the window is focused anyway. */
+:root[data-cl-motion="idle"] .k2-leg,
+:root[data-cl-motion="idle"] .k2-fore,
+:root[data-cl-motion="idle"] .k2-foot,
+:root[data-cl-motion="idle"] .k2-zzz text { animation: none; }
+
+/* Occlusion gate (utils/idleMotion.ts, setOccluded) — same loops, same
+   reasoning, different trigger: the Descent settings screen is covering them.
+   `:not(.sd-root *)` keeps the mascot the settings screen renders for itself
+   animating; only the copy behind the overlay stops. */
+:root[data-cl-occluded="on"] .k2-leg:not(.sd-root *),
+:root[data-cl-occluded="on"] .k2-fore:not(.sd-root *),
+:root[data-cl-occluded="on"] .k2-foot:not(.sd-root *),
+:root[data-cl-occluded="on"] .k2-zzz text:not(.sd-root *) { animation: none; }
