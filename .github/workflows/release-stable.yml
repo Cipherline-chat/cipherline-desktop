@@ -26,6 +26,9 @@ name: Release Stable Desktop
 #      (CLIENT_ATTEST_SECRETS on the server; it is empty today, and the private builds ship without it too).
 #      Add it to the production environment when that is switched on.
 #
+# Runner images are PINNED (ubuntu-24.04, windows-2025, macos-15), not *-latest: an AppImage/deb built on a newer Linux
+# needs a newer glibc and can stop working on older distros, and ubuntu-latest moves to 26 on 2026-10-19.
+#
 # Verify a download:  gh attestation verify <installer> --repo Cipherline-chat/cipherline-desktop
 
 on:
@@ -42,7 +45,7 @@ permissions:
 
 jobs:
   prepare:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.v.outputs.version }}
       publish: ${{ steps.v.outputs.publish }}
@@ -71,7 +74,7 @@ jobs:
 
   windows:
     needs: prepare
-    runs-on: windows-latest
+    runs-on: windows-2025
     environment: production
     timeout-minutes: 60
     permissions:
@@ -197,7 +200,7 @@ jobs:
 
   macos:
     needs: prepare
-    runs-on: macos-latest
+    runs-on: macos-15
     environment: production
     # Apple's notary queue can take hours for a new account's first submissions.
     timeout-minutes: 240
@@ -324,7 +327,7 @@ jobs:
 
   linux:
     needs: prepare
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment: production
     timeout-minutes: 60
     permissions:
@@ -431,7 +434,7 @@ jobs:
   report:
     needs: [prepare, windows, macos, linux]
     if: always() && needs.prepare.outputs.publish == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Report what each platform's feed advertises
         shell: bash
