@@ -22,23 +22,48 @@ server relays them without being able to read them. It still has to see some thi
 to deliver them (who you're connected with, when, and how big a file is); the full,
 honest list is at [cipherline.chat/security](https://cipherline.chat/security).
 
-## Status: this repo is public, the source isn't published yet
+## What's in this repo
 
-This repo — Apache-2.0 licensed — is where the Cipherline **desktop client**
-(Electron + React) source lands. **Publishing the source is planned for launch,
-not done yet.** Right now this page, the license and the security policy are the
-whole repo; there's no client code to read here today. Watch or star the repo if
-you'd like to know the moment that changes.
+The full source of the Cipherline **desktop client** (Electron + React), Apache-2.0
+licensed. It's the code of the current stable release: each stable release
+replaces this tree, and the stable downloads are built from it by the release
+workflow.
 
-## What will be here at launch
+- `apps/desktop` — the desktop app (Electron main process in `electron/`, React UI in `src/`)
+- `packages/shared` — the message and API types shared with the server
+- `apps/desktop/LICENSES.md` — third-party dependency attributions
 
-- The full Electron + React desktop client source
-- Build instructions — clone, install, run, no account required to inspect the code
-- The actual cryptography, so you can check it yourself instead of taking our word
-  for it: X25519 key exchange, HKDF-SHA256 derivation, AES-256-GCM for content,
-  Ed25519 signatures, and one-time prekeys for forward secrecy — standard,
-  well-reviewed constructions, no hand-rolled crypto
-- Third-party dependency attributions under the Apache-2.0 license
+## Start here: the crypto
+
+Standard, well-reviewed constructions, no hand-rolled crypto: X25519 key exchange,
+HKDF-SHA256 derivation, AES-256-GCM for content and Ed25519 signatures. If you only
+read a few files, read these:
+
+| File | What it does |
+|---|---|
+| [`apps/desktop/electron/e2ee-engine.ts`](apps/desktop/electron/e2ee-engine.ts) | Message encryption: X25519 ECDH + HKDF-SHA256 + AES-256-GCM |
+| [`apps/desktop/electron/signal-identity.ts`](apps/desktop/electron/signal-identity.ts) | Identity keys and prekeys |
+| [`apps/desktop/src/utils/crypto.ts`](apps/desktop/src/utils/crypto.ts) | File and attachment encryption (WebCrypto AES-256-GCM) |
+| [`apps/desktop/src/utils/secureLocalStore.ts`](apps/desktop/src/utils/secureLocalStore.ts) | Encrypted storage at rest on your device |
+| [`apps/desktop/electron/storage.ts`](apps/desktop/electron/storage.ts) | Device master key, wrapped by the OS keystore (DPAPI / Keychain / libsecret) |
+
+What each part protects today, and what our server can still see, is spelled out at
+[cipherline.chat/security](https://cipherline.chat/security).
+
+## Build it yourself
+
+Node 20. The same steps the release workflow runs ([`release-stable.yml`](.github/workflows/release-stable.yml)):
+
+```bash
+npm ci --legacy-peer-deps
+cd apps/desktop
+npm run rebuild-native
+npm run build
+npm test
+```
+
+A build you make yourself is fine for inspecting and running the code. Official
+releases are signed and published only by the release workflow.
 
 ## Why the client and not the server
 
@@ -48,15 +73,14 @@ we're publishing. The server stays closed: it's a blind relay that never holds t
 keys to your content either way, and keeping its code private mainly slows abuse
 rather than hiding anything it could read.
 
-## In the meantime
+## More
 
-- **[cipherline.chat/opensource](https://cipherline.chat/opensource)** — the
-  current status of this plan, in more detail, with a link to this repo and the
-  mobile one.
+- **[cipherline.chat/opensource](https://cipherline.chat/opensource)** — how we
+  think about open source, and the licence in plain words.
 - **[cipherline.chat/security](https://cipherline.chat/security)** — what each
   client encrypts today and what our server can still see.
 - **[cipherline-mobile](https://github.com/Cipherline-chat/cipherline-mobile)** —
-  the mobile client's repo (closed beta, Android), same status as this one.
+  the mobile client's repo (closed beta); its source isn't published there yet.
 
 ---
 
