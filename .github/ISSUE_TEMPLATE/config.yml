@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/Cipherline-chat/cipherline-desktop/security/policy
+    about: Please don't open an issue. Report it privately to security@cipherline.chat (see our security policy).
+  - name: Report abuse or a user
+    url: https://cipherline.chat/report-abuse
+    about: Use the in-app report button, or email abuse@cipherline.chat. Not through GitHub issues.
+  - name: Account, billing or other help
+    url: https://cipherline.chat/support
+    about: Email hello@cipherline.chat for help with your account or subscription.
