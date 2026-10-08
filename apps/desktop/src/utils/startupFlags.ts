@@ -1,6 +1,7 @@
 /**
- * Renderer side of the Settings → Advanced startup flags (screen capture
- * method, capture timing log). The single source of truth is main's
+ * Renderer side of the startup flags: Settings → Advanced (screen capture
+ * method, capture timing log) and Settings → Voice & Video ("Prioritize call
+ * video while gaming", `gamingVideo` — see utils/gamingVideoMode.ts). The single source of truth is main's
  * <userData>/startup-flags.json (electron/startup-flags.ts) — nothing is
  * persisted in the renderer, so there is no secureLocalStore key for
  * backupRegistry.ts to classify (and the file is machine-specific anyway).
@@ -15,6 +16,7 @@ export type ScreenCapturerChoice = 'auto' | 'dxgi' | 'wgc';
 export interface StartupFlagValues {
     screenCapturer: ScreenCapturerChoice;
     captureLog: boolean;
+    gamingVideo: boolean;
 }
 
 export interface StartupFlagsState {
@@ -34,7 +36,11 @@ const capturer = (v: unknown): ScreenCapturerChoice =>
 
 const values = (v: unknown): StartupFlagValues => {
     const r = (v && typeof v === 'object' ? v : {}) as Record<string, unknown>;
-    return { screenCapturer: capturer(r.screenCapturer), captureLog: r.captureLog === true };
+    return {
+        screenCapturer: capturer(r.screenCapturer),
+        captureLog: r.captureLog === true,
+        gamingVideo: r.gamingVideo === true,
+    };
 };
 
 export function parseStartupFlagsState(v: unknown): StartupFlagsState | null {
@@ -63,5 +69,15 @@ export function restartPending(s: StartupFlagsState): boolean {
         && !s.envOverride.screenCapturer
         && s.saved.screenCapturer !== s.active.screenCapturer;
     const logPending = !s.envOverride.captureLog && s.saved.captureLog !== s.active.captureLog;
-    return capturerPending || logPending;
+    return capturerPending || logPending || gamingVideoRestartPending(s);
+}
+
+/**
+ * The gaming-video mode's launch-time switches differ from the saved choice —
+ * in either direction: turning it OFF also needs a restart to drop them. (Its
+ * runtime half has already followed the saved value; this is only about the
+ * Chromium switches.)
+ */
+export function gamingVideoRestartPending(s: StartupFlagsState): boolean {
+    return s.saved.gamingVideo !== s.active.gamingVideo;
 }

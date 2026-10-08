@@ -15,6 +15,19 @@
    ============================================================================ */
 
 .k2-svg .k2-brow { transition: d .25s var(--cl-spring), transform .25s var(--cl-spring); }
+
+/* `idleSway={false}`: no twelve-segment leg loop (the host moves him with
+   its own compositor-only swim, e.g. the Home deck's .hk-swim). MUST stay
+   above every one-shot leg rule in this file: equal specificity, so the
+   wave / flail / perk rules further down still win while they play. */
+.k2-still .k2-leg, .k2-still .k2-fore, .k2-still .k2-foot { animation: none; }
+/* ...and a resting pose instead of four rigid bars: the outer legs splay a
+   little, each bends a different way at the knee and the tip. Static
+   transforms: no per-frame cost. */
+.k2-still .k2-leg-1 { --r: 3deg; transform: rotate(var(--r)); }   .k2-still .k2-fore-1 { --r: -5deg; transform: rotate(var(--r)); } .k2-still .k2-foot-1 { --r: 5deg; transform: rotate(var(--r)); }
+.k2-still .k2-leg-2 { --r: 1deg; transform: rotate(var(--r)); }   .k2-still .k2-fore-2 { --r: 4deg; transform: rotate(var(--r)); }  .k2-still .k2-foot-2 { --r: -4deg; transform: rotate(var(--r)); }
+.k2-still .k2-leg-3 { --r: -1deg; transform: rotate(var(--r)); }  .k2-still .k2-fore-3 { --r: -4deg; transform: rotate(var(--r)); } .k2-still .k2-foot-3 { --r: 4deg; transform: rotate(var(--r)); }
+.k2-still .k2-leg-4 { --r: -3deg; transform: rotate(var(--r)); }  .k2-still .k2-fore-4 { --r: 5deg; transform: rotate(var(--r)); }  .k2-still .k2-foot-4 { --r: -5deg; transform: rotate(var(--r)); }
 .k2-tilt { transition: transform .5s var(--cl-spring); transform-origin: 50% 90%; }
 .k2-wiggle { animation: k2-wig .6s var(--cl-spring); }
 @keyframes k2-wig { 0%,100%{transform:rotate(0)} 22%{transform:rotate(-9deg)} 55%{transform:rotate(7deg)} 82%{transform:rotate(-2deg)} }
@@ -67,18 +80,24 @@
 .k2-perk .k2-leg-2 { animation: k2-perkleg .7s var(--cl-spring); }
 .k2-perk .k2-fore-2 { animation: k2-perkfore .7s var(--cl-spring); }
 .k2-perk .k2-tilt { animation: k2-perktilt .7s var(--cl-spring); }
-@keyframes k2-perkleg { 0%,100%{transform:rotate(0)} 35%{transform:rotate(-16deg)} 70%{transform:rotate(4deg)} }
-@keyframes k2-perkfore { 0%,100%{transform:rotate(0)} 40%{transform:rotate(18deg)} 75%{transform:rotate(-5deg)} }
+@keyframes k2-perkleg { 0%,100%{transform:rotate(var(--r, 0deg))} 35%{transform:rotate(calc(var(--r, 0deg) - 16deg))} 70%{transform:rotate(calc(var(--r, 0deg) + 4deg))} }
+@keyframes k2-perkfore { 0%,100%{transform:rotate(var(--r, 0deg))} 40%{transform:rotate(calc(var(--r, 0deg) + 18deg))} 75%{transform:rotate(calc(var(--r, 0deg) - 5deg))} }
 @keyframes k2-perktilt { 0%,100%{transform:rotate(0)} 40%{transform:rotate(-2deg)} }
+/* One-shots and the still pose: `.k2-still` rests each segment at its own
+   `--r` (set above). Every leg one-shot (perk, flail, wave) starts and ends
+   at `var(--r, 0deg)` (0 where there is no still pose, i.e. the sway rig), so
+   it eases out of the resting pose and back into it. Before, they began and
+   ended at a flat 0 and each segment snapped 3-5 degrees (compounding down
+   the limb) on the first and last frame of every one. */
 /* Flail lives on the SVG: every limb kicks out at once. The shorthand resets
    each segment's idle negative delay for the one-shot's duration; the sway
    resumes when the class drops. */
 .k2-flail .k2-leg  { animation: k2-kickA .55s ease-in-out; }
 .k2-flail .k2-fore { animation: k2-kickB .55s ease-in-out; }
 .k2-flail .k2-foot { animation: k2-kickC .55s ease-in-out; }
-@keyframes k2-kickA { 0%,100%{transform:rotate(0)} 30%{transform:rotate(-13deg)} 65%{transform:rotate(11deg)} }
-@keyframes k2-kickB { 0%,100%{transform:rotate(0)} 30%{transform:rotate(16deg)} 65%{transform:rotate(-14deg)} }
-@keyframes k2-kickC { 0%,100%{transform:rotate(0)} 30%{transform:rotate(-12deg)} 65%{transform:rotate(10deg)} }
+@keyframes k2-kickA { 0%,100%{transform:rotate(var(--r, 0deg))} 30%{transform:rotate(calc(var(--r, 0deg) - 13deg))} 65%{transform:rotate(calc(var(--r, 0deg) + 11deg))} }
+@keyframes k2-kickB { 0%,100%{transform:rotate(var(--r, 0deg))} 30%{transform:rotate(calc(var(--r, 0deg) + 16deg))} 65%{transform:rotate(calc(var(--r, 0deg) - 14deg))} }
+@keyframes k2-kickC { 0%,100%{transform:rotate(var(--r, 0deg))} 30%{transform:rotate(calc(var(--r, 0deg) - 12deg))} 65%{transform:rotate(calc(var(--r, 0deg) + 10deg))} }
 
 /* Jointed legs — each bends at an elbow, segments overlap so the round-capped
    ends hide inside the limb: a seamless bend, no ball-joint. */
@@ -136,26 +155,26 @@
 .k2-wave .k2-fore-4 { animation: k2-forewave 3.2s ease-in-out; }
 .k2-wave .k2-foot-4 { animation: k2-footwave 3.2s ease-in-out; }
 @keyframes k2-armraise {
-  0%{transform:rotate(0)} 9%{transform:rotate(-70deg)} 13%{transform:rotate(-80deg)}
-  17%{transform:rotate(-74deg)} 80%{transform:rotate(-74deg)} 90%{transform:rotate(-48deg)} 100%{transform:rotate(0)}
+  0%{transform:rotate(var(--r, 0deg))} 9%{transform:rotate(-70deg)} 13%{transform:rotate(-80deg)}
+  17%{transform:rotate(-74deg)} 80%{transform:rotate(-74deg)} 90%{transform:rotate(-48deg)} 100%{transform:rotate(var(--r, 0deg))}
 }
 @keyframes k2-forewave {
-  0%{transform:rotate(0)} 10%{transform:rotate(14deg)}
+  0%{transform:rotate(var(--r, 0deg))} 10%{transform:rotate(14deg)}
   17%{transform:rotate(8deg)} 23%{transform:rotate(-30deg)}
   29%{transform:rotate(8deg)} 35%{transform:rotate(-30deg)}
   41%{transform:rotate(8deg)} 47%{transform:rotate(-30deg)}
   53%{transform:rotate(8deg)} 59%{transform:rotate(-30deg)}
   65%{transform:rotate(8deg)} 71%{transform:rotate(-22deg)}
-  80%{transform:rotate(4deg)} 100%{transform:rotate(0)}
+  80%{transform:rotate(4deg)} 100%{transform:rotate(var(--r, 0deg))}
 }
 @keyframes k2-footwave {
-  0%{transform:rotate(0)} 10%{transform:rotate(9deg)}
+  0%{transform:rotate(var(--r, 0deg))} 10%{transform:rotate(9deg)}
   17%{transform:rotate(5deg)} 23%{transform:rotate(-18deg)}
   29%{transform:rotate(5deg)} 35%{transform:rotate(-18deg)}
   41%{transform:rotate(5deg)} 47%{transform:rotate(-18deg)}
   53%{transform:rotate(5deg)} 59%{transform:rotate(-18deg)}
   65%{transform:rotate(5deg)} 71%{transform:rotate(-13deg)}
-  80%{transform:rotate(2deg)} 100%{transform:rotate(0)}
+  80%{transform:rotate(2deg)} 100%{transform:rotate(var(--r, 0deg))}
 }
 
 .k2-zzz text { animation: k2-z 2.6s ease-in-out infinite; }
@@ -163,6 +182,9 @@
 
 .k2-speech {
   position: absolute; top: 100%; right: 0; transform: translateY(6px);
+  /* Its own width, not the mascot's: as an absolute child of a ~100px slot
+     it used to shrink-to-fit that and wrap every line into a narrow tower. */
+  width: max-content;
   background: var(--cl-raise); border: 1.5px solid var(--cl-border); color: var(--cl-text);
   font-family: var(--cl-font-body); font-weight: 700; font-size: 12.5px;
   max-width: 240px; line-height: 1.5;

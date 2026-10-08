@@ -1,10 +1,16 @@
 import React from 'react';
-import { Track, type LocalVideoTrack, type RemoteVideoTrack, type TrackPublication } from 'livekit-client';
+import { Track, type AudioTrack, type LocalVideoTrack, type RemoteVideoTrack, type TrackPublication } from 'livekit-client';
 import {
-    summarizeSender, summarizeReceiver, fpsTone, captureLimitHint, h264ProfileFromFmtp, bandwidthHint,
+    summarizeSender, summarizeReceiver, fpsTone, captureLimitHint, h264ProfileFromFmtp, bandwidthHint, formatLayers,
+    paddingHint, probeHevc, formatHevc, type HevcSupport,
     type SenderHudStats, type ReceiverHudStats, type SenderSnapshot, type ReceiverSnapshot, type StatsEntry,
     type CaptureVerdict,
 } from '../../utils/streamStatsHud';
+import { getCameraPublishState, subscribeCameraPublishState } from '../../utils/cameraPublish';
+import { getCallEvents, formatCallEvents, type CallEvent } from '../../utils/callEventLog';
+import { estimateAvSync, type AvSyncEstimate, type AvSyncSnapshot, type AvSyncVerdict } from '../../utils/avSync';
+import { recordAvSyncEstimate } from '../../utils/avSyncMonitor';
+import { getRemotePlaybackInfo } from '../../hooks/useParticipantAudio';
 import {
     useScreenShareSession, parseCaptureTiming,
     type CaptureTiming, type ScreenShareSession,
@@ -121,6 +127,21 @@ const ShareRows: React.FC<{ session: ScreenShareSession }> = ({ session }) => {
     );
 };
 
+const AV_TONE: Record<AvSyncVerdict, string> = {
+    ok: 'text-green-400',
+    'audio-late': 'text-amber-300',
+    'audio-early': 'text-amber-300',
+    unknown: 'text-white/45',
+};
+
+/** "+92±30ms audio late" — sign: + = audio behind video. */
+const fmtAv = (e: AvSyncEstimate): string => {
+    const o = Math.round(e.offsetMs);
+    const unc = e.uncertaintyMs > 0 ? `±${Math.round(e.uncertaintyMs)}` : '';
+    const what = o > 0 ? 'audio late' : o < 0 ? 'audio early' : 'in sync';
+    return `${o > 0 ? '+' : ''}${o}${unc}ms ${what}`;
+};
+
 const encryptionLabel = (pub: TrackPublication | undefined): { text: string; ok: boolean } | null => {
     // Encryption_Type: 0 NONE, 1 GCM, 2 CUSTOM — what the SFU recorded for this
     // publication, i.e. the server's view, not this client's belief.
@@ -129,14 +150,69 @@ const encryptionLabel = (pub: TrackPublication | undefined): { text: string; ok:
     return e === 0 ? { text: 'OFF', ok: false } : { text: e === 1 ? 'GCM' : 'on', ok: true };
 };
 
+/**
+ * "Call log" — the tail of utils/callEventLog.ts (privacy-safe decisions:
+ * codecs, layers, switches, freezes, ICE route types…), collapsed by default,
+ * with "Copy call log" for bug reports. The overlay itself ignores the
+ * pointer; this section opts back in and keeps its clicks off the tile (whose
+ * click toggles focus).
+ */
+const CALL_LOG_TAIL = 50;
+const CallLogSection: React.FC = () => {
+    const [open, setOpen] = React.useState(false);
+    const [events, setEvents] = React.useState<CallEvent[]>([]);
+    const [copied, setCopied] = React.useState(false);
+    React.useEffect(() => {
+        if (!open) return;
+        const read = () => setEvents(getCallEvents().slice(-CALL_LOG_TAIL));
+        read();
+        const id = setInterval(read, 1000);
+        return () => clearInterval(id);
+    }, [open]);
+    const stop = (e: React.SyntheticEvent) => e.stopPropagation();
+    const copy = (e: React.MouseEvent) => {
+        e.stopPropagation();
+        void navigator.clipboard?.writeText(formatCallEvents(getCallEvents())).then(() => {
+            setCopied(true);
+            setTimeout(() => setCopied(false), 1500);
+        }).catch(() => {});
+    };
+    return (
+        <div className="pointer-events-auto mt-1" onClick={stop} onPointerDown={stop} onMouseDown={stop}>
+            <div className="flex gap-2">
+                <button type="button" className="p-0 bg-transparent border-0 text-white/60 hover:text-white cursor-pointer font-mono text-[10.5px]" onClick={e => { e.stopPropagation(); setOpen(o => !o); }}>
+                    {open ? '▾' : '▸'} Call log
+                </button>
+                <button type="button" className="p-0 bg-transparent border-0 text-white/45 hover:text-white cursor-pointer font-mono text-[10.5px]" onClick={copy}>
+                    {copied ? 'copied' : 'Copy call log'}
+                </button>
+            </div>
+            {open && (
+                <div className="max-h-[180px] overflow-y-auto mt-0.5 text-white/75 leading-[1.3]">
+                    {events.length === 0 ? <span className="text-white/45">no events yet</span> : formatCallEvents(events).split('\n').map((line, i) => (
+                        <div key={i} className="whitespace-nowrap">{line}</div>
+                    ))}
+                </div>
+            )}
+        </div>
+    );
+};
+
 export const StreamStatsHud: React.FC<{
     track: LocalVideoTrack | RemoteVideoTrack;
     isLocal: boolean;
     publication?: TrackPublication;
-}> = ({ track, isLocal, publication }) => {
+    /** Remote only: the audio that should line up with this video (mic for a
+     *  camera, screen-share audio for a share) — enables the A/V-sync row. */
+    audioTrack?: AudioTrack;
+    /** Remote only: whose audio chain to read the playback path from. Stays
+     *  in-process; the A/V-sync monitor logs a placeholder, never this. */
+    identity?: string;
+}> = ({ track, isLocal, publication, audioTrack, identity }) => {
     const [sender, setSender] = React.useState<SenderHudStats | null>(null);
     const [caps, setCaps] = React.useState<SenderCaps>({});
     const [receiver, setReceiver] = React.useState<ReceiverHudStats | null>(null);
+    const [avSync, setAvSync] = React.useState<AvSyncEstimate | null>(null);
     // What the CAPTURE was asked for — the track's own settings, i.e. the
     // frame rate Chromium's capturer was configured with (not the encoder cap).
     const [captureReqFps, setCaptureReqFps] = React.useState<number | undefined>(undefined);
@@ -146,6 +222,15 @@ export const StreamStatsHud: React.FC<{
     const [polledAt, setPolledAt] = React.useState<number | undefined>(undefined);
 
     const isShare = isLocal && publication?.source === Track.Source.ScreenShare;
+    const [hevc, setHevc] = React.useState<HevcSupport | null>(null);
+    React.useEffect(() => {
+        if (!isLocal) return;
+        let cancelled = false;
+        void probeHevc().then(h => { if (!cancelled) setHevc(h); });
+        return () => { cancelled = true; };
+    }, [isLocal]);
+    const isCamera = isLocal && publication?.source === Track.Source.Camera;
+    const camState = React.useSyncExternalStore(subscribeCameraPublishState, getCameraPublishState, () => null);
     const sessionAll = useScreenShareSession();
     const session = isShare ? sessionAll : null;
     const captureLogOn = !!session?.main?.captureLog;
@@ -169,6 +254,8 @@ export const StreamStatsHud: React.FC<{
         let cancelled = false;
         let prevS: SenderSnapshot | null = null;
         let prevR: ReceiverSnapshot | null = null;
+        let prevAv: AvSyncSnapshot | null = null;
+        const isShareTile = publication?.source === Track.Source.ScreenShare;
         const poll = async () => {
             try {
                 const report = await track.getRTCStatsReport();
@@ -186,13 +273,32 @@ export const StreamStatsHud: React.FC<{
                     const r = summarizeReceiver(report as unknown as Iterable<StatsEntry>, prevR, now);
                     prevR = r.snapshot;
                     setReceiver(r.stats);
+                    // A/V sync: this video's jitter buffer + decode vs the
+                    // matching audio's jitter buffer + playback path.
+                    const playback = identity ? getRemotePlaybackInfo(identity, isShareTile ? 'screen' : 'mic') : null;
+                    const aReport = audioTrack && playback ? await audioTrack.getRTCStatsReport() : undefined;
+                    if (cancelled) return;
+                    if (aReport && playback) {
+                        const av = estimateAvSync(
+                            aReport as unknown as Iterable<StatsEntry>,
+                            report as unknown as Iterable<StatsEntry>,
+                            playback, prevAv,
+                        );
+                        prevAv = av.snapshot;
+                        setAvSync(av.estimate);
+                        if (av.estimate && identity) {
+                            recordAvSyncEstimate(identity, isShareTile ? 'screen_share' : 'camera', av.estimate);
+                        }
+                    } else {
+                        setAvSync(null);
+                    }
                 }
             } catch { /* track ended between polls — next tick or unmount */ }
         };
         void poll();
         const id = setInterval(poll, 1000);
         return () => { cancelled = true; clearInterval(id); };
-    }, [track, isLocal]);
+    }, [track, isLocal, audioTrack, identity, publication]);
 
     const enc = encryptionLabel(publication);
     // The bar a share is measured against is the rate it should SEND. The
@@ -223,6 +329,15 @@ export const StreamStatsHud: React.FC<{
         })
         : null;
     const h264Profile = sender?.codec === 'H264' ? h264ProfileFromFmtp(sender.codecFmtp) : undefined;
+    const pad = isLocal && sender
+        ? paddingHint({
+            sendMbps: sender.sendMbps,
+            capMbps: caps.maxBitrate !== undefined ? caps.maxBitrate / 1e6 : undefined,
+            encodedFps: sender.encodedFps,
+            targetFps: isShare ? reqFps : undefined,
+            unchangedRatio: isShare ? timing?.unchangedRatio ?? null : null,
+        })
+        : null;
 
     return (
         <div className="font-mono text-[10.5px] text-white/90 flex flex-col gap-[1px] min-w-[210px]">
@@ -260,6 +375,21 @@ export const StreamStatsHud: React.FC<{
                             <HwBadge hw={sender.hardware} />{' '}
                             <span className="text-white/60">{sender.encoder ?? 'hidden'}</span>
                         </Row>
+                        {isCamera && camState && (
+                            <Row label="camera">
+                                <span className="text-white/90">{camState.capture.width}×{camState.capture.height}@{Math.round(camState.capture.frameRate)}</span>
+                                <span className="text-white/45"> · {camState.tier} · {camState.codec.reason}</span>
+                            </Row>
+                        )}
+                        {formatLayers(sender.layers) && (
+                            <Row label="layers"><span className="text-white/75">{formatLayers(sender.layers)}</span></Row>
+                        )}
+                        {pad && (
+                            <Row label="static"><span className={pad.padding ? 'text-amber-300' : 'text-green-400'}>{pad.text}</span></Row>
+                        )}
+                        {hevc && (
+                            <Row label="h265"><span className="text-white/60">{formatHevc(hevc)}</span></Row>
+                        )}
                         <Row label="bitrate">
                             {fmtMbps(sender.sendMbps)}
                             <span className="text-white/45"> / cap {fmtMbps(caps.maxBitrate !== undefined ? caps.maxBitrate / 1e6 : undefined)}</span>
@@ -330,9 +460,22 @@ export const StreamStatsHud: React.FC<{
                             </span>
                             {enc && <span className={enc.ok ? 'text-green-400' : 'text-red-400'}>{' · e2ee '}{enc.text}</span>}
                         </Row>
+                        {avSync && (
+                            // Receive-side estimate: the sender's own capture
+                            // and voice-processing latency happen before RTP
+                            // and are invisible here. + = audio behind video.
+                            <Row label="a/v">
+                                <span className={AV_TONE[avSync.verdict]}>{fmtAv(avSync)}</span>
+                                <span className="text-white/45">
+                                    {` · ${avSync.path === 'element' ? 'direct' : 'web audio'}`}
+                                    {` · a ${Math.round(avSync.audioPathMs)} / v ${Math.round(avSync.videoPathMs)}ms`}
+                                </span>
+                            </Row>
+                        )}
                     </>
                 ) : <span className="text-white/50">stats…</span>
             )}
+            <CallLogSection />
         </div>
     );
 };

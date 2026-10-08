@@ -43,7 +43,13 @@ export function loadZxcvbn(): Promise<Zxcvbn> {
  * not pay for it.
  */
 export function useZxcvbn(needed: boolean): Zxcvbn | null {
-    const [z, setZ] = useState<Zxcvbn | null>(impl);
+    // Lazy initializer, NOT `useState(impl)`: `impl` is itself a function, and
+    // useState CALLS a function initial value — so once zxcvbn had been loaded
+    // earlier in the session (any password typed on the sign-in screen), the
+    // next mount ran zxcvbn(undefined) and threw, taking the whole app down to
+    // the router error boundary (ChangePasswordModal is mounted, closed, by
+    // Settings → Profile). Found by the onboarding E2E: sign in, open Settings.
+    const [z, setZ] = useState<Zxcvbn | null>(() => impl);
     useEffect(() => {
         if (z || !needed) return;
         let live = true;

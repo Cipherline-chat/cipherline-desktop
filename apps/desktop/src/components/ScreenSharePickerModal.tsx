@@ -1,9 +1,12 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { RefreshCw, Check, ChevronDown, Monitor, ArrowRight, ArrowLeft, Loader2, AlertTriangle, Settings, ShieldAlert } from 'lucide-react';
+import React, { useState, useEffect, useLayoutEffect, useCallback, useRef } from 'react';
+import { RefreshCw, Check, ChevronDown, Monitor, ArrowRight, ArrowLeft, Loader2, AlertTriangle, Settings, ShieldAlert, Info } from 'lucide-react';
 import { ClButton, ClCheckbox, ClModal } from './cl';
+import { getCachedSources, storeNames, refreshDesktopSources, cancelDesktopSourceRefresh, hasPreview, pickerRequestedAt } from '../utils/desktopSourceCache';
+import { logCallEvent } from '../utils/callEventLog';
 import {
     screenSourcesVerdict,
     isScreenAccessRefused,
+    showMacPickerBypassNote,
     type ScreenCaptureAccess,
 } from '../utils/screenCapturePermission';
 
@@ -250,13 +253,20 @@ const SourceGrid = ({
                                 className="w-full bg-black flex items-center justify-center overflow-hidden relative"
                                 style={{ height: 112 }}
                             >
-                                <img
-                                    src={source.thumbnailDataUrl}
-                                    alt={source.name}
-                                    draggable={false}
-                                    className="w-full h-full object-contain transition-transform duration-200 pointer-events-none"
-                                    style={{ transform: selected ? 'scale(1.04)' : 'scale(1)' }}
-                                />
+                                {hasPreview(source) ? (
+                                    <img
+                                        src={source.thumbnailDataUrl}
+                                        alt={source.name}
+                                        draggable={false}
+                                        className="w-full h-full object-contain transition-transform duration-200 pointer-events-none"
+                                        style={{ transform: selected ? 'scale(1.04)' : 'scale(1)' }}
+                                    />
+                                ) : (
+                                    // Preview still loading (or the window has none, e.g. minimised).
+                                    <div className="w-full h-full bg-white/[0.03] animate-pulse flex items-center justify-center" data-testid="thumb-pending">
+                                        <Monitor className="w-6 h-6 text-cl-faint opacity-60" />
+                                    </div>
+                                )}
                                 {selected && (
                                     <div className="absolute inset-0 bg-cl-lume/10 flex items-center justify-center">
                                         <div className="w-6 h-6 rounded-full bg-cl-lume flex items-center justify-center shadow-lg">
@@ -451,15 +461,28 @@ type LinuxStep = 'waiting' | 'error' | 'grid' | 'settings';
 export const ScreenSharePickerModal: React.FC<ScreenSharePickerModalProps> = ({ onSelect }) => {
     const platform = window.electronAPI?.platform ?? 'windows';
     const isLinux = platform === 'linux';
+    const bypassNote = showMacPickerBypassNote(platform, window.electronAPI?.macOSMajor);
 
     // Sources are fetched PER TYPE, not both up front (classic/non-Linux
     // tabs only — the Linux flow below uses its own single combined-request
     // state instead).
-    const [sourcesByType, setSourcesByType] = useState<Partial<Record<SourceType, Source[]>>>({});
-    const [loading, setLoading] = useState(true);
-    // Window-first: it's the fast, portal-free path, so it's what most people
-    // should land on by default (classic/non-Linux tabs only).
-    const [selectedTab, setSelectedTab] = useState<SourceType>('window');
+    //
+    // Seeded from the last open (utils/desktopSourceCache.ts): a reopen — or
+    // a first open after hovering the share button — paints the whole grid
+    // on its first frame, and each tab is refreshed underneath.
+    const [sourcesByType, setSourcesByType] = useState<Partial<Record<SourceType, Source[]>>>(() => {
+        const seed: Partial<Record<SourceType, Source[]>> = {};
+        const sc = getCachedSources('screen');
+        const wi = getCachedSources('window');
+        if (sc) seed.screen = sc;
+        if (wi) seed.window = wi;
+        return seed;
+    });
+    const [loading, setLoading] = useState(() => !getCachedSources('screen'));
+    // Entire-screen first (classic/non-Linux tabs only): it is the first tab
+    // shown, a handful of sources rather than dozens of windows, so it also
+    // paints fastest.
+    const [selectedTab, setSelectedTab] = useState<SourceType>('screen');
     const [selectedSourceId, setSelectedSourceId] = useState<string | null>(null);
     const [resolution, setResolution] = useState<ScreenShareOptions['resolution']>('1080p');
     const [frameRate, setFrameRate] = useState<ScreenShareOptions['frameRate']>(30);
@@ -488,8 +511,24 @@ export const ScreenSharePickerModal: React.FC<ScreenSharePickerModalProps> = ({ 
     // Detect if primary screen is 1440p+
     const has1440p = typeof window !== 'undefined' && window.screen.height >= 1440;
 
+    // False once the picker is closing or gone: no more source enumerations
+    // are started for it (each one is real capture work in the main process —
+    // see electron/desktop-sources.ts), and a late answer is dropped.
+    const openRef = useRef(true);
+    useEffect(() => {
+        openRef.current = true;
+        return () => {
+            openRef.current = false;
+            cancelDesktopSourceRefresh('screen');
+            cancelDesktopSourceRefresh('window');
+        };
+    }, []);
+
     // Animate out before calling onSelect — ClModal unmounts 260 ms after `open` flips.
     const dismiss = useCallback((result: ScreenShareOptions | null) => {
+        openRef.current = false;
+        cancelDesktopSourceRefresh('screen');
+        cancelDesktopSourceRefresh('window');
         setClosing(true);
         setTimeout(() => onSelect(result), 260);
     }, [onSelect]);
@@ -508,15 +547,66 @@ export const ScreenSharePickerModal: React.FC<ScreenSharePickerModalProps> = ({ 
         } catch { /* leave the last known value — this only picks the copy */ }
     }, [platform]);
 
+    // Latest request per type: a slow thumbnail pass that finishes after a
+    // refresh (or a newer request for the same tab) must not overwrite it.
+    const fetchSeq = useRef<Record<SourceType, number>>({ screen: 0, window: 0 });
+
+    // Click → first painted frame, → names, → first preview: the "does the
+    // picker feel instant" numbers, in the call event log (diagnostics
+    // report) and the console. Durations only.
+    const [clickAt] = useState(() => pickerRequestedAt());
+    const timing = useRef<{ click: number | null; names?: number; preview?: number; previewCached?: boolean; logged: boolean }>({ click: clickAt, logged: false });
     const fetchSourcesFor = useCallback(async (type: SourceType) => {
-        setLoading(true);
-        setSelectedSourceId(null);
+        const seq = ++fetchSeq.current[type];
+        const current = () => openRef.current && fetchSeq.current[type] === seq;
+        // A cached grid stays up (and clickable) while it is refreshed.
+        if (!getCachedSources(type)) setLoading(true);
         if (window.electronAPI) {
+            // Two passes, because capturing a thumbnail of every window is the
+            // slow part of enumerating them (it scales with the number of
+            // windows; the names do not). Pass 1 asks for names only and the
+            // grid appears at once (cached previews where the source is still
+            // there, placeholders otherwise); pass 2 asks for the previews and
+            // fills them in. Same main-process handler, same admission list
+            // (each call replaces the other's result for this type, so what
+            // the user can pick is always what was last offered).
+            //
+            // The run is shared (utils/desktopSourceCache.refreshDesktopSources):
+            // the click already started one before this modal mounted, and
+            // this joins it rather than queueing a second enumeration behind
+            // it in the main process.
+            const api = window.electronAPI;
+            const run = refreshDesktopSources(type, (t, o) => api.getDesktopSources(t, o));
             try {
-                const desktopSources = await window.electronAPI.getDesktopSources([type]);
-                setSourcesByType(prev => ({ ...prev, [type]: desktopSources }));
+                const list = await run.names;
+                if (!current()) return;
+                setSourcesByType(prev => ({ ...prev, [type]: list }));
+                // A tile picked from the cached grid whose source has gone.
+                setSelectedSourceId(id => (id && !list.some(x => x.id === id) ? null : id));
                 setFetchFailed(false);
+                setLoading(false);
+                timing.current.names ??= performance.now();
+                // The previews, in the background. A failure here leaves the
+                // names (and placeholders) in place: the list is still usable.
+                // The main process runs these one at a time, so this waits for
+                // the names call rather than stacking on top of it.
+                void run.previews.then(merged => {
+                    if (!current()) return;
+                    setSourcesByType(prev => ({ ...prev, [type]: merged }));
+                    setSelectedSourceId(id => (id && !merged.some(x => x.id === id) ? null : id));
+                    // Warm the other tab's NAMES (cheap) so switching to it is
+                    // instant; its previews wait until it is actually opened.
+                    const other: SourceType = type === 'screen' ? 'window' : 'screen';
+                    if (!getCachedSources(other) && openRef.current) {
+                        void window.electronAPI?.getDesktopSources([other], { thumbnails: false }).then(names => {
+                            if (!openRef.current || getCachedSources(other)) return;
+                            const l = storeNames(other, names);
+                            setSourcesByType(prev => (prev[other] ? prev : { ...prev, [other]: l }));
+                        }).catch(() => { /* fetched normally when the tab opens */ });
+                    }
+                }).catch(err => console.warn('Desktop source previews failed:', err));
             } catch (err) {
+                if (!current()) return;
                 // On macOS this is the NORMAL shape of a missing Screen
                 // Recording grant: Electron rejects with "Failed to get
                 // sources." rather than resolving with an empty list.
@@ -529,17 +619,49 @@ export const ScreenSharePickerModal: React.FC<ScreenSharePickerModalProps> = ({ 
             // prompt, so asking first would report a staler answer.
             await refreshScreenAccess();
         }
-        setLoading(false);
+        if (current()) setLoading(false);
     }, [refreshScreenAccess]);
 
-    // Classic (non-Linux) tabs: fetch the active tab's sources whenever it
-    // changes, but only the first time — switching back to an already-
-    // fetched tab neither re-hits the IPC call nor re-prompts anything.
+    // Classic (non-Linux) tabs: refresh the active tab's sources the first
+    // time it is shown in this open (a cached grid is already on screen);
+    // switching back to an already-refreshed tab neither re-hits the IPC call
+    // nor re-prompts anything.
+    const refreshed = useRef<Set<SourceType>>(new Set());
     useEffect(() => {
         if (isLinux) return;
-        if (sourcesByType[selectedTab] !== undefined) { setSelectedSourceId(null); return; }
+        if (refreshed.current.has(selectedTab)) { setSelectedSourceId(null); return; }
+        refreshed.current.add(selectedTab);
         void fetchSourcesFor(selectedTab);
-    }, [isLinux, selectedTab, sourcesByType, fetchSourcesFor]);
+    }, [isLinux, selectedTab, fetchSourcesFor]);
+
+    const [openPaintMs, setOpenPaintMs] = useState<number | null>(null);
+    useLayoutEffect(() => {
+        const click = timing.current.click;
+        if (click === null) return;
+        const raf = requestAnimationFrame(() => setOpenPaintMs(performance.now() - click));
+        return () => cancelAnimationFrame(raf);
+    }, []);
+    const firstPreviewShown = !isLinux && (sourcesByType[selectedTab] ?? []).some(hasPreview);
+    useEffect(() => {
+        const t = timing.current;
+        if (!firstPreviewShown || t.preview !== undefined) return;
+        t.preview = performance.now();
+        // cached = this preview came from the last open / the hover warm-up,
+        // on screen before this open's own names pass returned.
+        t.previewCached = t.names === undefined;
+    }, [firstPreviewShown]);
+    useEffect(() => {
+        const t = timing.current;
+        if (t.logged || t.click === null || openPaintMs === null || t.preview === undefined) return;
+        t.logged = true;
+        const preview = Math.max(Math.round(t.preview - t.click), Math.round(openPaintMs));
+        const names = t.names !== undefined ? Math.round(t.names - t.click) : undefined;
+        logCallEvent('share_picker', {
+            open_ms: Math.round(openPaintMs), preview_ms: preview, cached: !!t.previewCached, tab: selectedTab,
+            ...(names !== undefined ? { list_ms: names } : {}),
+        });
+        console.info(`[ScreenShare] picker: painted ${Math.round(openPaintMs)} ms after click, list ${names ?? '-'} ms, first preview ${preview} ms${t.previewCached ? ' (cached)' : ''} (${selectedTab})`);
+    }, [openPaintMs, firstPreviewShown, selectedTab]);
 
     // Linux: the ONE call to the OS. Requesting both types together lets the
     // native dialog's own UI offer windows and screens side by side, so
@@ -675,6 +797,25 @@ export const ScreenSharePickerModal: React.FC<ScreenSharePickerModalProps> = ({ 
                             );
                         })}
                     </div>
+
+                    {/* macOS 15+: explain the system's periodic "bypass the private
+                        window picker" consent before it appears (see
+                        showMacPickerBypassNote). Not while the Screen Recording
+                        notice owns the body — that one comes first. */}
+                    {bypassNote && verdict !== 'macos-permission-required' && verdict !== 'macos-relaunch-required' && (
+                        <div
+                            className="mx-6 mt-3 flex items-start gap-2 rounded-lg px-3 py-2 border shrink-0"
+                            style={{ background: 'rgba(14,165,233,0.06)', borderColor: 'rgba(14,165,233,0.25)' }}
+                            role="note"
+                        >
+                            <Info className="w-3.5 h-3.5 text-cl-lume shrink-0 mt-[1px]" aria-hidden="true" />
+                            <p className="text-[11px] text-cl-muted m-0 leading-snug">
+                                macOS may ask whether Cipherline can <span className="text-cl-text">bypass the system private window picker</span>.
+                                Choose <span className="font-semibold text-cl-text">Allow</span>: Cipherline uses its own picker so it can share
+                                a window's sound and show annotations over what you share. macOS asks again about once a month.
+                            </p>
+                        </div>
+                    )}
 
                     {/* Source grid */}
                     <div className="flex-1 overflow-y-auto custom-scrollbar px-6 py-4">

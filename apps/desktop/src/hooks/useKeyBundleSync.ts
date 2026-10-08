@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
-import axios from 'axios';
 import { useAuth } from '../contexts/AuthContext';
-import { API_BASE } from '../constants';
+import { publishIdentityBundle, isRetryableUploadError } from '../utils/keyBundleUpload';
 
 /**
  * Ensures the device's Signal key bundle is uploaded to the server on every
@@ -38,19 +37,10 @@ export function useKeyBundleSync(): { bundleReady: boolean; bundleError: string 
                 try {
                     console.log(`[E2EE] Key bundle sync: attempt ${attempt} for device ${deviceId}`);
 
-                    // Generate or load the key bundle from the Electron main process
-                    const bundle = await window.electronAPI!.ensureIdentityBundle(deviceId);
-
-                    // Upload to the server (idempotent — uses upsert on device_id PK)
-                    await axios.post(`${API_BASE}/keys/upload_bundle`, {
-                        device_id:              bundle.device_id,
-                        identity_key_pub_b64:   bundle.identity_key_pub_b64,
-                        registration_id:        bundle.registration_id,
-                        signed_prekey_id:       bundle.signed_prekey.id,
-                        signed_prekey_pub_b64:  bundle.signed_prekey.pub_b64,
-                        signed_prekey_sig_b64:  bundle.signed_prekey.sig_b64,
-                        one_time_prekeys:       bundle.one_time_prekeys,
-                    }, { headers: { Authorization: `Bearer ${token}` } });
+                    // Generate or load the identity, then publish the current
+                    // signed prekey + a gated, capped prekey set (see
+                    // publishIdentityBundle for what is re-offered and why).
+                    await publishIdentityBundle(deviceId, token);
 
                     console.log('[E2EE] Key bundle sync: upload succeeded');
                     setBundleReady(true);
@@ -60,15 +50,18 @@ export function useKeyBundleSync(): { bundleReady: boolean; bundleError: string 
                     const msg = err?.response?.data?.message || err?.message || 'Unknown error';
                     console.error(`[E2EE] Key bundle sync: attempt ${attempt} failed —`, msg);
 
-                    if (attempt < maxRetries) {
+                    // A 4xx is the server's settled answer about this body;
+                    // re-sending it fails the same way. Only network/5xx retry.
+                    if (attempt < maxRetries && isRetryableUploadError(err)) {
                         // Exponential backoff: 1s, 2s, 4s
                         await new Promise(r => setTimeout(r, 1000 * Math.pow(2, attempt - 1)));
                     } else {
-                        console.error('[E2EE] Key bundle sync: permanently failed after 3 attempts');
+                        console.error(`[E2EE] Key bundle sync: gave up after attempt ${attempt}`);
                         setBundleError(`Key bundle upload failed: ${msg}`);
                         // Still set bundleReady so the UI isn't permanently locked —
                         // individual encryption calls will show their own errors
                         setBundleReady(true);
+                        return;
                     }
                 }
             }

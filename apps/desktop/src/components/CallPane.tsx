@@ -6,12 +6,15 @@ import {
     useLocalParticipant,
     useRoomContext,
 } from '@livekit/components-react';
-import { ExternalE2EEKeyProvider, VideoPresets, Track, RoomEvent, DisconnectReason, LocalAudioTrack, type TrackPublication, type RemoteTrackPublication } from 'livekit-client';
+import { ExternalE2EEKeyProvider, VideoPresets, VideoPreset, Track, RoomEvent, DisconnectReason, LocalAudioTrack, type RemoteTrackPublication } from 'livekit-client';
 import { annotationStore } from '../utils/annotationStore';
 import { useAnnotationTransport } from '../hooks/useAnnotationTransport';
 import { AnnotationRequestsDock } from './call/AnnotationRequestsDock';
 import type { RoomOptions, RoomConnectOptions, LocalTrackPublication } from 'livekit-client';
-import e2eeWorkerUrl from 'livekit-client/e2ee-worker?worker&url';
+// LiveKit's E2EE worker + the Annex-B canonicalizer in front of each sender
+// stream (a 3-byte start code otherwise fails GCM on every receiver — see
+// utils/e2eeAnnexB.ts). Same cryptor, same keys; workers/e2eeWorker.ts.
+import e2eeWorkerUrl from '../workers/e2eeWorker?worker&url';
 import ReactDOM from 'react-dom';
 import { SidebarConference } from './SidebarConference';
 import { RemoteE2EEWatcher } from './RemoteE2EEWatcher';
@@ -28,12 +31,22 @@ import * as audioHealth from '../utils/audioHealth';
 import { setCurrentPipelineDbfs, resetPipelineDbfs } from '../utils/micLevelRegistry';
 import { mapDisconnectReasonToUserMessage } from '../utils/callDisconnectReasons';
 import { beginActivity, trackActivity } from '../utils/freezeLog';
+import { CallDiagnosticsRecorder } from './diagnostics/CallDiagnosticsRecorder';
 import { stableE2EEOptions } from '../utils/e2eeRoomOptions';
+import { attachAnnexBStatsLog, attachDataPacketErrorLog } from '../utils/e2eeWorkerStats';
+import { installE2EESenderCodecPin, e2eeWorkerOf, type CodecPinRoom } from '../utils/e2eeSenderCodec';
 import { describeE2EEActivationFailure, type E2EEActivationFailure } from '../utils/e2eeActivation';
 import { E2EEActivator } from './E2EEActivator';
-import { cameraCueForEvent } from '../utils/callTrackCues';
+import { TrackCueController, type CuePublication, type CueParticipant } from '../utils/callTrackCues';
 import { ROSTER_ONLY } from '../utils/callRosterEvents';
 import { noteRemoteVideoSubscribed } from '../utils/remoteVideoDemand';
+import { GamingVideoGuard } from './call/GamingVideoGuard';
+import { CallPerformanceGuard } from './call/CallPerformanceGuard';
+import { CallEventMonitor } from './call/CallEventMonitor';
+import { publishGrants } from '../utils/livekitPublishGrants';
+import { markCallJoinTrace, finishCallJoinTrace } from '../utils/callJoinTrace';
+import { releaseMicPrewarm } from '../utils/micPrewarm';
+import { ringbackWanted, createRingbackDriver } from '../utils/ringback';
 
 /**
  * Bridge: attaches the CipherlineVoiceProcessor to the mic track as soon as
@@ -52,6 +65,71 @@ import { noteRemoteVideoSubscribed } from '../utils/remoteVideoDemand';
  * cycles restart the same track and keep its processor; a genuinely new track
  * publication arrives processor-less and gets one here).
  */
+/**
+ * Tells LiveKit's E2EE worker the codec of each of our published video
+ * tracks, so its frame cryptor never has to guess where the clear header
+ * ends. Without it an H.264 High camera or share is guessed as H.265 as soon
+ * as a peer publishes, and the peer gets a keyframe-only slideshow (or
+ * nothing). See utils/e2eeSenderCodec.ts. Renders nothing.
+ */
+/** The call's E2EE worker (module worker), with its Annex-B counts feeding the call event log. */
+function makeE2EEWorker(): Worker {
+    const w = new Worker(e2eeWorkerUrl, { type: 'module' });
+    attachAnnexBStatsLog(w);
+    attachDataPacketErrorLog(w);
+    return w;
+}
+
+const E2EESenderCodecPin = () => {
+    const room = useRoomContext();
+    useEffect(() => installE2EESenderCodecPin(
+        room as unknown as CodecPinRoom,
+        e2eeWorkerOf(room as unknown as Parameters<typeof e2eeWorkerOf>[0]),
+        m => console.info(m),
+    ), [room]);
+    return null;
+};
+
+/**
+ * Instant join, inside the room: closes out the join once the mic is up.
+ *
+ * - The first microphone publication ends the join trace and releases the
+ *   mic warm-up capture (utils/micPrewarm.ts) — the call's own track now
+ *   holds the device.
+ * - A mute/deafen pressed on the joining controls AFTER LiveKit had already
+ *   started publishing the mic (it starts on SignalConnected, from the
+ *   `audio` prop as it stood then) is honoured here by switching that first
+ *   publication off. Only that one: a later publish is the user unmuting on
+ *   the real controls and must not be undone.
+ */
+const JoinIntentBridge = ({ audioRequested, silenced, onFirstMic }: { audioRequested: boolean; silenced: boolean; onFirstMic: () => void }) => {
+    const room = useRoomContext();
+    const latest = useRef({ audioRequested, silenced, onFirstMic });
+    useEffect(() => { latest.current = { audioRequested, silenced, onFirstMic }; });
+    useEffect(() => {
+        let startedWithMic: boolean | null = null;
+        let firstMicSeen = false;
+        const onSignal = () => { if (startedWithMic === null) startedWithMic = latest.current.audioRequested; };
+        const onPublished = (pub: LocalTrackPublication) => {
+            if (pub.source !== Track.Source.Microphone || firstMicSeen) return;
+            firstMicSeen = true;
+            markCallJoinTrace('mic');
+            releaseMicPrewarm();
+            if (startedWithMic && latest.current.silenced) {
+                room.localParticipant.setMicrophoneEnabled(false).catch(() => { /* surfaced by the controls */ });
+            }
+            latest.current.onFirstMic();
+        };
+        room.on(RoomEvent.SignalConnected, onSignal);
+        room.on(RoomEvent.LocalTrackPublished, onPublished);
+        return () => {
+            room.off(RoomEvent.SignalConnected, onSignal);
+            room.off(RoomEvent.LocalTrackPublished, onPublished);
+        };
+    }, [room]);
+    return null;
+};
+
 const MicProcessorBridge = ({ token, voice }: { token: string; voice?: VoiceSettingsHook }) => {
     const room = useRoomContext();
     // Latest-value ref: settings only matter for the one-time constructor
@@ -197,9 +275,18 @@ interface CallPaneProps {
      *  otherwise reports only this device's own key state and would stay green
      *  through a partly-plaintext call. See utils/remoteE2EEWatch.ts. */
     onRemoteEncryptionChange?: (snapshot: RemoteEncryptionSnapshot) => void;
+    /** Instant join: mute / deafen pressed on Dashboard's joining controls
+     *  while this call was still connecting. Until the room connects they are
+     *  live (a muted join never asks LiveKit to publish the mic); at Connected
+     *  they are latched and handed to SidebarConference to seed its state. */
+    joinMuted?: boolean;
+    joinDeafened?: boolean;
+    /** Fired when the room first reports Connected — Dashboard swaps its
+     *  joining controls for the real ones in the same commit. */
+    onRoomConnected?: () => void;
 }
 
-const CallAudioEffects = ({ isInitiator, noRinging }: { isInitiator?: boolean; noRinging?: boolean }) => {
+const CallAudioEffects = ({ isInitiator, noRinging, roomConnected }: { isInitiator?: boolean; noRinging?: boolean; roomConnected: boolean }) => {
     const participants = useParticipants(ROSTER_ONLY); // only .length is read — see utils/callRosterEvents.ts
     const prevCountRef = useRef(participants.length);
     const [hasConnectedOnce, setHasConnectedOnce] = useState(false);
@@ -345,85 +432,39 @@ const CallAudioEffects = ({ isInitiator, noRinging }: { isInitiator?: boolean; n
             if (identity) ctxRef.current?.markAdjusting(identity, 2000);
         };
 
-        const onTrackPublished = (pub: any, participant: { identity: string }) => {
-            if (!readyRef.current) return;
-            if (pub?.source === Track.Source.ScreenShare) {
-                if (ctxRef.current?.isAdjusting(participant.identity)) return;
-                playSound('screenshare_on', soundsPrefs());
-            } else if (pub?.source === Track.Source.Camera) {
-                // A track publish only happens the FIRST time someone turns
-                // their camera on in a call — every toggle after that is a
-                // mute/unmute of the same publication (see onTrackMuted /
-                // onTrackUnmuted below, and callTrackCues.ts's header for why).
-                const cue = cameraCueForEvent('published', readyRef.current);
-                if (cue) playSound(cue, soundsPrefs());
-            }
-        };
-
-        // Pending screenshare-end cues, keyed by participant identity. LiveKit
-        // fires TrackUnpublished BEFORE ParticipantDisconnected when someone
-        // leaves while screensharing — so at the moment we'd play the cue we
-        // don't yet know a leave is coming. We schedule the cue with a short
-        // delay, and if a ParticipantDisconnected arrives for that same
-        // identity in the meantime, we cancel it. Result: a clean solo
-        // leave_call.wav when someone sharing leaves, and an un-delayed
-        // screenshare_ended.wav when someone just stops sharing.
-        //
-        // Camera does NOT need this dance and TrackUnpublished is deliberately
-        // ignored for it below: a camera publication is only ever unpublished
-        // as part of the SAME participant-departure teardown that screenshare
-        // guards against (setCameraEnabled(false) only ever mutes, never
-        // unpublishes — see callTrackCues.ts), so there is no "someone stopped
-        // their camera but is still here" case to disambiguate from a leave.
-        // Reacting to it would just double up camera_off with every leave cue
-        // for a participant whose camera happened to be on.
-        const pendingSsEndTimers = new Map<string, ReturnType<typeof setTimeout>>();
-
-        const onTrackUnpublished = (pub: any, participant: { identity: string }) => {
-            if (!readyRef.current) return;
-            if (pub?.source !== Track.Source.ScreenShare) return;
-            if (ctxRef.current?.isAdjusting(participant.identity)) return;
-            // Clear any earlier pending cue for this identity (extremely rare
-            // but harmless) and schedule a new one.
-            const prev = pendingSsEndTimers.get(participant.identity);
-            if (prev) clearTimeout(prev);
-            const timer = setTimeout(() => {
-                pendingSsEndTimers.delete(participant.identity);
-                playSound('screenshare_off', soundsPrefs());
-            }, 200); // 200 ms: imperceptible for a notification cue, long enough
-                     //         to catch a ParticipantDisconnected that follows.
-            pendingSsEndTimers.set(participant.identity, timer);
-        };
-
-        // Camera on/off AFTER the first publish is a mute/unmute of the
-        // existing publication, not a publish/unpublish cycle — see
-        // callTrackCues.ts. `RoomEvent.TrackMuted`/`TrackUnmuted` (unlike
-        // TrackPublished) already fire for BOTH local and remote participants
-        // through the same registration, so — unlike the Published/Unpublished
-        // pair above — there is no separate Local* variant to also register.
-        // Filtering to Camera here is also what keeps this from firing on a
-        // microphone mute/unmute, which must stay local-only (see
-        // SidebarConference's toggleMic).
-        const onTrackMuted = (pub: TrackPublication) => {
-            if (pub?.source !== Track.Source.Camera) return;
-            const cue = cameraCueForEvent('muted', readyRef.current);
-            if (cue) playSound(cue, soundsPrefs());
-        };
-        const onTrackUnmuted = (pub: TrackPublication) => {
-            if (pub?.source !== Track.Source.Camera) return;
-            const cue = cameraCueForEvent('unmuted', readyRef.current);
-            if (cue) playSound(cue, soundsPrefs());
-        };
-
-        const onParticipantDisconnected = (participant: { identity: string }) => {
-            // Cancel any pending screenshare-end cue — the participant-count
-            // change in the other effect will play leave_call.wav instead.
-            const timer = pendingSsEndTimers.get(participant.identity);
-            if (timer) {
-                clearTimeout(timer);
-                pendingSsEndTimers.delete(participant.identity);
-            }
-        };
+        // Which cue each camera / share event plays lives in
+        // callTrackCues.TrackCueController (unit-tested there):
+        //  - share stop is delayed SHARE_STOP_DELAY_MS and cancelled by a
+        //    ParticipantDisconnected (LiveKit unpublishes BEFORE it on a leave,
+        //    which earns its own leave cue);
+        //  - camera never cues on unpublish — turning a camera off is a mute
+        //    (setCameraEnabled(false) never unpublishes); a camera unpublish is
+        //    a leave or one of OUR republishes;
+        //  - a republish (H.265 negotiation / the "Allow H.265" toggle, codec
+        //    swap, hardware-encoder fallback, layering change) is a new
+        //    publication of a source that was already on, recognised from
+        //    what every listener sees — the old publication still present, or
+        //    the same source unpublished moments ago — and plays nothing for
+        //    anyone. Subscribing, pausing (remoteVideoDemand), layer and focus
+        //    changes never publish, so they never cue.
+        const cues = new TrackCueController({
+            isReady: () => readyRef.current,
+            isAdjusting: identity => !!ctxRef.current?.isAdjusting(identity),
+            play: cue => playSound(cue, soundsPrefs()),
+            now: () => Date.now(),
+            setTimer: (fn, ms) => setTimeout(fn, ms),
+            clearTimer: t => clearTimeout(t as ReturnType<typeof setTimeout>),
+            sources: { camera: Track.Source.Camera, screenShare: Track.Source.ScreenShare },
+        });
+        const onTrackPublished = (pub: CuePublication, participant: CueParticipant) => cues.trackPublished(pub, participant);
+        const onTrackUnpublished = (pub: CuePublication, participant: CueParticipant) => cues.trackUnpublished(pub, participant);
+        // RoomEvent.TrackMuted/TrackUnmuted fire for BOTH local and remote
+        // participants through the same registration (no Local* variant to
+        // add); the controller filters to Camera, which keeps a microphone
+        // mute local-only (see SidebarConference's toggleMic).
+        const onTrackMuted = (pub: CuePublication) => cues.trackMuted(pub);
+        const onTrackUnmuted = (pub: CuePublication) => cues.trackUnmuted(pub);
+        const onParticipantDisconnected = (participant: { identity: string }) => cues.participantDisconnected(participant);
 
         // Re-arm the ready gate around a full LiveKit reconnect. On a full
         // reconnect (as opposed to the common fast-resume path) the Room tears
@@ -468,8 +509,7 @@ const CallAudioEffects = ({ isInitiator, noRinging }: { isInitiator?: boolean; n
             if (reconnectReadyTimer) clearTimeout(reconnectReadyTimer);
             readyRef.current = false;
             // Flush any still-pending screenshare-end cues so we don't leak them.
-            for (const t of pendingSsEndTimers.values()) clearTimeout(t);
-            pendingSsEndTimers.clear();
+            cues.dispose();
             room.off(RoomEvent.DataReceived, onData);
             room.off(RoomEvent.TrackPublished,   onTrackPublished);
             room.off(RoomEvent.TrackUnpublished, onTrackUnpublished);
@@ -484,21 +524,23 @@ const CallAudioEffects = ({ isInitiator, noRinging }: { isInitiator?: boolean; n
         };
     }, [room]);
 
-    useEffect(() => {
-        if (isInitiator && !noRinging && participants.length <= 1 && !hasConnectedOnce) {
-            // Was a bare `new Audio(...)` with no pref check at all, so a user
-            // who had turned every sound off still got 15 seconds of looping
-            // ringback. playLoopingSound returns a no-op stopper when the
-            // category is muted, so the cleanup path stays identical.
-            const stop = playLoopingSound('ringing', soundsPrefs());
-            const timeout = setTimeout(stop, 15000);
-
-            return () => {
-                clearTimeout(timeout);
-                stop();
-            };
-        }
-    }, [isInitiator, noRinging, participants.length, hasConnectedOnce]);
+    // Outgoing ringback (utils/ringback.ts). With instant join this component
+    // is up before the room is, so it no longer rings at mount: only once the
+    // room is Connected AND we started the call (the start request created
+    // the session and rang the callee — a failed start never reaches here).
+    // Stops on answer (count > 1), after RINGBACK_MAX_MS, and when this unmounts
+    // (declined / cancelled / left / failed all tear CallPane down).
+    // playLoopingSound returns a no-op stopper when the category is muted.
+    const ringWanted = ringbackWanted({
+        isInitiator: !!isInitiator,
+        noRinging: !!noRinging,
+        roomConnected,
+        participantCount: participants.length,
+        hasConnectedOnce,
+    });
+    const [ringback] = useState(() => createRingbackDriver());
+    useEffect(() => { ringback.update(ringWanted, () => playLoopingSound('ringing', soundsPrefs())); }, [ringback, ringWanted]);
+    useEffect(() => () => ringback.dispose(), [ringback]);
 
     // The streamer's Allow / Decline, visible in every view (the per-tile
     // menu only exists on their own focused tile). Empty until someone asks.
@@ -534,8 +576,40 @@ export const CallPane = ({
     channelPermissions,
     encryptionIndicatorMode,
     onRemoteEncryptionChange,
+    joinMuted = false,
+    joinDeafened = false,
+    onRoomConnected,
 }: CallPaneProps) => {
     const [keyProvider] = useState(() => new ExternalE2EEKeyProvider());
+
+    // ── Instant join ─────────────────────────────────────────────────────
+    // The in-call UI (SidebarConference: tiles + the real ControlBar) mounts
+    // when the room reports Connected. Until then Dashboard's joining
+    // controls own the bar, so the two can never both show. SidebarConference
+    // is already built to mount into a live room — it remounts mid-call every
+    // time its portal target moves — so mounting it at Connected instead of
+    // at CallPane mount changes nothing it depends on.
+    const [roomConnected, setRoomConnected] = useState(false);
+    /** The room reported Connected (before the UI handover — see handoverRef). */
+    const [rtcConnected, setRtcConnected] = useState(false);
+    const [latchedIntent, setLatchedIntent] = useState<{ muted: boolean; deafened: boolean } | null>(null);
+    const joinIntent = latchedIntent ?? { muted: joinMuted, deafened: joinDeafened };
+    // When the handover happens. Not at Connected itself: right then the mic
+    // is still publishing, and the real entry would show "mic off" for that
+    // moment (useIsMicMuted → muteBadge: connected + no mic track = muted)
+    // and then drop it — a flicker on exactly the row the user is watching.
+    // So: at Connected when no mic is coming (muted/deafened/listen-only
+    // join), else at the first mic publication, else HANDOVER_MIC_WAIT_MS
+    // after Connected at the latest (a slow device must not hold the call UI —
+    // and with it the remote audio, which plays from SidebarConference — back).
+    const handoverRef = useRef({ connected: false, micUp: false, done: false, timer: 0 });
+    // What SidebarConference seeds its mute/deafen state from on its FIRST
+    // mount only. Cleared once that mount has happened (CallSidebarPortal
+    // reports it), so a later mid-call remount — the portal target moves on
+    // navigation — starts from the live room state instead of re-applying a
+    // join-time intent the user has since changed on the real controls.
+    const [sidebarSeed, setSidebarSeed] = useState<{ muted: boolean; deafened: boolean } | null>(null);
+    const clearSidebarSeed = useCallback(() => setSidebarSeed(null), []);
 
     // ── Render isolation from Dashboard ─────────────────────────────────────
     // Dashboard (the app-wide monolith) renders this component inline, so it
@@ -741,22 +815,34 @@ export const CallPane = ({
     }), []);
 
     const roomOptions = useMemo((): RoomOptions => ({
-        // adaptiveStream: LiveKit observes every <video> element attached via track.attach(),
-        // takes the MAX across all visible tiles, multiplies by the real devicePixelRatio
-        // ('screen'), and sends UpdateTrackSettings to the SFU so only the simulcast layer
-        // each subscriber actually needs is forwarded. pixelDensity:'screen' replaces the
-        // default cap of 1× (which under-reports on Retina/4K displays and requests
-        // lower quality than the tile actually renders at).
-        adaptiveStream: false,   // explicit setVideoQuality per tile replaces dimension-based adaptation
-        // dynacast: false — keep all simulcast layers always publishing.
-        // With dynacast: true, the SFU tells the publisher to DROP unused layers when sidebar
-        // tiles request LOW. When a tile is then focused and requests HIGH, the publisher has to
-        // cold-start the HIGH VP8 encoder and wait for a keyframe — this can take 2–5 s and
-        // often never fully ramps up before the user unfocuses. With dynacast: false, all three
-        // simulcast layers are always live; the SFU just routes a different one instantly.
-        // The publisher pays ~2 Mbps extra upload for the unused layers, which is acceptable
-        // for small group calls on modern connections.
-        dynacast: false,
+        // adaptiveStream OFF: each tile picks its simulcast layer itself from its
+        // rendered size × devicePixelRatio, its role and the tile count, and a
+        // per-publication arbiter merges the tiles (upgrade now, downgrade after
+        // 2.5 s) — utils/remoteVideoQuality.ts. Pausing off-screen video is
+        // utils/remoteVideoDemand.ts.
+        adaptiveStream: false,
+        // dynacast ON (it was off): the SFU tells each publisher which layers
+        // somebody is actually watching and the publisher stops ENCODING the
+        // rest. It had been switched off on the belief that resuming a paused
+        // top layer takes 2–5 s. Measured (harness: this Electron 43 +
+        // livekit-client 2.18.8 + E2EE, LiveKit v1.9.12 with server defaults,
+        // the same image as prod), a top layer that had been paused for 10 s
+        // reached the viewer as a decoded full-resolution frame in 0.46–0.50 s
+        // at 720p and 0.49–0.84 s at 1080p — the SFU grants the upgrade at
+        // once and PLIs the publisher, whose encoder restarts with a keyframe.
+        // Meanwhile dynacast OFF had a measurable cost: encoding all three
+        // layers non-stop drove WebRTC's CPU adaptation to shrink EVERY layer
+        // (720p top → 960×540, 1080p → 1280×720) for the rest of the call, so
+        // "HIGH" was soft — and the publisher spent ~14% of a core on 720p
+        // with nobody watching it vs ~2–3% with dynacast pausing h/f. Paused
+        // layers come back within the 5 s server-side downgrade debounce
+        // (dynacast_pause_delay), so a quick unfocus → refocus never pauses.
+        dynacast: true,
+        // Camera capture size and the simulcast ladder are decided per camera
+        // from what it ACTUALLY delivers (utils/cameraQuality.ts +
+        // cameraPublish.ts publish the camera themselves). These defaults only
+        // apply if anything ever publishes a camera through LiveKit's own
+        // setCameraEnabled first; they mirror the 720p ladder.
         videoCaptureDefaults: {
             resolution: VideoPresets.h720.resolution,
             deviceId: initialCameraDeviceId,
@@ -767,16 +853,14 @@ export const CallPane = ({
             // `if (!useSimulcast) return [videoEncoding]` early-exit and publishes a single
             // stream regardless of what videoSimulcastLayers / screenShareSimulcastLayers say.
             simulcast: true,
-            videoSimulcastLayers: [VideoPresets.h180, VideoPresets.h360, VideoPresets.h720],
-            // Screen share simulcast is not used — browsers rarely honour simulcast on
-            // getDisplayMedia tracks. Screen share quality is always requested at HIGH on the
-            // subscriber side (see VideoTile.tsx isScreenShare branch). Screen shares carry
-            // their OWN publish options (codec, screenShareEncoding, degradationPreference —
-            // utils/screenShare.ts buildScreenSharePublishOptions), so nothing screen-share
-            // specific belongs here; note that leaving screenShareEncoding unset at BOTH
+            // LiveKit uses only the first two entries (low + mid); the top layer is
+            // the capture itself. Same 180/360 @30 as cameraLadder() for 720p.
+            videoSimulcastLayers: [new VideoPreset(320, 180, 200_000, 30), new VideoPreset(640, 360, 600_000, 30)],
+            // Screen shares carry their OWN publish options (codec, screenShareEncoding,
+            // degradationPreference — utils/screenShare.ts buildScreenSharePublishOptions),
+            // and the camera carries its own (cameraPublish.ts), so nothing
+            // source-specific belongs here; note that leaving screenShareEncoding unset at BOTH
             // levels makes LiveKit publish a share at its default of 2.5 Mbps / 15 fps.
-            // We intentionally do NOT set videoCodec here globally, because camera simulcast
-            // relies on VP8/H.264's independent-layer model (VP9 uses SVC which behaves differently).
             // RED (RFC 2198 redundant audio) adds latency and bandwidth in
             // exchange for surviving BURST packet loss — a real tradeoff, not
             // an obviously-wrong one: production voice apps split roughly
@@ -876,7 +960,7 @@ export const CallPane = ({
             // forever and killed every E2EE call mid-connect. See that file.
             encryption: stableE2EEOptions(
                 keyProvider,
-                new Worker(e2eeWorkerUrl, { type: 'module' }),
+                makeE2EEWorker(),
             ),
         } : {}),
     // Device ids intentionally absent from these deps — see initialMicDeviceId.
@@ -885,6 +969,49 @@ export const CallPane = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }), [e2eeKeyB64, keyProvider, token]);
 
+
+    const grants = publishGrants(token);
+    // Mic on join = the token allows it AND the user didn't mute/deafen on the
+    // joining controls. LiveKit reads this on SignalConnected.
+    const joinWithMic = grants.microphone && !joinIntent.muted && !joinIntent.deafened;
+    // Nothing to keep warm for a join that won't publish the mic.
+    useEffect(() => { if (!joinWithMic) releaseMicPrewarm(); }, [joinWithMic]);
+
+    // Latest values for the handover, which fires from LiveKit callbacks and a timer.
+    const handoverLatest = useRef({ joinIntent, onRoomConnected });
+    useLayoutEffect(() => { handoverLatest.current = { joinIntent, onRoomConnected }; });
+    const doHandover = useCallback(() => {
+        const h = handoverRef.current;
+        if (h.done) return;
+        h.done = true;
+        window.clearTimeout(h.timer);
+        const { joinIntent: i, onRoomConnected: notify } = handoverLatest.current;
+        setLatchedIntent({ muted: i.muted, deafened: i.deafened });
+        setSidebarSeed({ muted: i.muted, deafened: i.deafened });
+        setRoomConnected(true);
+        notify?.();
+    }, []);
+    const onFirstMic = useCallback(() => {
+        handoverRef.current.micUp = true;
+        if (handoverRef.current.connected) doHandover();
+    }, [doHandover]);
+    useEffect(() => { const h = handoverRef.current; return () => window.clearTimeout(h.timer); }, []);
+    // A CallPane that goes away (left, failed, replaced) ends any warm-up and
+    // any join trace still open for it. Deferred and re-checked so React
+    // StrictMode's dev-only mount→unmount→mount probe (dev:windows runs it)
+    // does not end the join it is in the middle of.
+    const paneAliveRef = useRef(false);
+    useEffect(() => {
+        paneAliveRef.current = true;
+        return () => {
+            paneAliveRef.current = false;
+            window.setTimeout(() => {
+                if (paneAliveRef.current) return;
+                releaseMicPrewarm();
+                finishCallJoinTrace('ended');
+            }, 0);
+        };
+    }, []);
 
     if (!token || !livekitUrl) {
         return (
@@ -897,15 +1024,41 @@ export const CallPane = ({
     return (
         <div className="hidden">
             <LiveKitRoom
-                video={videoByDefault}
-                audio={true}
+                // Only start what the token lets us publish. A member who may
+                // CONNECT but not SPEAK (or is under a server-mute) gets a token
+                // with no microphone grant; asking the room to publish the mic
+                // anyway makes LiveKit reject it, and onError below would fail
+                // the whole call — so they could not join to listen. With the
+                // mic left off they join muted. See utils/livekitPublishGrants.ts.
+                video={videoByDefault && grants.camera}
+                audio={joinWithMic}
                 token={token}
                 serverUrl={livekitUrl}
                 options={roomOptions}
                 connectOptions={connectOptions}
                 connect={true}
                 data-lk-theme="default"
-                onConnected={() => { hasConnectedRef.current = true; endJoinActivityRef.current?.(); console.log('LiveKit Room Connected successfully'); }}
+                onConnected={() => {
+                    hasConnectedRef.current = true;
+                    endJoinActivityRef.current?.();
+                    console.log('LiveKit Room Connected successfully');
+                    const h = handoverRef.current;
+                    if (!h.connected) {
+                        h.connected = true;
+                        setRtcConnected(true);
+                        markCallJoinTrace('connected');
+                        if (!joinWithMic) {
+                            // No mic coming (listen-only token, or a muted /
+                            // deafened join): the join is complete now.
+                            finishCallJoinTrace();
+                            doHandover();
+                        } else if (h.micUp) {
+                            doHandover();
+                        } else {
+                            h.timer = window.setTimeout(doHandover, HANDOVER_MIC_WAIT_MS);
+                        }
+                    }
+                }}
                 onDisconnected={(reason) => {
                     console.log('LiveKit Room Disconnected, reason:', reason !== undefined ? DisconnectReason[reason] : 'unknown', '— audio health:', audioHealth.summarize());
                     void voiceProcessorManager.destroyForCall(token);
@@ -943,6 +1096,11 @@ export const CallPane = ({
                         onFailure={failEncryption}
                     />
 
+                    {/* Issue reporter: a 2-minute ring of WebRTC stats for
+                        "Report a problem" (no SIDs / identities — see
+                        utils/diagnostics/webrtcRing.ts). Renders nothing. */}
+                    <CallDiagnosticsRecorder />
+
                     {/* Observer, not a gate: reports peers publishing in the
                         clear. Mounted even on a keyless call — see the
                         component docstring. */}
@@ -957,7 +1115,13 @@ export const CallPane = ({
                         SidebarConference panel.  Voice channels pass noRinging=true
                         to skip the ringing state and jump straight to the live view;
                         isGroup=true gives multi-participant tile layout. */}
-                    <CallSidebarPortal
+                    <JoinIntentBridge audioRequested={joinWithMic} silenced={joinIntent.muted || joinIntent.deafened} onFirstMic={onFirstMic} />
+
+                    {roomConnected && <CallSidebarPortal
+                        initialMuted={sidebarSeed?.muted}
+                        initialDeafened={sidebarSeed?.deafened}
+                        instantEnter={!!sidebarSeed}
+                        onSeedConsumed={clearSidebarSeed}
                         apiToken={apiToken}
                         onLeave={stableOnLeave}
                         onInactivityWarning={onInactivityWarning ? stableOnInactivityWarning : undefined}
@@ -979,15 +1143,30 @@ export const CallPane = ({
                         channelPermissions={channelPermissions}
                         encryptionIndicatorMode={encryptionIndicatorMode}
                         unencryptedIdentities={remoteEncryption.unencryptedIdentities}
-                    />
+                    />}
 
                     <MicProcessorBridge token={token} voice={voice} />
+
+                    {/* Our video senders' codec → the E2EE worker (never a guess). */}
+                    <E2EESenderCodecPin />
 
                     <CallSpeakingReporter
                         onChange={onSpeakingChange ?? (() => {})}
                         onParticipantCount={onParticipantCount ?? (() => {})}
                     />
-                    <CallAudioEffects isInitiator={isCallInitiator} noRinging={noRinging} />
+                    <CallAudioEffects isInitiator={isCallInitiator} noRinging={noRinging} roomConnected={rtcConnected} />
+
+                    {/* "Prioritize call video while gaming": in-call priority
+                        signal to main, the camera's degradation preference,
+                        and the one-time freeze offer. See the component. */}
+                    <GamingVideoGuard />
+
+                    {/* "Your PC is struggling to keep up" — sustained encoder CPU
+                        starvation → a once-per-call offer to lower the camera. */}
+                    <CallPerformanceGuard />
+
+                    {/* Privacy-safe call event log feed (utils/callEventLog.ts). */}
+                    <CallEventMonitor />
             </LiveKitRoom>
         </div>
     );
@@ -995,12 +1174,16 @@ export const CallPane = ({
 
 const EMPTY_MEMBER_MAP: Record<string, string | null> = Object.freeze({}) as Record<string, string | null>;
 
+/** Longest the in-call UI waits after Connected for our mic to publish before
+ *  taking over from the joining placeholder anyway (see handoverRef). */
+export const HANDOVER_MIC_WAIT_MS = 1000;
+
 /** The whole in-call UI, skipped unless its own props change — see "Render
  *  isolation from Dashboard" in CallPane. LiveKit-driven updates still reach
  *  it through its own hooks (useParticipants, contexts), unaffected. */
 const MemoSidebarConference = React.memo(SidebarConference);
 
-const CallSidebarPortal = ({ apiToken, onLeave, onInactivityWarning, localAvatarUrl, activeChatAvatarUrl, activeChatUserId, activeChatTitle, sessionId, isGroup, noRinging, isHuddle, onFocusedStreamChange, voice, memberRoleColors, memberAvatarMap, canServerMute, onServerMuteTrack, isActive, channelPermissions, encryptionIndicatorMode, unencryptedIdentities }: { apiToken: string, onLeave: () => void, onInactivityWarning?: (active: boolean) => void, localAvatarUrl?: string, activeChatAvatarUrl?: string, activeChatUserId?: string, activeChatTitle?: string, sessionId?: string, isGroup?: boolean, noRinging?: boolean, isHuddle?: boolean, onFocusedStreamChange?: (active: boolean) => void, voice?: VoiceSettingsHook, memberRoleColors?: Record<string, string | null>, memberAvatarMap?: Record<string, string | null>, canServerMute?: boolean, onServerMuteTrack?: (targetUserId: string, trackType: 'audio' | 'video' | 'screenshare' | 'deafen', muted: boolean) => void, isActive?: boolean, channelPermissions?: bigint, encryptionIndicatorMode: Extract<CallEncryptionIndicatorMode, 'connected' | 'degraded'>, unencryptedIdentities?: string[] }) => {
+const CallSidebarPortal = ({ apiToken, onLeave, onInactivityWarning, localAvatarUrl, activeChatAvatarUrl, activeChatUserId, activeChatTitle, sessionId, isGroup, noRinging, isHuddle, onFocusedStreamChange, voice, memberRoleColors, memberAvatarMap, canServerMute, onServerMuteTrack, isActive, channelPermissions, encryptionIndicatorMode, unencryptedIdentities, initialMuted, initialDeafened, instantEnter, onSeedConsumed }: { initialMuted?: boolean, initialDeafened?: boolean, instantEnter?: boolean, onSeedConsumed?: () => void, apiToken: string, onLeave: () => void, onInactivityWarning?: (active: boolean) => void, localAvatarUrl?: string, activeChatAvatarUrl?: string, activeChatUserId?: string, activeChatTitle?: string, sessionId?: string, isGroup?: boolean, noRinging?: boolean, isHuddle?: boolean, onFocusedStreamChange?: (active: boolean) => void, voice?: VoiceSettingsHook, memberRoleColors?: Record<string, string | null>, memberAvatarMap?: Record<string, string | null>, canServerMute?: boolean, onServerMuteTrack?: (targetUserId: string, trackType: 'audio' | 'video' | 'screenshare' | 'deafen', muted: boolean) => void, isActive?: boolean, channelPermissions?: bigint, encryptionIndicatorMode: Extract<CallEncryptionIndicatorMode, 'connected' | 'degraded'>, unencryptedIdentities?: string[] }) => {
     // Track the portal target via state so we re-render when it appears in
     // the DOM. We poll briefly with rAF until the target appears, then watch
     // for its removal via a MutationObserver on document.body.
@@ -1064,6 +1247,12 @@ const CallSidebarPortal = ({ apiToken, onLeave, onInactivityWarning, localAvatar
         observer.observe(document.body, { childList: true, subtree: true });
         return () => observer.disconnect();
     }, [root]);
+    // The join-intent seed has been read by the SidebarConference that just
+    // mounted under this root (its state initialisers ran during that render);
+    // let CallPane drop it so no later remount re-applies it.
+    useEffect(() => {
+        if (root && instantEnter) onSeedConsumed?.();
+    }, [root, instantEnter, onSeedConsumed]);
     if (!root) return null;
     return ReactDOM.createPortal(
         <MemoSidebarConference
@@ -1087,6 +1276,9 @@ const CallSidebarPortal = ({ apiToken, onLeave, onInactivityWarning, localAvatar
             channelPermissions={channelPermissions}
             encryptionIndicatorMode={encryptionIndicatorMode}
             unencryptedIdentities={unencryptedIdentities}
+            initialMuted={initialMuted}
+            initialDeafened={initialDeafened}
+            instantEnter={instantEnter}
         />,
         root
     );

@@ -30,6 +30,11 @@
  *     from usePersistentVolume which is per-participant), so writes don't
  *     fight.
  *
+ * Playback path (A/V sync, 2026-10): a chain plays through the attached
+ * <audio> element itself (low latency) unless it needs the Web Audio graph —
+ * per-user noise suppression or a combined volume above 100 %. See the
+ * "Playback path" section below and utils/avSync.ts for the measurements.
+ *
  * Lifecycle correctness:
  *   - Local participant is skipped (no self-monitor playback).
  *   - Screenshare-audio chain is gated on screenShareSubscribed AND defensively
@@ -41,7 +46,7 @@
  *     truth per identity, callers always pass the same value — no thrashing.
  */
 import secureLocalStore from '../utils/secureLocalStore';
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useSyncExternalStore } from 'react';
 import { Participant, RemoteParticipant, RemoteTrackPublication, Track } from 'livekit-client';
 import RNNoiseWorker from '../workers/rnnoise.worker?worker';
 // Loaded on demand (~4.8 MB of vendored WASM glue) — see rnnoiseSources.ts.
@@ -49,6 +54,8 @@ import { loadInlineRnnoiseWorkletSource, loadRnnoiseWorkletSource } from '../uti
 import { RNNOISE_SAMPLE_RATE, isUsableRnnoiseContext, RNNOISE_COMP_GAIN } from '../utils/voiceProcessor';
 import { applyOutputDevice, unregisterOutputDeviceTarget, registerOutputAudioContext } from '../utils/audioOutput';
 import { workletModuleUrl, forgetWorkletModuleUrl } from '../utils/workletModuleUrl';
+import { choosePlaybackPath, elementVolumeFor, webAudioExtraMs, type PlaybackInfo, type PlaybackPath } from '../utils/avSync';
+import { notePlaybackPath, noteWebAudioContext } from '../utils/avSyncMonitor';
 
 // ── Shared AudioContext ─────────────────────────────────────────────────────
 let sharedAudioCtx: AudioContext | null = null;
@@ -77,10 +84,11 @@ export const getSharedAudioContext = (): AudioContext | null => {
         // 48 kHz matches WebRTC/Opus decode rate — no resampling needed for RNNoise
         if (AudioCtx) {
             sharedAudioCtx = new AudioCtx({ sampleRate: RNNOISE_SAMPLE_RATE });
-            // THE playback sink for the whole call. Every participant chain
-            // ends at this context's destination (the <audio> elements we
-            // attach are muted — see buildMicInternals), so this, not those
-            // elements, is what has to follow the user's speaker choice.
+            // The playback sink for every chain on the Web Audio path (NS or a
+            // >100 % boost — see "Playback path"); those chains end at this
+            // context's destination and their attached <audio> elements are
+            // silent, so this context has to follow the user's speaker choice
+            // too. Element-path chains follow it via applyOutputDevice.
             // Without this registration `setSinkId` only ever moved silence
             // around and picking an output device changed nothing audible.
             registerOutputAudioContext(sharedAudioCtx);
@@ -139,8 +147,9 @@ const sliderToGain = (slider: number): number => Math.pow(Math.max(0, slider), P
 // Every per-participant chain feeds into this single master gain instead of
 // connecting straight to ctx.destination. That lets the Settings → Speaker
 // Volume slider act as an actual master volume — previously it manipulated
-// HTMLAudioElement.volume, which is a no-op when the element is muted (and
-// it always is in our setup, since we play audio through WebAudio). Storage
+// HTMLAudioElement.volume, which was a no-op while every element was muted.
+// Element-path chains (see "Playback path") now carry the master volume in
+// element.volume = per-user × master instead; Web Audio chains get it here. Storage
 // uses the same numeric range as useVoiceSettings.speakerVolume (0..200).
 const MASTER_GAIN_STORAGE_KEY = 'cipherline_master_speaker_volume';
 const MASTER_GAIN_EXPONENT = 1.5; // same perceptual curve as per-user
@@ -161,6 +170,21 @@ function masterSliderToGain(slider: number): number {
     // Slider is 0..200 (matches Settings UI). Convert to 0..2.0 then apply
     // perceptual curve so 100 → 1.0 (unity), 200 → ~2.83 (≈ +9 dB).
     return Math.pow(Math.max(0, slider) / 100, MASTER_GAIN_EXPONENT);
+}
+
+// The master slider is ALSO an input to every chain's playback-path choice
+// (a master boost above 100 % can't be done by an <audio> element), so hooks
+// subscribe to it. Read lazily (first use is inside a call, after the store
+// has hydrated) and cached; setMasterVolume is the only writer.
+let masterSliderCache: number | null = null;
+const masterListeners = new Set<() => void>();
+function getMasterSlider(): number {
+    if (masterSliderCache === null) masterSliderCache = readPersistedMasterSlider();
+    return masterSliderCache;
+}
+function subscribeMasterSlider(cb: () => void): () => void {
+    masterListeners.add(cb);
+    return () => { masterListeners.delete(cb); };
 }
 
 // ── Master-bus limiter ───────────────────────────────────────────────────
@@ -191,7 +215,7 @@ function getMasterLimiter(ctx: AudioContext): DynamicsCompressorNode {
 export function getMasterGain(ctx: AudioContext): GainNode {
     if (!masterGain) {
         masterGain = ctx.createGain();
-        masterGain.gain.value = masterSliderToGain(readPersistedMasterSlider());
+        masterGain.gain.value = masterSliderToGain(getMasterSlider());
         masterGain.connect(getMasterLimiter(ctx));
     }
     return masterGain;
@@ -200,6 +224,14 @@ export function getMasterGain(ctx: AudioContext): GainNode {
 /** Settings calls this when the speaker-volume slider moves. */
 export function setMasterVolume(slider: number): void {
     try { secureLocalStore.setItem(MASTER_GAIN_STORAGE_KEY, String(slider)); } catch { /* quota */ }
+    const changed = masterSliderCache !== slider;
+    masterSliderCache = slider;
+    // Element-path chains carry the master volume in element.volume.
+    micChains.forEach(c => applyChainVolume(c));
+    ssAudioChains.forEach(c => applyChainVolume(c));
+    // Crossing 100 % can flip chains between the element and Web Audio paths;
+    // the hooks re-evaluate on this notification.
+    if (changed) masterListeners.forEach(cb => { try { cb(); } catch { /* ignore */ } });
     if (!sharedAudioCtx || !masterGain) return;
     const t = sharedAudioCtx.currentTime;
     const g = masterGain.gain;
@@ -244,15 +276,104 @@ function readPersistedPerUserVolume(identity: string, type: 'mic' | 'screen'): n
     }
 }
 
+// ── Playback path (A/V sync) ────────────────────────────────────────────────
+// Every chain plays through ONE of two paths (see utils/avSync.ts for the
+// measurements behind this):
+//   'element'  — the attached <audio> element itself is audible, at
+//                element.volume = per-user × master (≤ 1). This is the plain
+//                WebRTC renderer path: lowest latency, and the same path
+//                Chromium's own audio/video timing assumes.
+//   'webaudio' — the element is silent and the audio goes
+//                MediaStreamAudioSourceNode → [NS worklet] → gain → master
+//                gain → limiter → destination. Needed ONLY for per-user noise
+//                suppression or a combined gain above 100 % (an element can't
+//                boost). It costs 30–100 ms of extra audio-only latency
+//                (Chromium's source-node FIFO + render buffer + limiter
+//                look-ahead [+ NS ring]), which, with no A/V sync group from
+//                LiveKit, lands 1:1 as audio-behind-video.
+// The path is decided from the PERSISTED per-user volume (written before the
+// cross-tile volume event fires) so every acquirer of a shared chain agrees.
+
+/** Fields both chain kinds share for volume and path handling. */
+interface PlaybackChainBase {
+    path: PlaybackPath;
+    attachedEl: HTMLMediaElement;   // audible on 'element', silent (volume 0) on 'webaudio'
+    src?: MediaStreamAudioSourceNode;   // 'webaudio' only
+    gain?: GainNode;                    // 'webaudio' only — per-user volume/mute
+    /** Linear per-user gain the callers last asked for. */
+    perUserGain: number;
+    /** Local mute / deafen / screen-share mute. */
+    silenced: boolean;
+}
+
+/** Write the chain's current volume state to whichever path is live. */
+function applyChainVolume(chain: PlaybackChainBase): void {
+    if (chain.path === 'webaudio') {
+        if (chain.gain) chain.gain.gain.value = chain.silenced ? 0 : chain.perUserGain;
+        chain.attachedEl.volume = 0;
+    } else {
+        try {
+            chain.attachedEl.volume = elementVolumeFor(chain.perUserGain, masterSliderToGain(getMasterSlider()), chain.silenced);
+        } catch { /* element detached mid-teardown */ }
+    }
+}
+
+function pathFor(identity: string, type: 'mic' | 'screen', nsEnabled: boolean): PlaybackPath {
+    return choosePlaybackPath({
+        nsEnabled,
+        perUserGain: sliderToGain(readPersistedPerUserVolume(identity, type)),
+        masterGain: masterSliderToGain(getMasterSlider()),
+    });
+}
+
+function playbackInfoOf(path: PlaybackPath, nsEnabled: boolean): PlaybackInfo {
+    const ctx = sharedAudioCtx;
+    return {
+        path, nsEnabled,
+        baseLatency: ctx?.baseLatency,
+        outputLatency: ctx?.outputLatency,
+    };
+}
+
+/**
+ * The playback path + latency inputs for one remote participant's audio —
+ * what the A/V-sync monitor (utils/avSync.ts) needs to turn getStats() into
+ * an offset estimate. Null when no chain exists for it.
+ */
+export function getRemotePlaybackInfo(identity: string, kind: 'mic' | 'screen'): PlaybackInfo | null {
+    const chain = kind === 'mic' ? micChains.get(identity) : ssAudioChains.get(identity);
+    if (!chain) return null;
+    return playbackInfoOf(chain.path, kind === 'mic' ? (chain as MicChain).nsEnabled : false);
+}
+
+function logPath(identity: string, kind: 'mic' | 'screen', path: PlaybackPath, nsEnabled: boolean, reason: string): void {
+    try {
+        if (path === 'webaudio' && sharedAudioCtx) noteWebAudioContext(sharedAudioCtx);
+        notePlaybackPath(identity, kind, path, webAudioExtraMs(playbackInfoOf(path, nsEnabled), undefined), reason);
+    } catch { /* logging must never break playback */ }
+}
+
+/** Attach the track to a fresh <audio> element routed to the user's output
+ *  device. Audible only on the element path. */
+function attachElement(pub: RemoteTrackPublication, path: PlaybackPath): HTMLMediaElement {
+    const el = pub.track!.attach();
+    // Start silent either way: applyChainVolume sets the real level once the
+    // chain's volume state is in place (no full-volume blip on a quiet peer).
+    el.volume = 0;
+    if (path === 'element') el.muted = false;
+    // Route this attached element to the user's chosen output device. Without
+    // this, every chain rebuild would default the new <audio> element to the
+    // system speaker even if the user picked headphones in Settings.
+    applyOutputDevice(el);
+    return el;
+}
+
 // ── Mic chain store ─────────────────────────────────────────────────────────
-interface MicChain {
+interface MicChain extends PlaybackChainBase {
     refCount: number;
     track: MediaStreamTrack;        // identity check for track replacement
     nsEnabled: boolean;             // identity check for NS rebuild
     pub: RemoteTrackPublication;
-    attachedEl: HTMLMediaElement;   // silent <audio> needed to activate the track
-    src: MediaStreamAudioSourceNode;
-    gain: GainNode;                 // EXTERNAL volume/mute control surface
     nsWorklet?: AudioWorkletNode;
     nsWorker?: Worker;
 }
@@ -269,34 +390,31 @@ const micChains = new Map<string, MicChain>();
 // identity guarantees only one build's nodes ever reach the destination.
 const micChainBuilds = new Map<string, Promise<MicChain>>();
 
-interface SSAudioChain {
+interface SSAudioChain extends PlaybackChainBase {
     refCount: number;
     track: MediaStreamTrack;
     pub: RemoteTrackPublication;
-    attachedEl: HTMLMediaElement;
-    src: MediaStreamAudioSourceNode;
-    gain: GainNode;
 }
 const ssAudioChains = new Map<string, SSAudioChain>();
 
+type MicInternals = Pick<MicChain, 'path' | 'attachedEl' | 'src' | 'gain' | 'nsWorklet' | 'nsWorker'>;
+
 // ── Mic chain build / teardown ──────────────────────────────────────────────
 async function buildMicInternals(
-    ctx: AudioContext,
+    ctx: AudioContext | null,
     pub: RemoteTrackPublication,
     track: MediaStreamTrack,
     nsEnabled: boolean,
     identity: string,
-): Promise<Pick<MicChain, 'attachedEl' | 'src' | 'gain' | 'nsWorklet' | 'nsWorker'>> {
+    path: PlaybackPath,
+): Promise<MicInternals> {
     // Activate the track in the browser's media pipeline. createMediaStreamSource
     // pulls audio frames only when the track is in some <audio>/<video> element
     // OR when the underlying RTP receiver has an active subscription — the
-    // attach() call here is the canonical way to guarantee frames flow.
-    const attachedEl = pub.track!.attach();
-    attachedEl.volume = 0; // silent: actual playback goes through Web Audio
-    // Route this attached element to the user's chosen output device. Without
-    // this, every chain rebuild would default the new <audio> element to the
-    // system speaker even if the user picked headphones in Settings.
-    applyOutputDevice(attachedEl);
+    // attach() call here is the canonical way to guarantee frames flow. On the
+    // element path this element IS the playback.
+    const attachedEl = attachElement(pub, path);
+    if (path === 'element' || !ctx) return { path: 'element', attachedEl };
 
     const gain = ctx.createGain();
     // Seed the gain to the user's persisted slider value (with perceptual
@@ -396,13 +514,13 @@ async function buildMicInternals(
         src.connect(gain);
     }
 
-    return { attachedEl, src, gain, nsWorklet, nsWorker };
+    return { path: 'webaudio', attachedEl, src, gain, nsWorklet, nsWorker };
 }
 
-function teardownMicInternals(chain: MicChain): void {
-    try { chain.gain.disconnect(); } catch { /* ignore */ }
+function teardownMicInternals(chain: MicInternals & { pub: RemoteTrackPublication }): void {
+    try { chain.gain?.disconnect(); } catch { /* ignore */ }
     try { chain.nsWorklet?.disconnect(); } catch { /* ignore */ }
-    try { chain.src.disconnect(); } catch { /* ignore */ }
+    try { chain.src?.disconnect(); } catch { /* ignore */ }
     if (chain.nsWorker) {
         try { chain.nsWorker.onmessage = null; } catch { /* ignore */ }
         try { chain.nsWorker.onerror = null; } catch { /* ignore */ }
@@ -416,9 +534,12 @@ function teardownMicInternals(chain: MicChain): void {
 }
 
 async function acquireMicChain(p: RemoteParticipant, nsEnabled: boolean): Promise<MicChain | null> {
-    const ctx = getSharedAudioContext();
-    if (!ctx) return null;
-    if (ctx.state === 'suspended') {
+    const path = pathFor(p.identity, 'mic', nsEnabled);
+    // The shared context is only needed for the Web Audio path. Not creating
+    // it for element-only calls also means no Web Audio render thread at all.
+    const ctx = path === 'webaudio' ? getSharedAudioContext() : null;
+    if (path === 'webaudio' && !ctx) return null;
+    if (ctx && ctx.state === 'suspended') {
         try { await ctx.resume(); } catch { /* ignore — Chrome auto-resumes on next user gesture */ }
     }
 
@@ -439,7 +560,7 @@ async function acquireMicChain(p: RemoteParticipant, nsEnabled: boolean): Promis
     }
 
     let chain = micChains.get(p.identity);
-    const needsRebuild = !!(chain && (chain.track !== track || chain.nsEnabled !== nsEnabled));
+    const needsRebuild = !!(chain && (chain.track !== track || chain.nsEnabled !== nsEnabled || chain.path !== path));
 
     if (!chain || needsRebuild) {
         const existing = chain;
@@ -448,35 +569,43 @@ async function acquireMicChain(p: RemoteParticipant, nsEnabled: boolean): Promis
                 // Rebuild internals in-place: tear the old, swap to a fresh set.
                 // refCount is preserved — every existing acquirer is now reading
                 // the same Map entry but with new internals.
+                const reason = existing.path !== path ? 'volume-or-ns' : existing.nsEnabled !== nsEnabled ? 'ns' : 'track';
                 teardownMicInternals(existing);
-                const internals = await buildMicInternals(ctx, pub, track, nsEnabled, p.identity);
+                const internals = await buildMicInternals(ctx, pub, track, nsEnabled, p.identity, path);
                 // P2-REND-6: if releaseMicChain fired during the async build it
                 // removed existing from the map (refCount → 0). The new nodes are
                 // already connected to the destination — tear them down so they
                 // don't become an orphaned, un-releasable live audio graph.
                 if (!micChains.has(p.identity)) {
-                    teardownMicInternals({ refCount: 0, track, nsEnabled, pub, ...internals });
+                    teardownMicInternals({ ...internals, pub });
                     throw new Error('[audio] mic chain released during rebuild');
                 }
                 existing.track = track;
                 existing.nsEnabled = nsEnabled;
                 existing.pub = pub;
+                existing.path = internals.path;
                 existing.attachedEl = internals.attachedEl;
                 existing.src = internals.src;
                 existing.gain = internals.gain;
                 existing.nsWorklet = internals.nsWorklet;
                 existing.nsWorker = internals.nsWorker;
+                applyChainVolume(existing);
+                if (reason !== 'track') logPath(p.identity, 'mic', internals.path, nsEnabled, reason);
                 return existing;
             }
-            const internals = await buildMicInternals(ctx, pub, track, nsEnabled, p.identity);
+            const internals = await buildMicInternals(ctx, pub, track, nsEnabled, p.identity, path);
             const newChain: MicChain = {
                 refCount: 0,
                 track,
                 nsEnabled,
                 pub,
+                perUserGain: sliderToGain(readPersistedPerUserVolume(p.identity, 'mic')),
+                silenced: false,
                 ...internals,
             };
+            applyChainVolume(newChain);
             micChains.set(p.identity, newChain);
+            logPath(p.identity, 'mic', internals.path, nsEnabled, 'join');
             return newChain;
         })();
 
@@ -508,14 +637,14 @@ function releaseMicChain(identity: string): void {
 
 // ── Screenshare-audio chain build / teardown ─────────────────────────────────
 function buildSSAudioInternals(
-    ctx: AudioContext,
+    ctx: AudioContext | null,
     pub: RemoteTrackPublication,
     track: MediaStreamTrack,
     identity: string,
-): Pick<SSAudioChain, 'attachedEl' | 'src' | 'gain'> {
-    const attachedEl = pub.track!.attach();
-    attachedEl.volume = 0;
-    applyOutputDevice(attachedEl);
+    path: PlaybackPath,
+): Pick<SSAudioChain, 'path' | 'attachedEl' | 'src' | 'gain'> {
+    const attachedEl = attachElement(pub, path);
+    if (path === 'element' || !ctx) return { path: 'element', attachedEl };
     const gain = ctx.createGain();
     // Same race-closing seed as the mic chain — apply the persisted slider
     // value (with perceptual curve) so a rebuild doesn't briefly default to 1.0.
@@ -523,44 +652,53 @@ function buildSSAudioInternals(
     gain.connect(getMasterGain(ctx));
     const src = ctx.createMediaStreamSource(new MediaStream([track]));
     src.connect(gain);
-    return { attachedEl, src, gain };
+    return { path: 'webaudio', attachedEl, src, gain };
 }
 
-function teardownSSAudioInternals(chain: SSAudioChain): void {
-    try { chain.gain.disconnect(); } catch { /* ignore */ }
-    try { chain.src.disconnect(); } catch { /* ignore */ }
+function teardownSSAudioInternals(chain: Pick<SSAudioChain, 'attachedEl' | 'src' | 'gain' | 'pub'>): void {
+    try { chain.gain?.disconnect(); } catch { /* ignore */ }
+    try { chain.src?.disconnect(); } catch { /* ignore */ }
     unregisterOutputDeviceTarget(chain.attachedEl);
     try { chain.pub.track?.detach(chain.attachedEl); } catch { /* ignore */ }
 }
 
 function acquireSSAudioChain(p: RemoteParticipant): SSAudioChain | null {
-    const ctx = getSharedAudioContext();
-    if (!ctx) return null;
-    if (ctx.state === 'suspended') ctx.resume().catch(() => { /* ignore */ });
+    const path = pathFor(p.identity, 'screen', false);
+    const ctx = path === 'webaudio' ? getSharedAudioContext() : null;
+    if (path === 'webaudio' && !ctx) return null;
+    if (ctx && ctx.state === 'suspended') ctx.resume().catch(() => { /* ignore */ });
 
     const pub = p.getTrackPublication(Track.Source.ScreenShareAudio) as RemoteTrackPublication | undefined;
     const track = pub?.track?.mediaStreamTrack;
     if (!pub || !track) return null;
 
     let chain = ssAudioChains.get(p.identity);
-    if (chain && chain.track !== track) {
+    if (chain && (chain.track !== track || chain.path !== path)) {
+        const pathChanged = chain.path !== path;
         teardownSSAudioInternals(chain);
-        const internals = buildSSAudioInternals(ctx, pub, track, p.identity);
+        const internals = buildSSAudioInternals(ctx, pub, track, p.identity, path);
         chain.track = track;
         chain.pub = pub;
+        chain.path = internals.path;
         chain.attachedEl = internals.attachedEl;
         chain.src = internals.src;
         chain.gain = internals.gain;
+        applyChainVolume(chain);
+        if (pathChanged) logPath(p.identity, 'screen', internals.path, false, 'volume');
     }
     if (!chain) {
-        const internals = buildSSAudioInternals(ctx, pub, track, p.identity);
+        const internals = buildSSAudioInternals(ctx, pub, track, p.identity, path);
         chain = {
             refCount: 0,
             track,
             pub,
+            perUserGain: sliderToGain(readPersistedPerUserVolume(p.identity, 'screen')),
+            silenced: false,
             ...internals,
         };
+        applyChainVolume(chain);
         ssAudioChains.set(p.identity, chain);
+        logPath(p.identity, 'screen', internals.path, false, 'join');
     }
     chain.refCount++;
     return chain;
@@ -605,6 +743,14 @@ export function useParticipantAudio(
     const micTrack = remote.getTrackPublication?.(Track.Source.Microphone)?.track?.mediaStreamTrack;
     const ssAudioTrack = remote.getTrackPublication?.(Track.Source.ScreenShareAudio)?.track?.mediaStreamTrack;
 
+    // Playback path (element vs Web Audio — see "Playback path" above). Only
+    // used as an effect trigger: the chain itself decides from the persisted
+    // values so every acquirer of a shared chain lands on the same path.
+    const masterSlider = useSyncExternalStore(subscribeMasterSlider, getMasterSlider);
+    const masterLinear = masterSliderToGain(masterSlider);
+    const micPath = choosePlaybackPath({ nsEnabled, perUserGain: sliderToGain(volume), masterGain: masterLinear });
+    const ssPath = choosePlaybackPath({ nsEnabled: false, perUserGain: sliderToGain(screenShareVolume ?? 1), masterGain: masterLinear });
+
     // Always-current refs for volume state so the async acquire .then() can
     // apply the correct gain immediately after the chain is built or rebuilt.
     // The volume effect also writes, but it runs synchronously and may see an
@@ -646,9 +792,9 @@ export function useParticipantAudio(
             // or stale gain entry — this write corrects it using the latest values
             // via the always-current refs above.
             if (chain) {
-                chain.gain.gain.value = (isLocalMutedRef.current || isLocalDeafenedRef.current)
-                    ? 0
-                    : sliderToGain(volumeRef.current);
+                chain.perUserGain = sliderToGain(volumeRef.current);
+                chain.silenced = isLocalMutedRef.current || isLocalDeafenedRef.current;
+                applyChainVolume(chain);
             }
         }).catch(err => {
             console.warn('[useParticipantAudio] mic chain acquire failed:', err);
@@ -658,7 +804,7 @@ export function useParticipantAudio(
             if (acquired) releaseMicChain(p.identity);
         };
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [isLocal, p.identity, nsEnabled, micTrack]);
+    }, [isLocal, p.identity, nsEnabled, micTrack, micPath]);
 
     // Volume / mute apply to the SHARED gain. Idempotent: every caller writes
     // the same persistent-volume value (per-identity localStorage), so even
@@ -671,8 +817,10 @@ export function useParticipantAudio(
         if (isLocal) return;
         const chain = micChains.get(p.identity);
         if (!chain) return;
-        chain.gain.gain.value = (isLocalMuted || isLocalDeafened) ? 0 : sliderToGain(volume);
-    }, [isLocal, p.identity, volume, isLocalMuted, isLocalDeafened, micTrack, nsEnabled]);
+        chain.perUserGain = sliderToGain(volume);
+        chain.silenced = isLocalMuted || isLocalDeafened;
+        applyChainVolume(chain);
+    }, [isLocal, p.identity, volume, isLocalMuted, isLocalDeafened, micTrack, nsEnabled, micPath]);
 
     // ── Screenshare-audio chain ref-counted acquire ─────────────────────────
     useEffect(() => {
@@ -691,12 +839,14 @@ export function useParticipantAudio(
         if (!chain) return;
         return () => releaseSSAudioChain(p.identity);
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [isLocal, isScreenShare, screenShareSubscribed, p.identity, ssAudioTrack]);
+    }, [isLocal, isScreenShare, screenShareSubscribed, p.identity, ssAudioTrack, ssPath]);
 
     useEffect(() => {
         if (isLocal || !isScreenShare) return;
         const chain = ssAudioChains.get(p.identity);
         if (!chain) return;
-        chain.gain.gain.value = (isLocalDeafened || isScreenShareMuted) ? 0 : sliderToGain(screenShareVolume ?? 1);
-    }, [isLocal, isScreenShare, p.identity, screenShareVolume, isLocalDeafened, isScreenShareMuted, ssAudioTrack]);
+        chain.perUserGain = sliderToGain(screenShareVolume ?? 1);
+        chain.silenced = !!(isLocalDeafened || isScreenShareMuted);
+        applyChainVolume(chain);
+    }, [isLocal, isScreenShare, p.identity, screenShareVolume, isLocalDeafened, isScreenShareMuted, ssAudioTrack, ssPath]);
 }

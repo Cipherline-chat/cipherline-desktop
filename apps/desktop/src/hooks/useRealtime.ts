@@ -17,6 +17,12 @@ import {
 } from '../utils/typingStore';
 import { computeIsAttentive, heartbeatPayload, isWindowAttendable, IDLE_THRESHOLD_SECONDS, IDLE_POLL_INTERVAL_MS } from '../utils/attentionState';
 import { parseChannelReadEvent, type ChannelReadEvent } from '../utils/channelReadSync';
+import { recipientBundles } from '../utils/recipientBundles';
+import {
+    applyCallMediaEvent, clearCallMediaUser, clearCallMediaKey,
+    huddleCallMediaKey, voiceChannelMediaKey,
+} from '../utils/callMediaPresence';
+import type { CallMediaReport } from '@cipherline/shared';
 
 /** Matches the application-defined close code in the gateway. */
 const WS_CLOSE_UPGRADE_REQUIRED = 4426;
@@ -791,6 +797,15 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
                         }
                     }
 
+                    // A roster may have changed: drop any recipient bundle primed
+                    // for a message still being typed, so it cannot miss a new
+                    // member or device (utils/recipientBundles.ts). Removals are
+                    // enforced by the server at send time either way.
+                    if (msg.event === 'group:member_added' || msg.event === 'group:updated'
+                        || msg.event === 'device:linked' || msg.event === 'friend:removed') {
+                        recipientBundles.invalidate();
+                    }
+
                     if (msg.event === 'message:new') {
                         // Server is telling us there are new messages — pull immediately
                         onNewMessageRef.current?.();
@@ -1007,6 +1022,11 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
                         });
                     }
                     if (msg.event === 'channel:voice_state') {
+                        // Join or leave, the participant starts from "nothing
+                        // on" — the server clears its copy on both too.
+                        if (typeof msg.data?.channel_id === 'string' && typeof msg.data?.user_id === 'string') {
+                            clearCallMediaUser(voiceChannelMediaKey(msg.data.channel_id), msg.data.user_id);
+                        }
                         setVoiceStateEvent({
                             channel_id: msg.data.channel_id,
                             user_id: msg.data.user_id,
@@ -1022,6 +1042,7 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
                         });
                     }
                     if (msg.event === 'huddle:call_destroyed') {
+                        if (typeof msg.data?.call_id === 'string') clearCallMediaKey(huddleCallMediaKey(msg.data.call_id));
                         setHuddleDestroyEvent({
                             huddle_id: msg.data.huddle_id,
                             call_id: msg.data.call_id,
@@ -1035,6 +1056,9 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
                         });
                     }
                     if (msg.event === 'huddle:participant') {
+                        if (typeof msg.data?.call_id === 'string' && typeof msg.data?.user_id === 'string') {
+                            clearCallMediaUser(huddleCallMediaKey(msg.data.call_id), msg.data.user_id);
+                        }
                         setHuddleParticipantEvent({
                             huddle_id: msg.data.huddle_id,
                             call_id: msg.data.call_id,
@@ -1043,6 +1067,14 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
                             display_name: readDisplayName(msg.data.display_name),
                             avatar_url: readPresenceString(msg.data.avatar_url),
                         });
+                    }
+                    // Out-of-call camera / screen-share presence. Written straight
+                    // into its external store (utils/callMediaPresence) rather
+                    // than a one-slot *Event state: several people can toggle in
+                    // the same tick, and a one-slot value would drop all but the
+                    // last. Already VIEW_CHANNEL-filtered server-side.
+                    if (msg.event === 'call:media_state') {
+                        applyCallMediaEvent(msg.data);
                     }
                     if (msg.event === 'huddle:force_move') {
                         setHuddleForceMoveEvent({
@@ -1421,6 +1453,15 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
         }
     }, []);
 
+    /** `call:media_report` — MY camera / screen-share state in the call I'm
+     *  in (see hooks/useCallMediaReporter). Returns whether it went out. An
+     *  older server ignores the unknown event. */
+    const sendCallMediaReport = useCallback((report: CallMediaReport): boolean => {
+        if (wsRef.current?.readyState !== WebSocket.OPEN) return false;
+        wsRef.current.send(JSON.stringify({ event: 'call:media_report', data: report }));
+        return true;
+    }, []);
+
     const respondToPairing = useCallback((approved: boolean, requesting_device_id: string, sync_key_b64?: string, iv_b64?: string) => {
         if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
             const eventTarget = approved ? 'device:pairing_approve' : 'device:pairing_deny';
@@ -1448,6 +1489,7 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
         // expiry.
         clearTypingUsers: () => setTypingTimestamps({}),
         readReceipts, sendReadReceipt,
+        sendCallMediaReport,
         // Continuity — self-read sync (see isSelfReadEvent). Dashboard's
         // consumer clears the conversation's unread/mention badge and does
         // not need to explicitly reset this back to null (one-shot value

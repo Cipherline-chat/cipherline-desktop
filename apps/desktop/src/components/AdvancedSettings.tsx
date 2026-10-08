@@ -6,14 +6,19 @@ import {
 import { APP_VERSION, BUILD_COMMIT } from '../constants';
 import { counts as diagnosticCounts, clear as clearDiagnostics, formatReport } from '../utils/deliveryDiagnostics';
 import { fetchFreezeLog, clearFreezeLog, formatFreezeReport, isStall, LONG_TASK_MS, type FreezeEntry } from '../utils/freezeLog';
+import { rendererMemoryLine } from '../utils/memoryReport';
 import { useUpdate } from '../contexts/UpdateContext';
 import { ClButton, ClToggle, ClModal, ClConfirm } from './cl';
 import { StagingPasswordForm } from './StagingPasswordForm';
+import { ReportProblemCard } from './diagnostics/ReportProblemCard';
 import { isStagingLockedError, type StagingLockStatusLike } from '../utils/stagingLock';
 import {
     useStreamStatsHudEnabled, setStreamStatsHudEnabled,
     useScreenShareCodecPref, setScreenShareCodecPref,
+    useAllowHevc, setAllowHevc, useShareLowLayerEnabled, setShareLowLayerEnabled,
 } from '../utils/streamDiagnosticsPrefs';
+import { useCameraCodecPref, setCameraCodecPref } from '../utils/cameraQualityPrefs';
+import type { CameraCodecPref } from '../utils/cameraQuality';
 import type { ScreenShareCodecPref } from '../utils/screenShare';
 import {
     parseStartupFlagsState, restartPending,
@@ -58,7 +63,15 @@ export const AdvancedSettings: React.FC = () => {
     // locked. Here we only decide WHEN to ask, and ask once — after that the
     // device stays unlocked and the toggle never prompts again.
     const [lock, setLock] = useState<StagingLockStatusLike | null>(null);
-    const [promptOpen, setPromptOpen] = useState(false);
+    const [promptOpen, setPromptOpenState] = useState(false);
+    // Mirrors promptOpen synchronously. An unlock that is still being checked
+    // when the user hits Cancel / Esc must NOT go on to switch the channel:
+    // cancel means "stay where I was", whatever main answers afterwards.
+    const promptOpenRef = useRef(false);
+    const setPromptOpen = useCallback((open: boolean) => {
+        promptOpenRef.current = open;
+        setPromptOpenState(open);
+    }, []);
     const [confirmRelock, setConfirmRelock] = useState(false);
     const [relocking, setRelocking] = useState(false);
 
@@ -120,8 +133,12 @@ export const AdvancedSettings: React.FC = () => {
     };
 
     const onPromptUnlocked = async () => {
+        const stillWanted = promptOpenRef.current;
         setPromptOpen(false);
         await refreshLock();
+        // Cancelled while the password was being checked: the device is now
+        // unlocked (main already remembered it), but the channel stays put.
+        if (!stillWanted) return;
         await applyChannel('staging');
     };
 
@@ -197,8 +214,9 @@ export const AdvancedSettings: React.FC = () => {
             <ClModal open={promptOpen} onClose={() => setPromptOpen(false)} width={400} label="Unlock staging builds">
                 <h4>Unlock staging builds</h4>
                 <p>
-                    Staging builds are for testers. Enter the staging password once and this
-                    device will remember it.
+                    Staging builds are for testers. Enter the staging password to switch
+                    this device to Staging. It's remembered here, so the staging build
+                    won't ask again when it installs.
                 </p>
                 {promptOpen && (
                     <StagingPasswordForm
@@ -227,6 +245,8 @@ export const AdvancedSettings: React.FC = () => {
                 }
                 confirmLabel="Lock again"
             />
+
+            <ReportProblemCard />
 
             <StreamDiagnosticsCard />
 
@@ -266,6 +286,13 @@ export const AdvancedSettings: React.FC = () => {
     );
 };
 
+const CAMERA_CODEC_OPTIONS: { value: CameraCodecPref; title: string; description: string }[] = [
+    { value: 'auto', title: 'Auto', description: 'Recommended. Your GPU’s hardware H.264 encoder when it has one (checked a few seconds in — if it is not really hardware, the camera switches to VP8), otherwise VP8.' },
+    { value: 'h264', title: 'H.264', description: 'Hardware-encoded on NVIDIA, AMD and Intel GPUs. Without a hardware encoder it runs in software.' },
+    { value: 'vp8', title: 'VP8', description: 'Software encoder. Uses more CPU at 1080p and 1440p.' },
+    { value: 'h265', title: 'H.265', description: 'Like Auto, but uses H.265 whenever everyone in the call can decode it — even with the switch below off. Needs a GPU that encodes H.265.' },
+];
+
 const CODEC_OPTIONS: { value: ScreenShareCodecPref; title: string; description: string }[] = [
     { value: 'auto', title: 'Auto', description: 'Recommended. Uses your GPU’s hardware encoder when it has one (H.264 on almost every GPU — High profile on NVIDIA), otherwise the cheapest software encoder.' },
     { value: 'h264', title: 'H.264', description: 'Hardware-encoded on NVIDIA, AMD and Intel GPUs (in the profile your GPU encodes). Needs more bandwidth for the same picture.' },
@@ -281,6 +308,9 @@ const CODEC_OPTIONS: { value: ScreenShareCodecPref; title: string; description: 
 const StreamDiagnosticsCard: React.FC = () => {
     const hud = useStreamStatsHudEnabled();
     const codec = useScreenShareCodecPref();
+    const cameraCodec = useCameraCodecPref();
+    const allowHevc = useAllowHevc();
+    const shareLow = useShareLowLayerEnabled();
     return (
         <div className="sd-card">
             <div className="flex items-center gap-3">
@@ -323,15 +353,48 @@ const StreamDiagnosticsCard: React.FC = () => {
                 ))}
             </div>
 
+            <div className="sd-row">
+                <div className="sd-rl">
+                    <b>Allow H.265 when everyone supports it</b>
+                    <span>About a quarter less data for the same picture. Used only when your GPU encodes H.265 and every person in the call can decode it — otherwise H.264/VP8, switching back automatically.</span>
+                </div>
+                <ClToggle checked={allowHevc} onChange={setAllowHevc} />
+            </div>
+            <div className="sd-row">
+                <div className="sd-rl">
+                    <b>Lighter copy for viewers (saves bandwidth)</b>
+                    <span>When 3 or more people watch your screen share, also send a 720p copy for those watching it small. Only with a hardware encoder, and it switches itself off for the rest of the share if it costs your game anything. Off by default.</span>
+                </div>
+                <ClToggle checked={shareLow} onChange={setShareLowLayerEnabled} />
+            </div>
+            <div className="sd-row">
+                <div className="sd-rl">
+                    <b>Camera encoder</b>
+                    <span>Applies the next time you turn your camera on.</span>
+                </div>
+            </div>
+            <div className="sd-opts mt-2" role="radiogroup" aria-label="Camera encoder">
+                {CAMERA_CODEC_OPTIONS.map(o => (
+                    <ChannelCard
+                        key={o.value}
+                        active={cameraCodec === o.value}
+                        disabled={false}
+                        onClick={() => setCameraCodecPref(o.value)}
+                        title={o.title}
+                        description={o.description}
+                    />
+                ))}
+            </div>
+
             <CaptureStartupSettings />
         </div>
     );
 };
 
 const CAPTURER_OPTIONS: { value: ScreenCapturerChoice; title: string; description: string }[] = [
-    { value: 'auto', title: 'Automatic', description: 'Recommended. DXGI — the faster grab — except on hybrid-GPU laptops, where Windows Graphics Capture is the safe choice. Takes effect from the second launch, once the GPU layout is known.' },
-    { value: 'dxgi', title: 'DXGI (Desktop Duplication)', description: 'The long-standing capturer. Try it if a screen share stutters or tops out at a low frame rate.' },
-    { value: 'wgc', title: 'Windows Graphics Capture', description: 'The newer capturer. Only hands over a frame when something on screen changed.' },
+    { value: 'auto', title: 'Automatic', description: 'Recommended. On Windows 11 24H2 and newer, Desktop Duplication for screen shares (the fastest grab: around 90 fps at 1440p on a gaming PC), with the share picker listing your screens and windows in a separate background process so it never touches Desktop Duplication. Uses Windows Graphics Capture instead on hybrid-GPU laptops, on the first launch, or if that background process cannot start. Older Windows keeps its own default.' },
+    { value: 'dxgi', title: 'DXGI (Desktop Duplication)', description: 'Always Desktop Duplication for screen shares: the highest frame rates for games. The picker lists sources in a separate background process. Window shares use Windows Graphics Capture either way, so share the whole screen for high frame rates.' },
+    { value: 'wgc', title: 'Windows Graphics Capture', description: 'Desktop Duplication switched off entirely. Screen shares top out around 50 fps at 1440p, because each frame takes Windows Graphics Capture about 10 ms to hand over. Pick this if screens flicker or go black when you start a share.' },
 ];
 
 const mib = (bytes: number | null): string => (bytes ? `${Math.round(bytes / (1024 * 1024))} MB` : 'a few MB');
@@ -747,7 +810,12 @@ const PerformanceLogCard: React.FC = () => {
 
     const copy = async () => {
         try {
-            await navigator.clipboard.writeText(formatFreezeReport(rows, { version: APP_VERSION, platform, commit: BUILD_COMMIT }));
+            // A one-line snapshot of where the renderer's memory is (caches,
+            // history, DOM images) — counts and sizes only. Diagnostics must
+            // never cost the copy itself: a failure just leaves the line out.
+            let memory: string | undefined;
+            try { memory = rendererMemoryLine(); } catch { memory = undefined; }
+            await navigator.clipboard.writeText(formatFreezeReport(rows, { version: APP_VERSION, platform, commit: BUILD_COMMIT, memory }));
             setCopied(true);
             setTimeout(() => setCopied(false), 2000);
         } catch {

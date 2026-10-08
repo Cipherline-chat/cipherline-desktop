@@ -84,3 +84,5 @@ export function clearRemoteImageCache(): void {
 
 /** Test-only. */
 export function __remoteImageStats() { return cache.stats(); }
+/** Footprint for the Performance log (Blob bytes live in the browser process). */
+export function remoteImageCacheStats(): { entries: number; bytes: number; held: number } { return cache.stats(); }

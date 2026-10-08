@@ -2,6 +2,7 @@ import * as crypto from 'crypto';
 import * as fs from 'fs';
 import { promises as fsp } from 'fs';
 import * as path from 'path';
+import { Worker } from 'worker_threads';
 import { app, safeStorage, dialog } from 'electron';
 import { classifyKeyProtection, type KeyProtection } from './key-protection';
 import { freezeMonitor } from './freeze-monitor';
@@ -67,6 +68,115 @@ async function readFileIfPresent(p: string): Promise<Buffer | null> {
     }
 }
 
+/**
+ * Envelopes at least this large are parsed in a worker thread (see
+ * parseEnvelope). Below it a main-thread JSON.parse costs a few ms and a
+ * worker's start-up would cost more than it saves.
+ */
+export const OFF_THREAD_PARSE_MIN_BYTES = 1024 * 1024;
+
+/** Entries per message the parse worker hands back. */
+const PARSE_CHUNK_ENTRIES = 2000;
+
+/**
+ * The parse worker. Plain CommonJS, run with `eval: true` so it needs no file
+ * of its own inside the asar. It receives the envelope BYTES (ciphertext
+ * values, nothing secret in the clear), runs the very same JSON.parse and
+ * plain-object check the main thread used to, and streams the entries back as
+ * small JSON arrays of [key, entry] pairs — each cheap for the main thread to
+ * parse between turns of its event loop. It never sees a key.
+ */
+const PARSE_WORKER_SOURCE = `
+const { parentPort, workerData } = require('worker_threads');
+try {
+    const parsed = JSON.parse(Buffer.from(workerData.bytes).toString('utf8'));
+    if (typeof parsed !== 'object' || Array.isArray(parsed) || parsed === null) throw new Error('not a plain object');
+    const entries = Object.entries(parsed);
+    for (let i = 0; i < entries.length; i += workerData.chunk) {
+        parentPort.postMessage({ type: 'chunk', json: JSON.stringify(entries.slice(i, i + workerData.chunk)) });
+    }
+    parentPort.postMessage({ type: 'done', count: entries.length });
+} catch (e) {
+    parentPort.postMessage({ type: 'invalid', message: String(e && e.message) });
+}
+`;
+
+/** Thrown for an envelope that is not valid JSON / not a plain object. */
+class InvalidEnvelopeError extends Error {}
+
+/** Own-property assignment that is safe for a '__proto__' key too. */
+function putOwn(target: Record<string, EncryptedEntry>, key: string, value: EncryptedEntry): void {
+    if (key === '__proto__') Object.defineProperty(target, key, { value, writable: true, enumerable: true, configurable: true });
+    else target[key] = value;
+}
+
+function parseEnvelopeOnThisThread(raw: Buffer): Record<string, EncryptedEntry> {
+    let parsed: unknown;
+    try { parsed = JSON.parse(raw.toString('utf8')); } catch (e) { throw new InvalidEnvelopeError((e as Error).message); }
+    if (typeof parsed !== 'object' || Array.isArray(parsed) || parsed === null) throw new InvalidEnvelopeError('not a plain object');
+    return parsed as Record<string, EncryptedEntry>;
+}
+
+/**
+ * Parse the vault envelope without one long block of the main thread.
+ *
+ * `JSON.parse` of the whole vault cannot be sliced, and on a long-lived
+ * install it is the largest single block left at start-up (13-22 MB measured
+ * for a device whose prekey top-ups had been failing). So for a large
+ * envelope the parse runs in a worker and the entries come back in chunks.
+ *
+ * SAME OUTCOMES as the main-thread parse, which is the identity-critical part:
+ *   - invalid JSON or a non-object → InvalidEnvelopeError (the caller's
+ *     existing corrupt-envelope path: move aside, flag for the boot gate);
+ *   - the worker failing for any OTHER reason (could not start, crashed,
+ *     exited early) is NOT treated as corruption: the bytes are parsed on
+ *     this thread instead, exactly as before.
+ */
+async function parseEnvelope(raw: Buffer, stats: { offThread: boolean }): Promise<Record<string, EncryptedEntry>> {
+    stats.offThread = false;
+    if (raw.length < OFF_THREAD_PARSE_MIN_BYTES) return parseEnvelopeOnThisThread(raw);
+    let worker: Worker;
+    try {
+        // workerData is copied (structured clone), so `raw` stays usable for
+        // the fallback.
+        worker = new Worker(PARSE_WORKER_SOURCE, { eval: true, workerData: { bytes: raw, chunk: PARSE_CHUNK_ENTRIES } });
+    } catch (err) {
+        console.warn('[SecureStore] envelope parse worker unavailable — parsing on the main thread', err);
+        return parseEnvelopeOnThisThread(raw);
+    }
+    const outcome = await new Promise<{ data: Record<string, EncryptedEntry> } | { invalid: string } | { failed: unknown }>((resolve) => {
+        const data: Record<string, EncryptedEntry> = {};
+        let received = 0;
+        let settled = false;
+        const settle = (v: { data: Record<string, EncryptedEntry> } | { invalid: string } | { failed: unknown }) => {
+            if (settled) return;
+            settled = true;
+            resolve(v);
+            void worker.terminate().catch(() => {});
+        };
+        worker.on('message', (msg: { type: string; json?: string; count?: number; message?: string }) => {
+            try {
+                if (msg.type === 'chunk' && typeof msg.json === 'string') {
+                    for (const [k, v] of JSON.parse(msg.json) as [string, EncryptedEntry][]) { putOwn(data, k, v); received++; }
+                } else if (msg.type === 'done') {
+                    if (received !== msg.count) settle({ failed: new Error('entry count mismatch') });
+                    else settle({ data });
+                } else if (msg.type === 'invalid') {
+                    settle({ invalid: String(msg.message) });
+                }
+            } catch (err) {
+                settle({ failed: err });
+            }
+        });
+        worker.on('error', (err) => settle({ failed: err }));
+        worker.on('exit', (code) => settle({ failed: new Error(`parse worker exited (${code})`) }));
+    });
+    if ('data' in outcome) { stats.offThread = true; return outcome.data; }
+    if ('invalid' in outcome) throw new InvalidEnvelopeError(outcome.invalid);
+    console.warn('[SecureStore] envelope parse worker failed — parsing on the main thread', outcome.failed);
+    return parseEnvelopeOnThisThread(raw);
+}
+
 export type SecureStoreStatus = 'uninitialized' | 'ok' | 'locked';
 
 /** Linux only; null elsewhere or when the API is missing / throws. */
@@ -119,6 +229,10 @@ export class SecureStore {
     corruptionInfo(): { backupFileName: string } | null {
         return this._corruptBackupFile ? { backupFileName: this._corruptBackupFile } : null;
     }
+
+    /** How the last envelope load went (tests + diagnostics). */
+    private _loadStats = { offThread: false };
+    loadStats(): { offThread: boolean } { return { ...this._loadStats }; }
 
     /** G8: the strength of the master key's at-rest wrapping — see
      *  electron/key-protection.ts. Read-only; never blocks anything. */
@@ -194,6 +308,10 @@ export class SecureStore {
         // the UI thread in one go.
         await this.loadEnvelope();
         await yieldToLoop();
+        // The prefix indexes the hot paths use (keysWithPrefix), built here in
+        // slices — so no IPC call later pays a whole-vault scan on the
+        // window's thread the first time it asks.
+        await this.buildHotIndexes();
 
         // The master key is wrapped with Electron's safeStorage (DPAPI on
         // Windows, Keychain on macOS, libsecret/kwallet on Linux) so a simple
@@ -298,13 +416,13 @@ export class SecureStore {
         this._status = 'ok';
         // Write a canary on first launch so recoverWithKey always has an entry
         // to validate a candidate key against (prevents silent mis-keying).
-        // `set()` stays synchronous — 50 call sites across electron/ and src/
-        // assume that, and making it async is a separate change. It costs
-        // nothing here: this branch only runs when the vault is EMPTY, so the
-        // save() it triggers serialises one entry.
+        // Awaited so a fresh store has its canary ON DISK once initialize()
+        // resolves (the vault write itself is asynchronous now). Cheap: this
+        // branch only runs when the vault is EMPTY.
         if (Object.keys(this.data).length === 0) {
             await yieldToLoop();
             this.set('__canary__', 'cipherline-keycheck-v1');
+            await this.whenDurable();
         }
     }
 
@@ -342,6 +460,7 @@ export class SecureStore {
      *  existing one moves it aside and records the backup name for the boot
      *  gate (Phase 7), rather than silently minting a fresh identity. */
     private async loadEnvelope() {
+        this.indexes.clear();
         try {
             const raw = await readFileIfPresent(this.dbPath);
             // Genuinely absent (ENOENT) — a fresh install. Not corruption, and
@@ -349,11 +468,9 @@ export class SecureStore {
             // greet the user with a data-loss warning.
             if (raw === null) { this.data = {}; return; }
 
-            const parsed = JSON.parse(raw.toString('utf8'));
-            if (typeof parsed !== 'object' || Array.isArray(parsed) || parsed === null) {
-                throw new Error('not a plain object');
-            }
-            this.data = parsed;
+            // Same parse and plain-object check as ever; large envelopes are
+            // parsed off this thread (see parseEnvelope).
+            this.data = await parseEnvelope(raw, this._loadStats);
         } catch {
             // Present but unreadable (EACCES/EIO/...) or unparseable. Both land
             // here, which matches the old behaviour exactly: existsSync() would
@@ -431,14 +548,18 @@ export class SecureStore {
      */
     factoryReset(): void {
         // A written-behind snapshot of the OLD vault must never land after the
-        // wipe: drop the pending one and invalidate any write in flight.
-        if (this.deferTimer) { clearTimeout(this.deferTimer); this.deferTimer = null; }
-        this.deferredDirty = false;
-        this.asyncWriteAgain = false;
+        // wipe: drop the scheduled write and invalidate any write in flight.
+        this.clearWriteTimer();
         this.saveGen++;
         try { if (fs.existsSync(this.dbPath)) fs.unlinkSync(this.dbPath); } catch {}
         try { if (fs.existsSync(this.keyPath)) fs.unlinkSync(this.keyPath); } catch {}
         this.data = {};
+        this.indexes.clear();
+        // Nothing of the old vault is owed to disk any more — it was deleted on
+        // purpose. Anyone awaiting durability of an old change is released.
+        this.durableSeq = this.seq;
+        this.pendingSoon = false;
+        this.settleWaiters();
         const keyHex = crypto.randomBytes(32).toString('hex');
         try {
             const tmp = this.keyPath + '.tmp';
@@ -459,189 +580,375 @@ export class SecureStore {
         this._corruptBackupFile = null;
     }
 
-    // ── Write coalescing ─────────────────────────────────────────────────
+    // ── Persistence: asynchronous, coalesced, crash-safe ─────────────────
     //
-    // Every set()/delete() used to rewrite the WHOLE vault synchronously on the
-    // main thread: JSON.stringify of every entry + writeFileSync + renameSync.
-    // The vault is not small — it holds the DM replay set (up to 50k
-    // ephemeral keys) and the channel replay ledger (up to 30k entries), each
-    // one encrypted value, so a long-used install carries megabytes — and the
-    // write counts were large:
-    //   • every DM that used a one-time prekey deleted two entries → 2 full
-    //     rewrites per message, so a wake-up catch-up of N messages cost 2N;
-    //   • a prekey top-up minted 100 prekeys → 200+ full rewrites in one
-    //     synchronous loop (and the top-up is triggered by the post-wake
-    //     WebSocket reconnect).
-    // The main thread owns every window; while it writes, the app cannot
-    // repaint, restore, or answer the renderer. That is the "(Not Responding)
-    // after waking the PC" shape. Two tools, both opt-in per call site so no
-    // existing caller's durability changes silently:
-    //   • batch(fn): mutations inside fn are written ONCE, synchronously, when
-    //     the outermost batch ends — same durability as before (on disk before
-    //     batch() returns, errors still throw), N× fewer writes.
-    //   • setDeferred()/deleteDeferred(): write-behind for high-frequency state
-    //     where a sub-second window is already accepted (the replay sets were
-    //     already persisted on a 500 ms debounce). Coalesced over
-    //     DEFER_MS (at most DEFER_MAX_MS after the first change), serialized
-    //     on the main thread but WRITTEN off it (async fs), committed with an
-    //     ordered rename. flush() writes synchronously; main.ts calls it on
-    //     quit.
-    private batchDepth = 0;
-    private batchDirty = false;
-    private deferredDirty = false;
-    private deferTimer: ReturnType<typeof setTimeout> | null = null;
+    // WHY THIS IS ASYNC NOW. Every set()/delete() used to rewrite the WHOLE
+    // vault synchronously on the main thread: JSON.stringify of every entry +
+    // writeFileSync + renameSync. The main thread owns every window; while it
+    // writes, the app cannot repaint, restore, or answer the renderer. A
+    // long-lived vault is not small (the DM replay set, the channel replay
+    // ledger, every one-time prekey this device still holds — measured 5.5 MB
+    // for a healthy 6-month install and 13-22 MB for one whose prekey top-ups
+    // had been failing), and at those sizes ONE save blocked the thread for
+    // 70-380 ms. `batch()` and the earlier write-behind cut the NUMBER of saves;
+    // this cuts what each one costs the thread:
+    //
+    //   1. A change marks the store dirty and schedules ONE write (next turn for
+    //      set()/delete(), DEFER_MS-debounced for setDeferred()/deleteDeferred()).
+    //      Any number of changes before it starts ride the same write. A set()
+    //      of the value already stored, or a delete() of an absent key, is not
+    //      a change and writes nothing.
+    //   2. The write takes a point-in-time snapshot of the entry REFERENCES
+    //      (entries are immutable — encrypt() makes a new one per set — so the
+    //      snapshot cannot tear), then serialises it in slices of at most
+    //      SLICE_MS, yielding the loop between slices, and streams it to a temp
+    //      file with async fs, fsync, then an atomic rename on this thread so
+    //      commits stay strictly ordered with flush().
+    //   3. `whenDurable()` resolves once every change made before the call is
+    //      on disk, and REJECTS if the write covering it failed. This is the
+    //      durability contract that `set()` returning used to provide: callers
+    //      whose next step publishes something (the public half of a prekey,
+    //      a channel key handed to other members) await it first.
+    //   4. `flush()` still writes synchronously — before-quit and suspend use
+    //      it, and a newer synchronous write always wins over an older async
+    //      one in flight (saveGen).
+    //
+    // What did NOT change: values are AES-256-GCM encrypted under the master
+    // key exactly as before; the file format is the same flat JSON object; a
+    // crash mid-write leaves a stale temp file and the previous vault intact.
+    private seq = 0;
+    private durableSeq = 0;
+    private pendingSoon = false;
+    private writeTimer: ReturnType<typeof setTimeout> | null = null;
+    private writeTimerDue = 0;
+    private writeTimerDeferred = false;
     private deferFirstAt = 0;
-    private asyncWrite: Promise<void> | null = null;
-    private asyncWriteAgain = false;
-    /** Bumped by every write; an async write that finishes after a newer one
-     *  started must not rename its (older) snapshot over the newer file. */
+    private inFlight: Promise<void> | null = null;
+    private retryDelayMs = 0;
+    private waiters: { target: number; resolve: () => void; reject: (e: unknown) => void }[] = [];
+    /** Bumped by every write; a write that finishes after a newer one started
+     *  must not rename its (older) snapshot over the newer file. */
     private saveGen = 0;
+    /** prefix → keys currently stored under it (see keysWithPrefix). */
+    private indexes = new Map<string, Set<string>>();
     static readonly DEFER_MS = 250;
     static readonly DEFER_MAX_MS = 1000;
+    static readonly RETRY_MIN_MS = 1000;
+    static readonly RETRY_MAX_MS = 30_000;
+    /** Longest the serialiser holds the thread before yielding. */
+    static readonly SLICE_MS = 8;
+    /** Serialised text buffered before it is handed to the (async) file write. */
+    static readonly CHUNK_CHARS = 512 * 1024;
+    /** set() compares against the stored plaintext only for values this small,
+     *  so the no-change check never costs a large decrypt. */
+    static readonly NOOP_CHECK_MAX_CHARS = 4096;
 
     /** How many whole-vault writes have started (tests + perf log). */
     writeCount = 0;
 
     /**
-     * Run `fn` with the store's disk writes coalesced into ONE synchronous save
-     * at the end of the outermost batch. `fn` must be synchronous. Nested
-     * batches join the outer one. If `fn` throws, what it already changed is
-     * still written (matching the old per-call behaviour, where every
-     * completed set() had already reached disk) and the error propagates.
+     * Run `fn` (synchronous). Every change inside it lands in the same
+     * coalesced write, as before. It no longer writes synchronously when it
+     * returns — `await whenDurable()` for that (ensureSignalIdentity and
+     * generateRotationBundle do, before anything they made can be uploaded).
      */
     batch<T>(fn: () => T): T {
-        this.batchDepth++;
-        try {
-            return fn();
-        } finally {
-            this.batchDepth--;
-            if (this.batchDepth === 0 && this.batchDirty) {
-                this.batchDirty = false;
-                this.save();
-            }
-        }
+        return fn();
     }
 
-    /** set(), written behind (see the coalescing note above). */
+    /** set(), written behind on the debounce (high-frequency state). */
     setDeferred(key: string, value: string): void {
-        this.data[key] = this.encrypt(value);
-        this.scheduleDeferredSave();
+        this.put(key, value, true);
     }
 
-    /** delete(), written behind (see the coalescing note above). */
+    /** delete(), written behind on the debounce. */
     deleteDeferred(key: string): void {
-        if (!(key in this.data)) return;
-        delete this.data[key];
-        this.scheduleDeferredSave();
+        this.remove(key, true);
     }
 
-    /** Write any pending deferred change synchronously, now. */
-    flush(): void {
-        if (this.deferTimer) { clearTimeout(this.deferTimer); this.deferTimer = null; }
-        if (this.deferredDirty || this.asyncWriteAgain) {
-            this.asyncWriteAgain = false;
-            this.save();
-        }
-    }
-
-    /** True while a deferred change has not reached disk yet. */
+    /** True while any change has not reached disk yet. */
     hasPendingWrites(): boolean {
-        return this.deferredDirty || this.asyncWriteAgain || this.batchDirty;
+        return this.seq > this.durableSeq;
     }
 
-    private scheduleDeferredSave(): void {
-        if (this.batchDepth > 0) { this.batchDirty = true; return; }
-        this.deferredDirty = true;
-        const now = Date.now();
-        if (!this.deferTimer) this.deferFirstAt = now;
-        else clearTimeout(this.deferTimer);
-        const wait = Math.max(0, Math.min(SecureStore.DEFER_MS, this.deferFirstAt + SecureStore.DEFER_MAX_MS - now));
-        this.deferTimer = setTimeout(() => this.writeBehind(), wait);
-        // A pending write must not be what keeps a quitting process alive;
-        // before-quit flushes it synchronously instead.
-        (this.deferTimer as { unref?: () => void }).unref?.();
+    /**
+     * Resolves once every change made BEFORE this call is on disk; rejects with
+     * the write error if the write that covered it failed (the store keeps
+     * retrying in the background). Never resolves early: a change counts as
+     * durable only after the rename of a snapshot taken after the change.
+     */
+    whenDurable(): Promise<void> {
+        const target = this.seq;
+        if (this.durableSeq >= target) return Promise.resolve();
+        return new Promise<void>((resolve, reject) => {
+            this.waiters.push({ target, resolve, reject });
+            this.pendingSoon = true;
+            this.scheduleWrite('soon');
+        });
     }
 
-    private writeBehind(): void {
-        this.deferTimer = null;
-        if (!this.deferredDirty) return;
-        if (process.env.CIPHERLINE_SMOKE_TEST) { this.deferredDirty = false; return; }
-        if (this.asyncWrite) { this.asyncWriteAgain = true; return; }
-        this.deferredDirty = false;
-        const gen = ++this.saveGen;
-        this.writeCount++;
-        const json = freezeMonitor.track('securestore:serialize', () => JSON.stringify(this.data));
-        const tmp = this.dbPath + '.wb.tmp';
-        const done = fsp.writeFile(tmp, json, { encoding: 'utf8', mode: 0o600 })
-            .then(async () => {
-                // A synchronous save() started after this snapshot: the file
-                // on disk is already newer. Drop ours.
-                if (gen !== this.saveGen) { await fsp.unlink(tmp).catch(() => {}); return; }
-                // Commit on the main thread, so commits are strictly ordered
-                // with the synchronous save() path.
-                fs.renameSync(tmp, this.dbPath);
-            })
-            .catch((err) => {
-                console.error('[SecureStore] deferred write failed — will retry', err);
-                this.deferredDirty = true;
-            })
-            .finally(() => {
-                this.asyncWrite = null;
-                if (this.asyncWriteAgain || this.deferredDirty) {
-                    this.asyncWriteAgain = false;
-                    this.deferredDirty = true;
-                    this.scheduleDeferredSave();
-                }
-            });
-        this.asyncWrite = done;
-    }
-
-    /** Test hook: resolves once no deferred write is pending or in flight. */
+    /** Test hook: resolves once nothing is pending or in flight. */
     async whenWritesSettled(): Promise<void> {
         for (let i = 0; i < 50; i++) {
-            if (this.deferTimer) { clearTimeout(this.deferTimer); this.writeBehind(); }
-            if (this.asyncWrite) { await this.asyncWrite; continue; }
-            if (!this.deferredDirty && !this.deferTimer) return;
+            if (this.inFlight) { await this.inFlight; continue; }
+            if (this.seq <= this.durableSeq && !this.writeTimer) return;
+            try { await this.whenDurable(); } catch { /* reported by the store */ }
         }
     }
 
-    private save() {
-        // Inside batch(): the outermost batch writes once when it ends.
-        if (this.batchDepth > 0) { this.batchDirty = true; return; }
-        // A whole-vault write supersedes any pending write-behind.
-        const hadDeferred = this.deferredDirty || this.deferTimer !== null;
-        if (this.deferTimer) { clearTimeout(this.deferTimer); this.deferTimer = null; }
-        this.deferredDirty = false;
+    /** Write every pending change synchronously, now (before-quit, suspend). */
+    flush(): void {
+        this.clearWriteTimer();
+        if (this.seq <= this.durableSeq) return;
+        const target = this.seq;
+        if (process.env.CIPHERLINE_SMOKE_TEST) { this.markDurable(target); return; }
+        // Any async snapshot still in flight is older than this one.
         this.saveGen++;
+        this.writeCount++;
         try {
-            this.writeNow();
+            // P2-ELEC-2: atomic write — crash mid-write yields a stale tmp, not
+            // a corrupt db. tmp is on the same filesystem so renameSync is atomic.
+            const tmp = this.dbPath + '.tmp';
+            freezeMonitor.track('securestore:save', () => {
+                fs.writeFileSync(tmp, JSON.stringify(this.data), { encoding: 'utf8', mode: 0o600 });
+                fs.renameSync(tmp, this.dbPath);
+            });
         } catch (e) {
-            // Keep the write-behind obligation alive: a failed synchronous save
-            // must not silently drop deferred changes that rode on it.
-            if (hadDeferred) this.scheduleDeferredSave();
+            this.failWaiters(target, e);
+            this.retryDelayMs = this.nextRetryDelay();
+            this.scheduleWrite('retry');
             throw e;
         }
+        this.retryDelayMs = 0;
+        this.markDurable(target);
     }
 
-    private writeNow() {
+    /** Prefixes the hot paths look up by; indexed during initialize(). */
+    static readonly PREINDEXED_PREFIXES: readonly string[] = ['otp_priv_', 'otp_mint_', 'signed_prekey_priv_', 'channel_keys:'];
+
+    private async buildHotIndexes(): Promise<void> {
+        const keys = Object.keys(this.data);
+        const built = SecureStore.PREINDEXED_PREFIXES.map((p) => [p, new Set<string>()] as const);
+        let sliceStart = performance.now();
+        for (let i = 0; i < keys.length; i++) {
+            const k = keys[i];
+            for (const [p, set] of built) if (k.startsWith(p)) set.add(k);
+            if ((i & 1023) === 1023 && performance.now() - sliceStart > SecureStore.SLICE_MS) {
+                await yieldToLoop();
+                sliceStart = performance.now();
+            }
+        }
+        // Nothing can have changed meanwhile: the store refuses reads and
+        // writes until initialize() completes.
+        for (const [p, set] of built) this.indexes.set(p, set);
+    }
+
+    /** Every key currently stored under `prefix`, without scanning the whole
+     *  vault. The first call for a prefix builds its index (one scan); after
+     *  that every change keeps it current. Same read guard as keys(). */
+    keysWithPrefix(prefix: string): string[] {
+        this.assertReadable('keysWithPrefix');
+        let idx = this.indexes.get(prefix);
+        if (!idx) {
+            idx = new Set<string>();
+            for (const k of Object.keys(this.data)) if (k.startsWith(prefix)) idx.add(k);
+            this.indexes.set(prefix, idx);
+        }
+        return [...idx];
+    }
+
+    private has(key: string): boolean {
+        return Object.prototype.hasOwnProperty.call(this.data, key);
+    }
+
+    /** True when `key` already holds exactly `value` (small values only). */
+    private holds(key: string, value: string): boolean {
+        if (!this.has(key) || value.length > SecureStore.NOOP_CHECK_MAX_CHARS) return false;
+        try { return this.decrypt(this.data[key]) === value; } catch { return false; }
+    }
+
+    private put(key: string, value: string, deferred: boolean): void {
+        // No change, no write. Settings re-saved with the same value, the
+        // hourly protected-epochs refresh, a re-derived pub that was already
+        // stored: each of these used to cost a whole-vault rewrite.
+        if (this.holds(key, value)) return;
+        const isNew = !this.has(key);
+        this.data[key] = this.encrypt(value);
+        if (isNew) for (const [p, idx] of this.indexes) if (key.startsWith(p)) idx.add(key);
+        this.changed(deferred);
+    }
+
+    private remove(key: string, deferred: boolean): void {
+        if (!this.has(key)) return;
+        delete this.data[key];
+        for (const [p, idx] of this.indexes) if (key.startsWith(p)) idx.delete(key);
+        this.changed(deferred);
+    }
+
+    private changed(deferred: boolean): void {
+        this.seq++;
+        if (!deferred) this.pendingSoon = true;
+        this.scheduleWrite(deferred ? 'deferred' : 'soon');
+    }
+
+    private nextRetryDelay(): number {
+        return Math.min(SecureStore.RETRY_MAX_MS, Math.max(SecureStore.RETRY_MIN_MS, this.retryDelayMs * 2));
+    }
+
+    private clearWriteTimer(): void {
+        if (this.writeTimer) { clearTimeout(this.writeTimer); this.writeTimer = null; }
+        this.writeTimerDeferred = false;
+    }
+
+    private scheduleWrite(mode: 'soon' | 'deferred' | 'retry'): void {
+        // The in-flight write's completion reschedules whatever is left.
+        if (this.inFlight) return;
+        if (this.seq <= this.durableSeq) { this.clearWriteTimer(); this.settleWaiters(); return; }
+        const now = Date.now();
+        let due: number;
+        if (mode === 'soon') {
+            due = now;
+        } else if (mode === 'retry') {
+            due = now + this.retryDelayMs;
+        } else {
+            // Debounce, but never past DEFER_MAX_MS after the first deferred
+            // change: a steady trickle must not postpone the write forever.
+            if (!(this.writeTimer && this.writeTimerDeferred)) this.deferFirstAt = now;
+            due = Math.min(now + SecureStore.DEFER_MS, this.deferFirstAt + SecureStore.DEFER_MAX_MS);
+        }
+        if (this.writeTimer) {
+            // A sooner write already scheduled covers this change too. A
+            // deferred timer is a debounce: a newer deferred change moves it.
+            const debounce = mode === 'deferred' && this.writeTimerDeferred;
+            if (!debounce && this.writeTimerDue <= due) return;
+            clearTimeout(this.writeTimer);
+        }
+        this.writeTimerDue = due;
+        this.writeTimerDeferred = mode === 'deferred';
+        this.writeTimer = setTimeout(() => {
+            this.writeTimer = null;
+            this.writeTimerDeferred = false;
+            this.startWrite();
+        }, Math.max(0, due - now));
+        // A pending write must not be what keeps a quitting process alive;
+        // before-quit flushes it synchronously instead.
+        (this.writeTimer as { unref?: () => void }).unref?.();
+    }
+
+    private markDurable(target: number): void {
+        if (target > this.durableSeq) this.durableSeq = target;
+        this.settleWaiters();
+    }
+
+    private settleWaiters(): void {
+        if (this.waiters.length === 0) return;
+        const left: typeof this.waiters = [];
+        for (const w of this.waiters) {
+            if (w.target <= this.durableSeq) w.resolve();
+            else left.push(w);
+        }
+        this.waiters = left;
+    }
+
+    private failWaiters(target: number, err: unknown): void {
+        if (this.waiters.length === 0) return;
+        const left: typeof this.waiters = [];
+        for (const w of this.waiters) {
+            if (w.target <= target) w.reject(err);
+            else left.push(w);
+        }
+        this.waiters = left;
+    }
+
+    private startWrite(): void {
+        this.clearWriteTimer();
+        if (this.inFlight) return;
+        if (this.seq <= this.durableSeq) { this.settleWaiters(); return; }
+        const target = this.seq;
+        this.pendingSoon = false;
         // Under the CI smoke test, initialize() deliberately never assigns
-        // dbPath (the test only needs the window to paint), so a disk write
-        // here is rename('.tmp', '') → ENOENT → a failed build the moment any
-        // startup code calls set(). Values have already landed in this.data,
-        // so the store keeps working in-process for the run; just don't touch
-        // disk. Outside the smoke test an empty dbPath still throws — that is
-        // a real "written before initialize()" bug and should stay loud.
-        if (process.env.CIPHERLINE_SMOKE_TEST) return;
+        // dbPath (the test only needs the window to paint). Values have
+        // already landed in this.data, so the store keeps working in-process
+        // for the run; just don't touch disk.
+        if (process.env.CIPHERLINE_SMOKE_TEST) { this.markDurable(target); return; }
+        if (!this.dbPath) {
+            // A write before initialize() is a real bug and stays loud.
+            const err = new Error('SecureStore write before initialize() — no vault path');
+            console.error('[SecureStore]', err.message);
+            this.failWaiters(target, err);
+            return;
+        }
+        const gen = ++this.saveGen;
         this.writeCount++;
-        // P2-ELEC-2: atomic write — crash mid-write yields a stale tmp, not a
-        // corrupt db. tmp is on the same filesystem so renameSync is atomic.
-        const tmp = this.dbPath + '.tmp';
-        // Synchronous whole-file write on the main thread — labelled so a
-        // stall it causes shows up as such in the freeze log.
-        freezeMonitor.track('securestore:save', () => {
-            fs.writeFileSync(tmp, JSON.stringify(this.data), { encoding: 'utf8', mode: 0o600 });
-            fs.renameSync(tmp, this.dbPath);
+        // Point-in-time snapshot of entry references: O(entries) pointer
+        // copies, the one step that is not sliced.
+        const snapshot = freezeMonitor.track('securestore:snapshot', () => {
+            const keys = Object.keys(this.data);
+            const out: [string, EncryptedEntry][] = new Array(keys.length);
+            for (let i = 0; i < keys.length; i++) out[i] = [keys[i], this.data[keys[i]]];
+            return out;
         });
+        this.inFlight = this.writeSnapshot(snapshot, gen).then(
+            (committed) => {
+                this.retryDelayMs = 0;
+                if (committed) this.markDurable(target);
+                else this.settleWaiters();
+            },
+            (err) => {
+                console.error('[SecureStore] vault write failed — previous vault left intact, will retry', err);
+                this.retryDelayMs = this.nextRetryDelay();
+                this.failWaiters(target, err);
+            },
+        ).finally(() => {
+            this.inFlight = null;
+            if (this.seq > this.durableSeq) {
+                this.scheduleWrite(this.retryDelayMs > 0 ? 'retry' : this.pendingSoon ? 'soon' : 'deferred');
+            }
+        });
+    }
+
+    /**
+     * Serialise `snapshot` and atomically replace the vault with it. Resolves
+     * true when committed, false when a newer write superseded it (its temp
+     * file is removed and the newer vault is left alone). Rejects on any I/O
+     * error, leaving the previous vault file untouched.
+     */
+    private async writeSnapshot(snapshot: [string, EncryptedEntry][], gen: number): Promise<boolean> {
+        const tmp = this.dbPath + '.wb.tmp';
+        const fh = await fsp.open(tmp, 'w', 0o600);
+        let complete = false;
+        try {
+            let buf = '{';
+            let sliceStart = performance.now();
+            for (let i = 0; i < snapshot.length; i++) {
+                const [k, e] = snapshot[i];
+                buf += (i === 0 ? '' : ',') + JSON.stringify(k) + ':' + JSON.stringify(e);
+                if (buf.length >= SecureStore.CHUNK_CHARS) {
+                    await fh.writeFile(buf, 'utf8');
+                    buf = '';
+                    sliceStart = performance.now();
+                } else if ((i & 31) === 31 && performance.now() - sliceStart > SecureStore.SLICE_MS) {
+                    await yieldToLoop();
+                    sliceStart = performance.now();
+                }
+            }
+            buf += '}';
+            await fh.writeFile(buf, 'utf8');
+            // Off-thread fsync, so the rename below never publishes a file
+            // whose bytes are still only in the page cache.
+            await fh.datasync();
+            complete = true;
+        } finally {
+            await fh.close().catch(() => {});
+            if (!complete) await fsp.unlink(tmp).catch(() => {});
+        }
+        // A synchronous flush() (or factoryReset) ran while we were writing:
+        // the file on disk is already newer than this snapshot. Drop ours.
+        if (gen !== this.saveGen) { await fsp.unlink(tmp).catch(() => {}); return false; }
+        // Commit on the main thread, so commits are strictly ordered with the
+        // synchronous flush() path. A rename is a metadata operation.
+        freezeMonitor.track('securestore:commit', () => fs.renameSync(tmp, this.dbPath));
+        return true;
     }
 
     private encrypt(plaintext: string): EncryptedEntry {
@@ -665,33 +972,30 @@ export class SecureStore {
         return plaintext;
     }
 
+    /** Store `value` under `key`. In memory at once; on disk shortly after —
+     *  `await whenDurable()` when the next step depends on it being there. */
     set(key: string, value: string) {
-        this.data[key] = this.encrypt(value);
-        this.save();
+        this.put(key, value, false);
     }
 
-    /** Encrypt and persist multiple entries in a single atomic save (P2-ELEC-10).
-     *  A crash between individual `set()` calls would leave a half-applied state;
-     *  this mutates all entries then calls `save()` once. */
+    /** Encrypt and store multiple entries; they reach disk in the same write
+     *  (P2-ELEC-10: never half-applied on disk). */
     setMany(entries: Record<string, string>) {
-        for (const [k, v] of Object.entries(entries)) {
-            this.data[k] = this.encrypt(v);
-        }
-        this.save();
+        for (const [k, v] of Object.entries(entries)) this.put(k, v, false);
     }
 
     /**
      * Fail loudly on a read that happens before initialize() has finished.
      *
-     * `save()` already refuses a write-before-init on the grounds that it is "a
-     * real bug and should stay loud". A READ before init was the asymmetric,
-     * and far more dangerous, half: `this.data` is still `{}`, so `get()`
-     * returned a perfectly ordinary-looking `null` — indistinguishable from
-     * "this key has never been set". Callers act on that. `ensureSignalIdentity()`
-     * reads `identity_priv`, sees null, and MINTS A NEW IDENTITY over the real
-     * one; `pruneOldKeys()` sees no channel keys and skips silently; the game
-     * ignore-list comes back empty. Every one of those is a silent wrong answer
-     * where a crash would have been recoverable.
+     * A write-before-init has always been refused loudly as "a real bug". A
+     * READ before init was the asymmetric, and far more dangerous, half:
+     * `this.data` is still `{}`, so `get()` returned a perfectly
+     * ordinary-looking `null` — indistinguishable from "this key has never been
+     * set". Callers act on that. `ensureSignalIdentity()` reads `identity_priv`,
+     * sees null, and MINTS A NEW IDENTITY over the real one; `pruneOldKeys()`
+     * sees no channel keys and skips silently; the game ignore-list comes back
+     * empty. Every one of those is a silent wrong answer where a crash would
+     * have been recoverable.
      *
      * That hazard was masked only by _doInitialize() running synchronously.
      * Now that it genuinely yields, the window is real, so the guard is real.
@@ -714,7 +1018,7 @@ export class SecureStore {
 
     get(key: string): string | null {
         this.assertReadable('get');
-        const entry = this.data[key];
+        const entry = this.has(key) ? this.data[key] : undefined;
         if (!entry) return null;
         try {
             return this.decrypt(entry);
@@ -725,16 +1029,15 @@ export class SecureStore {
     }
 
     delete(key: string) {
-        delete this.data[key];
-        this.save();
+        this.remove(key, false);
     }
 
     /** Iterate over all stored keys. Used by the backup exporter to scoop up
      *  prefix-scoped entries (e.g. `avatar_key:*`).
      *
      *  Guarded for the same reason as get(): before init this returns `[]`,
-     *  and callers read an empty list as "nothing stored". pruneOldKeys() and
-     *  the SPK/OTP enumeration in signal-identity.ts both iterate this. */
+     *  and callers read an empty list as "nothing stored". Prefer
+     *  keysWithPrefix() on hot paths — this one is O(vault). */
     keys(): string[] {
         this.assertReadable('keys');
         return Object.keys(this.data);

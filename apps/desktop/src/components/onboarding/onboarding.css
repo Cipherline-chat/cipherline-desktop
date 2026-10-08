@@ -1,0 +1,134 @@
+/* ============================================================
+   Onboarding (round 6) — the shell + the classes every step shares.
+   Ported from the approved prototype (scratchpad ob6/css/wiz.css,
+   auth.css). Everything is scoped under `.ob` so nothing leaks into
+   the Dashboard mounted underneath. Step-specific rules live with
+   their step (steps/*.css).
+   ============================================================ */
+
+.ob {
+  /* prototype token names -> the app's tokens */
+  --abyss: var(--cl-abyss); --deep: var(--cl-deep); --surface: var(--cl-surface); --raise: var(--cl-raise);
+  --border: var(--cl-border); --sink: var(--cl-sink);
+  --lume: var(--cl-lume); --lume-hi: var(--cl-lume-hi); --lume-press: var(--cl-lume-press); --lume-deep: var(--cl-lume-deep);
+  --on-lume: var(--cl-on-lume); --lume-tint: var(--cl-lume-tint);
+  --flash: var(--cl-flash); --glow: var(--cl-glow); --on-glow: var(--cl-on-glow); --ok: var(--cl-ok);
+  --text: var(--cl-text); --muted: var(--cl-muted); --faint: var(--cl-faint);
+  --display: var(--cl-font-display); --body: var(--cl-font-body); --mono: var(--cl-font-mono);
+  --spr: cubic-bezier(.34, 1.56, .64, 1);
+  --out: cubic-bezier(.22, 1, .36, 1);
+
+  position: fixed; inset: 0; z-index: 900;
+  background: var(--cl-abyss); color: var(--cl-text); font-family: var(--cl-font-body);
+  -webkit-font-smoothing: antialiased;
+  isolation: isolate;
+}
+.ob *, .ob *::before, .ob *::after { box-sizing: border-box; }
+
+/* ---- the deep field (same family as AuthScreen's backdrop) ---- */
+.ob-deep { position: absolute; inset: 0; overflow: hidden; pointer-events: none; z-index: 0; }
+.ob-deep-base { position: absolute; inset: 0; background: radial-gradient(125% 90% at 50% -10%, #15203B 0%, #0B0F1E 52%, #070A14 100%); }
+.ob-deep-halo { position: absolute; width: 78vw; height: 78vw; left: 50%; top: -22%; transform: translateX(-50%); border-radius: 50%; filter: blur(50px); opacity: .7;
+  background: radial-gradient(circle, rgba(37, 224, 200, .10) 0%, rgba(37, 224, 200, .03) 38%, transparent 62%); }
+.ob-deep-vig { position: absolute; inset: 0; background: radial-gradient(125% 105% at 50% 50%, transparent 58%, rgba(0, 0, 0, .5) 100%); }
+.ob-deep-field { position: absolute; inset: 0; }
+/* The aurora's shared animation pans background-position, which repaints on
+   the main thread every frame (measured: ~14 points of main-thread time on
+   this step at idle). Here the same slow drift is a transform on the layer
+   instead, which the compositor runs on its own. */
+.ob .auth-aurora { animation: ob-aurora 34s ease-in-out infinite; background-position: 50% 50%; will-change: transform; }
+@keyframes ob-aurora { 0%, 100% { transform: translate3d(-6%, 0, 0); } 50% { transform: translate3d(6%, 0, 0); } }
+/* Decoration stops while the window is blurred or hidden (utils/idleMotion.ts). */
+:root[data-cl-motion="idle"] .ob .auth-aurora,
+:root[data-cl-motion="idle"] .ob .auth-bubble { animation-play-state: paused; }
+
+/* ---- the shared dot canvas (privacy, invite, the ending) ---- */
+.ob-dots { position: fixed; inset: 0; width: 100%; height: 100%; z-index: 2; pointer-events: none; opacity: 0; transition: opacity .6s ease; }
+.ob-dots.on { opacity: 1; }
+.ob-dots.over { z-index: 60; }
+
+/* ---- the wizard chrome ---- */
+.ob-wiz { position: absolute; inset: 0; z-index: 3; display: flex; flex-direction: column; overflow-y: auto; overflow-x: hidden; animation: ob-wiz-in .55s ease-out .3s both; }
+@keyframes ob-wiz-in { from { opacity: 0; } }
+.ob-wiz.leaving { opacity: 0; transition: opacity .25s ease; pointer-events: none; }
+.ob-head { flex: none; display: flex; flex-direction: column; align-items: center; gap: 14px; padding: 28px 0 8px; animation: ob-head-in .5s var(--out) both; }
+@keyframes ob-head-in { from { opacity: 0; transform: translateY(-12px); } }
+.ob-lockup { display: flex; align-items: center; gap: 10px; font: 700 20px/1 var(--display); letter-spacing: -.01em; color: var(--text); }
+.ob-lockup-keys { display: flex; width: 38px; }
+/* The lockup Keys holds still (no infinite limb sway) — idle cost near zero, as in the prototype. */
+.ob-lockup-keys .k2-leg, .ob-lockup-keys .k2-fore, .ob-lockup-keys .k2-foot { animation: none; }
+.ob-stepdots { display: flex; gap: 8px; align-items: center; }
+.ob-stepdots i { display: block; width: 6px; height: 6px; border-radius: 99px; background: rgba(255, 255, 255, .15); transition: width .45s var(--spr), background .3s; }
+.ob-stepdots i.on { width: 22px; background: var(--lume); }
+.ob-body { flex: 1; display: flex; align-items: center; justify-content: center; padding: 20px 48px 44px; }
+
+/* ---- a step: copy column beside a visual column ---- */
+.ob .step { width: 100%; max-width: 1140px; display: grid; grid-template-columns: minmax(0, 540px) minmax(0, 1fr); gap: 64px; align-items: center; }
+.ob .step--one { max-width: 860px; grid-template-columns: minmax(0, 1fr); }
+.ob-step-anim { width: 100%; display: flex; justify-content: center; }
+/* `backwards`, not `both`: a filled end state keeps a transform/filter on the
+   wrapper, which makes it the containing block for the steps' position:fixed
+   dot labels and menus. */
+.ob-step-anim.enter { animation: ob-step-in .42s cubic-bezier(.25, .46, .45, .94) backwards; }
+.ob-step-anim.enter.back { animation-name: ob-step-in-back; }
+@keyframes ob-step-in { from { opacity: 0; transform: translateX(40px); filter: blur(5px); } }
+@keyframes ob-step-in-back { from { opacity: 0; transform: translateX(-40px); filter: blur(5px); } }
+.ob-step-anim.exit { animation: ob-step-out .24s ease-in both; pointer-events: none; }
+.ob-step-anim.exit.back { animation-name: ob-step-out-back; }
+@keyframes ob-step-out { to { opacity: 0; transform: translateX(-40px); filter: blur(5px); } }
+@keyframes ob-step-out-back { to { opacity: 0; transform: translateX(40px); filter: blur(5px); } }
+.ob .copy { min-width: 0; }
+.ob .eyebrow { display: inline-flex; align-items: center; gap: 10px; margin: 0; font: 600 11px var(--mono); letter-spacing: .2em; text-transform: uppercase; color: var(--lume); }
+.ob .eyebrow::before { content: ''; width: 18px; height: 1.5px; border-radius: 2px; background: currentColor; opacity: .7; }
+.ob .h1 { margin: 12px 0 12px; font: 600 clamp(32px, 3.3vw, 48px)/1.06 var(--display); letter-spacing: -.012em; color: var(--text); text-wrap: balance; }
+.ob .h1 em { font-style: normal; color: var(--lume); }
+.ob .lede { margin: 0; max-width: 500px; font-size: 16.5px; line-height: 1.55; color: var(--muted); text-wrap: pretty; }
+.ob .lede b { color: var(--text); font-weight: 700; }
+.ob .acts { display: flex; align-items: center; gap: 12px; margin-top: 28px; }
+.ob .acts .grow { flex: 1; }
+.ob .foot { display: flex; align-items: flex-start; gap: 8px; margin: 14px 2px 0; font-size: 12.5px; line-height: 1.5; color: var(--faint); }
+.ob .foot svg { flex: none; margin-top: 2px; }
+.ob .foot b { color: var(--muted); font-weight: 700; }
+.ob .lbl { margin: 0 0 8px; font: 600 10.5px var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--faint); }
+
+/* settings-style card + rows (the real Settings `sd-row` look) */
+.ob .card { border-radius: 20px; background: rgba(19, 26, 48, .78); border: 1px solid var(--border); padding: 16px 20px 6px; }
+.ob .card + .card { margin-top: 12px; }
+.ob .card .lbl { margin-bottom: 2px; }
+.ob .row { display: flex; align-items: center; gap: 16px; padding: 12px 0; }
+.ob .row + .row { border-top: 1px solid rgba(42, 53, 88, .5); }
+.ob .tile { flex: none; width: 36px; height: 36px; border-radius: 10px; display: grid; place-items: center; background: rgba(37, 224, 200, .1); border: 1px solid rgba(37, 224, 200, .22); color: var(--lume); transition: background .25s, color .25s, border-color .25s; }
+.ob .tile.dim { background: var(--raise); border-color: var(--border); color: var(--faint); }
+.ob .row .rl { flex: 1; min-width: 0; }
+.ob .row .rl b { display: block; font-size: 14px; font-weight: 800; color: var(--text); }
+.ob .row .rl span { display: block; margin-top: 2px; font-size: 12.5px; line-height: 1.45; color: var(--muted); }
+
+/* the error line a step shows when its save failed */
+.ob .ob-err { margin: 14px 2px 0; padding: 10px 14px; border-radius: 12px; font-size: 13px; color: var(--flash); background: rgba(255, 107, 94, .1); border: 1px solid rgba(255, 107, 94, .28); }
+
+/* ---- narrower / shorter windows ---- */
+@media (max-width: 1180px) {
+  .ob .step:not(.step--one) { gap: 40px; grid-template-columns: minmax(0, 500px) minmax(0, 1fr); }
+  .ob-body { padding: 16px 32px 36px; }
+}
+@media (max-width: 980px) {
+  .ob .step:not(.step--one) { gap: 28px; grid-template-columns: minmax(0, 1fr) minmax(0, 340px); }
+  .ob .h1 { font-size: 32px; }
+  .ob .lede { font-size: 15.5px; }
+}
+@media (max-height: 940px) {
+  .ob .acts { margin-top: 20px; }
+}
+@media (max-height: 820px) {
+  .ob-head { padding-top: 20px; gap: 10px; }
+  .ob .h1 { margin: 8px 0 10px; }
+  .ob .acts { margin-top: 22px; }
+  .ob .row { padding: 10px 0; }
+}
+
+/* ---- reduced motion: the static path ---- */
+.ob.rm .ob-wiz, .ob.rm .ob-head, .ob.rm .ob-step-anim { animation: none !important; }
+.ob.rm .ob-dots { transition: none; }
+@media (prefers-reduced-motion: reduce) {
+  .ob .ob-wiz, .ob .ob-head, .ob .ob-step-anim { animation: none !important; }
+}

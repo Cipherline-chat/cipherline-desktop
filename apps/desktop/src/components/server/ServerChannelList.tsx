@@ -50,6 +50,7 @@ import cipherlineMark from '../../assets/cipherline-mark.svg';
 import { ClButton } from '../cl';
 import { writeToClipboard } from '../../utils/clipboard';
 import { useToast } from '../../contexts/ToastContext';
+import { hoverPrefetchChannelViewers, cancelHoverPrefetch } from '../../utils/channelViewerCache';
 
 // ── Sortable wrappers (defined at module level — no re-creation on render) ──
 
@@ -563,6 +564,10 @@ export const ServerChannelList: React.FC<Props> = ({
             <div
                 key={ch.channel_id}
                 onClick={() => onSelectChannel(ch)}
+                // Rest the pointer on a restricted channel and its member-sidebar
+                // viewer set is fetched before the click (utils/channelViewerCache).
+                onMouseEnter={() => hoverPrefetchChannelViewers(ch, token)}
+                onMouseLeave={cancelHoverPrefetch}
                 onContextMenu={(e) => ctx.open(e, buildChannelMenu(ch), `${ch.icon_emoji ?? '#'} ${ch.name}`)}
                 className={channelRowCls(ch.channel_id)}
                 title={ch.topic ?? ch.name}

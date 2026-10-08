@@ -13,7 +13,17 @@
  * codes. Surfaced in Settings → Advanced → "Delivery diagnostics".
  */
 
-export type DiagnosticKind = 'message_decrypt' | 'message_process' | 'message_persist' | 'message_encrypt' | 'message_ack' | 'channel_key_decrypt' | 'channel_key_distribute';
+/**
+ * Channel-key kinds cover every hop of the new-member / new-device key path,
+ * so one report from EACH side (the keyless device and a key holder) names the
+ * hop that failed:
+ *   channel_key_request    — the keyless device filing `POST …/key-request`;
+ *   channel_key_pull       — the keyless device fetching `GET …/channel-keys/pending`;
+ *   channel_key_decrypt    — installing one envelope (decrypt, attribution, conflict);
+ *   channel_key_distribute — a holder answering: finding the recipient's
+ *                            devices, wrapping, and `POST …/key-handshake`.
+ */
+export type DiagnosticKind = 'message_decrypt' | 'message_process' | 'message_persist' | 'message_encrypt' | 'message_ack' | 'channel_key_request' | 'channel_key_pull' | 'channel_key_decrypt' | 'channel_key_distribute';
 
 export interface DiagnosticEntry {
     /** Wall-clock ms — informational only; never persisted across restarts. */
@@ -36,9 +46,24 @@ export function extractE2eeCode(message: string): string {
     return m ? m[1] : 'UNKNOWN';
 }
 
+/** The HTTP status of an axios-shaped error, if it has one. */
+function httpStatusOf(error: unknown): number | undefined {
+    const status = (error as { response?: { status?: unknown } } | null)?.response?.status;
+    return typeof status === 'number' ? status : undefined;
+}
+
 export function record(kind: DiagnosticKind, error: unknown, ctx: DiagnosticEntry['ctx'] = {}): DiagnosticEntry {
     const message = error instanceof Error ? error.message : String(error);
-    const entry: DiagnosticEntry = { ts: Date.now(), kind, code: extractE2eeCode(message), ctx, message };
+    // A failed REST hop carries no [E2EE:…] prefix; its status is the whole
+    // story (403 vs 429 vs 5xx are three different bugs), so it becomes the code.
+    const status = httpStatusOf(error);
+    const e2ee = extractE2eeCode(message);
+    const code = e2ee !== 'UNKNOWN' ? e2ee : status !== undefined ? `HTTP_${status}` : 'UNKNOWN';
+    const entry: DiagnosticEntry = {
+        ts: Date.now(), kind, code,
+        ctx: status !== undefined && ctx.status === undefined ? { ...ctx, status } : ctx,
+        message,
+    };
     entries.push(entry);
     if (entries.length > MAX_ENTRIES) entries.shift();
     return entry;

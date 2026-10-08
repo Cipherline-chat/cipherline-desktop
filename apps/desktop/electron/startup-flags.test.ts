@@ -11,10 +11,10 @@ import {
 
 describe('parseStartupFlags', () => {
     it('reads exactly what serializeStartupFlags writes', () => {
-        const f: StartupFlags = { screenCapturer: 'dxgi', captureLog: true };
+        const f: StartupFlags = { screenCapturer: 'dxgi', captureLog: true, gamingVideo: true };
         expect(parseStartupFlags(serializeStartupFlags(f))).toEqual(f);
-        expect(parseStartupFlags(serializeStartupFlags({ screenCapturer: 'wgc', captureLog: false })))
-            .toEqual({ screenCapturer: 'wgc', captureLog: false });
+        expect(parseStartupFlags(serializeStartupFlags({ screenCapturer: 'wgc', captureLog: false, gamingVideo: false })))
+            .toEqual({ screenCapturer: 'wgc', captureLog: false, gamingVideo: false });
     });
 
     it.each([
@@ -32,9 +32,19 @@ describe('parseStartupFlags', () => {
 
     it('falls back per field: a bad value resets only that field', () => {
         expect(parseStartupFlags('{"screenCapturer":"gdi","captureLog":true}'))
-            .toEqual({ screenCapturer: 'auto', captureLog: true });
+            .toEqual({ screenCapturer: 'auto', captureLog: true, gamingVideo: false });
         expect(parseStartupFlags('{"screenCapturer":"wgc","captureLog":"true"}'))
-            .toEqual({ screenCapturer: 'wgc', captureLog: false });
+            .toEqual({ screenCapturer: 'wgc', captureLog: false, gamingVideo: false });
+    });
+
+    it('gamingVideo is OFF unless the file holds exactly true', () => {
+        expect(DEFAULT_STARTUP_FLAGS.gamingVideo).toBe(false);
+        expect(parseStartupFlags('{"gamingVideo":true}').gamingVideo).toBe(true);
+        expect(parseStartupFlags('{"gamingVideo":"true"}').gamingVideo).toBe(false);
+        expect(parseStartupFlags('{"gamingVideo":1}').gamingVideo).toBe(false);
+        // A file written before the setting existed keeps it off and the others intact.
+        expect(parseStartupFlags('{"screenCapturer":"dxgi","captureLog":true}'))
+            .toEqual({ screenCapturer: 'dxgi', captureLog: true, gamingVideo: false });
     });
 
     it('is exact, not lenient: no case folding, trimming or truthy coercion', () => {
@@ -46,7 +56,7 @@ describe('parseStartupFlags', () => {
 
     it('ignores unknown keys and does not honour inherited ones', () => {
         expect(parseStartupFlags('{"captureLog":true,"enable-logging":"stderr","vmodule":"*=9"}'))
-            .toEqual({ screenCapturer: 'auto', captureLog: true });
+            .toEqual({ screenCapturer: 'auto', captureLog: true, gamingVideo: false });
         expect(parseStartupFlags('{"__proto__":{"captureLog":true}}')).toEqual(DEFAULT_STARTUP_FLAGS);
     });
 
@@ -62,6 +72,8 @@ describe('validateStartupFlagsPatch (IPC trust boundary)', () => {
         expect(validateStartupFlagsPatch({ captureLog: false })).toEqual({ captureLog: false });
         expect(validateStartupFlagsPatch({ screenCapturer: 'auto', captureLog: true }))
             .toEqual({ screenCapturer: 'auto', captureLog: true });
+        expect(validateStartupFlagsPatch({ gamingVideo: true })).toEqual({ gamingVideo: true });
+        expect(validateStartupFlagsPatch({ gamingVideo: false })).toEqual({ gamingVideo: false });
         expect(validateStartupFlagsPatch({})).toEqual({});
     });
 
@@ -75,29 +87,32 @@ describe('validateStartupFlagsPatch (IPC trust boundary)', () => {
         ['a capturer in the wrong case', { screenCapturer: 'DXGI' }],
         ['a non-boolean captureLog', { captureLog: 'true' }],
         ['a numeric captureLog', { captureLog: 1 }],
+        ['a string gamingVideo', { gamingVideo: 'true' }],
+        ['a numeric gamingVideo', { gamingVideo: 1 }],
+        ['a null gamingVideo', { gamingVideo: null }],
     ])('rejects %s', (_label, input) => {
         expect(() => validateStartupFlagsPatch(input)).toThrow();
     });
 });
 
 describe('resolveStartupFlags — env > file > default', () => {
-    const file: StartupFlags = { screenCapturer: 'dxgi', captureLog: true };
+    const file: StartupFlags = { screenCapturer: 'dxgi', captureLog: true, gamingVideo: false };
 
     it('default when neither env nor file sets anything', () => {
         const r = resolveStartupFlags({ file: { ...DEFAULT_STARTUP_FLAGS }, env: {}, packaged: true });
-        expect(r).toEqual({ screenCapturer: 'auto', captureLog: false, source: { screenCapturer: 'default', captureLog: 'default' } });
+        expect(r).toEqual({ screenCapturer: 'auto', captureLog: false, gamingVideo: false, source: { screenCapturer: 'default', captureLog: 'default', gamingVideo: 'default' } });
     });
 
     it('file wins over default', () => {
         const r = resolveStartupFlags({ file, env: {}, packaged: true });
-        expect(r).toEqual({ screenCapturer: 'dxgi', captureLog: true, source: { screenCapturer: 'file', captureLog: 'file' } });
+        expect(r).toEqual({ screenCapturer: 'dxgi', captureLog: true, gamingVideo: false, source: { screenCapturer: 'file', captureLog: 'file', gamingVideo: 'default' } });
     });
 
     it('env wins over file (dev build)', () => {
         const r = resolveStartupFlags({
             file, env: { CIPHERLINE_SCREEN_CAPTURER: 'wgc', CIPHERLINE_CAPTURE_LOG: '0' }, packaged: false,
         });
-        expect(r).toEqual({ screenCapturer: 'wgc', captureLog: false, source: { screenCapturer: 'env', captureLog: 'env' } });
+        expect(r).toEqual({ screenCapturer: 'wgc', captureLog: false, gamingVideo: false, source: { screenCapturer: 'env', captureLog: 'env', gamingVideo: 'default' } });
     });
 
     it('an env capturer that is set but unrecognised still wins, as auto (the pre-existing env semantics)', () => {
@@ -108,7 +123,7 @@ describe('resolveStartupFlags — env > file > default', () => {
 
     it('an empty or blank env var counts as unset', () => {
         const r = resolveStartupFlags({ file, env: { CIPHERLINE_SCREEN_CAPTURER: '  ', CIPHERLINE_CAPTURE_LOG: '' }, packaged: false });
-        expect(r.source).toEqual({ screenCapturer: 'file', captureLog: 'file' });
+        expect(r.source).toEqual({ screenCapturer: 'file', captureLog: 'file', gamingVideo: 'default' });
     });
 
     it('CIPHERLINE_SCREEN_CAPTURER applies in a packaged build too (as it always did)', () => {
@@ -122,6 +137,15 @@ describe('resolveStartupFlags — env > file > default', () => {
         const off = resolveStartupFlags({ file, env: { CIPHERLINE_CAPTURE_LOG: '0' }, packaged: true });
         expect(off.captureLog).toBe(true);
         expect(off.source.captureLog).toBe('file');
+    });
+
+    it('gamingVideo comes from the file only (no env override)', () => {
+        const on = resolveStartupFlags({ file: { ...DEFAULT_STARTUP_FLAGS, gamingVideo: true }, env: {}, packaged: true });
+        expect(on.gamingVideo).toBe(true);
+        expect(on.source.gamingVideo).toBe('file');
+        const off = resolveStartupFlags({ file: { ...DEFAULT_STARTUP_FLAGS }, env: { CIPHERLINE_CAPTURE_LOG: '1' }, packaged: false });
+        expect(off.gamingVideo).toBe(false);
+        expect(off.source.gamingVideo).toBe('default');
     });
 
     it('dev: CIPHERLINE_CAPTURE_LOG=1 turns it on, anything else set turns it off', () => {
@@ -141,8 +165,8 @@ describe('startup-flags.json and capture-log files on disk', () => {
     const prev = () => path.join(dir, CAPTURE_LOG_PREV_FILENAME);
 
     it('write → read round-trips and leaves no temp file', () => {
-        writeStartupFlagsFile(flagsPath(), { screenCapturer: 'wgc', captureLog: true });
-        expect(readStartupFlagsFile(flagsPath())).toEqual({ screenCapturer: 'wgc', captureLog: true });
+        writeStartupFlagsFile(flagsPath(), { screenCapturer: 'wgc', captureLog: true, gamingVideo: false });
+        expect(readStartupFlagsFile(flagsPath())).toEqual({ screenCapturer: 'wgc', captureLog: true, gamingVideo: false });
         expect(fs.readdirSync(dir)).toEqual(['startup-flags.json']);
     });
 

@@ -4,9 +4,12 @@ import { API_BASE } from '../constants';
 import { preloadAvatarsBackground, warmAvatarsFromDiskCache } from './useEncryptedAvatar';
 import secureLocalStore from '../utils/secureLocalStore';
 import { hydratePeerIdentityCache, knownAvatarIds } from '../utils/peerIdentityCache';
+import { bindProfileCacheViewer } from '../utils/profileCache';
+import { bindRosterViewer } from '../utils/serverRosterCache';
 import {
     buildAvatarWarmPlan,
     collectRecentSenderIds,
+    selectFriendBanners,
     selectServerMemberAvatars,
     DEFAULT_WARM_LIMITS,
     type WarmPlanConversation,
@@ -108,6 +111,10 @@ export function useAvatarWarming(input: AvatarWarmingInput): void {
         // from A's contacts. Unbinds the writer too, so nothing lands in the
         // wrong account's record during the gap.
         hydratePeerIdentityCache(null);
+        // Same rule for the profile cache: responses depend on who asks.
+        bindProfileCacheViewer(warmUserId);
+        // ...and the server member rosters: they are membership-gated, per account.
+        bindRosterViewer(warmUserId);
         if (!warmUserId) return;
         let cancelled = false;
         void (async () => {
@@ -177,6 +184,13 @@ export function useAvatarWarming(input: AvatarWarmingInput): void {
             const fresh = plan.direct.filter(id => !enqueued.current.has(id));
             for (const id of fresh) enqueued.current.add(id);
             if (fresh.length) void preloadAvatarsBackground(fresh, token);
+
+            // Friends' banners, AFTER the avatars so they queue behind them on
+            // the paced background lane. See selectFriendBanners for the bet.
+            const banners = selectFriendBanners(state.friends, state.presence)
+                .filter(id => !enqueued.current.has(id));
+            for (const id of banners) enqueued.current.add(id);
+            if (banners.length) void preloadAvatarsBackground(banners, token, { kind: 'banner' });
 
             for (const serverId of plan.serverIds) {
                 if (warmedServers.current.has(serverId)) continue;

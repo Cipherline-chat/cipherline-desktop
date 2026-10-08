@@ -231,7 +231,19 @@ export function useScreenLock() {
      *  getting back into the account after signing out requires the account
      *  password again, which is the real gate here. */
     const forgotPinReset = useCallback(() => {
-        setSettings(prev => ({ ...prev, enabled: false, verifier: null }));
+        const next: ScreenLockSettings = { ...settingsRef.current, enabled: false, verifier: null };
+        // Written NOW, not left to the persist effect above. The caller signs
+        // out in the same breath, which unmounts Dashboard (where this hook
+        // lives) in the very render that would have run that effect — so the
+        // reset never reached the store, and signing back in found the old
+        // verifier and asked for the PIN again. Durable too (flushNow), since
+        // sign-out also changes which account the store is bound to.
+        settingsRef.current = next;
+        try {
+            secureLocalStore.setItem(STORAGE_KEY, JSON.stringify(next));
+            void secureLocalStore.flushNow?.().catch(() => { /* the in-memory write above still stands */ });
+        } catch { /* a locked store cannot hold the old verifier either */ }
+        setSettings(next);
         setIsLocked(false);
         setAttempts(0);
         setLockedOutUntil(null);

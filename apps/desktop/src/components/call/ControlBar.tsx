@@ -1,6 +1,6 @@
 import React from 'react';
 import ReactDOM from 'react-dom';
-import { PhoneCall, Mic, MicOff, Video, VideoOff, ScreenShare, X, ChevronDown, ChevronLeft, Headphones, HeadphoneOff, Maximize2, Minimize2, Monitor, Sliders, Check, Volume2, VolumeX } from 'lucide-react';
+import { PhoneCall, Mic, MicOff, Video, VideoOff, ScreenShare, X, ChevronDown, ChevronLeft, Headphones, HeadphoneOff, Maximize2, Minimize2, Monitor, Sliders, Check, Volume2, VolumeX, LifeBuoy } from 'lucide-react';
 import { useCallContextSafe } from '../../contexts/CallContext';
 import { useSubscription } from '../../contexts/SubscriptionContext';
 import { useDismissOnOutsideClick } from '../../hooks/useDismissOnOutsideClick';
@@ -14,6 +14,7 @@ import { ClSlider } from '../ClSlider';
 import { playIco } from '../../utils/clPhysics';
 import { bumpStreak, firesAt, type Streak } from '../../utils/eggStreak';
 import { computeTooltipPlacement, type TooltipPlacement } from '../cl/tooltipPlacement';
+import { openReportProblem } from '../../utils/diagnostics/reportRequest';
 
 interface ControlBarProps {
     localParticipant: any;
@@ -23,6 +24,8 @@ interface ControlBarProps {
     onToggleCamera: () => void;
     onToggleScreenshare: () => void;
     onOpenScreenSharePicker: () => void;
+    /** Pointer is on the (idle) share button: warm the picker's source list. */
+    onScreenShareIntent?: () => void;
     onAdjustScreenShareQuality: (resolution: ScreenShareOptions['resolution'], frameRate: ScreenShareOptions['frameRate']) => void;
     /** Toggle share audio on/off for the currently-running share. */
     onToggleScreenShareAudio?: () => void;
@@ -279,6 +282,7 @@ export const ControlBar = ({
     onToggleCamera,
     onToggleScreenshare,
     onOpenScreenSharePicker,
+    onScreenShareIntent,
     onAdjustScreenShareQuality,
     onToggleScreenShareAudio,
     currentShareResolution,
@@ -352,6 +356,18 @@ export const ControlBar = ({
     const deafenMenu = useContextMenu();
     const cameraMenu = useContextMenu();
 
+    // Issue reporter, from the call's own menus. Preselects screen share while
+    // sharing (the "not getting 90 fps" case), else call audio — the camera
+    // menu asks about video. The report carries this call's WebRTC stats.
+    const reportQualityItem = (category?: 'video_camera'): ContextMenuItem => ({
+        icon: <LifeBuoy className="w-4 h-4" />,
+        label: 'Report call quality…',
+        onSelect: () => openReportProblem({
+            category: category ?? (localParticipant?.isScreenShareEnabled ? 'screen_share' : 'call_audio'),
+            trigger: 'in_call',
+        }),
+    });
+
     const openMicMenu = (e: React.MouseEvent<HTMLButtonElement>) => {
         e.preventDefault();
         if (!voice) return;
@@ -362,6 +378,8 @@ export const ControlBar = ({
             }),
             { divider: true },
             volumeRow('Mic Volume', voice.settings.micVolume, voice.setMicVolume),
+            { divider: true },
+            reportQualityItem(),
         ];
         micMenu.open(e, build(voice.settings.micDeviceId), 'Microphone');
     };
@@ -376,6 +394,8 @@ export const ControlBar = ({
             }),
             { divider: true },
             volumeRow('Output Volume', voice.settings.speakerVolume, voice.setSpeakerVolume),
+            { divider: true },
+            reportQualityItem(),
         ];
         deafenMenu.open(e, build(voice.settings.speakerDeviceId), 'Speaker');
     };
@@ -394,11 +414,14 @@ export const ControlBar = ({
         // which entry is selected. The placeholder-list case it was also
         // covering is handled properly inside buildDeviceRowModel.
         if (!voice) return;
-        const build = (currentId: string): ContextMenuItem[] =>
-            buildDeviceRows(videoDevices, currentId, 'Default Camera', pickedId => {
+        const build = (currentId: string): ContextMenuItem[] => [
+            ...buildDeviceRows(videoDevices, currentId, 'Default Camera', pickedId => {
                 voice.setCameraDeviceId(pickedId);
                 cameraMenu.updateItems(build(pickedId));
-            });
+            }),
+            { divider: true },
+            reportQualityItem('video_camera'),
+        ];
         cameraMenu.open(e, build(voice.settings.cameraDeviceId), 'Camera');
     };
 
@@ -632,6 +655,20 @@ export const ControlBar = ({
                         </div>
                     </ClButton>
                 )}
+
+                <ClButton
+                    variant="ghost"
+                    fullWidth
+                    row
+                    onClick={() => { setSsMenuOpen(false); openReportProblem({ category: 'screen_share', trigger: 'in_call' }); }}
+                    className="border-t border-white/[0.06]"
+                >
+                    <LifeBuoy className="w-4 h-4 text-cl-faint shrink-0" />
+                    <div className="min-w-0 flex-1">
+                        <p className="text-[13px] font-semibold m-0 leading-none mb-1">Report a Quality Problem</p>
+                        <p className="text-[11px] text-cl-faint m-0 leading-none">Low frame rate, blur or stutter</p>
+                    </div>
+                </ClButton>
             </div>
 
             {/* ── QUALITY PANEL ── */}
@@ -906,6 +943,7 @@ export const ControlBar = ({
                             if (videoLocked) { promptUpgrade('screenshare'); return; }
                             onToggleScreenshare();
                         }}
+                        onMouseEnter={videoLocked || shareDisabled ? undefined : () => onScreenShareIntent?.()}
                         title={
                             videoLocked ? 'Screen sharing is a Pro feature — upgrade for $2.50/mo + tax'
                             : serverMutedScreenShare ? "Screen sharing has been disabled by a moderator"

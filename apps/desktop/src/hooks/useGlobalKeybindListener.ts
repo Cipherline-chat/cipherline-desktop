@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef } from 'react';
 import { eventToCombo, GLOBAL_ACTIONS, type BindableAction, type KeybindHook } from './useKeybinds';
+import { isKeyComboClaimed } from '../utils/keyClaims';
 
 export interface KeybindActionHandlers {
     'toggle-mute'?:        () => void;
@@ -71,7 +72,15 @@ export function useGlobalKeybindListener(
         const api = (window as any).electronAPI;
         if (!api?.onGlobalShortcut) return;
 
-        return api.onGlobalShortcut((actionId: string) => fire(actionId as BindableAction));
+        return api.onGlobalShortcut((actionId: string) => {
+            // A surface that owns the keyboard (the Home game, utils/keyClaims)
+            // has taken this action's combo: the OS-level shortcut must not
+            // fire underneath it either.
+            for (const [combo, action] of comboMapRef.current) {
+                if (action === actionId && isKeyComboClaimed(combo)) return;
+            }
+            fire(actionId as BindableAction);
+        });
     }, [fire]);
 
     // ── Tier 2: Local keydown listener (only when focused) ─────────────────
@@ -85,6 +94,9 @@ export function useGlobalKeybindListener(
 
             const action = comboMapRef.current.get(combo);
             if (!action) return;
+            // Claimed by an open surface (the Home game plays on Space; see
+            // utils/keyClaims): the press is that surface's, not a hotkey.
+            if (isKeyComboClaimed(combo)) return;
 
             // Navigation actions don't fire while typing (except close-panel /
             // Escape). Global (controls) actions skip this guard — muting or

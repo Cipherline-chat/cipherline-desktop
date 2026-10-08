@@ -69,6 +69,7 @@ describe('SecureStore key-protection detection (G8)', () => {
         const first = new SecureStore();
         await first.initialize(); // basic_text → v10 key file
         first.set('k', 'v');
+        await first.whenDurable(); // vault writes are asynchronous; this is the durability point
         expect(fs.readFileSync(path.join(tmpDir, 'store.key')).subarray(0, 3).toString()).toBe('v10');
 
         backend = 'gnome_libsecret';

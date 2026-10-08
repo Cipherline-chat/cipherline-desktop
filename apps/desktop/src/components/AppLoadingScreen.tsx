@@ -1,438 +1,454 @@
 /**
- * AppLoadingScreen — Keys waits in the deep, watches your cursor, then surfaces.
+ * AppLoadingScreen — Keys, an honest line and bar, a field of dots in space, and a secret.
  *
- * The first thing anyone sees when the app opens. Keys (the mark's dome and
- * four key-shaped legs, verbatim from apps/website/public/logo.svg) hangs in
- * a small 3D scene: a dot-matrix seabed glowing under him, plankton drifting
- * past at two depths, and two orbits of light around him. The loading cue is
- * the comet orbit, a pulse of light that runs along his legs like signal bars
- * filling up, and an honest line of status text. Move the mouse and the scene
- * turns toward it: near and far plankton part, the orbits tip, Keys turns
- * his head, his eyes follow you, his legs reach for the pointer, and a soft
- * light tracks it across the water. Click and he hops. When the data lands
- * he kicks for the surface and the scene is gone in just over half a second.
+ * The first thing anyone sees when the app opens. Keys (the real mark, drawn
+ * from apps/website/public/logo.svg's own geometry) swims gently in the
+ * middle: a quick jellyfish stroke, then a slow glide, always upright, turning
+ * a few degrees to face the pointer. Under him, one big line says what is
+ * actually being waited on, and a slim bar of dots shows honest progress
+ * (real stages and core loads; it slows rather than lies, and only fills
+ * when loading is really done). After SLOW_MS a calm "taking longer" line
+ * joins them. Behind him is the onboarding's ambient dot field — the faint
+ * teal/ice dots from behind the privacy-step globe — in real 3D: a gentle
+ * current streams past, and the camera orbits toward the pointer, so near
+ * dots swing ~5x further than far ones.
  *
- *   'loading'   — idle, indefinite (after SLOW_MS a calm "taking longer"
- *                 line fades in; no fake percentage, nothing that stalls)
- *   'surfacing' — the ~620ms ascent, then onSurfaced() fires and the caller
- *                 unmounts us
+ * When the data lands, the bar fills, the camera rushes forward through the
+ * field while Keys swells and fades, and the screen dissolves into the
+ * Dashboard that has been mounted underneath all along (SURFACE_MS, nothing
+ * pops at the end).
  *
- * PERF CONTRACT — this animates during the app's heaviest main-thread moment
- * (the Dashboard mounting and fetching right behind it), so it must neither
- * need the main thread to keep moving nor make the compositor work harder
- * than the screen it replaced:
- *   - Every animated property is transform or opacity, on HTML elements, and
- *     no keyframe references a custom property, so all idle motion runs on the
- *     compositor and keeps going straight through a long task. (Animations
- *     on SVG children — <rect>, <path>, <g> — are not a reliable compositor
- *     path in Chromium, so Keys is built from HTML here; the SVGs are static.)
- *   - The pointer is ONE passive pointermove listener, coalesced to at most
- *     one write per animation frame and per POINTER_WRITE_MS, which sets
- *     three non-inheriting custom properties (--mx, --my, --md) on the six
- *     elements that follow it (see writePointer for why never on the root).
- *     No React state, no layout reads, no work that scales with the scene's
- *     element count. The followers move by CSS transitions, which the
- *     compositor plays smoothly even if the next pointer event is stuck
- *     behind a long task.
- *   - Everything large is STILL: the seabed (pre-projected to 2D, see
- *     seabedPaths), the light pool and the halo are painted once into the
- *     base layer. Only small things move or pulse, because whatever moves is
- *     redrawn every frame.
- *   - Few loop restarts. Every restart of every CSS animation wakes the main
- *     thread (React listens for animationiteration at its root), so the
- *     plankton is nine sliding strips rather than dozens of looping dots and
- *     short cycles are written three-to-an-iteration. Measured idle: zero
- *     main-thread frames in 1.5 s, against 195 for the screen this replaced.
- *   - No canvas and no rAF loop. Reduced motion attaches no listeners at all.
- * See styles/loading-scene.css for the scene itself, and loadingScene.ts for
- * the non-React parts.
+ * THE SECRET: after HINT_MS a small "Press Space to play" appears. Only Space
+ * starts it (a click never does, so stray clicks while waiting are
+ * harmless): "Firewall" — the field speeds into a side-scroller and Keys
+ * swims, one stroke per Space, through gaps in pillars that build themselves
+ * out of the field's dots as they come (rules in utils/loadingGame.ts). The
+ * score is plain text in a strip across the top. Esc leaves the game. If the
+ * app finishes loading during a game nobody is yanked out: a "Cipherline is
+ * ready · Enter to continue" chip appears; a crash holds on the score card
+ * ("Enter to continue · Space to play again"); only Enter or Esc goes into
+ * the app — nothing continues on its own. Offered only where the caller
+ * hands off through onSurfaced (HydrationGate) — App.tsx's own screen is
+ * unmounted abruptly, so a game could not be kept there.
+ *
+ *   'loading'   — indefinite (no fake percentage, nothing that stalls)
+ *   'surfacing' — the app is ready: leave as soon as no game is up (or they
+ *                 chose to), then onSurfaced() fires and the caller unmounts us
+ *
+ * PERF CONTRACT. This is on screen exactly while the renderer's main thread
+ * is busiest (the Dashboard mounting behind it; real users have seen 2–3 s
+ * stalls), so NOTHING that moves runs on the main thread:
+ *   - Keys, the field, the bar and the game run in a dedicated worker
+ *     (workers/loadingScreen.worker.ts) drawing WebGL into an
+ *     OffscreenCanvas: one draw call per frame, 30 fps at rest. A blocked
+ *     main thread cannot stall it.
+ *   - The main thread posts only sizes, the bar's slot, progress, and raw
+ *     input: keys, and the pointer coalesced to one message per frame (one
+ *     rAF per pointer burst, never a loop). The worker posts back only state
+ *     changes (first frame, game state and score).
+ *   - The DOM (text, chips, score) animates with transform/opacity only
+ *     (styles/app-loading.css), on HTML elements.
+ *   - No OffscreenCanvas / no worker / no WebGL → the static mark and the
+ *     text on the plain backdrop, a slim CSS sweep as the cue, no game.
+ *     Reduced motion → a still field, a still Keys, the text and a still
+ *     bar: no current, no swim, no pointer, no game.
+ *   - The worker is parked across the App → HydrationGate handoff and
+ *     terminated (GL context released) on exit (loadingWorkerHost.ts).
  */
 
-import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import '../styles/loading-scene.css';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import '../styles/app-loading.css';
 import {
-    STAGE_LABEL, SLOW_LABEL, beginWait, holdWait, releaseWait, rememberPointer,
-    now, pointerTargets, writePointer, seabedPaths, outerOrbitDots, type LoadingStage,
-} from './loadingScene';
+    STAGE_LABEL, SLOW_LABEL, OFFLINE_LABEL, OFFLINE_SUB, HINT_MS, beginWait, holdWait, releaseWait, now,
+    isLeaving, showsReadyChip, progressBand, OVER_GUARD_MS, type GameState, type LoadingStage,
+} from './loadingWait';
+import { acquireWorker, canUseWorker, markBroken, releaseWorker, type WorkerLike } from './loadingWorkerHost';
+import { useEscape } from '../hooks/useEscape';
+import { readLoadingGameBest, saveLoadingGameBest } from '../utils/loadingGameBest';
+import type { FromWorker } from '../workers/loadingScreenProtocol';
 
-export type { LoadingStage } from './loadingScene';
+export type { LoadingStage } from './loadingWait';
 export type LoadingPhase = 'loading' | 'surfacing';
 
-/** Must match the ls-leave / ls-ascend durations in loading-scene.css. */
-export const SURFACE_MS = 620;
-/** Reduced motion swaps the ascent for a plain cross-fade. */
-export const REDUCED_MS = 260;
+/** The exit into the app. Must match lo-out in app-loading.css (and the worker's dolly). */
+export const SURFACE_MS = 560;
+/** Reduced motion: a plain fade, no movement (see app-loading.css). */
+export const REDUCED_MS = 200;
 /**
  * After this long on screen (counted across the App → HydrationGate handoff,
  * see beginWait) a calm "taking longer than usual" line fades in.
  */
 export const SLOW_MS = 8000;
-/**
- * At most one pointer write per this many ms (and per animation frame).
- * Everything that follows the pointer eases over 0.65–1.1 s, so 5 targets a
- * second look the same as 60 (an underwater, slightly floaty follow), and
- * each write costs a style recalc and a batch of fresh compositor
- * transitions.
- */
-export const POINTER_WRITE_MS = 200;
 
 interface Props {
-    /** 'surfacing' plays the ascent, then calls onSurfaced. */
+    /** 'surfacing' = the app is ready: exit (once no run is in progress), then onSurfaced. */
     phase?: LoadingPhase;
-    /** Fired once the ascent has finished. */
+    /** Fired once the exit has finished. */
     onSurfaced?: () => void;
     /** What is being waited on; drives the status line. Defaults to 'start'. */
     stage?: LoadingStage;
+    /**
+     * While syncing: the fraction (0..1) of the core loads that have settled
+     * (HydrationGate). Drives the loading bar; never a percentage on screen.
+     */
+    progress?: number;
+    /**
+     * The OFFLINE screen's game stage (components/OfflineScreen.tsx): the same
+     * field, Keys and Firewall, but the words are "You're offline" instead of a
+     * loading line, there is no loading bar, and `phase` 'surfacing' means
+     * "back online". Needs onSurfaced like the loading screen does.
+     */
+    offline?: boolean;
+    /**
+     * Start a run as soon as the field is drawn: the user already pressed
+     * Space somewhere else (the offline card's hint), so this screen is the
+     * transition INTO the game, not another "press Space" prompt.
+     */
+    autoPlay?: boolean;
+    /**
+     * Fired when the game stage has nothing to show and the screen is NOT
+     * leaving: the player quit with Esc (back to the card they came from), or
+     * there is no field to play on. Only meaningful with autoPlay.
+     */
+    onIdle?: () => void;
 }
 
-const clamp = (v: number, lo: number, hi: number) => (v < lo ? lo : v > hi ? hi : v);
+/** 'static': no field (no worker/WebGL). 'starting' → 'ok' once the field has drawn. */
+type Gl = 'static' | 'starting' | 'ok';
 
-/**
- * Plankton: [left%, top%, size px, alpha]. Fixed rather than random so the
- * field never reshuffles on a re-render (the website's bubble field,
- * kit/65-ocean.js, is deterministic for the same reason). Dealt into
- * columns ("strips") below.
- */
-const PLANKTON: ReadonlyArray<readonly [number, number, number, number]> = [
-    [4, 12, 3, .5], [11, 34, 2, .35], [18, 71, 4, .55], [24, 48, 2.5, .4],
-    [31, 88, 3, .45], [37, 22, 2, .3], [43, 62, 3.5, .5], [49, 8, 2, .35],
-    [55, 41, 4, .6], [61, 79, 2.5, .4], [67, 27, 3, .45], [73, 56, 2, .3],
-    [79, 91, 4, .55], [85, 17, 2.5, .35], [91, 66, 3, .5], [96, 38, 2, .4],
-    [8, 82, 3.5, .55], [15, 5, 2, .35], [28, 59, 3, .45], [34, 95, 2.5, .4],
-    [46, 31, 2, .3], [58, 74, 3, .5], [70, 14, 2.5, .4], [82, 49, 3, .45],
-    [21, 44, 2.5, .4], [64, 97, 2, .35], [52, 3, 3, .5],
-];
+/** Best score on record. Seeded from the encrypted local store on first use, so
+ *  it survives an app restart (see utils/loadingGameBest.ts). */
+let sessionBest: number | null = null;
+const currentBest = (): number => (sessionBest ??= readLoadingGameBest());
 
-interface Strip {
-    left: number; // % of the layer
-    dur: number; // s per full climb of one layer height
-    delay: number; // s
-    dots: ReadonlyArray<{ x: number; y: number; size: number; alpha: number }>;
-}
-/**
- * Deal the plankton into a few columns. Each dot sits in the top half of
- * its strip and again 50% lower, so sliding the strip up by half its height
- * is a seamless loop (see .ls-strip).
- */
-function strips(far: boolean): Strip[] {
-    const lefts = far ? [16, 37, 58, 79] : [7, 26, 47, 68, 88];
-    const src = PLANKTON.filter((_, i) => (i % 9 < 4) === far);
-    return lefts.map((left, s) => ({
-        left,
-        dur: far ? 26 + s * 2.5 : 15 + s * 1.3,
-        delay: -(s * 3.7 + (far ? 5 : 0)),
-        dots: src.filter((_, i) => i % lefts.length === s).map(([l, top, size, alpha]) => ({
-            x: Math.round((l * 7) % 26),
-            y: top / 2,
-            size: far ? Math.max(1.5, size * 0.7) : size * 1.3,
-            // the far layer's dimness is baked in (no opacity on the layer)
-            alpha: far ? alpha * 0.55 : alpha,
-        })),
-    }));
-}
-const FAR_STRIPS = strips(true);
-const NEAR_STRIPS = strips(false);
+const isEditable = (t: EventTarget | null): boolean => {
+    const el = t as HTMLElement | null;
+    if (!el || typeof el.tagName !== 'string') return false;
+    return el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName);
+};
 
-const OUTER_ORBIT = outerOrbitDots();
-
-/**
- * The seabed and the still outer orbit: a few static paths, painted once
- * (see seabedPaths / outerOrbitDots). Origin = Keys' eye line, centred.
- */
-const Seabed: React.FC = () => (
-    <svg className="ls-floor" width="3200" height="1700" viewBox="-1600 -300 3200 1700">
-        {seabedPaths().map((p, i) => <path key={i} d={p.d} fill={p.fill} fillOpacity={p.opacity} />)}
-        <g fill="#25E0C8" fillOpacity={0.3}>
-            {OUTER_ORBIT.map((d, i) => <ellipse key={i} cx={d.x.toFixed(1)} cy={d.y.toFixed(1)} rx={d.rx.toFixed(2)} ry={d.ry.toFixed(2)} />)}
+/** Keys: logo.svg's shapes, viewBox trimmed to its own bounds. Static art. */
+const Mark: React.FC = () => (
+    <svg className="lo-mark" viewBox="21 14 68 64" aria-hidden="true" focusable="false">
+        <g fill="#25E0C8">
+            <rect x="22.5" y="44" width="13" height="34" rx="6.5" />
+            <rect x="39.8" y="44" width="13" height="34" rx="6.5" />
+            <rect x="57.1" y="44" width="13" height="34" rx="6.5" />
+            <rect x="74.4" y="44" width="13" height="34" rx="6.5" />
+            <path d="M21 48 A34 34 0 0 1 89 48 L89 53 L21 53 Z" />
+        </g>
+        <g fill="none" stroke="#0B0F1E" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M33.5 40 l3.75 -5 l3.75 5 l3.75 -5 l3.75 5" />
+            <path d="M61.5 40 l3.75 -5 l3.75 5 l3.75 -5 l3.75 5" />
         </g>
     </svg>
 );
 
-/**
- * The comet orbit: a static SVG of dots (rasterised once) inside three
- * wrappers — the tilt (follows the pointer), the intro (unfurls once) and the
- * spin (a compositor loop). The dots grade from a bright head to a fading
- * tail, which is what makes the spin read as "working".
- */
-const Orbit: React.FC<{ r: number; n: number; kind: string }> = ({ r, n, kind }) => {
-    const box = r * 2 + 16;
-    const dots = [];
-    for (let i = 0; i < n; i++) {
-        const a = (i / n) * Math.PI * 2;
-        const f = i / (n - 1);
-        dots.push(
-            <circle
-                key={i}
-                cx={(box / 2 + Math.cos(a) * r).toFixed(2)}
-                cy={(box / 2 + Math.sin(a) * r).toFixed(2)}
-                r={(1.2 + f * f * 2.8).toFixed(2)}
-                fill={i === n - 1 ? '#E6FFFB' : '#25E0C8'}
-                opacity={(0.1 + f * f * 0.9).toFixed(3)}
-            />,
-        );
-    }
-    return (
-        <div className={`ls-orbit ls-orbit--${kind} ls-p`}>
-            <div className="ls-orbit-in">
-                <div className="ls-orbit-spin" style={{ width: box, height: box, marginLeft: -box / 2, marginTop: -box / 2 }}>
-                    <svg width={box} height={box} viewBox={`0 0 ${box} ${box}`}>{dots}</svg>
-                </div>
-            </div>
-        </div>
-    );
-};
+const Kbd: React.FC<{ children: React.ReactNode }> = ({ children }) => <kbd className="lo-kbd">{children}</kbd>;
 
-/**
- * Keys himself, rebuilt from the logo's shapes as HTML so every moving part
- * can animate on the compositor: the look (pointer), the bob (idle), the boop
- * (click), then legs (pointer reach + idle sway), dome and eyes. A tiny real
- * 3D rig: the eyes sit in front of the dome and the legs behind it, so one
- * head turn makes them shift against each other.
- */
-const KeysRig: React.FC<{ boopRef: React.RefObject<HTMLDivElement | null> }> = ({ boopRef }) => (
-    <div className="ls-k-look ls-p">
-        <div className="ls-k-bob">
-            <div className="ls-k-boop" ref={boopRef}>
-                <div className="ls-k-legs ls-p">
-                    {[1, 2, 3, 4].map(i => (
-                        <div key={i} className={`ls-k-reach ls-k-reach-${i}`}>
-                            <div className={`ls-k-leg ls-k-leg-${i}`}>
-                                <div className="ls-k-leg-lit" />
-                            </div>
-                        </div>
-                    ))}
-                </div>
-                <div className="ls-k-dome">
-                    <div className="ls-k-shine" />
-                </div>
-                <div className="ls-k-eyes">
-                    <div className="ls-k-blink">
-                        <svg viewBox="0 0 110 90" width="100%" height="100%">
-                            <path d="M33.5 40 l3.75 -5 l3.75 5 l3.75 -5 l3.75 5" fill="none" stroke="#0B0F1E" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round" />
-                            <path d="M61.5 40 l3.75 -5 l3.75 5 l3.75 -5 l3.75 5" fill="none" stroke="#0B0F1E" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round" />
-                        </svg>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-);
-
-const Plankton: React.FC<{ far: boolean }> = ({ far }) => (
-    <div className={`ls-layer ls-plankton ls-plankton--${far ? 'far' : 'near'} ls-p`}>
-        {(far ? FAR_STRIPS : NEAR_STRIPS).map((st, s) => (
-            <div
-                key={s}
-                className="ls-strip"
-                style={{ left: `${st.left}%`, ['--ls-dur' as string]: `${st.dur}s`, ['--ls-delay' as string]: `${st.delay}s` }}
-            >
-                {st.dots.flatMap((d, i) => [0, 50].map(off => (
-                    <span
-                        key={`${i}-${off}`}
-                        className="ls-bub"
-                        style={{
-                            left: d.x,
-                            top: `${d.y + off}%`,
-                            width: d.size,
-                            height: d.size,
-                            background: `rgba(37, 224, 200, ${d.alpha.toFixed(3)})`,
-                        }}
-                    />
-                )))}
-            </div>
-        ))}
-    </div>
-);
-
-export const AppLoadingScreen: React.FC<Props> = ({ phase = 'loading', onSurfaced, stage = 'start' }) => {
-    const rootRef = useRef<HTMLDivElement>(null);
-    const boopRef = useRef<HTMLDivElement>(null);
-    const surfacedRef = useRef(false);
-    const onSurfacedRef = useRef(onSurfaced);
-    useEffect(() => { onSurfacedRef.current = onSurfaced; });
-
+export const AppLoadingScreen: React.FC<Props> = ({ phase = 'loading', onSurfaced, stage = 'start', progress = 0, offline = false, autoPlay = false, onIdle }) => {
     const [reduced] = useState(
         () => typeof window !== 'undefined'
             && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true,
     );
+    const canvasRef = useRef<HTMLCanvasElement>(null);
+    const textRef = useRef<HTMLDivElement>(null);
+    const slotRef = useRef<HTMLDivElement>(null);
+    const workerRef = useRef<WorkerLike | null>(null);
+    /** When the last crash happened (performance.now), for the Enter/Esc guard. */
+    const overAt = useRef(-Infinity);
+    const fired = useRef(false);
+    const latest = useRef(onSurfaced);
+    const latestIdle = useRef(onIdle);
+    useEffect(() => { latest.current = onSurfaced; latestIdle.current = onIdle; });
 
     // When this wait began (continuing a previous screen's), and how far into
     // it we already are — fed to CSS as a negative animation-delay so a
-    // handoff remount picks every loop up mid-stride.
+    // handoff remount doesn't replay the intro.
     const [wait] = useState(() => beginWait());
     const [el0] = useState(() => Math.max(0, (now() - wait.t0) / 1000));
-
     useEffect(() => {
         holdWait(wait.t0);
         return releaseWait;
     }, [wait]);
 
-    const [slow, setSlow] = useState(() => now() - wait.t0 >= SLOW_MS);
+    const [gl, setGl] = useState<Gl>('starting');
+    const [game, setGame] = useState<GameState>('idle');
+    const [score, setScore] = useState({ now: 0, best: currentBest() });
+    const [continued, setContinued] = useState(false);
+    const [slow, setSlow] = useState(() => offline || now() - wait.t0 >= SLOW_MS);
+
+    const loaded = phase === 'surfacing';
+    // Offline can come back more than once: "continue" belongs to THIS return,
+    // so a connection that drops again mid-exit doesn't pre-approve the next.
+    if (!loaded && continued) setContinued(false);
+    const leaving = isLeaving(loaded, game, continued);
+    const readyChip = showsReadyChip(loaded, game, continued);
+    const live = gl === 'ok' && !reduced;
+    // The game needs the field, and a caller that waits for our exit.
+    const playable = live && onSurfaced !== undefined;
 
     const finish = useCallback(() => {
-        if (surfacedRef.current) return;
-        surfacedRef.current = true;
-        onSurfacedRef.current?.();
+        if (fired.current) return;
+        fired.current = true;
+        latest.current?.();
     }, []);
 
-    // One timer, not an animationend listener: several elements finish at
-    // once, the scene may be mounted with phase already 'surfacing', and a
-    // dropped animationend (reduced motion runs no animation at all) would
-    // strand the gate up forever. A timer can't miss.
+    // The worker: start it (or take over the one parked by the previous
+    // screen), hand it the canvas, and from then on only forward sizes.
     useEffect(() => {
-        if (phase !== 'surfacing') return;
-        const t = window.setTimeout(finish, reduced ? REDUCED_MS : SURFACE_MS);
-        return () => window.clearTimeout(t);
-    }, [phase, reduced, finish]);
-
-    // The slow hint: one timer, only while loading, gone the moment we surface.
-    useEffect(() => {
-        if (phase !== 'loading' || slow) return;
-        const t = window.setTimeout(() => setSlow(true), Math.max(0, SLOW_MS - (now() - wait.t0)));
-        return () => window.clearTimeout(t);
-    }, [phase, slow, wait]);
-
-    // A handoff remount picks up where the pointer left Keys. Before paint, so
-    // the first style already has it and no transition plays from centre.
-    useLayoutEffect(() => {
-        const root = rootRef.current;
-        if (root && wait.continued && (wait.mx || wait.my || wait.md)) {
-            writePointer(pointerTargets(root), wait.mx, wait.my, wait.md);
+        const canvas = canvasRef.current;
+        if (!canvas || !canUseWorker(canvas)) { setGl('static'); return; }
+        const got = acquireWorker(canvas);
+        if (!got) { setGl('static'); return; }
+        const w = got.worker;
+        let dead = false;
+        const fail = () => {
+            if (dead) return;
+            dead = true;
+            markBroken();
+            workerRef.current = null;
+            releaseWorker(w, canvas, true);
+            setGl('static');
+            setGame('idle');
+        };
+        w.onmessage = (e: MessageEvent<FromWorker>) => {
+            const m = e.data;
+            if (m.type === 'ok') setGl('ok');
+            else if (m.type === 'nogl') fail();
+            else if (m.type === 'game') {
+                sessionBest = saveLoadingGameBest(Math.max(currentBest(), m.best));
+                if (m.mode === 'over') overAt.current = now();
+                setGame(m.mode);
+                setScore({ now: m.score, best: currentBest() });
+            }
+        };
+        w.onerror = (e: ErrorEvent) => { e.preventDefault?.(); fail(); };
+        const size = () => ({ w: window.innerWidth || 1, h: window.innerHeight || 1, dpr: window.devicePixelRatio || 1 });
+        try {
+            if (got.resumed) {
+                w.postMessage({ type: 'resume' });
+            } else {
+                const off = canvas.transferControlToOffscreen();
+                w.postMessage({ type: 'init', canvas: off, ...size(), best: currentBest(), reduced }, [off]);
+            }
+        } catch {
+            fail();
+            return;
         }
-    }, [wait]);
-
-    // The pointer. Deliberately outside React: a move writes three custom
-    // properties onto the few elements that follow it (see writePointer), at
-    // most once a frame and once per POINTER_WRITE_MS, and that's all.
-    useEffect(() => {
-        const root = rootRef.current;
-        if (!root || reduced || phase !== 'loading') return;
-
-        // Viewport size, cached: read here (after commit, layout is clean)
-        // and on resize — never inside the move handler.
-        let w = window.innerWidth || 1;
-        let h = window.innerHeight || 1;
-        let x = 0;
-        let y = 0;
-        let raf = 0;
-        let timer = 0;
-        let lastWrite = -Infinity;
-        let last = '';
-
-        const targets = pointerTargets(root);
-        const write = (mx: number, my: number, md: number) => {
-            const key = `${mx.toFixed(2)} ${my.toFixed(2)} ${md.toFixed(2)}`;
-            if (key === last) return;
-            last = key;
-            rememberPointer(mx, my, md);
-            writePointer(targets, mx, my, md);
+        workerRef.current = w;
+        // Where the worker draws the bar: the DOM slot under the status line,
+        // by offsets (not getBoundingClientRect: the text's intro transform
+        // would skew a measurement taken while it plays).
+        const postBar = () => {
+            const slot = slotRef.current, text = textRef.current;
+            if (!slot || !text) return;
+            const W = window.innerWidth || 1, H = window.innerHeight || 1;
+            const cx = text.offsetLeft + slot.offsetLeft + slot.offsetWidth / 2;
+            const cy = text.offsetTop + slot.offsetTop + slot.offsetHeight / 2;
+            w.postMessage({ type: 'bar', x: cx - W / 2, y: H / 2 - cy, w: slot.offsetWidth });
         };
-        const flush = () => {
-            raf = 0;
-            lastWrite = now();
-            const cx = w / 2;
-            const cy = h * 0.46; // Keys' height in the scene (see .ls-keys)
-            const mx = clamp((x - cx) / cx, -1, 1);
-            const my = clamp((y - cy) / (h - cy), -1, 1);
-            // Proximity to Keys: 1 on top of him, 0 from ~a third of the
-            // shorter side away. Drives how hard his legs reach.
-            const md = clamp(1 - Math.hypot(x - cx, y - cy) / (Math.min(w, h) * 0.36), 0, 1);
-            write(mx, my, md);
-        };
-        const onMove = (e: PointerEvent) => {
-            x = e.clientX;
-            y = e.clientY;
-            if (raf || timer) return;
-            const remaining = POINTER_WRITE_MS - (now() - lastWrite);
-            if (remaining <= 0) raf = window.requestAnimationFrame(flush);
-            else timer = window.setTimeout(() => { timer = 0; raf = window.requestAnimationFrame(flush); }, remaining);
-        };
-        const cancel = () => {
-            if (raf) window.cancelAnimationFrame(raf);
-            if (timer) window.clearTimeout(timer);
-            raf = 0;
-            timer = 0;
-        };
-        const onLeave = () => {
-            cancel();
-            write(0, 0, 0); // drift home; the CSS transitions do the easing
-        };
-        let flip = false;
-        const onDown = () => {
-            // A hop. Alternating between two identical keyframes restarts the
-            // animation without a forced reflow.
-            const b = boopRef.current;
-            if (!b) return;
-            flip = !flip;
-            b.classList.remove(flip ? 'ls-boop-b' : 'ls-boop-a');
-            b.classList.add(flip ? 'ls-boop-a' : 'ls-boop-b');
-        };
-        const onResize = () => { w = window.innerWidth || 1; h = window.innerHeight || 1; };
-
-        root.addEventListener('pointermove', onMove, { passive: true });
-        root.addEventListener('pointerleave', onLeave, { passive: true });
-        root.addEventListener('pointerdown', onDown, { passive: true });
+        // The offline screen has no loading bar (the worker draws none until told where).
+        if (!offline) postBar();
+        // The brand font arriving can change the headline's height: re-place the bar.
+        void document.fonts?.ready.then(() => { if (workerRef.current === w && !offline) postBar(); });
+        const onResize = () => { w.postMessage({ type: 'resize', ...size() }); if (!offline) postBar(); };
         window.addEventListener('resize', onResize, { passive: true });
         return () => {
-            root.removeEventListener('pointermove', onMove);
-            root.removeEventListener('pointerleave', onLeave);
-            root.removeEventListener('pointerdown', onDown);
             window.removeEventListener('resize', onResize);
-            cancel();
+            if (dead) return;
+            workerRef.current = null;
+            releaseWorker(w, canvas, fired.current);
         };
-    }, [reduced, phase]);
+        // Mount-only: the worker outlives prop changes; `reduced` is fixed at mount.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
 
-    const label = STAGE_LABEL[stage] ?? STAGE_LABEL.start;
+    // The pointer, for the field's parallax: the latest position, posted at
+    // most once per frame (one rAF per burst of moves — no loop, no React).
+    useEffect(() => {
+        if (!live || leaving) return;
+        let raf = 0;
+        let x = 0, y = 0, on = true;
+        const flush = () => {
+            raf = 0;
+            workerRef.current?.postMessage({ type: 'pointer', x, y, on });
+        };
+        const queue = () => { if (!raf) raf = window.requestAnimationFrame(flush); };
+        const onMove = (e: PointerEvent) => {
+            const w = window.innerWidth || 1, h = window.innerHeight || 1;
+            x = (e.clientX / w) * 2 - 1;
+            y = 1 - (e.clientY / h) * 2;
+            on = true;
+            queue();
+        };
+        const onOut = (e: PointerEvent) => { if (!e.relatedTarget) { on = false; queue(); } };
+        window.addEventListener('pointermove', onMove, { passive: true });
+        document.addEventListener('pointerout', onOut, { passive: true });
+        return () => {
+            window.removeEventListener('pointermove', onMove);
+            document.removeEventListener('pointerout', onOut);
+            if (raf) window.cancelAnimationFrame(raf);
+        };
+    }, [live, leaving]);
+
+    // The loading bar: what is honestly known, as it changes. Never backwards
+    // (the worker also keeps the max, across the handoff remount too).
+    const band = progressBand(stage, progress, loaded);
+    useEffect(() => {
+        if (offline) return;
+        workerRef.current?.postMessage({ type: 'progress', ...band });
+    }, [band.floor, band.ceil, band.done, gl]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    // The offline card's Space already asked for a game: begin the run the
+    // moment the field has drawn (once), rather than asking for Space again.
+    const autoStarted = useRef(false);
+    useEffect(() => {
+        if (!autoPlay || !playable || autoStarted.current) return;
+        autoStarted.current = true;
+        workerRef.current?.postMessage({ type: 'act' });
+    }, [autoPlay, playable]);
+
+    // Back to where they came from: no field to play on at all, or the run
+    // ended with Esc. (Leaving because the connection is back is `leaving`,
+    // handled by the exit timer — never this.)
+    const everPlayed = useRef(false);
+    useEffect(() => {
+        if (game !== 'idle') { everPlayed.current = true; return; }
+        if (!autoPlay || leaving) return;
+        if (gl === 'static' || reduced || (everPlayed.current && !loaded)) latestIdle.current?.();
+    }, [game, autoPlay, leaving, gl, reduced, loaded]);
+
+    // Leaving: tell the worker (the dolly through the field), then one timer.
+    // Not an animationend listener: a dropped event (reduced motion, a hidden
+    // window) would strand the gate up forever; a timer can't miss.
+    useEffect(() => {
+        if (!leaving) return;
+        workerRef.current?.postMessage({ type: 'exit' });
+        const t = window.setTimeout(finish, reduced ? REDUCED_MS : SURFACE_MS);
+        return () => window.clearTimeout(t);
+    }, [leaving, reduced, finish]);
+
+    // The slow hint: one timer, only while loading, gone the moment we leave.
+    useEffect(() => {
+        if (loaded || slow) return;
+        const t = window.setTimeout(() => setSlow(true), Math.max(0, SLOW_MS - (now() - wait.t0)));
+        return () => window.clearTimeout(t);
+    }, [loaded, slow, wait]);
+
+    // Keys, only while there is a game to play. Capture phase, so the
+    // Dashboard mounted underneath never sees a key the game used.
+    useEffect(() => {
+        if (!playable || leaving) return;
+        const onKey = (e: KeyboardEvent) => {
+            if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey || isEditable(e.target)) return;
+            const w = workerRef.current;
+            if (!w) return;
+            const take = () => { e.preventDefault(); e.stopPropagation(); };
+            if (e.code === 'Space' || e.key === ' ') {
+                take();
+                if (!e.repeat) w.postMessage({ type: 'act' });
+            } else if (e.key === 'Enter' && readyChip) {
+                take();
+                if (now() - overAt.current >= OVER_GUARD_MS) setContinued(true);
+            }
+        };
+        window.addEventListener('keydown', onKey, true);
+        return () => window.removeEventListener('keydown', onKey, true);
+    }, [playable, leaving, readyChip]);
+
+    // Esc, through the app's shared Escape stack (utils/escapeStack.ts): once
+    // the app is ready it continues into it; before that it leaves the game.
+    // Right after a crash both wait OVER_GUARD_MS, so mashed keys can't skip
+    // the score.
+    useEscape(() => {
+        if (game === 'over' && now() - overAt.current < OVER_GUARD_MS) return;
+        if (readyChip) setContinued(true);
+        else workerRef.current?.postMessage({ type: 'quit' });
+    }, playable && !leaving && (readyChip || game !== 'idle'));
+
+    const label = offline ? OFFLINE_LABEL : (STAGE_LABEL[stage] ?? STAGE_LABEL.start);
+    const inGame = game !== 'idle';
+    const hintDelay = Math.max(0, HINT_MS - (now() - wait.t0)) / 1000;
+
+    const cls = [
+        'lo-root',
+        gl === 'ok' ? 'is-gl' : '',
+        gl === 'static' ? 'is-static' : '',
+        inGame ? 'is-game' : '',
+        leaving ? 'is-surfacing' : '',
+        slow ? 'is-slow' : '',
+        reduced ? 'is-reduced' : '',
+    ].filter(Boolean).join(' ');
 
     return (
-        <div
-            ref={rootRef}
-            className={`ls-root${phase === 'surfacing' ? ' is-surfacing' : ''}${slow ? ' is-slow' : ''}`}
-            style={{ ['--ls-el' as string]: `${el0.toFixed(3)}s` }}
-        >
-            {/* Back to front. First everything that never moves — painted
-                once into the base layer — then the few small things that do. */}
-            <div className="ls-still" aria-hidden="true">
-                <Seabed />
-                <div className="ls-floor-pool" />
-                <div className="ls-k-halo" />
+        <div className={cls} style={{ ['--lo-el' as string]: `${el0.toFixed(3)}s` }}>
+            {gl !== 'static' && <canvas ref={canvasRef} className="lo-canvas" aria-hidden="true" />}
+
+            <div className="lo-keys" aria-hidden="true"><div className="lo-keys-bob"><Mark /></div></div>
+
+            <div className="lo-text" ref={textRef} aria-hidden="true">
+                <div className="lo-headline">{label}</div>
+                {/* The loading bar's slot: the worker draws it here in dots; without
+                    the field (no WebGL) a plain CSS sweep stands in. */}
+                <div className="lo-bar" ref={slotRef}>
+                    {gl === 'static' && !reduced && <div className="lo-track"><div className="lo-sweep" /></div>}
+                </div>
+                <div className="lo-slow">{offline ? OFFLINE_SUB : SLOW_LABEL}</div>
             </div>
 
-            {/* A light that follows the pointer across the water. */}
-            <div className="ls-glow ls-p" aria-hidden="true"><div className="ls-glow-in" /></div>
-
-            <div className="ls-scene" aria-hidden="true">
-                <Plankton far />
-
-                {/* The comet orbit sits BEHIND Keys and is tilted so its near
-                    arc always passes below his legs: occlusion by plain paint
-                    order, no 3D sorting. (The faint outer orbit is still, so
-                    it is drawn into the seabed art.) */}
-                <div className="ls-layer ls-orbits">
-                    <Orbit r={168} n={46} kind="inner" />
+            {playable && !inGame && !leaving && !autoPlay && (
+                <div className="lo-hint" style={{ animationDelay: `${hintDelay.toFixed(3)}s` }} aria-hidden="true">
+                    Press <Kbd>Space</Kbd> to play
                 </div>
+            )}
 
-                <div className="ls-layer ls-keys">
-                    <div className="ls-k-pos">
-                        <KeysRig boopRef={boopRef} />
+            {/* Game over holds on the score until they choose — even once the
+                app is ready (then Enter goes in). Never continues on its own. */}
+            {playable && game === 'over' && !leaving && (
+                <div className="lo-over" aria-hidden="true">
+                    <div className="lo-over-title">
+                        Score {score.now} <span className="lo-sep">·</span> Best {score.best}
+                    </div>
+                    <div className="lo-over-sub">
+                        {loaded
+                            ? <><Kbd>Enter</Kbd> to continue <span className="lo-sep">·</span> <Kbd>Space</Kbd> to play again</>
+                            : <><Kbd>Space</Kbd> to play again <span className="lo-sep">·</span> <Kbd>Esc</Kbd> to stop</>}
                     </div>
                 </div>
+            )}
 
-                <Plankton far={false} />
-            </div>
-
-            <div className="ls-status" aria-hidden="true">
-                <div className="ls-status-line">
-                    {label}
-                    <span className="ls-ellipsis"><i>.</i><i>.</i><i>.</i></span>
+            {/* In a game: one strip across the top (Keys never swims up into
+                it): what is still loading (or that it is done), the score,
+                and the keys. */}
+            {playable && inGame && (
+                <div className="lo-hud">
+                    <div className="lo-hud-side">
+                        {readyChip || (leaving && loaded) ? (
+                            <button type="button" className="lo-ready" onClick={() => setContinued(true)}>
+                                <span className="lo-ready-dot" />
+                                {offline ? "You're back online" : 'Cipherline is ready'} <span className="lo-sep">·</span> <Kbd>Enter</Kbd> to continue
+                            </button>
+                        ) : (
+                            <div className="lo-pill" aria-hidden="true">
+                                <span className="lo-pill-dot" />
+                                {offline ? label : `${label}…`}
+                            </div>
+                        )}
+                    </div>
+                    <div className="lo-score" aria-hidden="true">
+                        <span className="lo-score-now">{score.now}</span>
+                        {score.best > 0 && <span className="lo-score-best">Best {score.best}</span>}
+                    </div>
+                    <div className="lo-hud-side lo-hud-keys" aria-hidden="true"><Kbd>Space</Kbd> swim <Kbd>Esc</Kbd> stop</div>
                 </div>
-                <div className="ls-status-slow">{SLOW_LABEL}</div>
-            </div>
-
-            <div className="ls-light" aria-hidden="true" />
+            )}
 
             <span className="sr-only" role="status" aria-live="polite">
-                {slow ? `${label}. ${SLOW_LABEL}` : `${label}…`}
+                {readyChip
+                    ? (offline ? "You're back online. Press Enter to continue." : 'Cipherline is ready. Press Enter to continue.')
+                    : offline ? `${label}. ${OFFLINE_SUB}`
+                    : slow ? `${label}. ${SLOW_LABEL}` : `${label}…`}
             </span>
         </div>
     );

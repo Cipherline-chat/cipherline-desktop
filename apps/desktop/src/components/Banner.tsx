@@ -1,14 +1,16 @@
-import React from 'react';
-import { useEncryptedAvatar } from '../hooks/useEncryptedAvatar';
-import { userColor } from '../utils/avatarColor';
+import React, { useState } from 'react';
+import { useEncryptedAvatar, evictAvatar } from '../hooks/useEncryptedAvatar';
 import { useIsFriendOrSelf } from '../contexts/FriendshipContext';
+import cipherlineMark from '../assets/cipherline-mark.svg';
 
 interface BannerProps {
-    /** Encrypted attachment ID — resolved via useEncryptedAvatar. Null = fallback to avatar or gradient. */
+    /** Encrypted attachment ID — resolved via useEncryptedAvatar. Null = the default Cipherline banner. */
     attachmentId: string | null;
-    /** Avatar attachment ID to use (blurred + darkened) when the banner is missing. */
+    /** No longer rendered: the default banner replaced the blurred-avatar
+     *  fallback (owner decision, 2026-10-05). Kept so existing callers compile. */
     fallbackAvatarAttachmentId?: string | null;
-    /** When the user has neither a banner nor an avatar, use their deterministic color as the fallback. */
+    /** The banner's owner, for the friend/self privacy gate. (It no longer
+     *  picks a colour: the default banner replaced that fallback too.) */
     fallbackUserId?: string | null;
     token: string;
     /** Pixel height of the banner (default 120). Ignored when `aspectRatio` is set. */
@@ -26,7 +28,30 @@ interface BannerProps {
      *  is already in a shared server or group with the subject (e.g. profile
      *  modal opened from a server member list). */
     bypassFriendGate?: boolean;
+    /** A local preview (a blob: URL of a just-cropped image that is not
+     *  uploaded yet) shown INSTEAD of the attachment. The onboarding profile
+     *  card uses it; everything else leaves it unset. */
+    src?: string | null;
 }
+
+/**
+ * The default banner (owner request, 2026-10-05; the design from the round-6
+ * onboarding prototype): a deep navy field with a faint fine grid, the Keys
+ * mark small and dim near the top, and a soft teal glow rising from below
+ * behind the avatar. It replaces the old fallbacks (the avatar blurred, or
+ * the user's colour) everywhere a user has no banner of their own: the
+ * profile popover, Settings → Profile, the DM partner panel, the onboarding
+ * card. Pure CSS (index.css `.cipherline-banner-default*`) + the bundled mark.
+ */
+export const DefaultBanner: React.FC = () => (
+    <div className="cipherline-banner-default" aria-hidden>
+        <span className="cipherline-banner-default-grid" />
+        <span className="cipherline-banner-default-glow" />
+        <img src={cipherlineMark} alt="" className="cipherline-banner-default-mark" draggable={false} />
+    </div>
+);
+
+const BANNER_KIND = { kind: 'banner' } as const;
 
 /**
  * Shared profile-banner component. All sizing is enforced via CSS rules in
@@ -36,7 +61,6 @@ interface BannerProps {
  */
 export const Banner: React.FC<BannerProps> = ({
     attachmentId,
-    fallbackAvatarAttachmentId = null,
     fallbackUserId = null,
     token,
     height = 120,
@@ -45,57 +69,65 @@ export const Banner: React.FC<BannerProps> = ({
     fadeToColor,
     className = '',
     bypassFriendGate = false,
+    src = null,
 }) => {
     const isFriendOrSelf = useIsFriendOrSelf();
-    // Privacy gate: strangers in a shared group / call should never see this
-    // user's real banner or avatar. Skip both network fetches and force the
-    // colored-fallback branch below. When no `fallbackUserId` is provided
-    // (legacy callers that pre-date the privacy gate) we fall through to the
-    // old behaviour.
+    // Privacy gate: strangers in a shared group / call never see this user's
+    // real banner — the fetch is skipped and they get the default banner.
+    // When no `fallbackUserId` is provided (legacy callers that pre-date the
+    // privacy gate) we fall through to the old behaviour.
     const allowImage = bypassFriendGate || !fallbackUserId || isFriendOrSelf(fallbackUserId);
 
-    const bannerUrl = useEncryptedAvatar(allowImage ? attachmentId : null, token);
-    // Only resolve the fallback avatar when there's no real banner (cached hook — no extra fetch if already loaded elsewhere).
-    const fallbackAvatarUrl = useEncryptedAvatar(
-        allowImage && !attachmentId ? fallbackAvatarAttachmentId ?? null : null,
-        token
-    );
+    // `kind: 'banner'` only picks the persisted blob's prune budget — banners
+    // are ~3x an avatar and must not evict the avatars every chat row paints.
+    const resolvedUrl = useEncryptedAvatar(allowImage && !src ? attachmentId : null, token, null, BANNER_KIND);
+    const bannerUrl = src || resolvedUrl;
+
+    // ── No blank flash, no pop ───────────────────────────────────────────────
+    // The default banner is ALWAYS underneath, so there is never an empty box.
+    // An image that was already decrypted when the card mounted (memory cache
+    // hit — the common case once a profile has been seen, prefetched on hover,
+    // or warmed) paints solid on the first frame. One that resolves later
+    // (download + decrypt) cross-fades in over the default instead of
+    // hard-swapping — the same rule EncryptedAvatar uses, for the same reason.
+    // The URL present at mount, captured once (state, not a ref: it is read
+    // during render).
+    const [firstUrl] = useState(bannerUrl);
+    const [loadedUrl, setLoadedUrl] = useState<string | null>(null);
+    // A blob URL that fails to decode (revoked after a long session, corrupt
+    // cache entry) must not leave a broken image over the default: evict it so
+    // the next open re-downloads, and fall back to the default banner. Keyed by
+    // attachment id, like EncryptedAvatar, so a re-minted URL for the same bad
+    // attachment does not loop.
+    const [broken, setBroken] = useState<string | null>(null);
+    const showImage = !!bannerUrl && (src ? true : broken !== attachmentId);
+    const fades = bannerUrl !== firstUrl;
 
     const sizeStyle: React.CSSProperties = aspectRatio
         ? { aspectRatio, height: 'auto' }
         : { height };
-
-    // Strangers always see the user-color fallback even if an attachmentId is
-    // present — `allowImage` suppresses the image fetch, so only this branch
-    // can render below.
-    const colorFallback = fallbackUserId && (!allowImage || (!attachmentId && !fallbackAvatarAttachmentId))
-        ? userColor(fallbackUserId)
-        : null;
 
     return (
         <div
             className={`cipherline-banner ${className}`}
             style={{ ...sizeStyle, ...(borderRadius ? { borderRadius } : {}) }}
         >
-            {/* Fallback — colored if we have a userId, otherwise the neutral gradient. Always rendered underneath. */}
-            {colorFallback ? (
-                <div
-                    className="cipherline-banner-fallback-colored"
-                    style={{ backgroundColor: colorFallback }}
-                />
-            ) : (
-                <div className="cipherline-banner-fallback" />
-            )}
-            {/* The image itself — real banner wins; else use the avatar as a blurred/darkened fill. */}
-            {bannerUrl ? (
-                <img src={bannerUrl} alt="" className="cipherline-banner-img" />
-            ) : fallbackAvatarUrl ? (
+            {/* Always underneath: the default banner, until (unless) a real one loads. */}
+            <DefaultBanner />
+            {showImage && (
                 <img
-                    src={fallbackAvatarUrl}
+                    src={bannerUrl!}
                     alt=""
-                    className="cipherline-banner-img cipherline-banner-img-blurred"
+                    className="cipherline-banner-img"
+                    style={fades ? { opacity: loadedUrl === bannerUrl ? 1 : 0, transition: 'opacity .2s ease' } : undefined}
+                    onLoad={fades ? () => setLoadedUrl(bannerUrl) : undefined}
+                    onError={() => {
+                        if (src) return;
+                        if (attachmentId) evictAvatar(attachmentId);
+                        setBroken(attachmentId);
+                    }}
                 />
-            ) : null}
+            )}
             {/* Optional bottom fade for avatar-overlap contexts */}
             {fadeToColor && (
                 <div

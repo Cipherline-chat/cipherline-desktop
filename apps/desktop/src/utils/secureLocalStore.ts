@@ -224,6 +224,40 @@ class SecureLocalStore {
      */
     private generation = 0;
 
+    /**
+     * DETACHED VALUES — the plaintext of a record dropped from `map` once it is
+     * on disk, because the module that owns it keeps the same data in memory in
+     * PARSED form and can serialise it again on demand.
+     *
+     * WHY (renderer memory): message history is held twice. messageStore parses
+     * every thread into the arrays React renders, and this map kept the JSON
+     * text those arrays came from for the rest of the session — as a two-byte
+     * string as soon as one message contains an emoji. For a 30k-message
+     * history that second copy was 23 MB of the renderer's heap, measured, for
+     * text nothing reads again except a few rare paths (the DM merge base, a
+     * backup export), which can be served from the parsed copy instead.
+     *
+     * THE CONTRACT that keeps this lossless:
+     *  - Only a key whose owner called {@link markDetachable} right after
+     *    writing (or reading) it can be detached, and only while `map` still
+     *    holds THAT exact string (any other setItem clears the mark).
+     *  - A key is dropped from `map` only once it is not dirty, i.e. its newest
+     *    value has been handed to a flush. If that flush then fails, the
+     *    re-queued write regenerates the value from the source — see
+     *    {@link valueFor} in flushOnce — so nothing that was owed to disk is
+     *    lost.
+     *  - Every read API (getItem, keysWithPrefix, key/length) treats a detached
+     *    key as present and getItem regenerates its value, so no caller can
+     *    mistake a detached record for an absent one — the confusion that
+     *    would, for example, let a DM merge write a thread over its own history.
+     *  - setItem/removeItem/clear/sign-out/account switch drop the detached
+     *    state exactly as they drop a `map` entry.
+     */
+    private detached = new Set<string>();
+    /** key -> the exact string the owner vouched it can regenerate. */
+    private detachable = new Map<string, string>();
+    private sources: Array<{ prefix: string; regenerate: (key: string) => string | null }> = [];
+
     // ── Lifecycle ───────────────────────────────────────────────────────────
 
     /**
@@ -350,7 +384,7 @@ class SecureLocalStore {
                             // cache is its only copy once the server drops the
                             // ACKed envelope). A tombstone means it was deleted
                             // in the gap; don't resurrect it either.
-                            if (this.map.has(k) || this.tombstones.has(k)) return;
+                            if (this.map.has(k) || this.detached.has(k) || this.tombstones.has(k)) return;
                             this.map.set(k, plain);
                         });
                         if (i + HYDRATE_BATCH < entries.length) await yieldToEventLoop();
@@ -386,7 +420,75 @@ class SecureLocalStore {
         this.ensureReady();
         const out: string[] = [];
         for (const k of this.map.keys()) if (k.startsWith(prefix)) out.push(k);
+        for (const k of this.detached) if (k.startsWith(prefix)) out.push(k);
         return out;
+    }
+
+    // ── Detached values (see the `detached` field) ──────────────────────────
+
+    /**
+     * Declare that every key under `prefix` that its owner marks with
+     * {@link markDetachable} can be serialised again by `regenerate`. It must
+     * return exactly the data last written for that key (or null if it does not
+     * know the key — such a key is then never detached).
+     */
+    registerDetachableSource(prefix: string, regenerate: (key: string) => string | null): void {
+        this.sources = this.sources.filter(s => s.prefix !== prefix);
+        this.sources.push({ prefix, regenerate });
+    }
+
+    /**
+     * The owner of `key` holds, in memory, the parsed form of the value `map`
+     * holds for it right now, and will keep it until it next writes or removes
+     * the key. The plaintext is dropped from `map` as soon as it is on its way
+     * to disk (immediately, when it already is).
+     */
+    markDetachable(key: string): void {
+        if (this.locked) return;
+        const v = this.map.get(key);
+        if (v === undefined) return;            // already detached, or absent
+        if (!this.sources.some(s => key.startsWith(s.prefix))) return;
+        this.detachable.set(key, v);
+        this.maybeDetach(key);
+    }
+
+    /** True when `key` is present but its plaintext lives with its owner. */
+    isDetached(key: string): boolean {
+        return this.detached.has(key);
+    }
+
+    /** Drop `key`'s plaintext from `map` if the contract allows it now. */
+    private maybeDetach(key: string): void {
+        const vouched = this.detachable.get(key);
+        if (vouched === undefined) return;
+        if (this.dirty.has(key) || this.tombstones.has(key)) return; // newest value not handed to a flush yet
+        if (this.map.get(key) !== vouched) { this.detachable.delete(key); return; }
+        this.map.delete(key);
+        this.detachable.delete(key);
+        this.detached.add(key);
+    }
+
+    /** Serialise a detached key again. Loud on failure: by construction it
+     *  cannot fail, and a silent null would read as "no such record". */
+    private regenerate(key: string): string | null {
+        const src = this.sources.find(s => key.startsWith(s.prefix));
+        const v = src ? src.regenerate(key) : null;
+        if (v === null) console.error(`[secureLocalStore] detached record ${key} could not be regenerated by its owner`);
+        return v;
+    }
+
+    /** The current value of `key`, wherever it lives. */
+    private valueFor(key: string): string | undefined {
+        const v = this.map.get(key);
+        if (v !== undefined) return v;
+        if (this.detached.has(key)) return this.regenerate(key) ?? undefined;
+        return undefined;
+    }
+
+    /** Forget detached/detachable state for keys matching `pred` (or all). */
+    private forgetDetached(pred?: (k: string) => boolean): void {
+        for (const k of [...this.detached]) if (!pred || pred(k)) this.detached.delete(k);
+        for (const k of [...this.detachable.keys()]) if (!pred || pred(k)) this.detachable.delete(k);
     }
 
     /** Delete any plaintext localStorage entries under the managed prefixes. */
@@ -421,7 +523,7 @@ class SecureLocalStore {
 
     getItem(key: string): string | null {
         this.ensureReady();
-        const v = this.map.get(key);
+        const v = this.valueFor(key);
         return v === undefined ? null : v;
     }
 
@@ -429,6 +531,8 @@ class SecureLocalStore {
         this.ensureReady();
         if (this.locked) return; // never write over preserved ciphertext
         this.map.set(key, value);
+        this.detached.delete(key);
+        this.detachable.delete(key);
         this.tombstones.delete(key);
 
         // Track the active account so per-user records route to the right subkey.
@@ -473,6 +577,10 @@ class SecureLocalStore {
                 for (const k of [...this.map.keys()]) {
                     if (k !== 'cipherline_user_id' && keyIsNamedFor(k, prevId)) this.map.delete(k);
                 }
+                // A detached record is as present as a `map` entry: it leaves
+                // with its account, or the previous account's history would
+                // still answer getItem() after sign-out.
+                this.forgetDetached(k => k !== 'cipherline_user_id' && keyIsNamedFor(k, prevId));
             }
             // Any records still queued for phase 2 belong to the account we
             // just left — drop them before loading the new one, or a later
@@ -509,7 +617,7 @@ class SecureLocalStore {
                 for (const [k, plain] of await this.openRecords(mine)) {
                     // Same rule as hydrateMessages(): never roll back a value
                     // written (or deleted) while this decrypt was in flight.
-                    if (!this.map.has(k) && !this.tombstones.has(k)) this.map.set(k, plain);
+                    if (!this.map.has(k) && !this.detached.has(k) && !this.tombstones.has(k)) this.map.set(k, plain);
                 }
             }
             if (this.activeUserId === nextId) this.readyUserId = nextId;
@@ -552,6 +660,7 @@ class SecureLocalStore {
             console.error('[secureLocalStore] wipeLocalData failed', e);
         }
         this.map.clear();
+        this.forgetDetached();
         this.dirty.clear();
         this.dirtyOwner.clear();
         this.tombstones.clear();
@@ -569,6 +678,8 @@ class SecureLocalStore {
         this.ensureReady();
         if (this.locked) return;
         this.map.delete(key);
+        this.detached.delete(key);
+        this.detachable.delete(key);
         this.dirty.delete(key);
         this.dirtyOwner.delete(key);
         this.tombstones.add(key);
@@ -588,6 +699,8 @@ class SecureLocalStore {
         this.ensureReady();
         if (this.locked) return;
         for (const key of this.map.keys()) this.tombstones.add(key);
+        for (const key of this.detached) this.tombstones.add(key);
+        this.forgetDetached();
         this.dirtyOwner.clear();
         this.map.clear();
         this.dirty.clear();
@@ -603,12 +716,16 @@ class SecureLocalStore {
             if (i === index) return k;
             i++;
         }
+        for (const k of this.detached) {
+            if (i === index) return k;
+            i++;
+        }
         return null;
     }
 
     get length(): number {
         this.ensureReady();
-        return this.map.size;
+        return this.map.size + this.detached.size;
     }
 
     // ── Flushing ──────────────────────────────────────────────────────────────
@@ -710,8 +827,14 @@ class SecureLocalStore {
         // was chosen and the moment it was read. Collecting first removes that
         // window entirely: what gets encrypted is exactly what was in the map
         // when the flush began.
+        //
+        // valueFor, not map.get: a key re-queued by a FAILED flush may have
+        // been detached in the meantime (its plaintext dropped because the
+        // failed write had already taken it off the dirty set). Its owner
+        // regenerates it, so the retry still writes it instead of reading
+        // "absent" and silently dropping a value that never reached disk.
         const pending = dirtyKeys.flatMap(key => {
-            const v = this.map.get(key);
+            const v = this.valueFor(key);
             if (v === undefined) return []; // deleted after being marked dirty
             return [{ k: key, o: owners.get(key) ?? null, v }];
         });
@@ -747,6 +870,9 @@ class SecureLocalStore {
             // otherwise a single transient encrypt failure silently loses that
             // key's newest value with nothing to retry it.
             if (failed.length) this.requeue(failed, owners, []);
+            // On disk now: a vouched-for value can leave memory (maybeDetach
+            // re-checks that it is still the value just written and not dirty).
+            for (const { key } of puts) if (this.detachable.has(key)) this.maybeDetach(key);
         } catch (e) {
             // Re-queue so the data isn't lost; it'll retry on the next write.
             this.requeue(dirtyKeys, owners, tombstoneKeys);
@@ -904,6 +1030,9 @@ class SecureLocalStore {
     /** @internal reset in-memory state (tests only). */
     _resetForTest(): void {
         this.map.clear();
+        // Sources stay registered: they are installed once, at module load,
+        // by their owners (messageStore), which a test reset does not re-run.
+        this.forgetDetached();
         this.dirty.clear();
         this.tombstones.clear();
         this.hydrated = false;

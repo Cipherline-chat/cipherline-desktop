@@ -1,0 +1,361 @@
+/* ── App loading screen (AppLoadingScreen.tsx) ──────────────────────────────────
+   Keys and one big honest line, centred, over a 3D field of faint dots
+   (drawn by a worker into .lo-canvas) — and, after a moment, "Press Space
+   to play".
+
+   PERF CONTRACT. The field and the game are not in this file: they run in a
+   worker (workers/loadingScreen.worker.ts), so they keep moving while the
+   main thread is busy mounting the Dashboard. What IS here must not need
+   the main thread either (AppLoadingScreen.test.ts checks these rules):
+
+   1. Only transform and opacity are ever animated or transitioned, and only
+      on HTML elements — Chromium runs those on the compositor. Keys is a
+      static svg inside animated divs; nothing inside the svg animates.
+   2. No keyframe references a custom property (that forces an animation back
+      onto the main thread). Custom properties appear only in delays/sizes.
+   3. No filter, blur, backdrop-filter or box-shadow anywhere; the backdrop
+      is painted once.
+   4. Two loops only, both in the static fallback alone (no WebGL): Keys'
+      slow bob (one iteration event per 6 s) and the bar. The bar's track clips with a plain
+      RECTANGLE (no border-radius), which the compositor does for free.
+   5. Intros use fill-mode `backwards` (their end state IS the resting
+      style), so a finished intro leaves nothing on a compositor layer.
+
+   Geometry shared with the worker: Keys is --lo-k tall (the worker draws
+   him at the same clamp(72px, 11vh, 132px)) and centred 42% from the top. --lo-el is how far into the wait we are when this screen
+   mounts (App.tsx's screen hands over to HydrationGate's), subtracted from
+   intro delays so the handoff remount doesn't replay them. */
+
+.lo-root {
+  --lo-el: 0s;
+  --lo-k: clamp(72px, 11vh, 132px);
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  /* Same backdrop index.html paints before any script runs. */
+  background: linear-gradient(180deg, #131A30 0%, #0F1526 45%, #0B0F1E 100%);
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: default;
+  /* HydrationGate's wrapper drops pointer events once the app is ready; a
+     run that is still going keeps taking clicks (they are swims). */
+  pointer-events: auto;
+  font-family: var(--cl-font-body, 'Nunito', system-ui, sans-serif);
+}
+.lo-root.is-surfacing { pointer-events: none; }
+
+.lo-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  animation: lo-fade 900ms ease-out backwards;
+  animation-delay: calc(0s - var(--lo-el));
+}
+
+/* Keys: the real mark. With the field running, the worker draws him (the
+   exact logo geometry, swimming) and this DOM copy only covers the first
+   frame; without it (no WebGL), this copy floats gently on its own. */
+.lo-keys {
+  position: absolute;
+  left: 50%;
+  top: 42%;
+  height: var(--lo-k);
+  width: calc(var(--lo-k) * 68 / 64);
+  margin-left: calc(var(--lo-k) * -34 / 64);
+  margin-top: calc(var(--lo-k) / -2);
+}
+.lo-root.is-gl .lo-keys { opacity: 0; transition: opacity 200ms ease-out; }
+.lo-keys-bob {
+  width: 100%;
+  height: 100%;
+}
+.lo-root.is-static .lo-keys-bob {
+  animation: lo-bob 6s ease-in-out infinite;
+  animation-delay: calc(0s - var(--lo-el));
+}
+@keyframes lo-bob {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(-6px); }
+}
+.lo-mark {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.lo-text {
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  top: calc(42% + var(--lo-k) / 2 + 22px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  transition: opacity 240ms ease-out, transform 240ms ease-out;
+  animation: lo-rise 600ms cubic-bezier(.2, .7, .2, 1) backwards;
+  animation-delay: calc(200ms - var(--lo-el));
+}
+@keyframes lo-rise {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: none; }
+}
+.lo-headline {
+  font-family: var(--cl-font-display, 'Fredoka', 'Nunito', system-ui, sans-serif);
+  font-weight: 600;
+  font-size: clamp(24px, 3.4vmin, 40px);
+  line-height: 1.15;
+  letter-spacing: -.005em;
+  color: #F4F7FF;
+}
+.lo-bar {
+  width: clamp(180px, 22vmin, 300px);
+  height: 12px;
+  margin-top: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.lo-slow {
+  margin-top: 14px;
+  font-weight: 600;
+  font-size: clamp(14px, 1.7vmin, 18px);
+  color: rgba(167, 179, 212, .75);
+  opacity: 0;
+  transform: translateY(4px);
+  transition: opacity 700ms ease-out, transform 700ms ease-out;
+}
+.lo-root.is-slow .lo-slow { opacity: 1; transform: none; }
+
+/* Static fallback only: a slim bar, so there is still a living cue. The
+   segment is 40% of the track: -100% is off the left edge, 250% off the
+   right; three sweeps per iteration (one animationiteration per 4.8 s). */
+.lo-track {
+  position: relative;
+  width: 100%;
+  height: 2px;
+  overflow: hidden;
+  background: rgba(37, 224, 200, .12);
+}
+.lo-sweep {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 40%;
+  background: linear-gradient(90deg, rgba(37, 224, 200, 0) 0%, #25E0C8 50%, rgba(37, 224, 200, 0) 100%);
+  transform: translateX(-100%);
+  animation: lo-sweep 4.8s linear infinite;
+  animation-delay: calc(0s - var(--lo-el));
+}
+@keyframes lo-sweep {
+  0%       { transform: translateX(-100%); animation-timing-function: cubic-bezier(.45, 0, .55, 1); }
+  28%      { transform: translateX(250%); }
+  33.33%   { transform: translateX(250%); }
+  33.34%   { transform: translateX(-100%); animation-timing-function: cubic-bezier(.45, 0, .55, 1); }
+  61.33%   { transform: translateX(250%); }
+  66.66%   { transform: translateX(250%); }
+  66.67%   { transform: translateX(-100%); animation-timing-function: cubic-bezier(.45, 0, .55, 1); }
+  94.67%   { transform: translateX(250%); }
+  100%     { transform: translateX(250%); }
+}
+
+.lo-kbd {
+  display: inline-block;
+  font-family: var(--cl-font-mono, 'JetBrains Mono', ui-monospace, monospace);
+  font-size: .8em;
+  font-weight: 600;
+  line-height: 1.3;
+  padding: 1px 7px 2px;
+  margin: 0 .2em;
+  border-radius: 6px;
+  border: 1px solid rgba(167, 179, 212, .3);
+  background: rgba(255, 255, 255, .04);
+  color: #D5DDF2;
+}
+
+/* "Press Space to play": quiet, at the bottom, after HINT_MS (the delay is
+   set inline from the wait clock). */
+.lo-hint {
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  bottom: 7vh;
+  text-align: center;
+  font-weight: 700;
+  font-size: 14px;
+  color: rgba(167, 179, 212, .8);
+  animation: lo-fade 700ms ease-out backwards;
+}
+@keyframes lo-fade {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+/* In the game the loading copy steps aside. */
+.lo-root.is-game .lo-text { opacity: 0; transform: translateY(10px); }
+
+/* Game over: one clean line, on a quiet backing so it reads over the pillars. */
+.lo-over {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: max-content;
+  max-width: calc(100% - 32px);
+  margin-left: 0;
+  transform: translate(-50%, -50%);
+  padding: 14px 22px;
+  border-radius: 16px;
+  background: rgba(11, 15, 30, .78);
+  border: 1px solid rgba(255, 255, 255, .07);
+  text-align: center;
+  animation: lo-fade 260ms ease-out backwards;
+  animation-delay: 450ms;
+}
+.lo-over-title {
+  font-family: var(--cl-font-display, 'Fredoka', 'Nunito', system-ui, sans-serif);
+  font-weight: 600;
+  font-size: clamp(17px, 2.2vmin, 24px);
+  color: #F4F7FF;
+}
+.lo-over-sub {
+  margin-top: 8px;
+  font-weight: 700;
+  font-size: 14px;
+  color: rgba(167, 179, 212, .75);
+}
+@keyframes lo-pop {
+  from { opacity: 0; transform: translateY(6px) scale(.97); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* In a game: a strip across the top 8% of the window (Keys never swims up
+   into it; the pillars do run beneath it, so each item sits on a quiet
+   backing): status or ready chip | score | keys. */
+.lo-hud {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 8vh;
+  min-height: 44px;
+  padding: 0 16px;
+  box-sizing: border-box;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 12px;
+}
+.lo-hud-side { display: flex; min-width: 0; }
+.lo-hud-keys {
+  justify-self: end;
+  justify-content: flex-end;
+  align-items: center;
+  padding: 5px 10px;
+  border-radius: 99px;
+  background: rgba(11, 15, 30, .62);
+  font-weight: 700;
+  font-size: 13px;
+  color: rgba(167, 179, 212, .7);
+  white-space: nowrap;
+}
+.lo-score {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 5px 14px;
+  border-radius: 99px;
+  background: rgba(11, 15, 30, .62);
+  font-family: var(--cl-font-display, 'Fredoka', 'Nunito', system-ui, sans-serif);
+  font-variant-numeric: tabular-nums;
+}
+.lo-score-now {
+  font-weight: 600;
+  font-size: clamp(20px, 3.2vh, 28px);
+  line-height: 1;
+  color: #F4F7FF;
+}
+.lo-score-best {
+  font-family: var(--cl-font-body, 'Nunito', system-ui, sans-serif);
+  font-weight: 700;
+  font-size: 13px;
+  color: rgba(37, 224, 200, .8);
+}
+.lo-pill,
+.lo-ready {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 14px;
+  border-radius: 99px;
+  font-family: inherit;
+  font-weight: 700;
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+  animation: lo-pop 260ms cubic-bezier(.2, .7, .2, 1) backwards;
+}
+.lo-pill {
+  color: rgba(167, 179, 212, .9);
+  background: rgba(19, 26, 48, .78);
+  border: 1px solid rgba(255, 255, 255, .08);
+}
+.lo-pill-dot,
+.lo-ready-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: rgba(167, 179, 212, .7);
+}
+.lo-ready-dot { background: #25E0C8; }
+.lo-sep { opacity: .45; }
+.lo-ready {
+  padding: 8px 15px;
+  font-size: 14px;
+  color: #E6FFFB;
+  background: rgba(37, 224, 200, .12);
+  border: 1px solid rgba(37, 224, 200, .5);
+  cursor: pointer;
+}
+.lo-ready:hover { background: rgba(37, 224, 200, .18); }
+.lo-ready:focus-visible { outline: 2px solid #25E0C8; outline-offset: 3px; }
+@media (max-width: 720px) { .lo-hud-keys { display: none; } }
+
+/* ── Into the app ──────────────────────────────────────────────────────────────
+   The worker rushes the camera forward through the field; Keys swells and
+   fades; the words go first; the whole screen holds, then dissolves onto the
+   Dashboard. Everything eases OUT to zero — nothing snaps at the end.
+   560 ms (SURFACE_MS). */
+.lo-root.is-surfacing { animation: lo-out 560ms cubic-bezier(.45, 0, .55, 1) forwards; }
+@keyframes lo-out {
+  0%   { opacity: 1; }
+  30%  { opacity: 1; }
+  100% { opacity: 0; }
+}
+.lo-root.is-static.is-surfacing .lo-keys { animation: lo-keys-out 480ms cubic-bezier(.5, 0, .75, 0) forwards; }
+@keyframes lo-keys-out {
+  from { opacity: 1; transform: scale(1); }
+  to   { opacity: 0; transform: scale(1.22); }
+}
+.lo-root.is-surfacing:not(.is-game) .lo-text,
+.lo-root.is-surfacing .lo-hint,
+.lo-root.is-surfacing .lo-hud { animation: lo-fade-out 200ms ease-out forwards; }
+@keyframes lo-fade-out {
+  from { opacity: 1; }
+  to   { opacity: 0; }
+}
+
+/* ── Reduced motion ──────────────────────────────────────────────────────────
+   A still field, a still Keys and the text: no bob, no bar, no intro, no
+   movement; the exit is a plain fade, and the JS fires onSurfaced after
+   REDUCED_MS (200 ms). */
+@media (prefers-reduced-motion: reduce) {
+  .lo-root,
+  .lo-root * { animation: none !important; transition: none !important; }
+  .lo-track { display: none; }
+  .lo-root.is-surfacing { opacity: 0; transition: opacity 200ms ease-out !important; }
+}

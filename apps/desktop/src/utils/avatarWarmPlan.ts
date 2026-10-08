@@ -63,6 +63,8 @@ export interface WarmPlanConversation {
 export interface WarmPlanFriend {
     user_id: string;
     avatar_url?: string | null;
+    /** Profile banner attachment id (`GET /friends` carries it). */
+    banner_url?: string | null;
 }
 
 export interface WarmPlanServer {
@@ -230,6 +232,42 @@ export function collectRecentSenderIds(
             out.push(uid);
         }
         if (out.length >= limit) break;
+    }
+    return out;
+}
+
+/**
+ * Friends' profile BANNERS worth warming, online-first, capped.
+ *
+ * A banner is only ever seen on a profile card, one at a time, so this is a
+ * much smaller bet than avatars: FRIEND_BANNER_WARM_LIMIT, not 24. It exists
+ * because the card is where the "slow profile" complaint lives — a friend's
+ * banner id is in the friends list from boot, so warming it means the card
+ * paints it on the first frame instead of after a cold download (two API
+ * round trips + the media GET). Fully cold that is 2 requests per banner on
+ * the same paced background lane as the avatars (queued behind them), once
+ * per device: the decrypted result lands in the encrypted disk cache under its
+ * own 'banner' prune budget and later boots cost nothing.
+ */
+export const FRIEND_BANNER_WARM_LIMIT = 12;
+
+export function selectFriendBanners(
+    friends: WarmPlanFriend[] | null | undefined,
+    presence: Record<string, boolean> | null | undefined,
+    limit: number = FRIEND_BANNER_WARM_LIMIT,
+): string[] {
+    const online = presence ?? {};
+    const ranked = (friends ?? [])
+        .filter((f): f is WarmPlanFriend => !!f && typeof f.banner_url === 'string' && f.banner_url.length > 0)
+        .map((f, index) => ({ index, id: f.banner_url as string, online: online[f.user_id] === true }))
+        .sort((a, b) => (Number(b.online) - Number(a.online)) || (a.index - b.index));
+    const out: string[] = [];
+    const seen = new Set<string>();
+    for (const f of ranked) {
+        if (out.length >= Math.max(0, limit)) break;
+        if (seen.has(f.id)) continue;
+        seen.add(f.id);
+        out.push(f.id);
     }
     return out;
 }

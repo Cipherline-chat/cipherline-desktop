@@ -15,6 +15,7 @@ import { useOpenProfile } from '../../contexts/ProfileOpenContext';
 import { useCallServerCtx } from '../../contexts/CallServerCtx';
 import { TileNamePill } from './TileCornerChrome';
 import { tileCornerInsets, tileChromeSlots } from './videoRectChrome';
+import { tileMetrics } from './participantTileMetrics';
 // Server-moderation flags are derived inline below from useParticipantMetadata
 // (the LiveKit-event-subscribed source) so we don't import the string-input
 // parseParticipantMetadata helper here.
@@ -178,53 +179,20 @@ export const ParticipantCard = ({
         const speaking = isSpeaking && !isLocalMuted && !isMuted && !isLocalDeafened && !isDeafened;
         const silenced = isMuted || isDeafened || isLocalMuted || isLocalDeafened;
         return (
-            <div
-                className="flex items-center gap-2.5 px-2 py-1.5 hover:bg-white/[0.04] transition-colors w-full relative cursor-pointer"
+            <ParticipantRowShell
+                userId={p.identity}
+                displayName={displayName}
+                avatarId={avatarToUse}
+                token={token}
+                speaking={speaking}
+                silenced={silenced}
+                roleColor={roleColor}
                 onClick={(e) => handleToggle(e)}
                 onContextMenu={handleContextMenu}
-            >
-                {/* Avatar — clean, no badge overlay */}
-                <div
-                    ref={buttonRef as any}
-                    className={`w-8 h-8 rounded-full overflow-hidden bg-cl-surface shrink-0
-                        ${speaking ? 'ring-2 ring-green-500 shadow-[0_0_12px_rgba(34,197,94,0.35)] scale-105' : 'ring-1 ring-white/10'}`}
-                >
-                    <EncryptedAvatar
-                        attachmentId={avatarToUse}
-                        userId={p.identity}
-                        token={token}
-                        className={`w-full h-full object-cover ${silenced ? 'opacity-50' : ''}`}
-                        fallbackSize={13}
-                        disableClickProfile
-                        bypassFriendGate
-                    />
-                </div>
-
-                {/* Name — dimmed when silenced, role colour otherwise */}
-                <span
-                    className={`flex-1 text-[13px] font-medium truncate transition-colors ${silenced ? 'text-white/40' : ''}`}
-                    style={!silenced && roleColor ? { color: roleColor } : !silenced ? { color: 'rgba(255,255,255,0.8)' } : undefined}
-                >
-                    {displayName}
-                </span>
-                <AnnotationGrantBadge identity={p.identity} size={12} />
-
-                {/* All status badges — horizontal row on the right of the name.
-                    Order: [local ping] → server-moderation flags (red) → screenshare → camera → audio (deafen → mute → local-mute). */}
-                <div className="flex items-center gap-1.5 shrink-0">
+                avatarRef={buttonRef as unknown as React.Ref<HTMLDivElement>}
+                badges={<>
                     {/* Ping + signal bars — local user only, server calls only */}
-                    {showLocalPing && isLocal && (() => {
-                        const { pingMs, packetLossPercent } = callStats ?? { pingMs: null, packetLossPercent: null };
-                        const { bars, color } = signalQuality(pingMs, packetLossPercent);
-                        return (
-                            <div className="flex items-center gap-1">
-                                <SignalBars bars={bars} color={color} />
-                                <span className={`text-[10px] font-mono tabular-nums ${pingColor(pingMs)}`}>
-                                    {pingMs !== null ? `${pingMs}ms` : '—'}
-                                </span>
-                            </div>
-                        );
-                    })()}
+                    {showLocalPing && isLocal && <LocalPingReadout stats={callStats} />}
                     {/* Server-moderation badges — saturated red so they're
                         immediately distinguishable from self-mute / local-mute
                         (white/grey) and local-deafen (also red but for the local
@@ -267,8 +235,8 @@ export const ParticipantCard = ({
                     {isLocalDeafened && isLocal && !isDeafened && (
                         <Headphones className="w-3.5 h-3.5 text-white/30" />
                     )}
-                </div>
-
+                </>}
+            >
                 {showPopover && !isLocal && ReactDOM.createPortal(
                     <PopoverMenu
                         displayName={displayName}
@@ -303,93 +271,29 @@ export const ParticipantCard = ({
                     />,
                     document.body
                 )}
-            </div>
+            </ParticipantRowShell>
         );
     }
 
     // ── Tile mode (compact / normal / large) ─────────────────────────────────
-    const effectiveCompact = sizeMode === 'tiny' || (sizeMode !== 'large' && compact);
-    const effectiveLarge = sizeMode === 'large';
-
-    const size = effectiveLarge ? 'w-20 h-20' : effectiveCompact ? 'w-9 h-9' : 'w-24 h-24';
-    const nameTrunc = effectiveLarge ? 'max-w-[100px]' : effectiveCompact ? 'max-w-[60px]' : 'max-w-[100px]';
-    const nameSize = effectiveLarge ? 'text-xs' : effectiveCompact ? 'text-[10px]' : 'text-xs';
-    const badgeSize = effectiveLarge ? 'p-1' : effectiveCompact ? 'p-0.5' : 'p-1.5';
-    const badgeIconSize = effectiveLarge ? 'w-3 h-3' : effectiveCompact ? 'w-2 h-2' : 'w-3.5 h-3.5';
-
-    // ── Corner chrome (fullscreen grid / people cells only) ──────────────────
-    //
-    // This card has no picture and never will — `contentRect()` would return
-    // null for it — so its insets are the tile's own corners, which is exactly
-    // what `tileCornerInsets()` means and exactly the fallback
-    // videoRectChrome.ts documents for "a tile that has no picture to ride".
-    // It is the SAME gutter VideoTile's chrome uses (CHROME_GUTTER_PX), pulled
-    // from that module rather than retyped here, so a camera-off card and the
-    // live video tile next to it in the same grid line their names up.
-    //
-    // There is no top-LEFT cluster to render: the annotation tool exists only
-    // on a surface you can draw on, and there is no video here. The one piece
-    // of annotation state a card carries — AnnotationGrantBadge, "this person
-    // may draw" — rides in the name pill, the same place VideoTile keeps it.
-    //
-    // The corner comes from `tileChromeSlots(true)` — hard TRUE, not a context
-    // read, because `cornerChrome` is set in exactly one place in the app and
-    // that place is FullscreenOverlay's grid/people cells (grep it). So this
-    // card is only ever a fullscreen tile, and the fullscreen row of the table
-    // is the only one that can apply to it. Derived from the table rather than
-    // written as the literal 'top-right' so that if the fullscreen row ever
-    // moves, this moves with it instead of silently disagreeing with the video
-    // tile beside it in the same grid.
-    const cornerInsets = tileCornerInsets();
-    const nameCorner = tileChromeSlots(true).name;
-    const nameRow = (
-        <>
-            <span className={`truncate min-w-0 ${cornerChrome ? 'max-w-full' : nameTrunc}`} style={{ color: roleColor ?? '#d1d5db' }}>
-                {displayName}
-            </span>
-            <AnnotationGrantBadge identity={p.identity} size={effectiveCompact ? 9 : 11} />
-        </>
-    );
+    const { badgeSize, badgeIconSize } = tileMetrics(sizeMode, compact);
 
     return (
-        <div className={cornerChrome
-            // Fills the cell so the pill's corners ARE the tile's corners, and
-            // so `chromeMaxWidthCss`'s `100%` resolves to the tile's width
-            // rather than to a shrink-wrapped column's.
-            ? 'relative w-full h-full flex flex-col items-center justify-center'
-            : `flex flex-col items-center ${effectiveCompact ? 'gap-0.5' : 'gap-2'} relative`}>
-            <div className="relative">
-                {/* Plain button (not ClButton): ClButton's icon variant pins its inner
-                    .cap to a fixed 46px circle, which left the avatar floating in the
-                    middle of larger tiles. A bare button lets the avatar fill edge-to-edge. */}
-                <button
-                    type="button"
-                    ref={buttonRef}
-                    onClick={(e) => handleToggle(e)}
-                    onContextMenu={handleContextMenu}
-                    className={`${size} p-0 border-none rounded-full overflow-hidden bg-cl-surface cursor-pointer transition-[transform,box-shadow] duration-150
-                        ${isSpeaking && !isLocalMuted && !isMuted && !isLocalDeafened && !isDeafened
-                            ? 'ring-2 ring-green-500 shadow-[0_0_20px_rgba(34,197,94,0.3)] scale-105'
-                            : 'ring-1 ring-white/10 hover:ring-white/30'}`}
-                >
-                    <EncryptedAvatar
-                        attachmentId={avatarToUse}
-                        userId={p.identity}
-                        token={token}
-                        className={`w-full h-full object-cover ${(isMuted || isDeafened || isLocalMuted || isLocalDeafened) ? 'opacity-50' : ''}`}
-                        fallbackSize={effectiveCompact ? 14 : effectiveLarge ? 28 : 32}
-                        disableClickProfile
-                        bypassFriendGate
-                    />
-                </button>
-
-                {/* Status badges. Hide-state badges are GATED on the underlying
-                    track actually existing right now — the hide preference is
-                    sticky (user's choice) but a badge claiming "video is hidden"
-                    is misleading once the publisher has turned their camera off.
-                    Same for screenshare. When they re-enable the source, the
-                    sticky preference takes effect again and the badge returns. */}
-                <div className="absolute bottom-0 right-[-4px] flex items-center justify-end z-10 pointer-events-none gap-[-2px]">
+        <ParticipantTileShell
+            userId={p.identity}
+            displayName={displayName}
+            avatarId={avatarToUse}
+            token={token}
+            sizeMode={sizeMode}
+            compact={compact}
+            cornerChrome={cornerChrome}
+            roleColor={roleColor}
+            speaking={isSpeaking && !isLocalMuted && !isMuted && !isLocalDeafened && !isDeafened}
+            dimmed={isMuted || isDeafened || isLocalMuted || isLocalDeafened}
+            onClick={(e) => handleToggle(e)}
+            onContextMenu={handleContextMenu}
+            buttonRef={buttonRef}
+            badges={<>
                     {isHiddenScreenShare && hasActiveScreenShare && (
                         <div className={`bg-cl-raise rounded-full ${badgeSize} border-[2px] border-[#0B0F1E] shadow-md z-[1]`}>
                             <MonitorOff className={`${badgeIconSize} text-[darkgray]`} />
@@ -413,28 +317,8 @@ export const ParticipantCard = ({
                             <MicOff className={`${badgeIconSize} text-[darkgray]`} />
                         </div>
                     ) : null}
-                </div>
-            </div>
-
-            {/* The name. In corner-chrome mode it moves to the tile's TOP-RIGHT
-                corner (owner request, and the shared shell every other tile
-                type uses); otherwise it keeps its place directly under the
-                avatar, which is the only sensible spot for a card with no tile
-                box around it.
-
-                Either way the name pill and its annotation badge share one flex
-                ROW — a bare sibling badge would land under the name instead of
-                beside it. */}
-            {cornerChrome ? (
-                <TileNamePill insets={cornerInsets} corner={nameCorner} large={effectiveLarge} className={`${nameSize} font-semibold`}>
-                    {nameRow}
-                </TileNamePill>
-            ) : (
-                <div className={`flex items-center gap-1 ${nameSize} font-semibold px-2 py-0.5 rounded-full bg-white/5 max-w-full`}>
-                    {nameRow}
-                </div>
-            )}
-
+            </>}
+        >
             {showPopover && !isLocal && ReactDOM.createPortal(
                 <PopoverMenu
                     displayName={displayName}
@@ -467,6 +351,213 @@ export const ParticipantCard = ({
                 />,
                 document.body
             )}
+        </ParticipantTileShell>
+    );
+};
+
+// ── Presentational shells ────────────────────────────────────────────────────
+// The markup of a participant row / tile with every live input already
+// resolved. ParticipantCard renders through these, and so does the instant-join
+// placeholder (call/JoiningCallView.tsx) before the LiveKit room exists — the
+// same components, so the user's entry is pixel-identical before and after the
+// room connects and nothing moves at the handover. Keep ALL markup here; a
+// class added to ParticipantCard's own JSX instead would split the two.
+
+/** The local user's ping + signal bars ("—" until the first stats sample). */
+export const LocalPingReadout = ({ stats }: { stats: { pingMs: number | null; packetLossPercent: number | null } | null | undefined }) => {
+    const { pingMs, packetLossPercent } = stats ?? { pingMs: null, packetLossPercent: null };
+    const { bars, color } = signalQuality(pingMs, packetLossPercent);
+    return (
+        <div className="flex items-center gap-1">
+            <SignalBars bars={bars} color={color} />
+            <span className={`text-[10px] font-mono tabular-nums ${pingColor(pingMs)}`}>
+                {pingMs !== null ? `${pingMs}ms` : '—'}
+            </span>
+        </div>
+    );
+};
+
+export interface ParticipantRowShellProps {
+    userId: string;
+    displayName: string;
+    avatarId: string | null | undefined;
+    token: string;
+    speaking: boolean;
+    silenced: boolean;
+    roleColor?: string;
+    onClick?: (e: React.MouseEvent) => void;
+    onContextMenu?: (e: React.MouseEvent) => void;
+    avatarRef?: React.Ref<HTMLDivElement>;
+    /** Status badges, right of the name. */
+    badges?: React.ReactNode;
+    /** Portaled extras (the popover). */
+    children?: React.ReactNode;
+}
+
+/** Row mode (voice-channel / huddle list). */
+export const ParticipantRowShell = ({ userId, displayName, avatarId, token, speaking, silenced, roleColor, onClick, onContextMenu, avatarRef, badges, children }: ParticipantRowShellProps) => (
+    <div
+        className="flex items-center gap-2.5 px-2 py-1.5 hover:bg-white/[0.04] transition-colors w-full relative cursor-pointer"
+        onClick={onClick}
+        onContextMenu={onContextMenu}
+    >
+        {/* Avatar — clean, no badge overlay */}
+        <div
+            ref={avatarRef}
+            className={`w-8 h-8 rounded-full overflow-hidden bg-cl-surface shrink-0
+                ${speaking ? 'ring-2 ring-green-500 shadow-[0_0_12px_rgba(34,197,94,0.35)] scale-105' : 'ring-1 ring-white/10'}`}
+        >
+            <EncryptedAvatar
+                attachmentId={avatarId}
+                userId={userId}
+                token={token}
+                className={`w-full h-full object-cover ${silenced ? 'opacity-50' : ''}`}
+                fallbackSize={13}
+                disableClickProfile
+                bypassFriendGate
+            />
+        </div>
+
+        {/* Name — dimmed when silenced, role colour otherwise */}
+        <span
+            className={`flex-1 text-[13px] font-medium truncate transition-colors ${silenced ? 'text-white/40' : ''}`}
+            style={!silenced && roleColor ? { color: roleColor } : !silenced ? { color: 'rgba(255,255,255,0.8)' } : undefined}
+        >
+            {displayName}
+        </span>
+        <AnnotationGrantBadge identity={userId} size={12} />
+
+        {/* All status badges — horizontal row on the right of the name.
+            Order: [local ping] → server-moderation flags (red) → screenshare → camera → audio (deafen → mute → local-mute). */}
+        <div className="flex items-center gap-1.5 shrink-0">
+            {badges}
+        </div>
+
+        {children}
+    </div>
+);
+
+export interface ParticipantTileShellProps {
+    userId: string;
+    displayName: string;
+    avatarId: string | null | undefined;
+    token: string;
+    sizeMode?: ParticipantCardProps['sizeMode'];
+    compact: boolean;
+    cornerChrome?: boolean;
+    roleColor?: string;
+    speaking: boolean;
+    dimmed: boolean;
+    onClick?: (e: React.MouseEvent) => void;
+    onContextMenu?: (e: React.MouseEvent) => void;
+    buttonRef?: React.Ref<HTMLButtonElement>;
+    /** Badges in the avatar's bottom-right stack. */
+    badges?: React.ReactNode;
+    /** Portaled extras (the popover). */
+    children?: React.ReactNode;
+}
+
+/** Tile mode (compact / normal / large; corner chrome for fullscreen cells). */
+export const ParticipantTileShell = ({ userId, displayName, avatarId, token, sizeMode, compact, cornerChrome = false, roleColor, speaking, dimmed, onClick, onContextMenu, buttonRef, badges, children }: ParticipantTileShellProps) => {
+    const { effectiveCompact, effectiveLarge, size, nameTrunc, nameSize } = tileMetrics(sizeMode, compact);
+
+    // ── Corner chrome (fullscreen grid / people cells only) ──────────────────
+    //
+    // This card has no picture and never will — `contentRect()` would return
+    // null for it — so its insets are the tile's own corners, which is exactly
+    // what `tileCornerInsets()` means and exactly the fallback
+    // videoRectChrome.ts documents for "a tile that has no picture to ride".
+    // It is the SAME gutter VideoTile's chrome uses (CHROME_GUTTER_PX), pulled
+    // from that module rather than retyped here, so a camera-off card and the
+    // live video tile next to it in the same grid line their names up.
+    //
+    // There is no top-LEFT cluster to render: the annotation tool exists only
+    // on a surface you can draw on, and there is no video here. The one piece
+    // of annotation state a card carries — AnnotationGrantBadge, "this person
+    // may draw" — rides in the name pill, the same place VideoTile keeps it.
+    //
+    // The corner comes from `tileChromeSlots(true)` — hard TRUE, not a context
+    // read, because `cornerChrome` is set in exactly one place in the app and
+    // that place is FullscreenOverlay's grid/people cells (grep it). So this
+    // card is only ever a fullscreen tile, and the fullscreen row of the table
+    // is the only one that can apply to it. Derived from the table rather than
+    // written as the literal 'top-right' so that if the fullscreen row ever
+    // moves, this moves with it instead of silently disagreeing with the video
+    // tile beside it in the same grid.
+    const cornerInsets = tileCornerInsets();
+    const nameCorner = tileChromeSlots(true).name;
+    const nameRow = (
+        <>
+            <span className={`truncate min-w-0 ${cornerChrome ? 'max-w-full' : nameTrunc}`} style={{ color: roleColor ?? '#d1d5db' }}>
+                {displayName}
+            </span>
+            <AnnotationGrantBadge identity={userId} size={effectiveCompact ? 9 : 11} />
+        </>
+    );
+
+    return (
+        <div className={cornerChrome
+            // Fills the cell so the pill's corners ARE the tile's corners, and
+            // so `chromeMaxWidthCss`'s `100%` resolves to the tile's width
+            // rather than to a shrink-wrapped column's.
+            ? 'relative w-full h-full flex flex-col items-center justify-center'
+            : `flex flex-col items-center ${effectiveCompact ? 'gap-0.5' : 'gap-2'} relative`}>
+            <div className="relative">
+                {/* Plain button (not ClButton): ClButton's icon variant pins its inner
+                    .cap to a fixed 46px circle, which left the avatar floating in the
+                    middle of larger tiles. A bare button lets the avatar fill edge-to-edge. */}
+                <button
+                    type="button"
+                    ref={buttonRef}
+                    onClick={onClick}
+                    onContextMenu={onContextMenu}
+                    className={`${size} p-0 border-none rounded-full overflow-hidden bg-cl-surface cursor-pointer transition-[transform,box-shadow] duration-150
+                        ${speaking
+                            ? 'ring-2 ring-green-500 shadow-[0_0_20px_rgba(34,197,94,0.3)] scale-105'
+                            : 'ring-1 ring-white/10 hover:ring-white/30'}`}
+                >
+                    <EncryptedAvatar
+                        attachmentId={avatarId}
+                        userId={userId}
+                        token={token}
+                        className={`w-full h-full object-cover ${dimmed ? 'opacity-50' : ''}`}
+                        fallbackSize={effectiveCompact ? 14 : effectiveLarge ? 28 : 32}
+                        disableClickProfile
+                        bypassFriendGate
+                    />
+                </button>
+
+                {/* Status badges. Hide-state badges are GATED on the underlying
+                    track actually existing right now — the hide preference is
+                    sticky (user's choice) but a badge claiming "video is hidden"
+                    is misleading once the publisher has turned their camera off.
+                    Same for screenshare. When they re-enable the source, the
+                    sticky preference takes effect again and the badge returns. */}
+                <div className="absolute bottom-0 right-[-4px] flex items-center justify-end z-10 pointer-events-none gap-[-2px]">
+                    {badges}
+                </div>
+            </div>
+
+            {/* The name. In corner-chrome mode it moves to the tile's TOP-RIGHT
+                corner (owner request, and the shared shell every other tile
+                type uses); otherwise it keeps its place directly under the
+                avatar, which is the only sensible spot for a card with no tile
+                box around it.
+
+                Either way the name pill and its annotation badge share one flex
+                ROW — a bare sibling badge would land under the name instead of
+                beside it. */}
+            {cornerChrome ? (
+                <TileNamePill insets={cornerInsets} corner={nameCorner} large={effectiveLarge} className={`${nameSize} font-semibold`}>
+                    {nameRow}
+                </TileNamePill>
+            ) : (
+                <div className={`flex items-center gap-1 ${nameSize} font-semibold px-2 py-0.5 rounded-full bg-white/5 max-w-full`}>
+                    {nameRow}
+                </div>
+            )}
+
+            {children}
         </div>
     );
 };

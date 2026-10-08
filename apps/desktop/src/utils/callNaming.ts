@@ -129,3 +129,20 @@ export function previewCallNames(
     const playing = callDisplayName(start, [ctx.game], s);
     return { start, whilePlaying: playing === start ? null : playing };
 }
+
+/**
+ * The name the server will give a call this user starts in `channel` — the
+ * same renderBaseCallName the API runs (huddles.service → baseCallName), fed
+ * what the client knows: the channel's naming setting, the host's server
+ * nickname (or username), and the names of the calls already in it. Used for
+ * the client-side call card shown while the spawn request is in flight
+ * (utils/joinView.ts); the server's real name replaces it the moment the
+ * request returns. Display only.
+ */
+export function predictSpawnedCallName(
+    channel: { name: string; call_naming?: unknown },
+    host: string,
+    takenNames: string[],
+): string {
+    return renderBaseCallName(callNamingOf(channel), { host, channel: channel.name, takenNames });
+}

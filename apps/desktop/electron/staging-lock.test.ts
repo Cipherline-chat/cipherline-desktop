@@ -21,8 +21,12 @@ import {
     parseUnlockFile, serializeUnlockFile, readUnlockFileSync, writeUnlockFileAtomic, removeUnlockFile,
     UNLOCK_FILE_VERSION, UNLOCK_FILENAME, PREVIEW_UNLOCK_FILENAME,
     isStagingVersion, resolveStagingLockMode, decideSetChannel, STAGING_LOCKED_ERROR,
+    verifierFingerprint, serializeUnlockMarker, isValidUnlockMarker, resolveRememberedUnlock,
+    LEGACY_FILE_VERIFIER_FINGERPRINT, UNLOCK_MARKER_VERSION, UNLOCK_MARKER_MAX_CHARS,
+    STAGING_UNLOCK_STORE_KEY, PREVIEW_UNLOCK_STORE_KEY,
     type ScryptVerifier,
 } from './staging-lock';
+import { isRendererSecureKey } from './secure-store-policy';
 
 /**
  * Every password in this file is a THROWAWAY generated here, with its own
@@ -256,5 +260,116 @@ describe('decideSetChannel (the updater:set-channel policy)', () => {
     });
     it('has a distinct error code for the renderer', () => {
         expect(STAGING_LOCKED_ERROR).toBe('STAGING_LOCKED');
+    });
+});
+
+describe('remembered unlock marker (SecureStore), bound to the verifier', () => {
+    const current = makeVerifier(randomPassword());
+    const rotated = makeVerifier(randomPassword());
+
+    it('round-trips for the verifier it was written for', () => {
+        const m = serializeUnlockMarker(current, 1_700_000_000_000);
+        expect(isValidUnlockMarker(m, current)).toBe(true);
+        // It stores a fingerprint, never anything password-shaped.
+        expect(m).not.toContain(current.hash);
+        expect(m).not.toContain(current.salt);
+        expect(JSON.parse(m)).toEqual({ v: UNLOCK_MARKER_VERSION, verifier: verifierFingerprint(current), unlockedAt: 1_700_000_000_000 });
+    });
+
+    it('a marker from before a password rotation (stale verifier) is REJECTED', () => {
+        const old = serializeUnlockMarker(current, Date.now());
+        expect(isValidUnlockMarker(old, current)).toBe(true);  // positive control
+        expect(isValidUnlockMarker(old, rotated)).toBe(false);
+        // Any one field of the verifier changing is a rotation.
+        for (const k of ['salt', 'hash'] as const) {
+            const flipped = { ...current, [k]: (current[k][0] === 'a' ? 'b' : 'a') + current[k].slice(1) };
+            expect(isValidUnlockMarker(old, flipped), k).toBe(false);
+        }
+        expect(isValidUnlockMarker(old, { ...current, N: current.N * 2 })).toBe(false);
+    });
+
+    it('the fingerprint is deterministic and differs per verifier', () => {
+        expect(verifierFingerprint(current)).toBe(verifierFingerprint({ ...current }));
+        expect(verifierFingerprint(current)).toMatch(/^[0-9a-f]{64}$/);
+        expect(verifierFingerprint(current)).not.toBe(verifierFingerprint(rotated));
+    });
+
+    it('rejects missing, garbage, unbound and tampered shapes', () => {
+        const fp = verifierFingerprint(current);
+        const bad: (string | null | undefined)[] = [
+            null, undefined, '', 'true', '1', 'not json', '[]', '{}', 'null',
+            // A bare boolean / the legacy v1 file shape is not a marker.
+            JSON.stringify({ v: 1, unlocked: true, unlockedAt: 1 }),
+            JSON.stringify({ v: UNLOCK_MARKER_VERSION, unlocked: true, unlockedAt: 1 }),
+            JSON.stringify({ v: UNLOCK_MARKER_VERSION, verifier: fp }),
+            JSON.stringify({ v: UNLOCK_MARKER_VERSION, verifier: fp, unlockedAt: 0 }),
+            JSON.stringify({ v: UNLOCK_MARKER_VERSION, verifier: fp, unlockedAt: '1' }),
+            JSON.stringify({ v: UNLOCK_MARKER_VERSION + 1, verifier: fp, unlockedAt: 1 }),
+            JSON.stringify({ v: UNLOCK_MARKER_VERSION, verifier: fp.toUpperCase(), unlockedAt: 1 }),
+            JSON.stringify({ v: UNLOCK_MARKER_VERSION, verifier: fp.slice(2), unlockedAt: 1 }),
+            JSON.stringify({ v: UNLOCK_MARKER_VERSION, verifier: true, unlockedAt: 1 }),
+            `{"v":${UNLOCK_MARKER_VERSION},"verifier":"${fp}","unlockedAt":1e400}`,
+            ' '.repeat(UNLOCK_MARKER_MAX_CHARS) + serializeUnlockMarker(current, 1),
+        ];
+        for (const raw of bad) expect(isValidUnlockMarker(raw, current), String(raw).slice(0, 80)).toBe(false);
+    });
+
+    it('compares the fingerprint with timingSafeEqual', () => {
+        const spy = vi.mocked(crypto.timingSafeEqual);
+        spy.mockClear();
+        expect(isValidUnlockMarker(serializeUnlockMarker(current, 1), current)).toBe(true);
+        expect(spy).toHaveBeenCalledTimes(1);
+    });
+
+    it('keys are main-process only: never renderer-reachable', () => {
+        expect(isRendererSecureKey(STAGING_UNLOCK_STORE_KEY)).toBe(false);
+        expect(isRendererSecureKey(PREVIEW_UNLOCK_STORE_KEY)).toBe(false);
+        expect(PREVIEW_UNLOCK_STORE_KEY).not.toBe(STAGING_UNLOCK_STORE_KEY);
+    });
+});
+
+describe('resolveRememberedUnlock (what the launch-time lock and the channel gate see)', () => {
+    const current = makeVerifier(randomPassword());
+
+    it('not enforced (dev / smoke test): unlocked, reads nothing', () => {
+        expect(resolveRememberedUnlock({ enforced: false, marker: null, legacyFileValid: false, verifier: current }))
+            .toEqual({ unlocked: true, source: 'not-enforced' });
+    });
+
+    it('no marker → LOCKED (someone who grabbed the staging installer directly is still asked)', () => {
+        expect(resolveRememberedUnlock({ enforced: true, marker: null, legacyFileValid: false, verifier: current }))
+            .toEqual({ unlocked: false, source: 'none' });
+    });
+
+    it('a valid marker → unlocked, so the downloaded staging build skips its launch lock', () => {
+        expect(resolveRememberedUnlock({
+            enforced: true, marker: serializeUnlockMarker(current, 1), legacyFileValid: false, verifier: current,
+        })).toEqual({ unlocked: true, source: 'marker' });
+    });
+
+    it('a stale marker (password rotated) → LOCKED', () => {
+        const rotated = makeVerifier(randomPassword());
+        expect(resolveRememberedUnlock({
+            enforced: true, marker: serializeUnlockMarker(rotated, 1), legacyFileValid: false, verifier: current,
+        })).toEqual({ unlocked: false, source: 'none' });
+    });
+
+    it('a legacy file is honoured ONLY under the verifier legacy files were written for', () => {
+        // Positive control: the shipped verifier IS that verifier today.
+        expect(verifierFingerprint(STAGING_VERIFIER)).toBe(LEGACY_FILE_VERIFIER_FINGERPRINT);
+        expect(resolveRememberedUnlock({ enforced: true, marker: null, legacyFileValid: true, verifier: STAGING_VERIFIER }))
+            .toEqual({ unlocked: true, source: 'legacy-file' });
+        // After a rotation the same file no longer unlocks anything.
+        expect(resolveRememberedUnlock({ enforced: true, marker: null, legacyFileValid: true, verifier: current }))
+            .toEqual({ unlocked: false, source: 'none' });
+        // And a missing/invalid file never does.
+        expect(resolveRememberedUnlock({ enforced: true, marker: null, legacyFileValid: false, verifier: STAGING_VERIFIER }))
+            .toEqual({ unlocked: false, source: 'none' });
+    });
+
+    it('a valid marker wins over the legacy file', () => {
+        expect(resolveRememberedUnlock({
+            enforced: true, marker: serializeUnlockMarker(STAGING_VERIFIER, 1), legacyFileValid: true, verifier: STAGING_VERIFIER,
+        }).source).toBe('marker');
     });
 });

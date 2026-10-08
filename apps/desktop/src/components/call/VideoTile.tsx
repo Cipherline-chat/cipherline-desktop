@@ -18,6 +18,9 @@ import { AnnotationRequestButton } from './AnnotationRequestButton';
 import { AnnotationRequestsMenu } from './AnnotationRequestsMenu';
 import { AnnotationGrantBadge } from './AnnotationGrantBadge';
 import { ViewerCountBadge } from './ViewerCountBadge';
+import { StopWatchingButton } from './StopWatchingButton';
+import { canStopWatching } from '../../utils/stopWatchingScreenshare';
+import { useOverlayCaptured, strokeAuthorFilter, type AttributeSource } from '../../utils/annotationOverlayCapture';
 import { useAnnotationStore, trackKey as annotationTrackKey, isGranted as annotationIsGranted } from '../../utils/annotationStore';
 import { contentRect, type FitMode, type ContentRect } from '../../utils/annotationGeometry';
 import { videoRectInsets, videoRectPending, tileChromeSlots, CHROME_GUTTER_PX } from './videoRectChrome';
@@ -27,6 +30,12 @@ import { useStreamStatsHudEnabled } from '../../utils/streamDiagnosticsPrefs';
 import { useVideoZoomPan } from '../../hooks/useVideoZoomPan';
 import { acquireSpeakingAnalyser, releaseSpeakingAnalyser } from '../../utils/speakingAnalyser';
 import { retainRemoteVideo } from '../../utils/remoteVideoDemand';
+import {
+    claimRemoteQuality, prewarmRemoteQuality, pickTileLayer, pickShareLayer, displayedPixels, normaliseLayers, msSinceUpgrade,
+    DATASAVER_SHARE_FPS, type QualityClaim, type TileRole,
+} from '../../utils/remoteVideoQuality';
+import { useIncomingVideoMode } from '../../utils/cameraQualityPrefs';
+import { logCallEvent, trackPlaceholder } from '../../utils/callEventLog';
 // vtMeta is derived inline from useParticipantMetadata (the reactive source)
 // so we don't need the string-input parser here.
 
@@ -353,13 +362,30 @@ export interface VideoTileProps {
      * one video". A disabled no-op is honest; a no-op that mutates state is not.
      */
     focusToggleDisabled?: boolean;
-    /** Explicit SFU simulcast quality tier — replaces adaptiveStream dimension detection */
+    /**
+     * Hard override of the simulcast layer this tile asks for. Normally
+     * omitted: the tile picks its own layer from its rendered size × DPR,
+     * its role (focused / grid / sidebar) and `videoCount`
+     * (utils/remoteVideoQuality.ts).
+     */
     quality?: VideoQuality;
+    /** How many video tiles share this view — caps the layer (≤4 / 5–9 / 10+). */
+    videoCount?: number;
     /** True when the local user has MUTE_MEMBERS — shows server-mute options in popover. */
     canServerMute?: boolean;
     /** Forwarded to PopoverMenu for server-side track muting. */
     onServerMuteTrack?: (targetUserId: string, trackType: 'audio' | 'video' | 'screenshare' | 'deafen', muted: boolean) => void;
+    /**
+     * Stop watching this (remote) screen share — unsubscribe, leave the sharer's
+     * viewer list, return to the Watch gate. When set on a remote screen-share
+     * tile, a red X renders next to the name in the name pill. Ignored on
+     * cameras and on your own share (see `canStopWatching`).
+     */
+    onStopWatching?: () => void;
 }
+
+/** Resting the pointer this long on a focusable tile pre-warms its top layer. */
+const HOVER_PREWARM_DWELL_MS = 150;
 
 export const VideoTile = ({
     p,
@@ -383,8 +409,10 @@ export const VideoTile = ({
     annotationSurface,
     focusToggleDisabled,
     quality,
+    videoCount,
     canServerMute,
     onServerMuteTrack,
+    onStopWatching,
 }: VideoTileProps) => {
     const isLocal = p.identity === localParticipant?.identity;
     const isScreenShare = source === Track.Source.ScreenShare;
@@ -471,6 +499,11 @@ export const VideoTile = ({
     // UI choosing never to let the owner exercise it.
     const annotKey = annotationTrackKey(p.identity, source);
     const annotMe: string = localParticipant?.identity ?? '';
+    // A Linux sharer's desktop overlay is captured into this very video: draw
+    // only our own strokes on it (the video already shows everyone else's).
+    // utils/annotationOverlayCapture.ts.
+    const overlayCaptured = useOverlayCaptured(p as unknown as AttributeSource, isScreenShare);
+    const annotOnlyBy = strokeAuthorFilter({ isScreenShare, captured: overlayCaptured, me: annotMe || p.identity });
     const annotGranted = useAnnotationStore(st => !isLocal && !!annotMe && annotationIsGranted(st, annotKey, annotMe));
     const annotCanDraw = annotSurface && annotEnabled && annotGranted;
     /**
@@ -539,6 +572,9 @@ export const VideoTile = ({
     const hudEnabled = useStreamStatsHudEnabled();
     const hudPub = p.getTrackPublication(source);
     const hudTrack = hudPub?.videoTrack;
+    // The audio that should line up with this video (A/V-sync row).
+    const hudAudioTrack = isLocal ? undefined
+        : p.getTrackPublication(isScreenShare ? Track.Source.ScreenShareAudio : Track.Source.Microphone)?.audioTrack;
     const [videoRes, setVideoRes] = React.useState<string | null>(null);
     const [videoFps, setVideoFps] = React.useState<number>(0);
     const lastFrameRef = React.useRef<{ count: number; time: number }>({ count: 0, time: performance.now() });
@@ -605,28 +641,138 @@ export const VideoTile = ({
         return () => { track.detach(el); };
     }, [p, source, p.getTrackPublication(source)?.track]);
 
-    // Explicit quality control — set the exact SFU simulcast routing tier this tile needs.
-    // The sidebar tile of a currently-focused stream is suppressed (isFocused && !isFocusedView)
-    // so it never races against the FocusedStreamBanner/FullscreenOverlay tile's HIGH call.
-    // When the focused tile unmounts, isFocused flips to false and the sidebar re-runs → LOW.
+    // Simulcast layer for this tile (utils/remoteVideoQuality.ts). Every tile
+    // showing a stream holds a CLAIM; the publication gets the MAX of them,
+    // upgrades at once and downgrades only after a short delay — so the
+    // sidebar copy of a focused stream no longer has to stand aside, and
+    // unfocus → refocus never dips. The tile picks from its rendered size ×
+    // devicePixelRatio against the publisher's real layers, capped by how
+    // many tiles share the view.
+    const [tileBox, setTileBox] = React.useState<{ w: number; h: number }>({ w: 0, h: 0 });
     React.useEffect(() => {
-        const trackPub = p.getTrackPublication(source);
-        const isRemote = trackPub instanceof RemoteTrackPublication;
-
-        if (!trackPub || !isRemote) return;
-
-        // Screen shares: browsers rarely support simulcast on getDisplayMedia tracks, so
-        // setVideoQuality has nothing to switch between. Always receive at max quality.
-        if (isScreenShare) {
-            trackPub.setVideoQuality(VideoQuality.HIGH);
-            return;
+        const el = wrapperRef.current;
+        if (!el || typeof ResizeObserver === 'undefined') return;
+        // 16 px buckets: a drag-resize must not re-render the tile per pixel.
+        const q = (n: number) => Math.round(n / 16) * 16;
+        const ro = new ResizeObserver(entries => {
+            const r = entries[entries.length - 1].contentRect;
+            const next = { w: q(r.width), h: q(r.height) };
+            setTileBox(prev => (prev.w === next.w && prev.h === next.h ? prev : next));
+        });
+        ro.observe(el);
+        return () => ro.disconnect();
+    }, []);
+    const layerPubRaw = p.getTrackPublication(source);
+    // Cameras AND screen shares go through the arbiter (a share has a 720p
+    // lower layer since the screen-share simulcast change; pickShareLayer).
+    const layerPub = layerPubRaw instanceof RemoteTrackPublication ? layerPubRaw : null;
+    const layerTrack = layerPubRaw?.track;
+    const claimRef = React.useRef<QualityClaim | null>(null);
+    const lastPickRef = React.useRef<VideoQuality | undefined>(undefined);
+    React.useEffect(() => {
+        if (!layerPub || !layerTrack) return;
+        const c = claimRemoteQuality(layerPub);
+        claimRef.current = c;
+        lastPickRef.current = undefined;
+        return () => { c.release(); if (claimRef.current === c) claimRef.current = null; };
+    }, [layerPub, layerTrack]);
+    const tileRole: TileRole = isFocusedView ? 'focus' : isGridView ? 'grid' : 'tile';
+    const incomingMode = useIncomingVideoMode();
+    const pubDims = layerPub?.dimensions;
+    const layersKey = (layerPub?.trackInfo?.layers ?? []).map(l => `${l.quality}:${l.width}x${l.height}`).join(',');
+    React.useEffect(() => {
+        const c = claimRef.current;
+        if (!c || !layerPub) return;
+        let q: VideoQuality;
+        if (quality !== undefined) {
+            q = quality;
+        } else if (isScreenShare) {
+            const aspect = pubDims && pubDims.height > 0 ? pubDims.width / pubDims.height : 16 / 9;
+            const dpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
+            q = pickShareLayer({
+                layers: normaliseLayers(layerPub.trackInfo?.layers),
+                role: tileRole,
+                need: displayedPixels(tileBox.w, tileBox.h, dpr, aspect, 'contain'),
+                mode: incomingMode,
+                current: lastPickRef.current,
+            });
+        } else {
+            const aspect = pubDims && pubDims.height > 0 ? pubDims.width / pubDims.height : 16 / 9;
+            const dpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
+            q = pickTileLayer({
+                need: displayedPixels(tileBox.w, tileBox.h, dpr, aspect, isFocusedView || isGridView ? 'contain' : 'cover'),
+                layers: normaliseLayers(layerPub.trackInfo?.layers),
+                role: tileRole,
+                count: videoCount ?? 1,
+                speaking: isSpeaking,
+                current: lastPickRef.current,
+                mode: incomingMode,
+            });
         }
-        // Sidebar tile of a focused stream — suppress so it doesn't race the focused tile's HIGH call.
-        if (isFocused && !isFocusedView) return;
-
-        trackPub.setVideoQuality(quality ?? VideoQuality.LOW);
+        if (tileRole === 'focus' && lastPickRef.current !== q) {
+            logCallEvent('focus_upgrade', { track: trackPlaceholder(layerPub.trackSid, isScreenShare ? 'remote-screen' : 'remote-video'), quality: q });
+        }
+        lastPickRef.current = q;
+        c.set(q);
+    // layersKey stands in for trackInfo.layers (a fresh array on every update).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [p, source, isFocusedView, isFocused, quality, p.getTrackPublication(source)?.track]);
+    }, [layerPub, layerTrack, tileBox, tileRole, videoCount, isSpeaking, quality, layersKey, pubDims?.width, pubDims?.height, incomingMode]);
+
+    // Diagnostics: when the decoded picture changes size shortly after an
+    // upgrade request, log how long the switch took — the focus-switch time,
+    // readable in DevTools on a real call. Console only; nothing is stored.
+    React.useEffect(() => {
+        const el = videoRef.current;
+        if (!el || !layerPub) return;
+        const onResize = () => {
+            const ms = msSinceUpgrade(layerPub);
+            if (ms !== null && el.videoWidth > 0) {
+                console.info(`[VideoQuality] ${tileRole} tile now ${el.videoWidth}×${el.videoHeight}, ${ms} ms after the upgrade request`);
+                logCallEvent('focus_switched', {
+                    track: trackPlaceholder(layerPub.trackSid, isScreenShare ? 'remote-screen' : 'remote-video'),
+                    role: tileRole, size: `${el.videoWidth}x${el.videoHeight}`, ms,
+                });
+            }
+        };
+        el.addEventListener('resize', onResize);
+        return () => el.removeEventListener('resize', onResize);
+    }, [layerPub, layerTrack, tileRole, isScreenShare]);
+
+    // Data saver also caps a share's received frame rate (0 = no cap). With
+    // the lower layer that is already ≤ 30 fps; on a VP9 share (L1T3, one
+    // spatial layer) this is what drops the temporal layers.
+    React.useEffect(() => {
+        if (!isScreenShare || !(layerPubRaw instanceof RemoteTrackPublication)) return;
+        layerPubRaw.setVideoFPS(incomingMode === 'datasaver' ? DATASAVER_SHARE_FPS : 0);
+    }, [isScreenShare, layerPubRaw, layerTrack, incomingMode]);
+
+    // Pre-warm: ask for the top layer the moment the user presses (or rests
+    // the pointer on) a tile that would focus on click — the focus view then
+    // mounts onto a layer that is already flowing. Refs only: a pointer pass
+    // must not re-render a live video tile (see cl-tile-hover below).
+    const prewarmable = !!layerPub && !isFocusedView && !focusToggleDisabled;
+    const hoverTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+    const hoverClaimRef = React.useRef<QualityClaim | null>(null);
+    const endHover = React.useCallback(() => {
+        if (hoverTimerRef.current) { clearTimeout(hoverTimerRef.current); hoverTimerRef.current = null; }
+        hoverClaimRef.current?.release();
+        hoverClaimRef.current = null;
+    }, []);
+    React.useEffect(() => endHover, [endHover, layerPub]);
+    const handlePointerEnter = () => {
+        if (!prewarmable || hoverTimerRef.current || hoverClaimRef.current) return;
+        hoverTimerRef.current = setTimeout(() => {
+            hoverTimerRef.current = null;
+            if (!layerPub) return;
+            const c = claimRemoteQuality(layerPub);
+            c.set(VideoQuality.HIGH);
+            hoverClaimRef.current = c;
+        }, HOVER_PREWARM_DWELL_MS);
+    };
+    const handlePointerDown = (e: React.PointerEvent) => {
+        if (e.button !== 0 || !prewarmable || !layerPub) return;
+        prewarmRemoteQuality(layerPub);
+    };
 
     // Poll video resolution and FPS (used by focused overlay and right-click context).
     // Only while one of those two readouts is actually on screen: the fps
@@ -955,6 +1101,9 @@ export const VideoTile = ({
                 ${hasPreciseFitBorder ? '' : 'ring-inset ring-1 ring-white/5'}`}
             style={style}
             onClick={handleClick}
+            onPointerEnter={handlePointerEnter}
+            onPointerLeave={endHover}
+            onPointerDown={handlePointerDown}
         >
             {/* The wrapper's own ring is suppressed (see hasPreciseFitBorder above)
                 once we know exactly where the picture renders — this draws the SAME
@@ -1118,6 +1267,7 @@ export const VideoTile = ({
                 canDraw={annotCanDraw}
                 armed={annotSurface && annotEnabled}
                 by={annotMe || p.identity}
+                onlyBy={annotOnlyBy}
                 onContextMenu={handleContextMenu}
             />
                     </>
@@ -1195,7 +1345,10 @@ export const VideoTile = ({
                 tiles only: a sidebar thumbnail has no room for six rows. */}
             {hudEnabled && hudTrack && (isFocusedView || isGridView) && !chromeHidden && (
                 <TileStatsReadout insets={chrome} corner={slots.stats}>
-                    <StreamStatsHud track={hudTrack} isLocal={isLocal} publication={hudPub} />
+                    <StreamStatsHud
+                        track={hudTrack} isLocal={isLocal} publication={hudPub}
+                        audioTrack={hudAudioTrack} identity={p.identity}
+                    />
                 </TileStatsReadout>
             )}
             {!hudEnabled && isFocusedView && videoRes && !chromeHidden && (
@@ -1307,6 +1460,9 @@ export const VideoTile = ({
                         size={isFocusedView ? 12 : 10}
                         showZero={isLocal}
                     />
+                )}
+                {canStopWatching({ source, isLocal, onStopWatching }) && (
+                    <StopWatchingButton name={displayName} onStop={onStopWatching!} size={isFocusedView ? 14 : 12} />
                 )}
                 {/* Hidden-stream indicator badges — gated on the OTHER source
                     actually existing right now. A camera tile only shows the

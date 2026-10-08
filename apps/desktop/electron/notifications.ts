@@ -35,9 +35,11 @@
  * has an idempotency key, so a second delivery is a second real message.
  */
 
-import { Notification, BrowserWindow, ipcMain } from 'electron';
+import { Notification, BrowserWindow, ipcMain, nativeImage } from 'electron';
+import type { NativeImage } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
+import { validateNotifIconDataUrl } from './notificationIcon';
 
 export interface NotifShowPayload {
     /** Unique ID for deduplication — same id replaces the previous toast. */
@@ -50,6 +52,31 @@ export interface NotifShowPayload {
     hasReply?: boolean;
     /** Reply placeholder text (macOS + Windows). */
     replyPlaceholder?: string;
+    /**
+     * Optional sender avatar, already decrypted, downscaled (96x96) and
+     * circle-cropped by the renderer (src/utils/notificationAvatar.ts), as a
+     * `data:image/png;base64,` URL. UNTRUSTED here: validated by
+     * `validateNotifIconDataUrl` and silently replaced by the app icon when it
+     * fails. Absent whenever the user's preview setting hides the sender.
+     *
+     * Per platform (Electron 43, verified against its notification sources):
+     *   - Linux: handed to libnotify as an in-memory pixbuf (D-Bus image hint).
+     *     Electron writes no file.
+     *   - Windows: Electron itself writes the image as a PNG into its own
+     *     per-process temp dir and references it as the toast's
+     *     `appLogoOverride` (hint-crop none — hence the renderer's own circle
+     *     crop). The temp dir is deleted when the app exits cleanly.
+     *   - macOS: shown as the notification's attachment thumbnail (the app
+     *     icon always stays the main icon). Electron writes a temp PNG that
+     *     UNUserNotificationCenter moves into its attachment store for the
+     *     life of the notification.
+     * Those two disk copies are made by the OS notification plumbing, not by
+     * Cipherline, and are the same class of exposure as the title/body text
+     * the OS already persists in its notification history — which is why the
+     * renderer only sends an avatar when the preview setting already shows
+     * the sender's name.
+     */
+    iconDataUrl?: string;
 }
 
 /** Map of active Notification objects so we can close/replace by ID. */
@@ -178,6 +205,25 @@ function getIconPath(): string {
     return path.join(process.resourcesPath, 'icon.png');
 }
 
+/**
+ * The icon for one toast: the validated sender avatar when one was supplied
+ * and passes validation, otherwise the generic app icon (today's behaviour).
+ * Exported for tests.
+ */
+export function resolveNotificationIcon(iconDataUrl: unknown): string | NativeImage {
+    if (iconDataUrl !== undefined && iconDataUrl !== null) {
+        const ok = validateNotifIconDataUrl(iconDataUrl);
+        if (ok) {
+            try {
+                const img = nativeImage.createFromBuffer(ok.png);
+                if (!img.isEmpty()) return img;
+            } catch { /* undecodable — fall back */ }
+        }
+        console.warn('[notif] rejected sender avatar icon; using app icon');
+    }
+    return getIconPath();
+}
+
 export function showNotification(
     win: BrowserWindow,
     payload: NotifShowPayload,
@@ -195,7 +241,7 @@ export function showNotification(
         title: payload.title,
         body: payload.body,
         silent: true,                          // renderer handles sound
-        icon: getIconPath(),
+        icon: resolveNotificationIcon(payload.iconDataUrl),
         hasReply: !!payload.hasReply,
         replyPlaceholder: payload.replyPlaceholder ?? 'Reply…',
         timeoutType: 'default',

@@ -1,4 +1,5 @@
 import type { ScreenShareOptions } from '../components/ScreenSharePickerModal';
+import { VideoPreset } from 'livekit-client';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Screen-share pipeline settings: capture box → codec → publish options →
@@ -47,9 +48,11 @@ export function resolveSSResolution(res: ScreenShareOptions['resolution']): { wi
  *  livekit-client 2.18.8's E2EE worker throws on AV1 frames ("av1 is not yet
  *  supported for end to end encryption"), and a share is never published
  *  unencrypted. */
-export type ScreenShareCodec = 'h264' | 'vp9' | 'vp8';
-/** User preference (Settings → Advanced). 'auto' picks per machine. */
-export type ScreenShareCodecPref = 'auto' | ScreenShareCodec;
+export type ScreenShareCodec = 'h264' | 'vp9' | 'vp8' | 'h265';
+/** User preference (Settings → Advanced). 'auto' picks per machine. H.265 is
+ *  never a preference: it comes only from the room negotiation
+ *  (hevcNegotiation.ts), because a viewer who cannot decode it sees nothing. */
+export type ScreenShareCodecPref = 'auto' | Exclude<ScreenShareCodec, 'h265'>;
 
 /**
  * Relative bitrate a codec needs for the same picture. VP9 is the baseline
@@ -63,6 +66,9 @@ const CODEC_BITRATE_FACTOR: Record<ScreenShareCodec, number> = {
     vp9:  1.0,
     vp8:  1.25,
     h264: 1.5,
+    // ~27 % under H.264 — the low end of published HEVC-vs-H.264 gains for
+    // low-latency CBR hardware encoders without B-frames.
+    h265: 1.1,
 };
 
 // Compute the RTP maxBitrate CEILING for a screen share. It is a ceiling, not
@@ -357,7 +363,8 @@ export interface SenderCreatedSource extends PublisherLike {
 }
 
 /**
- * Keep asking for H.264 High on every screen-share sender LiveKit creates
+ * Keep asking for H.264 High on every screen-share (or, with `source`
+ * 'camera', camera) sender LiveKit creates
  * while `wantHigh()` says so — the first publish AND every republish
  * (LocalParticipant.republishAllTracks runs on each reconnect and builds a
  * new transceiver whose preferences would otherwise be the defaults, i.e.
@@ -370,10 +377,11 @@ export function installH264HighPreference(
     participant: SenderCreatedSource,
     wantHigh: () => boolean,
     log: (msg: string) => void = m => console.info(m),
+    source: 'screen_share' | 'camera' = 'screen_share',
 ): () => void {
     const onSender = (sender: RTCRtpSender, track: { source?: string }) => {
-        if (track?.source !== 'screen_share' || !wantHigh()) return;
-        log(`[ScreenShare] H.264 High preference on the share's transceiver: ${preferH264HighOnSender(participant, sender)}`);
+        if (track?.source !== source || !wantHigh()) return;
+        log(`[${source === 'camera' ? 'Camera' : 'ScreenShare'}] H.264 High preference on the ${source === 'camera' ? 'camera' : 'share'}'s transceiver: ${preferH264HighOnSender(participant, sender)}`);
     };
     participant.on('localSenderCreated', onSender);
     return () => { participant.off('localSenderCreated', onSender); };
@@ -390,25 +398,33 @@ export function installH264HighPreference(
  * after `timeoutMs`, 'gone' if the sender stops answering (share ended).
  */
 export async function watchH264HighStart(
-    getStats: () => Promise<RTCStatsReport | Iterable<{ type: string; kind?: string; framesEncoded?: number }>>,
+    getStats: () => Promise<RTCStatsReport | Iterable<{ type: string; kind?: string; framesEncoded?: number; active?: boolean }>>,
     opts: { timeoutMs?: number; intervalMs?: number; sleep?: (ms: number) => Promise<void> } = {},
 ): Promise<'ok' | 'failed' | 'gone'> {
     const timeoutMs = opts.timeoutMs ?? 6000;
     const intervalMs = opts.intervalMs ?? 1000;
     const sleep = opts.sleep ?? (ms => new Promise<void>(r => setTimeout(r, ms)));
+    // Per LAYER since the share got a lower layer: each layer is its own
+    // hardware encoder session, and a dead full layer next to a working 720p
+    // one is exactly the case to catch (NVENC session limits). 'ok' once every
+    // ACTIVE layer has encoded a frame; a layer dynacast paused (active:false)
+    // is not judged.
     for (let waited = 0; ; waited += intervalMs) {
-        let frames = 0;
+        let layers = 0;
+        let silent = 0;
         try {
             const report = await getStats();
-            const each = (s: { type: string; kind?: string; framesEncoded?: number }) => {
-                if (s.type === 'outbound-rtp' && s.kind === 'video') frames += s.framesEncoded ?? 0;
+            const each = (s: { type: string; kind?: string; framesEncoded?: number; active?: boolean }) => {
+                if (s.type !== 'outbound-rtp' || s.kind !== 'video' || s.active === false) return;
+                layers++;
+                if (!((s.framesEncoded ?? 0) > 0)) silent++;
             };
             if (typeof (report as RTCStatsReport).forEach === 'function') (report as RTCStatsReport).forEach(each);
-            else for (const s of report as Iterable<{ type: string; kind?: string; framesEncoded?: number }>) each(s);
+            else for (const s of report as Iterable<{ type: string; kind?: string; framesEncoded?: number; active?: boolean }>) each(s);
         } catch {
             return 'gone';
         }
-        if (frames > 0) return 'ok';
+        if (layers > 0 && silent === 0) return 'ok';
         if (waited >= timeoutMs) return 'failed';
         await sleep(intervalMs);
     }
@@ -449,12 +465,81 @@ export function captureFrameRateFor(targetFps: number): number {
     return Math.min(240, Math.ceil(targetFps * 1.25));
 }
 
+// ── The lower layer ─────────────────────────────────────────────────────────
+//
+// OFF BY DEFAULT — Settings → Advanced → "Lighter copy for viewers" — and
+// only on a HARDWARE encoder, only while ≥ 3 people watch, backed off for the
+// rest of the share at the first sign of cost to the sharer: see
+// shareLowLayer.ts. With it off a share is exactly the old single layer.
+//
+// A share used to be ONE layer at up to 30–54 Mbps (1440p/source at 60–90 fps)
+// that every viewer pulled in full — 8 viewers of one 1440p60 H.264 share is
+// up to ~290 Mbps of SFU egress, from tiles most of them see as a thumbnail.
+// Now an H.264 / VP8 share at ≥ 1080p also publishes a 720p ≤ 30 fps layer
+// (VP8 2.5 Mbps, H.264 3 Mbps — computeSSBitrate's own 720p30 ceilings, the
+// middle of the 2–3 Mbps the research pass recommends). Viewers whose tile is
+// small or not focused, or who chose Reduced / Data saver, get that layer
+// (remoteVideoQuality.pickShareLayer); a focused or fullscreen share still
+// gets the full layer, untouched — same resolution, same 90 fps, same
+// ceiling. With dynacast on, the full layer is not even ENCODED while nobody
+// is focused on the share.
+//
+// VP9 stays single-layer: LiveKit forces VP9 screen shares onto L1T3 (one
+// spatial layer), and a spatial VP9 layer would be software on every GPU but
+// Intel. 720p/480p shares stay single-layer too — a 720p share's "lower"
+// layer would save almost nothing.
+
+export const SHARE_LOW_SHORT_SIDE = 720;
+export const SHARE_LOW_MAX_FPS = 30;
+
+/** Does a share of this box and codec get a lower layer? */
+export function shareHasLowerLayer(res: ScreenShareOptions['resolution'], codec: ScreenShareCodec): boolean {
+    if (codec === 'vp9') return false;
+    const b = resolveSSResolution(res);
+    return Math.min(b.width, b.height) >= 1080;
+}
+
+/** The lower layer's frame rate and bitrate ceiling. */
+export function shareLowLayer(frameRate: number, codec: ScreenShareCodec): { maxFramerate: number; maxBitrate: number } {
+    const fps = Math.min(SHARE_LOW_MAX_FPS, frameRate);
+    return { maxFramerate: fps, maxBitrate: computeSSBitrate('720p', fps, codec) };
+}
+
+/**
+ * The lower layer's encoding for the ACTUAL capture size. LiveKit derives
+ * the scale from its 1280×720 preset, which collapses onto the full layer
+ * when a window is captured smaller than 720p tall; this re-derives it from
+ * the capture: 720p on the short side when the capture is ≥ 1000 px short
+ * side, otherwise half size (a 1000×600 window → 500×300), never upscaled.
+ * The bitrate shrinks with the pixel count below 720p.
+ */
+export function shareLowEncoding(
+    captureWidth: number | undefined,
+    captureHeight: number | undefined,
+    frameRate: number,
+    codec: ScreenShareCodec,
+): { scaleResolutionDownBy: number; maxFramerate: number; maxBitrate: number } {
+    const base = shareLowLayer(frameRate, codec);
+    const short = Math.min(captureWidth ?? 0, captureHeight ?? 0);
+    if (!(short > 0)) return { scaleResolutionDownBy: 2, ...base };
+    const scale = short >= 1000 ? short / SHARE_LOW_SHORT_SIDE : 2;
+    const lowShort = short / scale;
+    const area = Math.min(1, (lowShort / SHARE_LOW_SHORT_SIDE) ** 2);
+    return {
+        scaleResolutionDownBy: Math.round(scale * 1000) / 1000,
+        maxFramerate: base.maxFramerate,
+        maxBitrate: Math.max(300_000, Math.round((base.maxBitrate * area) / 10_000) * 10_000),
+    };
+}
+
 /** The subset of livekit-client's TrackPublishOptions a screen share sets. */
 export interface ScreenSharePublishOptions {
-    simulcast: false;
+    simulcast: boolean;
     videoCodec: ScreenShareCodec;
     backupCodec: false;
     screenShareEncoding: { maxBitrate: number; maxFramerate: number; priority: RTCPriorityType };
+    /** Present only with a lower layer (simulcast). */
+    screenShareSimulcastLayers?: VideoPreset[];
     degradationPreference: RTCDegradationPreference;
 }
 
@@ -469,18 +554,22 @@ export interface ScreenSharePublishOptions {
  * value every time it assigns a new sender, and its default for a screen
  * share is 'maintain-resolution' — trade frame rate away first.
  *
- * `simulcast: false` — one full-resolution layer; publishDefaults'
- * videoSimulcastLayers (≤720p) are for cameras. `backupCodec: false` —
- * LiveKit disables backup codecs under E2EE anyway, and a second simulcast
- * codec would force dynacast on.
+ * `simulcast` + `screenShareSimulcastLayers`: the 720p lower layer (see
+ * shareHasLowerLayer); LiveKit then publishes [720p, full] as rids q / h, so
+ * the full layer is the MEDIUM quality to the SFU — viewers ask by layer, not
+ * by name (remoteVideoQuality.pickShareLayer). `backupCodec: false` —
+ * LiveKit disables backup codecs under E2EE anyway.
  */
 export function buildScreenSharePublishOptions(
     res: ScreenShareOptions['resolution'],
     frameRate: number,
     codec: ScreenShareCodec,
+    opts: { lowerLayer?: boolean } = {},
 ): ScreenSharePublishOptions {
+    const layered = !!opts.lowerLayer && shareHasLowerLayer(res, codec);
+    const low = shareLowLayer(frameRate, codec);
     return {
-        simulcast: false,
+        simulcast: layered,
         videoCodec: codec,
         backupCodec: false,
         screenShareEncoding: {
@@ -488,13 +577,14 @@ export function buildScreenSharePublishOptions(
             maxFramerate: frameRate,
             priority: 'high',
         },
+        ...(layered ? { screenShareSimulcastLayers: [new VideoPreset(1280, 720, low.maxBitrate, low.maxFramerate, 'high')] } : {}),
         degradationPreference: 'maintain-framerate',
     };
 }
 
 /** Narrow an arbitrary string (a LiveKit track's `codec`) to a screen-share codec. */
 export function asScreenShareCodec(codec: string | undefined): ScreenShareCodec | undefined {
-    return codec === 'h264' || codec === 'vp9' || codec === 'vp8' ? codec : undefined;
+    return codec === 'h264' || codec === 'vp9' || codec === 'vp8' || codec === 'h265' ? codec : undefined;
 }
 
 /**
@@ -521,18 +611,38 @@ export async function applyScreenShareSenderParams(
     sender: RTCRtpSender,
     frameRate: number,
     maxBitrate: number,
+    opts: { codec?: ScreenShareCodec } = {},
 ): Promise<void> {
     const params = sender.getParameters();
     if (!params.encodings || params.encodings.length === 0) {
         params.encodings = [{}];
     }
-    for (const enc of params.encodings) {
-        enc.maxFramerate = frameRate;
-        enc.maxBitrate   = maxBitrate;
-        // Raise stream priority so GCC probes this flow aggressively.
-        enc.priority        = 'high';
-        enc.networkPriority = 'high';
-    }
+    // With a lower layer, LiveKit orders the encodings low → full: only the
+    // LAST is the full layer (the requested frame rate and ceiling). The
+    // lower one gets its own ≤ 30 fps / ~2.5–3 Mbps, re-derived from the
+    // actual capture size. `active` is never touched — dynacast owns it.
+    const n = params.encodings.length;
+    const settings = n > 1 ? sender.track?.getSettings?.() : undefined;
+    const low = n > 1 ? shareLowEncoding(settings?.width, settings?.height, frameRate, opts.codec ?? 'vp8') : null;
+    params.encodings.forEach((enc, i) => {
+        if (low && i < n - 1) {
+            enc.scaleResolutionDownBy = low.scaleResolutionDownBy;
+            enc.maxFramerate = low.maxFramerate;
+            enc.maxBitrate   = low.maxBitrate;
+        } else {
+            enc.maxFramerate = frameRate;
+            enc.maxBitrate   = maxBitrate;
+        }
+        // Raise stream priority so GCC probes this flow aggressively. Chromium
+        // takes the priority of the WHOLE sender from encodings[0] and rejects
+        // any change to another encoding's ("Attempted to set an unimplemented
+        // parameter" — measured with two layers in the harness), so only the
+        // first is touched.
+        if (i === 0) {
+            enc.priority        = 'high';
+            enc.networkPriority = 'high';
+        }
+    });
     // Drop RESOLUTION, never framerate, under congestion. The default for screen
     // content is the opposite, which renders games at single-digit fps in
     // exchange for a crisp still image.
@@ -593,6 +703,7 @@ export async function retuneScreenShareInPlace(
         const tConstraints = performance.now();
         await applyScreenShareSenderParams(
             sender, frameRate, computeSSBitrate(resolution, frameRate, asScreenShareCodec(track.codec)),
+            { codec: asScreenShareCodec(track.codec) },
         );
         const tParams = performance.now();
 

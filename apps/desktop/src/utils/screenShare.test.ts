@@ -8,6 +8,8 @@ import {
     decideScreenShareCodec,
     isNvidiaOnly,
     buildScreenSharePublishOptions,
+    shareHasLowerLayer,
+    shareLowEncoding,
     probeHardwareEncoders,
     asScreenShareCodec,
     LIVEKIT_H264_CONTENT_TYPE,
@@ -137,14 +139,22 @@ describe('applyScreenShareSenderParams', () => {
         expect(applied.degradationPreference).toBe('maintain-framerate');
     });
 
-    it('applies every field to every encoding when multiple are present', async () => {
-        const { sender, setParameters } = makeFakeSender({ encodings: [{}, {}] } as RTCRtpSendParameters);
-        await applyScreenShareSenderParams(sender, 90, 18_000_000);
-        const applied = setParameters.mock.calls[0]![0] as RTCRtpSendParameters;
-        for (const enc of applied.encodings!) {
-            expect(enc.maxFramerate).toBe(90);
-            expect(enc.maxBitrate).toBe(18_000_000);
-        }
+    it('with the lighter copy: only the LAST encoding is the full layer; the first gets ≤30 fps / its own ceiling / scale from the capture', async () => {
+        const { sender, setParameters } = makeFakeSender({ encodings: [{ rid: 'q', active: false }, { rid: 'h' }] } as RTCRtpSendParameters);
+        (sender as unknown as { track: unknown }).track = { getSettings: () => ({ width: 2560, height: 1440 }) };
+        await applyScreenShareSenderParams(sender, 90, 18_000_000, { codec: 'h264' });
+        const [low, top] = (setParameters.mock.calls[0]![0] as RTCRtpSendParameters).encodings!;
+        expect(top).toMatchObject({ maxFramerate: 90, maxBitrate: 18_000_000 });
+        expect(low).toMatchObject({ maxFramerate: 30, maxBitrate: 3_000_000, scaleResolutionDownBy: 2, active: false });
+    });
+
+    it('priority only on encodings[0] (Chromium rejects a per-encoding priority change — measured)', async () => {
+        const { sender, setParameters } = makeFakeSender({ encodings: [{ rid: 'q', priority: 'high' }, { rid: 'h', priority: 'low', networkPriority: 'low' }] } as RTCRtpSendParameters);
+        await applyScreenShareSenderParams(sender, 60, 12_000_000, { codec: 'vp8' });
+        const [a, b] = (setParameters.mock.calls[0]![0] as RTCRtpSendParameters).encodings!;
+        expect(a.priority).toBe('high');
+        expect(b.priority).toBe('low');
+        expect(b.networkPriority).toBe('low');
     });
 
     it('is idempotent when applied twice', async () => {
@@ -525,6 +535,16 @@ describe('watchH264HighStart', () => {
         expect(stats).toHaveBeenCalledTimes(2);
     });
 
+    it('per layer: a dead full layer next to a working 720p copy is a failure; a dynacast-paused layer is not judged', async () => {
+        const two = (q: number, h: number, hActive = true) => [
+            { type: 'outbound-rtp', kind: 'video', framesEncoded: q, active: true },
+            { type: 'outbound-rtp', kind: 'video', framesEncoded: h, active: hActive },
+        ];
+        expect(await watchH264HighStart(vi.fn(async () => two(30, 0)), { sleep, timeoutMs: 2000, intervalMs: 1000 })).toBe('failed');
+        expect(await watchH264HighStart(vi.fn(async () => two(30, 0, false)), { sleep, timeoutMs: 2000, intervalMs: 1000 })).toBe('ok');
+        expect(await watchH264HighStart(vi.fn(async () => two(30, 12)), { sleep })).toBe('ok');
+    });
+
     it('failed when the video encoder is still at 0 frames after the timeout (the dead-HW-encoder case) — audio frames do not count', async () => {
         const stats = vi.fn(async () => report(0));
         expect(await watchH264HighStart(stats, { sleep, timeoutMs: 3000, intervalMs: 1000 })).toBe('failed');
@@ -549,6 +569,43 @@ describe('captureFrameRateFor — capture headroom above the send rate', () => {
     it('passes nonsense through unchanged', () => {
         expect(captureFrameRateFor(0)).toBe(0);
         expect(Number.isNaN(captureFrameRateFor(NaN))).toBe(true);
+    });
+});
+
+describe('the lighter copy (lower layer) — off unless asked for', () => {
+    it('default: one layer, exactly as before', () => {
+        for (const res of ['source', '1440p', '1080p'] as const) {
+            const o = buildScreenSharePublishOptions(res, 90, 'h264');
+            expect(o.simulcast).toBe(false);
+            expect(o.screenShareSimulcastLayers).toBeUndefined();
+        }
+    });
+    it('asked for: H.264 / VP8 / H.265 at ≥ 1080p get a 720p ≤ 30 fps layer; the full layer is unchanged', () => {
+        const o = buildScreenSharePublishOptions('1440p', 90, 'h264', { lowerLayer: true });
+        expect(o.simulcast).toBe(true);
+        expect(o.screenShareEncoding).toEqual(buildScreenSharePublishOptions('1440p', 90, 'h264').screenShareEncoding);
+        expect(o.screenShareSimulcastLayers!.map(p => [p.width, p.height, p.encoding.maxBitrate, p.encoding.maxFramerate])).toEqual([[1280, 720, 3_000_000, 30]]);
+        expect(buildScreenSharePublishOptions('1080p', 60, 'vp8', { lowerLayer: true }).screenShareSimulcastLayers![0].encoding.maxBitrate).toBe(2_500_000);
+        expect(buildScreenSharePublishOptions('1080p', 60, 'h265', { lowerLayer: true }).simulcast).toBe(true);
+    });
+    it('never for VP9 (LiveKit forces L1T3) or ≤ 720p shares', () => {
+        expect(buildScreenSharePublishOptions('1440p', 90, 'vp9', { lowerLayer: true }).simulcast).toBe(false);
+        expect(buildScreenSharePublishOptions('720p', 60, 'h264', { lowerLayer: true }).simulcast).toBe(false);
+        expect(shareHasLowerLayer('480p', 'vp8')).toBe(false);
+    });
+    it('shareLowEncoding: 720p from big captures, half size from small windows, never upscaled, bitrate by area', () => {
+        expect(shareLowEncoding(2560, 1440, 90, 'h264')).toEqual({ scaleResolutionDownBy: 2, maxFramerate: 30, maxBitrate: 3_000_000 });
+        expect(shareLowEncoding(5120, 1440, 60, 'vp8')).toMatchObject({ scaleResolutionDownBy: 2, maxFramerate: 30 });
+        expect(shareLowEncoding(1920, 1080, 15, 'vp8')).toEqual({ scaleResolutionDownBy: 1.5, maxFramerate: 15, maxBitrate: computeSSBitrate('720p', 15, 'vp8') });
+        const small = shareLowEncoding(1000, 600, 60, 'vp8');
+        expect(small.scaleResolutionDownBy).toBe(2);
+        expect(small.maxBitrate).toBeLessThan(2_500_000);
+        expect(shareLowEncoding(undefined, undefined, 30, 'vp8').scaleResolutionDownBy).toBe(2);
+    });
+    it('H.265 ceiling is ~27 % under H.264', () => {
+        expect(computeSSBitrate('1440p', 60, 'h265') / computeSSBitrate('1440p', 60, 'h264')).toBeCloseTo(1.1 / 1.5, 5);
+        expect(asScreenShareCodec('h265')).toBe('h265');
+        expect(asScreenShareCodec('av1')).toBeUndefined();
     });
 });
 

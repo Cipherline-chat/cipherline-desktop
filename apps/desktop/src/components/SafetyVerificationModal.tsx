@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import axios from 'axios';
-import { Copy, Check, AlertTriangle, ChevronDown, X, Send } from 'lucide-react';
+import { Copy, Check, AlertTriangle, ChevronDown, X, Send, Info } from 'lucide-react';
 import { API_BASE } from '../constants';
 import { ClButton } from './ClButton';
 import { ClModal, ClInput } from './cl';
@@ -184,7 +184,7 @@ const OwnCoverage: React.FC<{
 
     return (
         <div className="flex flex-col gap-1.5" data-testid="own-coverage" data-verdict={verdict.kind}>
-            <span className="text-[11px] leading-snug text-cl-faint" data-testid="my-code-count">
+            <span className="text-[11px] leading-snug text-cl-faint [overflow-wrap:anywhere]" data-testid="my-code-count">
                 Your code covers {n} device{n === 1 ? '' : 's'}:{' '}
                 {verdict.covered.filter(d => !answerIds.has(d.device_id)).map(d => ownDeviceLabel(d, names)).join(', ') || 'none'}
                 {needsAnswer.length > 0 && <>, plus {needsAnswer.length} you have not confirmed</>}.
@@ -215,7 +215,14 @@ const OwnCoverage: React.FC<{
                     </span>
                     {needsAnswer.map(d => (
                         <div key={d.device_id} className="flex items-center justify-between gap-2" data-testid="own-unconfirmed-row">
-                            <span className="text-xs font-semibold truncate">
+                            {/* `min-w-0` is what lets `truncate` work inside a flex
+                                row (its min-width is otherwise `auto` = the full
+                                text width, which widens the modal instead). The
+                                full name stays reachable in the tooltip. */}
+                            <span
+                                className="min-w-0 text-xs font-semibold truncate"
+                                title={ownDeviceLabel(d, names)}
+                            >
                                 {ownDeviceLabel(d, names)}
                                 {d.status === 'rejected' && ' (you said this is not yours)'}
                                 {verdict.kind === 'own_key_changed' && ' (new key)'}
@@ -285,6 +292,7 @@ export const SafetyVerificationModal: React.FC<Props> = ({
      */
     const [fromPins, setFromPins] = useState(false);
     /** The user asked to run the live comparison again from the all-clear. */
+    const [infoOpen, setInfoOpen] = useState(false);
     const [recheckOpen, setRecheckOpen] = useState(false);
     /** Transient — drives the all-clear's staged arrival, see ALLCLEAR_ANIM_MS. */
     const [allClearAnim, setAllClearAnim] = useState(false);
@@ -745,7 +753,7 @@ export const SafetyVerificationModal: React.FC<Props> = ({
         <ClModal
             open={isOpen}
             onClose={onClose}
-            width={480}
+            width={400}
             label={anyKeyChanged ? 'Security Alert' : 'Verify Identity'}
             // Height still scales with the contact's device count, just far more
             // slowly now that each device is a collapsed row rather than a digit
@@ -753,8 +761,8 @@ export const SafetyVerificationModal: React.FC<Props> = ({
             // the viewport `.mod`'s centred flex puts the top of the list
             // permanently out of reach (scrollTop clamps at 0). Nothing here
             // escapes the card — no ClSelect, no popover — so the overflow is safe.
-            cardClassName="flex flex-col items-stretch gap-4 mcard--scroll"
-            cardStyle={{ padding: 28 }}
+            cardClassName="flex flex-col items-stretch gap-3 mcard--scroll"
+            cardStyle={{ padding: 20 }}
         >
             {/* Header.
 
@@ -766,29 +774,96 @@ export const SafetyVerificationModal: React.FC<Props> = ({
                 happens to be positioned). Still the SAME `TrustBadge` fed the
                 SAME `trust`, so the celebration cannot say anything the badge
                 is not already saying. */}
-            <div className="flex flex-col items-center gap-2 text-center">
+            <div className="shrink-0 flex flex-col items-center gap-1 text-center">
                 <div className={allClear ? `cl-allclear-crest ${allClearAnim ? 'cl-allclear--seal' : ''}` : ''}>
                     <TrustBadge
                         trust={trust}
                         displayName={remoteUsername}
-                        size={allClear ? 40 : 28}
+                        size={allClear ? 36 : 26}
                         className={codeSealing ? 'cl-verify-allclear' : ''}
                     />
                 </div>
-                <h2 className="m-0 text-cl-text text-lg font-semibold">
-                    {anyKeyChanged ? 'Security Alert' : allClear ? 'Identity verified' : 'Verify Identity'}
-                </h2>
+                <div className="flex items-center justify-center gap-1.5">
+                    <h2 className="m-0 text-cl-text text-base font-semibold">
+                        {anyKeyChanged ? 'Security Alert' : allClear ? 'Identity verified' : 'Verify Identity'}
+                    </h2>
+                    {/* The plain-English "what is this?" lives behind this icon so
+                        the screen itself can stay short. */}
+                    <button
+                        type="button"
+                        onClick={() => setInfoOpen(v => !v)}
+                        aria-expanded={infoOpen}
+                        aria-label="What is this?"
+                        title="What is this?"
+                        className="inline-flex items-center justify-center rounded-full text-cl-faint hover:text-cl-lume transition-colors"
+                        style={{ background: 'none', border: 0, padding: 2, cursor: 'pointer', color: infoOpen ? 'var(--cl-lume)' : undefined }}
+                    >
+                        <Info size={15} />
+                    </button>
+                </div>
                 {/* The instruction is suppressed once it has been carried out —
                     asking someone to "confirm the keys really are theirs" over a
                     contact they have already confirmed is the whole complaint. */}
                 {!allClear && (
-                    <p className="text-cl-faint text-sm leading-relaxed m-0">
-                        Confirm that the encryption keys this app holds for{' '}
-                        <strong className="text-cl-muted">{remoteUsername}</strong> really are theirs
-                        {devices.length > 1 && <> — all {devices.length} of their devices at once</>}.
+                    <p className="text-cl-faint text-[13px] leading-snug m-0">
+                        Make sure it's really <strong className="text-cl-muted">{remoteUsername}</strong> on the other end
+                        {devices.length > 1 && <> (all {devices.length} of their devices)</>}.
                     </p>
                 )}
             </div>
+
+            {/* ── Scrolling body ───────────────────────────────────────────
+                Reported: "if they have a lot of devices it kinda breaks the UI
+                and I cannot check their code again because the button is cut
+                off." That is the flexbox overflow trap, and `mcard--scroll`
+                alone cannot prevent it. The card is a `flex-col` with a
+                max-height, so once the by-eye list outgrows the viewport its
+                children do not overflow — they SHRINK, and any child with
+                `overflow: hidden` (the all-clear card, the quick-verify card,
+                every device row) has an automatic min-height of 0, so it
+                shrinks without limit and clips its own content: the all-clear
+                card collapsed to a 34px sliver with "Check their code again"
+                cut in half and unclickable.
+
+                So the height cap lives on a body that is told to scroll
+                (`min-h-0 flex-1 overflow-y-auto`), between a header and a
+                footer that are `shrink-0` and therefore always on screen. The
+                children sit in a SECOND, height:auto column inside it, so they
+                are laid out at their natural height and the scroll container
+                (not the flex algorithm) absorbs the excess. `-mx-5 px-5` puts
+                the scrollbar on the card's edge instead of 20px inside it.
+                `tabIndex=0` makes the region scrollable from the keyboard even
+                when focus is up in the header. */}
+            <div
+                className="min-h-0 flex-1 overflow-y-auto overscroll-contain -mx-5 px-5"
+                data-testid="verify-scroll-body"
+                role="region"
+                aria-label="Verification details"
+                tabIndex={0}
+            >
+            <div className="flex flex-col items-stretch gap-3">
+            {infoOpen && (
+                <div
+                    className="w-full rounded-xl px-3.5 py-3 text-[12.5px] leading-relaxed text-cl-muted flex flex-col gap-1.5"
+                    style={{ background: 'var(--cl-lume-tint)', border: '1px solid rgba(37,224,200,0.22)' }}
+                    data-testid="verify-info"
+                >
+                    <strong className="text-cl-text text-[13px]">What's a verification code?</strong>
+                    <span>
+                        Everything you and <strong className="text-cl-text">{remoteUsername}</strong> send is locked with
+                        keys that belong only to the two of you. A verification code is a short fingerprint of those keys.
+                    </span>
+                    <span>
+                        If the code you have for {remoteUsername} matches the one they see for themselves, nobody is
+                        secretly sitting in the middle. Compare it in person or on a call, not by a message sent through
+                        Cipherline. A code that arrives through the app could have been written by an attacker, so it
+                        can't prove anything.
+                    </span>
+                    <span>
+                        It's a one-time check, and you'll be warned if their keys ever change.
+                    </span>
+                </div>
+            )}
 
             {loading ? (
                 <div className="w-full rounded-xl border border-white/[0.06] bg-black/30 p-5">
@@ -853,7 +928,7 @@ export const SafetyVerificationModal: React.FC<Props> = ({
                         does that and gets a green shield has been lied to. */}
                     {showQuickVerify && (
                     <div
-                        className={`relative overflow-hidden w-full rounded-xl border border-white/[0.06] bg-black/30 p-4 flex flex-col gap-3 ${
+                        className={`relative overflow-hidden w-full rounded-xl border border-white/[0.06] bg-black/30 p-3.5 flex flex-col gap-2.5 ${
                             codeSealing ? 'cl-verify-seal' : ''
                         }`}
                     >
@@ -870,21 +945,15 @@ export const SafetyVerificationModal: React.FC<Props> = ({
                         {trust.level === 'verified_legacy' && (
                             <p className="text-[11px] leading-snug m-0" style={{ color: 'var(--cl-lume)' }} role="status">
                                 You verified {remoteUsername} before safety numbers were strengthened. Nothing is
-                                wrong, and you would still be warned if their keys changed. Compare codes once more
-                                to refresh it.
+                                wrong. Compare codes once more to refresh it.
                             </p>
                         )}
 
-                        <div
-                            className="flex items-start gap-2 rounded-lg px-3 py-2"
-                            style={{ background: 'rgba(255,201,77,0.10)', border: '1px solid rgba(255,201,77,0.28)' }}
-                        >
-                            <AlertTriangle size={14} className="shrink-0 mt-0.5" style={{ color: 'var(--cl-glow)' }} />
-                            <span className="text-[11px] leading-snug" style={{ color: 'var(--cl-glow)' }}>
-                                This only proves something if you got their code <strong>somewhere other than
-                                Cipherline</strong> — in person, over a phone call you recognise their voice on, or
-                                any channel an attacker would have to break separately. A code sent to you
-                                <em> through this app</em> could have been written by whoever you are actually talking to.
+                        <div className="flex items-start gap-1.5" style={{ color: 'var(--cl-glow)' }}>
+                            <AlertTriangle size={13} className="shrink-0 mt-px" />
+                            <span className="text-[11.5px] leading-snug">
+                                Get their code <strong>outside Cipherline</strong>: in person, or on a call. A code sent
+                                through the app proves nothing.
                             </span>
                         </div>
 
@@ -897,8 +966,8 @@ export const SafetyVerificationModal: React.FC<Props> = ({
                                 but only a person knows how many devices they
                                 really have. */}
                             <span className="text-[11px] leading-snug text-cl-faint" data-testid="their-code-count">
-                                Their code covers {devices.length} device{devices.length === 1 ? '' : 's'}. Ask them how
-                                many devices their code covers.
+                                Their code covers {devices.length} device{devices.length === 1 ? '' : 's'}. Check that
+                                matches how many they use.
                             </span>
                             {/* `items-center` is load-bearing, and its absence is
                                 what made this button "look bad". With the default
@@ -967,7 +1036,7 @@ export const SafetyVerificationModal: React.FC<Props> = ({
                             contact having verified them. */}
                         <div className="flex flex-col gap-1.5 pt-1 border-t border-white/[0.06]">
                             <span className="text-xs text-cl-muted">
-                                Your code — read this to {remoteUsername} so they can check you too
+                                Your code, so {remoteUsername} can check you too
                             </span>
                             {ownVerdict && (
                                 <OwnCoverage
@@ -1048,9 +1117,7 @@ export const SafetyVerificationModal: React.FC<Props> = ({
                                         </span>
                                     )}
                                     <span className="text-[11px] leading-snug text-cl-faint">
-                                        Sending is safe — the code is a fingerprint of public keys. But it is not a
-                                        substitute for the check above: a code that arrives <em>through Cipherline</em>
-                                        {' '}can only confirm two views agree, never that nobody is in the middle.
+                                        Safe to send, but it can't replace comparing outside Cipherline.
                                     </span>
                                 </>
                             )}
@@ -1090,7 +1157,7 @@ export const SafetyVerificationModal: React.FC<Props> = ({
                             <p className="text-[11px] text-cl-faint leading-snug m-0 px-1" data-testid="sn-version-note">
                                 Safety number v{SAFETY_NUMBER_VERSION} · {SAFETY_NUMBER_GROUPS} groups of five.
                                 If {remoteUsername}'s app shows only 6 groups, it is out of date and the numbers
-                                cannot match. Use the Quick verify code above instead, which is the same on every version.
+                                can't match. Use the Quick verify code instead.
                             </p>
                             {devices.map(d => {
                                 const grid = d.safetyNumber ? formatSafetyNumber(d.safetyNumber) : [];
@@ -1116,7 +1183,7 @@ export const SafetyVerificationModal: React.FC<Props> = ({
                                             className="w-full flex items-center justify-between gap-2"
                                             style={{ background: 'none', border: 0, padding: 0, cursor: 'pointer' }}
                                         >
-                                            <span className="flex items-center gap-1.5 text-xs font-medium text-cl-muted">
+                                            <span className="flex min-w-0 items-center gap-1.5 text-xs font-medium text-cl-muted" title={d.device_id}>
                                                 <ChevronDown
                                                     size={13}
                                                     style={{ transform: open ? 'rotate(0deg)' : 'rotate(-90deg)', transition: 'transform .15s' }}
@@ -1189,11 +1256,9 @@ export const SafetyVerificationModal: React.FC<Props> = ({
                                 does not vary per contact device. */}
                             {myOtherDeviceCount > 0 && (
                                 <p className="text-[11px] text-cl-faint leading-snug m-0 px-1">
-                                    These numbers are for <strong className="text-cl-muted">this</strong> device of yours.
-                                    You have {myOtherDeviceCount} other device
-                                    {myOtherDeviceCount === 1 ? '' : 's'}, and {remoteUsername} sees a different
-                                    number for {myOtherDeviceCount === 1 ? 'it' : 'each of them'}. The Quick
-                                    verify code above covers all of them at once.
+                                    These are for <strong className="text-cl-muted">this</strong> device of yours. Your{' '}
+                                    {myOtherDeviceCount} other device{myOtherDeviceCount === 1 ? '' : 's'} show
+                                    {myOtherDeviceCount === 1 ? 's' : ''} different numbers. The Quick verify code covers all of them.
                                 </p>
                             )}
                         </div>
@@ -1201,6 +1266,12 @@ export const SafetyVerificationModal: React.FC<Props> = ({
                 </>
             )}
 
+            </div>
+            </div>
+
+            {/* Footer — `shrink-0`, so Close (and the dismiss escape hatch) are on
+                screen at any device count; only the body above scrolls. */}
+            <div className="shrink-0 flex flex-col items-stretch gap-3" data-testid="verify-footer">
             {/* The escape hatch. Rendered outside the loading/error branch on
                 purpose — see `activeWarning` in Props for the offline /
                 no-keys-published state where it is the ONLY resolution left,
@@ -1221,13 +1292,13 @@ export const SafetyVerificationModal: React.FC<Props> = ({
                         Dismiss this warning
                     </ClButton>
                     <p className="text-[11px] text-cl-faint leading-snug m-0 text-center">
-                        Clears the warning for {remoteUsername} without verifying them. It comes
-                        back the next time something about their identity doesn't check out.
+                        Clears the alert without verifying {remoteUsername}. It returns if something changes.
                     </p>
                 </div>
             )}
 
-            <ClButton fullWidth variant="ghost" onClick={onClose}>Close</ClButton>
+            <ClButton fullWidth variant="ghost" size="sm" onClick={onClose}>Close</ClButton>
+            </div>
         </ClModal>
     );
 };

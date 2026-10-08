@@ -41,8 +41,11 @@ import RootErrorBoundary from './components/RootErrorBoundary';
 import StagingLockScreen from './components/StagingLockScreen';
 import { readStagingLockStatus, shouldShowStagingLockScreen } from './utils/stagingLock';
 import { APP_VERSION } from './constants';
+import { installRecentErrorCapture } from './utils/diagnostics/recentErrors';
 
 const endBootActivity = startFreezeLog();
+// Issue reporter: remember the last few renderer errors (scrubbed at capture).
+installRecentErrorCapture();
 loadWebFonts();
 
 const router = createHashRouter([

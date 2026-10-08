@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import {
     computeMissingKeyChannels,
     computeUnmintedChannels,
+    canMintChannelKey,
+    splitMissingKeyChannels,
     decideChannelEntryAction,
     shouldMintAfterKeyRequest,
     chunkEnvelopes,
@@ -764,5 +766,57 @@ describe('rotation jitter (pickJitterMs, shared with the key-request path)', () 
         expect(Math.min(...samples)).toBeGreaterThanOrEqual(500);
         expect(Math.max(...samples)).toBeLessThan(3500);
         expect(new Set(samples).size).toBeGreaterThan(20);
+    });
+});
+
+describe('canMintChannelKey — mirrors the server epoch write gate', () => {
+    const P = { VIEW: 1n << 16n, SEND: 1n << 17n, ATTACH: 1n << 20n, CONNECT: 1n << 24n };
+    it('text: needs SEND_MESSAGES; VIEW/ATTACH alone do not mint', () => {
+        expect(canMintChannelKey('text', P.VIEW | P.SEND)).toBe(true);
+        expect(canMintChannelKey('text', P.VIEW | P.ATTACH)).toBe(false);
+        expect(canMintChannelKey('text', P.VIEW)).toBe(false);
+    });
+    it('a text channel without ATTACH_FILES still mints if the member can send', () => {
+        expect(canMintChannelKey('text', P.VIEW | P.SEND)).toBe(true);
+    });
+    it('calls (huddle/voice): needs VIEW | CONNECT, not SEND', () => {
+        expect(canMintChannelKey('huddle', P.VIEW | P.CONNECT)).toBe(true);
+        expect(canMintChannelKey('voice', P.VIEW | P.CONNECT)).toBe(true);
+        expect(canMintChannelKey('huddle', P.VIEW | P.SEND)).toBe(false);
+        expect(canMintChannelKey('huddle', P.CONNECT)).toBe(false);
+    });
+    it('unknown permissions fail open (server stays the authority)', () => {
+        expect(canMintChannelKey('text', undefined)).toBe(true);
+    });
+});
+
+describe('splitMissingKeyChannels — only a device with NO key is gated', () => {
+    const chans = [
+        { channel_id: 'none', kind: 'text', latest_epoch: 2 },
+        { channel_id: 'stale', kind: 'text', latest_epoch: 3 },
+        { channel_id: 'current', kind: 'text', latest_epoch: 2 },
+        { channel_id: 'ahead', kind: 'text', latest_epoch: 1 },
+        { channel_id: 'unminted', kind: 'text', latest_epoch: 0 },
+        { channel_id: 'call-stale', kind: 'huddle', latest_epoch: 5 },
+        { channel_id: 'voice-none', kind: 'voice', latest_epoch: 1 },
+    ];
+    const local = { none: null, stale: 2, current: 2, ahead: 2, unminted: null, 'call-stale': 4, 'voice-none': null };
+
+    it('no local key → noKey (composer gate)', () => {
+        expect(splitMissingKeyChannels(chans, local).noKey.sort()).toEqual(['none', 'voice-none']);
+    });
+    it('holds an older epoch than the server → stale (background repair, never the gate)', () => {
+        expect(splitMissingKeyChannels(chans, local).stale.sort()).toEqual(['call-stale', 'stale']);
+    });
+    it('current, ahead, and never-minted channels are in neither', () => {
+        const { noKey, stale } = splitMissingKeyChannels(chans, local);
+        for (const id of ['current', 'ahead', 'unminted']) {
+            expect(noKey).not.toContain(id);
+            expect(stale).not.toContain(id);
+        }
+    });
+    it('together they are exactly computeMissingKeyChannels', () => {
+        const { noKey, stale } = splitMissingKeyChannels(chans, local);
+        expect([...noKey, ...stale].sort()).toEqual(computeMissingKeyChannels(chans, local).sort());
     });
 });

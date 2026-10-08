@@ -15,7 +15,7 @@ import { getGroupRowPosition, getGroupRowRoundingClass, type GroupRowPosition } 
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import axios from 'axios';
-import { Volume2, MoreVertical, ChevronDown, ChevronRight, User, MessageSquare, PhoneCall, UserMinus, UserPlus, Ban, Flag, Link as LinkIcon, LogOut, Radio, Edit3, Folder, Plus, Pencil, Trash2, Crown, Shield, VolumeX, Gavel, Lock, Pin, X, Search, Video, Monitor, MicOff, VideoOff, MonitorOff, HeadphoneOff, Headphones, PencilOff, PenLine } from 'lucide-react';
+import { Volume2, MoreVertical, ChevronDown, ChevronRight, User, MessageSquare, PhoneCall, UserMinus, UserPlus, Ban, Flag, Link as LinkIcon, LogOut, Radio, Edit3, Folder, Plus, Pencil, Trash2, Crown, Shield, VolumeX, Gavel, Lock, Pin, X, Search, MicOff, VideoOff, MonitorOff, HeadphoneOff, PencilOff, PenLine } from 'lucide-react';
 import {
     annotationStore, ownedGrantTracks, selectCanGrantAnnotation, selectGrantTarget, isScreenShareTrack,
 } from '../../utils/annotationStore';
@@ -57,6 +57,8 @@ import { useCallContextSafe, useCallTelemetrySafe } from '../../contexts/CallCon
 import { SpeakingRing } from '../call/SpeakingRing';
 import { PopoverMenu, calcPopoverPos } from '../call/PopoverMenu';
 import { usePersistentVolume, usePersistentNsEnabled } from '../call/VideoTile';
+import { ParticipantStatusIcons } from './ParticipantStatusIcons';
+import { huddleCallMediaKey, voiceChannelMediaKey } from '../../utils/callMediaPresence';
 import { useDismissOnOutsideClick } from '../../hooks/useDismissOnOutsideClick';
 import ReactDOM from 'react-dom';
 import { SignalBars, signalQuality } from '../call/CallStatsPill';
@@ -69,6 +71,12 @@ import { canOfferFriendGatedAction } from '../../utils/friendGatedActions';
 import { isHuddleAtCallLimit } from '../../utils/huddleCallLimit';
 import { callNamingOf, canRenameHuddleCall, liveCallTitle, type CallNamingSettings } from '../../utils/callNaming';
 import { nudges } from '../../utils/firstWeekNudgeStore';
+import { refreshRoster, type RosterMember, type RosterRole } from '../../utils/serverRosterCache';
+import { useServerRoster } from '../../hooks/useServerRoster';
+import { useChannelMemberFilter } from '../../hooks/useChannelMemberFilter';
+import { filterMembers } from '../../utils/channelViewerCache';
+import { useIncrementalRows } from '../../hooks/useIncrementalRows';
+import { allocateRows, ROW_PX_ESTIMATE } from '../../utils/incrementalRows';
 
 // ── Sortable wrappers for Huddle DnD ────────────────────────────────────────
 
@@ -213,29 +221,11 @@ function SortableHuddleCatSection({ catId, disabled, isDragging, dropLine, child
     );
 }
 
-interface ServerMember {
-    user_id: string;
-    username: string;
-    discriminator: number | null;
-    nickname: string | null;
-    avatar_url: string | null;
-    status: string;
-    /** From the roster fetch — present on phones only. Newer servers only. */
-    on_mobile?: boolean;
-    joined_at: string;
-    muted_until: string | null;
-    /** Role IDs assigned to this member (excludes @everyone — that's implicit). */
-    role_ids: string[];
-}
+type ServerMember = RosterMember;
+type RoleInfo = RosterRole;
 
-interface RoleInfo {
-    role_id: string;
-    name: string;
-    color: number;    // 24-bit packed int; -1 = no color
-    position: number;
-    hoisted: boolean;
-    is_everyone: boolean;
-}
+const EMPTY_MEMBERS: ReadonlyArray<ServerMember> = [];
+const EMPTY_ROLES: ReadonlyArray<RoleInfo> = [];
 
 interface Props {
     server: ServerInfo;
@@ -424,8 +414,26 @@ export const ServerContextPanel: React.FC<Props> = ({
     pinnedSearchQuery = '',
     onPinnedSearchChange,
 }) => {
-    const [members, setMembers] = useState<ServerMember[]>([]);
-    const [serverRoles, setServerRoles] = useState<RoleInfo[]>([]);
+    // The roster lives in utils/serverRosterCache (stale-while-revalidate, LRU
+    // over servers), not in this component: a server switch or a roster event
+    // used to throw it away and put the whole list behind a spinner. Reading it
+    // synchronously means a cached server's rows paint in the same render.
+    const roster = useServerRoster(server.server_id);
+    const members = roster?.members ?? EMPTY_MEMBERS;
+    const serverRoles = roster?.roles ?? EMPTY_ROLES;
+    // The member LIST shows only who can see the open channel (Discord). The
+    // server decides (utils/channelViewerCache): a public channel is never
+    // asked about, a restricted one paints its cached viewer set instantly and
+    // revalidates in the background. `members` stays the FULL roster — name
+    // colours, nicknames, avatars and call-participant rows need everyone.
+    // The channel is looked up in the live list so its view_scope follows
+    // permission changes without a re-selection.
+    const liveChannel = useMemo(
+        () => allChannels.find(c => c.channel_id === channel.channel_id) ?? channel,
+        [allChannels, channel],
+    );
+    const memberFilter = useChannelMemberFilter(server.server_id, liveChannel, token);
+    const listMembers = useMemo(() => filterMembers(members, memberFilter), [members, memberFilter]);
     const toast = useToast();
 
     /** Returns true if the current user has CONNECT permission on a given channel.
@@ -464,7 +472,13 @@ export const ServerContextPanel: React.FC<Props> = ({
     const onMemberNicknamesChangeRef = useRef(onMemberNicknamesChange);
     useEffect(() => { onMemberNicknamesChangeRef.current = onMemberNicknamesChange; });
     useEffect(() => { onMemberNicknamesChangeRef.current?.(memberNicknames); }, [memberNicknames]);
-    const [loading, setLoading] = useState(false);
+    // Set when the FIRST fetch for a server failed with nothing cached, so the
+    // spinner gives way to the empty state instead of spinning forever.
+    const [failedRosterFor, setFailedRosterFor] = useState<string | null>(null);
+    const loading = roster === null && failedRosterFor !== server.server_id;
+    // The member LIST additionally waits for a never-seen restricted channel's
+    // viewer set, so it never paints all N members and then shrinks to two.
+    const listLoading = loading || memberFilter.kind === 'loading';
     const [voiceCollapsed, setVoiceCollapsed] = useState(false);
     /** Per-huddle expand state for the active-calls list under each button.
      *  Auto-expands when there are calls; user can manually collapse. */
@@ -1056,34 +1070,45 @@ export const ServerContextPanel: React.FC<Props> = ({
 
     // (Member-menu dismissal lives inside useContextMenu — no extra wiring.)
 
-    const loadMembers = useCallback(() => {
-        if (!token || !server.server_id) return;
-        setLoading(true);
-        Promise.all([
-            axios.get(`${API_BASE}/servers/${server.server_id}/members`, {
-                headers: { Authorization: `Bearer ${token}` },
-            }),
-            axios.get(`${API_BASE}/servers/${server.server_id}/roles`, {
-                headers: { Authorization: `Bearer ${token}` },
-            }).catch(() => ({ data: [] })),
-        ]).then(([membersRes, rolesRes]) => {
-            setMembers(membersRes.data ?? []);
-            setServerRoles(rolesRes.data ?? []);
-            const avatarMap: Record<string, string | null> = {};
-            for (const m of (membersRes.data ?? [])) {
-                avatarMap[m.user_id] = m.avatar_url ?? null;
-            }
-            onMemberAvatarMapChange?.(avatarMap);
-        }).catch(err => {
-            console.error('[ServerContextPanel] Failed to load members:', err);
-        }).finally(() => {
-            setLoading(false);
-        });
-    }, [token, server.server_id]);
+    // `force` = a mutation just happened (nickname, role toggle, kick, ban, a
+    // roster-changed event), so a copy that is merely recent is not good enough.
+    // The default revalidates only when the cached copy is older than FRESH_MS.
+    // Either way the cached rows stay on screen; the answer replaces them only
+    // if something differs.
+    const rosterServerId = server.server_id;
+    const revalidateRoster = useCallback((force: boolean) => {
+        if (!token || !rosterServerId) return;
+        const sid = rosterServerId;
+        refreshRoster(sid, token, { force })
+            .then(() => setFailedRosterFor(prev => (prev === sid ? null : prev)))
+            .catch(err => {
+                console.error('[ServerContextPanel] Failed to load members:', err);
+                setFailedRosterFor(sid);
+            });
+    }, [token, rosterServerId]);
+    const loadMembers = () => revalidateRoster(true);
 
-    // Also re-fetch when rolesRefreshKey changes (settings modal closed after
-    // creating/editing roles so the right-click role menu stays up to date).
-    useEffect(() => { loadMembers(); }, [loadMembers, rolesRefreshKey]);
+    // Revalidate on open / server switch (not forced), and force a refetch when
+    // rolesRefreshKey moves (settings modal closed after editing roles, or a
+    // server:members_changed event).
+    const lastRolesRefreshKeyRef = useRef(rolesRefreshKey);
+    useEffect(() => {
+        const forced = lastRolesRefreshKeyRef.current !== rolesRefreshKey;
+        lastRolesRefreshKeyRef.current = rolesRefreshKey;
+        revalidateRoster(forced);
+    }, [revalidateRoster, rolesRefreshKey]);
+
+    // Hand the parent the userId->avatar map whenever the roster changes,
+    // including the instant a cached server is switched to (message rendering
+    // in ChatPane reads it), not only after a fetch lands.
+    const onMemberAvatarMapChangeRef = useRef(onMemberAvatarMapChange);
+    useEffect(() => { onMemberAvatarMapChangeRef.current = onMemberAvatarMapChange; });
+    useEffect(() => {
+        if (!roster) return;
+        const avatarMap: Record<string, string | null> = {};
+        for (const m of roster.members) avatarMap[m.user_id] = m.avatar_url ?? null;
+        onMemberAvatarMapChangeRef.current?.(avatarMap);
+    }, [roster]);
 
     // Helper: live status for a member
     // Server-enforced enum — status strings that reach the client are always
@@ -1181,7 +1206,7 @@ export const ServerContextPanel: React.FC<Props> = ({
         const onlineNoRole: ServerMember[] = [];
         const allOffline:   ServerMember[] = [];
 
-        for (const m of members) {
+        for (const m of listMembers) {
             const isOffline = liveStatus(m) === 'offline';
             if (isOffline) { allOffline.push(m); continue; }
             const top = getTopHoistedRole(m.role_ids ?? [], serverRoles);
@@ -1210,9 +1235,21 @@ export const ServerContextPanel: React.FC<Props> = ({
 
         return { roleGroups, onlineNoRole, allOffline };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [members, serverRoles, friendStatuses, myStatus, presenceAuthoritative]);
+    }, [listMembers, serverRoles, friendStatuses, myStatus, presenceAuthoritative]);
 
     const { roleGroups, onlineNoRole, allOffline } = memberGroups;
+
+    // Only the first batch of rows is mounted; the rest are a spacer that adds
+    // the next batch as it nears the viewport (see utils/incrementalRows for the
+    // measurements). A server whose roster fits one batch renders as before.
+    const { budget: rowBudget, hidden: hiddenRows, sentinelRef: rowSentinelRef } =
+        useIncrementalRows(server.server_id, listMembers.length);
+    const rowAlloc = allocateRows(
+        [...roleGroups.map(g => g.members.length), onlineNoRole.length, allOffline.length],
+        rowBudget,
+    );
+    const onlineAlloc = rowAlloc[roleGroups.length];
+    const offlineAlloc = rowAlloc[roleGroups.length + 1];
 
     // ── Member tile ─────────────────────────────────────────────────────────
     // Build the per-member context menu items. Called fresh each open so the
@@ -1711,7 +1748,11 @@ export const ServerContextPanel: React.FC<Props> = ({
                     });
                     return (
                         <motion.div
-                            key={c.call_id}
+                            // render_key: a call this client started is drawn
+                            // client-side from the click (utils/joinView.ts) and
+                            // keeps that card's key once it is the server's call,
+                            // so it never remounts / re-animates at the hand-over.
+                            key={c.render_key ?? c.call_id}
                             className={landedCallId === c.call_id ? 'cl-move-landed rounded-xl' : undefined}
                             initial={{ opacity: 0, y: -6 }}
                             animate={{ opacity: 1, y: 0, transition: { duration: 0.18, ease: [0.22, 1, 0.36, 1] } }}
@@ -1851,47 +1892,21 @@ export const ServerContextPanel: React.FC<Props> = ({
                                                             </div>
                                                         );
                                                     })()}
-                                                    {(() => {
-                                                        const ts    = participantTrackStates[uid];
-                                                        const pmeta = participantMetadata[uid];
-                                                        const isLocalMutedByMe   = callCtx?.localMutedIds.has(uid)         ?? false;
-                                                        const isVideoHiddenByMe  = callCtx?.hiddenVideoIds.has(uid)         ?? false;
-                                                        const isScreenHiddenByMe = callCtx?.hiddenScreenShareIds.has(uid)   ?? false;
-                                                        if (!ts && !pmeta && !isLocalMutedByMe && !isVideoHiddenByMe && !isScreenHiddenByMe) return null;
-                                                        return (
-                                                            <div className="flex items-center gap-1 shrink-0">
-                                                                {/* Server-moderation badges — red, highest visual priority. */}
-                                                                {pmeta?.serverMutedAudio       && <MicOff       className="w-3.5 h-3.5 text-red-500" />}
-                                                                {pmeta?.serverDeafened         && <HeadphoneOff className="w-3.5 h-3.5 text-red-500" />}
-                                                                {pmeta?.serverMutedVideo       && <VideoOff     className="w-3.5 h-3.5 text-red-500" />}
-                                                                {pmeta?.serverMutedScreenShare && <MonitorOff   className="w-3.5 h-3.5 text-red-500" />}
-                                                                {/* Self-deafen — participant toggled deafen themselves. */}
-                                                                {pmeta?.deafened && !pmeta?.serverDeafened && (
-                                                                    <Headphones className="w-3.5 h-3.5 text-red-400" />
-                                                                )}
-                                                                {/* Self-mute — participant muted their own mic. */}
-                                                                {ts?.isMuted && !pmeta?.serverMutedAudio && !pmeta?.serverDeafened && !pmeta?.deafened && (
-                                                                    <MicOff className="w-3.5 h-3.5 text-red-400" />
-                                                                )}
-                                                                {/* Client-side local mute — only visible to the viewer; gray. */}
-                                                                {!ts?.isMuted && !pmeta?.serverDeafened && !pmeta?.deafened && isLocalMutedByMe && (
-                                                                    <MicOff className="w-3.5 h-3.5 text-cl-faint" />
-                                                                )}
-                                                                {/* Screenshare indicator — gray MonitorOff when viewer has hidden it. */}
-                                                                {ts?.hasScreenShare && !pmeta?.serverMutedScreenShare && (
-                                                                    isScreenHiddenByMe
-                                                                        ? <MonitorOff className="w-3.5 h-3.5 text-cl-faint" />
-                                                                        : <Monitor    className="w-3.5 h-3.5 text-cl-muted" />
-                                                                )}
-                                                                {/* Camera indicator — gray VideoOff when viewer has hidden it. */}
-                                                                {ts?.hasCamera && !pmeta?.serverMutedVideo && (
-                                                                    isVideoHiddenByMe
-                                                                        ? <VideoOff className="w-3.5 h-3.5 text-cl-faint" />
-                                                                        : <Video    className="w-3.5 h-3.5 text-cl-muted" />
-                                                                )}
-                                                            </div>
-                                                        );
-                                                    })()}
+                                                    {/* Camera / screen-share (+ in-call mute/deafen/moderation)
+                                                        badges. In this call → live LiveKit state; not in it →
+                                                        server presence (call:media_state), so people outside the
+                                                        call see the same icons. See ParticipantStatusIcons. */}
+                                                    <ParticipantStatusIcons
+                                                        userId={uid}
+                                                        inThisCall={activeHuddleCallId === c.call_id}
+                                                        mediaKey={huddleCallMediaKey(c.call_id)}
+                                                        track={participantTrackStates[uid]}
+                                                        meta={participantMetadata[uid]}
+                                                        localMuted={callCtx?.localMutedIds.has(uid) ?? false}
+                                                        videoHidden={callCtx?.hiddenVideoIds.has(uid) ?? false}
+                                                        screenHidden={callCtx?.hiddenScreenShareIds.has(uid) ?? false}
+                                                        iconClass="w-3.5 h-3.5"
+                                                    />
                                                 </div>
                                                 </DraggableParticipant>
                                             );
@@ -2376,43 +2391,21 @@ export const ServerContextPanel: React.FC<Props> = ({
                                                                 </div>
                                                                 <span className="text-[13px] font-medium text-cl-muted truncate flex-1 group-hover:text-white/80 transition-colors">{pName}</span>
                                                                 <AnnotationGrantBadge identity={uid} size={12} />
-                                                                {/* Status badges — only populated when the viewer is in the
-                                                                    same LiveKit room (callCtx has data for this participant). */}
-                                                                {(() => {
-                                                                    const ts    = participantTrackStates[uid];
-                                                                    const pmeta = participantMetadata[uid];
-                                                                    const isLocalMutedByMe   = callCtx?.localMutedIds.has(uid)       ?? false;
-                                                                    const isVideoHiddenByMe  = callCtx?.hiddenVideoIds.has(uid)       ?? false;
-                                                                    const isScreenHiddenByMe = callCtx?.hiddenScreenShareIds.has(uid) ?? false;
-                                                                    if (!ts && !pmeta && !isLocalMutedByMe) return null;
-                                                                    return (
-                                                                        <div className="flex items-center gap-1 shrink-0">
-                                                                            {pmeta?.serverMutedAudio       && <MicOff       className="w-3 h-3 text-red-500" />}
-                                                                            {pmeta?.serverDeafened         && <HeadphoneOff className="w-3 h-3 text-red-500" />}
-                                                                            {pmeta?.serverMutedVideo       && <VideoOff     className="w-3 h-3 text-red-500" />}
-                                                                            {pmeta?.serverMutedScreenShare && <MonitorOff   className="w-3 h-3 text-red-500" />}
-                                                                            {pmeta?.deafened && !pmeta?.serverDeafened && (
-                                                                                <Headphones className="w-3 h-3 text-red-400" />
-                                                                            )}
-                                                                            {ts?.isMuted && !pmeta?.serverMutedAudio && !pmeta?.serverDeafened && !pmeta?.deafened && (
-                                                                                <MicOff className="w-3 h-3 text-red-400" />
-                                                                            )}
-                                                                            {!ts?.isMuted && !pmeta?.serverDeafened && !pmeta?.deafened && isLocalMutedByMe && (
-                                                                                <MicOff className="w-3 h-3 text-cl-faint" />
-                                                                            )}
-                                                                            {ts?.hasScreenShare && !pmeta?.serverMutedScreenShare && (
-                                                                                isScreenHiddenByMe
-                                                                                    ? <MonitorOff className="w-3 h-3 text-cl-faint" />
-                                                                                    : <Monitor    className="w-3 h-3 text-cl-muted" />
-                                                                            )}
-                                                                            {ts?.hasCamera && !pmeta?.serverMutedVideo && (
-                                                                                isVideoHiddenByMe
-                                                                                    ? <VideoOff className="w-3 h-3 text-cl-faint" />
-                                                                                    : <Video    className="w-3 h-3 text-cl-muted" />
-                                                                            )}
-                                                                        </div>
-                                                                    );
-                                                                })()}
+                                                                {/* Status badges. These rows only render for a voice channel
+                                                                    the viewer is NOT in (`!isMine` above), so camera /
+                                                                    screen share come from server presence
+                                                                    (call:media_state); see ParticipantStatusIcons. */}
+                                                                <ParticipantStatusIcons
+                                                                    userId={uid}
+                                                                    inThisCall={isMine}
+                                                                    mediaKey={voiceChannelMediaKey(vc.channel_id)}
+                                                                    track={participantTrackStates[uid]}
+                                                                    meta={participantMetadata[uid]}
+                                                                    localMuted={callCtx?.localMutedIds.has(uid) ?? false}
+                                                                    videoHidden={callCtx?.hiddenVideoIds.has(uid) ?? false}
+                                                                    screenHidden={callCtx?.hiddenScreenShareIds.has(uid) ?? false}
+                                                                    iconClass="w-3 h-3"
+                                                                />
                                                             </div>
                                                         );
                                                 })}
@@ -2427,7 +2420,7 @@ export const ServerContextPanel: React.FC<Props> = ({
 
                 {/* ── Members ────────────────────────────────────────────── */}
                 <div className="space-y-3">
-                    {loading ? (
+                    {listLoading ? (
                         <div className="flex justify-center py-6">
                             <div className="w-4 h-4 border-2 border-white/20 border-t-cl-lume rounded-full animate-spin" />
                         </div>
@@ -2443,25 +2436,25 @@ export const ServerContextPanel: React.FC<Props> = ({
                                         group's outer top/bottom corners round (no per-row overflow
                                         wrapper, so the Crown tooltip never gets clipped). Rows sit
                                         flush (no gap) so consecutive rows butt seamlessly. */}
-                                    {roleGroups.map(({ role, members: gMembers }) => (
+                                    {roleGroups.map(({ role, members: gMembers }, gi) => rowAlloc[gi] > 0 && (
                                         <div key={role.role_id}>
                                             <p className="text-[10px] font-mono font-semibold uppercase tracking-widest text-cl-faint px-1 mb-1.5">
                                                 {role.name} — {gMembers.length}
                                             </p>
                                             <div>
-                                                {gMembers.map((m, i) => renderMemberTile(m, getGroupRowPosition(i, gMembers.length)))}
+                                                {gMembers.slice(0, rowAlloc[gi]).map((m, i) => renderMemberTile(m, getGroupRowPosition(i, gMembers.length)))}
                                             </div>
                                         </div>
                                     ))}
 
                                     {/* Online members with no hoisted role — flat, no card */}
-                                    {onlineNoRole.length > 0 && (
+                                    {onlineAlloc > 0 && (
                                         <div>
                                             <p className="text-[10px] font-mono font-semibold uppercase tracking-widest text-cl-faint px-1 mb-1.5">
                                                 Online — {onlineNoRole.length}
                                             </p>
                                             <div className="space-y-0.5">
-                                                {onlineNoRole.map(m => renderMemberTile(m))}
+                                                {onlineNoRole.slice(0, onlineAlloc).map(m => renderMemberTile(m))}
                                             </div>
                                         </div>
                                     )}
@@ -2469,18 +2462,25 @@ export const ServerContextPanel: React.FC<Props> = ({
                             )}
 
                             {/* Offline — flat list, no card regardless of role */}
-                            {allOffline.length > 0 && (
+                            {offlineAlloc > 0 && (
                                 <div>
                                     <p className="text-[10px] font-mono font-semibold uppercase tracking-widest text-cl-faint px-1 mb-1.5">
                                         Offline — {allOffline.length}
                                     </p>
                                     <div className="space-y-0.5">
-                                        {allOffline.map(m => renderMemberTile(m))}
+                                        {allOffline.slice(0, offlineAlloc).map(m => renderMemberTile(m))}
                                     </div>
                                 </div>
                             )}
 
-                            {members.length === 0 && (
+                            {/* Stands in for the rows not mounted yet; entering the viewport
+                                (plus a margin) mounts the next batch. Sized so the scrollbar
+                                reflects the full list. */}
+                            {hiddenRows > 0 && (
+                                <div ref={rowSentinelRef} aria-hidden="true" style={{ height: hiddenRows * ROW_PX_ESTIMATE }} />
+                            )}
+
+                            {listMembers.length === 0 && (
                                 <p className="text-center text-cl-faint text-xs py-4 px-3">No members found</p>
                             )}
                         </div>

@@ -39,7 +39,7 @@ const KNOWN_TYPES = new Set(['Browser', 'Tab', 'GPU', 'Utility', 'Zygote', 'Sand
  * "browser 1.2% 140MB | tab 8.0% 420MB | gpu 3.1% 210MB | utility(3) 0.4% 75MB"
  * — summed per process TYPE (never names or pids). workingSetSize is KB.
  */
-export function summarizeAppMetrics(metrics: readonly ProcessMetricLike[]): string {
+export function summarizeAppMetrics(metrics: readonly ProcessMetricLike[], mainHeap?: { heapUsed: number; heapTotal: number; external: number }): string {
     const by = new Map<string, { n: number; cpu: number; kb: number }>();
     for (const m of metrics) {
         const type = KNOWN_TYPES.has(m.type) ? m.type : 'Other';
@@ -55,13 +55,31 @@ export function summarizeAppMetrics(metrics: readonly ProcessMetricLike[]): stri
         return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib) || a.localeCompare(b);
     });
     let totalKb = 0;
+    // privateBytes (Windows only): memory not shared with other processes —
+    // the kind of figure Task Manager's default Memory column (private
+    // working set) shows. workingSetSize also counts the Chromium/Electron DLL
+    // pages shared between our processes, once per process, so comparing THAT
+    // total with another app's Task Manager figure overstates us.
+    let privKb = 0;
+    let havePriv = false;
+    for (const m of metrics) {
+        const p = m.memory?.privateBytes;
+        if (typeof p === 'number' && Number.isFinite(p)) { privKb += p; havePriv = true; }
+    }
     const parts = keys.map(k => {
         const e = by.get(k)!;
         totalKb += e.kb;
         const label = k.toLowerCase().replace(/\s+/g, '-') + (e.n > 1 ? `(${e.n})` : '');
         return `${label} ${e.cpu.toFixed(1)}% ${Math.round(e.kb / 1024)}MB`;
     });
-    return `${parts.join(' | ')} | total ${Math.round(totalKb / 1024)}MB`;
+    // The main process's own JS heap (bytes): tells "our JS in main grew" (the
+    // vault, replay sets, IPC garbage) apart from Chromium's browser-process
+    // memory (blob bytes, IndexedDB, network, compositor) in the browser row.
+    const js = mainHeap && [mainHeap.heapUsed, mainHeap.heapTotal, mainHeap.external].every(Number.isFinite)
+        ? ` | main-js ${Math.round(mainHeap.heapUsed / 1048576)}/${Math.round(mainHeap.heapTotal / 1048576)}MB ext ${Math.round(mainHeap.external / 1048576)}MB`
+        : '';
+    const priv = havePriv ? ` private ${Math.round(privKb / 1024)}MB` : '';
+    return `${parts.join(' | ')} | total ${Math.round(totalKb / 1024)}MB${priv}${js}`;
 }
 
 /** Structural slices of the Electron objects this module touches. */

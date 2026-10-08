@@ -36,6 +36,7 @@
 import { classifyDecryptFailure, extractE2eeCode, isLegacyEnvelope } from './e2eeErrors';
 import * as messageStore from './messageStore';
 import { secureLocalStore } from './secureLocalStore';
+import { serverOrderIndex } from './messageOrder';
 
 export type ThreadMap = messageStore.ThreadMap;
 /** One stored DM row (the shape the thread arrays hold). */
@@ -208,7 +209,11 @@ export function applyIncomingDmMessages(threads: ThreadMap, incoming: ThreadMap)
                 // Not a row. Handled by the pull loop; the branch exists so these
                 // don't reach the final append and show up as messages.
             } else if (!currentThread.find(t => t.id === m.id)) {
-                currentThread.push(m);
+                // Server order, not arrival order (utils/messageOrder.ts): a
+                // row carrying the server's timestamp goes where the server put
+                // it — the same place on every device, sender included. Rows
+                // without one (older senders' history paths) still append.
+                currentThread.splice(serverOrderIndex(currentThread, m), 0, m);
             }
         }
         next[cId] = currentThread;
@@ -271,7 +276,11 @@ export interface CommitResult {
     /** Every envelope id sent in the ACK. */
     acked: string[];
     persistError?: unknown;
+    /** Set only when the ACK was awaited (the default). */
     ackError?: unknown;
+    /** Settles when the ACK has: to the ACK error, or undefined. With
+     *  `awaitAck: false` this is the only place an ACK failure shows up. */
+    ackDone: Promise<unknown>;
 }
 
 /**
@@ -283,13 +292,20 @@ export interface CommitResult {
  * real one, `ackMessageEnvelopes`, cannot), but a throw is still reported
  * rather than lost; an un-ACKed stored envelope is simply delivered again,
  * which the idempotent merge absorbs.
+ *
+ * `awaitAck: false` returns as soon as the batch is STORED, with the ACK still
+ * in flight (`ackDone`). The ordering rule is unchanged — the ACK is still only
+ * ever sent after the persist resolved — but the caller can show the messages
+ * without first waiting a network round trip for an acknowledgement nobody
+ * sees. The caller must await `ackDone` before pulling again, or the next pull
+ * would fetch the not-yet-deleted envelopes a second time.
  */
 export async function commitPulledBatch(args: {
     toStore: PulledForStore[];
     ackOnly: string[];
     persist: (byConversation: ThreadMap) => Promise<void>;
     ack: (envelopeIds: string[]) => Promise<{ ok: boolean; error?: unknown }>;
-}): Promise<CommitResult> {
+}, opts: { awaitAck?: boolean } = {}): Promise<CommitResult> {
     const { toStore, ackOnly, persist, ack } = args;
     let persistError: unknown;
     let persisted = toStore.length === 0;
@@ -304,16 +320,19 @@ export async function commitPulledBatch(args: {
     const stored = persisted ? toStore : [];
     const carry = persisted ? [] : toStore;
     const acked = [...ackOnly, ...stored.map(s => s.envelopeId)];
-    let ackError: unknown;
-    if (acked.length > 0) {
-        try {
-            const r = await ack(acked);
-            if (!r.ok) ackError = r.error ?? new Error('ack failed');
-        } catch (e) {
-            ackError = e ?? new Error('ack failed');
-        }
-    }
-    return { stored, carry, acked, persistError, ackError };
+    const ackDone: Promise<unknown> = acked.length === 0
+        ? Promise.resolve(undefined)
+        : (async () => {
+            try {
+                const r = await ack(acked);
+                return r.ok ? undefined : (r.error ?? new Error('ack failed'));
+            } catch (e) {
+                return e ?? new Error('ack failed');
+            }
+        })();
+    if (opts.awaitAck === false) return { stored, carry, acked, persistError, ackDone };
+    const ackError = await ackDone;
+    return { stored, carry, acked, persistError, ackError, ackDone };
 }
 
 /**

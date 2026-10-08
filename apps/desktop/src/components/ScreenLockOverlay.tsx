@@ -1,10 +1,51 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Lock, LogOut } from 'lucide-react';
+import { LogOut } from 'lucide-react';
 import { ClButton } from './cl';
 import SlottedCodeInput, { type SlottedCodeInputHandle } from './SlottedCodeInput';
 import { useAuth } from '../contexts/AuthContext';
 import type { ScreenLockHook } from '../hooks/useScreenLock';
-import cipherlineMark from '../assets/cipherline-mark.svg';
+import LockScreenField from './LockScreenField';
+import '../styles/screen-lock.css';
+
+/**
+ * The padlock. Drawn here (not an icon-font glyph) so the shackle can move and
+ * the whole thing can take the state of the lock: lume when waiting, red after a
+ * wrong PIN or while cooling down. The keyhole is cut out in the backdrop's own
+ * navy so it reads as a hole on any background.
+ */
+const Padlock: React.FC<{ state: 'idle' | 'typing' | 'bad' | 'cool' }> = ({ state }) => {
+    const bad = state === 'bad' || state === 'cool';
+    const top = bad ? '#FF8A85' : '#5CF0DC';
+    const bottom = bad ? '#E5484D' : '#14B8A4';
+    return (
+        <div className={`sl-lock${state === 'bad' ? ' is-bad' : ''}${state === 'cool' ? ' is-cool' : ''}${state === 'typing' ? ' is-typing' : ''}`} aria-hidden="true">
+            <div className="sl-lock-glow" />
+            <svg className="sl-lock-svg" viewBox="0 0 96 96" fill="none">
+                <defs>
+                    <linearGradient id="sl-body" x1="48" y1="40" x2="48" y2="88" gradientUnits="userSpaceOnUse">
+                        <stop offset="0" stopColor={top} />
+                        <stop offset="1" stopColor={bottom} />
+                    </linearGradient>
+                </defs>
+                {/* Shackle: a rounded arch that disappears into the body. */}
+                <path
+                    className="sl-shackle"
+                    d="M30 46 V33 a18 18 0 0 1 36 0 V46"
+                    stroke={bad ? '#FF8A85' : '#A7F3EA'}
+                    strokeWidth="7"
+                    strokeLinecap="round"
+                />
+                {/* Body */}
+                <rect x="17" y="42" width="62" height="46" rx="15" fill="url(#sl-body)" />
+                {/* Top-edge sheen */}
+                <path d="M21 56 a13 13 0 0 1 13 -12 h28" stroke="#FFFFFF" strokeOpacity=".28" strokeWidth="2.4" strokeLinecap="round" />
+                {/* Keyhole */}
+                <circle cx="48" cy="62" r="6.2" fill="#0B0F1E" />
+                <rect x="45.4" y="64" width="5.2" height="12" rx="2.6" fill="#0B0F1E" />
+            </svg>
+        </div>
+    );
+};
 
 /**
  * Full-viewport gate shown whenever `screenLock.isLocked` is true — visually
@@ -21,6 +62,7 @@ const ScreenLockOverlay: React.FC<{ screenLock: ScreenLockHook }> = ({ screenLoc
     const [busy, setBusy] = useState(false);
     const [confirmingSignOut, setConfirmingSignOut] = useState(false);
     const [cooldownSecs, setCooldownSecs] = useState(0);
+    const [fieldLive, setFieldLive] = useState(false);
     const codeInputRef = useRef<SlottedCodeInputHandle>(null);
 
     // Refocus the hidden PIN input whenever the Cipherline window regains OS
@@ -65,89 +107,74 @@ const ScreenLockOverlay: React.FC<{ screenLock: ScreenLockHook }> = ({ screenLoc
         logout('Screen Lock was reset. Sign in again to continue.');
     };
 
+    const lockState: 'idle' | 'typing' | 'bad' | 'cool' =
+        cooldownSecs > 0 ? 'cool' : error ? 'bad' : pin.length > 0 ? 'typing' : 'idle';
+
     return (
         <div
             onClick={() => codeInputRef.current?.focus()}
             style={{
                 position: 'fixed', inset: 0, zIndex: 999999,
-                background: 'var(--cl-abyss)',
+                // The loading screen's own backdrop once its dots are up (they
+                // are drawn on a transparent canvas); the flat abyss otherwise.
+                background: fieldLive
+                    ? 'linear-gradient(180deg, #131A30 0%, #0F1526 45%, #0B0F1E 100%)'
+                    : 'var(--cl-abyss)',
                 display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24,
+                overflow: 'hidden',
             }}
         >
-            <div style={{ width: '100%', maxWidth: 400 }}>
-                <div style={{ textAlign: 'center', marginBottom: 22 }}>
-                    <div
-                        style={{
-                            width: 56, height: 56, borderRadius: 18, margin: '0 auto 16px',
-                            background: 'var(--cl-lume-tint)', border: '1.5px solid rgba(37,224,200,0.32)',
-                            display: 'flex', alignItems: 'center', justifyContent: 'center',
-                            boxShadow: 'var(--cl-glow-lume)',
-                        }}
-                    >
-                        <Lock style={{ width: 26, height: 26, color: 'var(--cl-lume)' }} />
-                    </div>
-                    <img src={cipherlineMark} alt="" width={28} height={22} style={{ marginBottom: 10, opacity: 0.7 }} />
-                    <h1 style={{ fontSize: 20, fontWeight: 800, color: 'var(--cl-text)', marginBottom: 8 }}>
-                        Cipherline is locked
-                    </h1>
-                    <p style={{ fontSize: 13, lineHeight: 1.5, color: 'var(--cl-faint)' }}>
-                        Enter your PIN to continue.
-                    </p>
-                </div>
+            {/* The loading screen's dots, behind everything (see LockScreenField). */}
+            <LockScreenField onLive={setFieldLive} />
 
-                <div
+            <div className="sl-stage">
+                <Padlock state={lockState} />
+
+                <h1
                     style={{
-                        background: 'var(--cl-deep)', border: '1px solid var(--cl-border)',
-                        borderRadius: 20, padding: 26, boxShadow: '0 24px 60px rgba(0,0,0,0.4)',
+                        margin: '0 0 6px', textAlign: 'center',
+                        fontFamily: 'var(--cl-font-display)', fontWeight: 600, fontSize: 26,
+                        letterSpacing: '-.005em', color: 'var(--cl-text)',
                     }}
                 >
-                    <div style={{ marginBottom: 20 }}>
-                        <SlottedCodeInput
-                            ref={codeInputRef}
-                            value={pin}
-                            onChange={setPin}
-                            onAutoSubmit={attempt}
-                            disabled={busy || cooldownSecs > 0}
-                            error={error}
-                            noAutoPaste
-                            mask
-                            length={screenLock.settings.pinLength}
-                        />
-                    </div>
+                    Cipherline is locked
+                </h1>
+                <p style={{ margin: '0 0 18px', textAlign: 'center', fontSize: 14, color: 'var(--cl-faint)' }}>
+                    Enter your PIN to unlock.
+                </p>
 
-                    {cooldownSecs > 0 ? (
-                        <p style={{ textAlign: 'center', fontSize: 12.5, color: 'var(--cl-flash)', fontWeight: 600 }}>
-                            Too many attempts. Try again in {cooldownSecs}s.
-                        </p>
-                    ) : error ? (
-                        <p style={{ textAlign: 'center', fontSize: 12.5, color: 'var(--cl-flash)' }}>
-                            Wrong PIN. Try again.
-                        </p>
-                    ) : (
-                        <p style={{ textAlign: 'center', fontSize: 12.5, color: 'var(--cl-faint)' }}>
-                            {screenLock.settings.pinLength}-digit PIN
-                        </p>
-                    )}
+                <div className="sl-panel">
+                    <SlottedCodeInput
+                        ref={codeInputRef}
+                        value={pin}
+                        onChange={setPin}
+                        onAutoSubmit={attempt}
+                        disabled={busy || cooldownSecs > 0}
+                        error={error}
+                        noAutoPaste
+                        mask
+                        length={screenLock.settings.pinLength}
+                    />
 
-                    <div style={{ height: 1, background: 'var(--cl-border)', margin: '18px 0 14px' }} />
+                    <p className={`sl-status${cooldownSecs > 0 || error ? ' is-bad' : ''}`} role="status">
+                        {cooldownSecs > 0
+                            ? `Too many attempts. Try again in ${cooldownSecs}s.`
+                            : error
+                                ? 'Wrong PIN. Try again.'
+                                : ''}
+                    </p>
+
+                    <div className="sl-divider" />
 
                     {!confirmingSignOut ? (
-                        <button
-                            onClick={() => setConfirmingSignOut(true)}
-                            style={{
-                                display: 'block', width: '100%', textAlign: 'center',
-                                background: 'none', border: 'none', cursor: 'pointer',
-                                fontSize: 12.5, color: 'var(--cl-faint)', textDecoration: 'underline',
-                                textUnderlineOffset: 3,
-                            }}
-                        >
+                        <button type="button" className="sl-forgot" onClick={() => setConfirmingSignOut(true)}>
                             Forgot your PIN?
                         </button>
                     ) : (
                         <>
-                            <p style={{ fontSize: 12, color: 'var(--cl-muted)', marginBottom: 10, lineHeight: 1.5, textAlign: 'center' }}>
+                            <p style={{ fontSize: 12, color: 'var(--cl-muted)', margin: '0 0 10px', lineHeight: 1.5, textAlign: 'center' }}>
                                 This turns Screen Lock off and signs you out on this device. Nothing else is
-                                lost — sign back in with your account password to pick up where you left off.
+                                lost. Sign back in with your account password to pick up where you left off.
                             </p>
                             <div style={{ display: 'flex', gap: 8 }}>
                                 <ClButton fullWidth variant="ghost" onClick={() => setConfirmingSignOut(false)}>

@@ -444,3 +444,44 @@ describe('SafetyVerificationModal — the all-clear animation', () => {
         expect(q('.cl-allclear--seal')).toBeNull();
     }, 30_000);
 });
+
+describe('SafetyVerificationModal — the plain-English explanation sits behind an info icon', () => {
+    it('is collapsed by default, opens from the (i) button, and says the one thing that matters', async () => {
+        directories[ALICE] = [{ device_id: 'dev-a1', identity_key_pub_b64: b64(1) }];
+        pinStore = {};
+
+        render();
+        await settle();
+
+        // The long prose is not on the screen until asked for...
+        expect(q('[data-testid="verify-info"]')).toBeNull();
+        expect(text()).not.toContain("What's a verification code?");
+
+        const info = q('button[aria-label="What is this?"]') as HTMLButtonElement;
+        expect(info).not.toBeNull();
+        expect(info.getAttribute('aria-expanded')).toBe('false');
+        act(() => { info.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+
+        // ...then it explains the purpose and the load-bearing caveat.
+        const panel = q('[data-testid="verify-info"]')!;
+        expect(panel.textContent).toContain("What's a verification code?");
+        expect(panel.textContent).toContain('nobody is secretly sitting in the middle');
+        expect(panel.textContent).toContain('not by a message sent through');
+        expect((q('button[aria-label="What is this?"]') as HTMLButtonElement).getAttribute('aria-expanded')).toBe('true');
+
+        // And it closes again.
+        act(() => { (q('button[aria-label="What is this?"]') as HTMLButtonElement).dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+        expect(q('[data-testid="verify-info"]')).toBeNull();
+    }, 30_000);
+
+    it('keeps the security caveat on the screen itself, in one short line', async () => {
+        directories[ALICE] = [{ device_id: 'dev-a1', identity_key_pub_b64: b64(1) }];
+        pinStore = {};
+        render();
+        await settle();
+        expect(text()).toContain('outside Cipherline');
+        expect(text()).toContain('proves nothing');
+        // The old multi-sentence warning and its essay-length siblings are gone.
+        expect(text()).not.toContain('could have been written by whoever you are actually talking to');
+    }, 30_000);
+});

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
     screenSourcesVerdict,
     isScreenAccessRefused,
+    showMacPickerBypassNote,
     MACOS_SCREEN_RECORDING_SETTINGS_URL,
     type MediaAccessStatus,
     type ScreenCaptureAccess,
@@ -96,5 +97,23 @@ describe('MACOS_SCREEN_RECORDING_SETTINGS_URL', () => {
         // main-process handler.
         expect(MACOS_SCREEN_RECORDING_SETTINGS_URL.startsWith('https:')).toBe(false);
         expect(MACOS_SCREEN_RECORDING_SETTINGS_URL.startsWith('mailto:')).toBe(false);
+    });
+});
+
+describe('showMacPickerBypassNote (macOS 15+ "bypass the private window picker" consent)', () => {
+    it('macOS 15 and later: shown (boundary at Sequoia)', () => {
+        expect(showMacPickerBypassNote('mac', 14)).toBe(false);
+        expect(showMacPickerBypassNote('mac', 15)).toBe(true);
+        expect(showMacPickerBypassNote('mac', 27)).toBe(true);
+    });
+    it('unknown macOS version (older preload / unreadable): shown rather than leave the dialog unexplained', () => {
+        expect(showMacPickerBypassNote('mac', null)).toBe(true);
+        expect(showMacPickerBypassNote('mac', undefined)).toBe(true);
+    });
+    it('never on Windows or Linux, whatever version is passed', () => {
+        for (const p of ['windows', 'linux'] as const) {
+            expect(showMacPickerBypassNote(p, 27)).toBe(false);
+            expect(showMacPickerBypassNote(p, null)).toBe(false);
+        }
     });
 });

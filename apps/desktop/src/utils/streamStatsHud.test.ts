@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
     summarizeSender, summarizeReceiver, isHardwareCodec, fpsTone, captureLimitHint, h264ProfileFromFmtp,
-    bandwidthHint, BWE_RAMP_SECONDS,
+    bandwidthHint, BWE_RAMP_SECONDS, formatLayers,
     type StatsEntry,
 } from './streamStatsHud';
 
@@ -271,5 +271,38 @@ describe('bandwidthHint', () => {
     it('full resolution but held back', () => {
         expect(bandwidthHint({ ...owner, encodedWidth: 2560, encodedHeight: 1440, availableMbps: 14.2, ageSec: 30 }))
             .toBe('link settled at 14 Mbps — likely your upload; encoder held back');
+    });
+});
+
+describe('camera simulcast layers (dynacast)', () => {
+    const layer = (rid: string, w: number, h: number, fps: number, active: boolean, impl = 'libvpx'): StatsEntry => ({
+        id: `out-${rid}`, type: 'outbound-rtp', kind: 'video', rid, frameWidth: w, frameHeight: h, framesPerSecond: fps, active,
+        bytesSent: 1000, framesEncoded: 10, totalEncodeTime: 0.1, encoderImplementation: impl,
+    });
+
+    it('a dynacast-paused top layer (last size still reported) is not shown as "encoded"', () => {
+        const { stats } = summarizeSender([layer('q', 320, 180, 30, true), layer('h', 640, 360, 30, true), layer('f', 1280, 720, 0, false)], null, 1000);
+        expect([stats.encodedWidth, stats.encodedHeight, stats.encodedFps]).toEqual([640, 360, 30]);
+    });
+
+    it('with every layer live, the top one is shown', () => {
+        const { stats } = summarizeSender([layer('q', 320, 180, 30, true), layer('f', 1280, 720, 30, true)], null, 1000);
+        expect(stats.encodedWidth).toBe(1280);
+    });
+
+    it('formats the ladder smallest first, paused layers as off', () => {
+        const { stats } = summarizeSender([layer('f', 2560, 1440, 0, false), layer('q', 640, 360, 30, true), layer('h', 1280, 720, 29.6, true)], null, 1000);
+        expect(formatLayers(stats.layers)).toBe('640×360 30 · 1280×720 30 · 2560×1440 off');
+    });
+
+    it('a single-layer sender (screen share) has no layers row', () => {
+        const { stats } = summarizeSender([layer('', 1920, 1080, 60, true)], null, 1000);
+        expect(stats.layers).toBeUndefined();
+        expect(formatLayers(stats.layers)).toBeUndefined();
+    });
+
+    it('HW/SW comes from the active top layer', () => {
+        const { stats } = summarizeSender([layer('q', 320, 180, 30, true, 'ExternalEncoder'), layer('f', 1280, 720, 30, true, 'ExternalEncoder')], null, 1000);
+        expect(stats.hardware).toBe(true);
     });
 });

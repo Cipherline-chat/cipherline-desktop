@@ -86,6 +86,43 @@ export function applyPinOps(state: PinState, ops: readonly PinOp[]): PinState {
 }
 
 /**
+ * A React state updater for the pinned-id map whose LWW ledger lives in a ref
+ * beside it — safe to run more than once.
+ *
+ * React may call a state updater twice (StrictMode in every dev build, which
+ * is what the Windows test PC runs) or again when it rebases a render. The old
+ * inline pattern
+ *
+ *     setPins(prev => { const n = applyPinOp({ pins: prev, ledger: ref.current }, op);
+ *                       ref.current = n.ledger; return n.pins; })
+ *
+ * wrote the op's timestamp into the ledger on the first call, so the second
+ * call found `at <= lastAt`, treated its own op as a stale replay and returned
+ * `prev` unchanged — and React keeps the second result. Measured under
+ * React 19 StrictMode: Unpin did nothing (the pin stayed), and with any other
+ * update queued first Pin did nothing either ("same with unpinning",
+ * 2026-10-08). The same applied to pin ops synced from your other devices and
+ * to the `personal_saves` merge.
+ *
+ * Fix: every invocation computes from the ledger as it stood when THIS
+ * updater first ran. React replays a queue's updaters in the same order, so
+ * an earlier updater's replay has already restored that same ledger by the
+ * time this one replays; the result is identical on every call.
+ */
+export function replaySafePinUpdater(
+    ledgerRef: { current: PinLedger },
+    step: (state: PinState) => PinState,
+): (prev: PinMap) => PinMap {
+    let before: PinLedger | null = null;
+    return (prev: PinMap) => {
+        if (before === null) before = ledgerRef.current;
+        const next = step({ pins: prev, ledger: before });
+        ledgerRef.current = next.ledger;
+        return next.pins;
+    };
+}
+
+/**
  * Build the op for a LOCAL pin toggle, to be both applied locally and sent to
  * your other devices. Local actions are authoritative at the moment they
  * happen; callers must apply the returned op through applyPinOp too, or the

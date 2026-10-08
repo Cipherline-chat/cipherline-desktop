@@ -24,6 +24,7 @@
 import React from 'react';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
+import '../../styles/server-folders.css';
 
 const REDUCED_MOTION = typeof window !== 'undefined' && !!window.matchMedia
     ? window.matchMedia('(prefers-reduced-motion: reduce)').matches
@@ -46,10 +47,15 @@ interface Props {
     id: string;
     dropLine: 'top' | 'bottom' | null;
     isDragging: boolean;
+    /** The dwell-armed "drop INTO this tile" state (create / add to a folder)
+     *  — deliberately a different visual language from the gap line: the
+     *  target lifts and gets a ring, instead of a line appearing between
+     *  tiles. See useRailFolderDnd.ts. */
+    merge?: boolean;
     children: React.ReactNode;
 }
 
-export const SortableServerTile: React.FC<Props> = ({ id, dropLine, isDragging, children }) => {
+export const SortableServerTile: React.FC<Props> = ({ id, dropLine, isDragging, merge, children }) => {
     const { setNodeRef, listeners, transform, transition } = useSortable({ id });
     return (
         <div
@@ -61,10 +67,12 @@ export const SortableServerTile: React.FC<Props> = ({ id, dropLine, isDragging, 
                 transition: REDUCED_MOTION ? undefined : transition,
             }}
             className="relative"
+            data-rail-id={id}
             {...listeners}
         >
             {dropLine === 'top' && <RailDropIndicator position="top" />}
-            <div style={{ opacity: isDragging ? 0.4 : 1 }}>
+            {merge && <span aria-hidden className="cl-rail-merge" />}
+            <div className="cl-rail-merge-lift" data-merge={merge ? 'true' : undefined} style={{ opacity: isDragging ? 0.4 : 1 }}>
                 {children}
             </div>
             {dropLine === 'bottom' && <RailDropIndicator position="bottom" />}

@@ -7,7 +7,8 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as nodeCrypto from 'crypto';
-import { getLocalIdentityPub, migrateSpkPubIfMissing, ensureSignalIdentity, signIdentityMessage, generateRotationBundle, lowestHeldOtpId } from './signal-identity';
+import { getLocalIdentityPub, migrateSpkPubIfMissing, ensureSignalIdentity, signIdentityMessage, generateRotationBundle, lowestHeldOtpId, type StatusAwareRotationOptions } from './signal-identity';
+import { SpkCandidateOrder } from './spk-candidates';
 import { detectCurrentGame, getCurrentGameCached, getRunningProcessList, setCustomGames, setIgnoredProcesses, nextGamePollDelayMs, GAME_POLL_MS, GAME_POLL_SETTLE_MS } from './game-detector';
 import { secureStore } from './storage';
 import { shouldShowKeyProtectionNotice, keyProtectionNoticeToken } from './key-protection';
@@ -16,8 +17,9 @@ import { isRendererSecureKey, filterRendererSecureKeys } from './secure-store-po
 import { createRecoveryKeyGate } from './recovery-key-gate';
 import { startOAuth, getAccessToken, revokeTokens, getLinkedAccount } from './googleDriveAuth';
 import { uploadFileResumable, downloadFileToPath } from './driveTransfer';
-import { showAnnotationOverlay, hideAnnotationOverlay, pushAnnotationOverlayDelta, type OverlayDelta } from './annotation-overlay';
+import { showAnnotationOverlay, hideAnnotationOverlay, pushAnnotationOverlayDelta, setAnnotationOverlayNative, annotationOverlayPrecheck, type OverlayDelta, type OverlayShowResult } from './annotation-overlay';
 import { thumbnailJpegDataUrl } from './thumbnailDataUrl';
+import { createDesktopSourcesBroker } from './desktop-sources';
 import { parseAttributionClipboard, parseAttributionArgv } from './attribution-link';
 import {
   showNotification,
@@ -28,7 +30,7 @@ import {
 import { setBadgeCount, flashTaskbar, applyWindowsCallOverlay } from './badge';
 import { setupTray, updateTrayMenu, getTray, setTrayCallState } from './tray';
 import type { TrayMenuState } from './tray';
-import { encryptForDevices, decryptEnvelope, encryptChannelMessage, decryptChannelMessage, flushReplayCache, type DevicePub } from './e2ee-engine';
+import { encryptForDevices, decryptWithRetainedSpks, encryptChannelMessage, decryptChannelMessage, flushReplayCache, type DevicePub } from './e2ee-engine';
 import { setChannelKey, getChannelKey, getLatestEpoch, listChannelEpochs, rotateChannelKey, pruneOldKeys, getChannelKeyFingerprint, listChannelEpochFingerprints, discardChannelKey, setProtectedEpochs } from './channel-keys';
 import { installerSplashHtml } from './installer-splash';
 import { shouldGiveUpOnCrashLoop } from './crashLoopPolicy';
@@ -59,20 +61,34 @@ import {
   windowsBuildFromRelease, parseCaptureTimingLog, summarizeGpuDevices,
   decideAutoScreenCapturer, gpuTopologyFromInfo, parseGpuTopologyHint, serializeGpuTopologyHint,
   resolveCapturedDisplayHz, GPU_TOPOLOGY_FILENAME, GPU_TOPOLOGY_MAX_BYTES,
+  pickerEnumeration, parseSourcesHelperFailure, serializeSourcesHelperFailure,
+  SOURCES_HELPER_FAILURE_FILENAME, SOURCES_HELPER_FAILURE_MAX_BYTES,
 } from './capture-flags';
+import { createSourcesHelperClient, launchSourcesHelper } from './sources-helper-client';
+import { SOURCES_HELPER_FLAG, type ListedSource } from './sources-helper-protocol';
 import {
   STARTUP_FLAGS_FILENAME, CAPTURE_LOG_FILENAME, CAPTURE_LOG_MAX_BYTES, DEFAULT_STARTUP_FLAGS,
   readStartupFlagsFile, writeStartupFlagsFile, resolveStartupFlags, validateStartupFlagsPatch,
   prepareCaptureLogFiles, enforceCaptureLogCap,
 } from './startup-flags';
 import { freezeMonitor } from './freeze-monitor';
+import {
+  gamingVideoStartupSwitches, validateCallMediaActive, CallPriorityBooster, PRIORITY_REAPPLY_MS,
+} from './gaming-video-mode';
 import { PowerCoordinator, type PowerSignal } from './power-events';
 import { wireWindowDiagnostics, summarizeAppMetrics, summarizeGpuFeatureStatus, describeChildProcessGone } from './lifecycle-diagnostics';
 import { powChallengeToHash } from './pow-challenge';
+import {
+  PendingCrashStore, mainScrubber, crashFromMainError, crashFromRenderGone, crashFromChildGone,
+  crashFromRendererReport, rotateSessionMarker, clearSessionMarker, parseSignatures, buildSystemInfo,
+  reportChannel, validateReportFile, defaultReportFileName, UNCLEAN_EXIT_MARKER_FILE,
+  type GpuInfoLike,
+} from './diagnostics';
 import { beginLinkSession, bindLinkSession, openActiveLinkSession, endLinkSession, sealLinkGrant, type LinkGrantPayload } from './link-grant';
 import {
   STAGING_VERIFIER, verifyPassword, isAcceptablePasswordInput, createAttemptLimiter,
-  readUnlockFileSync, writeUnlockFileAtomic, removeUnlockFile, UNLOCK_FILENAME, PREVIEW_UNLOCK_FILENAME,
+  readUnlockFileSync, removeUnlockFile, UNLOCK_FILENAME, PREVIEW_UNLOCK_FILENAME,
+  STAGING_UNLOCK_STORE_KEY, PREVIEW_UNLOCK_STORE_KEY, serializeUnlockMarker, resolveRememberedUnlock,
   resolveStagingLockMode, decideSetChannel, STAGING_LOCKED_ERROR,
   type StagingLockStatus, type StagingUnlockResult,
 } from './staging-lock';
@@ -130,28 +146,81 @@ const autoUpdater = new Proxy({} as AppUpdater, {
   set: (_t, prop, value) => Reflect.set(loadAutoUpdater(), prop, value),
 });
 
-// Native per-process audio capture (Windows only; gracefully absent on other platforms).
+// Native per-app audio capture: WASAPI ApplicationLoopback on Windows
+// (src-native/audio_capture.cc), ScreenCaptureKit on macOS 13+
+// (src-native/audio_capture_mac.mm). Same addon name and JS surface on both;
+// absent on Linux, where the renderer falls back to Chromium loopback.
 // Loaded inside app.whenReady() — see below — so that Electron's COM apartment and
 // audio subsystems are fully initialized before mmdevapi.dll is pulled in.
 let audioCaptureAddon: {
+  // macOS only: false below macOS 13 (the addon still loads there). The Windows
+  // addon has no such export — being loaded is being supported.
+  isSupported?(): boolean;
   getPidFromSourceId(sourceId: string): number | null;
   startCapture(
     pid: number,
     mode: 'include' | 'exclude',
-    // Either a normal PCM chunk, or (Phase K) a one-shot, terminal
-    // { processExited: true } signal — see audio_capture.cc's IsProcessAlive.
-    callback: (chunk: { sampleRate: number; channels: number; data: Buffer } | { processExited: true }) => void
+    // Either a normal PCM chunk, or one of two one-shot, terminal signals:
+    // { processExited: true } (Phase K — the include-target quit; see
+    // audio_capture.cc's IsProcessAlive) and, macOS only, { failed: true, … }
+    // (Screen Recording not granted, ScreenCaptureKit stopped, target not found).
+    callback: (chunk:
+      | { sampleRate: number; channels: number; data: Buffer }
+      | { processExited: true }
+      | { failed: true; reason: string; message: string }) => void
   ): void;
   stopCapture(): void;
 } | null = null;
 
+/** True when the native addon is loaded AND this OS can actually run it. */
+function nativeAudioCaptureAvailable(): boolean {
+  if (!audioCaptureAddon) return false;
+  return audioCaptureAddon.isSupported ? audioCaptureAddon.isSupported() : true;
+}
+
+// ── Crash / issue reporter: pending crash records (electron/diagnostics.ts) ──
+// Records are JS-level only (error name, scrubbed message + stack, process
+// type, Electron's reason enum, exit code) — no minidumps, no crashReporter.
+// Held in memory until SecureStore is ready, then persisted ENCRYPTED under
+// 'diag_pending_crashes' (excluded from backups — see backupRegistry.ts). The
+// renderer offers to send them on the next boot; nothing is uploaded from here.
+const pendingCrashes = new PendingCrashStore();
+const safeOsUsername = (): string | undefined => {
+  try { return os.userInfo().username || undefined; } catch { return undefined; }
+};
+let diagScrubberCache: ReturnType<typeof mainScrubber> | null = null;
+const diagScrubber = () => (diagScrubberCache ??= mainScrubber(os.homedir(), safeOsUsername()));
+const recordCrash = (build: () => Parameters<PendingCrashStore['add']>[0]): void => {
+  // A crash handler must never throw — that would turn one crash into two.
+  try { pendingCrashes.add(build()); } catch (e) { console.error('[Main] could not record crash:', e); }
+};
+
 // Catch any main-process crash before Electron's own error handling swallows it.
 process.on('uncaughtException', (err) => {
   console.error('[Main] uncaughtException:', err);
+  recordCrash(() => crashFromMainError(err, 'uncaughtException', Date.now(), app.getVersion(), diagScrubber()));
 });
 process.on('unhandledRejection', (reason) => {
   console.error('[Main] unhandledRejection:', reason);
+  recordCrash(() => crashFromMainError(reason, 'unhandledRejection', Date.now(), app.getVersion(), diagScrubber()));
 });
+
+// Unclean-exit detector: a marker in userData written once this instance is
+// definitely the live one (first createWindow) and removed on a clean quit or
+// an OS shutdown / log-off. Found at the next launch → 'unclean_exit'. Packaged
+// builds only (a dev session killed with Ctrl+C would otherwise prompt every
+// launch); CIPHERLINE_DIAG_UNCLEAN_EXIT=1 opts a dev run in. Never under the
+// smoke test — no startup disk writes there (CLAUDE.md, smoke-test trap).
+const SESSION_MARKER_ENABLED = !IS_SMOKE_TEST && (IS_PACKAGED || process.env.CIPHERLINE_DIAG_UNCLEAN_EXIT === '1');
+let sessionMarkerPath: string | null = null;
+const startSessionMarker = (): void => {
+  if (!SESSION_MARKER_ENABLED || sessionMarkerPath) return;
+  sessionMarkerPath = path.join(app.getPath('userData'), UNCLEAN_EXIT_MARKER_FILE);
+  recordCrash(() => rotateSessionMarker(fs, sessionMarkerPath!, app.getVersion(), Date.now()));
+};
+const endSessionMarker = (): void => {
+  if (sessionMarkerPath) clearSessionMarker(fs, sessionMarkerPath);
+};
 
 // Dev mode: treat the Vite dev server origin as a secure context so that
 // window.crypto.subtle (WebCrypto) is available over plain HTTP.
@@ -237,26 +306,102 @@ const CAPTURE_LOG_ENABLED = STARTUP_FLAGS.captureLog;
 // Never under the smoke test (resolveStagingLockMode returns not-enforced, so
 // there is no file read here and no write ever happens for it), and never in
 // an unpackaged build unless CIPHERLINE_STAGING_LOCK_PREVIEW=1 asks for a
-// preview — which a packaged build ignores. The unlock is remembered in a
-// small non-secret JSON file read synchronously here; any problem reading it
-// means "locked" and never blocks startup.
+// preview — which a packaged build ignores. The unlock is remembered in the
+// encrypted SecureStore (a marker bound to the current password verifier),
+// so it is only known once the store is ready: `stagingUnlocked` starts
+// LOCKED and is settled by loadRememberedStagingUnlock() at the storeReady
+// barrier, before any staging-lock IPC handler exists or the window opens.
+// Any problem reading it means "locked" and never blocks startup.
 const STAGING_LOCK = resolveStagingLockMode({
   packaged: IS_PACKAGED,
   smokeTest: IS_SMOKE_TEST,
   version: app.getVersion(),
   previewEnv: process.env.CIPHERLINE_STAGING_LOCK_PREVIEW,
 });
+/** Legacy plaintext unlock file — read once to migrate, then deleted. */
 const STAGING_UNLOCK_PATH = path.join(
   USER_DATA_DIR, STAGING_LOCK.preview ? PREVIEW_UNLOCK_FILENAME : UNLOCK_FILENAME,
 );
-let stagingUnlocked = STAGING_LOCK.enforced ? readUnlockFileSync(STAGING_UNLOCK_PATH) : true;
+const STAGING_UNLOCK_KEY = STAGING_LOCK.preview ? PREVIEW_UNLOCK_STORE_KEY : STAGING_UNLOCK_STORE_KEY;
+let stagingUnlocked = !STAGING_LOCK.enforced;
 const stagingAttempts = createAttemptLimiter();
 const stagingLockStatus = (): StagingLockStatus => ({
   enforced: STAGING_LOCK.enforced,
   isStagingBuild: STAGING_LOCK.isStagingBuild,
-  unlocked: stagingUnlocked,
+  unlocked: isStagingUnlocked(),
   retryAfterMs: stagingAttempts.retryAfterMs(),
 });
+
+// The remembered unlock lives in SecureStore. Every touch of it below is
+// gated on stagingStoreUsable(): never under the smoke test (its store is
+// pathless — a write there failed every staging build once, see CLAUDE.md /
+// the smoke-test SecureStore trap), never before init, never while the
+// keystore is locked (get() is null and set() throws there).
+function stagingStoreUsable(): boolean {
+  return STAGING_LOCK.enforced && !IS_SMOKE_TEST && secureStore.status() === 'ok';
+}
+
+function readStagingMarker(): string | null {
+  if (!stagingStoreUsable()) return null;
+  try { return secureStore.get(STAGING_UNLOCK_KEY); } catch { return null; }
+}
+
+/**
+ * Called once, at the storeReady barrier (before the staging-lock IPC
+ * handlers are registered and before the window exists). Settles
+ * `stagingUnlocked` from the marker; a legacy plaintext file from an older
+ * build is accepted only while the verifier is unchanged, copied into the
+ * store, and deleted once the store write is on disk.
+ */
+function loadRememberedStagingUnlock(): void {
+  if (!STAGING_LOCK.enforced || IS_SMOKE_TEST) return;
+  const legacyFileValid = readUnlockFileSync(STAGING_UNLOCK_PATH);
+  const r = resolveRememberedUnlock({
+    enforced: true, marker: readStagingMarker(), legacyFileValid, verifier: STAGING_VERIFIER,
+  });
+  stagingUnlocked = r.unlocked;
+  if (r.source === 'marker') {
+    // Leftover from a migration interrupted after the store write.
+    if (legacyFileValid) removeUnlockFile(STAGING_UNLOCK_PATH);
+  } else if (r.source === 'legacy-file' && stagingStoreUsable()) {
+    void rememberStagingUnlock().then((ok) => { if (ok) removeUnlockFile(STAGING_UNLOCK_PATH); });
+  }
+  console.log('[Main/StagingLock] remembered unlock:', r.source);
+}
+
+/** Write the marker (bound to the current verifier) and wait for it to reach disk. */
+async function rememberStagingUnlock(): Promise<boolean> {
+  if (!stagingStoreUsable()) return false;
+  try {
+    secureStore.set(STAGING_UNLOCK_KEY, serializeUnlockMarker(STAGING_VERIFIER, Date.now()));
+    await secureStore.whenDurable();
+    return true;
+  } catch (e) {
+    console.warn('[Main/StagingLock] could not remember the unlock:', (e as NodeJS.ErrnoException)?.code ?? 'error');
+    return false;
+  }
+}
+
+function forgetStagingUnlock(): void {
+  if (stagingStoreUsable()) {
+    try { secureStore.delete(STAGING_UNLOCK_KEY); } catch { /* reported by the store */ }
+  }
+  removeUnlockFile(STAGING_UNLOCK_PATH);
+}
+
+/**
+ * The live answer. While locked it re-reads the marker, so a keystore that
+ * was locked at boot and recovered later (StorageLockedScreen) is honoured
+ * without a relaunch. Only a VALID marker for the current verifier unlocks.
+ */
+function isStagingUnlocked(): boolean {
+  if (!stagingUnlocked && stagingStoreUsable()) {
+    stagingUnlocked = resolveRememberedUnlock({
+      enforced: true, marker: readStagingMarker(), legacyFileValid: false, verifier: STAGING_VERIFIER,
+    }).unlocked;
+  }
+  return stagingUnlocked;
+}
 // Frame timings only (see captureLogSwitches); ≤ CAPTURE_LOG_MAX_BYTES, with
 // the previous launch's copy kept alongside as capture-debug.prev.log. On
 // Windows: %APPDATA%\Cipherline\capture-debug.log.
@@ -276,11 +421,14 @@ const CAPTURE_LOG_FILE = path.join(USER_DATA_DIR, CAPTURE_LOG_FILENAME);
 //  • What we CAN pick is the OS capturer (most of that per-grab duration):
 //    Settings → Advanced → Screen capture method (or, overriding it,
 //    CIPHERLINE_SCREEN_CAPTURER=dxgi|wgc) forces DXGI Desktop Duplication or
-//    Windows.Graphics.Capture for screens. Automatic = DXGI, except on a
-//    hybrid-GPU machine (or before we know the GPU layout) where it keeps
-//    Chromium's choice (WGC on Windows 11 24H2+, DXGI before) — measured on
-//    the owner's Win11 26200 box: DXGI grab 3.6 ms vs WGC ≈9.7 ms at 1440p,
-//    and Chromium's 2×-grab rule turns 9.7 ms into a ~52 fps ceiling. The
+//    Windows.Graphics.Capture for screens. Automatic = DXGI on Windows 11
+//    24H2+, except on a hybrid-GPU machine, before we know the GPU layout,
+//    or after the out-of-process picker failed, where it is WGC with DXGI
+//    disabled (before 24H2: Chromium's own DXGI) — measured on the owner's
+//    Win11 26200 box: DXGI grab 3.6 ms vs WGC ≈9.7 ms at 1440p, and
+//    Chromium's 2×-grab rule turns 9.7 ms into a ~52 fps ceiling. Whenever
+//    DXGI is enabled here, the share picker lists sources in a helper
+//    process with DXGI disabled (PICKER_ENUMERATION) — never on main. The
 //    GPU layout comes from the previous launch (gpu-topology.json), because
 //    this switch must be set before Chromium can report GPUs. Full rationale
 //    and DXGI failure modes: decideAutoScreenCapturer in ./capture-flags.ts.
@@ -307,13 +455,73 @@ const GPU_TOPOLOGY_AT_START = (() => {
     return null;
   }
 })();
+// "The out-of-process picker could not start" on a previous launch of this
+// version → Automatic falls back to WGC (see decideAutoScreenCapturer).
+const SOURCES_HELPER_FAILURE_PATH = path.join(USER_DATA_DIR, SOURCES_HELPER_FAILURE_FILENAME);
+const SOURCES_HELPER_FAILED_AT_START = (() => {
+  if (IS_SMOKE_TEST || process.platform !== 'win32') return false;
+  try {
+    const st = fs.statSync(SOURCES_HELPER_FAILURE_PATH);
+    if (st.size > SOURCES_HELPER_FAILURE_MAX_BYTES) return false;
+    return parseSourcesHelperFailure(fs.readFileSync(SOURCES_HELPER_FAILURE_PATH, 'utf8'), app.getVersion());
+  } catch {
+    return false;
+  }
+})();
 const AUTO_CAPTURER = decideAutoScreenCapturer({
   platform: process.platform,
   windowsBuild: process.platform === 'win32' ? windowsBuildFromRelease(os.release()) : null,
   gpu: GPU_TOPOLOGY_AT_START,
+  helperFailed: SOURCES_HELPER_FAILED_AT_START,
 });
+// Where desktopCapturer.getSources() runs: in a helper process whenever DXGI
+// is enabled in THIS process (the picker must never initialise DXGI on the
+// main thread — the 2026-10-07 freeze), in-process otherwise. The env knob
+// exists to exercise the helper on non-Windows harnesses; unpackaged only.
+const PICKER_ENUMERATION = pickerEnumeration({
+  platform: process.platform,
+  pref: SCREEN_CAPTURER_PREF,
+  autoBackend: AUTO_CAPTURER.backend,
+  forceHelper: !IS_PACKAGED && process.env.CIPHERLINE_SOURCES_HELPER === '1',
+});
+// "Prioritize call video while gaming" (Settings → Voice & Video), launch-time
+// half: keep Chromium from backgrounding/occlusion-throttling the app when a
+// fullscreen game covers it. See ./gaming-video-mode.ts. Its disable-features
+// entry is MERGED into the one media list below, never appended on its own.
+const GAMING_VIDEO_AT_LAUNCH = STARTUP_FLAGS.gamingVideo;
+// Runtime half: ABOVE_NORMAL process priority for every Cipherline process
+// while (setting on) AND (a call is running), Windows only, restored to each
+// process's own previous priority afterwards. Follows the SAVED setting, so
+// turning it on or off takes effect immediately (no restart). The renderer
+// reports the call via `call:set-media-active`; a renderer reload or crash
+// ends the "call" here too (see createWindow).
+const callPriority = new CallPriorityBooster({
+  platform: process.platform,
+  listPids: () => app.getAppMetrics().map(m => m.pid),
+  getPriority: (pid) => os.getPriority(pid),
+  setPriority: (pid, priority) => os.setPriority(pid, priority),
+});
+let callPriorityTimer: ReturnType<typeof setInterval> | null = null;
+const syncCallPriority = (change: { enabled?: boolean; inCall?: boolean }) => {
+  if (change.enabled !== undefined) callPriority.setEnabled(change.enabled);
+  if (change.inCall !== undefined) callPriority.setInCall(change.inCall);
+  if (callPriority.active && !callPriorityTimer) {
+    callPriorityTimer = setInterval(() => callPriority.tick(), PRIORITY_REAPPLY_MS);
+    callPriorityTimer.unref?.();
+  } else if (!callPriority.active && callPriorityTimer) {
+    clearInterval(callPriorityTimer);
+    callPriorityTimer = null;
+  }
+};
+syncCallPriority({ enabled: GAMING_VIDEO_AT_LAUNCH });
 {
+  const gamingSwitches = gamingVideoStartupSwitches(GAMING_VIDEO_AT_LAUNCH, process.platform);
+  for (const name of gamingSwitches.switches) app.commandLine.appendSwitch(name);
   const media = buildChromiumMediaSwitches(process.platform, SCREEN_CAPTURER_PREF, AUTO_CAPTURER.backend);
+  media.disableFeatures.push(...gamingSwitches.disableFeatures);
+  if (GAMING_VIDEO_AT_LAUNCH) {
+    console.log(`[Main] Gaming video mode ON at launch: ${[...gamingSwitches.switches, ...gamingSwitches.disableFeatures.map(f => `disable-features=${f}`)].join(', ')}`);
+  }
   if (media.enableFeatures.length) {
     app.commandLine.appendSwitch('enable-features', media.enableFeatures.join(','));
   }
@@ -333,6 +541,10 @@ const AUTO_CAPTURER = decideAutoScreenCapturer({
     setInterval(() => { void enforceCaptureLogCap(CAPTURE_LOG_FILE); }, 15_000).unref();
     console.log(`[Main] Capture-timing log ON (${STARTUP_FLAGS.source.captureLog}) → ${CAPTURE_LOG_FILE}`);
   }
+  // In the Performance log too, so a diagnostics report says which capturer
+  // (and whether DXGI was in the process at all) without a console.
+  freezeMonitor.event('capture:switches', 0,
+    `pref=${SCREEN_CAPTURER_PREF} auto=${AUTO_CAPTURER.backend} enable=${media.enableFeatures.join(',') || '-'} disable=${media.disableFeatures.join(',') || '-'} picker=${PICKER_ENUMERATION}${SOURCES_HELPER_FAILED_AT_START ? ' helper-failed-last-launch' : ''}`);
   if (SCREEN_CAPTURER_PREF !== 'auto') {
     console.log(`[Main] Screen capturer forced: ${SCREEN_CAPTURER_PREF} (${STARTUP_FLAGS.source.screenCapturer})`);
   } else if (process.platform === 'win32') {
@@ -498,6 +710,9 @@ function saveWindowState(win: BrowserWindow): void {
 }
 
 async function createWindow(csp: string, startHidden = false) {
+  // This instance is the live one now (the lock and the port hand-off are
+  // behind us), so it may take over the unclean-exit marker. Once per launch.
+  startSessionMarker();
   const savedState = loadWindowState();
 
   mainWindow = new BrowserWindow({
@@ -649,6 +864,10 @@ async function createWindow(csp: string, startHidden = false) {
   // Also flush immediately on close so a quick quit doesn't miss the last resize.
   // When minimize-to-tray is enabled and the user isn't explicitly quitting,
   // intercept the close and hide the window to the tray instead.
+  // Windows force-shutdown / restart / log-off: the OS ends the session
+  // without a normal quit. That is a clean end, not a crash — drop the
+  // unclean-exit marker (powerMonitor 'shutdown' covers macOS/Linux).
+  mainWindow.on('session-end', () => endSessionMarker());
   mainWindow.on('close', (e) => {
     if (_saveStateTimer) { clearTimeout(_saveStateTimer); _saveStateTimer = null; }
     saveWindowState(mainWindow!);
@@ -966,8 +1185,16 @@ async function createWindow(csp: string, startHidden = false) {
   const CRASH_LOOP_WINDOW_MS = 60_000;
   const CRASH_LOOP_THRESHOLD = 3;
 
+  // A renderer that is gone or has navigated (reload) has no call any more:
+  // put the gaming-video priority boost back now rather than waiting for a
+  // `call:set-media-active false` that will never come.
+  mainWindow.webContents.on('did-navigate', () => syncCallPriority({ inCall: false }));
   mainWindow.webContents.on('render-process-gone', (event, details) => {
     console.error(`[Main] Renderer process gone: ${details.reason} (${details.exitCode})`);
+    syncCallPriority({ inCall: false });
+    // Crash reporter: a pending record the reloaded renderer offers to send.
+    // Recording only — the recovery behaviour below is unchanged.
+    recordCrash(() => crashFromRenderGone(details, Date.now(), app.getVersion()));
 
     if (IS_SMOKE_TEST) return; // a dialog/reload loop would hang CI
 
@@ -1277,6 +1504,69 @@ ipcMain.handle('perf:record', (_event, rows: unknown) => freezeMonitor.recordFro
 ipcMain.handle('perf:get-log', () => freezeMonitor.snapshot());
 ipcMain.handle('perf:clear', () => { freezeMonitor.clear(); });
 
+// ── Crash / issue reporter IPC (electron/diagnostics.ts) ─────────────────
+// Every channel is origin-checked by installIpcSenderGuard() above. Nothing
+// here uploads anything: the renderer builds, scrubs, previews and sends the
+// report itself through the authenticated API client.
+//
+// diag:get-system-info — SystemInfo for a report, plus { homeDir, osUsername }
+// which the renderer uses ONLY as scrubber input (never placed in a payload).
+ipcMain.handle('diag:get-system-info', async () => {
+  let gpuInfo: GpuInfoLike | null = null;
+  try { gpuInfo = await app.getGPUInfo('basic') as GpuInfoLike; } catch { gpuInfo = null; }
+  let gpuFeatureStatus: Record<string, unknown> | null = null;
+  try { gpuFeatureStatus = app.getGPUFeatureStatus() as unknown as Record<string, unknown>; } catch { /* unavailable */ }
+  let stored: string | null = null;
+  try { stored = secureStore.get('updateChannel'); } catch { /* store not ready */ }
+  let displays: Electron.Display[] = [];
+  let primaryId: number | null = null;
+  try { displays = screen.getAllDisplays(); primaryId = screen.getPrimaryDisplay().id; } catch { /* headless */ }
+  const system = buildSystemInfo({
+    appVersion: app.getVersion(),
+    versions: { electron: process.versions.electron, chrome: process.versions.chrome, node: process.versions.node },
+    platform: process.platform,
+    osRelease: os.release(),
+    arch: process.arch,
+    cpus: os.cpus(),
+    totalMemBytes: os.totalmem(),
+    gpuInfo,
+    gpuFeatureStatus,
+    displays,
+    primaryDisplayId: primaryId,
+    hardwareAcceleration: typeof app.isHardwareAccelerationEnabled === 'function' ? app.isHardwareAccelerationEnabled() : true,
+    uptimeS: process.uptime(),
+    channel: reportChannel(IS_PACKAGED, stored, app.getVersion()),
+  });
+  return { system, scrub: { homeDir: os.homedir(), osUsername: safeOsUsername() ?? null } };
+});
+ipcMain.handle('diag:get-pending-crashes', () => pendingCrashes.all());
+// No argument = all; otherwise only the given signatures.
+ipcMain.handle('diag:clear-pending-crashes', (_e, signatures: unknown) => { pendingCrashes.remove(parseSignatures(signatures)); });
+ipcMain.handle('diag:mark-crashes-seen', (_e, signatures: unknown) => { pendingCrashes.markSeen(parseSignatures(signatures)); });
+// The root React error boundary's last words. Untrusted strings, scrubbed
+// again here with main's own scrubber before they are stored.
+ipcMain.handle('diag:record-renderer-crash', (_e, payload: unknown) => {
+  recordCrash(() => crashFromRendererReport(payload, Date.now(), app.getVersion(), diagScrubber()));
+});
+// "Save to file": main owns the dialog and the path; the renderer supplies
+// only the already-scrubbed report text, which is validated (string, ≤ 512 KiB,
+// a JSON object) and written verbatim.
+ipcMain.handle('diag:save-report', async (_e, category: unknown, content: unknown) => {
+  const v = validateReportFile(category, content);
+  if (!v.ok) throw new Error(`Invalid report: ${v.error}`);
+  const opts: Electron.SaveDialogOptions = {
+    title: 'Save diagnostic report',
+    defaultPath: path.join(app.getPath('downloads'), defaultReportFileName(v.category, new Date())),
+    filters: [{ name: 'JSON', extensions: ['json'] }],
+  };
+  const result = mainWindow && !mainWindow.isDestroyed()
+    ? await dialog.showSaveDialog(mainWindow, opts)
+    : await dialog.showSaveDialog(opts);
+  if (result.canceled || !result.filePath) return { status: 'cancelled' as const };
+  await fs.promises.writeFile(result.filePath, v.text, { encoding: 'utf8', mode: 0o600 });
+  return { status: 'saved' as const };
+});
+
 // ── Performance log: lifecycle + resources (see lifecycle-diagnostics.ts) ──
 // Per-process CPU/memory, summed per process TYPE. Throttled so the restore /
 // stall / periodic triggers can never stack up into their own load.
@@ -1285,7 +1575,7 @@ function sampleMetrics(why: string, minGapMs = 2000): void {
   const t = Date.now();
   if (t - lastMetricsAt < minGapMs) return;
   lastMetricsAt = t;
-  try { freezeMonitor.metrics(`${why}: ${summarizeAppMetrics(app.getAppMetrics())}`); } catch { /* before ready */ }
+  try { freezeMonitor.metrics(`${why}: ${summarizeAppMetrics(app.getAppMetrics(), process.memoryUsage())}`); } catch { /* before ready */ }
 }
 // After a long main stall, record what every process was doing right then.
 let lastStallMetricsAt = 0;
@@ -1641,7 +1931,11 @@ app.whenReady().then(async () => {
   app.on('child-process-gone', (_e, details) => {
     freezeMonitor.event('process:gone', 0, describeChildProcessGone(details));
     sampleMetrics('process-gone', 0);
+    // Crash reporter: GPU / Utility / … deaths with a crash reason only.
+    recordCrash(() => crashFromChildGone(details, Date.now(), app.getVersion()));
   });
+  // macOS / Linux OS shutdown: a clean end of the session, not a crash.
+  powerMonitor.on('shutdown', () => endSessionMarker());
   // Resource snapshot every 15 s while the window is on screen (nothing while
   // minimized / in the tray — the log is about what the user sees).
   setInterval(() => {
@@ -1697,12 +1991,16 @@ app.whenReady().then(async () => {
   try {
     audioCaptureAddon = require(path.join(__dirname, '../build/Release/audio_capture.node'));
     console.log('[Main] Native audio capture addon loaded successfully.');
+    // The same addon carries the annotation overlay's display/window geometry
+    // (src-native/window_geometry.cc on Windows, window_geometry_mac.mm on
+    // macOS); an older build simply lacks it.
+    setAnnotationOverlayNative(audioCaptureAddon);
   } catch (e: any) {
     const addonPath = path.join(__dirname, '../build/Release/audio_capture.node');
     console.warn(`[Main] Native audio capture addon NOT loaded — screenshare will fall back to Chromium loopback.`);
     console.warn(`[Main]   Path attempted: ${addonPath}`);
     console.warn(`[Main]   Reason: ${e.message}`);
-    console.warn(`[Main]   Fix: run "npm run rebuild-native" inside apps/desktop/ on Windows (MSVC required)`);
+    console.warn(`[Main]   Fix: run "npm run rebuild-native" (Windows, MSVC) or "npm run rebuild-native:mac" (macOS, Xcode) inside apps/desktop/`);
   }
 
   // Kick off SecureStore initialization. It genuinely runs in the background
@@ -1733,6 +2031,16 @@ app.whenReady().then(async () => {
   storeReady
     .then(() => {
       console.log('[Main] secureStore initialized');
+      // Pending crash records go to the encrypted store from here on (and the
+      // ones captured during startup are merged in). Not under the smoke test
+      // (its store is pathless — CLAUDE.md), and not while locked.
+      if (!IS_SMOKE_TEST && secureStore.status() === 'ok') {
+        pendingCrashes.attach({
+          read: () => secureStore.get('diag_pending_crashes'),
+          write: (v) => secureStore.set('diag_pending_crashes', v),
+          clear: () => secureStore.delete('diag_pending_crashes'),
+        });
+      }
       if (showInstaller) { splashSendProgress(58); installerGate?.storeDone(); }
     })
     .catch(err => {
@@ -1858,8 +2166,11 @@ app.whenReady().then(async () => {
     // that the backup folder browser is our own UI rather than the Google
     // Picker widget. accounts.google.com stays for the OAuth handshake.
     // js.stripe.com — Payment Element iframe; hooks.stripe.com — 3DS challenge frame.
-    // challenges.cloudflare.com — Turnstile widget renders in an iframe.
-    "frame-src https://www.youtube-nocookie.com blob: https://accounts.google.com https://js.stripe.com https://hooks.stripe.com https://challenges.cloudflare.com",
+    // https://cipherline.chat — the website-hosted Turnstile page (turnstile-embed.html)
+    // the sign-up form embeds; Cloudflare rejects 127.0.0.1 as a widget hostname, so the
+    // widget runs there (components/TurnstileFrame.tsx). challenges.cloudflare.com — the
+    // widget's own iframe.
+    "frame-src https://www.youtube-nocookie.com blob: https://accounts.google.com https://js.stripe.com https://hooks.stripe.com https://challenges.cloudflare.com https://cipherline.chat",
     "frame-ancestors 'none'",
     "base-uri 'self'",
     "form-action 'self'",
@@ -2226,11 +2537,16 @@ app.whenReady().then(async () => {
     return getLocalIdentityPub();
   });
 
-  // Generate (or load) the Signal identity and return the full key bundle so
-  // the renderer can POST it to /v1/keys/upload_bundle after device registration.
-  ipcMain.handle('crypto:ensure-identity-bundle', async (_event, deviceId: string) => {
-    const { bundle } = await ensureSignalIdentity();
-    return { device_id: deviceId, ...bundle };
+  // Generate (or load) the Signal identity and return the key bundle so the
+  // renderer can POST it to /v1/keys/upload_bundle after device registration.
+  // `opts.unclaimedPrekeyIds` (from GET /v1/keys/status) gates which held
+  // one-time prekeys are re-offered — validated in ensureSignalIdentity, a
+  // malformed value degrades to "no gate", never to anything wider. `is_new`
+  // tells the renderer whether this call minted the identity.
+  ipcMain.handle('crypto:ensure-identity-bundle', async (_event, deviceId: string, opts?: { unclaimedPrekeyIds?: unknown }) => {
+    const unclaimedPrekeyIds = opts && typeof opts === 'object' ? opts.unclaimedPrekeyIds : undefined;
+    const { isNew, bundle } = await ensureSignalIdentity({ unclaimedPrekeyIds });
+    return { device_id: deviceId, is_new: isNew, ...bundle };
   });
 
   // The lowest one-time-prekey id this device still holds a private for — the
@@ -2252,12 +2568,17 @@ app.whenReady().then(async () => {
   // days and tried on every decrypt). The prekey id lists added for the
   // one-time-prekey reuse fix travel the same channel, so the drop would have
   // silently disabled this fix too.
+  //
+  // `otpPoolLow` (a boolean) switches on the status-aware mode, which may
+  // answer null — "nothing needs publishing" — see generateRotationBundle.
   ipcMain.handle('keys:get-rotation-bundle', async (_event, opts?: {
     rotateSpk?: boolean;
     unclaimedPrekeyIds?: number[];
     retiredPrekeyIds?: number[];
+    otpPoolLow?: boolean;
   }) => {
-    return generateRotationBundle(opts ?? {});
+    const options = (opts && typeof opts === 'object' ? opts : {}) as StatusAwareRotationOptions;
+    return generateRotationBundle(options);
   });
 
   // --- E2EE Message Encryption ---
@@ -2299,30 +2620,15 @@ app.whenReady().then(async () => {
   // messages wrapped against a since-rotated SPK stay decryptable; this is
   // what actually uses them. Active id first (the common case), then the
   // rest by id descending (most-recently-rotated-away first).
+  //
+  // Main-thread cost is bounded by the keys actually TRIED, not by how many
+  // are retained: ids come from the store's prefix index (not a scan of the
+  // whole vault), each private is decrypted from the store only when its turn
+  // comes, and the key that opened the previous envelope is tried right after
+  // the active one (see spk-candidates.ts). The candidate SET is unchanged.
+  const spkOrder = new SpkCandidateOrder();
   ipcMain.handle('crypto:decrypt-message', (event, ciphertextB64: string, myDeviceId: string) => {
-
-    const activeIdStr = secureStore.get('signed_prekey_active_id');
-    const activeId = activeIdStr ? parseInt(activeIdStr, 10) : null;
-
-    const ids = secureStore.keys()
-      .map(k => /^signed_prekey_priv_(\d+)$/.exec(k)?.[1])
-      .filter((v): v is string => v != null)
-      .map(Number)
-      .sort((a, b) => (a === activeId ? -1 : b === activeId ? 1 : b - a));
-
-    const spkCandidates = ids
-      .map(id => {
-        const privHex = secureStore.get(`signed_prekey_priv_${id}`);
-        const pubB64 = secureStore.get(`signed_prekey_pub_${id}`);
-        return privHex && pubB64 ? { id, privHex, pubB64 } : null;
-      })
-      .filter((c): c is { id: number; privHex: string; pubB64: string } => c != null);
-
-    if (spkCandidates.length === 0) {
-      throw new Error('[E2EE:NO_SPK] No signed prekeys found in secure store');
-    }
-
-    return decryptEnvelope(ciphertextB64, myDeviceId, spkCandidates);
+    return decryptWithRetainedSpks(ciphertextB64, myDeviceId, spkOrder);
   });
 
   // --- Sender Keys — Channel Message Crypto ---
@@ -2366,8 +2672,12 @@ app.whenReady().then(async () => {
     });
   });
 
-  ipcMain.handle('channel:set-key', (event, channelId: string, epoch: number, keyB64: string, rotatesAt: string, replaceIfFingerprintB64?: string) => {
-    return setChannelKey(channelId, epoch, keyB64, new Date(rotatesAt), replaceIfFingerprintB64 ? { replaceIfFingerprintB64 } : undefined);
+  // Vault writes are asynchronous: handlers that store key material reply
+  // only once it is on disk, as they did when set() wrote synchronously.
+  ipcMain.handle('channel:set-key', async (event, channelId: string, epoch: number, keyB64: string, rotatesAt: string, replaceIfFingerprintB64?: string) => {
+    const result = setChannelKey(channelId, epoch, keyB64, new Date(rotatesAt), replaceIfFingerprintB64 ? { replaceIfFingerprintB64 } : undefined);
+    await secureStore.whenDurable();
+    return result;
   });
 
   ipcMain.handle('channel:get-latest-epoch', (event, channelId: string) => {
@@ -2381,15 +2691,19 @@ app.whenReady().then(async () => {
   // RC-10 / Phase 6: epochs a pin in this channel references, refreshed by
   // the renderer from GET /pinned-epochs (server open + hourly) so
   // pruneOldKeys never deletes the only local copy of a key a pin needs.
-  ipcMain.handle('channel:set-protected-epochs', (event, channelId: string, epochs: number[]) => {
+  ipcMain.handle('channel:set-protected-epochs', async (event, channelId: string, epochs: number[]) => {
     if (!Array.isArray(epochs)) {
       throw new TypeError(`channel:set-protected-epochs: epochs must be an array, got ${typeof epochs}`);
     }
     setProtectedEpochs(channelId, epochs);
+    await secureStore.whenDurable();
   });
 
-  ipcMain.handle('channel:rotate-key', (event, channelId: string, atEpoch?: number) => {
+  // The returned key is about to be wrapped and handed to other members: it is
+  // on this device's disk first.
+  ipcMain.handle('channel:rotate-key', async (event, channelId: string, atEpoch?: number) => {
     const result = rotateChannelKey(channelId, atEpoch);
+    await secureStore.whenDurable();
     return { epoch: result.epoch, keyB64: result.keyB64, rotatesAt: result.rotatesAt.toISOString() };
   });
 
@@ -2401,8 +2715,9 @@ app.whenReady().then(async () => {
     return listChannelEpochFingerprints(channelId);
   });
 
-  ipcMain.handle('channel:discard-key', (event, channelId: string, epoch: number) => {
+  ipcMain.handle('channel:discard-key', async (event, channelId: string, epoch: number) => {
     discardChannelKey(channelId, epoch);
+    await secureStore.whenDurable();
   });
 
   /**
@@ -2426,7 +2741,7 @@ app.whenReady().then(async () => {
   // this line ran); now that init really yields, this has to say so.
   // Housekeeping with no startup dependency, so nothing waits on it.
   storeReady
-    .then(() => { pruneOldKeys(); })
+    .then(() => pruneOldKeys())
     .catch(err => console.warn('[Main] pruneOldKeys failed:', err));
 
   // --- Secure Storage IPC ---
@@ -2437,6 +2752,7 @@ app.whenReady().then(async () => {
 
   ipcMain.handle('secure:set-avatar-key', async (event, attachmentId, keyB64, nonceB64) => {
     secureStore.set(`avatar_key:${attachmentId}`, JSON.stringify({ keyB64, nonceB64 }));
+    await secureStore.whenDurable();
     return true;
   });
 
@@ -2491,7 +2807,8 @@ app.whenReady().then(async () => {
     for (const [k, v] of Object.entries(entries)) {
       if (typeof v === 'string' && isRendererSecureKey(k)) filtered[k] = v;
     }
-    secureStore.setMany(filtered); // single atomic save (P2-ELEC-10)
+    secureStore.setMany(filtered); // one vault write, never half-applied (P2-ELEC-10)
+    await secureStore.whenDurable();
     return true;
   });
 
@@ -2514,6 +2831,7 @@ app.whenReady().then(async () => {
         secureStore.delete(k);
       }
     });
+    await secureStore.whenDurable();
     return true;
   });
 
@@ -2622,7 +2940,7 @@ app.whenReady().then(async () => {
 
   // Whether the device master key is available — WITHOUT handing it over.
   // Callers that only need to know "can this device decrypt its own data"
-  // (e.g. RegistrationWizard deciding whether to offer the recovery-key card)
+  // (e.g. a screen deciding whether to offer the recovery-key card)
   // must use this, not the -ex channel below: there is no reason to move
   // 32 bytes of key material across the bridge to answer a yes/no question.
   ipcMain.handle('secure:get-local-master-key-status', async () => {
@@ -2760,8 +3078,8 @@ app.whenReady().then(async () => {
   // onboarding gets no carve-out. The decision logic lives there so it is
   // covered by tests; this wires it to the real keystore and the real dialog.
   // Single place the raw master-key bytes are read for a recovery-key
-  // reveal, shared by BOTH the gated (Settings) and ungated (signup) paths
-  // below — so there is still exactly one literal call site here regardless
+  // reveal (the gated Settings path below; the ungated signup path that used
+  // to share it is gone) — so there is still exactly one literal call site here regardless
   // of how many reveal channels exist (recovery-key-gate.test.ts pins the
   // total count of raw reads in this file; sharing this closure is what
   // keeps adding a second reveal path from silently doubling it).
@@ -2797,37 +3115,11 @@ app.whenReady().then(async () => {
     return revealRecoveryKeyGated();
   });
 
-  // ── SIGNUP CARVE-OUT (deliberate, owner decision 2026-09-20) ────────────
-  // The registration wizard's recovery-key step used to call the SAME gated
-  // reveal above, behind an explicit "Reveal my recovery key" button (so the
-  // native confirmation dialog was always the answer to a click the user
-  // just made). The owner asked for both the click and the dialog gone for
-  // signup specifically: "just show it to me, and also get rid of this huge
-  // pop up with it." recovery-key-gate.ts's header documents in full why an
-  // onboarding carve-out was originally rejected (main cannot distinguish a
-  // brand-new signup from a second device logging into an existing, non-empty
-  // vault, and the key never rotates) — that analysis is still correct and is
-  // NOT being relitigated here; the owner was told it and asked for the
-  // carve-out anyway. Residual risk: this channel is ungated for WHATEVER
-  // mounts the wizard, so it stays safe only as long as the wizard is
-  // signup-only. Re-read that file's UPDATE notice before changing what
-  // mounts RegistrationWizard.
-  //
-  // Reusing createRecoveryKeyGate here (rather than reading the key inline)
-  // keeps the lock-check / null-key handling identical to the gated path;
-  // only `confirm` differs, resolving true with no dialog at all, so `ok` is
-  // the only outcome a live keystore can produce (no `declined`, no `busy`,
-  // since nothing ever refuses or overlaps).
-  const revealRecoveryKeySignup = createRecoveryKeyGate({
-    isLocked: () => secureStore.isLocked(),
-    getMasterKeyB64: readMasterKeyB64,
-    confirm: async () => true,
-  });
-
-  ipcMain.handle('secure:reveal-recovery-key-signup', async () => {
-    await secureStore.initialize();
-    return revealRecoveryKeySignup();
-  });
+  // There is deliberately NO ungated reveal any more. The signup wizard's
+  // separate no-dialog "signup" reveal channel (2026-09-20) went with the
+  // wizard's recovery-key step when onboarding round 6 removed that step
+  // (2026-10-05): the key is shown only from Settings, through the gate
+  // above. See the UPDATE notice at the top of electron/recovery-key-gate.ts.
 
   // Adopt a user-supplied recovery key on a locked device. Validates against an
   // existing encrypted entry and re-wraps it with this device's keystore.
@@ -2835,6 +3127,8 @@ app.whenReady().then(async () => {
     await secureStore.initialize();
     if (typeof keyB64 !== 'string') return false;
     const ok = secureStore.recoverWithKey(keyB64.trim());
+    // recoverWithKey may write a canary into an empty vault.
+    if (ok) await secureStore.whenDurable();
     // Both recovery paths replace the master key underneath a live KvCrypto.
     // Its cache self-heals on a key-fingerprint change, but drop it explicitly
     // too: a stale per-account subkey here fails every read AND every write for
@@ -2871,7 +3165,7 @@ app.whenReady().then(async () => {
   // directory grant; a picked file → that file only, session-scoped, in
   // `userPickedFiles`). These two now follow that precedent: a save admits the
   // one path, for writes, for this launch only. Nothing here needs to persist —
-  // the only consumer, RegistrationWizard's recovery-key save, writes
+  // the consumers (e.g. a recovery-key .txt save) write
   // immediately after the dialog returns. Durable directory grants still come
   // from `dialog:open`'s openDirectory flow, which is what the backup folder
   // actually uses.
@@ -3681,7 +3975,79 @@ app.whenReady().then(async () => {
   app.on('will-quit', () => power.dispose());
 
   // --- Screenshare IPC Handlers ---
-  let cachedDesktopSources: Electron.DesktopCapturerSource[] = [];
+  // EVERY desktopCapturer.getSources() in this process goes through this one
+  // gate: one call at a time, identical waiting/running calls shared, and
+  // each call's queue wait + run time in the Performance log (so a slow or
+  // stuck enumeration is visible in a diagnostics report). See
+  // ./desktop-sources.ts for why stacked calls were dangerous on Windows.
+  //
+  // WHERE it runs is PICKER_ENUMERATION: with DXGI enabled in this process
+  // (Automatic on a 24H2+ desktop, the "DXGI" setting, pre-24H2 Windows) the
+  // list comes from the helper process (./sources-helper.ts, DXGI disabled
+  // there) and this process never calls desktopCapturer at all — there is no
+  // in-process fallback, because that fallback IS the freeze. Either way the
+  // result is the same ListedSource shape, previews already JPEG-encoded.
+  const sourcesHelper = PICKER_ENUMERATION === 'helper'
+    ? createSourcesHelperClient({
+      launch: () => launchSourcesHelper({
+        command: process.execPath,
+        // Packaged: the exe IS the app. Unpackaged (`electron .`): name the app dir.
+        args: IS_PACKAGED ? [SOURCES_HELPER_FLAG] : [app.getAppPath(), SOURCES_HELPER_FLAG],
+        connectTimeoutMs: 15_000,
+      }),
+      onEvent: (e) => {
+        switch (e.type) {
+          case 'ready':
+            freezeMonitor.event('capture:sources-helper', e.ms, `ready pid=${e.pid} disable=${e.disabledFeatures || '-'}`);
+            // It works on this machine: Automatic may use DXGI again next launch.
+            try { fs.rmSync(SOURCES_HELPER_FAILURE_PATH, { force: true }); } catch { /* best effort */ }
+            break;
+          case 'start-failed':
+            freezeMonitor.event('capture:sources-helper', 0, `start failed (${e.failures}): ${e.reason}`);
+            break;
+          case 'unavailable':
+            // Next launch: Automatic falls back to WGC (no DXGI anywhere).
+            try {
+              fs.writeFileSync(SOURCES_HELPER_FAILURE_PATH,
+                serializeSourcesHelperFailure({ version: app.getVersion(), reason: e.reason, at: Date.now() }));
+            } catch { /* best effort */ }
+            freezeMonitor.event('capture:sources-helper', 0, `unavailable: ${e.reason}`);
+            break;
+          case 'exit':
+            freezeMonitor.event('capture:sources-helper', 0, `exit ${e.code ?? e.signal}`);
+            break;
+          case 'request-timeout':
+            freezeMonitor.event('capture:sources-helper', 0, `request ${e.id} timed out; restarting`);
+            break;
+          case 'dropped':
+            freezeMonitor.event('capture:sources-helper', 0, `request ${e.id}: ${e.count} malformed source(s) dropped`);
+            break;
+          default:
+            break;
+        }
+      },
+    })
+    : null;
+  if (sourcesHelper) app.on('will-quit', () => sourcesHelper.dispose());
+  const listSourcesInProcess = async (req: { types: Array<'window' | 'screen'>; thumbnailSize: { width: number; height: number } }): Promise<ListedSource[]> => {
+    const wantThumbs = req.thumbnailSize.width > 0 && req.thumbnailSize.height > 0;
+    const raw = await desktopCapturer.getSources(req);
+    return raw.map(s => ({
+      id: s.id,
+      name: s.name,
+      display_id: s.display_id ?? '',
+      // JPEG on main — see the measurements in 'desktop-capturer-get-sources'.
+      thumbnailDataUrl: wantThumbs ? thumbnailJpegDataUrl(s.thumbnail) : '',
+    }));
+  };
+  const desktopSources = createDesktopSourcesBroker<ListedSource>({
+    getSources: (req) => (sourcesHelper ? sourcesHelper.getSources(req) : listSourcesInProcess(req)),
+    onTiming: (t) => {
+      freezeMonitor.event('capture:get-sources', t.runMs,
+        `${t.key} n=${t.count} queued=${t.queuedMs}ms shared=${t.sharers} via=${PICKER_ENUMERATION}${t.ok ? '' : ' FAILED'}`);
+    },
+  });
+  let cachedDesktopSources: ListedSource[] = [];
   // PIDs the native audio addon may capture: populated only when
   // audio:get-pid-from-source-id resolves a sourceId that was actually in
   // cachedDesktopSources (i.e. offered by the screen-share picker this
@@ -3704,7 +4070,12 @@ app.whenReady().then(async () => {
     // window sharing (the common case) never triggers it at all, and screen
     // sharing gets it as a single expected consent step instead of stacked
     // on top of our own picker. See ScreenSharePickerModal.tsx.
-    const requestedTypes: Array<'window' | 'screen'> = types && types.length > 0 ? types : ['window', 'screen'];
+    // Renderer input: keep only the two real types (never coerce anything
+    // else into a request).
+    const validTypes = Array.isArray(types)
+      ? types.filter((t): t is 'window' | 'screen' => t === 'window' || t === 'screen')
+      : [];
+    const requestedTypes: Array<'window' | 'screen'> = validTypes.length > 0 ? validTypes : ['window', 'screen'];
     console.log(`[IPC] Fetching desktop sources (types=${requestedTypes.join(',')})...`);
     try {
       // macOS: Screen Recording is a per-app TCC permission, and this call is
@@ -3744,10 +4115,17 @@ app.whenReady().then(async () => {
       // shipping client is Windows — treat the ratio as the transferable part,
       // not the milliseconds.
       const wantThumbs = opts?.thumbnails !== false;
+      // A bounding box (aspect is kept): 320x200. The picker draws these in a
+      // 112 px tall box (object-contain) at ~190-280 px wide, so a 16:9 screen
+      // comes back 320x180 — sharp at 1.25x DPR — and a portrait monitor
+      // 113x200. Smaller than the old 360x360 box (360x203 for 16:9; 203x360
+      // portrait) for less scale, JPEG encode (main thread) and IPC per
+      // source. The picker asks for names first ({thumbnails:false}) and these
+      // second, so the grid appears before any of this is paid.
       const thumbnailSize = wantThumbs
-        ? { width: 400, height: 400 }
+        ? { width: 320, height: 200 }
         : { width: 0, height: 0 };
-      const sources = await desktopCapturer.getSources({ types: requestedTypes, thumbnailSize });
+      const sources = await desktopSources.request({ types: requestedTypes, thumbnailSize });
       console.log(`[IPC] Found ${sources.length} sources (thumbnails=${wantThumbs}).`);
       // Deliberately REPLACE rather than merge. This list is not just a latency
       // cache: it is the admission list that gates per-process audio capture
@@ -3757,18 +4135,19 @@ app.whenReady().then(async () => {
       return sources.map(source => ({
         id: source.id,
         name: source.name,
-        // toDataURL() on a 0x0 thumbnail is wasted work and a misleading value;
-        // callers that opted out already ignore this field.
+        // Encoded where the list was made (listSourcesInProcess, or the
+        // helper process). '' when thumbnails were not asked for: callers
+        // that opted out already ignore this field.
         //
-        // JPEG, not toDataURL()'s PNG: this encode runs on the MAIN process,
-        // once per source, while the picker waits. Measured on Electron 43 /
+        // JPEG, not toDataURL()'s PNG: in-process this encode runs on the
+        // MAIN process, once per source, while the picker waits. Measured on Electron 43 /
         // Linux (400x225 screen thumbnail, same box as the figures above):
         // PNG 5.5–25 ms per image vs JPEG q85 0.8–3.2 ms (~7x), and the data
         // URL shrinks 81 KB -> 33 KB, which is also less IPC and less decode in
         // the renderer. A Windows desktop offers dozens of window sources, so
         // that is the difference between the picker blocking main for a few
         // hundred ms and a few tens. q85 is visually lossless at thumbnail size.
-        thumbnailDataUrl: wantThumbs ? thumbnailJpegDataUrl(source.thumbnail) : ''
+        thumbnailDataUrl: wantThumbs ? source.thumbnailDataUrl : ''
       }));
     } catch (err) {
       console.error('[IPC] Failed to fetch sources:', err);
@@ -3918,7 +4297,9 @@ app.whenReady().then(async () => {
       // Use cached sources first to avoid race with windows opening/closing
       let match = cachedDesktopSources.find(s => s.id === sourceId);
       if (!match) {
-        const fresh = await desktopCapturer.getSources({ types: ['window', 'screen'] });
+        // id + name only: the default 150x150 thumbnail would capture EVERY
+        // window and screen just to look one id up.
+        const fresh = await desktopSources.request({ types: ['window', 'screen'], thumbnailSize: { width: 0, height: 0 } });
         match = fresh.find(s => s.id === sourceId);
       }
       if (match) {
@@ -3943,12 +4324,16 @@ app.whenReady().then(async () => {
         // for audio and passes audio:false to setScreenShareEnabled, so withAudio
         // should already be false. But if a timing edge case lets withAudio=true
         // reach here anyway, this guard prevents Cipherline from muting locally.
-        const effectiveWithAudio = withAudio && !audioCaptureAddon;
-        const audioMode: 'loopbackWithMute' | undefined = effectiveWithAudio
+        const effectiveWithAudio = withAudio && !nativeAudioCaptureAvailable();
+        // macOS has no Chromium loopback (Electron documents it as Windows-only),
+        // so there is nothing to ask for there — never request one.
+        const audioMode: 'loopbackWithMute' | undefined = effectiveWithAudio && process.platform !== 'darwin'
           ? (isWindow ? undefined : 'loopbackWithMute')
           : undefined;
-        console.log(`[IPC] desktop-capturer-resolve: sourceId=${sourceId} withAudio=${withAudio} effectiveWithAudio=${effectiveWithAudio} audioMode=${audioMode} addonLoaded=${!!audioCaptureAddon}`);
-        currentScreenshareCallback({ video: match, audio: audioMode });
+        console.log(`[IPC] desktop-capturer-resolve: sourceId=${sourceId} withAudio=${withAudio} effectiveWithAudio=${effectiveWithAudio} audioMode=${audioMode} addonLoaded=${!!audioCaptureAddon} nativeAvailable=${nativeAudioCaptureAvailable()}`);
+        // Electron reads only `id` and `name` here (electron_browser_context.cc
+        // DisplayMediaDeviceChosen); a helper-listed source works the same.
+        currentScreenshareCallback({ video: { id: match.id, name: match.name }, audio: audioMode });
       } else {
         console.error('[IPC] Source not found:', sourceId);
         currentScreenshareCallback(null);
@@ -3962,15 +4347,28 @@ app.whenReady().then(async () => {
   });
 
   // ── Desktop annotation overlay (docs/video-annotation-design.md, Phase 5) ──
-  // While the local user shares a whole screen, mirror the in-call
-  // annotations onto a transparent, click-through, capture-excluded window
-  // over that display. Only sources the picker actually offered are
-  // accepted (same admission rule as desktop-capturer-resolve); window
-  // shares and Linux resolve to `false` and the renderer keeps the in-app
-  // preview only. Deltas are fire-and-forget: a dropped frame is just a
-  // slightly later line.
-  ipcMain.handle('annot-overlay:show', async (event, sourceId: string) => {
-    if (typeof sourceId !== 'string' || !sourceId.startsWith('screen:')) return false;
+  // While the local user shares a screen (or, on Windows, a window), mirror
+  // the in-call annotations onto a transparent, click-through,
+  // capture-excluded window over that display / window. Only sources the
+  // picker actually offered are accepted (same admission rule as
+  // desktop-capturer-resolve). Anything that cannot be overlaid (window
+  // shares off Windows or without the addon's window_geometry, an unknown
+  // display, Wayland, an X11 desktop without a compositor) resolves to a
+  // refusal WITH a reason enum, which the renderer records as an
+  // `annot_overlay` call event — a refused overlay used to be a bare `false`
+  // plus a main-process console line nobody sees in a packaged build. On
+  // Linux the overlay is captured into the share (no exclusion exists) and
+  // the result says `captured: true`. Deltas are fire-and-forget: a dropped
+  // frame is just a slightly later line.
+  ipcMain.handle('annot-overlay:show', async (event, sourceId: unknown): Promise<OverlayShowResult> => {
+    if (typeof sourceId !== 'string' || sourceId.length > 64) return { ok: false, reason: 'bad_source' };
+    const kind: 'screen' | 'window' | null =
+      sourceId.startsWith('screen:') ? 'screen' : sourceId.startsWith('window:') ? 'window' : null;
+    if (!kind) return { ok: false, reason: 'bad_source' };
+    // Platform refusals BEFORE admission: a cache miss below asks for a fresh
+    // source list, and on Wayland asking for screens opens the portal chooser.
+    const pre = annotationOverlayPrecheck(kind);
+    if (pre) return pre;
     let src = cachedDesktopSources.find(s => s.id === sourceId);
     if (!src) {
       try {
@@ -3979,11 +4377,11 @@ app.whenReady().then(async () => {
         // the main process (see 'get-desktop-sources'). The overlay is now
         // created lazily on the first stroke, often long after the picker's
         // cache was replaced, so this path is no longer rare.
-        const fresh = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 0, height: 0 } });
+        const fresh = await desktopSources.request({ types: [kind], thumbnailSize: { width: 0, height: 0 } });
         src = fresh.find(s => s.id === sourceId);
       } catch { src = undefined; }
     }
-    if (!src) return false;
+    if (!src) return { ok: false, reason: 'not_offered' };
     return showAnnotationOverlay(src);
   });
   ipcMain.handle('annot-overlay:hide', () => {
@@ -3997,7 +4395,7 @@ app.whenReady().then(async () => {
   // --- Native per-process audio capture (Windows WASAPI ApplicationLoopback) ---
 
   ipcMain.handle('audio:get-pid-from-source-id', (event, sourceId: string) => {
-    if (!audioCaptureAddon) return null;
+    if (!audioCaptureAddon || !nativeAudioCaptureAvailable()) return null;
     // Only resolve (and admit for capture) sourceIds the picker actually
     // offered — mirrors desktop-capturer-resolve's same check for video.
     if (!cachedDesktopSources.some(s => s.id === sourceId)) return null;
@@ -4011,7 +4409,7 @@ app.whenReady().then(async () => {
   // Renderer capability probe — lets the screenshare audio path decide at runtime
   // whether to go through the native WASAPI addon (Windows) or fall back to
   // Electron/Chromium's getDisplayMedia audio (other platforms / missing addon).
-  ipcMain.handle('audio:is-capture-supported', () => !!audioCaptureAddon);
+  ipcMain.handle('audio:is-capture-supported', () => nativeAudioCaptureAvailable());
 
   // Display refresh rates. Screen capture is fundamentally sampling the
   // compositor's output, so it can never produce more distinct frames per
@@ -4051,7 +4449,7 @@ app.whenReady().then(async () => {
     // yields a refresh rate, it admits nothing.
     if (!offered && sourceKind === 'screen') {
       try {
-        const fresh = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 0, height: 0 } });
+        const fresh = await desktopSources.request({ types: ['screen'], thumbnailSize: { width: 0, height: 0 } });
         offered = fresh.find(s => s.id === id);
       } catch { /* fall back below */ }
     }
@@ -4110,7 +4508,12 @@ app.whenReady().then(async () => {
     return {
       platform: process.platform,
       saved,
-      active: { screenCapturer: STARTUP_FLAGS.screenCapturer, captureLog: STARTUP_FLAGS.captureLog },
+      active: {
+        screenCapturer: STARTUP_FLAGS.screenCapturer,
+        captureLog: STARTUP_FLAGS.captureLog,
+        // The launch-time switches only; the runtime half follows `saved`.
+        gamingVideo: GAMING_VIDEO_AT_LAUNCH,
+      },
       envOverride: {
         screenCapturer: STARTUP_FLAGS.source.screenCapturer === 'env',
         captureLog: STARTUP_FLAGS.source.captureLog === 'env',
@@ -4128,7 +4531,16 @@ app.whenReady().then(async () => {
     if (!IS_SMOKE_TEST) {
       writeStartupFlagsFile(STARTUP_FLAGS_PATH, { ...readStartupFlagsFile(STARTUP_FLAGS_PATH), ...change });
     }
+    // The gaming-video mode's runtime half (process priority during a call)
+    // follows the saved value at once; only its Chromium switches wait for
+    // the next launch.
+    if (change.gamingVideo !== undefined) syncCallPriority({ enabled: change.gamingVideo });
     return startupFlagsState();
+  });
+  // The renderer says a call started / ended (CallPane mount / unmount).
+  // Strict boolean — validateCallMediaActive throws on anything else.
+  ipcMain.handle('call:set-media-active', (_event, active: unknown) => {
+    syncCallPriority({ inCall: validateCallMediaActive(active) });
   });
   // "Restart Cipherline to apply". A normal quit (before-quit handlers run:
   // replay-cache flush, presence goodbye), not app.exit — then Electron's
@@ -4146,6 +4558,25 @@ app.whenReady().then(async () => {
   // Per-frame capture timing, parsed from Chromium's own log (Settings →
   // Advanced → Capture timing log). null when the log is off or has too
   // little data yet. Reads only the newest 512 KB — a few thousand frames.
+  // In-call performance helper (renderer CallPerformanceGuard): the CPU of
+  // the calling renderer and of the GPU process (hardware decode runs there),
+  // in percent of ONE core since the previous call (Electron's
+  // app.getAppMetrics semantics). Read-only, numbers only, no arguments.
+  ipcMain.handle('perf:get-process-cpu', (event) => {
+    try {
+      const pid = event.sender.getOSProcessId();
+      const metrics = app.getAppMetrics();
+      const pct = (m: Electron.ProcessMetric | undefined) =>
+        (m && Number.isFinite(m.cpu.percentCPUUsage) ? m.cpu.percentCPUUsage : null);
+      return {
+        renderer: pct(metrics.find(m => m.pid === pid)),
+        gpu: pct(metrics.find(m => m.type === 'GPU')),
+      };
+    } catch {
+      return null;
+    }
+  });
+
   ipcMain.handle('screenshare:get-capture-timing', async () => {
     if (!CAPTURE_LOG_ENABLED || !CAPTURE_LOG_FILE) return null;
     try {
@@ -4165,8 +4596,8 @@ app.whenReady().then(async () => {
   });
 
   ipcMain.handle('audio:start-window-capture', (event, pid: number, mode: 'include' | 'exclude' = 'include') => {
-    if (!audioCaptureAddon) {
-      console.warn('[Main/Audio] start-window-capture called but addon not loaded');
+    if (!audioCaptureAddon || !nativeAudioCaptureAvailable()) {
+      console.warn('[Main/Audio] start-window-capture called but the native addon is not loaded/supported');
       return false;
     }
     // Confine capture to the app's own process (the 'screen'/exclude-self
@@ -4184,6 +4615,18 @@ app.whenReady().then(async () => {
       // that used to be here only broke narrowing: negating `A && B` leaves TS
       // unable to eliminate the exited variant, so every `chunk.data` /
       // `chunk.sampleRate` below failed to compile.
+      if ('failed' in chunk) {
+        // macOS: ScreenCaptureKit could not start or was stopped (Screen Recording
+        // not granted, the user hit the system "Stop sharing" control, target not
+        // found). Terminal — release the addon and tell the renderer why so it can
+        // say something better than "no audio".
+        console.warn(`[Main/Audio] capture failed (${chunk.reason}): ${chunk.message}`);
+        audioCaptureAddon?.stopCapture();
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('audio:capture-failed', { reason: chunk.reason });
+        }
+        return;
+      }
       if ('processExited' in chunk) {
         // Phase K: the captured process exited mid-share. This is a terminal
         // signal from the native thread — it has already stopped itself, but
@@ -4305,6 +4748,9 @@ app.whenReady().then(async () => {
   // store never initialized.
   const storeOk = await storeReady.then(() => true, () => false);
   if (!storeOk) console.warn('[Main] SecureStore unavailable — startup preferences fall back to defaults');
+  // Staging lock: settle the remembered unlock now that the store can be read
+  // (no-op when not enforced, which includes the smoke test).
+  loadRememberedStagingUnlock();
 
   // Configured once, a few seconds after the window exists (see below) or on
   // the first updater IPC, whichever comes first — not before the window.
@@ -4511,7 +4957,7 @@ app.whenReady().then(async () => {
     // and it is enforced here, not in the renderer. A distinct error code so
     // the Settings UI can open its password prompt instead of a generic error.
     // Asking for stable is never gated (see decideSetChannel).
-    if (decideSetChannel({ requested: ch, enforced: STAGING_LOCK.enforced, unlocked: stagingUnlocked }) === 'refuse-locked') {
+    if (decideSetChannel({ requested: ch, enforced: STAGING_LOCK.enforced, unlocked: isStagingUnlocked() }) === 'refuse-locked') {
       throw new Error(STAGING_LOCKED_ERROR);
     }
 
@@ -4564,13 +5010,20 @@ app.whenReady().then(async () => {
    * Verify the staging password. Constant-time scrypt (~100 ms, synchronous on
    * purpose: two concurrent calls cannot interleave around the limiter), with
    * the in-memory backoff in front of it. Nothing about the attempt is logged
-   * — not the input, not even its length. On success the unlock is remembered
-   * in STAGING_UNLOCK_PATH; if that write fails the device is still unlocked
-   * for this launch and will simply ask again next time.
+   * — not the input, not even its length — and the password goes nowhere
+   * else: it is compared here, locally, and dropped. On success the unlock is
+   * remembered as a SecureStore marker bound to STAGING_VERIFIER and awaited
+   * onto disk before replying, so the staging build that the channel switch
+   * goes on to download (and installs on quit) finds it at launch. If that
+   * write fails the device is still unlocked for this launch and will simply
+   * ask again next time.
+   *
+   * Everything up to and including `stagingUnlocked = true` is synchronous,
+   * so the limiter still cannot be raced; only the durability wait yields.
    */
-  ipcMain.handle('staging-lock:unlock', (_event, password: unknown): StagingUnlockResult => {
+  ipcMain.handle('staging-lock:unlock', async (_event, password: unknown): Promise<StagingUnlockResult> => {
     if (!isAcceptablePasswordInput(password)) throw new Error('Invalid input');
-    if (!STAGING_LOCK.enforced || stagingUnlocked) return { ok: true, retryAfterMs: 0 };
+    if (!STAGING_LOCK.enforced || isStagingUnlocked()) return { ok: true, retryAfterMs: 0 };
     const wait = stagingAttempts.retryAfterMs();
     if (wait > 0) return { ok: false, retryAfterMs: wait };
     if (!verifyPassword(password, STAGING_VERIFIER)) {
@@ -4579,11 +5032,7 @@ app.whenReady().then(async () => {
     }
     stagingAttempts.recordSuccess();
     stagingUnlocked = true;
-    try {
-      writeUnlockFileAtomic(STAGING_UNLOCK_PATH, Date.now());
-    } catch (e) {
-      console.warn('[Main/StagingLock] could not remember the unlock:', (e as NodeJS.ErrnoException)?.code ?? 'error');
-    }
+    if (await rememberStagingUnlock()) removeUnlockFile(STAGING_UNLOCK_PATH);
     console.log('[Main/StagingLock] staging access unlocked on this device');
     return { ok: true, retryAfterMs: 0 };
   });
@@ -4597,7 +5046,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('staging-lock:relock', (): StagingLockStatus => {
     if (!STAGING_LOCK.enforced) return stagingLockStatus();
     stagingUnlocked = false;
-    removeUnlockFile(STAGING_UNLOCK_PATH);
+    forgetStagingUnlock();
     if (readChannel() === 'staging') {
       try { applyUpdateChannel('latest'); } catch (e) {
         console.warn('[Main/StagingLock] relock: could not switch the channel back to stable:', (e as Error)?.message);
@@ -4898,6 +5347,8 @@ app.whenReady().then(async () => {
 // never worse than today. Registered FIRST among the before-quit handlers
 // so the renderer gets the earliest possible signal.
 app.on('before-quit', () => {
+  // Gaming-video priority boost: restore before the processes start exiting.
+  syncCallPriority({ inCall: false });
   mainWindow?.webContents.send('app:before-quit');
 });
 
@@ -4921,6 +5372,8 @@ app.on('before-quit', () => {
 // window lands after the flush above.
 app.on('will-quit', () => {
   try { secureStore.flush(); } catch { /* logged by the store */ }
+  // A clean quit: the next launch must not report an unclean exit.
+  endSessionMarker();
 });
 
 app.on('window-all-closed', () => {

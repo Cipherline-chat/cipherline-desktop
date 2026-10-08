@@ -109,6 +109,23 @@ describe('summaries carry types, reasons and numbers only', () => {
             { type: 'C:\\Users\\alice\\evil', cpu: { percentCPUUsage: 1 }, memory: { workingSetSize: 1024 } },
         ]);
         expect(s).toBe('browser 1.3% 150MB | tab(2) 8.5% 430MB | gpu 3.0% 200MB | other 1.0% 1MB | total 781MB');
+        // With the main process's JS heap appended, still a storable row.
+        const withHeap = summarizeAppMetrics([
+            { type: 'Browser', cpu: { percentCPUUsage: 1 }, memory: { workingSetSize: 232 * 1024 } },
+        ], { heapUsed: 12.4 * 1048576, heapTotal: 20 * 1048576, external: 3 * 1048576 });
+        expect(withHeap).toBe('browser 1.0% 232MB | total 232MB | main-js 12/20MB ext 3MB');
+        // Windows also reports privateBytes (Task Manager's figure): totalled.
+        const withPriv = summarizeAppMetrics([
+            { type: 'Browser', cpu: { percentCPUUsage: 1 }, memory: { workingSetSize: 232 * 1024, privateBytes: 120 * 1024 } },
+            { type: 'Tab', cpu: { percentCPUUsage: 2 }, memory: { workingSetSize: 250 * 1024, privateBytes: 150 * 1024 } },
+        ]);
+        expect(withPriv).toBe('browser 1.0% 232MB | tab 2.0% 250MB | total 482MB private 270MB');
+        const m3 = new FreezeMonitor(() => 0);
+        m3.metrics(`periodic: ${withPriv}`);
+        expect(m3.snapshot()).toHaveLength(1);
+        const m2 = new FreezeMonitor(() => 0);
+        m2.metrics(`periodic: ${withHeap}`);
+        expect(m2.snapshot()).toHaveLength(1);
         // And it passes the monitor's own pattern, so it is actually stored.
         const m = new FreezeMonitor(() => 0);
         m.metrics(`restore: ${s}`);

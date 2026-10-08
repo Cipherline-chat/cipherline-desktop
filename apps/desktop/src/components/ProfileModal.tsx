@@ -1,45 +1,29 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
-import { MessageSquare, Pencil, MoreVertical, PhoneCall, Server, UserPlus, UserMinus, Ban, AtSign, Check, X, Flag, Crown } from 'lucide-react';
-import { ClRole } from './cl';
+import { MessageSquare, Pencil, MoreVertical, PhoneCall, Server, UserPlus, UserMinus, Ban, AtSign, Check, X, Flag } from 'lucide-react';
 import { API_BASE } from '../constants';
 import { EncryptedAvatar } from './EncryptedAvatar';
-import { Banner } from './Banner';
 import { ImageLightbox } from './ImageLightbox';
 import { GameControllerIcon } from './GameControllerIcon';
 import { MobileStatusGlyph } from './MobileStatusGlyph';
-import { ProfileBadgeRow } from './ProfileBadgeRow';
-import type { ProfileBadge } from '../utils/profileBadges';
 import { STATUS_CONFIG } from '../hooks/useUserStatus';
 import type { FriendStatusEntry, UserStatus } from '../hooks/useUserStatus';
-import { padDiscriminator } from '@cipherline/shared';
 import { useEncryptedAvatar } from '../hooks/useEncryptedAvatar';
 import { useModalExit } from '../hooks/useModalExit';
 import { useContextMenu } from '../hooks/useContextMenu';
 import { useEscape } from '../hooks/useEscape';
 import { formatLastSeen } from '../utils/formatLastSeen';
+import { fetchProfile as fetchProfileCached, peekProfile, __profilePrefetchTuning, type PublicProfile } from '../utils/profileCache';
+import { lookupUserAvatarId, lookupUserBannerId } from '../utils/peerIdentityCache';
 import { roleColorHexFromInt } from '../utils/roleColor';
 import { ClButton, ClInput } from './cl';
-
-interface PublicProfile {
-    user_id: string;
-    username: string;
-    discriminator: number | null;
-    avatar_url: string | null;
-    banner_url: string | null;
-    bio: string | null;
-    status: UserStatus;
-    custom_status_text: string | null;
-    custom_status_emoji: string | null;
-    last_seen_at: string | null;
-    /** Present on phones only (newer servers; same gate as `status`). */
-    on_mobile?: boolean;
-    /** Paying (or comped) account. Server-derived; absent on older servers. */
-    is_pro?: boolean;
-    /** Admin-granted custom profile badges. Always an array on a current
-     *  server; absent/undefined on an older one. */
-    badges?: ProfileBadge[];
-}
+// The card's markup is shared with the onboarding profile preview (so the two
+// cannot drift) — see ProfileCardParts.tsx.
+import {
+    PROFILE_CARD_FRAME_CLASS, PROFILE_CARD_IDENTITY_CLASS, PROFILE_CARD_INFO_CLASS, PROFILE_CARD_WIDTH,
+    ProfileCardAbout, ProfileCardAvatar, ProfileCardBanner, ProfileCardEyebrow as Eyebrow, ProfileCardFooter,
+    ProfileCardHairline, ProfileCardNameRow, ProfileCardStatusDot, ProfileCardStatusLabel, ProfileCardStatusLine,
+} from './ProfileCardParts';
 
 export interface ProfileModalProps {
     userId: string;
@@ -101,17 +85,7 @@ export interface ProfileModalProps {
     autoEditNickname?: boolean;
 }
 
-/** Mono uppercase section label — same vocabulary as the settings zone labels. */
-const Eyebrow: React.FC<{ children: React.ReactNode }> = ({ children }) => (
-    <p
-        className="text-[10px] font-semibold uppercase text-cl-faint m-0 mb-1.5"
-        style={{ fontFamily: 'var(--cl-font-mono)', letterSpacing: '1.2px' }}
-    >
-        {children}
-    </p>
-);
-
-const CARD_WIDTH = 360;
+const CARD_WIDTH = PROFILE_CARD_WIDTH;
 // Conservative estimate used for viewport-edge clamping. A taller card just
 // gets `max-height: calc(100vh - 16px)` and scrolls internally.
 const ESTIMATED_CARD_HEIGHT = 500;
@@ -193,9 +167,21 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
 
     const isOwnProfile = userId === currentUserId;
 
-    const [profile, setProfile] = useState<PublicProfile | null>(null);
-    const [loading, setLoading] = useState(true);
+    // Seeded from the session profile cache: a re-open paints the whole card
+    // on its first frame and revalidates underneath (see utils/profileCache).
+    const [profile, setProfile] = useState<PublicProfile | null>(() => peekProfile(userId));
+    const [loading, setLoading] = useState(() => !peekProfile(userId));
     const [error, setError] = useState<string | null>(null);
+
+    // Which images to show. The profile response is the authority once it is
+    // here; before that, the ids this device already knows — the friends list,
+    // an earlier open, last session's identity cache — so both images start
+    // (or paint from the decrypted-blob cache) on the click instead of one
+    // profile round trip later. A stale id survives at most that one round
+    // trip, and the hook keeps showing it until the replacement has decrypted,
+    // so a change never flashes the placeholder.
+    const avatarId = profile ? profile.avatar_url : lookupUserAvatarId(userId);
+    const bannerId = profile ? profile.banner_url : lookupUserBannerId(userId);
 
     // When the profile is opened from a call tile (no pre-fetched role/member data),
     // lazy-fetch the server roles and this member's role IDs + nickname.
@@ -298,25 +284,31 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
 
     // Resolved avatar blob URL for the lightbox (hook is cached — EncryptedAvatar
     // already loaded this, so this is essentially free).
-    const avatarBlobUrl = useEncryptedAvatar(profile?.avatar_url ?? null, token);
+    const avatarBlobUrl = useEncryptedAvatar(avatarId, token);
 
+    // Stale-while-revalidate. A copy younger than FRESH_MS (a hover prefetch
+    // moments ago, or the press that opened this card) is used as-is; anything
+    // older is shown immediately and replaced when the fresh answer lands. The
+    // request is shared with any prefetch already in flight for this user.
     const fetchProfile = useCallback(async () => {
-        setLoading(true);
+        const cached = peekProfile(userId);
+        setProfile(cached);
+        setLoading(!cached);
         setError(null);
         try {
-            const res = await axios.get(`${API_BASE}/auth/users/${userId}`, {
-                headers: { Authorization: `Bearer ${token}` },
-            });
-            setProfile(res.data);
+            const fresh = await fetchProfileCached(userId, token, { maxAgeMs: __profilePrefetchTuning.FRESH_MS });
+            setProfile(fresh);
         } catch {
-            setError('Could not load profile.');
+            // A cached card stays up on a failed revalidation; only a card
+            // with nothing to show reports the error.
+            if (!cached) setError('Could not load profile.');
         } finally {
             setLoading(false);
         }
     }, [userId, token]);
 
     useEffect(() => {
-        fetchProfile();
+        void fetchProfile();
     }, [fetchProfile]);
 
     // Esc dismisses the popover through the shared stack. ImageLightbox and
@@ -393,7 +385,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                 On close, plays a short reverse fade/scale via animate-out classes. */}
             <div
                 ref={cardRef}
-                className={`custom-scrollbar fixed z-[10001] bg-cl-deep border border-cl-border rounded-[20px] shadow-[0_24px_64px_rgba(0,0,0,0.6)] ${closing ? 'fade-pop-exit' : 'profile-popover-anim'}`}
+                className={`custom-scrollbar fixed z-[10001] ${PROFILE_CARD_FRAME_CLASS} ${closing ? 'fade-pop-exit' : 'profile-popover-anim'}`}
                 style={{
                     left,
                     top: topAdj,
@@ -415,17 +407,12 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                 }}
             >
                 {/* Banner — rounded top corners (matching the card's 20px), fades into card bg at the bottom */}
-                <div className="relative rounded-t-[20px] overflow-hidden">
-                    <Banner
-                        attachmentId={profile?.banner_url ?? null}
-                        fallbackAvatarAttachmentId={profile?.avatar_url ?? null}
-                        fallbackUserId={userId}
-                        token={token}
-                        height={120}
-                        fadeToColor="#131A30"
-                        bypassFriendGate
-                    />
-                </div>
+                <ProfileCardBanner
+                    attachmentId={bannerId}
+                    fallbackAvatarAttachmentId={avatarId}
+                    userId={userId}
+                    token={token}
+                />
 
                 {/* 3-dots menu — top-right over banner, only for other users' profiles.
                     Items built fresh per click so isFriend / canSetNickname stays current. Portals to body
@@ -483,57 +470,46 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                     </div>
                 )}
 
-                {/* Avatar — overlaps banner, horizontally centered, clickable to enlarge, status dot in corner.
-                    -mt-6 (24px) overlaps only a quarter of the avatar for a more "dropped" look.
-                    A plain button, NOT a ClButton: the kit button's visible face is its inner
-                    .cap (fixed icon-button size), so sizing classes on the wrapper produce a
-                    big empty ring with a tiny avatar floating inside it. */}
-                <div className="px-5 -mt-6 flex justify-center">
-                    <div className="relative">
-                        <button
-                            type="button"
-                            aria-label="View avatar"
-                            title={avatarBlobUrl ? 'View avatar' : undefined}
-                            onClick={(e) => {
-                                e.stopPropagation();
-                                if (avatarBlobUrl) setLightboxOpen(true);
-                            }}
-                            className={`block w-24 h-24 rounded-full ring-4 ring-[#131A30] overflow-hidden bg-cl-raise p-0 border-none transition-transform duration-200 ${avatarBlobUrl ? 'cursor-zoom-in hover:scale-[1.04]' : 'cursor-default'}`}
+                {/* Avatar — overlaps banner, horizontally centered, clickable to enlarge,
+                    status badge in the corner (ringed to separate it from the avatar face). */}
+                <ProfileCardAvatar
+                    ariaLabel="View avatar"
+                    title={avatarBlobUrl ? 'View avatar' : undefined}
+                    onClick={(e) => {
+                        e.stopPropagation();
+                        if (avatarBlobUrl) setLightboxOpen(true);
+                    }}
+                    interactionClassName={avatarBlobUrl ? 'cursor-zoom-in hover:scale-[1.04]' : 'cursor-default'}
+                    badge={!loading && (onMobile ? (
+                        <span
+                            className="absolute flex items-center justify-center rounded-[6px] ring-[3px] ring-[#131A30] bg-[#131A30]"
+                            style={{ right: 4, bottom: 0 }}
                         >
-                            {loading ? (
-                                <div className="w-full h-full bg-white/5 animate-pulse" />
-                            ) : (
-                                <EncryptedAvatar
-                                    attachmentId={profile?.avatar_url ?? null}
-                                    userId={userId}
-                                    token={token}
-                                    className="w-full h-full"
-                                    fallbackSize={40}
-                                    disableClickProfile
-                                    bypassFriendGate
-                                />
-                            )}
-                        </button>
-                        {/* Status badge — bottom-right of the avatar, ringed to separate from the avatar face */}
-                        {!loading && (onMobile ? (
-                            <span
-                                className="absolute flex items-center justify-center rounded-[6px] ring-[3px] ring-[#131A30] bg-[#131A30]"
-                                style={{ right: 4, bottom: 0 }}
-                            >
-                                <MobileStatusGlyph status={liveEntry.status} size={16} />
-                            </span>
-                        ) : (
-                            <span
-                                className="absolute w-5 h-5 rounded-full ring-[3px] ring-[#131A30]"
-                                style={{ backgroundColor: statusCfg.color, right: 2, bottom: 2 }}
-                                title={statusCfg.label}
-                            />
-                        ))}
-                    </div>
-                </div>
+                            <MobileStatusGlyph status={liveEntry.status} size={16} />
+                        </span>
+                    ) : (
+                        <ProfileCardStatusDot color={statusCfg.color} title={statusCfg.label} />
+                    ))}
+                >
+                    {/* Skeleton only while there is genuinely nothing to show:
+                        no profile yet AND no avatar id known for this user. */}
+                    {loading && !avatarId ? (
+                        <div className="w-full h-full bg-white/5 animate-pulse" />
+                    ) : (
+                        <EncryptedAvatar
+                            attachmentId={avatarId}
+                            userId={userId}
+                            token={token}
+                            className="w-full h-full"
+                            fallbackSize={40}
+                            disableClickProfile
+                            bypassFriendGate
+                        />
+                    )}
+                </ProfileCardAvatar>
 
                 {/* Info block — left-aligned */}
-                <div className="px-5 pt-3 pb-4 flex flex-col">
+                <div className={PROFILE_CARD_INFO_CLASS}>
                     {loading ? (
                         <div className="space-y-2 animate-pulse">
                             <div className="h-5 bg-white/10 rounded-lg w-3/4" />
@@ -546,42 +522,21 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                         <>
                             {/* Identity — centered under the centered avatar so the card
                                 reads as one column instead of two competing alignments. */}
-                            <div className="flex flex-col items-center text-center">
-                                <div className="flex items-center gap-2 flex-wrap justify-center">
-                                    <h2
-                                        className="text-[21px] font-semibold text-cl-text leading-tight m-0"
-                                        style={{ fontFamily: 'var(--cl-font-display)' }}
-                                    >
-                                        {displayName}
-                                    </h2>
-                                    {profile.discriminator !== null && profile.discriminator !== undefined && (
-                                        <span
-                                            className="text-[11px] font-semibold text-cl-muted bg-cl-surface border border-cl-border px-2 py-0.5 rounded-full"
-                                            style={{ fontFamily: 'var(--cl-font-mono)', letterSpacing: '0.5px' }}
-                                        >
-                                            #{padDiscriminator(profile.discriminator)}
-                                        </span>
-                                    )}
-                                    {profile.is_pro && (
-                                        <ClRole variant="gold" style={{ fontSize: 11 }}>
-                                            <Crown size={11} aria-hidden /> Pro
-                                        </ClRole>
-                                    )}
-                                    <ProfileBadgeRow badges={profile.badges} />
-                                </div>
+                            <div className={PROFILE_CARD_IDENTITY_CLASS}>
+                                <ProfileCardNameRow
+                                    name={displayName}
+                                    discriminator={profile.discriminator}
+                                    isPro={profile.is_pro}
+                                    badges={profile.badges}
+                                />
 
                                 {/* Status label / last seen */}
-                                <div className="flex items-center gap-1.5 mt-1.5 justify-center">
+                                <ProfileCardStatusLine>
                                     {liveEntry.status === 'offline' && formatLastSeen(profile.last_seen_at)
                                         ? <span className="text-[12px] text-cl-faint">{formatLastSeen(profile.last_seen_at)}</span>
-                                        : (
-                                            <>
-                                                <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ backgroundColor: statusCfg.color }} aria-hidden="true" />
-                                                <span className="text-[12px] font-semibold" style={{ color: statusCfg.color }}>{onMobile ? `${statusCfg.label} · on mobile` : statusCfg.label}</span>
-                                            </>
-                                        )
+                                        : <ProfileCardStatusLabel color={statusCfg.color} label={onMobile ? `${statusCfg.label} · on mobile` : statusCfg.label} />
                                     }
-                                </div>
+                                </ProfileCardStatusLine>
 
                                 {/* Game activity — hidden when offline so the "playing"
                                     signal isn't leaked. */}
@@ -604,17 +559,10 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                             </div>
 
                             {/* Hairline between identity and the detail sections */}
-                            {hasDetails && <div className="h-px bg-cl-border/50 mt-4 mb-3.5" aria-hidden="true" />}
+                            {hasDetails && <ProfileCardHairline />}
 
                             {/* Bio */}
-                            {profile.bio && (
-                                <div>
-                                    <Eyebrow>About</Eyebrow>
-                                    <p className="text-[13px] text-cl-muted leading-relaxed whitespace-pre-wrap break-words m-0">
-                                        {profile.bio}
-                                    </p>
-                                </div>
-                            )}
+                            {profile.bio && <ProfileCardAbout bio={profile.bio} />}
 
                             {/* Server nickname — shown when in server context */}
                             {serverId && (
@@ -715,7 +663,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
 
                 {/* Bottom action — full-width */}
                 {profile && (
-                    <div className="px-5 pb-5 space-y-2">
+                    <ProfileCardFooter>
                         {isOwnProfile ? (
                             <ClButton
                                 variant="ghost"
@@ -745,7 +693,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                             </ClButton>
                         ) : null}
 
-                    </div>
+                    </ProfileCardFooter>
                 )}
             </div>
 

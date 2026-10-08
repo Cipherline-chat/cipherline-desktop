@@ -28,6 +28,7 @@ import { messageRetentionMs, attachmentRetentionMs, UNSAVE_EXPIRY_MS, getEffecti
 import axios from 'axios';
 import { useAuth } from '../contexts/AuthContext';
 import { useOpenProfile } from '../contexts/ProfileOpenContext';
+import { scheduleProfilePrefetch } from '../utils/profileCache';
 import { useToast } from '../contexts/ToastContext';
 import { useSubscription } from '../contexts/SubscriptionContext';
 import { generateAesGcmKey, encryptBlob, decryptBlob, exportKeyToBase64, importKeyFromBase64, generateCallKey } from '../utils/crypto';
@@ -37,7 +38,7 @@ import { getRemovedAttachmentIds, markAttachmentRemoved } from '../utils/removed
 import { PrioritySemaphore } from '../utils/avatarWarmQueue';
 import { trackActivity } from '../utils/freezeLog';
 import type { ClientContent, KlipyGifRef } from '@cipherline/shared';
-import { Permissions, padDiscriminator, parseKlipyGifRef, isKlipyMediaUrl } from '@cipherline/shared';
+import { Permissions, parseKlipyGifRef, isKlipyMediaUrl } from '@cipherline/shared';
 import { MENTION_TOKEN_RE, extractMentionsFromText, parseMentionToken, mentionsToDisplayText } from '../utils/mentionTokens';
 import { displayTextOf, messageTextMatches } from '../utils/messagePreviewText';
 import { UNDECRYPTABLE_KIND, placeholderText } from '../utils/dmInbound';
@@ -47,6 +48,7 @@ import { isSelfDm, chatAffordances } from '../utils/selfConversation';
 import { useWindowFocus } from '../hooks/useWindowFocus';
 import { EMOJI_RE, EMOJI_TOKEN_RE, isEmojiOnly, countEmojis } from '../utils/emojiText';
 import { buildWireText, buildEmojiWireText, tokenMapsFromWireText } from '../utils/composerWireText';
+import { rankMentionCandidates, describeMentionUserRow } from '../utils/mentionSuggestions';
 import { SafetyVerificationModal } from './SafetyVerificationModal';
 import { deriveContactTrust } from '../utils/contactTrust';
 import { contactTrustDevices } from '../utils/contactBadgeDevices';
@@ -55,6 +57,11 @@ import type { SenderVerdict } from '../utils/senderTrust';
 import { UnverifiedDeviceBanner } from './UnverifiedDeviceBanner';
 import { encryptAndAddress } from '../utils/encryptAndAddress';
 import { classifySubmit, decideViewportAction, correctedScrollTop } from '../utils/feedScrollDecision';
+import { isUnconfirmedSend, sendFailureReason, type SendPatch } from '../utils/pendingSend';
+import { assignRowKeys, createEntranceTracker, createRevealGate, messageRowKey, type EntranceTracker, type RevealGate } from '../utils/messageEntrance';
+import { deliveryQueue, withRateLimitRetry } from '../utils/deliveryQueue';
+import { recipientBundles, recipientBundleKey, type RecipientDevice } from '../utils/recipientBundles';
+import { clampFutureTimestamp } from '../utils/retentionSweeper';
 import { GroupSettingsModal } from './GroupSettingsModal';
 import FileViewer from './FileViewer';
 // The light wrapper — the picker itself (emoji-mart + dataset) loads on demand.
@@ -102,6 +109,7 @@ import {
 import type { FriendStatusEntry } from '../hooks/useUserStatus';
 import { EncryptedAvatar } from './EncryptedAvatar';
 import { preloadAvatars } from '../hooks/useEncryptedAvatar';
+import { peekRoster, refreshRoster, type Roster } from '../utils/serverRosterCache';
 import {
     rememberIdentities,
     rememberUserAvatarId,
@@ -422,6 +430,7 @@ function renderReactionGlyph(
     return (
         <EmojiImage
             name={found!.name}
+            serverId={found!.server_id}
             attachmentId={found!.attachment_id}
             keyB64={found!.key_b64}
             nonceB64={found!.nonce_b64}
@@ -848,6 +857,7 @@ function renderTextWithMentions(
                     <EmojiImage
                         key={`emoji-${segIdx++}-${m.index}`}
                         name={found!.name}
+                        serverId={found!.server_id}
                         attachmentId={found!.attachment_id}
                         keyB64={found!.key_b64}
                         nonceB64={found!.nonce_b64}
@@ -980,6 +990,7 @@ function renderJumboContent(
                 <EmojiImage
                     key={`jumbo-emoji-${i++}`}
                     name={found!.name}
+                    serverId={found!.server_id}
                     attachmentId={found!.attachment_id}
                     keyB64={found!.key_b64}
                     nonceB64={found!.nonce_b64}
@@ -1433,6 +1444,9 @@ interface ChatPaneProps {
     emojisChangedEvent?: { server_id: string; ts: number } | null;
     /** Called after a channel message is successfully sent (optimistic append). */
     onChannelMessageSent?: (msg: any) => void;
+    /** Instant send: update the marker on a message already shown (sending →
+     *  delivered / failed). See utils/pendingSend.ts. */
+    onPatchSentMessage?: (kind: 'dm' | 'channel', conversationId: string, clientMsgId: string, patch: SendPatch) => void;
     /** userId → hex role colour; when set, sender names are tinted by their top role. */
     memberRoleColors?: Record<string, string | null>;
     /** userId → server nickname; when set, server channel messages show the
@@ -1566,7 +1580,7 @@ const QUICK_REACTION_EMOJIS = ['👍', '❤️', '😂', '🎉'];
 
 const NOOP_TYPING: (event: 'typing:start' | 'typing:stop', cid: string) => void = () => {};
 
-const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, keyChangedSenders, senderWarnings = {}, onKeyChangeResolved, messages, messagesFetching = false, onMessageSent, onAddToGroup, typingUsers, sendTypingEvent: sendTypingEventProp, activeCall, onCallChange, onStartingCallChange, chatSearch = '', friendRemovedEvent, onCloseChatRequest, notifPref = 'all', onSetNotifMode, retention, friendStatuses, pinnedMsgIds, onPinMessage, onUnpinMessage, serverSavedIds = [], onServerSaveMessage, onServerUnsaveMessage, pinnedSidebarExpanded, onTogglePinnedSidebar, onOpenPinnedCallOverlay, pinnedSearchQuery, jumpToMessageRef, onOpenProfile, avatarUpdatedEvent, activeChannel = null, emojisChangedEvent, onChannelMessageSent, memberRoleColors, serverMemberNicknames, channelMessageRetention, channelAttachmentRetention, convType, servers = [], onInviteJoin, onInviteCodeClick, channelPermissions, channelKeyMissing = false, channelKeyCoolingOff = false, onChannelKeyMissing, onLoadOlderFromServer, channelHistoryExhausted = false, readReceipts = {}, sendReadReceipt, showReadReceipts = true, myUserId = '', onReport }) => {
+const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, keyChangedSenders, senderWarnings = {}, onKeyChangeResolved, messages, messagesFetching = false, onMessageSent, onAddToGroup, typingUsers, sendTypingEvent: sendTypingEventProp, activeCall, onCallChange, onStartingCallChange, chatSearch = '', friendRemovedEvent, onCloseChatRequest, notifPref = 'all', onSetNotifMode, retention, friendStatuses, pinnedMsgIds, onPinMessage, onUnpinMessage, serverSavedIds = [], onServerSaveMessage, onServerUnsaveMessage, pinnedSidebarExpanded, onTogglePinnedSidebar, onOpenPinnedCallOverlay, pinnedSearchQuery, jumpToMessageRef, onOpenProfile, avatarUpdatedEvent, activeChannel = null, emojisChangedEvent, onChannelMessageSent, onPatchSentMessage, memberRoleColors, serverMemberNicknames, channelMessageRetention, channelAttachmentRetention, convType, servers = [], onInviteJoin, onInviteCodeClick, channelPermissions, channelKeyMissing = false, channelKeyCoolingOff = false, onChannelKeyMissing, onLoadOlderFromServer, channelHistoryExhausted = false, readReceipts = {}, sendReadReceipt, showReadReceipts = true, myUserId = '', onReport }) => {
     const { token, deviceId, user } = useAuth();
     const openProfileCtx = useOpenProfile();
     const toast = useToast();
@@ -1966,24 +1980,20 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
 
     // ── Message entrance-animation bookkeeping ────────────────────────────
     // We animate ONLY genuinely-new messages (just-sent + freshly-arrived),
-    // never the initial history dump and never paginated-in older messages.
-    //  • seenMsgIdsRef — ids already on screen (won't animate again).
-    //  • msgListInitRef — has the first populated render happened for this convo?
-    //  • maxSeenMsgTsRef — newest timestamp seen so far; a not-yet-seen message
-    //    only animates if it's at/after this (i.e. appended at the bottom, not
-    //    prepended by pagination). Using list-relative time, not Date.now(),
-    //    keeps it immune to sender/clock skew.
-    const seenMsgIdsRef = useRef<Set<string>>(new Set());
-    const msgListInitRef = useRef(false);
-    const maxSeenMsgTsRef = useRef(0);
+    // never the initial history dump and never paginated-in older messages —
+    // and each one exactly ONCE. The tracker works on the row's stable identity
+    // (utils/messageEntrance.ts messageRowKey), not `msg.id`: an instantly-sent
+    // channel message swaps its client id for the server's within a few hundred
+    // ms, and keying on the id replayed the entrance on every swap.
+    // One tracker per mounted pane (a useState initialiser: created once, and
+    // usable during render without reading a ref).
+    const [entrance] = useState<EntranceTracker>(createEntranceTracker);
     useEffect(() => {
-        seenMsgIdsRef.current = new Set();
-        msgListInitRef.current = false;
-        maxSeenMsgTsRef.current = 0;
+        entrance.reset();
         // "in a row" means in this conversation — carrying the streak across a
         // switch would quip about files the user sent somewhere else.
         uploadStreak.current = 0;
-    }, [activeChat?.id, activeChannel?.channel_id]);
+    }, [entrance, activeChat?.id, activeChannel?.channel_id]);
     const [uploadProgress, setUploadProgress] = useState<Record<string, number>>({}); // filename → 0-100
 
     // Blob-URL cache for staged-file preview thumbnails.
@@ -2121,8 +2131,14 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         [openProfileCtx, onOpenProfile],
     );
     /** This channel's Sender Key hasn't been delivered to this device yet —
-     *  encrypting would throw, so gate the composer (distinct placeholder). */
-    const keyMissing     = isServerChannel && channelKeyMissing;
+     *  encrypting would throw, so gate the composer (distinct placeholder).
+     *  Only for members who can send at all: a read-only member has nothing to
+     *  encrypt, so "waiting for keys" would just hide the real reason (the
+     *  permission message below) behind a state that may never resolve —
+     *  nobody with SEND_MESSAGES need ever have opened the channel. */
+    const keyMissing     = isServerChannel && channelKeyMissing
+                           && (channelPermissions === undefined
+                               || !!(channelPermissions & Permissions.SEND_MESSAGES));
 
     // ── Server-side history paging (server channels only) ────────────────────
     // useMessagePagination only widens a window over what's already in memory,
@@ -2304,6 +2320,10 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
          *  Only populated for the channel-members source today; DM/group
          *  candidates (built from userIdToUsername) don't carry it. */
         discriminator?: number | null;
+        /** `user` rows in a server channel only — the member's server
+         *  nickname. DISPLAY + MATCHING ONLY: `label` stays the username, so
+         *  the inserted `@label` and the wire token are unchanged. */
+        nickname?: string | null;
     };
     const [mentionSuggestions, setMentionSuggestions] = useState<MentionSuggestion[]>([]);
     const [mentionQueryRange, setMentionQueryRange] = useState<{ start: number; end: number } | null>(null);
@@ -2413,14 +2433,19 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         // server skip the gate because the maps are already populated.
         const isFirstFetch = !fetchedServerIds.current.has(sid);
         if (isFirstFetch) setMembersFetching(true);
-        Promise.all([
-            axios.get(`${API_BASE}/servers/${sid}/members`, { headers: { Authorization: `Bearer ${token}` } }),
-            axios.get(`${API_BASE}/servers/${sid}/roles`, { headers: { Authorization: `Bearer ${token}` } }),
-        ]).then(async ([mRes, rRes]) => {
+        // The roster comes from the shared roster cache (the same one the
+        // server panel renders from): a cached server applies immediately —
+        // which also lifts the first-fetch gate in the same tick — and the
+        // revalidation below only re-applies if something changed. It also
+        // means a channel switch no longer re-requests members + roles when the
+        // panel (or the previous channel) fetched them seconds ago, and a cold
+        // open shares ONE request pair with the panel instead of making its own.
+        const applyRoster = (roster: Roster) => {
+            const mRes = { data: roster.members as unknown as unknown[] };
             const members: Array<{ user_id: string; username: string; discriminator: number | null }> =
                 (mRes.data as any[]).map((m: any) => ({ user_id: m.user_id, username: m.username, discriminator: m.discriminator ?? null }));
             const roles: Array<{ role_id: string; name: string; color: number; mentionable: boolean }> =
-                (rRes.data as any[]).filter((r: any) => !r.is_everyone);
+                (roster.roles as unknown as Array<{ role_id: string; name: string; color: number; mentionable: boolean; is_everyone: boolean }>).filter(r => !r.is_everyone);
             setMentionMembers(members);
             setMentionRoles(roles);
 
@@ -2488,6 +2513,12 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
 
             fetchedServerIds.current.add(sid);
             if (isFirstFetch) setMembersFetching(false);
+        };
+        const cachedRoster = peekRoster(sid);
+        if (cachedRoster) applyRoster(cachedRoster);
+        refreshRoster(sid, token).then(roster => {
+            if (roster && roster !== cachedRoster) applyRoster(roster);
+            else if (!roster && isFirstFetch) setMembersFetching(false);
         }).catch(() => {
             if (isFirstFetch) setMembersFetching(false);
         });
@@ -2869,8 +2900,9 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
     // re-measures that same row afterwards and corrects scrollTop by the drift,
     // so the row the user was looking at does not move even when the edit makes
     // it taller/shorter or the composer's "Editing Message" strip unmounts.
-    // The row carries `id={`msg-${msg.id}`}` and `key={msg.id}`, so it is the
-    // same DOM node before and after an edit — no remount to fight.
+    // The row carries `id={`msg-${msg.id}`}` and a stable React key (its
+    // identity, utils/messageEntrance.ts), so it is the same DOM node before
+    // and after an edit — no remount to fight.
     const editAnchorRef = useRef<{ msgId: string; rowTop: number } | null>(null);
     const findMsgRow = (msgId: string): HTMLElement | null => {
         const el = feedRef.current;
@@ -3012,33 +3044,21 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
     // user requested the symmetric behaviour to "send-snaps-me-to-bottom":
     // any new message (theirs OR a peer's) should snap them to the bottom.
     // This effect re-engages followBottomRef and force-snaps independent of
-    // the existing logic. Keyed on the last message's id so we don't re-snap
-    // when the array reference changes for unrelated reasons (edits,
-    // reactions, attachment-key resolution, etc.).
-    const lastMsgIdentityRef = useRef<{ chatId: string | null; lastMsgKey: string | null }>({
-        chatId: null,
-        lastMsgKey: null,
-    });
+    // the existing logic. Keyed on the last message's stable IDENTITY
+    // (utils/messageEntrance.ts) so we don't re-snap when the array reference
+    // changes for unrelated reasons (edits, reactions, attachment-key
+    // resolution, etc.) — nor when the SAME message is confirmed, swaps its
+    // client id for the server's, takes the server's time, or is re-sorted:
+    // keyed on `id::timestamp`, every one of those re-ran the reveal. A row
+    // that was already revealed as the last one is never revealed again.
+    // On a chat switch the gate only records (the chat-switch effect above is
+    // the canonical snap-on-mount).
+    const [revealGate] = useState<RevealGate>(createRevealGate);
     useLayoutEffect(() => {
         const chatId = activeChat?.id ?? null;
         const last = messages[messages.length - 1];
-        // Composite key — system messages may not have a stable id, so fall
-        // back to a synthetic one. Concatenated with timestamp so edits to
-        // the same id (which shouldn't happen but defensively) don't fire.
-        const lastMsgKey = last
-            ? `${last.id ?? 'no-id'}::${last.timestamp ?? ''}`
-            : null;
-        const prev = lastMsgIdentityRef.current;
-        // Chat switch: don't snap from this effect. The chat-switch effect
-        // above is the canonical snap-on-mount; just record the new identity.
-        if (chatId !== prev.chatId) {
-            lastMsgIdentityRef.current = { chatId, lastMsgKey };
-            return;
-        }
-        // No change in last message → nothing to do.
-        if (lastMsgKey === prev.lastMsgKey) return;
-        lastMsgIdentityRef.current = { chatId, lastMsgKey };
-        if (!lastMsgKey) return; // empty conversation, nothing to snap to
+        const lastMsgKey = last ? messageRowKey(last, deviceId, 'no-id') : null;
+        if (!revealGate.check(chatId, lastMsgKey)) return;
 
         const el = feedRef.current;
         if (!el) return;
@@ -3529,6 +3549,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                         type: 'user' as const, id: m.user_id, label: m.username,
                         avatarId: userIdToAvatar[m.user_id] ?? null,
                         discriminator: m.discriminator,
+                        nickname: serverMemberNicknames?.[m.user_id] ?? null,
                     }))
                     : Object.entries(userIdToUsername)
                         // Scoped to THIS conversation's participants, which is
@@ -3560,9 +3581,9 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                 : [];
 
             const all: MentionSuggestion[] = [...specials, ...memberCandidates, ...roleCandidates];
-            const filtered = query === ''
-                ? all.slice(0, 10)
-                : all.filter(s => s.label.toLowerCase().includes(query)).slice(0, 10);
+            // Matches username OR server nickname; prefix hits before substring
+            // hits (see utils/mentionSuggestions.ts).
+            const filtered = rankMentionCandidates(all, query, 10);
 
             if (filtered.length > 0) {
                 setMentionSuggestions(filtered);
@@ -3578,6 +3599,9 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         }
 
         sendTypingEvent('typing:start', activeChat.id);
+        // DM/group: claim this message's recipients now, while it is being
+        // typed, so Enter goes straight to encrypt + POST.
+        if (!activeChannel && bundleReady) primeRecipients(activeChat.id);
 
         if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
         typingTimeoutRef.current = setTimeout(() => {
@@ -3924,13 +3948,15 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         // RC-2: address exactly the devices that got wrapped.
         const { ciphertext_b64, recipient_device_ids } = await encryptAndAddress(JSON.stringify(content), user!.user_id, devices, deviceId ?? undefined);
 
-        await axios.post(`${API_BASE}/messages/send`, {
+        const sendRes = await axios.post(`${API_BASE}/messages/send`, {
             conversation_id: activeChat.id,
             recipient_device_ids,
             envelope_type: 'signal_chat',
             ciphertext_b64,
             sent_at_client: new Date().toISOString()
         }, { headers: { Authorization: `Bearer ${token}`, 'x-device-id': deviceId } });
+        // The server's timestamp: this row's position and time, as everyone else sees it.
+        const serverTs = typeof sendRes.data?.received_at_server === 'string' ? sendRes.data.received_at_server as string : undefined;
 
         // The sender shows their own file straight from the picked File (no
         // re-download, no decrypt) — registered in the shared cache so a later
@@ -3940,7 +3966,8 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
             id: content.client_msg_id!,
             content,
             sender_device_id: deviceId,
-            timestamp: new Date().toISOString(),
+            timestamp: serverTs ? clampFutureTimestamp(serverTs) : new Date().toISOString(),
+            ...(serverTs ? { server_ts: serverTs } : {}),
             conversation_id: activeChat.id
         });
     };
@@ -4116,7 +4143,8 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
             content,
             sender_device_id: deviceId,
             sender_user_id: resp.data.sender_user_id ?? null,
-            timestamp: new Date().toISOString(),
+            // The server's time, so it sorts where everyone else sees it.
+            timestamp: resp.data?.created_at ? clampFutureTimestamp(String(resp.data.created_at)) : new Date().toISOString(),
             conversation_id: channelId,
         });
     };
@@ -4141,6 +4169,11 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         if (!content.client_msg_id) {
             content.client_msg_id = typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : `local-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
         }
+
+        // Never overtake a message still queued for this conversation: an
+        // edit, delete or reaction aimed at it would reach people first and
+        // find nothing to act on.
+        await deliveryQueue.idle(activeChannel ? deliveryKey('channel', activeChannel.channel_id) : deliveryKey('dm', activeChat.id));
 
         // Channel branch: encrypt once with the channel's Sender Key,
         // POST to /channels/:id/messages. Server validates action perms
@@ -4174,36 +4207,34 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                 content,
                 sender_device_id: deviceId,
                 sender_user_id: resp.data.sender_user_id ?? null,
-                timestamp: new Date().toISOString(),
+                // The server's time, so it sorts where everyone else sees it.
+                timestamp: resp.data?.created_at ? clampFutureTimestamp(String(resp.data.created_at)) : new Date().toISOString(),
                 conversation_id: channelId,
             });
             return;
         }
 
-        // Conversation branch (DM/group): per-recipient envelopes — unchanged.
-        // claim_otp=1: consume a one-time prekey per recipient device (per-message forward secrecy)
-        const devicesRes = await axios.get(`${API_BASE}/conversations/${activeChat.id}/devices?claim_otp=1`, {
-            headers: { Authorization: `Bearer ${token}`, 'x-device-id': deviceId }
-        });
-        if (!Array.isArray(devicesRes.data)) {
-            throw new Error(`[E2EE] /conversations/${activeChat.id}/devices returned ${typeof devicesRes.data} instead of array`);
-        }
-        const devices = devicesRes.data as { device_id: string; spk_pub_b64: string }[];
+        // Conversation branch (DM/group): per-recipient envelopes. Recipients
+        // (one claimed one-time prekey per device) come from the bundle primed
+        // while typing when there is one — single use either way.
+        const devices = await takeRecipients(activeChat.id);
         // RC-2: address exactly the devices that got wrapped.
         const { ciphertext_b64, recipient_device_ids } = await encryptAndAddress(JSON.stringify(content), user!.user_id, devices, deviceId ?? undefined);
-        await axios.post(`${API_BASE}/messages/send`, {
+        const sendRes = await axios.post(`${API_BASE}/messages/send`, {
             conversation_id: activeChat.id,
             recipient_device_ids,
             envelope_type: 'signal_chat',
             ciphertext_b64,
             sent_at_client: new Date().toISOString()
         }, { headers: { Authorization: `Bearer ${token}`, 'x-device-id': deviceId } });
+        const serverTs = typeof sendRes.data?.received_at_server === 'string' ? sendRes.data.received_at_server as string : undefined;
 
         onMessageSent({
             id: content.client_msg_id!,
             content,
             sender_device_id: deviceId,
-            timestamp: new Date().toISOString(),
+            timestamp: serverTs ? clampFutureTimestamp(serverTs) : new Date().toISOString(),
+            ...(serverTs ? { server_ts: serverTs } : {}),
             conversation_id: activeChat.id
         });
     };
@@ -4465,6 +4496,136 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
     // Doesn't touch the typed draft — only clears which message is quoted.
     useEscape(() => setReplyingId(null), !!replyingId);
 
+    // ── Instant-send delivery (utils/pendingSend.ts, utils/deliveryQueue.ts) ──
+    /** Recipient devices for a DM/group send, fresh from the server.
+     *  claim_otp=1 consumes a one-time prekey per recipient device
+     *  (per-message forward secrecy), so every result is single-use. */
+    const fetchConversationDevices = async (conversationId: string): Promise<RecipientDevice[]> => {
+        const raw = await trackActivity('send:devices', () => axios.get(`${API_BASE}/conversations/${conversationId}/devices?claim_otp=1`, {
+            headers: { Authorization: `Bearer ${token}`, 'x-device-id': deviceId }
+        }).then(r => r.data));
+        if (!Array.isArray(raw)) {
+            throw new Error(`[E2EE] /conversations/${conversationId}/devices returned ${typeof raw} instead of array`);
+        }
+        return raw;
+    };
+
+    /** Start claiming the NEXT message's recipients while it is still being
+     *  typed, so Enter does not wait a round trip for them
+     *  (utils/recipientBundles.ts — single use, bounded age). */
+    const primeRecipients = (conversationId: string) => {
+        recipientBundles.prime(recipientBundleKey(deviceId, conversationId), () => fetchConversationDevices(conversationId));
+    };
+    /** This send's recipients: the bundle primed while typing, else a fresh claim. */
+    const takeRecipients = (conversationId: string): Promise<RecipientDevice[]> =>
+        recipientBundles.take(recipientBundleKey(deviceId, conversationId), () => fetchConversationDevices(conversationId));
+
+    type DeliveryJob = { kind: 'dm' | 'channel'; conversationId: string; serverId?: string; content: ClientContent };
+    /** One delivery lane per conversation, shared by every ChatPane mount. */
+    const deliveryKey = (kind: 'dm' | 'channel', conversationId: string) => `${deviceId ?? ''}:${kind}:${conversationId}`;
+
+    /** Deliver a message that is already in the feed: encrypt (overlapping the
+     *  previous message's POST), then POST strictly after it, then mark it
+     *  delivered — taking the server's id (channel) and the server's time, which
+     *  moves it to the position every other member sees — or failed. Never
+     *  throws: a failure belongs to the message, not to the composer. */
+    const enqueueDelivery = (job: DeliveryJob): void => {
+        const clientMsgId = job.content.client_msg_id;
+        if (!clientMsgId) return;
+        const headers = { Authorization: `Bearer ${token}`, 'x-device-id': deviceId };
+        const contentJson = JSON.stringify(job.content);
+        const fail = (err: unknown) => {
+            console.error('Failed to send:', err instanceof Error ? `${err.name}: ${err.message}` : String(err), err);
+            onPatchSentMessage?.(job.kind, job.conversationId, clientMsgId, { send_state: 'failed', send_error: sendFailureReason(err) });
+            const msg = err instanceof Error ? err.message : String(err);
+            // This device hasn't got the channel's Sender Key: start fetching it
+            // so a Retry can succeed.
+            if (job.kind === 'channel' && job.serverId && /No channel key|Channel key for epoch/.test(msg)) {
+                onChannelKeyMissing?.(job.serverId, job.conversationId);
+            }
+        };
+        if (job.kind === 'channel') {
+            const c = job.content as { text?: string; reply_to_id?: string; mentions?: { type: string }[] };
+            const mentionsEveryone = (c.mentions ?? []).some(m => m.type === 'everyone' || m.type === 'here');
+            const containsUrl = /https?:\/\/[^\s<>"{}|\\^`[\]]+/.test(c.text ?? '');
+            void deliveryQueue.enqueue(deliveryKey('channel', job.conversationId), {
+                prepare: () => trackActivity('send:encrypt', () => window.electronAPI!.encryptChannelMessage(contentJson, job.conversationId, { user_id: user?.user_id, device_id: deviceId })),
+                post: async ({ epoch, nonce_b64, ciphertext_b64, signature_b64 }) => {
+                    // A 429 waits out the server's window and tries again (the
+                    // limit is respected, never exceeded) instead of failing.
+                    const resp = await trackActivity('send:post', () => withRateLimitRetry(() => axios.post(`${API_BASE}/channels/${job.conversationId}/messages`, {
+                        sender_device_id: deviceId,
+                        epoch,
+                        nonce_b64,
+                        ciphertext_b64,
+                        signature_b64,
+                        ...(c.reply_to_id ? { reply_to_id: c.reply_to_id } : {}),
+                        ...(mentionsEveryone ? { mentions_everyone: true } : {}),
+                        ...(containsUrl ? { contains_url: true } : {}),
+                    }, { headers })));
+                    onPatchSentMessage?.('channel', job.conversationId, clientMsgId, {
+                        send_state: null,
+                        id: resp.data?.id,
+                        sender_user_id: resp.data?.sender_user_id ?? undefined,
+                        // The server's created_at — what every other member sorts
+                        // this message by — replaces this device's compose time.
+                        timestamp: resp.data?.created_at ? clampFutureTimestamp(String(resp.data.created_at)) : undefined,
+                    });
+                },
+                fail,
+            });
+        } else {
+            void deliveryQueue.enqueue(deliveryKey('dm', job.conversationId), {
+                prepare: async () => {
+                    const devices = await takeRecipients(job.conversationId);
+                    // RC-2: address exactly the devices that got wrapped.
+                    return trackActivity('send:encrypt', () => encryptAndAddress(contentJson, user!.user_id, devices, deviceId ?? undefined));
+                },
+                post: async ({ ciphertext_b64, recipient_device_ids }) => {
+                    const resp = await trackActivity('send:post', () => withRateLimitRetry(() => axios.post(`${API_BASE}/messages/send`, {
+                        conversation_id: job.conversationId,
+                        recipient_device_ids,
+                        envelope_type: 'signal_chat',
+                        ciphertext_b64,
+                        sent_at_client: new Date().toISOString()
+                    }, { headers })));
+                    // The server's received_at_server: the ordering key (and time)
+                    // every recipient gets for this message. An older API does not
+                    // return it; the row then simply stays where it is.
+                    const serverTs = typeof resp.data?.received_at_server === 'string' ? resp.data.received_at_server : undefined;
+                    onPatchSentMessage?.('dm', job.conversationId, clientMsgId, serverTs
+                        ? { send_state: null, server_ts: serverTs, timestamp: clampFutureTimestamp(serverTs) }
+                        : { send_state: null });
+                },
+                fail,
+            });
+        }
+    };
+
+    /** Retry a failed message: same content, same client_msg_id (so a copy the
+     *  server did get, with only the reply lost, dedupes on every receiver). */
+    const retrySend = (msg: { id: string; content?: unknown }) => {
+        const content = msg.content as ClientContent | undefined;
+        const clientMsgId = content?.client_msg_id;
+        if (!content || !clientMsgId) return;
+        const kind: 'dm' | 'channel' = activeChannel ? 'channel' : 'dm';
+        const conversationId = activeChannel ? activeChannel.channel_id : activeChat.id;
+        onPatchSentMessage?.(kind, conversationId, clientMsgId, { send_state: 'sending' });
+        enqueueDelivery({ kind, conversationId, serverId: activeChannel?.server_id, content });
+    };
+
+    /** Delete a message that never reached anyone — local only, nothing to tell the server. */
+    const discardUnsent = (msg: { id: string }) => {
+        const del = {
+            id: `unsend-${msg.id}`,
+            content: { type: 'delete', target_id: msg.id } as unknown as ClientContent,
+            sender_device_id: deviceId,
+            timestamp: new Date().toISOString(),
+        };
+        if (activeChannel) onChannelMessageSent?.({ ...del, conversation_id: activeChannel.channel_id });
+        else onMessageSent({ ...del, conversation_id: activeChat.id });
+    };
+
     const handleSendAll = async (e?: React.FormEvent) => {
         e?.preventDefault();
         if (!bundleReady) { toast.push({ kind: 'info', title: 'Please Wait', message: 'Establishing secure session — please wait a moment' }); return; }
@@ -4522,19 +4683,51 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         hasSentOnce.current = true;
         if (!keepViewport) followBottomRef.current = true;   // follow down when the user sends
         setSending(true);
-        try {
-            // Fetch recipient devices only for DM/group sends — channel sends
-            // use the Sender Key path and don't need per-recipient device lists.
-            // claim_otp=1: consume a one-time prekey per recipient device (per-message forward secrecy)
-            const devicesRaw = activeChannel
-                ? []
-                : await axios.get(`${API_BASE}/conversations/${activeChat.id}/devices?claim_otp=1`, {
-                    headers: { Authorization: `Bearer ${token}`, 'x-device-id': deviceId }
-                }).then(r => r.data);
-            if (!Array.isArray(devicesRaw)) {
-                throw new Error(`[E2EE] /conversations/${activeChat.id}/devices returned ${typeof devicesRaw} instead of array`);
+
+        // ── Plain text is INSTANT ────────────────────────────────────────────
+        // A text-only send is put in the feed (marked 'sending') and the
+        // composer is cleared the moment the content is built; the devices
+        // fetch → encrypt → POST happens behind it, in order, through
+        // enqueueDelivery. A failure never takes the message back: it stays in
+        // the feed marked "Not delivered" with Retry / Delete
+        // (utils/pendingSend.ts). Edits and anything with files keep the
+        // original, awaited flow.
+        const textOnly = !editingId && stagedFiles.length === 0 && inputText.trim().length > 0;
+        // `as` cast: assigned inside a closure, which TypeScript's flow analysis
+        // does not see, so it would narrow it to false in the finally.
+        let earlyReleased = false as boolean;
+        const releaseComposerEarly = () => {
+            earlyReleased = true;
+            sendTimestamps.current.push(Date.now()); // the rate limiter counts it NOW, not after the round trip
+            setInputText('');
+            setLoudInput(false);
+            emptySendRef.current = 0;
+            draftHighWater.current = 0;
+            draftErases.current = 0;
+            attachRemovals.current = 0;
+            setTimeout(() => { if (inputRef.current) inputRef.current.style.height = 'auto'; }, 0);
+            setReplyingId(null);
+            if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+            sendTypingEvent('typing:stop', activeChat.id);
+            setSending(false);
+            if (!keepViewport) {
+                requestAnimationFrame(() => revealNewMessage());
             }
-            const devices: { device_id: string; spk_pub_b64: string }[] = devicesRaw;
+        };
+        try {
+            // An awaited send (files, an edit) first lets every message already
+            // queued for this conversation go out: it must not overtake them,
+            // or an edit could reach people before the message it edits.
+            if (!textOnly) {
+                await deliveryQueue.idle(activeChannel ? deliveryKey('channel', activeChannel.channel_id) : deliveryKey('dm', activeChat.id));
+            }
+            // DM/group recipients are resolved PER MESSAGE (takeRecipients),
+            // never once per send and shared: each resolution claims one
+            // one-time prekey per recipient device, and the recipient deletes
+            // that prekey after the first message that used it — so a second
+            // file (or the text after a file) encrypted to the same claim was
+            // undecryptable for every recipient. Channel sends use the Sender
+            // Key and need no recipient list.
 
             // Upload each staged file sequentially
             for (const file of stagedFiles) {
@@ -4542,7 +4735,8 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                 if (activeChannel) {
                     await trackActivity('upload:send', () => uploadFileToChannel(file, activeChannel.channel_id));
                 } else {
-                    await trackActivity('upload:send', () => uploadFile(file, devices));
+                    const fileRecipients = await takeRecipients(activeChat.id);
+                    await trackActivity('upload:send', () => uploadFile(file, fileRecipients));
                 }
             }
             setStagedFiles([]);
@@ -4605,10 +4799,25 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                     const msgContent: ClientContent = bareInviteCode
                         ? { client_msg_id: safeUUID, type: 'server_invite', code: bareInviteCode }
                         : { client_msg_id: safeUUID, type: 'text', text: wireText, ...(replyingId ? { reply_to_id: replyingId } : {}), ...(mentions.length > 0 ? { mentions } : {}) };
+                    if (textOnly) {
+                        // Shown NOW under its client id; delivery swaps in the
+                        // server id (or marks it failed) — see enqueueDelivery.
+                        onChannelMessageSent?.({
+                            id: safeUUID,
+                            content: msgContent,
+                            sender_device_id: deviceId,
+                            sender_user_id: user?.user_id ?? null,
+                            timestamp: new Date().toISOString(),
+                            conversation_id: activeChannel.channel_id,
+                            send_state: 'sending',
+                        });
+                        releaseComposerEarly();
+                        enqueueDelivery({ kind: 'channel', conversationId: activeChannel.channel_id, serverId: activeChannel.server_id, content: msgContent });
+                    } else {
                     const contentJson = JSON.stringify(msgContent);
                     const { epoch, nonce_b64, ciphertext_b64: channelCt, signature_b64 } =
-                        await window.electronAPI!.encryptChannelMessage(contentJson, activeChannel.channel_id, { user_id: user?.user_id, device_id: deviceId });
-                    const resp = await axios.post(`${API_BASE}/channels/${activeChannel.channel_id}/messages`, {
+                        await trackActivity('send:encrypt', () => window.electronAPI!.encryptChannelMessage(contentJson, activeChannel.channel_id, { user_id: user?.user_id, device_id: deviceId }));
+                    const resp = await trackActivity('send:post', () => axios.post(`${API_BASE}/channels/${activeChannel.channel_id}/messages`, {
                         sender_device_id: deviceId,
                         epoch,
                         nonce_b64,
@@ -4617,7 +4826,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                         ...(replyingId ? { reply_to_id: replyingId } : {}),
                         ...(mentionsEveryone ? { mentions_everyone: true } : {}),
                         ...(containsUrl ? { contains_url: true } : {}),
-                    }, { headers: { Authorization: `Bearer ${token}`, 'x-device-id': deviceId } });
+                    }, { headers: { Authorization: `Bearer ${token}`, 'x-device-id': deviceId } }));
                     // Optimistic append for the sender's own view.
                     // id = server DB row id so the WS dedup check can match it.
                     // content.client_msg_id = safeUUID as secondary dedup key.
@@ -4626,9 +4835,11 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                         content: msgContent,
                         sender_device_id: deviceId,
                         sender_user_id: resp.data.sender_user_id ?? null,
-                        timestamp: new Date().toISOString(),
+                        // The server's time, so it sorts where everyone else sees it.
+                        timestamp: resp.data?.created_at ? clampFutureTimestamp(String(resp.data.created_at)) : new Date().toISOString(),
                         conversation_id: activeChannel.channel_id,
                     });
+                    }
                 } else {
                     const safeUUID = typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : `local-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
                     // If the entire message is a bare Cipherline invite URL, send it as a
@@ -4638,45 +4849,64 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                     const content: ClientContent = bareInviteCode
                         ? { client_msg_id: safeUUID, type: 'server_invite', code: bareInviteCode }
                         : { client_msg_id: safeUUID, type: 'text', text: wireText, ...(replyingId ? { reply_to_id: replyingId } : {}), ...(mentions.length > 0 ? { mentions } : {}) };
-                    // RC-2: address exactly the devices that got wrapped.
-                    const { ciphertext_b64, recipient_device_ids } = await encryptAndAddress(JSON.stringify(content), user!.user_id, devices, deviceId ?? undefined);
-                    await axios.post(`${API_BASE}/messages/send`, {
-                        conversation_id: activeChat.id,
-                        recipient_device_ids,
-                        envelope_type: 'signal_chat',
-                        ciphertext_b64,
-                        sent_at_client: new Date().toISOString()
-                    }, { headers: { Authorization: `Bearer ${token}`, 'x-device-id': deviceId } });
-                    onMessageSent({
+                    const sentMsg = {
                         id: content.client_msg_id!,
                         content,
                         sender_device_id: deviceId,
                         timestamp: new Date().toISOString(),
                         conversation_id: activeChat.id
-                    });
+                    };
+                    if (textOnly) {
+                        // Shown (and the composer freed) NOW. The id is the client_msg_id the
+                        // post-send append always used, so nothing is swapped when it lands.
+                        onMessageSent({ ...sentMsg, send_state: 'sending' });
+                        releaseComposerEarly();
+                        enqueueDelivery({ kind: 'dm', conversationId: activeChat.id, content });
+                    } else {
+                        // Its own recipients — never the files' (see takeRecipients above).
+                        const devices = await takeRecipients(activeChat.id);
+                        // RC-2: address exactly the devices that got wrapped.
+                        const { ciphertext_b64, recipient_device_ids } = await trackActivity('send:encrypt', () => encryptAndAddress(JSON.stringify(content), user!.user_id, devices, deviceId ?? undefined));
+                        const sendRes = await trackActivity('send:post', () => axios.post(`${API_BASE}/messages/send`, {
+                            conversation_id: activeChat.id,
+                            recipient_device_ids,
+                            envelope_type: 'signal_chat',
+                            ciphertext_b64,
+                            sent_at_client: new Date().toISOString()
+                        }, { headers: { Authorization: `Bearer ${token}`, 'x-device-id': deviceId } }));
+                        const serverTs = typeof sendRes.data?.received_at_server === 'string' ? sendRes.data.received_at_server as string : undefined;
+                        onMessageSent(serverTs ? { ...sentMsg, server_ts: serverTs, timestamp: clampFutureTimestamp(serverTs) } : sentMsg);
+                    }
                 }
 
-                setInputText('');
-                setLoudInput(false);
-                emptySendRef.current = 0;
-                // A send empties the field too, but it isn't second-guessing —
-                // clear the write-then-erase state so it never counts, and so
-                // an erase streak doesn't survive a message actually going out.
-                draftHighWater.current = 0;
-                draftErases.current = 0;
-                attachRemovals.current = 0;
-                setTimeout(() => { if (inputRef.current) inputRef.current.style.height = 'auto'; }, 0);
-                setReplyingId(null);
-                if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
-                sendTypingEvent('typing:stop', activeChat.id);
-                // fly the send icon on success
-                playIco(sendIcoRef.current, 'play-send');
+                if (!earlyReleased) {
+                    setInputText('');
+                    setLoudInput(false);
+                    emptySendRef.current = 0;
+                    // A send empties the field too, but it isn't second-guessing —
+                    // clear the write-then-erase state so it never counts, and so
+                    // an erase streak doesn't survive a message actually going out.
+                    draftHighWater.current = 0;
+                    draftErases.current = 0;
+                    attachRemovals.current = 0;
+                    setTimeout(() => { if (inputRef.current) inputRef.current.style.height = 'auto'; }, 0);
+                    setReplyingId(null);
+                    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+                    sendTypingEvent('typing:stop', activeChat.id);
+                }
+                // Fly the send icon again on success of an AWAITED send (files,
+                // an edit), which can take seconds. An instant text send already
+                // flew it on submit, in this same tick — a second call there
+                // was only swallowed by playIco's busy guard.
+                if (!earlyReleased) playIco(sendIcoRef.current, 'play-send');
             }
 
             // Record successful send for rate-limit sliding window
-            sendTimestamps.current.push(Date.now());
+            if (!earlyReleased) sendTimestamps.current.push(Date.now());
 
         } catch (err) {
+            // Only the awaited flows (edits, files) land here: an instant text
+            // send reports its own failure on the message (enqueueDelivery).
             const status = (err as any)?.response?.status as number | undefined;
             if (status === 429) {
                 // Server-side rate limit hit — sync the client cooldown so the
@@ -4728,7 +4958,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
             // revealNewMessage() assigns `el.scrollTop = el.scrollHeight`, and
             // running it here unconditionally was the reported bug. The edited
             // row is held still by the anchor layout effect instead.
-            if (!keepViewport) {
+            if (!keepViewport && !earlyReleased) {
                 followBottomRef.current = true;
                 isAtBottomRef.current   = true;
                 setShowScrollBtn(false);
@@ -4762,22 +4992,42 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         onStartingCallChange?.(true);
 
         try {
-            // 1. Generate local E2EE session key for zero-knowledge LiveKit routing
-            const callKey = await generateCallKey();
-
-            // claim_otp=1: consume a one-time prekey per recipient device (per-message forward secrecy)
-            const devicesRes = await axios.get(`${API_BASE}/conversations/${activeChat.id}/devices?claim_otp=1`, {
-                headers: {
-                    Authorization: `Bearer ${token}`,
-                    'x-device-id': deviceId
+            // Three independent steps, run together rather than back to back
+            // (instant join — they used to be two serial round trips plus the
+            // key generation in front of the call appearing). The device fetch
+            // still happens on every start exactly as before, so one-time
+            // prekey consumption is unchanged.
+            const [keyR, devicesR, initR] = await Promise.allSettled([
+                // 1. Generate local E2EE session key for zero-knowledge LiveKit routing
+                generateCallKey(),
+                // 2. claim_otp=1: consume a one-time prekey per recipient device (per-message forward secrecy)
+                axios.get(`${API_BASE}/conversations/${activeChat.id}/devices?claim_otp=1`, {
+                    headers: {
+                        Authorization: `Bearer ${token}`,
+                        'x-device-id': deviceId
+                    }
+                }),
+                // 3. Initiate backend call orchestrator to get LiveKit JWT Auth token
+                axios.post(`${API_BASE}/calls/start`,
+                    { conversation_id: activeChat.id },
+                    { headers: { Authorization: `Bearer ${token}` } }
+                ),
+            ]);
+            if (keyR.status === 'rejected' || devicesR.status === 'rejected' || initR.status === 'rejected') {
+                // Run serially, a failed key/device step meant /calls/start was
+                // never sent. Now it may already have created a session that is
+                // ringing the other side with no key coming — end it.
+                if (initR.status === 'fulfilled' && !initR.value.data?.joined && initR.value.data?.session_id) {
+                    axios.post(`${API_BASE}/calls/${initR.value.data.session_id}/end`, {}, { headers: { Authorization: `Bearer ${token}` } })
+                        .catch(() => { /* best-effort */ });
                 }
-            });
-
-            // 3. Initiate backend call orchestrator to get LiveKit JWT Auth token
-            const initRes = await axios.post(`${API_BASE}/calls/start`,
-                { conversation_id: activeChat.id },
-                { headers: { Authorization: `Bearer ${token}` } }
-            );
+                throw keyR.status === 'rejected' ? keyR.reason
+                    : devicesR.status === 'rejected' ? devicesR.reason
+                    : (initR as PromiseRejectedResult).reason;
+            }
+            const callKey = keyR.value;
+            const devicesRes = devicesR.value;
+            const initRes = initR.value;
 
             // If the server merged this start into an EXISTING session
             // (advisory-lock path), the original caller already broadcast a
@@ -5970,32 +6220,14 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                         // (no cascade on chat open). Afterwards, a not-yet-seen message
                         // animates only if it's at/after the newest timestamp we've seen
                         // (appended live), so paginated-in older messages stay still.
-                        const tsOf = (m: any) => typeof m.timestamp === 'number' ? m.timestamp : Date.parse(m.timestamp || '');
-                        const animateIds = new Set<string>();
-                        if (!msgListInitRef.current) {
-                            if (displayMessages.length > 0) {
-                                for (const m of displayMessages) {
-                                    if (m.id) seenMsgIdsRef.current.add(m.id);
-                                    const t = tsOf(m);
-                                    if (Number.isFinite(t)) maxSeenMsgTsRef.current = Math.max(maxSeenMsgTsRef.current, t);
-                                }
-                                msgListInitRef.current = true;
-                            }
-                        } else {
-                            for (const m of displayMessages) {
-                                if (!m.id || seenMsgIdsRef.current.has(m.id)) continue;
-                                const t = tsOf(m);
-                                if (Number.isFinite(t) && t >= maxSeenMsgTsRef.current - 1000) {
-                                    animateIds.add(m.id);
-                                    maxSeenMsgTsRef.current = Math.max(maxSeenMsgTsRef.current, t);
-                                    // NOTE: not added to seenMsgIdsRef here — a re-render
-                                    // mid-animation must keep the class applied. The row's
-                                    // onAnimationEnd marks it seen + strips the class.
-                                } else {
-                                    seenMsgIdsRef.current.add(m.id); // older/paginated — never animate
-                                }
-                            }
-                        }
+                        // Rows are keyed by their stable identity (client_msg_id for
+                        // this device's own sends), so confirming a send, adopting the
+                        // server id and re-sorting by server time all update the SAME
+                        // row — never unmount it and mount a fresh one that would play
+                        // its entrance again. A row that is entering keeps entering
+                        // until its onAnimationEnd calls finish(). utils/messageEntrance.ts.
+                        const rowKeys = assignRowKeys(displayMessages, deviceId);
+                        const enteringKeys = entrance.decide(displayMessages, rowKeys);
 
                         // Grouping input for each row, in one forward pass: the
                         // nearest earlier non-system message, or null when that
@@ -6009,6 +6241,8 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                             }
                         }
                         return displayMessages.map((msg, index) => {
+                        const rowKey = rowKeys[index];
+                        const entering = enteringKeys.has(rowKey);
                         const replyToId = msg.content?.reply_to_id;
                         // The quoted message, found by index (was two scans of
                         // the whole conversation per reply row per render).
@@ -6019,14 +6253,14 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                         const rowCall = callId ? callDurations[callId] : undefined;
                         const rowDeps = [
                             ...rowGlobals, msg, index > 0 ? displayMessages[index - 1] : null, groupPrev[index],
-                            index === lastSeenMsgIndex, animateIds.has(msg.id),
+                            index === lastSeenMsgIndex, entering,
                             hoveredMsgId === msg.id, highlightedMsgId === msg.id,
                             showEmojiPicker === msg.id ? (reactionPickerAnchor ?? 'open') : null,
                             objectUrls[msg.id], decryptErrors[msg.id], decryptingIds[msg.id], manualDecryptIds.has(msg.id),
                             replyTarget, rowCall, rowCall?.active ? callTick : 0,
                         ];
                         return (
-                        <MemoRow key={msg.id ?? index} deps={rowDeps} render={() => {
+                        <MemoRow key={rowKey} deps={rowDeps} render={() => {
                         // Handlers that act on state outside this row's deps →
                         // stable stand-ins (see rowLive).
                         const {
@@ -6101,7 +6335,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                             const systemRow = msg.content as { kind?: unknown; data?: { reason?: unknown } };
                             if (systemRow.kind === UNDECRYPTABLE_KIND) {
                                 return (
-                                    <React.Fragment key={msg.id ?? index}>
+                                    <React.Fragment key={rowKey}>
                                         {DateDivider}
                                         <div className="flex items-center gap-3 my-2 px-4 select-none" role="note">
                                             <div className="flex-1 h-px bg-white/[0.05]" />
@@ -6121,7 +6355,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                             // happens (Ctrl+R or channel switch + back).
                             if ((msg.content as any).kind === 'encrypted') {
                                 return (
-                                    <React.Fragment key={msg.id ?? index}>
+                                    <React.Fragment key={rowKey}>
                                         {DateDivider}
                                         <div className="flex items-center gap-3 my-2 px-4 select-none">
                                             <div className="flex-1 h-px bg-white/[0.05]" />
@@ -6140,7 +6374,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                             const isLeave  = /left|removed|kicked/i.test(sysText);
                             const SysIcon  = isJoin ? UserPlus : isLeave ? UserMinus : null;
                             return (
-                                <React.Fragment key={msg.id ?? index}>
+                                <React.Fragment key={rowKey}>
                                     {DateDivider}
                                     <div className="flex items-center gap-3 my-2 px-4 select-none">
                                         <div className="flex-1 h-px bg-white/[0.05]" />
@@ -6179,7 +6413,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                             };
                             const callerName = isMe ? (user?.username ?? 'You') : (deviceToUsername[msg.sender_device_id] || 'Someone');
                             return (
-                                <React.Fragment key={msg.id ?? index}>
+                                <React.Fragment key={rowKey}>
                                     {DateDivider}
                                     <div className="flex items-center gap-3 my-2 px-4 select-none">
                                         <div className="flex-1 h-px bg-white/[0.05]" />
@@ -6414,21 +6648,21 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                         );
 
                         return (
-                            <React.Fragment key={msg.id ?? index}>
+                            <React.Fragment key={rowKey}>
                             {DateDivider}
                             <div
                                 id={`msg-${msg.id}`}
                                 className={`group relative flex gap-3 py-0.5 pr-2 pl-3 ${showHeader ? 'mt-3' : ''} ${
                                     mentionsMe ? '' : 'hover:bg-white/[0.015]'
                                 } ${highlightedMsgId === msg.id ? 'msg-reply-highlight' : ''} ${(isTextLike || (msg.content?.type === 'attachment' && attId)) ? 'cursor-pointer' : ''} ${
-                                    animateIds.has(msg.id) ? (isMe ? 'cl-msg-enter-sent' : 'cl-msg-enter-recv') : ''
+                                    entering ? (isMe ? 'cl-msg-enter-sent' : 'cl-msg-enter-recv') : ''
                                 }`}
                                 onAnimationEnd={(e) => {
                                     // Mark seen + strip the class once the entrance finishes so the
                                     // lingering transform can't establish a containing block under
                                     // the hover menu. Guard so child animations don't trigger this.
                                     if (e.target === e.currentTarget && e.animationName.startsWith('cl-msg-in')) {
-                                        if (msg.id) seenMsgIdsRef.current.add(msg.id);
+                                        entrance.finish(rowKey);
                                         e.currentTarget.classList.remove('cl-msg-enter-sent', 'cl-msg-enter-recv');
                                     }
                                 }}
@@ -6448,7 +6682,10 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                     if (hoverLeaveTimerRef.current) clearTimeout(hoverLeaveTimerRef.current);
                                     hoverLeaveTimerRef.current = setTimeout(() => setHoveredMsgId(null), 200);
                                 }}
-                                onContextMenu={(e) => handleContextMenu(e, msg)}
+                                // A message that never reached the server has nothing to
+                                // react to, pin, edit or reply to yet — Retry / Delete sit
+                                // under it instead.
+                                onContextMenu={(e) => { if (isUnconfirmedSend(msg)) { e.preventDefault(); return; } handleContextMenu(e, msg); }}
                                 onMouseDown={onRowMouseDown}
                                 onClick={onRowClick}
                                 // The action bar only mounts while the row is "hovered", which
@@ -6534,6 +6771,11 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                             <span
                                                 className={`text-[14px] font-semibold leading-tight ${nameClickable ? 'cursor-pointer hover:brightness-125 transition-[filter]' : ''}`}
                                                 style={{ color: (msg.sender_user_id && memberRoleColors?.[msg.sender_user_id]) || 'white' }}
+                                                // Press = the open, one event early: start the
+                                                // profile + images now; the click joins them.
+                                                onPointerDown={nameClickable ? (e) => {
+                                                    if (e.button === 0) scheduleProfilePrefetch(nameTargetId, token, { immediate: true });
+                                                } : undefined}
                                                 onClick={nameClickable ? (e) => {
                                                     e.stopPropagation();
                                                     if (openProfileCtx) openProfileCtx(nameTargetId!, { x: e.clientX, y: e.clientY });
@@ -6618,7 +6860,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
 
                                                 return (
                                                     <div
-                                                        className="text-white/90 break-words whitespace-pre-wrap overflow-hidden"
+                                                        className={`text-white/90 break-words whitespace-pre-wrap overflow-hidden${msg.send_state === 'sending' ? ' cl-send-pending' : ''}`}
                                                         style={{ fontSize, lineHeight, wordBreak: 'break-word' }}
                                                     >
                                                         {emojiOnly
@@ -6871,6 +7113,31 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                             })}
                                         </div>
                                     )}
+
+                                    {/* Instant send: this message never reached the server. It
+                                        stays in the feed rather than vanishing; Retry re-sends
+                                        the same content, Delete drops it (local only). */}
+                                    {msg.send_state === 'failed' && (
+                                        <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 mt-1 text-[12px] text-cl-flash" role="status">
+                                            <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                                            <span>Not delivered{msg.send_error ? ` — ${msg.send_error}` : ''}</span>
+                                            <button
+                                                type="button"
+                                                onClick={(e) => { e.stopPropagation(); retrySend(msg); }}
+                                                className="ml-1 inline-flex items-center gap-1 font-semibold text-cl-text hover:underline focus-visible:underline outline-none"
+                                            >
+                                                <RotateCcw className="w-3 h-3" /> Retry
+                                            </button>
+                                            <span className="text-cl-faint" aria-hidden>·</span>
+                                            <button
+                                                type="button"
+                                                onClick={(e) => { e.stopPropagation(); discardUnsent(msg); }}
+                                                className="text-cl-muted hover:text-cl-text hover:underline focus-visible:underline outline-none"
+                                            >
+                                                Delete
+                                            </button>
+                                        </div>
+                                    )}
                                 </div>
 
                                 {/* Discord-style: no right-side avatar — every row is left-aligned. */}
@@ -6878,7 +7145,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                 {/* Floating action menu — always above the row, anchored to the right edge.
                                     For server channels the menu always shows (Reply/Edit/Delete work regardless
                                     of reaction permission). For DMs/groups it requires friendship/membership. */}
-                                {hoveredMsgId === msg.id && (isServerChannel || isFriend || activeChat?.type === 'group') && (
+                                {hoveredMsgId === msg.id && !isUnconfirmedSend(msg) && (isServerChannel || isFriend || activeChat?.type === 'group') && (
                                     <div
                                         className={`msgbar absolute ${showHeader ? '-top-11' : '-top-9'} right-14 z-30`}
                                         onClick={(e) => e.stopPropagation()}
@@ -7305,7 +7572,14 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                     display: 'flex',
                                     alignItems: 'center',
                                     gap: 4,
-                                    background: !canSend ? 'rgba(255,255,255,.02)' : 'var(--cl-surface)',
+                                    // The composer FLOATS over the feed (absolute, bottom-4), so its own
+                                    // fill is the only thing hiding scrolled messages. The disabled look
+                                    // (key-wait / cooling-off / no SEND_MESSAGES) must therefore be OPAQUE:
+                                    // a bare rgba(255,255,255,.02) let message text show straight through.
+                                    // Dimmed tint layered over a solid base keeps the look, loses the leak.
+                                    background: !canSend
+                                        ? 'linear-gradient(rgba(255,255,255,.02), rgba(255,255,255,.02)), var(--cl-deep)'
+                                        : 'var(--cl-surface)',
                                     border: `1.5px solid ${
                                         !canSend ? 'rgba(255,255,255,.05)'
                                             : loudInput ? 'var(--cl-glow)'
@@ -7413,6 +7687,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                             icon: s.custom ? (
                                                 <EmojiImage
                                                     name={s.name}
+                                                    serverId={emojiServerId}
                                                     attachmentId={s.custom.attachmentId}
                                                     keyB64={s.custom.keyB64}
                                                     nonceB64={s.custom.nonceB64}
@@ -7432,16 +7707,13 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                 {mentionSuggestions.length > 0 && inputRef.current && (() => {
                                     // Two members can share a display name — usernames aren't
                                     // globally unique, only (username, discriminator) is (see
-                                    // packages/shared/user.ts) — so two rows can otherwise render
-                                    // as identical, unusable "@Dawson" / "@Dawson". Disambiguate
-                                    // ONLY the colliding rows, only among `user` candidates
-                                    // currently visible in this filtered list.
-                                    const userLabelCounts = new Map<string, number>();
-                                    for (const s of mentionSuggestions) {
-                                        if (s.type !== 'user') continue;
-                                        const key = s.label.toLowerCase();
-                                        userLabelCounts.set(key, (userLabelCounts.get(key) ?? 0) + 1);
-                                    }
+                                    // packages/shared/user.ts), and a nickname can equal someone
+                                    // else's username — so two rows can otherwise render as
+                                    // identical, unusable "@Dawson" / "@Dawson".
+                                    // describeMentionUserRow shows the nickname as the primary
+                                    // label with the username beside it, and adds the
+                                    // discriminator ONLY to rows that would still look alike,
+                                    // among the `user` rows currently visible in this list.
                                     return (
                                     <SuggestionMenu
                                         anchorEl={inputRef.current}
@@ -7450,14 +7722,12 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                         items={mentionSuggestions.map((s): SuggestionMenuItem => {
                                             const isSpecial = s.type === 'everyone' || s.type === 'here';
                                             const isRole = s.type === 'role';
-                                            const isDuplicateLabel = s.type === 'user' && (userLabelCounts.get(s.label.toLowerCase()) ?? 0) > 1;
+                                            const userText = s.type === 'user' ? describeMentionUserRow(s, mentionSuggestions) : null;
                                             const hint = isSpecial
                                                 ? (s.type === 'everyone' ? 'Notify all members' : 'Notify online members')
                                                 : isRole
                                                     ? 'Role'
-                                                    : (isDuplicateLabel && s.discriminator != null)
-                                                        ? `#${padDiscriminator(s.discriminator)}`
-                                                        : undefined;
+                                                    : userText?.secondary;
                                             return {
                                                 key: `${s.type}-${s.id}`,
                                                 icon: isSpecial ? (
@@ -7488,7 +7758,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                                         disableClickProfile
                                                     />
                                                 ),
-                                                label: `@${s.label}`,
+                                                label: `@${userText ? userText.primary : s.label}`,
                                                 hint,
                                                 onSelect: () => insertMentionSuggestion(s),
                                             };

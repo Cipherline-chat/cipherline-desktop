@@ -93,4 +93,17 @@ describe('DM/group call keys this device generated are recorded locally', () => 
         expect(calls).toHaveLength(3);
         expect(dashboard).not.toMatch(/recordCallKeyRef\.current\([^,]+,\s*(res|initRes)\.data/);
     });
+
+    it('the crash-recovery rejoin is the one other writer, and its only key source is our own persisted record', () => {
+        // acceptRejoin (Dashboard) records the key the previous run persisted via
+        // callRejoinStore (encrypted at rest, 150 s TTL — see callRejoinPolicy.ts).
+        // It goes through recordCallKey, never the ref, and never from a response.
+        const body = bodyAfter('const acceptRejoin = useCallback', 2600);
+        expect(body).toMatch(/const key = d\.callKeyB64 \?\? ''/);
+        expect(body).toMatch(/recordCallKey\(d\.sessionId,\s*key\)/);
+        expect(body).not.toMatch(/recordCallKey\([^)]*(res|initRes)\.data/);
+        // Startup must not seed the store from disk just by launching.
+        const startup = bodyAfter('// (2) Startup check', 3800);
+        expect(startup).not.toMatch(/recordCallKey(Ref\.current)?\(/);
+    });
 });

@@ -19,7 +19,11 @@ describe('ChatPane render path', () => {
     });
 
     it('wraps every message row in MemoRow keyed by the message and the pane-wide inputs', () => {
-        expect(chat).toMatch(/<MemoRow key=\{msg\.id \?\? index\} deps=\{rowDeps\} render=\{\(\) => \{/);
+        // Keyed by the message's stable identity, not msg.id: an instant send's
+        // client id → server id swap must not remount the row (and replay its
+        // entrance). See utils/messageEntrance.ts / messageRowIdentityWiring.test.ts.
+        expect(chat).toMatch(/<MemoRow key=\{rowKey\} deps=\{rowDeps\} render=\{\(\) => \{/);
+        expect(chat).toMatch(/const rowKey = rowKeys\[index\];/);
         const deps = chat.slice(chat.indexOf('const rowDeps = ['), chat.indexOf('];', chat.indexOf('const rowDeps = [')));
         for (const d of ['...rowGlobals', 'msg', 'hoveredMsgId === msg.id', 'objectUrls[msg.id]', 'replyTarget']) expect(deps).toContain(d);
         // What render-time helpers read must be in the globals, or a skipped row would show stale state.

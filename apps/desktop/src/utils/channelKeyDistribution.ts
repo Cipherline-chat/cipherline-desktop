@@ -5,6 +5,8 @@
  * requestMissingChannelKeys / serveKeyRequests for the effectful side.
  */
 
+import { Permissions } from '@cipherline/shared';
+
 export interface ChannelKeyStatusInput {
     channel_id: string;
     kind: string;
@@ -62,6 +64,36 @@ export function computeMissingKeyChannels(
 }
 
 /**
+ * computeMissingKeyChannels, split by what the gap actually means:
+ *
+ *  • `noKey` — the server has keys for the channel and this device holds NONE.
+ *    It cannot encrypt at all, so this (and only this) gates the composer.
+ *  • `stale` — this device holds a key, just not the server's newest epoch
+ *    (a rotation or recovery epoch it was never sent). Sending still works, so
+ *    this must NOT gate the composer — it is background repair: keep filing
+ *    key requests, and fall back to a fresh epoch if no holder ever answers.
+ *
+ * The composer gate used to be raised for both while every path that LOWERS
+ * it (opening the channel, the gate self-heal, envelopes-ready) asks only "is
+ * any key held?". A stale channel therefore flickered "Waiting for channel
+ * keys" on every server open (sweep raises, heal lowers, the 3 s follow-up
+ * sweep raises again) and the fallback rotation that should repair it never
+ * fired, because each lowering reset its 10-minute clock.
+ */
+export function splitMissingKeyChannels(
+    channels: ChannelKeyStatusInput[],
+    localLatest: Record<string, number | null>,
+): { noKey: string[]; stale: string[] } {
+    const noKey: string[] = [];
+    const stale: string[] = [];
+    for (const id of computeMissingKeyChannels(channels, localLatest)) {
+        if (localLatest[id] == null) noKey.push(id);
+        else stale.push(id);
+    }
+    return { noKey, stale };
+}
+
+/**
  * Keyed channels (text + Calls) that have NEVER been minted anywhere — `latest_epoch` is
  * explicitly `0` (a real "nobody has ever recorded an epoch for this
  * channel" answer from the server), not merely absent/unknown — and this
@@ -80,6 +112,30 @@ export function computeUnmintedChannels(
         .filter(c => c.latest_epoch === 0)
         .filter(c => (localLatest[c.channel_id] ?? null) == null)
         .map(c => c.channel_id);
+}
+
+/**
+ * May THIS member mint / record a channel's Sender-Key epoch? Mirrors the
+ * server's write gate (ChannelMessagesService.epochWritePermissions): text
+ * channels need SEND_MESSAGES, Calls channels need VIEW_CHANNEL | CONNECT.
+ *
+ * A member who fails it (read-only announcement channel, a mute, a role edit)
+ * must never attempt a mint: rotateChannelKey installs a key LOCALLY, the
+ * server then 403s the epoch record, and the member is left holding an epoch
+ * the server never heard of — one that can diverge from the real epoch-1 key
+ * once a sender does mint it, and that blocks the request path because
+ * "local >= latest" reads as "key held". They wait for a holder's
+ * distribution instead (viewing needs only VIEW_CHANNEL).
+ *
+ * `undefined` permissions (not loaded yet) → true, preserving prior behaviour:
+ * the server stays the authority and an unknown must not strand a channel.
+ */
+export function canMintChannelKey(kind: string, myPermissions: bigint | undefined): boolean {
+    if (myPermissions === undefined) return true;
+    const need = isCallsChannelKind(kind)
+        ? Permissions.VIEW_CHANNEL | Permissions.CONNECT
+        : Permissions.SEND_MESSAGES;
+    return (myPermissions & need) === need;
 }
 
 export type ChannelEntryAction = 'clear_gate' | 'mint' | 'wait';
@@ -468,6 +524,19 @@ export function normalizeRotationReason(reason: string | null | undefined): stri
     return (ROTATION_REASONS as readonly string[]).includes(reason ?? '')
         ? (reason as string)
         : 'permission_change';
+}
+
+/**
+ * The `rotation_reason` to RECORD with the server for a lost-access rotation.
+ * The signal's own vocabulary (`permission_change` / `member_removed`, kept in
+ * the encrypted channel_key content) is NOT in RecordEpochDto's allowlist
+ * (apps/api/src/servers/dto/server.dto.ts), so posting it 400'd on every
+ * attempt and the desktop discarded the new key — desktop never completed a
+ * lost-access rotation. Same mapping mobile uses (epochReasonForRotationSignal
+ * in cipherline-mobile's channelKeys/decisions.ts).
+ */
+export function epochReasonForRotationSignal(reason: string | null | undefined): 'role_perm_changed' | 'member_left' {
+    return normalizeRotationReason(reason) === 'member_removed' ? 'member_left' : 'role_perm_changed';
 }
 
 /**

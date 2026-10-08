@@ -1,8 +1,7 @@
 import { useEffect, useRef } from 'react';
-import axios from 'axios';
-import { API_BASE } from '../constants';
 import { useAuth } from '../contexts/AuthContext';
-import { shouldUploadBundle, subscribePrekeyCheckTriggers } from '../utils/prekeyHealth';
+import { shouldUploadBundle, otpPoolIsLow, subscribePrekeyCheckTriggers } from '../utils/prekeyHealth';
+import { fetchKeyStatus, postBundle, toUploadBundleBody } from '../utils/keyBundleUpload';
 
 /**
  * How often to re-check the server's view of this device's key material.
@@ -40,7 +39,7 @@ const KEY_STATUS_POLL_MS = 15 * 60 * 1000;
  * tried as a decrypt candidate, so that would pile up private keys that both
  * slow every decrypt and widen the exposure from a stolen key store.
  */
-export function useKeyRotation() {
+export function useKeyRotation(enabled = true) {
     const { token, deviceId } = useAuth();
     // Guards against two checks overlapping (a slow upload straddling a tick),
     // which would generate two bundles and upload them out of order.
@@ -49,7 +48,12 @@ export function useKeyRotation() {
     const lastCheckAt = useRef<number | null>(null);
 
     useEffect(() => {
-        if (!token || !deviceId) return;
+        // `enabled` — the Dashboard passes `bundleReady`, so the first check
+        // runs AFTER the launch publish (useKeyBundleSync) has landed. Two
+        // uploads racing each other replace the server's pool in either
+        // order, and the loser's freshly minted prekeys would be dropped from
+        // it (their privates then held forever, offered to no one).
+        if (!token || !deviceId || !enabled) return;
         let cancelled = false;
 
         const check = async () => {
@@ -57,33 +61,13 @@ export function useKeyRotation() {
             inFlight.current = true;
             lastCheckAt.current = Date.now();
             try {
-                // Paging cursor for retired_prekey_ids — the lowest prekey id
-                // this device still holds a private for. Best-effort: an older
-                // preload has no such method, and the server treats an absent
-                // cursor as "from the beginning".
-                let heldFrom: number | null = null;
-                try {
-                    heldFrom = await (window as any).electronAPI?.getLowestHeldOtpId?.() ?? null;
-                } catch { /* cursor is an optimization, never a precondition */ }
-
-                const { data } = await axios.get<{
-                    otp_remaining: number;
-                    spk_age_days: number;
-                    needs_rotation: boolean;
-                    // Added with the one-time-prekey reuse fix; OPTIONAL in the
-                    // type on purpose, because a client can outrun the server it
-                    // talks to and `undefined` must reach the generator as
-                    // "unknown" rather than as an empty set. Absent => carry
-                    // what we hold, delete nothing.
-                    unclaimed_prekey_ids?: number[];
-                    retired_prekey_ids?: number[];
-                }>(`${API_BASE}/keys/status`, {
-                    params: {
-                        device_id: deviceId,
-                        ...(heldFrom != null ? { held_from: heldFrom } : {}),
-                    },
-                    headers: { Authorization: `Bearer ${token}` },
-                });
+                // GET /v1/keys/status, with the `held_from` paging cursor for
+                // retired_prekey_ids (the lowest prekey id this device still
+                // holds). The id lists are OPTIONAL in the type on purpose: a
+                // client can outrun the server it talks to, and `undefined`
+                // must reach the generator as "unknown" rather than as an
+                // empty set. Absent => carry what we hold, delete nothing.
+                const data = await fetchKeyStatus(deviceId, token);
 
                 // G3: the server's flag (< 20 left, or an aging SPK) OR the
                 // client's higher low-water mark — see utils/prekeyHealth.ts.
@@ -99,23 +83,35 @@ export function useKeyRotation() {
                 // [] — see the type note above: `undefined` is "the server did
                 // not say", and the generator must not read that as "delete
                 // everything" or "carry nothing".
-                const bundle = await (window as any).electronAPI?.getRotationBundle?.({
+                //
+                // `otpPoolLow` turns on the main process's status-aware mode:
+                // it mints only when the pool is really low, rotates the
+                // signed prekey only when its OWN clock says it is 25 days old
+                // (the server's age never resets — see otpPoolIsLow), and
+                // answers null when neither holds, so nothing is uploaded.
+                const bundle = await window.electronAPI?.getRotationBundle?.({
                     rotateSpk,
                     unclaimedPrekeyIds: data.unclaimed_prekey_ids,
                     retiredPrekeyIds: data.retired_prekey_ids,
+                    otpPoolLow: otpPoolIsLow(data),
                 });
                 if (!bundle || cancelled) return;
 
-                await axios.post(
-                    `${API_BASE}/keys/upload_bundle`,
-                    { ...bundle, device_id: deviceId },
-                    { headers: { Authorization: `Bearer ${token}` } },
-                );
-            } catch {
-                // Silent — crypto falls back to existing keys, and the next
-                // tick retries. A failed top-up costs forward secrecy on some
-                // messages; surfacing it would cost the user an error they
-                // cannot act on.
+                // FLAT body. This used to post `{ ...bundle, device_id }` with
+                // the signed prekey nested, which the server's validation
+                // rejects (400) — every top-up since June failed silently
+                // here. See keyBundleUpload.ts.
+                await postBundle(toUploadBundleBody(bundle, deviceId), token);
+            } catch (err) {
+                // Not surfaced to the user — crypto falls back to existing
+                // keys, and the next tick retries; a failed top-up costs
+                // forward secrecy on some messages, and an error banner would
+                // cost the user something they cannot act on. But it IS
+                // logged: a fully silent catch is how every top-up 400'ing
+                // went unnoticed for three months. Status + server message
+                // only (validation text), never the body.
+                const e = err as { response?: { status?: number; data?: { message?: unknown } }; message?: string };
+                console.warn('[E2EE] Key top-up failed:', e?.response?.status ?? 'network', e?.response?.data?.message ?? e?.message ?? '');
             } finally {
                 inFlight.current = false;
             }
@@ -132,5 +128,5 @@ export function useKeyRotation() {
             clearInterval(timer);
             unsubscribe();
         };
-    }, [token, deviceId]);
+    }, [token, deviceId, enabled]);
 }

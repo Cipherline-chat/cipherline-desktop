@@ -1,7 +1,8 @@
 import React from 'react';
 import ReactDOM from 'react-dom';
 import { useParticipants, useLocalParticipant } from '@livekit/components-react';
-import { Track, VideoQuality } from 'livekit-client';
+import { Track, RemoteTrackPublication } from 'livekit-client';
+import { prewarmRemoteQuality } from '../../utils/remoteVideoQuality';
 import { useCallContext } from '../../contexts/CallContext';
 import { VideoTile } from './VideoTile';
 import secureLocalStore from '../../utils/secureLocalStore';
@@ -19,6 +20,7 @@ import {
     clampBannerHeight,
     fitBannerRatio,
 } from './focusBannerFit';
+import { focusSwap, FOCUS_CROSSFADE_MS } from './focusCrossfade';
 import { ROSTER_ONLY } from '../../utils/callRosterEvents';
 
 // Both clamps, and the auto-fit arithmetic they bound, live in
@@ -50,6 +52,8 @@ interface FocusedStreamBannerProps {
     onHideVideoChange: (identity: string, hide: boolean) => void;
     onHideScreenShareChange: (identity: string, hide: boolean) => void;
     onFocusedStreamChange?: (active: boolean) => void;
+    /** Stop watching a remote screen share (red X in the tile's name pill). */
+    onStopWatchingScreenshare?: (identity: string) => void;
 }
 
 export const FocusedStreamBanner = ({
@@ -67,6 +71,7 @@ export const FocusedStreamBanner = ({
     onHideVideoChange,
     onHideScreenShareChange,
     onFocusedStreamChange,
+    onStopWatchingScreenshare,
 }: FocusedStreamBannerProps) => {
     const callCtx = useCallContext();
     const { focusedStream } = callCtx;
@@ -81,15 +86,34 @@ export const FocusedStreamBanner = ({
     const [shownFocus, setShownFocus] = React.useState(focusedStream);
     const [crossfading, setCrossfading] = React.useState(false);
 
+    // Pre-warm the newly focused camera's top layer NOW, not when its tile
+    // mounts after the crossfade below: the SFU switch (~0.3–0.8 s measured)
+    // then overlaps the fade instead of starting after it. The focus tile's
+    // own claim takes over once mounted (utils/remoteVideoQuality.ts).
     React.useEffect(() => {
-        if (!focusedStream) { setShownFocus(null); return; }
-        const same = shownFocus?.identity === focusedStream.identity && shownFocus?.source === focusedStream.source;
-        if (same) return;
+        if (!focusedStream) return;
+        const pub = participants.find(p => p.identity === focusedStream.identity)?.getTrackPublication(focusedStream.source);
+        if (!(pub instanceof RemoteTrackPublication) || !pub.track) return;
+        return prewarmRemoteQuality(pub);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [focusedStream?.identity, focusedStream?.source]);
+
+    // Only a SWITCH (another stream already on screen) crossfades. A fresh
+    // focus shows at once — it used to crossfade too, with nothing to fade but
+    // the stream being focused, which blinked it out and back in over its
+    // first ~160 ms. See ./focusCrossfade.ts.
+    React.useEffect(() => {
+        const step = focusSwap(shownFocus, focusedStream);
+        if (step !== 'crossfade') {
+            setShownFocus(focusedStream);
+            setCrossfading(false);
+            return;
+        }
         setCrossfading(true);
         const t = setTimeout(() => {
             setShownFocus(focusedStream);
             setCrossfading(false);
-        }, 160);
+        }, FOCUS_CROSSFADE_MS);
         return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [focusedStream?.identity, focusedStream?.source]);
@@ -402,7 +426,7 @@ export const FocusedStreamBanner = ({
                     onHideVideoChange={(v) => onHideVideoChange(focusedParticipant.identity, v)}
                     onHideScreenShareChange={(v) => onHideScreenShareChange(focusedParticipant.identity, v)}
                     isFocusedView={true}
-                    quality={VideoQuality.HIGH}
+                    onStopWatching={onStopWatchingScreenshare ? () => onStopWatchingScreenshare(focusedParticipant.identity) : undefined}
                     style={displayFocus.source === Track.Source.ScreenShare ? { height: '100%' } : undefined}
                 />
                 </div>

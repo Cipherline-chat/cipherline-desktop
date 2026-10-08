@@ -90,7 +90,7 @@ export const StatusPicker: React.FC<StatusPickerProps> = ({
     return (
         <div ref={containerRef} className="relative flex justify-center w-full">
             {/* Trigger button */}
-            <div className="relative" ref={statusTipRef as React.Ref<HTMLDivElement>} {...statusTipHandlers}>
+            <div className="relative" ref={statusTipRef as React.Ref<HTMLDivElement>} {...statusTipHandlers} data-ob-anchor="rail-me">
                 {/* Plain button so the avatar fills — ClButton's icon cap is a fixed
                     46px circle that would float the image inside the 40px frame. */}
                 <button

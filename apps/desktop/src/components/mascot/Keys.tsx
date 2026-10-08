@@ -1,14 +1,14 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
     INITIAL_BRAIN, onPoke, onWake, onRest, applySignal, shouldArmRest,
     nextBlinkDelay, pokeReaction, BROWS, REST_MS,
-    type BrainState, type KeysMood, type KeysSignal, type PokeReaction,
+    type BrainState, type KeysMood, type KeysSignal, type PokeReaction, type KeysFace,
 } from '../../utils/keysBrain';
 import { useMascotCue } from '../../hooks/useMascotCue';
 import { isMotionActive } from '../../utils/idleMotion';
 import '../../styles/keys.css';
 
-export type { KeysMood, KeysSignal } from '../../utils/keysBrain';
+export type { KeysMood, KeysSignal, KeysFace, PokeReaction } from '../../utils/keysBrain';
 
 /**
  * Keys 2.0 — the articulated mascot. Jointed 3-segment limbs with a
@@ -56,6 +56,18 @@ export interface KeysProps {
     sad?: boolean;
     /** Overrides the default "Keys, the Cipherline mascot" label. */
     ariaLabel?: string;
+    /** A face the host holds over the mood's brows (the Home spam egg):
+     *  happy, or 'blank' (no brows: the host draws his eyes). Null = his own. */
+    face?: KeysFace | null;
+    /** Asked first on every poke. Return a reaction to play it INSTEAD of
+     *  the poke ladder (the brain does not advance and onPoke is not
+     *  called: the host owns that poke); null = the ladder as usual. */
+    interceptPoke?: () => PokeReaction | null;
+    /** The twelve-segment leg sway (a main-thread SVG loop, see the note at
+     *  the bottom of keys.css). Default true. A host that moves Keys with its
+     *  own compositor-only swim turns it off; one-shots (wave, flail, perk)
+     *  still play. */
+    idleSway?: boolean;
     onPoke?: (count: number) => void;
     onMoodChange?: (m: KeysMood) => void;
     className?: string;
@@ -70,6 +82,7 @@ export const Keys: React.FC<KeysProps> = ({
     interactive = true, waveOnMount = true, lively = false,
     wave: waveProp = false, sad = false,
     ariaLabel = 'Keys, the Cipherline mascot',
+    face = null, interceptPoke, idleSway = true,
     onPoke: onPokeCb, onMoodChange, className,
 }) => {
     const [brain, setBrain] = useState<BrainState>(INITIAL_BRAIN);
@@ -80,6 +93,20 @@ export const Keys: React.FC<KeysProps> = ({
     // wiggle every time (pokeReaction in keysBrain).
     const [reaction, setReaction] = useState<PokeReaction>('wiggle');
     const restTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+    // The one-shot wrapper (wiggle / hop / spin / squish / stir). It is NOT
+    // keyed on `wig`: a key remounts the whole rig, and a remounted rig
+    // restarts every leg animation in flight (a raised waving arm snapped
+    // to 0 on the very next frame, measured; spam-clicking did it seven
+    // times a second). Instead, replay the wrapper's own animation in place.
+    const oneShotRef = useRef<HTMLSpanElement>(null);
+    useLayoutEffect(() => {
+        const el = oneShotRef.current;
+        if (!el || wig === 0) return;
+        el.style.animation = 'none';
+        void el.offsetWidth; // flush, so clearing it below starts the class's animation afresh
+        el.style.removeProperty('animation');
+    }, [wig]);
 
     const mood = brain.mood;
     useEffect(() => { onMoodChange?.(mood); }, [mood, onMoodChange]);
@@ -98,8 +125,17 @@ export const Keys: React.FC<KeysProps> = ({
         }
     }, []);
 
+    const interceptRef = useRef(interceptPoke);
+    useEffect(() => { interceptRef.current = interceptPoke; });
+
     const poke = useCallback(() => {
         if (!interactive) return;
+        const forced = interceptRef.current?.() ?? null;
+        if (forced) {
+            setReaction(forced);
+            setWig(w => w + 1);
+            return;
+        }
         // Side effects OUTSIDE the state updater (StrictMode double-invokes
         // updaters); brainRef is advanced eagerly so rapid pokes never read a
         // stale count.
@@ -222,14 +258,20 @@ export const Keys: React.FC<KeysProps> = ({
     const happy = mood === 'happy';
     const closed = asleep || mood === 'sleepy' || blink;
 
-    const browL = sad ? BROWS.sadL : closed ? BROWS.closedL : happy ? BROWS.happyL : BROWS.awakeL;
-    const browR = sad ? BROWS.sadR : closed ? BROWS.closedR : happy ? BROWS.happyR : BROWS.awakeR;
+    // A held face outranks the mood (and the blink: you can't blink at
+    // someone you're cross with), but never sadness or sleep.
+    const held = sad || asleep ? null : face;
+    const browL = sad ? BROWS.sadL : held === 'happy' ? BROWS.happyL
+        : closed ? BROWS.closedL : happy ? BROWS.happyL : BROWS.awakeL;
+    const browR = sad ? BROWS.sadR : held === 'happy' ? BROWS.happyR
+        : closed ? BROWS.closedR : happy ? BROWS.happyR : BROWS.awakeR;
 
     const svgCls = [
         'k2-svg',
         wave ? 'k2-wave' : '',
         reaction === 'flail' ? 'k2-flail' : '',
         perk && !wave ? 'k2-perk' : '',
+        idleSway ? '' : 'k2-still',
         sad ? 'k2-sad' : asleep ? 'k2-asleep' : signal === 'alert' ? 'k2-alert' : signal === 'pulse' ? 'k2-pulse' : '',
         className ?? '',
     ].filter(Boolean).join(' ');
@@ -243,11 +285,10 @@ export const Keys: React.FC<KeysProps> = ({
             aria-label={ariaLabel}
         >
             {speech && !asleep && <span className="k2-speech">{speech}</span>}
-            {/* key={wig} remounts the wrapper so the one-shot wiggle replays —
-                same remove/reflow/add trick the other mascots use, minus the
-                manual reflow. */}
+            {/* The one-shot wrapper: its animation is replayed by the layout
+                effect above (not by remounting: see there). */}
             <span
-                key={wig}
+                ref={oneShotRef}
                 className={wig && reaction !== 'none' && reaction !== 'flail' ? `k2-${reaction}` : ''}
                 style={{ display: 'inline-block', width: fluid ? '100%' : undefined }}
             >
@@ -270,10 +311,16 @@ export const Keys: React.FC<KeysProps> = ({
                         </g>
                         {/* The dome — his head. */}
                         <path d="M21 48 A34 34 0 0 1 89 48 L89 53 L21 53 Z" fill="currentColor" />
-                        {/* The W-brows — his eyes, the only face he has. */}
-                        <g stroke="var(--cl-abyss)" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round" fill="none">
-                            <path className="k2-brow" d={browL} />
-                            <path className="k2-brow" d={browR} />
+                        {/* The W-brows — his eyes, the only face he has.
+                            k2-eyes is the hook a host moves them by (the Home
+                            deck's glance and look-at-the-pointer). */}
+                        <g className="k2-eyes" stroke="var(--cl-abyss)" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round" fill="none">
+                            {held !== 'blank' && (
+                                <>
+                                    <path className="k2-brow" d={browL} />
+                                    <path className="k2-brow" d={browR} />
+                                </>
+                            )}
                         </g>
                         {/* A single small tear — understated, not overdone
                             (carried over from OfflineScreen's sad face). */}

@@ -38,6 +38,11 @@ interface QuotaInfo {
      *  'ladder' = owner has Pro/trial (grows with members). Absent on an older
      *  API, which reads as the ladder. */
     storage_plan?: 'flat25' | 'ladder';
+    /** The split of used_bytes (absent on an API older than 2026-10-05):
+     *  server saves vs custom emojis, which share the one quota. */
+    saves_bytes?: number;
+    emoji_bytes?: number;
+    emoji_count?: number;
 }
 
 interface ChannelStorageRow {
@@ -146,7 +151,7 @@ export const ServerStoragePanel: React.FC<Props> = ({
                     <div className="flex items-center gap-1.5">
                         <Archive size={11} className="text-amber-400/70" />
                         <span className="text-[10px] font-mono font-semibold uppercase tracking-widest text-cl-faint">
-                            Server Saves Storage
+                            Server Storage
                         </span>
                     </div>
                     <span className="text-[11px] text-cl-muted font-mono tabular-nums">
@@ -264,6 +269,22 @@ export const ServerStoragePanel: React.FC<Props> = ({
                     </span>
                     <span>{Math.round(pct)}% used</span>
                 </div>
+
+                {typeof quota.emoji_bytes === 'number' && (
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[10px] text-cl-faint">
+                        <span>
+                            Saved messages{' '}
+                            <span className="text-cl-muted font-mono tabular-nums">
+                                {formatBytes(quota.saves_bytes ?? Math.max(0, quota.used_bytes - quota.emoji_bytes))}
+                            </span>
+                        </span>
+                        <span>
+                            Custom emojis{' '}
+                            <span className="text-cl-muted font-mono tabular-nums">{formatBytes(quota.emoji_bytes)}</span>
+                            {typeof quota.emoji_count === 'number' && <> ({quota.emoji_count})</>}
+                        </span>
+                    </div>
+                )}
 
                 {isNearLimit && (
                     <div className="flex items-start gap-1.5 text-[11px] text-amber-400/80 leading-snug">

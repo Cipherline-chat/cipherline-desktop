@@ -1,33 +1,20 @@
 /**
  * recovery-key-gate — the decision half of `secure:reveal-recovery-key`.
  *
- * UPDATE (2026-09-20) — THE TWO CALLERS ARE NO LONGER GATED IDENTICALLY.
- * Everything below this notice, up to DIALOG FATIGUE, is the ORIGINAL
- * rationale for why no onboarding carve-out should exist. It is kept
- * verbatim because it is still correct and still the reason the SETTINGS
- * reveal (`RecoveryKeyCard.tsx`, channel `secure:reveal-recovery-key`, this
- * gate) stays exactly as documented. It is no longer the reason the SIGNUP
- * wizard's reveal is gated, because it is not gated any more: after this
- * update, the wizard reveals the key automatically, with no confirmation
- * dialog, through a separate ungated channel
- * (`secure:reveal-recovery-key-signup`, wired in main.ts next to this gate —
- * search that file for "SIGNUP CARVE-OUT"). That is a deliberate owner
- * decision (2026-09-20: "just show it to me, and also get rid of this huge
- * pop up with it"), made with the analysis below already in hand, not a
- * rediscovery that the analysis was wrong.
- *
- * RESIDUAL RISK, stated plainly: the argument below that main cannot tell
- * "brand-new signup" apart from "a second device logging into an existing
- * account" still holds, and the key still never rotates. So the signup
- * wizard's ungated reveal is reachable by ANY flow that mounts it — which
- * today is only fresh registration, but if a future change ever routes an
- * existing-account device-login through the same wizard component, that
- * login would silently inherit an ungated reveal of a vault that is no
- * longer empty. Whoever makes that change is the one who must re-add a gate
- * to that path — this comment is the tripwire for that review, not a claim
- * that the risk has been designed away. Do not "fix" this file by re-gating
- * the signup channel without checking with the owner first; the friction
- * removal was the explicit point of the change.
+ * UPDATE (2026-10-05) — THE SIGNUP CARVE-OUT IS GONE. From 2026-09-20 the
+ * registration wizard revealed the key automatically, with no dialog, through
+ * a separate ungated channel (`secure:reveal-recovery-key-signup`) — an owner
+ * decision taken with the analysis below in hand, which accepted the residual
+ * risk that main cannot tell a brand-new signup from a second device logging
+ * into a non-empty vault. Onboarding round 6 removed the wizard's recovery-key
+ * step altogether (the key is offered from Settings only), so that channel had
+ * no caller left and was deleted rather than kept as an unused ungated path.
+ * Today there is exactly ONE reveal channel, `secure:reveal-recovery-key`,
+ * gated by this module, used by Settings (`RecoveryKeyCard.tsx`).
+ * Everything below is the original rationale and applies in full again: do
+ * not add an ungated reveal for onboarding without re-reading it and checking
+ * with the owner. recovery-key-gate.test.ts pins that no ungated channel
+ * exists.
  *
  * WHAT THIS PROTECTS
  * The device master key is the root of everything stored at rest on this

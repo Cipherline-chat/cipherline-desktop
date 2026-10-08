@@ -76,7 +76,10 @@
  *   maps rather than going through the setters, so a boot can never re-persist
  *   what it just read (and can never rewrite `savedAt` for a record it is about
  *   to expire).
- * - **Ids and usernames only — never blobs, keys, or nicknames.** Nothing here
+ * - **Ids and usernames only — never blobs, keys, or nicknames.** (The ids
+ *   are the avatar's and, per user, the profile banner's — the banner id comes
+ *   from `/auth/users/:id` and `/friends`, both of which have always carried
+ *   `banner_url`; see `utils/profileCache.ts` for why it is here.) Nothing here
  *   is secret and nothing here bypasses a gate: `EncryptedAvatar`'s friend gate
  *   still decides whether an avatar id is resolved at all, the server still
  *   authorises every key/download, and a username is already visible to anyone
@@ -142,8 +145,13 @@ const PERSIST_DEBOUNCE_MS = 1_500;
 const STORE_PREFIX = 'cipherline_peer_identity_';
 const RECORD_VERSION = 1;
 
-/** Compact on-disk shape: `[key, avatarId, name]`, '' meaning "not known". */
-type PersistedEntry = [string, string, string];
+/**
+ * Compact on-disk shape: `[key, avatarId, name, bannerId?]`, '' meaning "not
+ * known". The fourth slot (user map only) was added without a version bump:
+ * an older record simply has no banner ids, and an older client reading a
+ * newer record destructures the first three and ignores the rest.
+ */
+type PersistedEntry = [string, string, string] | [string, string, string, string];
 interface PersistedRecord {
     v: number;
     savedAt: number;
@@ -154,6 +162,12 @@ interface PersistedRecord {
 interface PeerIdentity {
     /** Attachment id of the profile picture, absent when they have none. */
     avatarId?: string;
+    /** Attachment id of the profile BANNER (user map only), absent when they
+     *  have none or it has not been learned. Lets a profile card start the
+     *  banner's load — or paint it from cache — on the click, instead of
+     *  after the profile fetch round trip that is the only other source of
+     *  a non-friend's banner id. */
+    bannerId?: string;
     /** ACCOUNT username — never a server nickname. See the precedence note. */
     name?: string;
 }
@@ -177,7 +191,9 @@ function clip(s: string): string {
 function toPersistedEntries(map: Map<string, PeerIdentity>): PersistedEntry[] {
     const all = [...map.entries()];
     const keep = all.length > MAX_PERSISTED_ENTRIES ? all.slice(all.length - MAX_PERSISTED_ENTRIES) : all;
-    return keep.map(([key, e]) => [clip(key), clip(e.avatarId ?? ''), clip(e.name ?? '')] as PersistedEntry);
+    return keep.map(([key, e]) => (e.bannerId
+        ? [clip(key), clip(e.avatarId ?? ''), clip(e.name ?? ''), clip(e.bannerId)]
+        : [clip(key), clip(e.avatarId ?? ''), clip(e.name ?? '')]) as PersistedEntry);
 }
 
 function writeNow(): void {
@@ -262,12 +278,13 @@ export function hydratePeerIdentityCache(userId: string | null | undefined): voi
 function load(map: Map<string, PeerIdentity>, entries: PersistedEntry[]): void {
     for (const entry of entries) {
         if (!Array.isArray(entry)) continue;
-        const [key, avatarId, name] = entry;
+        const [key, avatarId, name, bannerId] = entry as [unknown, unknown, unknown, unknown];
         if (typeof key !== 'string' || !key) continue;
         const rec: PeerIdentity = {};
         if (typeof avatarId === 'string' && avatarId) rec.avatarId = clip(avatarId);
         if (typeof name === 'string' && name) rec.name = clip(name);
-        if (rec.avatarId === undefined && rec.name === undefined) continue;
+        if (typeof bannerId === 'string' && bannerId) rec.bannerId = clip(bannerId);
+        if (isEmpty(rec)) continue;
         map.set(key, rec);
         if (map.size > MAX_ENTRIES) {
             const oldest = map.keys().next();
@@ -286,6 +303,10 @@ export async function flushPeerIdentityCache(): Promise<void> {
     await persistPending;
 }
 
+function isEmpty(e: PeerIdentity): boolean {
+    return e.avatarId === undefined && e.name === undefined && e.bannerId === undefined;
+}
+
 /**
  * Apply one facet to an identity record, keeping the map recency-ordered and
  * bounded. `patch` returns the updated record, or the same one it was given.
@@ -299,12 +320,13 @@ function update(
     const before = map.get(key);
     const entry: PeerIdentity = { ...(before ?? {}) };
     patch(entry);
-    const changed = !before || before.avatarId !== entry.avatarId || before.name !== entry.name;
+    const changed = !before || before.avatarId !== entry.avatarId || before.name !== entry.name
+        || before.bannerId !== entry.bannerId;
 
     // Re-insert so the most recently seen identity is the youngest for
     // eviction, whichever facet was touched.
     map.delete(key);
-    if (entry.avatarId === undefined && entry.name === undefined) {
+    if (isEmpty(entry)) {
         if (changed) schedulePersist();   // a cleared avatar must not come back on the next boot
         return;                            // nothing left to remember
     }
@@ -328,6 +350,17 @@ function update(
  */
 export function rememberUserAvatarId(userId: string | null | undefined, avatarId: string | null | undefined): void {
     update(byUser, userId, e => { if (avatarId) e.avatarId = avatarId; else delete e.avatarId; });
+}
+
+/**
+ * Record — or CLEAR — a user's profile-banner attachment id. Same rule as the
+ * avatar setter: every source that carries `banner_url` (`/auth/users/:id`,
+ * `/friends`) sends null for "no banner", so a falsy value clears the facet.
+ * `undefined` means the source did not carry the field at all and is a no-op.
+ */
+export function rememberUserBannerId(userId: string | null | undefined, bannerId: string | null | undefined): void {
+    if (bannerId === undefined) return;
+    update(byUser, userId, e => { if (bannerId) e.bannerId = bannerId; else delete e.bannerId; });
 }
 
 /** Record (or clear) one device's avatar attachment id. */
@@ -421,6 +454,12 @@ export function knownAvatarIds(): string[] {
 export function lookupUserAvatarId(userId: string | null | undefined): string | null {
     if (!userId) return null;
     return (userId && byUser.get(userId)?.avatarId) || null;
+}
+
+/** Look up one user's profile-banner attachment id, or null. */
+export function lookupUserBannerId(userId: string | null | undefined): string | null {
+    if (!userId) return null;
+    return byUser.get(userId)?.bannerId ?? null;
 }
 
 /** Look up one user's account username, or null. */

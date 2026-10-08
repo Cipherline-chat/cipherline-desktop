@@ -335,6 +335,18 @@ export const NotificationsTab: React.FC = () => {
                 />
                 <Divider />
                 <Row
+                    label="Show profile pictures"
+                    desc="Use the sender's picture as the notification icon. Only when message preview is set to Full message."
+                    right={
+                        <ClToggle
+                            checked={prefs.show_sender_avatar !== false}
+                            onChange={v => set('show_sender_avatar', v)}
+                            disabled={prefs.show_preview !== 'full'}
+                        />
+                    }
+                />
+                <Divider />
+                <Row
                     label="Quick reply from notification"
                     desc="Reply inline without opening the app (macOS)"
                     right={

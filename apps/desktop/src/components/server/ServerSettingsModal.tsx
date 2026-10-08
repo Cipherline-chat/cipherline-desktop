@@ -41,10 +41,16 @@ import { useAttachments } from '../../hooks/useAttachments';
 import { IMAGE_ACCEPT_ATTR, validateImageUpload, validateEmojiUpload } from '../../utils/imageUploadValidation';
 import { AVATAR_OUTPUT, BANNER_OUTPUT } from '../../utils/imageCrop';
 import { serverSettingsTabVisibility, type ServerSettingsTab } from '../../utils/serverSettingsAccess';
-import { Permissions, hasPermission } from '@cipherline/shared';
+import { Permissions, hasPermission, formatBytes } from '@cipherline/shared';
 import { ServerIcon } from './ServerIcon';
 import { EmojiImage } from './EmojiImage';
 import { useServerEmojis, type ServerEmoji } from '../../hooks/useServerEmojis';
+import { useServerStorageQuota, type ServerStorageQuota } from '../../hooks/useServerStorageQuota';
+import {
+    emojiQuotaExceededMessage, isStorageQuotaError,
+    emojiCountLimitMessage, emojiCountNearMessage, isEmojiCountLimitError,
+    EMOJI_COUNT_LIMIT_FALLBACK, EMOJI_COUNT_NOTE_AT,
+} from '../../utils/serverStorageCopy';
 import { DockBackdrop } from './DockBackdrop';
 import { ServerStoragePanel } from './ServerStoragePanel';
 import { API_BASE } from '../../constants';
@@ -387,7 +393,7 @@ function OverviewTab({ server, token, onServerUpdated, storageRefreshKey, canMan
                             ) : (
                                 <div className="w-full h-full flex items-center justify-center text-cl-faint group-hover:text-cl-muted transition-colors">
                                     <ImageIcon size={28} />
-                                    <span className="ml-2 text-xs">Upload banner (1500×600)</span>
+                                    <span className="ml-2 text-xs">Upload banner ({BANNER_OUTPUT.width}×{BANNER_OUTPUT.height})</span>
                                 </div>
                             )}
                             <div className="absolute inset-0 flex items-center justify-center bg-black/0 group-hover:bg-black/40 transition-colors">
@@ -401,9 +407,13 @@ function OverviewTab({ server, token, onServerUpdated, storageRefreshKey, canMan
                                 variant="ghost"
                                 onClick={() => handleClearImage('banner')}
                                 tooltip="Remove banner"
-                                style={{ position: 'absolute', top: 8, right: 8, background: 'rgba(0,0,0,0.6)' }}
+                                // Position only: a background here paints the button's
+                                // square outer wrapper, which showed as a dark box
+                                // around the round X. The round cap has its own fill.
+                                style={{ position: 'absolute', top: 8, right: 8 }}
                             >
-                                <X size={14} />
+                                <X size={14} aria-hidden />
+                                <span className="sr-only">Remove banner</span>
                             </ClButton>
                         )}
                     </div>
@@ -420,6 +430,11 @@ function OverviewTab({ server, token, onServerUpdated, storageRefreshKey, canMan
                 <div className="flex items-start gap-4">
                     <div className="shrink-0">
                         <p className={sectionLabel}>Icon</p>
+                        {/* Wrapper is the positioning box for the corner X: the
+                            icon box itself clips (overflow-hidden), and the X is
+                            a sibling, not a child, so clicking it can't also open
+                            the file picker. */}
+                        <div className="relative w-20 h-20">
                         <div
                             className="w-20 h-20 rounded-2xl overflow-hidden border border-cl-border cursor-pointer relative group bg-cl-surface"
                             onClick={() => iconInputRef.current?.click()}
@@ -441,16 +456,20 @@ function OverviewTab({ server, token, onServerUpdated, storageRefreshKey, canMan
                                 <Camera size={18} className="opacity-0 group-hover:opacity-100 text-cl-text transition-opacity" />
                             </div>
                         </div>
-                        {iconAttachment && (
+                        {(iconAttachment || iconPreview) && (
                             <ClButton
-                                size="sm"
+                                icon
                                 variant="ghost"
+                                className="clb--icon-xs"
                                 onClick={() => handleClearImage('icon')}
-                                style={{ marginTop: 4, fontSize: 10 }}
+                                tooltip="Remove icon"
+                                style={{ position: 'absolute', top: -8, right: -8 }}
                             >
-                                Remove
+                                <X size={12} aria-hidden />
+                                <span className="sr-only">Remove server icon</span>
                             </ClButton>
                         )}
+                        </div>
                         <input
                             ref={iconInputRef}
                             type="file"
@@ -1241,10 +1260,45 @@ function nameFromFile(file: File): string {
     return base.slice(0, 32) || 'emoji';
 }
 
+/** "Custom emojis use X · Y of Z server storage used" + a slim bar. Emojis
+ *  count toward the same quota as server saves. */
+function EmojiStorageLine({ quota, emojiCount }: { quota: ServerStorageQuota; emojiCount: number }) {
+    const pct = quota.limit_bytes > 0 ? Math.min(100, (quota.used_bytes / quota.limit_bytes) * 100) : 0;
+    const fill = pct >= 90 ? 'bg-red-500' : pct >= 50 ? 'bg-amber-400' : 'bg-cl-lume';
+    const count = quota.emoji_count ?? emojiCount;
+    return (
+        <div className="space-y-1.5" aria-label="Server storage">
+            <div className="flex items-center justify-between gap-2 text-[11px] text-cl-faint">
+                <span>
+                    {count} emoji{count === 1 ? '' : 's'}
+                    {typeof quota.emoji_bytes === 'number' && <> · {formatBytes(quota.emoji_bytes)}</>}
+                    {' '}— counts toward server storage
+                </span>
+                <span className="font-mono tabular-nums text-cl-muted">
+                    {formatBytes(quota.used_bytes)} / {formatBytes(quota.limit_bytes)}
+                </span>
+            </div>
+            <div
+                className="h-1 w-full bg-white/[0.06] rounded-full overflow-hidden"
+                role="progressbar"
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={Math.round(pct)}
+            >
+                <div className={`h-full ${fill} transition-all duration-500`} style={{ width: `${pct}%` }} />
+            </div>
+        </div>
+    );
+}
+
 function EmojisTab({ server, token, canManageEmojis }: {
     server: ServerInfo; token: string | null; canManageEmojis: boolean;
 }) {
     const { emojis, loading, create, rename, remove } = useServerEmojis(server.server_id, token);
+    // Emojis count toward the server's storage (the 1,000 backstop is not shown as a counter) — shown here so
+    // a moderator sees the room left before uploading. Display only; the API
+    // enforces the quota and refuses an upload that does not fit.
+    const { quota, refresh: refreshQuota } = useServerStorageQuota(server.server_id, token);
     const { uploadEncryptedFile } = useAttachments(token);
     const toast = useToast();
     const fileInputRef = useRef<HTMLInputElement>(null);
@@ -1260,8 +1314,13 @@ function EmojisTab({ server, token, canManageEmojis }: {
     // picking a new file over an existing pending one), and on unmount.
     useEffect(() => () => { if (pending) URL.revokeObjectURL(pending.previewUrl); }, [pending]);
 
-    const MAX_EMOJIS = 50;
-    const atCap = emojis.length >= MAX_EMOJIS;
+    // Only a server with NO room left at all is pre-blocked: the processed
+    // size of a new emoji is not known until the server has resized it.
+    const storageFull = !!quota && quota.limit_bytes > 0 && quota.used_bytes >= quota.limit_bytes;
+    // The 1,000-emoji backstop: never a visible counter (storage is the
+    // limit people see) — a quiet note near it, a clear message at it.
+    const atCountLimit = emojis.length >= EMOJI_COUNT_LIMIT_FALLBACK;
+    const nearCountLimit = !atCountLimit && emojis.length >= EMOJI_COUNT_NOTE_AT;
 
     const pickFile = (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0];
@@ -1294,9 +1353,17 @@ function EmojisTab({ server, token, canManageEmojis }: {
             await create({ name, attachment_id: attachmentId, key_b64: keyB64, nonce_b64: nonceB64 });
             setPending(null);
         } catch (e: any) {
-            toast.push({ kind: 'error', message: e?.response?.data?.message ?? e?.message ?? 'Upload failed' });
+            const data = e?.response?.data;
+            if (isStorageQuotaError(data)) {
+                toast.push({ kind: 'error', title: 'Server storage full', message: emojiQuotaExceededMessage(data) });
+            } else if (isEmojiCountLimitError(data)) {
+                toast.push({ kind: 'error', title: 'Emoji limit reached', message: emojiCountLimitMessage(data) });
+            } else {
+                toast.push({ kind: 'error', message: data?.message ?? e?.message ?? 'Upload failed' });
+            }
         } finally {
             setUploading(false);
+            void refreshQuota();
         }
     };
 
@@ -1323,6 +1390,7 @@ function EmojisTab({ server, token, canManageEmojis }: {
         setDeletingId(emojiId);
         try {
             await remove(emojiId);
+            void refreshQuota(); // deleting an emoji frees its storage
         } catch (e: any) {
             toast.push({ kind: 'error', message: e?.response?.data?.message ?? 'Delete failed' });
         } finally {
@@ -1339,12 +1407,12 @@ function EmojisTab({ server, token, canManageEmojis }: {
                     <div className="flex items-center justify-between">
                         <div>
                             <p className="text-sm font-medium text-cl-text">Add an emoji</p>
-                            <p className="text-xs text-cl-faint">JPG, PNG, WEBP, or GIF — up to 5 MB. Automatically cropped to a square. {emojis.length}/{MAX_EMOJIS} used.</p>
+                            <p className="text-xs text-cl-faint">JPG, PNG, WEBP, or GIF — up to 5 MB. Cropped to a square and shrunk to 128 px, so most emojis take only a few KB of server storage.</p>
                         </div>
                         <ClButton
                             size="sm"
                             variant="ghost"
-                            disabled={atCap || uploading}
+                            disabled={storageFull || atCountLimit || uploading}
                             onClick={() => fileInputRef.current?.click()}
                         >
                             <Upload size={14} className="mr-1.5" /> Upload
@@ -1357,8 +1425,17 @@ function EmojisTab({ server, token, canManageEmojis }: {
                             onChange={pickFile}
                         />
                     </div>
-                    {atCap && (
-                        <p className="text-xs text-cl-flash">This server already has the maximum of {MAX_EMOJIS} custom emojis.</p>
+                    {quota && <EmojiStorageLine quota={quota} emojiCount={emojis.length} />}
+                    {storageFull && (
+                        <p className="text-xs text-cl-flash">
+                            {emojiQuotaExceededMessage(quota ?? undefined)}
+                        </p>
+                    )}
+                    {atCountLimit && (
+                        <p className="text-xs text-cl-flash">{emojiCountLimitMessage()}</p>
+                    )}
+                    {nearCountLimit && (
+                        <p className="text-[11px] text-cl-faint">{emojiCountNearMessage(emojis.length)}</p>
                     )}
                     {pending && (
                         <div className="flex items-center gap-3 px-3 py-2.5 bg-cl-raise/20 border border-cl-border rounded-xl">
@@ -1402,6 +1479,7 @@ function EmojisTab({ server, token, canManageEmojis }: {
                         <div key={e.emoji_id} className="flex items-center gap-3 px-3 py-2 bg-cl-raise/20 border border-cl-border rounded-xl">
                             <EmojiImage
                                 name={e.name}
+                                serverId={e.server_id}
                                 attachmentId={e.attachment_id}
                                 keyB64={e.key_b64}
                                 nonceB64={e.nonce_b64}

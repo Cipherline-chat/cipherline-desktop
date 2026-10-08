@@ -259,23 +259,35 @@ function loadProtectedEpochs(channelId: string): Set<number> {
  * epoch a pin in this channel references (setProtectedEpochs) — a pruned
  * epoch a pin needs is permanently unreadable for anyone who joins after,
  * since there is then no holder left to redistribute it from.
+ *
+ * Runs in slices (yielding the event loop every PRUNE_SLICE_MS): it decrypts
+ * and parses every channel's key set, and a long-lived install has hundreds.
+ * Because the channel cache is live while it yields, each changed channel is
+ * serialised from the cache at the END, so a key stored mid-prune is kept.
  */
-export function pruneOldKeys(): void {
+const PRUNE_SLICE_MS = 8;
+
+export async function pruneOldKeys(): Promise<void> {
     const cutoff = Date.now() - PRUNE_AFTER_MS;
     const PREFIX = 'channel_keys:';
+    let sliceStart = performance.now();
 
     // Collected here and written in ONE `setMany` at the end rather than a
-    // `set()` per channel. `SecureStore.set()` calls `save()`, and `save()`
-    // re-serialises the ENTIRE vault and does a writeFileSync + renameSync —
-    // so the old shape was N full-vault rewrites, serially, on the Electron
-    // main process's UI thread, before `createWindow()` has even run. That is
-    // the thread that owns the window HWND, so blocking it is what Windows
-    // reports as "(Not Responding)". Batching also makes the prune atomic: a
-    // crash mid-loop previously left some channels pruned and some not.
-    const pending: Record<string, string> = {};
+    // `set()` per channel. Every set() used to re-serialise the ENTIRE vault
+    // with a writeFileSync + renameSync — so the old shape was N full-vault
+    // rewrites, serially, on the Electron main process's UI thread, before
+    // `createWindow()` has even run. (SecureStore now writes asynchronously,
+    // but one write is still cheaper than N.) Batching also keeps the prune
+    // atomic on disk: all channels pruned in the same vault write.
+    const changedChannels = new Set<string>();
 
-    for (const storeKeyStr of secureStore.keys()) {
+    // The prefix index, not a scan of every key in the vault.
+    for (const storeKeyStr of secureStore.keysWithPrefix(PREFIX)) {
         if (!storeKeyStr.startsWith(PREFIX)) continue;
+        if (performance.now() - sliceStart > PRUNE_SLICE_MS) {
+            await new Promise<void>((resolve) => setImmediate(resolve));
+            sliceStart = performance.now();
+        }
         const channelId = storeKeyStr.slice(PREFIX.length);
 
         const m = getOrLoad(channelId);
@@ -299,8 +311,11 @@ export function pruneOldKeys(): void {
                 console.log(`[ChannelKeys] Pruned epoch ${epoch} for channel ${channelId}`);
             }
         }
-        if (changed) pending[storeKey(channelId)] = serializeEpochs(m);
+        if (changed) changedChannels.add(channelId);
     }
 
-    if (Object.keys(pending).length > 0) secureStore.setMany(pending);
+    if (changedChannels.size === 0) return;
+    const pending: Record<string, string> = {};
+    for (const channelId of changedChannels) pending[storeKey(channelId)] = serializeEpochs(getOrLoad(channelId));
+    secureStore.setMany(pending);
 }

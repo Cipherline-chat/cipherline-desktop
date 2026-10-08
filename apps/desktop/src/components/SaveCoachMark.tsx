@@ -11,7 +11,7 @@
  * (the row already carries `id="msg-<id>"`), a caret pointing down at it. It
  * explains when messages here auto-delete and offers "Save this message" —
  * which performs the real save, so the lesson is the action. "Got it" or Esc
- * dismisses. One time per account: the flag is written the moment it is shown
+ * dismisses (there is no separate close button). One time per account: the flag is written the moment it is shown
  * (so a crash or a chat switch can never make it repeat), and it can be turned
  * off along with every other tip.
  *
@@ -22,12 +22,12 @@
  *
  * Accessibility: a polite live region announced on appearance (with the way
  * out spelled out), focus is never taken, Esc works through the shared escape
- * stack, both buttons are real buttons, and under prefers-reduced-motion it
+ * stack, its buttons are real buttons, and under prefers-reduced-motion it
  * simply appears.
  */
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
-import { Save, X } from 'lucide-react';
+import { Save } from 'lucide-react';
 import { ClButton } from './cl';
 import { useToast } from '../contexts/ToastContext';
 import { useEscape } from '../hooks/useEscape';
@@ -162,8 +162,7 @@ export const SaveCoachMark: React.FC<Props> = ({
             className="fixed z-[9400] pointer-events-auto fade-rise-enter"
             style={{ left: place.left, top: place.top, width: CARD_W }}
         >
-            <div className="relative bg-cl-deep border border-white/[0.08] ring-1 ring-cl-lume/30 rounded-xl shadow-2xl pl-4 pr-2 py-3">
-                <span className="absolute left-0 top-0 bottom-0 w-[3px] bg-cl-lume rounded-l-xl" aria-hidden="true" />
+            <div className="relative bg-cl-deep border border-white/[0.08] ring-1 ring-cl-lume/30 rounded-xl shadow-2xl px-4 py-3">
                 <div className="flex items-start gap-2">
                     <div className="flex-1 min-w-0">
                         <p className="text-[13px] font-semibold text-white leading-tight m-0 flex items-center gap-1.5">
@@ -187,9 +186,6 @@ export const SaveCoachMark: React.FC<Props> = ({
                             <ClButton size="sm" variant="ghost" onClick={close}>{copy.dismiss}</ClButton>
                         </div>
                     </div>
-                    <ClButton icon size="sm" variant="ghost" onClick={close} tooltip="Dismiss">
-                        <X size={14} />
-                    </ClButton>
                 </div>
                 {/* Caret toward the message */}
                 <span

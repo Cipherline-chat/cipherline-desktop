@@ -89,6 +89,24 @@ export function shouldUploadBundle(status: { needs_rotation?: boolean; otp_remai
         && status.otp_remaining < CLIENT_OTP_LOW_WATER;
 }
 
+/**
+ * Is the server-side one-time-prekey pool actually low? This — not the
+ * server's `needs_rotation` — is what decides whether a top-up MINTS.
+ *
+ * `needs_rotation` also goes true for an aging signed prekey, and the server's
+ * signed-prekey age never resets after a device's first upload, so for any
+ * device older than 25 days it is true on every check. Minting on it would add
+ * 100 prekeys every 15 minutes to a pool that is already full — and push 100
+ * live ones out of the 200-prekey upload, orphaning their privates on the
+ * device for good. Unknown (`otp_remaining` absent) reads as low, the
+ * pre-existing behaviour.
+ */
+export function otpPoolIsLow(status: { otp_remaining?: number }): boolean {
+    const n = status.otp_remaining;
+    if (typeof n !== 'number' || !Number.isFinite(n)) return true;
+    return n < CLIENT_OTP_LOW_WATER;
+}
+
 /** Spacing gate for event-triggered checks. Pure, so the hook stays thin. */
 export function mayRunTriggeredCheck(lastCheckAt: number | null, now: number): boolean {
     return lastCheckAt === null || now - lastCheckAt >= PREKEY_CHECK_MIN_SPACING_MS;

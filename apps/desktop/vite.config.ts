@@ -1,9 +1,10 @@
-import { defineConfig } from 'vite'
+import { defineConfig, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 import * as path from 'path'
 import * as fs from 'fs'
 import { execFileSync } from 'child_process'
 import { fileURLToPath } from 'url'
+import { escapeNonAsciiJs } from './src/utils/asciiJsSource'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -48,9 +49,56 @@ function gitDescribe(): string {
 
 const gitCommit = process.env.CIPHERLINE_BUILD_COMMIT?.trim() || gitDescribe()
 
+// ── Worklet kernels as one-byte strings ─────────────────────────────────────
+// The AudioWorklet kernels are imported as `?raw` TEXT and concatenated into
+// worklet sources the renderer keeps for the whole session (the RNNoise one is
+// ~4.8 MB and is prefetched shortly after boot). The vendored RNNoise glue has
+// Japanese doc comments, and one non-Latin-1 character makes V8 store the whole
+// string two bytes per character: 9.2 MB instead of 4.8 MB, measured. This
+// serves those raw imports with every non-ASCII character escaped — see
+// escapeNonAsciiJs for why that is behaviour-preserving for JS source. Scoped
+// to the worklet kernels on purpose: escaping any OTHER `?raw` text would
+// change its value.
+const ASCII_RAW_JS = /(?:[\\/]src[\\/]audio[\\/][^\\/]+\.js|[\\/]@shiguredo[\\/]rnnoise-wasm[\\/]dist[\\/]rnnoise\.js)\?raw$/
+function asciiWorkletSources(): Plugin {
+  return {
+    name: 'cl-ascii-worklet-sources',
+    enforce: 'pre',
+    async load(id) {
+      if (!ASCII_RAW_JS.test(id)) return null
+      const file = id.slice(0, -'?raw'.length)
+      this.addWatchFile(file)
+      const text = escapeNonAsciiJs(await fs.promises.readFile(file, 'utf8'))
+      return `export default ${JSON.stringify(text)}`
+    },
+    // esbuild's ascii charset cannot escape inside a regex literal, so a
+    // non-Latin-1 character there (an en dash in a character class, say)
+    // still makes Blink hold that whole chunk two bytes per character. Say so
+    // at build time; the fix is a `\uXXXX` escape in the source.
+    generateBundle(_options, bundle) {
+      for (const chunk of Object.values(bundle)) {
+        if (chunk.type !== 'chunk') continue
+        const at = chunk.code.search(/[\u0100-\uffff]/)
+        if (at !== -1) {
+          this.warn(`${chunk.fileName} is not Latin-1 (held 2 bytes/char by the renderer): ...${chunk.code.slice(Math.max(0, at - 40), at + 10)}...`)
+        }
+      }
+    },
+  }
+}
+
 // https://vite.dev/config/
 export default defineConfig({
-  plugins: [react()],
+  plugins: [asciiWorkletSources(), react()],
+  // Emit pure-ASCII JavaScript (esbuild's own default; Vite overrides it to
+  // utf8). Blink keeps every loaded script's source text alive for lazy
+  // compilation, and stores it two bytes per character as soon as it contains
+  // ONE non-Latin-1 character — the entry chunk's em dashes and curly quotes
+  // were enough to hold its 2.4 MB of source at 4.8 MB. With `\uXXXX` escapes
+  // the strings mean exactly the same thing at runtime; only the source text
+  // changes, and it is held at half the size. Measured in the renderer's
+  // ExternalStringData (see the claude/ram-diet commit message).
+  esbuild: { charset: 'ascii' },
   base: './', // important for electron build paths
   build: {
     sourcemap: false, // never ship source maps in the production bundle

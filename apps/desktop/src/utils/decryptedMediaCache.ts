@@ -105,6 +105,12 @@ export function clearDecryptedMediaCache(): void {
     thumbs.clear();
 }
 
+/** Footprint of both caches (their Blob bytes live in the BROWSER process),
+ *  for the Performance log. */
+export function decryptedMediaCacheStats(): { media: { entries: number; bytes: number; held: number }; thumbs: { entries: number; bytes: number; held: number } } {
+    return { media: cache.stats(), thumbs: thumbs.stats() };
+}
+
 /** Test-only view of the cache state. */
 export function __decryptedMediaStats(): { entries: number; bytes: number; held: number } {
     return cache.stats();

@@ -87,3 +87,51 @@ describe('deliveryDiagnostics ring buffer', () => {
         expect(formatReport()).not.toContain('epoch=undefined');
     });
 });
+
+// The channel-key REST hops (key-request, pending pull, handshake POST,
+// member device listing) fail with an HTTP status and no [E2EE:…] prefix.
+// Before this they all landed as `UNKNOWN`, so a 403, a 429 and a 500 read
+// identically in Settings → Advanced → Delivery diagnostics.
+describe('deliveryDiagnostics — channel-key REST hops', () => {
+    beforeEach(() => clear());
+
+    const axiosLike = (status: number) =>
+        Object.assign(new Error(`Request failed with status code ${status}`), { response: { status } });
+
+    it('codes an axios-shaped failure by its HTTP status and records the status in ctx', () => {
+        record('channel_key_request', axiosLike(403), { server_id: 's1', channel_id: 'c1' });
+        const [e] = snapshot();
+        expect(e.code).toBe('HTTP_403');
+        expect(e.ctx).toEqual({ server_id: 's1', channel_id: 'c1', status: 403 });
+    });
+
+    it('keeps an [E2EE:…] code over the status when both are present', () => {
+        const err = Object.assign(new Error('[E2EE:NO_RECIPIENT_BUNDLE] x'), { response: { status: 200 } });
+        record('channel_key_distribute', err, {});
+        expect(snapshot()[0].code).toBe('NO_RECIPIENT_BUNDLE');
+    });
+
+    it('does not overwrite a status the caller already put in ctx', () => {
+        record('channel_key_pull', axiosLike(429), { status: 'caller-set' });
+        expect(snapshot()[0].ctx.status).toBe('caller-set');
+    });
+
+    it('counts each hop separately, so one report names the failing hop', () => {
+        record('channel_key_request', axiosLike(429), {});
+        record('channel_key_pull', axiosLike(403), {});
+        record('channel_key_distribute', new Error('[E2EE:NO_RECIPIENT_BUNDLE] y'), {});
+        record('channel_key_decrypt', new Error('[E2EE:KEY_DISTRIBUTOR_REJECTED] z'), {});
+        expect(counts()).toEqual({
+            'channel_key_request:HTTP_429': 1,
+            'channel_key_pull:HTTP_403': 1,
+            'channel_key_distribute:NO_RECIPIENT_BUNDLE': 1,
+            'channel_key_decrypt:KEY_DISTRIBUTOR_REJECTED': 1,
+        });
+    });
+
+    it('still codes a plain thrown string as UNKNOWN', () => {
+        record('channel_key_pull', 'boom', {});
+        expect(snapshot()[0].code).toBe('UNKNOWN');
+        expect(snapshot()[0].ctx).toEqual({});
+    });
+});

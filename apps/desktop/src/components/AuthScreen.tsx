@@ -1,25 +1,22 @@
 import secureLocalStore from '../utils/secureLocalStore';
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Turnstile } from '@marsidev/react-turnstile';
+import { TurnstileFrame } from './TurnstileFrame';
 import { useAuth } from '../contexts/AuthContext';
 import axios from 'axios';
 import { loadZxcvbn, useZxcvbn } from '../utils/passwordStrength';
 import { API_BASE } from '../constants';
 import type { OpenedBackupFile } from '../services/driveBackup';
-import { Lock, Mail, User, Eye, EyeOff, Upload, KeyRound, Smartphone, Calendar, ShieldCheck, Monitor, Sparkles, CheckCircle2, ChevronRight, HardDrive, Gift, Check, X, Loader2 } from 'lucide-react';
+import { Lock, Mail, Eye, EyeOff, Upload, KeyRound, Smartphone, Calendar, ShieldCheck, Monitor, Sparkles, CheckCircle2, ChevronRight, HardDrive, Gift, Check, X, Loader2 } from 'lucide-react';
 import { markLocalHistory, probeLocalHistory } from '../utils/localHistoryFlag';
-import { markDeviceStorageSetupDone } from '../utils/deviceStorageSetup';
+import { startOnboarding } from '../utils/onboardingProgress';
 import cipherlineMark from '../assets/cipherline-mark.svg';
-import { RegistrationWizard, type WizardResult } from './RegistrationWizard';
 import { ClButton } from './ClButton';
 import { DatePicker } from './DatePicker';
 import { ClInput, ClCheckbox, ClSegment } from './cl';
 import SlottedCodeInput from './SlottedCodeInput';
-import { useAttachments } from '../hooks/useAttachments';
-import { useAvatarBroadcast } from '../hooks/useAvatarBroadcast';
-import { uploadAvatarBlob } from '../utils/avatarUpload';
 import { bubbleCount, makeBubbles } from '../utils/deepField';
 import { registerOrReuseDevice } from '../utils/deviceRegistration';
+import { openExternalLink } from '../utils/openExternalLink';
 import QrSignInPanel from './link/QrSignInPanel';
 import { ReferralAppliedCard } from './auth/ReferralAppliedCard';
 import { AttributionClipboardOffer } from './auth/AttributionClipboardOffer';
@@ -209,7 +206,7 @@ const ReferralCodeField: React.FC<{
 ───────────────────────────────────────────── */
 /** The mascot, poked — dry one-liners in the tagline slot it already owns. */
 const MASCOT_QUIPS = [
-    "shhh — it's all encrypted.",
+    "shhh — your messages are encrypted.",
     "i can't read your messages. nobody can.",
     "your keys never leave this device.",
     "no, i won't tell. i literally can't.",
@@ -481,6 +478,24 @@ function authConfetti(x: number, y: number) {
     }
 }
 
+
+const LEGAL_TERMS_URL = 'https://cipherline.chat/terms';
+const LEGAL_PRIVACY_URL = 'https://cipherline.chat/privacy';
+
+/** A real link (keyboard-focusable, right-click copies the address) that opens in
+ *  the system browser via the validated openExternalLink path, never in-app. */
+const LegalLink: React.FC<{ href: string; children: React.ReactNode }> = ({ href, children }) => (
+    <a
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        onClick={(e) => { e.preventDefault(); openExternalLink(href); }}
+        className="text-cl-text font-semibold underline decoration-dotted underline-offset-2 hover:text-cl-lume transition-colors"
+    >
+        {children}
+    </a>
+);
+
 const AuthScreen: React.FC = () => {
     const { login, logoutReason, clearLogoutReason } = useAuth();
     const [view, setView] = useState<View>(() => (!logoutReason && getPendingReferral() ? 'register' : 'login'));
@@ -509,7 +524,6 @@ const AuthScreen: React.FC = () => {
     const [carriedInvite, setCarriedInvite] = useState(() => !!getPendingInvite());
     useEffect(() => onPendingInviteChange(() => setCarriedInvite(!!getPendingInvite())), []);
     const [confirmPassword, setConfirmPassword] = useState('');
-    const [username, setUsername]             = useState('');
     const [dob, setDob]                       = useState('');
     const [showPassword, setShowPassword]     = useState(false);
     const [tosAccepted, setTosAccepted]       = useState(false);
@@ -538,33 +552,15 @@ const AuthScreen: React.FC = () => {
     const [codeError, setCodeError] = useState(false);
     const codeClearTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-    // Post-verify wizard. Account is created immediately after email verification
-    // (POST /auth/finalize runs in submitVerifyEmailCode), so the wizard has a live
-    // token from the start. Profile setup + retention happen after the wizard.
-    const [wizardOpen, setWizardOpen] = useState(false);
+    // Verification creates the account (POST /auth/finalize runs in
+    // submitVerifyEmailCode) and signs straight in; the first-run setup then
+    // runs over the Dashboard (components/onboarding/). `verifyExiting` plays
+    // the verify card's exit before that hand-off.
     const [verifyExiting, setVerifyExiting] = useState(false);
-    const [pendingFinalize, setPendingFinalize] = useState<{
-        finalizeToken: string; username: string; email: string;
-    } | null>(null);
     const [pendingRegPayload, setPendingRegPayload] = useState<{
         token: string; userId: string; deviceId: string;
         requiresPairing: boolean; refresh_token?: string;
-        referralApplied?: boolean;
-        /** Whether /auth/finalize actually started this account's free trial
-         *  (P2-BILL-6 anti-farming quota can withhold it) — `undefined` for
-         *  every path other than a fresh registration (existing-account
-         *  login never sets this), which the wizard treats as "don't say
-         *  anything", not as "withheld". */
-        trialGranted?: boolean;
     } | null>(null);
-
-    // Avatar pipeline for the onboarding wizard — reactive to the post-verify
-    // token/userId so the wizard's "Set up your profile" step can upload.
-    const { uploadEncryptedFile } = useAttachments(pendingRegPayload?.token ?? null);
-    const { broadcastProfileAvatarKey } = useAvatarBroadcast(
-        pendingRegPayload?.token ?? null,
-        pendingRegPayload?.userId ?? null,
-    );
 
     // Restore backup
     const [restoreFile, setRestoreFile]       = useState<File | null>(null);
@@ -801,7 +797,7 @@ const AuthScreen: React.FC = () => {
                 device_name: deviceName,
             });
             const { user_id, access_token, refresh_token } = res.data;
-            const { deviceId, requiresPairing } = await registerOrReuseDevice(user_id, access_token, username || 'user');
+            const { deviceId, requiresPairing } = await registerOrReuseDevice(user_id, access_token, 'user');
             if (requiresPairing) {
                 setPendingRegPayload({ token: access_token, userId: user_id, deviceId, requiresPairing: true, refresh_token });
                 switchView('device-not-approved');
@@ -839,13 +835,12 @@ const AuthScreen: React.FC = () => {
     const handleRegisterSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
         setError(''); setInfo('');
-        if (!email || !username || !password || !confirmPassword || !dob) {
+        // No username here any more: it is picked on the onboarding profile
+        // step, after the account exists (PATCH /auth/profile).
+        if (!email || !password || !confirmPassword || !dob) {
             return setError('Please fill in all fields.');
         }
         if (!tosAccepted) return setError('Please accept the Terms of Service to continue.');
-        if (!/^[A-Za-z0-9_]{3,32}$/.test(username)) {
-            return setError('Username must be 3–32 chars: letters, digits, underscore.');
-        }
         if (password !== confirmPassword) return setError('Passwords do not match.');
         if (referralCode.trim() && referralValidity !== true) {
             return setError(referralValidity === false
@@ -877,7 +872,6 @@ const AuthScreen: React.FC = () => {
 
             await axios.post(`${API_BASE}/auth/register`, {
                 email: email.trim().toLowerCase(),
-                username,
                 password,
                 dob,
                 ...powFields,
@@ -911,41 +905,49 @@ const AuthScreen: React.FC = () => {
         setLoading(true);
         try {
             const res = await axios.post(`${API_BASE}/auth/verify-email`, { email: verifyEmail, code: autoCode });
-            const { finalize_token, username: regUsername } = res.data;
-            const wizardUsername = regUsername || username;
+            const { finalize_token } = res.data;
 
-            // TOS was accepted on the register form — finalize the account now so
-            // the wizard has a live session token from step 1. This also means that
-            // if the user cancels out of profile setup they still have an account.
+            // TOS was accepted on the register form — finalize (create) the
+            // account now. No username: the server gives it a temporary one
+            // and flags it `username_pending` until the profile step picks
+            // the real one.
             const finRes = await axios.post(`${API_BASE}/auth/finalize`, {
                 finalize_token,
                 tos_accepted: true,
-                username: wizardUsername,
                 ...(referralCode.trim() ? { referral_code: referralCode.trim().toUpperCase() } : {}),
             });
-            const { user_id, access_token, refresh_token, referral_applied, trial_granted } = finRes.data;
+            const { user_id, access_token, refresh_token, referral_applied, trial_granted, bonus_days } = finRes.data;
             // The code has been used — one-shot. (A pending SERVER invite is NOT
             // cleared here: it is carried until the person answers the join prompt.)
             clearPendingReferral();
             if (referral_applied && referrer) rememberReferrer(user_id, referrer);
-            const { deviceId, requiresPairing } =
-                await registerOrReuseDevice(user_id, access_token, wizardUsername || 'user');
+            const { deviceId, requiresPairing } = await registerOrReuseDevice(user_id, access_token, 'user');
 
-            setPendingRegPayload({
-                token: access_token, userId: user_id, deviceId, requiresPairing, refresh_token,
-                referralApplied: !!referral_applied,
-                // trial_granted is a real boolean on every /auth/finalize response
-                // (see auth.service.ts) — read defensively anyway so an older
-                // API build (no field at all) degrades to "say nothing" rather
-                // than to "claim withheld".
+            // Open the first-run setup for this account on this device. It runs
+            // after sign-in, over the Dashboard, and resumes from this marker if
+            // the app is closed part-way (utils/onboardingProgress.ts).
+            // trial_granted is a real boolean on every /auth/finalize response —
+            // read defensively anyway so an older API build degrades to "say
+            // nothing" rather than to "claim withheld".
+            startOnboarding(user_id, {
                 trialGranted: typeof trial_granted === 'boolean' ? trial_granted : undefined,
+                referralApplied: !!referral_applied,
+                bonusDays: typeof bonus_days === 'number' ? bonus_days : undefined,
+                ...(referral_applied ? { referralCode: referralCode.trim().toUpperCase() } : {}),
             });
-            setPendingFinalize({ finalizeToken: '', username: wizardUsername, email: verifyEmail });
+            // The "Finish setting up" checklist is for freshly-onboarded accounts.
+            try { secureLocalStore.setItem(`cipherline_onboarded_v2_${user_id}`, '1'); } catch { /* checklist just stays hidden */ }
+            markLocalHistory(user_id);
+
             setLoading(false);
+            // Let the verify card drift away on the shared field, then sign in:
+            // the Dashboard mounts with the setup already up over it.
             setVerifyExiting(true);
-            setWizardOpen(true);
+            await new Promise<void>(r => setTimeout(r, window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 420));
+            await login(access_token, user_id, deviceId, requiresPairing, refresh_token);
             return;
         } catch (err: any) {
+            setVerifyExiting(false);
             flashWrongCode(err?.response?.data?.message || 'Verification failed.');
         }
         setLoading(false);
@@ -967,65 +969,6 @@ const AuthScreen: React.FC = () => {
         } catch (err: any) {
             setError(err?.response?.data?.message || 'Could not resend code.');
         }
-    };
-
-    /* ─────────────────────────────────────────
-       Wizard completion — apply settings and login
-       (Account + device were registered at email-verification time, so we just
-       need to upload the avatar, PATCH the profile, write retention, and login.)
-    ───────────────────────────────────────── */
-    const handleWizardComplete = async (result: WizardResult) => {
-        if (!pendingRegPayload) return;
-        const { token, userId } = pendingRegPayload;
-
-        try {
-            let avatarId: string | null = null;
-            if (result.avatarBlob) {
-                avatarId = await uploadAvatarBlob(result.avatarBlob, { uploadEncryptedFile, broadcastProfileAvatarKey });
-            }
-            const profilePatch: Record<string, unknown> = {};
-            if (avatarId) profilePatch.avatar_url = avatarId;
-            if (result.bio) profilePatch.bio = result.bio;
-            if (Object.keys(profilePatch).length > 0) {
-                await axios.patch(`${API_BASE}/auth/profile`, profilePatch,
-                    { headers: { Authorization: `Bearer ${token}` } });
-            }
-        } catch (err) { console.warn('[onboarding] avatar setup failed', err); }
-
-        const policy = {
-            messageRetention: 'never',
-            attachmentRetention: 'never',
-            dmMessageRetention:        result.dmMessageRetention,
-            dmAttachmentRetention:     result.dmAttachmentRetention,
-            groupMessageRetention:     result.groupMessageRetention,
-            groupAttachmentRetention:  result.groupAttachmentRetention,
-            serverMessageRetention:    result.serverMessageRetention,
-            serverAttachmentRetention: result.serverAttachmentRetention,
-            savedAttachmentIds: [], unsavedAttachmentIds: [],
-            savedMessageIds: [], unsavedMessageIds: [],
-            unsavedMessageTimestamps: {}, unsavedAttachmentTimestamps: {},
-        };
-        try { secureLocalStore.setItem(`cipherline_storage_policy_${userId}`, JSON.stringify(policy)); } catch {}
-        // The wizard just asked the retention question for THIS device, so the
-        // first-run device storage prompt (deviceStorageSetup.ts) must not ask
-        // it again the moment the Dashboard mounts.
-        try { markDeviceStorageSetupDone(userId, 'signup'); } catch { /* the policy above already counts as a choice, so the prompt adopts it silently */ }
-        try { secureLocalStore.setItem(`cipherline_onboarded_v2_${userId}`, '1'); } catch {}
-        if (pendingRegPayload?.referralApplied) {
-            try { secureLocalStore.setItem(`cl_referral_welcome_${userId}`, '7'); } catch {}
-        }
-        markLocalHistory(userId);
-        // NOTE: login() is intentionally NOT called here. The wizard plays its
-        // "welcome / diving in" outro after the save, then calls onEnter() below
-        // to actually log in (which unmounts this screen → Dashboard).
-    };
-
-    /** Called by the wizard once its outro animation has finished — performs the
-     *  deferred login that swaps AuthScreen out for the Dashboard. */
-    const handleWizardEnter = () => {
-        if (!pendingRegPayload) return;
-        const { token, userId, deviceId, requiresPairing, refresh_token } = pendingRegPayload;
-        login(token, userId, deviceId, requiresPairing, refresh_token);
     };
 
     /* ─────────────────────────────────────────
@@ -1211,13 +1154,6 @@ const AuthScreen: React.FC = () => {
             setRestoring(false);
         }
     };
-
-    /* ─────────────────────────────────────────
-       Render: Wizard
-    ───────────────────────────────────────── */
-    // The wizard is rendered as a fade-in overlay *on top of* the verify-email view
-    // (see that render block below) rather than as a hard view-swap, so Keys + the
-    // dot field cross-dissolve with the fading verify card instead of popping in.
 
     /* ─────────────────────────────────────────
        Render: Device-not-approved + Restore-backup
@@ -1446,8 +1382,8 @@ const AuthScreen: React.FC = () => {
         return (
             <>
             <Shell>
-                {/* Fades out as the wizard takes over — the backdrop's dots keep
-                    drifting underneath, so the handoff reads as one continuous scene. */}
+                {/* Fades out as the first-run setup takes over — the backdrop's dots
+                    keep drifting underneath, so the handoff reads as one continuous scene. */}
                 <div
                     style={{
                         opacity: verifyExiting ? 0 : 1,
@@ -1482,17 +1418,6 @@ const AuthScreen: React.FC = () => {
                     </form>
                 </div>
             </Shell>
-            {/* Wizard overlay — fades in over the fading verify card (same dot field
-                underneath) so Keys settles into place as the prompt dissolves. */}
-            {wizardOpen && pendingFinalize && (
-                <RegistrationWizard
-                    username={pendingFinalize.username}
-                    authToken={pendingRegPayload?.token}
-                    trialGranted={pendingRegPayload?.trialGranted}
-                    onComplete={handleWizardComplete}
-                    onEnter={handleWizardEnter}
-                />
-            )}
             </>
         );
     }
@@ -1577,13 +1502,12 @@ const AuthScreen: React.FC = () => {
                     <Field icon={<Mail size={15} />} placeholder="Email" value={email} onChange={setEmail} disabled={loading} autoFocus />
                     {TURNSTILE_KEY && (
                         <div className="flex flex-col items-center gap-1.5">
-                            <Turnstile
+                            <TurnstileFrame
                                 ref={forgotTurnstileRef}
                                 siteKey={TURNSTILE_KEY}
                                 onSuccess={(t) => { setForgotTurnstileToken(t); setTurnstileError(''); }}
                                 onError={() => { setForgotTurnstileToken(''); setTurnstileError("The human-check couldn't load. Check your connection (or an ad-blocker) and retry."); }}
                                 onExpire={() => setForgotTurnstileToken('')}
-                                options={{ theme: 'dark', size: 'normal' }}
                             />
                             {turnstileError && (
                                 <div className="text-xs text-amber-400 text-center">
@@ -1751,7 +1675,6 @@ const AuthScreen: React.FC = () => {
                 )}
                 <form onSubmit={handleRegisterSubmit} className="flex flex-col gap-3">
                     <Field icon={<Mail size={15} />} placeholder="Email" value={email} onChange={setEmail} disabled={loading} />
-                    <Field icon={<User size={15} />} placeholder="Username (display only)" value={username} onChange={setUsername} disabled={loading} />
                     <DatePicker icon={<Calendar size={15} />} placeholder="Date of birth (YYYY-MM-DD)" ariaLabel="Date of birth" value={dob} onChange={setDob} disabled={loading} />
                     <div>
                         <Field
@@ -1780,30 +1703,29 @@ const AuthScreen: React.FC = () => {
                     {/* Optional referral code — collapsible to keep the form lean; auto-expands when pre-filled from a referral link */}
                     <ReferralCodeField value={referralCode} onChange={setReferralCode} disabled={loading} forceOpen={referralFromLink} onValidityChange={setReferralValidity} onResolved={setReferrer} onRemove={removeReferral} />
 
-                    <ClCheckbox
-                        checked={tosAccepted}
-                        onChange={setTosAccepted}
-                        style={{ alignItems: 'center' }}
-                        label={
-                            // Age (13+) is enforced by the neutral date-of-birth gate
-                            // above + the Terms; no need to restate it here. This is the
-                            // clickwrap consent to the Terms & Privacy Policy. Kept to one
-                            // line so the box doesn't float against a wrapped label.
-                            <span className="text-[13px] text-cl-muted leading-snug whitespace-nowrap">
-                                I agree to the <span className="text-cl-text font-semibold">Terms</span> &amp;{' '}
-                                <span className="text-cl-text font-semibold">Privacy Policy</span>.
-                            </span>
-                        }
-                    />
+                    {/* Age (13+) is enforced by the neutral date-of-birth gate above +
+                        the Terms; no need to restate it here. This is the clickwrap
+                        consent to the Terms & Privacy Policy. The checkbox is a <button>,
+                        so the links can't live inside its label (nested interactive
+                        content, and the click would also toggle the box) — they sit beside
+                        it, and the plain words still toggle it like a normal label.
+                        Kept to one line so the box doesn't float against a wrapped label. */}
+                    <div className="flex items-center gap-[11px]">
+                        <ClCheckbox checked={tosAccepted} onChange={setTosAccepted} />
+                        <span className="text-[13px] text-cl-muted leading-snug whitespace-nowrap">
+                            <span className="cursor-pointer select-none" onClick={() => setTosAccepted(!tosAccepted)}>I agree to the</span>{' '}
+                            <LegalLink href={LEGAL_TERMS_URL}>Terms</LegalLink> &amp;{' '}
+                            <LegalLink href={LEGAL_PRIVACY_URL}>Privacy Policy</LegalLink>.
+                        </span>
+                    </div>
                     {TURNSTILE_KEY && (
                         <div className="flex flex-col items-center gap-1.5">
-                            <Turnstile
+                            <TurnstileFrame
                                 ref={regTurnstileRef}
                                 siteKey={TURNSTILE_KEY}
                                 onSuccess={(t) => { setRegTurnstileToken(t); setTurnstileError(''); }}
                                 onError={() => { setRegTurnstileToken(''); setTurnstileError("The human-check couldn't load. Check your connection (or an ad-blocker) and retry."); }}
                                 onExpire={() => setRegTurnstileToken('')}
-                                options={{ theme: 'dark', size: 'normal' }}
                             />
                             {turnstileError && (
                                 <div className="text-xs text-amber-400 text-center">

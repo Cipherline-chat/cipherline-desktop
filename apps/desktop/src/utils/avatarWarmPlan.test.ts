@@ -5,7 +5,38 @@ import {
     selectServerMemberAvatars,
     collectRecentSenderIds,
     DEFAULT_WARM_LIMITS,
+    selectFriendBanners,
+    FRIEND_BANNER_WARM_LIMIT,
 } from './avatarWarmPlan';
+
+describe('selectFriendBanners', () => {
+    const friends = [
+        { user_id: 'off-1', banner_url: 'bn-off-1' },
+        { user_id: 'on-1', banner_url: 'bn-on-1' },
+        { user_id: 'none', banner_url: null },
+        { user_id: 'empty', banner_url: '' },
+        { user_id: 'off-2', banner_url: 'bn-off-2' },
+        { user_id: 'on-2', banner_url: 'bn-on-2' },
+        { user_id: 'dup', banner_url: 'bn-on-1' },
+    ];
+
+    it('online friends first, then list order; friends with no banner are skipped', () => {
+        expect(selectFriendBanners(friends, { 'on-1': true, 'on-2': true }))
+            .toEqual(['bn-on-1', 'bn-on-2', 'bn-off-1', 'bn-off-2']);
+    });
+
+    it('is capped — banners are a smaller bet than avatars', () => {
+        expect(FRIEND_BANNER_WARM_LIMIT).toBeLessThan(DEFAULT_WARM_LIMITS.friendAvatars);
+        const many = Array.from({ length: 40 }, (_, i) => ({ user_id: `u${i}`, banner_url: `bn-${i}` }));
+        expect(selectFriendBanners(many, {})).toHaveLength(FRIEND_BANNER_WARM_LIMIT);
+        expect(selectFriendBanners(many, {}, 3)).toEqual(['bn-0', 'bn-1', 'bn-2']);
+    });
+
+    it('tolerates no input', () => {
+        expect(selectFriendBanners(null, null)).toEqual([]);
+        expect(selectFriendBanners(undefined, undefined)).toEqual([]);
+    });
+});
 
 describe('conversationAvatarId', () => {
     it('returns the attachment id when there is one', () => {

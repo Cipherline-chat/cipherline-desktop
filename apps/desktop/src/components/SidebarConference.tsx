@@ -2,7 +2,8 @@ import React from 'react';
 import ReactDOM from 'react-dom';
 import { AnimatePresence, LayoutGroup, motion } from 'framer-motion';
 import { useParticipants, useLocalParticipant, useRoomContext } from '@livekit/components-react';
-import { Track, RoomEvent, ParticipantEvent, TrackEvent, RemoteParticipant, RemoteTrackPublication, VideoQuality, LocalAudioTrack, LocalVideoTrack } from 'livekit-client';
+import { Track, RoomEvent, ParticipantEvent, TrackEvent, RemoteParticipant, RemoteTrackPublication, LocalAudioTrack, LocalVideoTrack, ConnectionState } from 'livekit-client';
+import { PCM_RING_WORKLET_SOURCE } from '../utils/pcmRingWorkletSource';
 import { Mic, WifiOff, VideoOff } from 'lucide-react';
 import { ClButton } from './cl';
 import * as voiceProcessorManager from '../utils/voiceProcessorManager';
@@ -25,8 +26,25 @@ import {
     markH264HighFailed,
     hasH264HighFailed,
     type SenderCreatedSource,
+    type ScreenShareCodec,
 } from '../utils/screenShare';
-import { getScreenShareCodecPref } from '../utils/streamDiagnosticsPrefs';
+import { getScreenShareCodecPref, getAllowHevc, getShareLowLayerEnabled } from '../utils/streamDiagnosticsPrefs';
+import {
+    startCamera, applyCameraTier, retuneCamera, republishCamera, watchHardwareCamera, chooseCameraCodec,
+    asCameraParticipant, asCameraTrack, recoverStalledCamera, type StartCameraOptions,
+} from '../utils/cameraPublish';
+import { EncoderStallDetector, encoderStallSample, ENCODER_STALL_SAMPLE_MS } from '../utils/cameraEncoderStall';
+import { markPickerRequested, prefetchDesktopSources } from '../utils/desktopSourceCache';
+import { CameraLayeringPolicy, initialLayering, type CameraCodec } from '../utils/cameraQuality';
+import {
+    HEVC_ATTR, HevcPolicy, formatDecodeCaps, hevcCapableCount, roomHevcState, probeHevcDecode, probeHevcEncode,
+    hasHevcFailed, markHevcFailed, type HevcMode,
+} from '../utils/hevcNegotiation';
+import { swapShareCodec, type ShareParticipantLike } from '../utils/shareRepublish';
+import { installShareLowLayerControl, type ShareTrackLike } from '../utils/shareLowLayer';
+import { logCallEvent } from '../utils/callEventLog';
+import { getCameraQualityTier, getCameraCodecPref, subscribeCameraQualityPrefs, useIncomingVideoMode } from '../utils/cameraQualityPrefs';
+import { chooseDecodedSet, DECODE_CAP } from '../utils/remoteVideoQuality';
 import { parseMainDiagnostics, setScreenShareSession, updateScreenShareSession } from '../utils/screenShareDiagnostics';
 
 /** The subset of RTCOutboundRtpStreamStats used for screenshare frame-rate
@@ -50,6 +68,7 @@ import { ScreenSharePickerModal } from './ScreenSharePickerModal';
 import { VideoTile, subscribeFastSpeaking } from './call/VideoTile';
 import { ParticipantCard } from './call/ParticipantCard';
 import { ScreenShareGate } from './call/ScreenShareGate';
+import { withoutIdentity, focusAfterStopWatching, unsubscribeShareTracks } from '../utils/stopWatchingScreenshare';
 import { AudioOnlyStrip } from './call/AudioOnlyStrip';
 import { ControlBar } from './call/ControlBar';
 import { FocusedStreamBanner } from './call/FocusedStreamBanner';
@@ -60,6 +79,8 @@ import { useCallStats } from '../hooks/useCallStats';
 import { Permissions } from '@cipherline/shared';
 import { annotationStore } from '../utils/annotationStore';
 import { useDesktopAnnotationOverlay } from '../hooks/useDesktopAnnotationOverlay';
+import { isDesktopOverlayCaptured, onDesktopOverlayCapturedChange } from '../utils/desktopAnnotationOverlay';
+import { capturedAttributePatch } from '../utils/annotationOverlayCapture';
 import { parseParticipantMetadata, type ParticipantMeta } from '../utils/participantMetadata';
 import {
     writeWatchedShares,
@@ -94,6 +115,8 @@ import { getCurrentPipelineDbfs } from '../utils/micLevelRegistry';
 import { flatRecordEqual } from '../utils/flatRecordEqual';
 import { ROSTER_ONLY } from '../utils/callRosterEvents';
 import { setCallParticipantSpeaking, clearCallSpeaking } from '../utils/callSpeakingStore';
+import { isKeyComboClaimed } from '../utils/keyClaims';
+import { canPublishMicrophone } from '../utils/livekitPublishGrants';
 
 interface SidebarConferenceProps {
     token: string;
@@ -162,6 +185,19 @@ interface SidebarConferenceProps {
      *  to display names here (the identity is a user id and means nothing to a
      *  human). Empty/undefined is the normal case. See utils/remoteE2EEWatch.ts. */
     unencryptedIdentities?: string[];
+    /** Instant join: mute / deafen pressed on the joining controls before the
+     *  room connected (Dashboard's JoiningControlBar). Read once, at mount —
+     *  CallPane only mounts this component after the room connects and
+     *  passes these to that FIRST mount only, so a later mid-call remount
+     *  (portal target moved) never re-applies them. */
+    initialMuted?: boolean;
+    initialDeafened?: boolean;
+    /** Instant join: this mount takes over from the joining placeholder
+     *  (call/JoiningCallView.tsx), which already shows this exact layout — so
+     *  skip the entrance fades/drifts on this first render, or the hand-over
+     *  would flash (content disappearing, then fading back in). Only the
+     *  first render reads it; later joins/leaves animate as always. */
+    instantEnter?: boolean;
 }
 
 // Tile entry/exit: fade + slight upward drift for a grounded, spatial feel.
@@ -184,6 +220,57 @@ const tileItemVariants = {
         transition: { duration: 0.14, ease: [0.4, 0, 1, 1] as const },
     },
 };
+/**
+ * Video-tile entrance/exit for the call's tile strips (voice-channel portal and
+ * DM/group inline). Same entrance as tileItemVariants; the EXIT collapses the
+ * tile's height instead of only fading it.
+ *
+ * Why: when a stream is focused (or a camera stops) its tile leaves the strip,
+ * and everything under the strip — the rest of the panel, the search bar —
+ * moves up by that tile's height. With a fade-only exit (and popLayout taking
+ * the tile out of the flow at once) that move was a one-frame snap, out of step
+ * with the fade and with the focus banner. Keeping the tile in the flow while
+ * its height eases to 0 turns the snap into one continuous glide, and the same
+ * curve/duration drives the wrapper's padding and the siblings' layout moves so
+ * they all arrive together. Measured in a browser harness mirroring this
+ * structure: the old exit moved the panel 178 px in one frame; this one eases
+ * it over ~0.32 s (20 frames) with no step at the end.
+ */
+const SIDEBAR_GLIDE_S = 0.32;
+const SIDEBAR_GLIDE_EASE = [0.4, 0, 0.2, 1] as const;
+/**
+ * `gapPx` is the flex `gap` of the column the tile sits in. The gap beside a
+ * tile is not part of the tile, so collapsing only its height left that gap
+ * standing until the tile unmounted, and the content below finished the glide
+ * with a one-frame 8 px (6 px in the camera strip, 12 px inline) snap. Easing a
+ * matching negative bottom margin in with the height makes the tile's net
+ * footprint reach exactly 0 on the last frame, so the unmount moves nothing.
+ * (Every column these sit in keeps a sibling after the tiles — the overflow
+ * sentinel, or another tile — so there is always one gap to cancel.)
+ */
+const tileGlideVariants = (gapPx: number) => ({
+    initial: { opacity: 0 },
+    animate: {
+        opacity: 1,
+        marginBottom: 0,
+        transition: { duration: 0.2, ease: [0.22, 1, 0.36, 1] as const },
+    },
+    exit: {
+        opacity: 0,
+        height: 0,
+        marginBottom: -gapPx,
+        overflow: 'hidden' as const,
+        transition: {
+            opacity: { duration: 0.12, ease: [0.4, 0, 1, 1] as const },
+            height: { duration: SIDEBAR_GLIDE_S, ease: SIDEBAR_GLIDE_EASE },
+            marginBottom: { duration: SIDEBAR_GLIDE_S, ease: SIDEBAR_GLIDE_EASE },
+        },
+    },
+});
+/** Portal strip (`gap-2`), the camera strip inside it (`gap-1.5`), inline (`gap-3`). */
+const portalTileGlide = tileGlideVariants(8);
+const camStripTileGlide = tileGlideVariants(6);
+const inlineTileGlide = tileGlideVariants(12);
 // Pure fade for the ping pill, mic device-change banner, screenshare notice,
 // audio-only strip, ringing tile — pop in at their position, no slide, no
 // delay. Same reasoning as tiles.
@@ -200,16 +287,14 @@ const sidebarPillVariants = {
 // the focused app unmounts the VideoTile underneath, which detaches the track
 // from its <video> element and stops the local decode/composite work — free
 // savings with no effect on what's actually being sent to the room.
-const LocalScreenShareTile = ({ shareSourceId, ...props }: React.ComponentProps<typeof VideoTile> & {
-    /** Capture source id of the running share — drives the desktop overlay
-     *  (docs/video-annotation-design.md, Phase 5) for whole-screen shares. */
-    shareSourceId?: string | null;
-}) => {
+//
+// The desktop annotation overlay is NOT tied to this tile (it used to be).
+// This tile is unmounted whenever you focus your own share — the focused
+// stage draws a different tile — and whenever its portal target is gone, so
+// the overlay vanished exactly while the streamer was looking at the strokes.
+// It is held by SidebarConference for the whole share instead.
+const LocalScreenShareTile = (props: React.ComponentProps<typeof VideoTile>) => {
     const appFocused = useWindowFocus();
-    // Lives here, not in SidebarConference's body: this tile exists exactly
-    // while the local share does, so mount/unmount IS show/hide. Refcounted
-    // inside, since the tile can render in two layouts at once.
-    useDesktopAnnotationOverlay(props.p.identity, shareSourceId ?? null);
     if (!appFocused) {
         return (
             <div className="relative rounded-xl overflow-hidden bg-cl-abyss w-full shrink-0 min-h-[80px] aspect-video ring-inset ring-1 ring-white/5 flex items-center justify-center">
@@ -222,9 +307,18 @@ const LocalScreenShareTile = ({ shareSourceId, ...props }: React.ComponentProps<
     return <VideoTile {...props} />;
 };
 
+/** GPU vendors from main (for the NVIDIA rule in decideCameraCodec), time-boxed. */
+function cameraGpuVendors(): Promise<readonly { vendor: string }[] | null> {
+    const ask = window.electronAPI?.getScreenShareDiagnostics?.('')
+        .then(v => parseMainDiagnostics(v)?.gpus ?? null)
+        .catch(() => null) ?? Promise.resolve(null);
+    return Promise.race([ask, new Promise<null>(res => setTimeout(() => res(null), 750))]);
+}
+
 export const SidebarConference = ({
     token, onLeave, onInactivityWarning, localAvatarUrl, activeChatAvatarUrl, activeChatUserId, activeChatTitle, sessionId, isGroup, noRinging, isHuddle, onFocusedStreamChange, voice, memberRoleColors,
     memberAvatarMap, canServerMute, onServerMuteTrack, channelPermissions, encryptionIndicatorMode, unencryptedIdentities,
+    initialMuted, initialDeafened, instantEnter,
 }: SidebarConferenceProps) => {
     // ── In-call permission flags (P13) ──────────────────────────────────────
     // SPEAK/VIDEO/SCREEN_SHARE control whether the user can publish their own
@@ -882,7 +976,7 @@ export const SidebarConference = ({
                 );
                 showDeviceBanner(
                     actualEntry?.label ||
-                    defaultLabel.replace(/^Default\s*[-–]\s*/i, '') ||
+                    defaultLabel.replace(/^Default\s*[-\u2013]\s*/i, '') ||
                     'New microphone',
                 );
             } else if (force) {
@@ -1056,6 +1150,9 @@ export const SidebarConference = ({
             const useExact = shouldUseExactConstraint(desired, inputs);
             const wasMuted = !!camTrack?.isMuted;
             await room.switchActiveDevice('videoinput', desired, useExact);
+            // A different camera can have a different native size: rebuild the
+            // simulcast ladder from the new capture (cameraPublish.retuneCamera).
+            await retuneCamera(asCameraTrack(room.localParticipant?.getTrackPublication(Track.Source.Camera)?.track as LocalVideoTrack | undefined)).catch(() => false);
 
             const liveCam = room.localParticipant
                 ?.getTrackPublication(Track.Source.Camera)?.track;
@@ -1090,7 +1187,7 @@ export const SidebarConference = ({
                 );
                 showDeviceBanner(
                     actualEntry?.label ||
-                    defaultLabel.replace(/^Default\s*[-–]\s*/i, '') ||
+                    defaultLabel.replace(/^Default\s*[-\u2013]\s*/i, '') ||
                     'New camera',
                 );
             } else if (force && trackAlive) {
@@ -1211,6 +1308,10 @@ export const SidebarConference = ({
     // person per speaking burst) or after they've been silent for 5 s — never on
     // every 1 s tick. Participants who aren't promoted stay in their original join order.
     const [promotedIds, setPromotedIds] = React.useState<string[]>([]);
+    // Everyone who has spoken this call, most recent speech start first — the
+    // decode cap's priority (see budgetHiddenVideoIds). Never shrinks during
+    // the call; ids that left are ignored where it is read.
+    const [speakOrder, setSpeakOrder] = React.useState<string[]>([]);
     const silenceTimerMapRef = React.useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
     React.useEffect(() => {
@@ -1228,6 +1329,7 @@ export const SidebarConference = ({
                         const timers = silenceTimerMapRef.current;
                         if (timers.has(id)) { clearTimeout(timers.get(id)); timers.delete(id); }
                         setPromotedIds(prev => [id, ...prev.filter(x => x !== id)]);
+                        setSpeakOrder(prev => (prev[0] === id ? prev : [id, ...prev.filter(x => x !== id)]));
                     }
                 } else {
                     const oldVal = ticks[id] || 0;
@@ -1347,8 +1449,11 @@ export const SidebarConference = ({
             localServerMutedScreenShare = _localMeta.server_muted_screenshare === true;
         }
     } catch {}
-    const [localDeafened, setLocalDeafened] = React.useState(false);
-    const wasMutedBeforeDeafenRef = React.useRef(false);
+    // Seeded from the joining controls (see initialMuted/initialDeafened):
+    // a pre-muted join must not be switched back on by the undeafen effect
+    // below, which runs on mount for everyone.
+    const [localDeafened, setLocalDeafened] = React.useState(() => !!initialDeafened);
+    const wasMutedBeforeDeafenRef = React.useRef(!!initialMuted);
     // Tracks whether the user had manually muted themselves BEFORE a server-mute
     // landed. When the server-mute is lifted, we only restore the mic to enabled
     // if they were NOT already muted — matching the self-deafen pattern above.
@@ -1412,7 +1517,7 @@ export const SidebarConference = ({
             // call that simply never had a server-mute doesn't fire this at
             // all) and skip when this effect's own true→false transition
             // wasn't a real lift (covered by the same guard).
-            if (!wasMutedBeforeServerMuteRef.current) {
+            if (!wasMutedBeforeServerMuteRef.current && canPublishMicrophone(localParticipant)) {
                 localParticipant.setMicrophoneEnabled(true).catch(() => {});
             }
             toast.push({
@@ -1693,6 +1798,34 @@ export const SidebarConference = ({
     const currentShareRef = React.useRef<ScreenShareOptions | null>(null);
     const [currentShare, setCurrentShare] = React.useState<ScreenShareOptions | null>(null);
 
+    // Desktop annotation overlay (docs/video-annotation-design.md, Phase 5) —
+    // for the whole life of the local share. It used to live in the self-view
+    // tile (LocalScreenShareTile), which unmounts when you focus your own
+    // share or its portal target goes away, taking the overlay with it.
+    useDesktopAnnotationOverlay(
+        localScreenShare ? localParticipant?.identity : null,
+        localScreenShare ? currentShare?.sourceId : null,
+    );
+    // Linux: the overlay is captured into the share. Say so on our participant
+    // so viewers draw only their own strokes over a video that already shows
+    // everyone else's (utils/annotationOverlayCapture.ts).
+    React.useEffect(() => {
+        const lp = localParticipant;
+        if (!lp) return;
+        let published = false;
+        const apply = (captured: boolean) => {
+            if (captured === published) return;
+            published = captured;
+            lp.setAttributes(capturedAttributePatch(captured)).catch(() => { /* cosmetic: worst case a duplicate stroke */ });
+        };
+        apply(isDesktopOverlayCaptured());
+        const off = onDesktopOverlayCapturedChange(apply);
+        return () => {
+            off();
+            if (published) lp.setAttributes(capturedAttributePatch(false)).catch(() => {});
+        };
+    }, [localParticipant]);
+
     // H.264 High for the screen share when that is this GPU's hardware H.264
     // (decideScreenShareCodec — the NVIDIA case). Set per publish; read by the
     // localSenderCreated hook below on the first publish AND on every
@@ -1710,6 +1843,205 @@ export const SidebarConference = ({
         );
     }, [localParticipant]);
 
+    // Camera: the same H.264 High transceiver preference, when the camera's
+    // encoder decision (cameraQuality.decideCameraCodec) picked hardware High.
+    const wantCameraH264HighRef = React.useRef(false);
+    React.useEffect(() => {
+        if (!localParticipant) return;
+        return installH264HighPreference(
+            localParticipant as unknown as SenderCreatedSource,
+            () => wantCameraH264HighRef.current,
+            undefined,
+            'camera',
+        );
+    }, [localParticipant]);
+
+    // ── Camera / share republish loop: 1:1 layering + H.265 negotiation ────
+    //
+    // Once a second, no React state:
+    //   - 1:1 calls publish ONE camera layer; a third person (present ≥ 3 s)
+    //     brings the simulcast ladder back; back to 1:1 for 30 s drops it
+    //     again, at most one switch per 20 s (cameraQuality.CameraLayeringPolicy);
+    //   - H.265 only while every remote participant advertises HEVC decode and
+    //     this machine HW-encodes it (hevcNegotiation.ts): someone who cannot
+    //     decode joins → camera and share move to their normal codec at once;
+    //     they leave → H.265 again after 30 s of everyone qualifying.
+    // Both are make-before-break republishes on the same E2EE room
+    // (cameraPublish.republishCamera, shareRepublish.swapShareCodec), and the
+    // codec is RECONCILED each tick (desired vs what is published), so a camera
+    // that was off during a switch catches up when it comes back.
+    const hevcModeRef = React.useRef<HevcMode>('base');
+    /** The current share's base codec is hardware H.264 (gates the lighter copy). */
+    const shareHwH264Ref = React.useRef(false);
+    /** The current share's base codec is H.264 High (the transceiver preference must follow it). */
+    const shareBaseHighRef = React.useRef(false);
+    const hevcEncodeRef = React.useRef(false);
+    const shareBaseCodecRef = React.useRef<ScreenShareCodec>('vp8');
+    const cameraStartOptions = React.useCallback((): StartCameraOptions => ({
+        tier: getCameraQualityTier(),
+        codec: {
+            pref: getCameraCodecPref(),
+            probe: (w, h, fps) => probeHardwareEncoders(w, h, fps),
+            gpus: cameraGpuVendors,
+        },
+        setWantH264High: on => { wantCameraH264HighRef.current = on; },
+        hevc: hevcModeRef.current === 'h265' && hevcEncodeRef.current && !hasHevcFailed(),
+        makeTrack: (t, c) => new LocalVideoTrack(t, c, false),
+    }), []);
+    React.useEffect(() => {
+        if (!room) return;
+        const lp = room.localParticipant;
+        let cancelled = false;
+        void probeHevcEncode().then(v => { hevcEncodeRef.current = v; });
+        // Advertise what WE can decode (codec capability only).
+        void probeHevcDecode().then(h265 => {
+            if (cancelled) return;
+            lp.setAttributes({ [HEVC_ATTR]: formatDecodeCaps({ h265 }) }).catch(() => {});
+        });
+        let layering: CameraLayeringPolicy | null = null;
+        const hevc = new HevcPolicy('base');
+        hevcModeRef.current = 'base';
+        const firstSeen = new Map<string, number>();
+        let capsKey = '';
+        let busy = false;
+        const iv = setInterval(() => {
+            if (busy) return;
+            const now = performance.now();
+            const live = new Set<string>();
+            const remotes = [...room.remoteParticipants.values()].map(p => {
+                live.add(p.identity);
+                if (!firstSeen.has(p.identity)) firstSeen.set(p.identity, now);
+                return { attr: p.attributes?.[HEVC_ATTR], joinedMsAgo: now - (firstSeen.get(p.identity) ?? now) };
+            });
+            for (const id of [...firstSeen.keys()]) if (!live.has(id)) firstSeen.delete(id);
+            const caps = hevcCapableCount(remotes);
+            const key = `${caps.capable}/${caps.total}/${hevcEncodeRef.current}`;
+            if (key !== capsKey) {
+                capsKey = key;
+                logCallEvent('h265_caps', { capable: caps.capable, total: caps.total, self_encode: hevcEncodeRef.current });
+            }
+            const allowed = (getAllowHevc() || getCameraCodecPref() === 'h265') && hevcEncodeRef.current && !hasHevcFailed();
+            const hevcWant = hevc.observe(roomHevcState(remotes), allowed, now);
+            if (hevcWant) { hevc.applied(hevcWant, now); hevcModeRef.current = hevcWant; }
+            const wantHevc = hevcModeRef.current === 'h265';
+
+            const camPub = lp.getTrackPublication(Track.Source.Camera);
+            const cam = asCameraTrack(camPub?.track as LocalVideoTrack | undefined);
+            let layWant: 'single' | 'simulcast' | null = null;
+            let camCodecFix = false;
+            if (cam?.publishOptions) {
+                const mode = cam.publishOptions.simulcast === false ? 'single' : 'simulcast';
+                if (!layering) layering = new CameraLayeringPolicy(mode, now);
+                else if (layering.mode !== mode) layering.reset(mode, now);
+                layWant = layering.observe(room.remoteParticipants.size, now);
+                // A camera with a picture processor is never republished (see
+                // republishCamera), so do not keep asking for its codec.
+                const hasProcessor = !!(camPub?.track as { getProcessor?: () => unknown } | undefined)?.getProcessor?.();
+                camCodecFix = !camPub?.isMuted && !hasProcessor && (cam.publishOptions.videoCodec === 'h265') !== wantHevc;
+            } else {
+                layering = null;
+            }
+            const sharePub = lp.getTrackPublication(Track.Source.ScreenShare);
+            const share = currentShareRef.current;
+            const shareCodec = (sharePub?.track as { codec?: string } | undefined)?.codec;
+            const shareFix = !!share && !!sharePub?.track && !!shareCodec && (shareCodec === 'h265') !== wantHevc;
+            if (!layWant && !camCodecFix && !shareFix) return;
+
+            busy = true;
+            const lay = layering;
+            void (async () => {
+                if (layWant || camCodecFix) {
+                    let codec: CameraCodec | undefined;
+                    let reason = 'negotiation';
+                    if (camCodecFix) {
+                        if (wantHevc) {
+                            codec = 'h265';
+                            reason = 'everyone can decode H.265';
+                        } else {
+                            const s = cam!.mediaStreamTrack.getSettings?.() ?? {};
+                            const base = await chooseCameraCodec(cameraStartOptions().codec, s.width ?? 1280, s.height ?? 720);
+                            wantCameraH264HighRef.current = base.codec === 'h264' && base.h264Profile === 'high';
+                            codec = base.codec;
+                            reason = hasHevcFailed() ? 'H.265 failed' : 'someone cannot decode H.265';
+                        }
+                    }
+                    const ok = await republishCamera(asCameraParticipant(lp), {
+                        single: layWant ? layWant === 'single' : undefined, codec, reason,
+                    }, (t, c) => new LocalVideoTrack(t, c, false));
+                    if (ok && layWant) lay?.applied(layWant, performance.now());
+                    if (ok && codec === 'h265') {
+                        const fresh = lp.getTrackPublication(Track.Source.Camera)?.track;
+                        if (fresh) void watchHardwareCamera(asCameraParticipant(lp), asCameraTrack(fresh as LocalVideoTrack)!, cameraStartOptions());
+                    }
+                }
+                if (shareFix && share) {
+                    const codec: ScreenShareCodec = wantHevc ? 'h265' : shareBaseCodecRef.current;
+                    wantH264HighRef.current = codec === 'h264' && shareBaseHighRef.current;
+                    await swapShareCodec(lp as unknown as ShareParticipantLike, codec, share, {
+                        makeTrack: t => new LocalVideoTrack(t, undefined, true),
+                        lowerLayer: getShareLowLayerEnabled() && (codec === 'h265' || (codec === 'h264' && shareHwH264Ref.current)),
+                        reason: wantHevc ? 'everyone can decode H.265' : (hasHevcFailed() ? 'H.265 failed' : 'someone cannot decode H.265'),
+                    });
+                }
+            })().catch(err => console.warn('[Call] republish failed:', err)).finally(() => { busy = false; });
+        }, 1000);
+        return () => { cancelled = true; clearInterval(iv); };
+    }, [room, cameraStartOptions]);
+
+    // ── Camera encoder watchdog (utils/cameraEncoderStall.ts) ─────────────
+    // A hardware camera encoder that stops producing frames MID-call (the
+    // owner's NVIDIA H.264 High camera: 29 fps → 0 for the rest of the call
+    // while capture kept running) is moved to the fallback encoder instead of
+    // staying black. Dynacast-paused, muted, network-held and capture-starved
+    // cameras are never judged. Stats only; no React state.
+    React.useEffect(() => {
+        if (!room) return;
+        const lp = room.localParticipant;
+        const detector = new EncoderStallDetector();
+        const keys = new WeakMap<object, string>();
+        let nextKey = 0;
+        let busy = false;
+        const iv = setInterval(() => {
+            if (busy) return;
+            const pub = lp.getTrackPublication(Track.Source.Camera);
+            const track = pub?.track as (LocalVideoTrack & { sender?: RTCRtpSender }) | undefined;
+            const sender = track?.sender;
+            if (!pub || !track || !sender) return;
+            busy = true;
+            void (async () => {
+                let key = keys.get(sender);
+                if (!key) { key = `cam-${++nextKey}`; keys.set(sender, key); }
+                const report = await sender.getStats();
+                const sample = encoderStallSample({
+                    at: performance.now(),
+                    trackKey: key,
+                    publicationMuted: !!pub.isMuted,
+                    trackLive: track.mediaStreamTrack?.readyState === 'live',
+                    roomConnected: room.state === ConnectionState.Connected,
+                    encodings: sender.getParameters().encodings,
+                    stats: report.values() as Iterable<Record<string, unknown>>,
+                });
+                if (detector.observe(sample) !== 'stalled') return;
+                await recoverStalledCamera(asCameraParticipant(lp), cameraStartOptions());
+            })().catch(err => console.warn('[Camera] encoder watchdog:', err)).finally(() => { busy = false; });
+        }, ENCODER_STALL_SAMPLE_MS);
+        return () => clearInterval(iv);
+    }, [room, cameraStartOptions]);
+
+    // Settings → Voice & Video → Camera quality (or "Lower" on the performance
+    // offer) while the camera is live: restart the capture at the new cap and
+    // rebuild the ladder. A camera that is off picks it up on its next publish.
+    React.useEffect(() => {
+        if (!localParticipant) return;
+        let last = getCameraQualityTier();
+        return subscribeCameraQualityPrefs(() => {
+            const tier = getCameraQualityTier();
+            if (tier === last) return;
+            last = tier;
+            void applyCameraTier(asCameraParticipant(localParticipant), tier);
+        });
+    }, [localParticipant]);
+
     // Transient notice shown above the call UI when a screenshare audio choice
     // hits a platform limit (e.g. per-window audio requires Windows). Auto-
     // dismisses after ~6s; manually dismissable via the close button.
@@ -1723,10 +2055,11 @@ export const SidebarConference = ({
         return () => clearTimeout(id);
     }, [screenShareNotice]);
 
-    // Whether the native WASAPI audio_capture.node addon is actually loaded in the
+    // Whether the native audio_capture.node addon (WASAPI on Windows,
+    // ScreenCaptureKit on macOS 13+) is actually loaded and usable in the
     // main process. The preload *always* exposes startWindowAudioCapture, so we
-    // cannot infer capability from its mere existence — on Linux/macOS the IPC
-    // returns false and we'd silently publish no audio track at all. Probing once
+    // cannot infer capability from its mere existence — on Linux (and macOS
+    // older than 13) the IPC returns false and we'd silently publish no audio track at all. Probing once
     // at mount lets us route non-Windows builds through LiveKit's getDisplayMedia
     // audio path (Chromium loopback) instead.
     const [nativeAudioSupported, setNativeAudioSupported] = React.useState(false);
@@ -1739,7 +2072,8 @@ export const SidebarConference = ({
             })
             .catch(() => setNativeAudioSupported(false));
     }, []);
-    // Native window-audio capture state (WASAPI ApplicationLoopback, Windows only).
+    // Native window-audio capture state (WASAPI ApplicationLoopback on Windows,
+    // ScreenCaptureKit on macOS 13+).
     // The native addon streams float32 PCM at 48 kHz / stereo / ~10 ms chunks.
     // We feed those chunks into an AudioWorkletNode ring buffer; the worklet pulls
     // at the AudioContext's own clock, so there's no absolute-time scheduling, no
@@ -1761,6 +2095,7 @@ export const SidebarConference = ({
         }
         window.electronAPI?.removeWindowAudioChunkListener?.();
         window.electronAPI?.removeWindowAudioProcessExitedListener?.();
+        window.electronAPI?.removeWindowAudioFailedListener?.();
         window.electronAPI?.stopWindowAudioCapture?.();
 
         if (nativeWorkletNodeRef.current) {
@@ -1891,89 +2226,14 @@ export const SidebarConference = ({
         }
         console.log('[NativeAudio] AudioContext state:', ctx.state, 'sr:', ctx.sampleRate);
 
-        // Inline AudioWorklet processor — a ring-buffer pull node. Chunks arrive via
-        // port.postMessage from the main thread; process() pulls frames at the audio
-        // graph's own clock. Underruns output silence (no click), overflows drop the
-        // oldest frames (bounded latency). Inlined as a Blob URL so packaged builds
-        // don't have to resolve a file path.
-        const workletSource = `
-            class PCMRingProcessor extends AudioWorkletProcessor {
-                constructor() {
-                    super();
-                    this.channels = 2;
-                    // 2 seconds of headroom at 48 kHz — absorbs IPC jitter comfortably.
-                    this.ringSize = 48000 * 2;
-                    this.ring = [new Float32Array(this.ringSize), new Float32Array(this.ringSize)];
-                    this.writeIdx = 0;
-                    this.readIdx = 0;
-                    this.available = 0;
-                    this.started = false;
-                    // Keep ~40 ms prebuffered before we start pulling so small bursts of
-                    // IPC jitter don't cause immediate underruns at the very start.
-                    this.prebufferFrames = Math.floor(sampleRate * 0.04);
-
-                    this.port.onmessage = (e) => {
-                        const d = e.data;
-                        if (!d || d.type !== 'pcm') return;
-                        const interleaved = d.pcm;
-                        const ch = d.channels || 2;
-                        const frames = (interleaved.length / ch) | 0;
-                        if (frames <= 0) return;
-
-                        // If we would overflow, drop the oldest frames — bound latency.
-                        if (this.available + frames > this.ringSize) {
-                            const toDrop = (this.available + frames) - this.ringSize;
-                            this.readIdx = (this.readIdx + toDrop) % this.ringSize;
-                            this.available -= toDrop;
-                        }
-
-                        // De-interleave into per-channel ring slots.
-                        let w = this.writeIdx;
-                        for (let f = 0; f < frames; f++) {
-                            this.ring[0][w] = interleaved[f * ch];
-                            this.ring[1][w] = ch > 1 ? interleaved[f * ch + 1] : interleaved[f * ch];
-                            w = (w + 1) % this.ringSize;
-                        }
-                        this.writeIdx = w;
-                        this.available += frames;
-                    };
-                }
-
-                process(_inputs, outputs) {
-                    const out = outputs[0];
-                    const outFrames = out[0].length;
-                    const outChannels = out.length;
-
-                    // Gate on prebuffer — silence until we have enough cushion.
-                    if (!this.started) {
-                        if (this.available < this.prebufferFrames) {
-                            for (let c = 0; c < outChannels; c++) out[c].fill(0);
-                            return true;
-                        }
-                        this.started = true;
-                    }
-
-                    if (this.available < outFrames) {
-                        // Underrun: emit silence for this block, re-arm prebuffer so we
-                        // rebuild cushion before resuming playback (prevents stutter loops).
-                        for (let c = 0; c < outChannels; c++) out[c].fill(0);
-                        this.started = false;
-                        return true;
-                    }
-
-                    let r = this.readIdx;
-                    for (let f = 0; f < outFrames; f++) {
-                        out[0][f] = this.ring[0][r];
-                        if (outChannels > 1) out[1][f] = this.ring[1][r];
-                        r = (r + 1) % this.ringSize;
-                    }
-                    this.readIdx = r;
-                    this.available -= outFrames;
-                    return true;
-                }
-            }
-            registerProcessor('pcm-ring', PCMRingProcessor);
-        `;
+        // AudioWorklet ring-buffer pull node. Chunks arrive via
+        // port.postMessage from the main thread; process() pulls frames at the
+        // audio graph's own clock. Underruns output silence (no click) and
+        // re-prime; standing excess latency (a stall's backlog) is trimmed back
+        // to the prebuffer so system audio can't drift behind the screen video
+        // — see utils/pcmRingWorkletSource.ts. Loaded as a Blob URL so packaged
+        // builds don't have to resolve a file path.
+        const workletSource = PCM_RING_WORKLET_SOURCE;
 
         const workletBlobUrl = URL.createObjectURL(
             new Blob([workletSource], { type: 'application/javascript' })
@@ -1990,6 +2250,12 @@ export const SidebarConference = ({
             outputChannelCount: [2],
         });
         nativeWorkletNodeRef.current = workletNode;
+        workletNode.port.onmessage = ({ data }: MessageEvent) => {
+            if (data?.type !== 'trim') return;
+            const droppedMs = Math.round(Number(data.droppedMs) || 0);
+            console.log(`[NativeAudio] ring latency trimmed by ${droppedMs} ms (trim #${data.trims})`);
+            logCallEvent('av_sync_ss_audio_trim', { dropped_ms: droppedMs, trims: Number(data.trims) || 0 });
+        };
 
         const destination = ctx.createMediaStreamDestination();
         nativeDestinationRef.current = destination;
@@ -2046,16 +2312,35 @@ export const SidebarConference = ({
             void stopNativeWindowAudio();
         });
 
+        // macOS (ScreenCaptureKit) reports start/stop failures asynchronously —
+        // the start call itself returns before ScreenCaptureKit has answered.
+        // 'stopped' is the user ending the share from the system's own control,
+        // which already tears the video down, so it needs no message.
+        window.electronAPI?.onWindowAudioFailed?.(({ reason }) => {
+            console.warn('[NativeAudio] Native capture failed:', reason);
+            if (reason !== 'stopped') {
+                setScreenShareNotice({
+                    tone: 'warn',
+                    text: reason === 'permission'
+                        ? 'Cipherline needs Screen Recording permission to share audio. Allow it in System Settings → Privacy & Security → Screen & System Audio Recording, then restart Cipherline. Sharing video without audio.'
+                        : reason === 'no-target'
+                            ? 'Could not find the shared app for audio capture. Sharing video without audio.'
+                            : 'Audio capture failed. Sharing video without audio.',
+                });
+            }
+            void stopNativeWindowAudio();
+        });
+
         // Hand off to the native addon. For window shares this is INCLUDE on the
         // app's root tree (captures that app only); for full-screen shares this is
         // EXCLUDE on Cipherline's own tree (captures everything else, no feedback).
         console.log(`[NativeAudio] Calling startWindowAudioCapture: pid=${rootPid} mode=${wasapiMode}`);
         const started = await window.electronAPI!.startWindowAudioCapture(rootPid, wasapiMode);
         if (!started) {
-            console.warn('[NativeAudio] startWindowAudioCapture returned false — WASAPI failed to init');
+            console.warn('[NativeAudio] startWindowAudioCapture returned false — native capture failed to init');
             setScreenShareNotice({
                 tone: 'warn',
-                text: 'Audio capture initialisation failed (WASAPI error). Sharing video without audio.',
+                text: 'Audio capture could not be started. Sharing video without audio.',
             });
             return;
         }
@@ -2069,9 +2354,10 @@ export const SidebarConference = ({
             if (chunkCount === 0) {
                 console.warn('[NativeAudio] No chunks received in 3s after capture start.',
                     `pid=${rootPid} mode=${wasapiMode}`,
-                    '— WASAPI capture is silent. Possible causes: target app has no audio,',
+                    '— native capture is silent. Possible causes: target app has no audio,',
                     'WASAPI EXCLUDE mode may not capture audio routed through audiodg.exe,',
-                    'or the audio service sandbox blocks per-process capture for this app.');
+                    'the audio service sandbox blocks per-process capture for this app,',
+                    'or (macOS) ScreenCaptureKit has no audio-producing app in the filter.');
                 setScreenShareNotice({
                     tone: 'warn',
                     text: mode === 'window'
@@ -2176,7 +2462,30 @@ export const SidebarConference = ({
         return () => registerLocalToggles({});
     }, [registerLocalToggles]);
 
+    // Stop watching a remote screenshare — the inverse of ScreenShareGate's
+    // Watch click (see utils/stopWatchingScreenshare.ts). Dropping the id from
+    // `subscribedScreenshares` is what (a) returns the tile to the Watch gate,
+    // (b) stops the auto-resubscribe effect re-taking it, and (c) removes this
+    // client from the sharer's viewer list: the metadata effect above re-derives
+    // `watching_shares` from this very set. The tracks are then unsubscribed
+    // (video + share audio), and focus closes if this share was the stage.
+    // ALSO the path "Hide screen share" takes (toggleHideScreenShare below): a
+    // hidden share must not keep downloading or keep counting this client as a
+    // viewer, so hide and stop-watching are one code path, not two.
+    const handleStopWatchingScreenshare = (identity: string) => {
+        setSubscribedScreenshares(prev => withoutIdentity(prev, identity));
+        const sharer = participants.find(part => part.identity === identity);
+        if (sharer) void unsubscribeShareTracks(sharer);
+        if (callCtx?.focusedStream && focusAfterStopWatching(callCtx.focusedStream, identity) === null) {
+            callCtx.setFocusedStream(null);
+        }
+    };
+
     const toggleHideScreenShare = async (id: string, hide: boolean) => {
+        // Hiding = no longer watching: leave the viewer list and unsubscribe the
+        // video + share audio (same path as the tile's red X). Idempotent when
+        // this client was not subscribed (e.g. hiding the Watch prompt).
+        if (hide) handleStopWatchingScreenshare(id);
         setHiddenScreenShareIds(prev => {
             const next = new Set(prev);
             if (hide) next.add(id); else next.delete(id);
@@ -2206,7 +2515,31 @@ export const SidebarConference = ({
     // latest closure (with fresh participants / subscribedScreenshares).
     toggleHideScreenShareRef.current = toggleHideScreenShare;
 
-    const visibleRemoteCamParticipants = remoteCamParticipants.filter(p => !hiddenVideoIds.has(p.identity));
+    // Decode cap ("Reduced" / "Data saver" incoming video): at most DECODE_CAP
+    // remote cameras are decoded at once — the focused one, then the people
+    // who spoke most recently (speakOrder: never drops anyone who has spoken,
+    // so the set only changes when someone NEW starts talking), then roster
+    // order. The rest show as avatars until they speak; their tiles unmount,
+    // so remoteVideoDemand pauses those streams at the SFU (nothing arrives to
+    // decrypt or decode). Kept separate from hiddenVideoIds, which is the
+    // user's own per-person "Hide video" and drives the menus.
+    const incomingVideoMode = useIncomingVideoMode();
+    const userVisibleRemoteCams = remoteCamParticipants.filter(p => !hiddenVideoIds.has(p.identity));
+    const decodeFocusId = callCtx?.focusedStream?.source === Track.Source.Camera ? callCtx.focusedStream.identity : null;
+    // Cheap (a few dozen ids at most) — computed per render, read only via .has().
+    const budgetOrder = userVisibleRemoteCams.map(p => p.identity);
+    const budgetDecoded = incomingVideoMode === 'auto'
+        ? null
+        : chooseDecodedSet({ order: budgetOrder, focused: decodeFocusId, recentSpeakers: speakOrder, cap: DECODE_CAP });
+    const budgetHiddenVideoIds = new Set(budgetDecoded ? budgetOrder.filter(id => !budgetDecoded.has(id)) : []);
+    const visibleRemoteCamParticipants = userVisibleRemoteCams.filter(p => !budgetHiddenVideoIds.has(p.identity));
+    const decodeCapHidden = budgetHiddenVideoIds.size;
+    React.useEffect(() => { logCallEvent('incoming_mode', { mode: incomingVideoMode }); }, [incomingVideoMode]);
+    React.useEffect(() => {
+        if (incomingVideoMode === 'auto') return;
+        logCallEvent('decode_cap', { cap: DECODE_CAP, decoded: userVisibleRemoteCams.length - decodeCapHidden, avatars: decodeCapHidden });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [incomingVideoMode, decodeCapHidden]);
 
     // Scroll-safe active speaker sorting
     const scrollContainerRef = React.useRef<HTMLDivElement>(null);
@@ -2353,10 +2686,10 @@ export const SidebarConference = ({
         ? applyPromotion(visibleRemoteCamParticipants)
         : visibleRemoteCamParticipants;
 
-    // Camera quality: MEDIUM for ≤4 visible camera tiles (good quality without excess bandwidth),
-    // LOW for >4 tiles (bandwidth saving on crowded calls).
+    // Camera tiles in the side panel. Each tile picks its own simulcast layer
+    // from its rendered size × DPR, capped by this count (≤4 / 5–9 / 10+) —
+    // utils/remoteVideoQuality.ts.
     const totalCamTiles = (localCam ? 1 : 0) + visibleRemoteCamParticipants.length;
-    const sidebarCamQuality = totalCamTiles > 4 ? VideoQuality.LOW : VideoQuality.MEDIUM;
 
     const visibleScreenShareParticipants = screenShareParticipants.filter(p => !hiddenScreenShareIds.has(p.identity));
 
@@ -2604,7 +2937,7 @@ export const SidebarConference = ({
         // P13: SPEAK gate — block UN-mute when the user lacks SPEAK on this
         // channel. Mute is always allowed (you can always go quiet). LiveKit
         // also enforces, but the UI should never even attempt the publish.
-        if (!localParticipant.isMicrophoneEnabled && !canSpeak) return;
+        if (!localParticipant.isMicrophoneEnabled && (!canSpeak || !canPublishMicrophone(localParticipant))) return;
         const willEnable = !localParticipant.isMicrophoneEnabled;
         // Unhandled-rejection fix: setMicrophoneEnabled is a promise (device
         // busy/permission revoked can reject it) and the button's on/off state
@@ -2621,7 +2954,19 @@ export const SidebarConference = ({
         // P13: VIDEO gate — block enable when denied; allow disable.
         if (willEnable && !canVideo) return;
         if (willEnable) setIsCameraEnabling(true);
-        localParticipant.setCameraEnabled(willEnable).catch(() => {});
+        if (willEnable) {
+            // First publish of the call goes through cameraPublish: capture at
+            // the camera's best native mode (up to the Camera quality tier),
+            // then build the simulcast ladder from what it ACTUALLY delivers.
+            // Later toggles are LiveKit's own unmute of that publication.
+            startCamera(asCameraParticipant(localParticipant), {
+                ...cameraStartOptions(),
+                // 1:1 call → one layer (cameraQuality.CameraLayeringPolicy).
+                single: initialLayering(remoteParticipants.length) === 'single',
+            }).catch(err => console.warn('[Camera] enable failed:', err));
+        } else {
+            localParticipant.setCameraEnabled(false).catch(() => {});
+        }
         // NOT playSound here, unlike toggleMic above: camera_on/camera_off is
         // bilateral (the whole call should hear it, not just the person who
         // toggled), and CallPane's CallAudioEffects already plays it for
@@ -2631,6 +2976,18 @@ export const SidebarConference = ({
         // the local user. Mute/unmute stays a direct call above because it is
         // deliberately local-only — see CallAudioEffects' onTrackMuted.
     };
+
+    // Hovering the share button warms the picker's default tab (screen names
+    // + previews, utils/desktopSourceCache.ts) so the first open paints a full
+    // grid. Also called on the click itself, so the list is already on its
+    // way while the modal mounts. Skipped while the cached previews are < 10 s
+    // old; joins a refresh already running. Not on Linux (that would raise the
+    // portal's own dialog on hover).
+    const warmScreenSharePicker = React.useCallback(() => {
+        const api = window.electronAPI;
+        if (!api?.getDesktopSources || api.platform === 'linux' || !canScreenShare) return;
+        void prefetchDesktopSources('screen', (types, opts) => api.getDesktopSources(types, opts));
+    }, [canScreenShare]);
 
     const toggleScreenshare = () => {
         if (!localParticipant) return;
@@ -2643,6 +3000,11 @@ export const SidebarConference = ({
             // P13: SCREEN_SHARE gate — don't even open the picker if the user
             // can't ultimately publish.
             if (!canScreenShare) return;
+            markPickerRequested();
+            // Start the source list NOW, in parallel with the modal's first
+            // render — the picker's own identical request joins it in the
+            // main process instead of waiting for the modal to mount.
+            warmScreenSharePicker();
             setIsScreenSharePickerOpen(true);
         }
     };
@@ -2650,6 +3012,8 @@ export const SidebarConference = ({
     // Open the picker while the current share is still running (change source / quality mid-share).
     // handleScreenShareSelect will call setScreenShareEnabled(true, ...) which replaces the live track.
     const openScreenSharePicker = () => {
+        markPickerRequested();
+        warmScreenSharePicker();
         setIsScreenSharePickerOpen(true);
     };
 
@@ -2721,6 +3085,9 @@ export const SidebarConference = ({
             };
             currentShareRef.current = retuned;
             setCurrentShare(retuned);
+            // Keep the diagnostics session's target in step with the live
+            // share (the stats overlay and the issue reporter measure against it).
+            updateScreenShareSession(current.sourceId, { requestedFps: frameRate, resolution });
             return;
         }
 
@@ -2823,6 +3190,7 @@ export const SidebarConference = ({
                 await applyScreenShareSenderParams(
                     lkTrack.sender, options.frameRate,
                     computeSSBitrate(options.resolution, options.frameRate, asScreenShareCodec(lkTrack.codec)),
+                    { codec: asScreenShareCodec(lkTrack.codec) },
                 );
             } catch (err) {
                 console.warn('[ScreenShare] hot-swap: setParameters override failed:', err);
@@ -3064,8 +3432,19 @@ export const SidebarConference = ({
             ]),
         ]);
         const decision = decideScreenShareCodec(codecPref, hwEncoders, mainDiag?.gpus, { h264HighFailed: hasH264HighFailed() });
-        const codec = decision.codec;
+        // H.265 when the room negotiation says everyone can decode it and this
+        // machine HW-encodes it (hevcNegotiation.ts); otherwise the normal choice,
+        // which the republish loop also falls back to mid-share.
+        const hevcShare = hevcModeRef.current === 'h265' && hevcEncodeRef.current && !hasHevcFailed();
+        shareBaseCodecRef.current = decision.codec;
+        shareBaseHighRef.current = decision.codec === 'h264' && decision.h264Profile === 'high';
+        const codec: ScreenShareCodec = hevcShare ? 'h265' : decision.codec;
         const h264High = codec === 'h264' && decision.h264Profile === 'high';
+        // Hardware encode: the decision picked H.264 because the GPU has it
+        // (CB probed HW, or High — which has no software encoder at all).
+        shareHwH264Ref.current = decision.codec === 'h264' && (decision.h264Profile === 'high' || !!hwEncoders?.h264);
+        const shareHw = codec === 'h265' || (codec === 'h264' && shareHwH264Ref.current);
+        const lowerLayer = getShareLowLayerEnabled() && shareHw;
         wantH264HighRef.current = h264High;
         // Ask the capturer for headroom above the send rate (see
         // captureFrameRateFor); the encoder's maxFramerate stays at the target.
@@ -3073,11 +3452,12 @@ export const SidebarConference = ({
         setScreenShareSession({
             sourceId: options.sourceId,
             requestedFps: options.frameRate,
+            resolution: options.resolution,
             captureFps,
             codecPref,
             codec,
             h264Profile: codec === 'h264' ? (decision.h264Profile ?? 'cb') : undefined,
-            codecReason: decision.reason,
+            codecReason: hevcShare ? 'H.265 (everyone can decode)' : decision.reason,
             hw: hwEncoders,
             main: mainDiag,
         });
@@ -3086,7 +3466,12 @@ export const SidebarConference = ({
                 if (late) updateScreenShareSession(options.sourceId, { main: late });
             });
         }
-        const publishOptions = buildScreenSharePublishOptions(options.resolution, options.frameRate, codec);
+        const publishOptions = buildScreenSharePublishOptions(options.resolution, options.frameRate, codec, { lowerLayer });
+        logCallEvent('share_codec', {
+            codec, profile: h264High ? 'high' : codec === 'h264' ? 'cb' : 'none', hardware: shareHw,
+            reason: hevcShare ? 'h265-negotiated' : decision.reason, res: options.resolution, fps: options.frameRate,
+            lighter_copy: publishOptions.simulcast,
+        });
         const maxBitrate = publishOptions.screenShareEncoding.maxBitrate;
         console.info(
             `[ScreenShare] codec=${codec}${h264High ? ' (High)' : ''} (pref=${codecPref}, ${decision.reason}, hw=${hwEncoders ? JSON.stringify(hwEncoders) : 'n/a'}) ` +
@@ -3119,10 +3504,19 @@ export const SidebarConference = ({
                     ? 'Per-window audio is NOT supported on this path; share will be silent.'
                     : 'Full-screen audio will use loopbackWithMute (Cipherline output will be muted locally while sharing).');
         }
-        if (fallbackWindowAudioUnsupported) {
+        // macOS never reaches the loopback fallback with sound (Electron has no
+        // loopback there), so the only way to land here is macOS older than 13,
+        // where the native ScreenCaptureKit capture is unavailable.
+        const onMac = window.electronAPI?.platform === 'mac';
+        if (options.audio && !nativeReady && onMac) {
             setScreenShareNotice({
                 tone: 'warn',
-                text: 'Per-window audio sharing requires Windows. Sharing this window without audio.',
+                text: 'Sharing audio needs macOS 13 or later. Sharing without audio.',
+            });
+        } else if (fallbackWindowAudioUnsupported) {
+            setScreenShareNotice({
+                tone: 'warn',
+                text: 'Per-window audio sharing requires Windows or macOS. Sharing this window without audio.',
             });
         } else if (fallbackFullScreenAudioMuted) {
             setScreenShareNotice({
@@ -3190,13 +3584,37 @@ export const SidebarConference = ({
         // does not start, the share would sit at 0 fps. Watch the first
         // seconds and, if nothing was encoded, republish the same source as
         // VP8 (never unencrypted — it is an ordinary E2EE republish).
+        if (codec === 'h265') {
+            // H.265 has no software encoder in Chromium either: same watch, and
+            // on failure a make-before-break switch to the normal codec.
+            const ssSender = (localParticipant.getTrackPublication(Track.Source.ScreenShare)?.track as
+                { sender?: RTCRtpSender } | undefined)?.sender;
+            if (ssSender) {
+                void watchH264HighStart(() => ssSender.getStats()).then(async result => {
+                    logCallEvent('share_start_check', { codec: 'h265', verdict: result });
+                    if (result !== 'failed') return;
+                    const cur = currentShareRef.current;
+                    if (!cur || cur.sourceId !== options.sourceId) return;
+                    markHevcFailed();
+                    logCallEvent('share_fallback', { from: 'h265', to: decision.codec, reason: 'no-frames' });
+                    wantH264HighRef.current = shareBaseHighRef.current;
+                    await swapShareCodec(localParticipant as unknown as ShareParticipantLike, decision.codec, cur, {
+                        makeTrack: t => new LocalVideoTrack(t, undefined, true),
+                        lowerLayer: getShareLowLayerEnabled() && shareHwH264Ref.current,
+                        reason: 'H.265 encoder produced no frames',
+                    });
+                });
+            }
+        }
         if (h264High) {
             const ssSender = (localParticipant.getTrackPublication(Track.Source.ScreenShare)?.track as
                 { sender?: RTCRtpSender } | undefined)?.sender;
             if (ssSender) {
                 void watchH264HighStart(() => ssSender.getStats()).then(result => {
                     console.info(`[ScreenShare] H.264 High start check: ${result}`);
+                    logCallEvent('share_start_check', { codec: 'h264', profile: 'high', verdict: result });
                     if (result !== 'failed') return;
+                    logCallEvent('share_fallback', { from: 'h264-high', to: 'restart', reason: 'no-frames' });
                     const cur = currentShareRef.current;
                     if (!cur || cur.sourceId !== options.sourceId) return; // share changed meanwhile
                     markH264HighFailed();
@@ -3229,7 +3647,7 @@ export const SidebarConference = ({
             }
             const sender = (ssPub?.track as { sender?: RTCRtpSender } | undefined)?.sender;
             if (sender) {
-                await applyScreenShareSenderParams(sender, options.frameRate, maxBitrate);
+                await applyScreenShareSenderParams(sender, options.frameRate, maxBitrate, { codec });
             } else {
                 console.warn('[ScreenShare] RTP sender not available — framerate override skipped');
             }
@@ -3329,13 +3747,31 @@ export const SidebarConference = ({
         playSound(newState ? 'deafen' : 'undeafen', soundsPrefs());
     };
 
+    // A deafen pressed while joining is local state above; tell the room too
+    // (the deafened icon others see), once. Self-healing on metadataKey: the
+    // avatar sync writes the same blob at mount, and whichever write lands
+    // second wins — re-run until `deafened` sticks or the user undeafens.
+    const joinDeafenPendingRef = React.useRef(!!initialDeafened);
+    React.useEffect(() => {
+        if (!joinDeafenPendingRef.current || !localParticipant) return;
+        if (!localDeafened) { joinDeafenPendingRef.current = false; return; }
+        let meta: Record<string, unknown> = {};
+        try { if (localParticipant.metadata) meta = JSON.parse(localParticipant.metadata); } catch { /* corrupt blob — rewrite */ }
+        if (meta.deafened === true) { joinDeafenPendingRef.current = false; return; }
+        meta.deafened = true;
+        localParticipant.setMetadata(JSON.stringify(meta)).catch(() => { /* cosmetic */ });
+    }, [localParticipant, localDeafened, metadataKey]);
+
     React.useEffect(() => {
         if (!localParticipant) return;
         if (isLocalDeafened) {
             if (localParticipant.isMicrophoneEnabled) localParticipant.setMicrophoneEnabled(false);
         } else {
-            if (!wasMutedBeforeDeafenRef.current && !localParticipant.isMicrophoneEnabled) {
-                localParticipant.setMicrophoneEnabled(true);
+            // canPublishMicrophone: a listen-only member (CONNECT without SPEAK)
+            // joined with the mic off on purpose; this effect runs on mount for
+            // everyone and must not try to switch it on.
+            if (!wasMutedBeforeDeafenRef.current && !localParticipant.isMicrophoneEnabled && canPublishMicrophone(localParticipant)) {
+                localParticipant.setMicrophoneEnabled(true).catch(() => {});
             }
         }
     }, [isLocalDeafened, localParticipant]);
@@ -3439,7 +3875,37 @@ export const SidebarConference = ({
             sender,
             share.frameRate,
             computeSSBitrate(share.resolution, share.frameRate, asScreenShareCodec(ssPub?.track?.codec)),
+            { codec: asScreenShareCodec(ssPub?.track?.codec) },
         ).catch(err => console.warn('[ScreenShare] re-applying sender params failed:', err));
+    }, [localParticipant, ssTrackSid]);
+
+    // Lighter copy for viewers (shareLowLayer.ts): only when the share was
+    // published with it (setting ON + hardware encoder); the gate keeps it OFF
+    // unless ≥ 3 viewers, a verified hardware encoder, and no cost to the
+    // sharer — and latches it off for the rest of the share on the first sign
+    // of one. Re-installed for each new share publication.
+    const shareViewersRef = React.useRef(0);
+    const shareViewerCount = localShareViewers.length;
+    React.useEffect(() => { shareViewersRef.current = shareViewerCount; }, [shareViewerCount]);
+    const gameRunningRef = React.useRef(false);
+    React.useEffect(() => {
+        const api = window.electronAPI;
+        const offA = api?.onGameDetected?.(() => { gameRunningRef.current = true; });
+        const offB = api?.onGameStopped?.(() => { gameRunningRef.current = false; });
+        return () => { try { offA?.(); offB?.(); } catch { /* gone */ } };
+    }, []);
+    React.useEffect(() => {
+        if (!localParticipant || !ssTrackSid) return;
+        const track = localParticipant.getTrackPublication(Track.Source.ScreenShare)?.track as unknown as ShareTrackLike | undefined;
+        const share = currentShareRef.current;
+        if (!track || !share) return;
+        return installShareLowLayerControl(track, {
+            settingOn: getShareLowLayerEnabled,
+            viewers: () => shareViewersRef.current,
+            gameRunning: () => gameRunningRef.current,
+            targetFps: share.frameRate,
+            onChange: (allow, reason) => logCallEvent('share_low_layer', { on: allow, reason, viewers: shareViewersRef.current }),
+        });
     }, [localParticipant, ssTrackSid]);
 
     // Pin mic sender RTP priority HIGH — explicitly tells WebRTC's congestion
@@ -3496,8 +3962,8 @@ export const SidebarConference = ({
             // PTT turned off — restore mic unless deafened or the user was
             // manually muted before they deafened (wasMutedBeforeDeafenRef).
             if (!voice?.settings.pushToTalk && localParticipant && !isLocalDeafened) {
-                if (!localParticipant.isMicrophoneEnabled && !wasMutedBeforeDeafenRef.current) {
-                    localParticipant.setMicrophoneEnabled(true);
+                if (!localParticipant.isMicrophoneEnabled && !wasMutedBeforeDeafenRef.current && canPublishMicrophone(localParticipant)) {
+                    localParticipant.setMicrophoneEnabled(true).catch(() => {});
                 }
             }
             return;
@@ -3525,8 +3991,12 @@ export const SidebarConference = ({
         };
 
         const onDown = (e: KeyboardEvent) => {
-            if (matchesKey(e) && !localParticipant.isMicrophoneEnabled) {
-                localParticipant.setMicrophoneEnabled(true);
+            // A surface that owns the keyboard has claimed this combo (the
+            // Home game plays on Space; utils/keyClaims): never open the mic
+            // for it. Key-up still closes it, which is always safe.
+            if (isKeyComboClaimed(pttKey)) return;
+            if (matchesKey(e) && !localParticipant.isMicrophoneEnabled && canPublishMicrophone(localParticipant)) {
+                localParticipant.setMicrophoneEnabled(true).catch(() => {});
             }
         };
         const onUp = (e: KeyboardEvent) => {
@@ -3738,6 +4208,23 @@ export const SidebarConference = ({
     const isFocusedInSidebar = (identity: string, source: Track.Source) =>
         focusedStream?.identity === identity && focusedStream?.source === source;
 
+    // Which tiles the voice-channel video strip (portalled to #call-video-root)
+    // will ACTUALLY draw. The focused stream is portalled elsewhere (the banner),
+    // so when it was the only video, `anyVideo` was still true but every tile was
+    // skipped — and the strip's wrapper (px-2 pt-2 pb-2, gap-2, plus the 1px
+    // overflow sentinel and an empty cam-strip div each costing a gap) rendered
+    // as ~33px of dead space above the panel's search bar. The camera strip now
+    // mounts only when it has something to show, and the wrapper's padding eases
+    // to 0 (rather than the wrapper unmounting) so the panel glides up.
+    const hasLocalShareTile = !!localScreenShare && !!localParticipant
+        && !isFocusedInSidebar(localParticipant.identity, Track.Source.ScreenShare);
+    const hasRemoteShareTile = visibleScreenShareParticipants
+        .some(p => !isFocusedInSidebar(p.identity, Track.Source.ScreenShare));
+    const hasCamStripTile =
+        (!!localCam && !!localParticipant && !isFocusedInSidebar(localParticipant.identity, Track.Source.Camera))
+        || sortedVisibleRemoteCamParticipants.some(p => !isFocusedInSidebar(p.identity, Track.Source.Camera));
+    const hasPortalVideoTile = hasLocalShareTile || hasRemoteShareTile || hasCamStripTile;
+
     const DummyRingingTile = ({ compact }: { compact: boolean }) => {
         const size = compact ? 'w-9 h-9' : 'w-24 h-24';
         const nameTrunc = compact ? 'max-w-[60px]' : 'max-w-[100px]';
@@ -3775,7 +4262,7 @@ export const SidebarConference = ({
         // with the number of participants instead of staying a fixed slot.
         <motion.div
             className="call-no-select w-full flex flex-col relative"
-            initial={{ opacity: 0 }}
+            initial={instantEnter ? false : { opacity: 0 }}
             animate={{ opacity: 1 }}
             transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
         >
@@ -3800,10 +4287,12 @@ export const SidebarConference = ({
                 onHideVideoChange={toggleHideVideo}
                 onHideScreenShareChange={toggleHideScreenShare}
                 onFocusedStreamChange={onFocusedStreamChange}
+                onStopWatchingScreenshare={handleStopWatchingScreenshare}
             />
 
             {/* Fullscreen overlay (portalled to body) */}
             <FullscreenOverlay
+                budgetHiddenVideoIds={budgetHiddenVideoIds}
                 token={token}
                 isLocalDeafened={isLocalDeafened}
                 localMutedParticipantIds={localMutedParticipantIds}
@@ -3818,6 +4307,7 @@ export const SidebarConference = ({
                 onHideScreenShareChange={toggleHideScreenShare}
                 subscribedScreenshares={subscribedScreenshares}
                 onSubscribeScreenshare={handleSubscribeScreenshare}
+                onStopWatchingScreenshare={handleStopWatchingScreenshare}
                 canServerMute={canServerMute}
                 onServerMuteTrack={onServerMuteTrack}
             />
@@ -3904,8 +4394,7 @@ export const SidebarConference = ({
                 </motion.div>
             )}
 
-            {/* Screenshare-audio platform-limit notice (per-window audio is
-                Windows-only; full-screen fallback uses loopbackWithMute). */}
+            {/* Screenshare-audio notice (platform limits, capture failures). */}
             {screenShareNotice && (
                 <motion.div
                     variants={sidebarPillVariants}
@@ -3958,24 +4447,31 @@ export const SidebarConference = ({
                 {anyVideo && (
                 <motion.div
                     key="video-tiles"
-                    className="flex flex-col gap-2 px-2 pt-2 pb-2"
-                    initial={{ height: 0, opacity: 0 }}
-                    animate={{ height: 'auto', opacity: 1 }}
-                    exit={{ height: 0, opacity: 0 }}
-                    transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
+                    className="flex flex-col gap-2 px-2"
+                    // The vertical padding is ANIMATED, not unmounted with the
+                    // wrapper. When the only video is focused every tile leaves
+                    // the strip (the focus banner has it); removing the wrapper
+                    // outright made the whole panel snap up in 0.18 s, out of step
+                    // with the tile fade and the banner. Mounted, with its padding
+                    // easing to 0 over the same 0.4 s curve the tiles' layout
+                    // moves use, everything below glides up with them. (Camera /
+                    // share going away entirely still exits as before.)
+                    initial={{ height: 0, opacity: 0, paddingTop: 0, paddingBottom: 0 }}
+                    animate={{ height: 'auto', opacity: 1, paddingTop: hasPortalVideoTile ? 8 : 0, paddingBottom: hasPortalVideoTile ? 8 : 0 }}
+                    exit={{ height: 0, opacity: 0, paddingTop: 0, paddingBottom: 0 }}
+                    transition={{ duration: hasPortalVideoTile ? 0.18 : SIDEBAR_GLIDE_S, ease: hasPortalVideoTile ? [0.22, 1, 0.36, 1] : SIDEBAR_GLIDE_EASE }}
                     style={{ overflow: 'hidden' }}
                 >
                     <LayoutGroup id="portal-video-tiles">
-                    <AnimatePresence mode="popLayout" initial={true}>
+                    <AnimatePresence initial={true}>
                     {/* Your own share — pinned first, same self-view treatment local
                         camera already gets. Confirms what's actually being sent, the
                         way every other call app shows your own share back to you. */}
                     {localScreenShare && !isFocusedInSidebar(localParticipant!.identity, Track.Source.ScreenShare) && (
                         <motion.div key="local-screenshare" layout
-                            variants={tileItemVariants} initial="initial" animate="animate" exit="exit"
-                            transition={{ layout: { duration: 0.4, ease: [0.22, 1, 0.36, 1] } }}>
+                            variants={portalTileGlide} initial="initial" animate="animate" exit="exit"
+                            transition={{ layout: { duration: SIDEBAR_GLIDE_S, ease: SIDEBAR_GLIDE_EASE } }}>
                             <LocalScreenShareTile
-                                shareSourceId={currentShare?.sourceId ?? null}
                                 p={localParticipant!}
                                 source={Track.Source.ScreenShare}
                                 localParticipant={localParticipant}
@@ -3987,7 +4483,6 @@ export const SidebarConference = ({
                                 onToggleLocalMute={(v) => toggleParticipantLocalMute(localParticipant.identity, v)}
                                 isGroup={isGroup}
                                 fallbackAvatars={fallbackAvatars}
-                                quality={VideoQuality.LOW}
                                 canServerMute={canServerMute}
                                 onServerMuteTrack={onServerMuteTrack}
                             />
@@ -3998,8 +4493,8 @@ export const SidebarConference = ({
                         !isFocusedInSidebar(p.identity, Track.Source.ScreenShare) && (
                             subscribedScreenshares.has(p.identity) ? (
                                 <motion.div key={`ss-${p.identity}`} layout
-                                    variants={tileItemVariants} initial="initial" animate="animate" exit="exit"
-                                    transition={{ layout: { duration: 0.4, ease: [0.22, 1, 0.36, 1] } }}>
+                                    variants={portalTileGlide} initial="initial" animate="animate" exit="exit"
+                                    transition={{ layout: { duration: SIDEBAR_GLIDE_S, ease: SIDEBAR_GLIDE_EASE } }}>
                                     <VideoTile
                                         p={p}
                                         source={Track.Source.ScreenShare}
@@ -4016,15 +4511,15 @@ export const SidebarConference = ({
                                         onHideScreenShareChange={(v) => toggleHideScreenShare(p.identity, v)}
                                         isGroup={isGroup}
                                         fallbackAvatars={fallbackAvatars}
-                                        quality={VideoQuality.LOW}
                                         canServerMute={canServerMute}
                                         onServerMuteTrack={onServerMuteTrack}
+                                        onStopWatching={() => handleStopWatchingScreenshare(p.identity)}
                                     />
                                 </motion.div>
                             ) : (
                                 <motion.div key={`ssgate-${p.identity}`} layout
-                                    variants={tileItemVariants} initial="initial" animate="animate" exit="exit"
-                                    transition={{ layout: { duration: 0.4, ease: [0.22, 1, 0.36, 1] } }}>
+                                    variants={portalTileGlide} initial="initial" animate="animate" exit="exit"
+                                    transition={{ layout: { duration: SIDEBAR_GLIDE_S, ease: SIDEBAR_GLIDE_EASE } }}>
                                     <ScreenShareGate
                                         p={p}
                                         localParticipant={localParticipant}
@@ -4052,20 +4547,22 @@ export const SidebarConference = ({
                         speaker stays top-most when tiles overflow the visible panel
                         (sortedVisibleRemoteCamParticipants applies the speaker-promotion
                         order). */}
-                    {(localCam || sortedVisibleRemoteCamParticipants.length > 0) && (
+                    {hasCamStripTile && (
                         <motion.div
                             key="cam-strip"
                             layout
-                            variants={tileItemVariants}
+                            variants={portalTileGlide}
                             initial="initial"
                             animate="animate"
                             exit="exit"
                             className="flex flex-col gap-1.5"
-                            transition={{ layout: { duration: 0.4, ease: [0.22, 1, 0.36, 1] } }}
+                            transition={{ layout: { duration: SIDEBAR_GLIDE_S, ease: SIDEBAR_GLIDE_EASE } }}
                         >
+                            <AnimatePresence initial={false}>
                             {localCam && !isFocusedInSidebar(localParticipant!.identity, Track.Source.Camera) && (
                                 <motion.div layout key="local-cam-portal" className="w-full"
-                                    transition={{ layout: { duration: 0.4, ease: [0.22, 1, 0.36, 1] } }}>
+                                    variants={camStripTileGlide} initial="initial" animate="animate" exit="exit"
+                                    transition={{ layout: { duration: SIDEBAR_GLIDE_S, ease: SIDEBAR_GLIDE_EASE } }}>
                                     <VideoTile
                                         p={localParticipant!}
                                         source={Track.Source.Camera}
@@ -4078,7 +4575,7 @@ export const SidebarConference = ({
                                         onToggleLocalMute={(v) => toggleParticipantLocalMute(localParticipant.identity, v)}
                                         isGroup={isGroup}
                                         fallbackAvatars={fallbackAvatars}
-                                        quality={sidebarCamQuality}
+                                        videoCount={totalCamTiles}
                                         canServerMute={canServerMute}
                                         onServerMuteTrack={onServerMuteTrack}
                                     />
@@ -4087,7 +4584,8 @@ export const SidebarConference = ({
                             {sortedVisibleRemoteCamParticipants.map((p) => (
                                 !isFocusedInSidebar(p.identity, Track.Source.Camera) && (
                                     <motion.div key={`cam-${p.identity}`} layout className="w-full"
-                                        transition={{ layout: { duration: 0.4, ease: [0.22, 1, 0.36, 1] } }}>
+                                        variants={camStripTileGlide} initial="initial" animate="animate" exit="exit"
+                                        transition={{ layout: { duration: SIDEBAR_GLIDE_S, ease: SIDEBAR_GLIDE_EASE } }}>
                                         <VideoTile
                                             p={p}
                                             source={Track.Source.Camera}
@@ -4103,13 +4601,14 @@ export const SidebarConference = ({
                                             onHideScreenShareChange={(v) => toggleHideScreenShare(p.identity, v)}
                                             isGroup={isGroup}
                                             fallbackAvatars={fallbackAvatars}
-                                            quality={sidebarCamQuality}
+                                            videoCount={totalCamTiles}
                                             canServerMute={canServerMute}
                                             onServerMuteTrack={onServerMuteTrack}
                                         />
                                     </motion.div>
                                 )
                             ))}
+                            </AnimatePresence>
                         </motion.div>
                     )}
                     </AnimatePresence>
@@ -4178,14 +4677,13 @@ export const SidebarConference = ({
                 <div ref={videoTilesRef} className="flex flex-col gap-3">
                 {!(noRinging && anyVideo) && (
                     <LayoutGroup id="inline-video-tiles">
-                    <AnimatePresence mode="popLayout" initial={true}>
+                    <AnimatePresence initial={true}>
                     {/* Your own share — see the portal branch above for why. */}
                     {localScreenShare && !isFocusedInSidebar(localParticipant!.identity, Track.Source.ScreenShare) && (
                         <motion.div key="local-screenshare" layout
-                            variants={tileItemVariants} initial="initial" animate="animate" exit="exit"
-                            transition={{ layout: { duration: 0.4, ease: [0.22, 1, 0.36, 1] } }}>
+                            variants={inlineTileGlide} initial="initial" animate="animate" exit="exit"
+                            transition={{ layout: { duration: SIDEBAR_GLIDE_S, ease: SIDEBAR_GLIDE_EASE } }}>
                             <LocalScreenShareTile
-                                shareSourceId={currentShare?.sourceId ?? null}
                                 p={localParticipant!}
                                 source={Track.Source.ScreenShare}
                                 localParticipant={localParticipant}
@@ -4197,7 +4695,6 @@ export const SidebarConference = ({
                                 onToggleLocalMute={(v) => toggleParticipantLocalMute(localParticipant.identity, v)}
                                 isGroup={isGroup}
                                 fallbackAvatars={fallbackAvatars}
-                                quality={VideoQuality.LOW}
                                 canServerMute={canServerMute}
                                 onServerMuteTrack={onServerMuteTrack}
                             />
@@ -4208,8 +4705,8 @@ export const SidebarConference = ({
                         !isFocusedInSidebar(p.identity, Track.Source.ScreenShare) && (
                             subscribedScreenshares.has(p.identity) ? (
                                 <motion.div key={`ss-${p.identity}`} layout
-                                    variants={tileItemVariants} initial="initial" animate="animate" exit="exit"
-                                    transition={{ layout: { duration: 0.4, ease: [0.22, 1, 0.36, 1] } }}>
+                                    variants={inlineTileGlide} initial="initial" animate="animate" exit="exit"
+                                    transition={{ layout: { duration: SIDEBAR_GLIDE_S, ease: SIDEBAR_GLIDE_EASE } }}>
                                     <VideoTile
                                         p={p}
                                         source={Track.Source.ScreenShare}
@@ -4226,15 +4723,15 @@ export const SidebarConference = ({
                                         onHideScreenShareChange={(v) => toggleHideScreenShare(p.identity, v)}
                                         isGroup={isGroup}
                                         fallbackAvatars={fallbackAvatars}
-                                        quality={VideoQuality.LOW}
                                         canServerMute={canServerMute}
                                         onServerMuteTrack={onServerMuteTrack}
+                                        onStopWatching={() => handleStopWatchingScreenshare(p.identity)}
                                     />
                                 </motion.div>
                             ) : (
                                 <motion.div key={`ssgate-${p.identity}`} layout
-                                    variants={tileItemVariants} initial="initial" animate="animate" exit="exit"
-                                    transition={{ layout: { duration: 0.4, ease: [0.22, 1, 0.36, 1] } }}>
+                                    variants={inlineTileGlide} initial="initial" animate="animate" exit="exit"
+                                    transition={{ layout: { duration: SIDEBAR_GLIDE_S, ease: SIDEBAR_GLIDE_EASE } }}>
                                     <ScreenShareGate
                                         p={p}
                                         localParticipant={localParticipant}
@@ -4261,8 +4758,8 @@ export const SidebarConference = ({
                     {/* Local camera — pinned above remotes, never promoted */}
                     {localCam && !isFocusedInSidebar(localParticipant!.identity, Track.Source.Camera) && (
                         <motion.div key="local-cam" layout
-                            variants={tileItemVariants} initial="initial" animate="animate" exit="exit"
-                            transition={{ layout: { duration: 0.4, ease: [0.22, 1, 0.36, 1] } }}>
+                            variants={inlineTileGlide} initial="initial" animate="animate" exit="exit"
+                            transition={{ layout: { duration: SIDEBAR_GLIDE_S, ease: SIDEBAR_GLIDE_EASE } }}>
                             <VideoTile
                                 p={localParticipant!}
                                 source={Track.Source.Camera}
@@ -4275,7 +4772,7 @@ export const SidebarConference = ({
                                 onToggleLocalMute={(v) => toggleParticipantLocalMute(localParticipant.identity, v)}
                                 isGroup={isGroup}
                                 fallbackAvatars={fallbackAvatars}
-                                quality={sidebarCamQuality}
+                                videoCount={totalCamTiles}
                                 canServerMute={canServerMute}
                                 onServerMuteTrack={onServerMuteTrack}
                             />
@@ -4286,8 +4783,8 @@ export const SidebarConference = ({
                     {sortedVisibleRemoteCamParticipants.map((p) => (
                         !isFocusedInSidebar(p.identity, Track.Source.Camera) && (
                             <motion.div key={`cam-${p.identity}`} layout
-                                variants={tileItemVariants} initial="initial" animate="animate" exit="exit"
-                                transition={{ layout: { duration: 0.4, ease: [0.22, 1, 0.36, 1] } }}>
+                                variants={inlineTileGlide} initial="initial" animate="animate" exit="exit"
+                                transition={{ layout: { duration: SIDEBAR_GLIDE_S, ease: SIDEBAR_GLIDE_EASE } }}>
                                 <VideoTile
                                     p={p}
                                     source={Track.Source.Camera}
@@ -4303,7 +4800,7 @@ export const SidebarConference = ({
                                     onHideScreenShareChange={(v) => toggleHideScreenShare(p.identity, v)}
                                     isGroup={isGroup}
                                     fallbackAvatars={fallbackAvatars}
-                                    quality={sidebarCamQuality}
+                                    videoCount={totalCamTiles}
                                     canServerMute={canServerMute}
                                     onServerMuteTrack={onServerMuteTrack}
                                 />
@@ -4426,7 +4923,7 @@ export const SidebarConference = ({
                            height on the first frame and the push-down is one motion. */
                         <motion.div
                             className="rounded-b-xl overflow-hidden bg-white/[0.04] border-x border-b border-white/[0.07]"
-                            initial={{ opacity: 0 }}
+                            initial={instantEnter ? false : { opacity: 0 }}
                             animate={{ opacity: 1 }}
                             transition={{ duration: 0.3, delay: 0.2, ease: [0.22, 1, 0.36, 1] }}
                         >
@@ -4464,7 +4961,7 @@ export const SidebarConference = ({
                     ) : (
                         /* ── DM / group call tile grid ───────────────────────── */
                         <div className="flex-1 flex flex-row flex-wrap justify-center items-center content-center gap-x-8 gap-y-6">
-                            <AnimatePresence mode="popLayout" initial={true}>
+                            <AnimatePresence mode="popLayout" initial={!instantEnter}>
                             {audioOnlyParticipants.map(p => (
                                 <motion.div key={p.identity} variants={tileItemVariants} initial="initial" animate="animate" exit="exit">
                                     <ParticipantCard
@@ -4583,6 +5080,7 @@ export const SidebarConference = ({
                             onToggleCamera={toggleCamera}
                             onToggleScreenshare={toggleScreenshare}
                             onOpenScreenSharePicker={openScreenSharePicker}
+                            onScreenShareIntent={warmScreenSharePicker}
                             onAdjustScreenShareQuality={adjustScreenShareQuality}
                             onToggleScreenShareAudio={toggleScreenShareAudio}
                             currentShareResolution={currentShare?.resolution}

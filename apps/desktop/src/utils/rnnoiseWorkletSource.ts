@@ -26,7 +26,7 @@ class RNNoiseWorklet extends AudioWorkletProcessor {
     constructor() {
         super();
         this.FRAME = RNNOISE_FRAME;
-        // Input accumulation ring — unchanged from before: just chunks the
+        // Input accumulation ring - unchanged from before: just chunks the
         // 128-sample render quanta into 480-sample frames for the Worker.
         this.inSize = this.FRAME * RING_FRAMES;
         this.inRing = new Float32Array(this.inSize);
@@ -91,7 +91,7 @@ class RNNoiseWorklet extends AudioWorkletProcessor {
         if (underrun) this.underrunsSinceReport++;
         this.statsQuantaSinceReport++;
 
-        // Bypass transitions are reported immediately — that's a UI-visible
+        // Bypass transitions are reported immediately - that's a UI-visible
         // "noise suppression paused" state change, not a metric to batch.
         if (bypassTripped) {
             this.port.postMessage({ type: 'nsAutoBypass', active: true });

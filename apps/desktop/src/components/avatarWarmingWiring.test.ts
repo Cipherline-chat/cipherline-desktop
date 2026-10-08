@@ -119,7 +119,7 @@ describe('ChatPane seeds its author maps from the session identity cache', () =>
         // the next chat switch would seed the stale handle straight back over
         // the five surfaces that handler patches. (The avatar's sibling event
         // is a ChatPane prop, which is why that one is patched over there.)
-        expect(dashboard).toContain("import { rememberUserName } from '../utils/peerIdentityCache';");
+        expect(dashboard).toMatch(/import \{[^}]*\brememberUserName\b[^}]*\} from '\.\.\/utils\/peerIdentityCache';/);
         const handler = dashboard.slice(dashboard.indexOf('const { user_id, username } = usernameUpdatedEvent;'));
         expect(handler.slice(0, handler.indexOf('}, [usernameUpdatedEvent]'))).toContain('rememberUserName(user_id, username)');
     });

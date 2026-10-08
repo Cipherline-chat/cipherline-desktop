@@ -12,6 +12,18 @@
    alert and stranded a tile alone in a row with empty columns beside it.
    ============================================================================ */
 
+/* The pane's frame: the scrolling deck, plus the easter-egg game when it is
+   open (FirewallOverlay, absolutely over the deck, not over the window). */
+.hd-frame {
+  container: hd-frame / inline-size;
+  position: relative;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+
 .hd-host {
   container-type: inline-size;
   flex: 1;
@@ -73,8 +85,8 @@
 }
 /* Keys scales with the pane: the slot width steps per container tier and the
    <Keys fluid> rig fills it — no JS sizing. */
-.hd-mascotslot { width: 76px; flex-shrink: 0; transition: transform .3s var(--cl-spring); }
-.hd-mascotslot:hover { transform: translateY(-3px); }
+/* No hover lift here any more: HomeKeys leans toward the pointer instead. */
+.hd-mascotslot { width: 76px; flex-shrink: 0; }
 @container (min-width: 560px)  { .hd-mascotslot { width: 88px; } }
 @container (min-width: 880px)  { .hd-mascotslot { width: 96px; } }
 @container (min-width: 1200px) { .hd-mascotslot { width: 112px; } }

@@ -188,9 +188,10 @@ export async function clearFreezeLog(): Promise<void> {
 }
 
 /** Plain-text report for the Copy button. No content, ids or names. */
-export function formatFreezeReport(entries: FreezeEntry[], meta: { version: string; platform: string; commit?: string }): string {
+export function formatFreezeReport(entries: FreezeEntry[], meta: { version: string; platform: string; commit?: string; memory?: string }): string {
     const stalls = entries.filter(isStall);
     const head = `Cipherline performance log — ${meta.version}${meta.commit ? ` (${meta.commit})` : ''} on ${meta.platform}\n`
+        + (meta.memory ? `${meta.memory}\n` : '')
         + `Freezes of ${LONG_TASK_MS} ms or more this session, newest first. ${stalls.length} entr${stalls.length === 1 ? 'y' : 'ies'}.`
         + (entries.length > stalls.length ? ` Plus ${entries.length - stalls.length} window/power/process event and resource rows.` : '');
     if (entries.length === 0) return `${head}\n\nNo freezes recorded.`;

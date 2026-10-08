@@ -1,0 +1,89 @@
+/* ============================================================
+   Onboarding step 1: Storage. Ported from the approved prototype
+   (scratchpad ob6/css/wiz.css, "step 1: storage" + the narrower-
+   window rules). Everything is scoped under `.ob`; tokens come
+   from onboarding.css.
+   ============================================================ */
+
+.ob .st-where { display: flex; flex-wrap: wrap; gap: 10px; margin: 20px 0 0; }
+.ob .st-where span { display: inline-flex; align-items: center; gap: 9px; padding: 8px 14px 8px 10px; border-radius: 12px; font-size: 13px; font-weight: 700; color: var(--muted); background: rgba(255, 255, 255, .035); border: 1px solid rgba(255, 255, 255, .07); }
+.ob .st-where span i { width: 26px; height: 26px; border-radius: 8px; display: grid; place-items: center; background: rgba(37, 224, 200, .12); color: var(--lume); }
+.ob .st-where span b { color: var(--text); }
+.ob .st-where .srv i { background: rgba(255, 107, 94, .1); color: var(--flash); }
+
+.ob .st-top { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: 30px 0 12px; flex-wrap: wrap; }
+.ob .st-seg { display: inline-flex; gap: 4px; padding: 4px; border-radius: 15px; background: var(--sink); box-shadow: inset 0 0 0 1px var(--border); }
+.ob .st-seg button { border: 0; background: transparent; padding: 9px 15px; border-radius: 11px; font: 800 13.5px var(--body); color: var(--muted); display: inline-flex; align-items: center; gap: 7px; cursor: pointer; transition: background .2s, color .2s, box-shadow .2s; }
+.ob .st-seg button:hover { color: var(--text); }
+.ob .st-seg button[aria-checked="true"] { background: var(--surface); color: var(--text); box-shadow: inset 0 0 0 1.5px var(--lume), 0 2px 10px rgba(0, 0, 0, .3); }
+.ob .st-seg button.st-custom { color: var(--glow); cursor: default; }
+.ob .st-seg button:focus-visible { outline: 2px solid var(--lume); outline-offset: 2px; }
+.ob .st-legend { display: flex; align-items: center; gap: 16px; font-size: 12.5px; font-weight: 700; color: var(--muted); }
+.ob .st-legend i { display: inline-block; width: 18px; height: 6px; border-radius: 99px; margin-right: 7px; vertical-align: middle; }
+.ob .st-legend .m i { height: 8px; background: var(--lume); }
+.ob .st-legend .f i { background: var(--glow); }
+
+.ob .st-rc { position: relative; padding: 14px 22px 8px; border-radius: 20px; background: rgba(19, 26, 48, .72); border: 1px solid var(--border); box-shadow: 0 18px 44px rgba(0, 0, 0, .3); }
+.ob .st-row { display: grid; grid-template-columns: 158px minmax(0, 1fr) 124px; column-gap: 20px; align-items: center; }
+.ob .st-ruler { height: 26px; }
+.ob .st-ticks { position: relative; height: 100%; }
+.ob .st-ticks span { position: absolute; top: 6px; transform: translateX(-50%); font: 600 10.5px var(--mono); color: var(--faint); white-space: nowrap; }
+.ob .st-ticks span:first-child { transform: none; }
+.ob .st-ticks span.inf { transform: translateX(-100%); font-size: 13px; top: 3px; color: var(--muted); }
+.ob .st-lane { padding: 12px 0; border-top: 1px solid rgba(42, 53, 88, .55); }
+.ob .st-lane-n { display: flex; align-items: center; gap: 11px; min-width: 0; }
+.ob .st-lane-n i { width: 32px; height: 32px; flex: none; border-radius: 10px; display: grid; place-items: center; background: rgba(37, 224, 200, .1); border: 1px solid rgba(37, 224, 200, .22); color: var(--lume); }
+.ob .st-lane-n b { font: 500 15px/1.2 var(--display); color: var(--text); }
+
+.ob .st-track { position: relative; height: 40px; touch-action: pan-y; user-select: none; -webkit-user-select: none; cursor: ew-resize;
+  background-image: repeating-linear-gradient(90deg, rgba(167, 179, 212, .09) 0 1px, transparent 1px calc(100% / 7)); background-size: calc(100% + 1px) 100%; }
+.ob .st-bar { position: absolute; left: 0; border-radius: 99px; transition: width .55s var(--spr); pointer-events: none; }
+.ob .st-bar--m { top: 9px; height: 10px; background: linear-gradient(90deg, rgba(37, 224, 200, .28), var(--lume)); box-shadow: 0 0 14px rgba(37, 224, 200, .25); }
+.ob .st-bar--f { top: 26px; height: 6px; background: linear-gradient(90deg, rgba(255, 201, 77, .2), var(--glow)); }
+/* Forever fades out past the end of the ruler */
+.ob .st-bar.inf { -webkit-mask-image: linear-gradient(90deg, #000 78%, transparent); mask-image: linear-gradient(90deg, #000 78%, transparent); }
+
+.ob .st-rh { position: absolute; width: 18px; height: 18px; margin-left: -9px; border-radius: 50%; border: 0; padding: 0; background: var(--text); cursor: ew-resize; opacity: 0; transform: scale(.6);
+  transition: opacity .15s, transform .25s var(--spr), left .55s var(--spr); box-shadow: 0 0 0 3px rgba(37, 224, 200, .35), 0 2px 8px rgba(0, 0, 0, .5); touch-action: none; }
+.ob .st-rh--m { top: 5px; }
+.ob .st-rh--f { top: 20px; width: 16px; height: 16px; margin-left: -8px; box-shadow: 0 0 0 3px rgba(255, 201, 77, .4), 0 2px 8px rgba(0, 0, 0, .5); }
+.ob .st-lane:hover .st-rh, .ob .st-rh:focus-visible, .ob .st-rh.drag { opacity: 1; transform: none; }
+.ob .st-rh:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--lume), 0 0 0 6px rgba(37, 224, 200, .3); }
+.ob .st-rh.drag { transition: opacity .15s, transform .25s var(--spr); }
+.ob .st-track.dragging .st-bar { transition: none; }
+
+.ob .st-vals { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; }
+.ob .st-vals button { border: 0; background: none; padding: 2px 6px; margin-left: -6px; border-radius: 7px; display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; cursor: pointer; }
+.ob .st-vals button:hover, .ob .st-vals button[aria-expanded="true"] { background: rgba(255, 255, 255, .06); }
+.ob .st-vals button:focus-visible { outline: 2px solid var(--lume); outline-offset: 1px; }
+.ob .st-vals .st-vm { font: 800 14px var(--body); color: var(--lume); }
+.ob .st-vals .st-vf { font: 700 12px var(--body); color: var(--glow); }
+.ob .st-vals .st-vf small { font-weight: 600; color: var(--faint); font-size: 11.5px; }
+.ob .st-vals svg { opacity: .5; }
+
+/* the value menu (portaled into `.ob`, positioned in viewport coordinates) */
+.ob .st-menu { position: fixed; z-index: 80; min-width: 150px; padding: 5px; border-radius: 13px; background: var(--deep); border: 1px solid var(--border); box-shadow: 0 14px 34px rgba(0, 0, 0, .5); animation: st-menu-in .18s var(--out); }
+@keyframes st-menu-in { from { opacity: 0; transform: translateY(-4px) scale(.98); } }
+.ob .st-menu button { display: flex; width: 100%; align-items: center; justify-content: space-between; gap: 14px; border: 0; background: none; padding: 7px 10px; border-radius: 9px; font: 700 13px var(--body); color: var(--muted); text-align: left; cursor: pointer; }
+.ob .st-menu button:hover, .ob .st-menu button:focus-visible { background: rgba(255, 255, 255, .06); color: var(--text); outline: none; }
+.ob .st-menu button[aria-checked="true"] { color: var(--lume); }
+
+/* narrower windows */
+@media (max-width: 1180px) {
+  .ob .st-row { grid-template-columns: 136px minmax(0, 1fr) 112px; column-gap: 14px; }
+}
+@media (max-width: 980px) {
+  .ob .st-rc { padding: 12px 16px 6px; }
+  .ob .st-row { grid-template-columns: 120px minmax(0, 1fr) 104px; column-gap: 12px; }
+  .ob .st-lane-n i { display: none; }
+}
+@media (max-height: 820px) {
+  .ob .st-top { margin-top: 22px; }
+  .ob .st-where { margin-top: 16px; }
+}
+
+/* reduced motion: bars and handles jump, nothing eases */
+.ob.rm .st-bar, .ob.rm .st-rh, .ob.rm .st-menu, .ob.rm .st-seg button { transition: none; animation: none; }
+@media (prefers-reduced-motion: reduce) {
+  .ob .st-bar, .ob .st-rh, .ob .st-menu, .ob .st-seg button { transition: none; animation: none; }
+}

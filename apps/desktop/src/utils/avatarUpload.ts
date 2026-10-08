@@ -12,9 +12,10 @@
  *
  * The hook-bound dependencies (`uploadEncryptedFile`, `broadcastProfileAvatarKey`)
  * are injected so this stays a plain async function callable from anywhere that
- * already holds those hooks (SettingsModal, RegistrationWizard).
+ * already holds those hooks (Settings, the onboarding profile step).
  */
 import { saveAvatarKey } from './avatarKeyStore';
+import { publishPublicAvatarInBackground } from './publicAvatar';
 
 /** Resize/re-encode an image File to a JPEG Blob, capping the longest edge. */
 export function resizeImageToBlob(
@@ -81,5 +82,11 @@ export async function uploadAvatarBlob(
         await deps.uploadEncryptedFile(blob, fileName, 'image/jpeg');
     await saveAvatarKey(attachmentId, keyB64, nonceB64);
     await deps.broadcastProfileAvatarKey(attachmentId, keyB64, nonceB64);
+    // The account's PUBLIC profile picture (the one unencrypted copy, shown on
+    // the referral page; see publicAvatar.ts). Background + fail-soft: never
+    // awaited, so it adds nothing to the save and cannot fail it. Sent BEFORE
+    // the caller's profile PATCH on purpose: the server only serves it once
+    // that PATCH makes this attachment the current avatar.
+    publishPublicAvatarInBackground(blob, attachmentId);
     return attachmentId;
 }

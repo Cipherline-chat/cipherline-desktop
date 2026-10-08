@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { readFileSync } from 'fs';
+import { readFileSync, readdirSync } from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
 import { createRecoveryKeyGate, DECLINE_COOLDOWN_MS, type RecoveryKeyGateDeps } from './recovery-key-gate';
@@ -181,43 +181,21 @@ describe('recovery-key reveal — the shipped code actually uses the gate', () =
         expect(preloadSrc).toContain('secure:reveal-recovery-key');
     });
 
-    it('RegistrationWizard.tsx (signup) uses the ungated carve-out, not the gated Settings channel, and still branches on the result', () => {
-        // SIGNUP CARVE-OUT (deliberate, owner decision 2026-09-20) — see the
-        // UPDATE notice at the top of recovery-key-gate.ts and main.ts's
-        // "SIGNUP CARVE-OUT" comment. Pins that the wizard was actually
-        // switched to the new channel rather than merely gaining it alongside
-        // the old one, and that — despite there being no dialog on this path
-        // to decline or queue behind — it still treats the result as the
-        // discriminated union it is, not a bare string.
-        const wizard = readFileSync(path.join(srcDir, 'components/RegistrationWizard.tsx'), 'utf8');
-        expect(wizard, 'must call the ungated signup channel').toMatch(/revealRecoveryKeySignup\?\.\(\)/);
-        expect(wizard, 'must branch on the result').toContain('res?.ok');
-        expect(wizard, 'must read keyB64').toContain('res.keyB64');
-        // The gated Settings-only channel must not appear at all in this file.
-        expect(wizard).not.toMatch(/revealRecoveryKey\?\.\(\)/);
-        expect(preloadSrc).toContain('secure:reveal-recovery-key-signup');
-        expect(mainSrc).toContain('secure:reveal-recovery-key-signup');
-    });
-
-    it('onboarding auto-reveals on mount through the ungated signup channel — never the gated dialog one', () => {
-        // Before 2026-09-20 this test asserted the opposite: that the mount
-        // effect must NOT reveal, because an ungated first reveal needs main
-        // to own "registration is done" and main cannot (recovery-key-gate.ts
-        // still explains why in full). The owner was told that analysis and
-        // asked for the carve-out anyway — see the UPDATE notice at the top
-        // of that file. So the mount effect below is now EXPECTED to reveal,
-        // through the separate ungated channel, with no click in between.
-        const wizard = readFileSync(path.join(srcDir, 'components/RegistrationWizard.tsx'), 'utf8');
-        const effect = wizard.slice(
-            wizard.indexOf("if (step !== 1 || keyState !== 'checking') return;"),
-            wizard.indexOf('}, [step, keyState]);'),
-        );
-        expect(effect, 'step-1 effect missing — did keyState change shape?').toBeTruthy();
-        expect(effect).toContain('getLocalMasterKeyStatus');
-        expect(effect, 'must auto-reveal via the ungated signup channel').toContain('revealRecoveryKeySignup');
-        expect(effect, 'must never call the gated Settings-only channel').not.toMatch(/revealRecoveryKey\?\.\(\)/);
-        // No button anywhere in the file hangs off a manual reveal any more —
-        // the whole point of the carve-out was removing that click.
-        expect(wizard).not.toMatch(/onClick=\{revealKey\}/);
+    it('there is NO ungated reveal channel any more (the signup carve-out was removed with the wizard step)', () => {
+        // 2026-09-20 to 2026-10-05 the registration wizard revealed the key on
+        // mount through `secure:reveal-recovery-key-signup`, with no dialog.
+        // Onboarding round 6 dropped the wizard's recovery-key step, so the
+        // channel was deleted — see the UPDATE notice at the top of
+        // recovery-key-gate.ts. Pin that it stays gone: in main, in preload,
+        // and in every renderer caller.
+        expect(mainSrc).not.toContain('reveal-recovery-key-signup');
+        expect(preloadSrc).not.toContain('reveal-recovery-key-signup');
+        expect(preloadSrc).not.toContain('revealRecoveryKeySignup');
+        // Exactly one reveal handler, and it is the gated one.
+        expect(mainSrc.match(/ipcMain\.handle\('secure:reveal-recovery-key/g) ?? []).toHaveLength(1);
+        const walk = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap(e =>
+            e.isDirectory() ? walk(path.join(dir, e.name)) : /\.(ts|tsx)$/.test(e.name) && !/\.test\.tsx?$/.test(e.name) ? [path.join(dir, e.name)] : []);
+        const callers = walk(srcDir).filter(f => readFileSync(f, 'utf8').includes('revealRecoveryKeySignup'));
+        expect(callers, 'no renderer code may call the removed ungated channel').toEqual([]);
     });
 });

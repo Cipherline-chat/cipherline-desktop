@@ -45,6 +45,8 @@ vi.mock('../../electron/storage', () => ({
         deleteDeferred: (k: string) => { store.delete(k); },
         batch: <T>(fn: () => T): T => fn(),
         keys: () => [...store.keys()],
+        keysWithPrefix: (p: string) => [...store.keys()].filter(k => k.startsWith(p)),
+        whenDurable: async () => {},
         initialize: async () => {},
     },
 }));

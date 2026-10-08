@@ -19,12 +19,26 @@
  * and let this hook derive one with the identical function.
  */
 
-import { useCallback, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNotificationPrefs } from '../contexts/NotificationContext';
 import { computeDnd } from './useDndState';
 import { playSound } from '../utils/notificationSounds';
 import { resolveNotification, type NotifDecision } from '../utils/notificationDecision';
 import { mentionsToDisplayText } from '../utils/mentionTokens';
+import {
+    selectNotificationAvatarId, getNotificationIconDataUrl, createToastSequencer,
+    rasterizeCircleIcon, type NotifIconDeps,
+} from '../utils/notificationAvatar';
+import { lookupUserAvatarId } from '../utils/peerIdentityCache';
+import { peekAvatarUrl, warmAvatarsFromDiskCache } from './useEncryptedAvatar';
+import type { FriendshipCheckFn } from '../contexts/FriendshipContext';
+
+/** Cache-only avatar sources for toast icons — never the network. */
+const NOTIF_ICON_DEPS: NotifIconDeps = {
+    peek: peekAvatarUrl,
+    warmFromDisk: (id) => warmAvatarsFromDiskCache([id]),
+    rasterize: rasterizeCircleIcon,
+};
 
 export type NotifCategory = 'message' | 'mention' | 'call' | 'join' | 'leave';
 export type { NotifDecision };
@@ -37,6 +51,14 @@ export interface NotifyPayload {
     conv_id: string;
     /** Sender display name. */
     sender_name: string;
+    /**
+     * The user who sent the message / placed the call. Used ONLY to pick the
+     * toast's avatar icon (utils/notificationAvatar.ts) — subject to the
+     * preview setting, `show_sender_avatar` and the friend-or-self gate.
+     */
+    sender_user_id?: string | null;
+    /** Avatar attachment id the caller already holds; else looked up from peerIdentityCache. */
+    sender_avatar_id?: string | null;
     /** Decrypted message text (may be empty for non-text messages). */
     text?: string;
     /** Whether this message already contains a direct @mention of the user. */
@@ -63,8 +85,22 @@ export interface NotifyPayload {
     decision?: NotifDecision;
 }
 
-export function useNotificationDispatch() {
+export interface NotificationDispatchOptions {
+    /**
+     * Returns the CURRENT friend-or-self gate (the one EncryptedAvatar uses).
+     * A getter, because Dashboard defines its gate after calling this hook.
+     * Absent or returning null → toasts never carry an avatar (fail closed).
+     */
+    getAvatarGate?: () => FriendshipCheckFn | null | undefined;
+}
+
+export function useNotificationDispatch(options?: NotificationDispatchOptions) {
     const { prefs } = useNotificationPrefs();
+    const optionsRef = useRef(options);
+    useEffect(() => { optionsRef.current = options; });
+    // One sequencer per dispatcher: an avatar toast that resolves late must not
+    // replace a newer toast for the same conversation.
+    const [takeToastTicket] = useState(createToastSequencer);
     // Keep ref so the callback doesn't need prefs in its dep array (avoids
     // re-creating on every prefs change, which would make Dashboard sad).
     const prefsRef = useRef(prefs);
@@ -140,17 +176,40 @@ export function useNotificationDispatch() {
                     break;
             }
             const id = `notif_${payload.conv_id}`;  // stable per-conv → replaces previous toast
-            window.electronAPI?.notifShow?.({
-                id,
-                title,
-                body,
-                conv_id: payload.conv_id,
-                hasReply: p.quick_reply_enabled && p.show_preview !== 'hidden' && payload.category !== 'call',
-                replyPlaceholder: 'Reply…',
+            const isCurrent = takeToastTicket(id);
+            const show = (iconDataUrl: string | null) => {
+                if (!isCurrent()) return;  // a newer toast for this conversation already went out
+                window.electronAPI?.notifShow?.({
+                    id,
+                    title,
+                    body,
+                    conv_id: payload.conv_id,
+                    hasReply: p.quick_reply_enabled && p.show_preview !== 'hidden' && payload.category !== 'call',
+                    replyPlaceholder: 'Reply…',
+                    ...(iconDataUrl ? { iconDataUrl } : {}),
+                });
+            };
+            // Sender avatar: follows the same preview setting as the sender's
+            // name, the user's own toggle, and the on-screen friend gate. From
+            // caches only, with a short bounded wait — never a request.
+            const avatarId = selectNotificationAvatarId({
+                showPreview: p.show_preview,
+                showSenderAvatar: p.show_sender_avatar,
+                senderUserId: payload.sender_user_id,
+                avatarIdHint: payload.sender_avatar_id,
+                lookupAvatarId: lookupUserAvatarId,
+                isFriendOrSelf: optionsRef.current?.getAvatarGate?.(),
             });
+            if (avatarId) {
+                void getNotificationIconDataUrl(avatarId, NOTIF_ICON_DEPS)
+                    .catch(() => null)
+                    .then(show);
+            } else {
+                show(null);
+            }
             if (p.flash_taskbar) window.electronAPI?.notifFlashTaskbar?.();
         }
-    }, []); // stable ref — reads live prefs via prefsRef
+    }, [takeToastTicket]); // stable — reads live prefs/options via refs
 
     return notify;
 }

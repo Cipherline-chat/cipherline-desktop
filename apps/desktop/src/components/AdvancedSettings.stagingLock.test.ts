@@ -77,6 +77,9 @@ async function mount() {
 const radio = (title: string) =>
     [...document.querySelectorAll('button[role="radio"]')].find((b) => b.textContent?.includes(title)) as HTMLButtonElement;
 const dialog = () => document.querySelector('[role="dialog"][aria-label="Unlock staging builds"]') as HTMLElement | null;
+// ClModal keeps its card mounted ~260 ms for the exit animation; the prompt
+// is "closed" once the password form inside it is gone.
+const promptShowing = () => !!dialog()?.querySelector('input');
 const buttonByText = (t: string) =>
     [...document.querySelectorAll('button')].find((b) => b.textContent?.trim() === t) as HTMLButtonElement | undefined;
 
@@ -159,6 +162,67 @@ describe('AdvancedSettings — staging lock', () => {
         expect(api.relockStaging).toHaveBeenCalledTimes(1);
         expect(radio('Stable').getAttribute('aria-checked')).toBe('true');
         expect(document.body.textContent).not.toContain('Staging access unlocked on this device');
+    });
+
+    it('Cancel closes the prompt and the channel stays on Stable (the card does not stick on Staging)', async () => {
+        await mount();
+        await click(radio('Staging'));
+        expect(promptShowing()).toBe(true);
+        await click(buttonByText('Cancel')!);
+        expect(promptShowing()).toBe(false);
+        expect(api.unlockStaging).not.toHaveBeenCalled();
+        expect(api.setUpdateChannel).not.toHaveBeenCalled();
+        expect(radio('Stable').getAttribute('aria-checked')).toBe('true');
+        expect(radio('Staging').getAttribute('aria-checked')).toBe('false');
+    });
+
+    it('Esc cancels the same way', async () => {
+        await mount();
+        await click(radio('Staging'));
+        expect(promptShowing()).toBe(true);
+        await act(async () => {
+            window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+            document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+        });
+        await flush();
+        expect(promptShowing()).toBe(false);
+        expect(api.setUpdateChannel).not.toHaveBeenCalled();
+        expect(radio('Stable').getAttribute('aria-checked')).toBe('true');
+    });
+
+    it('cancelling while the password is still being checked does NOT switch the channel afterwards', async () => {
+        let release!: (r: { ok: boolean; retryAfterMs: number }) => void;
+        api.unlockStaging.mockImplementationOnce(() => new Promise((res) => {
+            release = (r) => { lock.unlocked = true; res(r); };
+        }));
+        await mount();
+        await click(radio('Staging'));
+        const input = dialog()!.querySelector('input') as HTMLInputElement;
+        typeInto(input, 'correct-horse');
+        await act(async () => { input.form!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })); });
+        await click(buttonByText('Cancel')!);          // user backs out mid-check
+        await act(async () => { release({ ok: true, retryAfterMs: 0 }); });
+        await flush();
+        expect(api.unlockStaging).toHaveBeenCalledTimes(1);
+        expect(api.setUpdateChannel).not.toHaveBeenCalled();
+        expect(radio('Stable').getAttribute('aria-checked')).toBe('true');
+    });
+
+    it('Enter in the field submits (it is a real form)', async () => {
+        await mount();
+        await click(radio('Staging'));
+        const input = dialog()!.querySelector('input') as HTMLInputElement;
+        expect(input.form).not.toBeNull();
+        expect(dialog()!.querySelector('button[type="submit"]')).not.toBeNull();
+    });
+
+    it('a backoff from main is shown and blocks submitting', async () => {
+        lock.retryAfterMs = 30_000;
+        await mount();
+        await click(radio('Staging'));
+        expect(dialog()!.textContent).toContain('Too many attempts');
+        const submit = dialog()!.querySelector('button[type="submit"]') as HTMLButtonElement;
+        expect(submit.disabled).toBe(true);
     });
 
     it('no lock UI at all where the lock is not enforced (dev build)', async () => {

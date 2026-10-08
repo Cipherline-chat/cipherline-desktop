@@ -13,7 +13,23 @@ import { registerOutputAudioContext, unregisterOutputAudioContext } from '../uti
 import { subscribe as subscribeAudioHealth, getSnapshot as getAudioHealthSnapshot } from '../utils/audioHealth';
 import { ClToggle, ClButton, ClSelect } from './cl';
 import type { ClSelectOption } from './cl';
+import { useCameraQualityTier, setCameraQualityTier, useIncomingVideoMode, setIncomingVideoMode } from '../utils/cameraQualityPrefs';
+import type { IncomingVideoMode } from '../utils/remoteVideoQuality';
+import { CAMERA_QUALITY_TIERS, tierLabel, type CameraQualityTier } from '../utils/cameraQuality';
+
+const CAMERA_TIER_OPTIONS: ClSelectOption<CameraQualityTier>[] = CAMERA_QUALITY_TIERS.map(t => ({ value: t, label: tierLabel(t) }));
+const INCOMING_MODE_OPTIONS: ClSelectOption<IncomingVideoMode>[] = [
+    { value: 'auto', label: 'Auto' },
+    { value: 'reduced', label: 'Reduced' },
+    { value: 'datasaver', label: 'Data saver' },
+];
+const INCOMING_MODE_HELP: Record<IncomingVideoMode, string> = {
+    auto: 'Other people’s cameras sharpen with the size you show them at, and drop in quality when lots of cameras are on.',
+    reduced: 'Easier on your PC: other cameras in low quality (the one speaking a little sharper), at most 9 decoded at once — the rest show their avatar until they talk. A camera you focus stays sharp.',
+    datasaver: 'For metered connections: every camera in low quality, a focused one in medium, at most 9 at once, and screen shares capped at 30 fps where the sharer allows it.',
+};
 import { useEscape } from '../hooks/useEscape';
+import { GamingVideoSetting } from './settings/GamingVideoSetting';
 
 /**
  * Twilight · Voice & Video — Descent redesign (phase 2): sd-card sections,
@@ -486,6 +502,8 @@ const AudioHealthPanel: React.FC = () => {
 
 export const VoiceVideoSettings: React.FC<VoiceVideoSettingsProps> = ({ voice }) => {
     const { settings } = voice;
+    const cameraTier = useCameraQualityTier();
+    const incomingMode = useIncomingVideoMode();
 
     // Deduped/labelled lists shared with the call-control right-click menus.
     const { inputDevices, outputDevices, videoDevices, refresh: enumerateDevices } = useMediaDevices();
@@ -728,6 +746,30 @@ export const VoiceVideoSettings: React.FC<VoiceVideoSettingsProps> = ({ voice })
                     options={makeDeviceOptions(videoDevices, 'Default Camera')}
                     style={{ width: '100%' }}
                 />
+                <div className="sd-row">
+                    <div className="sd-rl">
+                        <b>Camera quality</b>
+                        <span>Auto sends the best your camera does at 30 fps — up to 1440p when your GPU can encode it, 1080p otherwise. Pick a lower one if your PC struggles in calls.</span>
+                    </div>
+                    <ClSelect<CameraQualityTier>
+                        value={cameraTier}
+                        onChange={setCameraQualityTier}
+                        options={CAMERA_TIER_OPTIONS}
+                        style={{ width: 200 }}
+                    />
+                </div>
+                <div className="sd-row">
+                    <div className="sd-rl">
+                        <b>Incoming video quality</b>
+                        <span>{INCOMING_MODE_HELP[incomingMode]}</span>
+                    </div>
+                    <ClSelect<IncomingVideoMode>
+                        value={incomingMode}
+                        onChange={setIncomingVideoMode}
+                        options={INCOMING_MODE_OPTIONS}
+                        style={{ width: 200 }}
+                    />
+                </div>
                 <CameraPreview
                     deviceId={settings.cameraDeviceId}
                     brightness={settings.cameraBrightness}
@@ -740,6 +782,9 @@ export const VoiceVideoSettings: React.FC<VoiceVideoSettingsProps> = ({ voice })
                     <PictureSlider label="Saturation" value={settings.cameraSaturation} onChange={voice.setCameraSaturation} min={0} max={200} />
                 </div>
             </div>
+
+            {/* ── While gaming (camera / screen-share freezes) ─────────── */}
+            <GamingVideoSetting />
 
             {/* ── Voice Processing ─────────────────────────────────────── */}
             <div className="sd-card">

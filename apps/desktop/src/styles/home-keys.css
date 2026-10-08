@@ -1,0 +1,188 @@
+/* ============================================================================
+   Keys on the Home deck (components/mascot/HomeKeys.tsx).
+
+   PERF CONTRACT. He sits on Home all day, and Home is idle most of the time:
+   1. The one loop (.hk-swim) animates transform only, on an HTML element, so
+      Chromium runs it on the compositor; nothing inside the svg loops (the
+      rig's leg sway is off here: `idleSway={false}`, see keys.css).
+   2. It stops whenever the app's decoration stops: window blurred, hidden or
+      untouched for 45 s (`[data-cl-motion="idle"]`, utils/idleMotion.ts),
+      Settings covering it (`[data-cl-occluded]`), and reduced motion.
+   3. No filter, no box-shadow, no will-change (a layer rasterised once and
+      then scaled would go soft; without it Chromium rasterises the running
+      animation at its largest scale, so he stays crisp at any DPI).
+   4. Pointer and glance moves are transitions/one-shots: they cost nothing
+      while nobody is pointing.
+   ============================================================================ */
+
+.hk {
+  position: relative;
+  --hk-x: 0;
+  --hk-y: 0;
+  /* A hit zone a little larger than him, without moving the layout. */
+  margin: -14px;
+  padding: 14px;
+}
+
+/* Lean toward the pointer: a few px toward it and a few degrees, pivoting
+   near his feet so the dome swings and the legs stay put. Upright when the
+   pointer leaves. */
+.hk-lean {
+  transform-origin: 50% 88%;
+  transition: transform .5s var(--cl-spring, cubic-bezier(.2, .8, .2, 1));
+}
+.hk.is-look .hk-lean {
+  transform: translate(calc(var(--hk-x) * 3px), calc(var(--hk-y) * 2px)) rotate(calc(var(--hk-x) * 6deg));
+}
+
+/* His eyes follow the pointer (the rig's k2-eyes group, in svg units). */
+.hk .k2-eyes { transition: transform .22s ease-out; }
+.hk.is-look .k2-eyes {
+  transform: translate(calc(var(--hk-x) * 2.6px), calc(var(--hk-y) * 1.8px));
+}
+/* ...and now and then glance aside on their own. */
+.hk.hk-glance-l .k2-eyes { animation: hk-glance-l 1.8s ease-in-out; }
+.hk.hk-glance-r .k2-eyes { animation: hk-glance-r 1.8s ease-in-out; }
+@keyframes hk-glance-l {
+  0%, 100% { transform: none; }
+  16%, 70% { transform: translate(-2.6px, .4px); }
+}
+@keyframes hk-glance-r {
+  0%, 100% { transform: none; }
+  16%, 70% { transform: translate(2.6px, .4px); }
+}
+
+/* The swim: a jellyfish's rhythm. The bell gathers (a touch wider, shorter),
+   pushes him up in a quick stroke (narrower, taller), then he glides down
+   for most of the cycle. Tempo follows the app-state signal like the rig's
+   cadences: unread messages swim a little livelier, mentions livelier still. */
+.hk-swim { transform-origin: 50% 70%; }
+.hk[data-swim="idle"] .hk-swim  { animation: hk-swim 4.8s infinite; }
+.hk[data-swim="pulse"] .hk-swim { animation: hk-swim 3.6s infinite; }
+.hk[data-swim="alert"] .hk-swim { animation: hk-swim 2.4s infinite; }
+@keyframes hk-swim {
+  0%   { transform: translateY(0) scale(1, 1); animation-timing-function: cubic-bezier(.4, 0, .6, 1); }
+  9%   { transform: translateY(1px) scale(1.035, .955); animation-timing-function: cubic-bezier(.25, .6, .3, 1); }
+  27%  { transform: translateY(-6px) scale(.97, 1.035); animation-timing-function: cubic-bezier(.3, 0, .4, 1); }
+  40%  { transform: translateY(-6.5px) scale(1, 1); animation-timing-function: cubic-bezier(.45, 0, .55, 1); }
+  100% { transform: translateY(0) scale(1, 1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hk[data-swim] .hk-swim { animation: none; }
+  .hk.is-look .hk-lean, .hk.is-look .k2-eyes { transform: none; }
+  .hk.hk-glance-l .k2-eyes, .hk.hk-glance-r .k2-eyes { animation: none; }
+  .hk-lean, .hk .k2-eyes { transition: none; }
+}
+
+/* The idle-motion gate and the occlusion gate (utils/idleMotion.ts): same
+   decoration, same off switches as the rig's own loops in keys.css. */
+:root[data-cl-motion="idle"] .hk-swim { animation: none; }
+:root[data-cl-occluded="on"] .hk-swim:not(.sd-root *) { animation: none; }
+
+/* ── The spam egg (utils/keysBurst.ts, utils/keysSpam.ts) ─────────────────
+   Five shows, one per streak. Their motion is Web Animations started by the
+   click handler on the html elements below (transform / opacity only:
+   compositor); this file only lays the elements out at rest. Nothing here
+   animates on its own, and nothing loops between clicks.
+
+   Everything a show moves stays inside the slot's surroundings: the deck's
+   padding is the room he has (the pane clips at its edges), so the shows'
+   biggest moves are sized for it and fade out before they could reach it. */
+.hk-react { position: relative; transform-origin: 50% 86%; }
+.hk-react > [role="img"] { position: relative; z-index: 1; }
+
+/* His face layer, in his own viewBox's proportions (110 x 92). */
+.hk-face {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 2;
+  width: 100%;
+  aspect-ratio: 110 / 92;
+  pointer-events: none;
+}
+.hk-eyes { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; fill: var(--cl-abyss); }
+.hk-eyes--stroke { fill: none; stroke: var(--cl-abyss); stroke-width: 3.5; stroke-linecap: round; stroke-linejoin: round; }
+/* camo: the eyes left floating once he has faded (fade in as he fades out) */
+.hk-eyes--light { stroke: #EFFFFC; opacity: 0; }
+
+/* glitch: two RGB-split silhouettes behind him */
+.hk-ghost {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  aspect-ratio: 110 / 92;
+  opacity: 0;
+  pointer-events: none;
+}
+.hk-ghost-a { fill: #FF4F8B; }
+.hk-ghost-b { fill: #3FC6FF; }
+/* the error bubble: a terminal line */
+.k2-speech.hk-speech--term {
+  font-family: var(--cl-font-mono, 'JetBrains Mono', ui-monospace, monospace);
+  font-weight: 600;
+  font-size: 11.5px;
+  letter-spacing: .01em;
+  background: #0B0F1E;
+  border-color: rgba(255, 79, 139, .55);
+  color: #FFB3CB;
+}
+.k2-speech.hk-speech--term::after { border-bottom-color: #0B0F1E; }
+
+/* charge: rings around him (behind), and the one that fills */
+.hk-rings {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  aspect-ratio: 110 / 92;
+  pointer-events: none;
+}
+.hk-ring {
+  position: absolute;
+  left: 50%;
+  top: 52%;
+  width: 104%;
+  aspect-ratio: 1;
+  margin-left: -52%;
+  margin-top: -52%;
+  border-radius: 50%;
+  border: 2px solid rgba(37, 224, 200, .85);
+  box-sizing: border-box;
+  opacity: 0;
+  transform: scale(.7);
+}
+.hk-ring--fill { border: 3px solid rgba(255, 201, 77, .75); transform: scale(.55); }
+
+/* camo: the cuttlefish pattern that flashes across his dome when he's found */
+.hk-stripes {
+  position: absolute;
+  left: 19.1%;
+  top: 15.2%;
+  width: 61.8%;
+  height: 42.4%;
+  border-radius: 50% 50% 0 0 / 100% 100% 0 0;
+  background: repeating-linear-gradient(115deg, rgba(11, 15, 30, .55) 0 4px, transparent 4px 9px);
+  opacity: 0;
+}
+
+/* dance: notes */
+.hk-note {
+  position: absolute;
+  left: 4%;
+  top: 18%;
+  font-family: var(--cl-font-display, 'Fredoka', system-ui, sans-serif);
+  font-weight: 600;
+  font-size: 16px;
+  line-height: 1;
+  color: var(--cl-lume);
+  opacity: 0;
+}
+.hk-note--b { left: 12%; top: 8%; color: var(--cl-glow); }
+
+/* dodge: his eyes look anywhere but at the pointer */
+.hk.hk-avoid.is-look .k2-eyes {
+  transform: translate(calc(var(--hk-x) * -2.6px), calc(var(--hk-y) * -1.8px));
+}

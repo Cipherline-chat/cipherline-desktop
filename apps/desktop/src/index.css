@@ -322,6 +322,11 @@ img {
   animation: cl-fade-rise-out 180ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
+/* Slides in from the left edge — for cards anchored to the top-left (the in-call
+   offer cards, utils/performanceOffer.ts CALL_OFFER_ENTER_CLASS). */
+@keyframes cl-fade-slide-left-in { from { opacity: 0; transform: translateX(-12px); } to { opacity: 1; transform: translateX(0); } }
+.fade-slide-left-enter { animation: cl-fade-slide-left-in 220ms cubic-bezier(0.22, 1, 0.36, 1) both; }
+
 @keyframes cl-fade-drop-in { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }
 .fade-drop-enter { animation: cl-fade-drop-in 200ms cubic-bezier(0.22, 1, 0.36, 1) both; }
 
@@ -333,7 +338,7 @@ img {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .fade-enter, .fade-rise-enter, .fade-drop-enter, .fade-pop-enter { animation: none; }
+  .fade-enter, .fade-rise-enter, .fade-slide-left-enter, .fade-drop-enter, .fade-pop-enter { animation: none; }
   .fade-exit, .fade-rise-exit, .fade-pop-exit { animation: none; opacity: 0; }
 }
 
@@ -871,6 +876,41 @@ img {
  * kind of action, not just another group. */
 .cl-console-sep--leave { margin-left: calc(var(--cg) * 1.6); margin-right: calc(var(--cg) * 1.2); }
 
+/* Joining controls (call/JoiningControlBar.tsx): one status segment standing
+ * in for camera + share + fullscreen while the join is in flight, sized to
+ * exactly those three controls and their two gaps so the capsule does not
+ * change width when the real controls take over on connect. Light only — no
+ * entrance animation (same reparent hazard as the rest of this bar); the
+ * spinner's rotation is continuous, so a restart is invisible, and it stops
+ * entirely under reduced motion (motion-safe: on the element). */
+.cl-join-status {
+  flex: 0 0 auto;
+  width: calc(var(--cs) * 3 + var(--cg) * 2);
+  height: var(--cs);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: .45em;
+  border-radius: 999px;
+  color: var(--cl-faint);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+.cl-join-status .cl-join-spinner {
+  width: calc(var(--cs) * 0.38);
+  height: calc(var(--cs) * 0.38);
+  flex: 0 0 auto;
+  color: var(--cl-lume);
+}
+.cl-join-status .cl-join-label {
+  font-family: var(--cl-font-body, inherit);
+  font-size: clamp(11px, 2.4cqi, 13px);
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .cl-ctrlbtn {
   position: relative;
   flex: 0 0 auto;
@@ -1185,6 +1225,20 @@ img {
  * the flat color heavily and overlay a subtle radial highlight so the banner
  * reads as ambient background rather than a big paint chip. The background
  * color itself is applied inline via React so !important here doesn't fight it. */
+/* The default banner (Banner.tsx DefaultBanner): navy field, faint 12px grid
+ * fading out toward the edges, the Keys mark dim near the top, a teal glow
+ * rising from below behind the avatar. Positions are proportional so it reads
+ * the same at 120px (popover), 150px (Settings) and aspect-ratio (DM panel). */
+.cipherline-banner-default { position: absolute !important; inset: 0 !important; background: #0A1120; overflow: hidden; }
+.cipherline-banner-default-grid { position: absolute; inset: 0;
+  background-image: linear-gradient(rgba(167, 179, 212, .045) 1px, transparent 1px), linear-gradient(90deg, rgba(167, 179, 212, .045) 1px, transparent 1px);
+  background-size: 12px 12px; background-position: center -1px;
+  -webkit-mask-image: radial-gradient(120% 100% at 50% 40%, #000 30%, transparent 85%);
+  mask-image: radial-gradient(120% 100% at 50% 40%, #000 30%, transparent 85%); }
+.cipherline-banner-default-glow { position: absolute; left: 50%; bottom: -58%; width: 260px; max-width: 80%; height: 125%; transform: translateX(-50%); border-radius: 50%;
+  background: radial-gradient(closest-side, rgba(37, 224, 200, .26), rgba(37, 224, 200, .08) 55%, transparent); filter: blur(4px); }
+.cipherline-banner-default-mark { position: absolute !important; left: 50%; top: 35%; width: 30px !important; height: auto !important; max-width: none !important;
+  transform: translateX(-50%); opacity: .24; pointer-events: none; }
 .cipherline-banner-fallback-colored {
   position: absolute !important;
   inset: 0 !important;
@@ -1699,6 +1753,105 @@ button,.cl-btn,.cl-toggle,.cl-check,.cl-radio,.cl-seg,.cl-selt,.cl-selm,.cl-pill
   .cl-l,.cl-knob,.cl-trk,.cl-tsh,.cl-cap,.cl-sind,.cl-rail-indicator{transition:none!important;animation:none!important}
 }
 
+/* ── Rail server box: scroll region + overlay scrollbar ───────────────────
+ * The server box (.cl-rail-track--scroll — the same rounded, sunk panel the
+ * Friends/Settings track uses) IS the scroll region: its height is bounded by
+ * the rail (the wrapper may shrink, min-height:0), its tiles scroll INSIDE it
+ * and are clipped cleanly at its rounded edge — no fade, nothing outside the
+ * box. The bottom group is a sibling that never shrinks.
+ *
+ * ONE layout, always: the tile column is truly centred in the box whether or
+ * not the list overflows (6px padding both sides; on painted pixels the icon
+ * ring sits 6px from the box's 1px inset border on each side). Nothing moves
+ * when the list starts or stops overflowing.
+ *
+ * The native scrollbar is hidden (`scrollbar-width:none` must be set
+ * explicitly: the app-wide `* { scrollbar-width: thin }` kit rule would
+ * otherwise show it) and replaced by RailScrollbar — an OVERLAY in the box's
+ * left padding that never takes layout space:
+ *   - flush against the far-left inside edge (just inside the 1px border),
+ *     clipped to the box's rounded corners (.cl-rail-box overflow:hidden);
+ *   - invisible at rest; fades in while the pointer is anywhere over the box,
+ *     and briefly while the list scrolls (wheel, keys, dnd auto-scroll —
+ *     RailScrollbar toggles `.is-scrolling` and drops it ~800ms after the
+ *     last scroll), as an overlay scrollbar does;
+ *   - widens 2px → 5px (rightwards from the edge) and brightens only while
+ *     the pointer is over the strip itself, and stays so for a thumb drag
+ *     (`.is-drag`, pointer-captured) until release.
+ * The grab strip is 6px wide — exactly the box's left padding — so it can
+ * never sit over a tile and steal its clicks or drags.
+ * Only drawn when the list actually overflows (`data-visible`). */
+.app-rail{
+  padding:var(--cl-rail-pad,16px) 0;
+}
+.cl-rail-box{
+  position:relative;flex:0 1 auto;min-height:0;
+  display:flex;flex-direction:column;
+  /* Clips the overlay scrollbar to the same rounded rect as the track. */
+  border-radius:16px;overflow:hidden;
+}
+.cl-rail-track--scroll{
+  flex:0 1 auto;min-height:0;
+  overflow-x:hidden;overflow-y:auto;
+  overscroll-behavior:contain;
+  scrollbar-width:none;
+}
+.cl-rail-track--scroll::-webkit-scrollbar{display:none;width:0;height:0}
+.cl-rail-sb{
+  position:absolute;left:0;top:12px;bottom:12px;width:6px;z-index:2;
+  /* visibility, NOT display:none — the strip's own height is what the thumb
+     geometry is measured against, and display:none would zero it. */
+  visibility:hidden;
+}
+.cl-rail-sb[data-visible="true"]{visibility:visible}
+.cl-rail-sb-thumb{
+  /* The element is the full-width hit target; the visible bar is its ::after
+     so a resting 2px bar is still easy to press. */
+  position:absolute;left:0;top:0;width:6px;
+  touch-action:none;cursor:default;
+}
+.cl-rail-sb-thumb::after{
+  content:'';position:absolute;top:0;bottom:0;left:1px;width:2px;border-radius:2px;
+  background:rgba(255,255,255,.22);
+  opacity:0;
+  transition:opacity .12s ease,width .12s ease,background-color .12s ease;
+}
+/* Shown: pointer anywhere over the box, while scrolling, or mid-drag. */
+.cl-rail-box:hover .cl-rail-sb-thumb::after,
+.cl-rail-sb.is-scrolling .cl-rail-sb-thumb::after,
+.cl-rail-sb.is-drag .cl-rail-sb-thumb::after{opacity:1}
+/* Expanded: ONLY while the pointer is over the strip itself, or dragging. */
+.cl-rail-sb:hover .cl-rail-sb-thumb::after,
+.cl-rail-sb.is-drag .cl-rail-sb-thumb::after{
+  width:5px;background:rgba(255,255,255,.4);
+}
+/* Grab colour on the thumb itself / mid-drag. Scoped under .cl-rail-sb so it
+   out-ranks the strip-hover rule above (it used to lose on specificity and
+   the lume never showed on hover). */
+.cl-rail-sb .cl-rail-sb-thumb:hover::after,
+.cl-rail-sb.is-drag .cl-rail-sb-thumb::after{
+  background:rgba(37,224,200,.65);
+}
+@media (prefers-reduced-motion: reduce){
+  .cl-rail-sb-thumb::after{transition:none}
+}
+/* Short windows: tighten the rail's vertical rhythm so the bottom group keeps
+ * more of the list's room. Variables are read by the <nav> inline style. */
+@media (max-height: 640px){
+  :root{--cl-rail-gap:10px;--cl-rail-pad:10px}
+}
+
+/* ── Title-bar wordmark ───────────────────────────────────────────────────
+ * "Cipherline" set in the brand display face, no logo. Lives inside the 34px
+ * drag bar, so it stays draggable (no `no-drag`) and unselectable; clicks fall
+ * through to the drag region. Windows/Linux: top-left. macOS: top-right (the
+ * traffic lights occupy the left there). */
+.cl-titlebar-wordmark{
+  font-family:var(--cl-font-display);font-weight:600;font-size:13px;line-height:1;
+  letter-spacing:.04em;color:var(--cl-muted);opacity:.55;
+  user-select:none;-webkit-user-select:none;pointer-events:none;white-space:nowrap;
+}
+
 /* ── Server channel topic (chat header) ───────────────────────────────────
  * A one-line description sitting under the channel name, so it must read as
  * secondary to it. Plain button rather than a kit ClButton on purpose: the
@@ -2062,3 +2215,10 @@ button,.cl-btn,.cl-toggle,.cl-check,.cl-radio,.cl-seg,.cl-selt,.cl-selm,.cl-pill
   -webkit-backdrop-filter: blur(10px) saturate(150%);
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
 }
+
+/* Instant send (utils/pendingSend.ts): a message still on its way dims only
+   if it is SLOW to land. A normal send is confirmed long before the delay
+   ends, so the usual case never flickers. */
+@keyframes cl-send-pending { from { opacity: 1; } to { opacity: 0.55; } }
+.cl-send-pending { animation: cl-send-pending 300ms ease 700ms both; }
+@media (prefers-reduced-motion: reduce) { .cl-send-pending { animation-duration: 1ms; } }

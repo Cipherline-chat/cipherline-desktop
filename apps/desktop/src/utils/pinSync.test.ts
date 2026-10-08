@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { applyPinOp, applyPinOps, localPinOp, pruneLedger, type PinState } from './pinSync';
+import { applyPinOp, applyPinOps, localPinOp, pruneLedger, replaySafePinUpdater, type PinState } from './pinSync';
 
 /**
  * Pins sync device-to-device over a store-and-forward envelope, so ops arrive
@@ -194,5 +194,39 @@ describe('pruneLedger', () => {
     it('returns the same object when nothing needed pruning', () => {
         const s = applyPinOp(empty(), op('c1', 'm1', 'add', 0));
         expect(pruneLedger(s, 1000, 7 * DAY)).toBe(s);
+    });
+});
+
+describe('replaySafePinUpdater — React may run a state updater more than once', () => {
+    const remove = (at: number) => ({ container_id: 'c', target_id: 'm', action: 'remove' as const, at });
+
+    it('CONTROL: the inline pattern returns prev on its second call (the op is dropped as its own replay)', () => {
+        const ledgerRef = { current: { c: { m: 1 } } as PinState['ledger'] };
+        const prev = { c: ['m'] };
+        const inline = (p: typeof prev) => { const n = applyPinOp({ pins: p, ledger: ledgerRef.current }, remove(5)); ledgerRef.current = n.ledger; return n.pins; };
+        expect(inline(prev)).toEqual({});
+        expect(inline(prev)).toBe(prev);   // the result React keeps under StrictMode
+    });
+
+    it('returns the same answer on every call, and leaves the ledger as one application would', () => {
+        const ledgerRef = { current: { c: { m: 1 } } as PinState['ledger'] };
+        const prev = { c: ['m'] };
+        const u = replaySafePinUpdater(ledgerRef, s => applyPinOp(s, remove(5)));
+        expect(u(prev)).toEqual({});
+        expect(u(prev)).toEqual({});
+        expect(ledgerRef.current).toEqual({ c: { m: 5 } });
+    });
+
+    it('replaying a queue [u1, u2] in order reproduces the same state and ledger', () => {
+        const ledgerRef = { current: {} as PinState['ledger'] };
+        const u1 = replaySafePinUpdater(ledgerRef, s => applyPinOp(s, { container_id: 'c', target_id: 'a', action: 'add', at: 10 }));
+        const u2 = replaySafePinUpdater(ledgerRef, s => applyPinOp(s, { container_id: 'c', target_id: 'a', action: 'remove', at: 11 }));
+        const first = u2(u1({}));
+        const firstLedger = ledgerRef.current;
+        const second = u2(u1({}));
+        expect(first).toEqual({});
+        expect(second).toEqual({});
+        expect(ledgerRef.current).toEqual(firstLedger);
+        expect(ledgerRef.current).toEqual({ c: { a: 11 } });
     });
 });

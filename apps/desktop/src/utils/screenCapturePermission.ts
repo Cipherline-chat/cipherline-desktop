@@ -138,3 +138,27 @@ export function isScreenAccessRefused(access: ScreenCaptureAccess): boolean {
  */
 export const MACOS_SCREEN_RECORDING_SETTINGS_URL =
     'x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture';
+
+/**
+ * macOS 15 (Sequoia) and later periodically ask the user to confirm an app
+ * that captures the screen WITHOUT the system's own content-sharing picker
+ * (SCContentSharingPicker): "Cipherline is requesting to bypass the system
+ * private window picker and directly access your screen and audio" (Allow /
+ * Open System Settings), asked again about monthly. Cipherline keeps its own
+ * picker on macOS on purpose: Electron's system-picker mode
+ * (`setDisplayMediaRequestHandler(..., { useSystemPicker: true })`, macOS 15+)
+ * hands the app no window/display id and no audio track, so per-app share
+ * audio (the ScreenCaptureKit addon needs the shared app's pid) and the
+ * desktop annotation overlay (needs the shared window/display) could not work
+ * with it, and mixing picker and non-picker captures in one process crashes
+ * Electron (electron#51571, closed unfixed). So the picker explains the prompt
+ * before macOS shows it.
+ *
+ * `macOSMajor` null/undefined (older preload, unreadable version) on a Mac
+ * still shows the note: an unneeded sentence beats an unexplained dialog.
+ */
+export function showMacPickerBypassNote(platform: ScreenSourcesInput['platform'], macOSMajor: number | null | undefined): boolean {
+    if (platform !== 'mac') return false;
+    if (macOSMajor == null) return true;
+    return macOSMajor >= 15;
+}

@@ -45,7 +45,7 @@ export function roleColorHexFromInt(c: number): string | null {
  */
 export function getTopColoredRole<R extends RoleLite>(
     roleIds: string[],
-    roles: R[],
+    roles: ReadonlyArray<R>,
 ): R | null {
     let best: R | null = null;
     for (const r of roles) {
@@ -60,7 +60,7 @@ export function getTopColoredRole<R extends RoleLite>(
 /** Convenience: hex of {@link getTopColoredRole}, or null. */
 export function getHighestRoleColor<R extends RoleLite>(
     roleIds: string[],
-    roles: R[],
+    roles: ReadonlyArray<R>,
 ): string | null {
     const top = getTopColoredRole(roleIds, roles);
     return top ? roleColorHexFromInt(top.color) : null;
@@ -74,7 +74,7 @@ export function getHighestRoleColor<R extends RoleLite>(
  */
 export function getTopRole<R extends RoleLite>(
     roleIds: string[],
-    roles: R[],
+    roles: ReadonlyArray<R>,
 ): R | null {
     let best: R | null = null;
     for (const r of roles) {
@@ -94,7 +94,7 @@ export function getTopRole<R extends RoleLite>(
  */
 export function getTopHoistedRole<R extends RoleLite>(
     roleIds: string[],
-    roles: R[],
+    roles: ReadonlyArray<R>,
 ): R | null {
     let best: R | null = null;
     for (const r of roles) {
@@ -109,7 +109,7 @@ export function getTopHoistedRole<R extends RoleLite>(
 /** Convenience numeric form of {@link getTopRole}. -Infinity if no role. */
 export function getHighestRolePosition<R extends RoleLite>(
     roleIds: string[],
-    roles: R[],
+    roles: ReadonlyArray<R>,
 ): number {
     const top = getTopRole(roleIds, roles);
     return top ? top.position : -Infinity;

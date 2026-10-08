@@ -2,8 +2,9 @@ import { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
 import { API_BASE } from '../constants';
 import { secureLocalStore } from '../utils/secureLocalStore';
-import type { CallNamingSettings } from '@cipherline/shared';
+import type { CallNamingSettings, CallMediaByUser } from '@cipherline/shared';
 import { isQuietRenameRefusal } from '../utils/callNaming';
+import { applyCallMediaSeed, callMediaEntriesFromCalls } from '../utils/callMediaPresence';
 
 /**
  * Local cache for the server list and each server's channels/categories.
@@ -90,6 +91,11 @@ export interface ChannelInfo {
      *  channel objects. Drives the mint-vs-wait decision in Dashboard's
      *  channel-key bootstrap (src/utils/channelKeyDistribution.ts). */
     latest_epoch?: number;
+    /** Whether EVERY member of the server can see this channel ('all') or
+     *  only some ('restricted' — the member sidebar then asks the server who,
+     *  via utils/channelViewerCache). Absent from an older API, which is
+     *  treated as 'all' (no filtering). */
+    view_scope?: 'all' | 'restricted';
 }
 
 export interface CategoryInfo {
@@ -115,6 +121,14 @@ export interface HuddleCallInfo {
     spawner_user_id: string;
     spawned_at: string;
     participants: string[];
+    /** Display only, never from the server: a stable React key for a call this
+     *  client drew before the server had it (see utils/joinView.ts). */
+    render_key?: string;
+    /** Camera / screen-share flags as of the snapshot this call came from
+     *  (seed or list). SNAPSHOT ONLY — the live value is the
+     *  utils/callMediaPresence store, which every renderer reads; this field
+     *  is never updated by WS events. Optional: older APIs omit it. */
+    media?: CallMediaByUser;
 }
 
 export interface ServerMemberInfo {
@@ -272,6 +286,8 @@ export function useServers(token: string | null, userId?: string | null) {
                 headers: { Authorization: `Bearer ${token}` },
             });
             setHuddleCalls(prev => ({ ...prev, [huddleId]: res.data ?? [] }));
+            // Partial seed: replaces media only for the calls this list covers.
+            applyCallMediaSeed(callMediaEntriesFromCalls(Array.isArray(res.data) ? res.data : []));
         } catch (err) {
             // Non-fatal; clear stale entries.
             setHuddleCalls(prev => ({ ...prev, [huddleId]: [] }));

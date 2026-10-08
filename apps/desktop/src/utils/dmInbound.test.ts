@@ -99,6 +99,38 @@ describe('commitPulledBatch — store, THEN ack', () => {
         expect(r.stored.map(s => s.envelopeId)).toEqual(['e1']);
         expect(String(r.ackError)).toMatch(/503/);
     });
+
+    // The received message is shown without first waiting a network round
+    // trip for the ACK — but the ACK itself is still never sent before the
+    // store has resolved.
+    it('awaitAck: false returns once STORED, with the ACK still in flight (and still after the store)', async () => {
+        const order: string[] = [];
+        let releaseAck!: () => void;
+        const ackGate = new Promise<void>(r => { releaseAck = r; });
+        const r = await commitPulledBatch({
+            toStore: [item('e1')], ackOnly: [],
+            persist: async () => { order.push('persist'); },
+            ack: async ids => { order.push(`ack:start:${ids.join(',')}`); await ackGate; order.push('ack:done'); return { ok: true }; },
+        }, { awaitAck: false });
+        expect(order).toEqual(['persist', 'ack:start:e1']);   // returned before the ACK finished
+        expect(r.stored.map(s => s.envelopeId)).toEqual(['e1']);
+        expect('ackError' in r).toBe(false);
+        releaseAck();
+        await expect(r.ackDone).resolves.toBeUndefined();
+        expect(order).toEqual(['persist', 'ack:start:e1', 'ack:done']);
+    });
+
+    it('awaitAck: false still never ACKs what failed to store, and reports a failed ACK via ackDone', async () => {
+        const acked: string[][] = [];
+        const r = await commitPulledBatch({
+            toStore: [item('e1')], ackOnly: ['legacy-1'],
+            persist: async () => { throw new Error('disk full'); },
+            ack: async ids => { acked.push(ids); return { ok: false, error: new Error('503') }; },
+        }, { awaitAck: false });
+        expect(String(await r.ackDone)).toMatch(/503/);
+        expect(acked).toEqual([['legacy-1']]);
+        expect(r.carry.map(c => c.envelopeId)).toEqual(['e1']);
+    });
 });
 
 describe('persistIncomingDms — merged into the ON-DISK thread and flushed durably', () => {
@@ -212,6 +244,24 @@ describe('applyIncomingDmMessages — one pure merge for disk and state', () => 
         const snapshot = JSON.stringify(base);
         applyIncomingDmMessages(base, batch);
         expect(JSON.stringify(base)).toBe(snapshot);
+    });
+
+    // utils/messageOrder.ts: a row carrying the server's timestamp goes where
+    // the server put it, not at the end of whatever happened to arrive first.
+    it('places a server-stamped row in server order, below the sender\'s own still-sending row', () => {
+        const ts = (s: number) => `2026-10-07T12:00:0${s}.000Z`;
+        const threads = { c1: [
+            msg('a', { server_ts: ts(1) }),
+            msg('c', { server_ts: ts(3) }),
+            msg('mine', { send_state: 'sending' }),
+        ] };
+        const out = applyIncomingDmMessages(threads, { c1: [msg('b', { server_ts: ts(2) })] });
+        expect(out.c1.map(m => m.id)).toEqual(['a', 'b', 'c', 'mine']);
+    });
+
+    it('a row with no server stamp (an older sender path) still appends, as before', () => {
+        const out = applyIncomingDmMessages({ c1: [msg('a', { server_ts: '2026-10-07T12:00:05.000Z' })] }, { c1: [msg('z')] });
+        expect(out.c1.map(m => m.id)).toEqual(['a', 'z']);
     });
 });
 
@@ -359,6 +409,20 @@ describe('Dashboard\'s DM pull loop is wired to these rules', () => {
         const commitAt = loop.indexOf('await commitPulledBatch(');
         const stateAt = loop.indexOf('setMessagesState(prev => applyIncomingDmMessages(prev, newMsgsByConv))');
         expect(stateAt).toBeGreaterThan(commitAt);
+    });
+
+    it('shows the batch once STORED, then finishes the ACK before the pull returns', () => {
+        expect(loop).toContain('}, { awaitAck: false });');
+        const stateAt = loop.indexOf('setMessagesState(prev => applyIncomingDmMessages(prev, newMsgsByConv))');
+        const ackAt = loop.indexOf('await commit.ackDone');
+        expect(ackAt).toBeGreaterThan(stateAt);
+        // ...and inside the same pull, so the latch keeps the next pull behind it
+        expect(ackAt).toBeLessThan(loop.indexOf("console.error('Polling error:'"));
+    });
+
+    it('orders by the server timestamp the pull returns', () => {
+        expect(loop).toContain('timestamp: clampFutureTimestamp(env.received_at_server ?? env.sent_at_client),');
+        expect(loop).toContain('server_ts: String(env.received_at_server)');
     });
 
     it('gives up on a decrypt visibly (placeholder), and never re-decrypts a carried envelope', () => {

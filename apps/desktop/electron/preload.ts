@@ -21,6 +21,19 @@ const HOST_PLATFORM: 'windows' | 'mac' | 'linux' =
     : process.platform === 'linux' ? 'linux'
     : 'windows';
 
+// macOS major version (15 = Sequoia) or null off macOS / if unreadable.
+// `process.getSystemVersion()` is available in a sandboxed preload (verified
+// on Electron 43.2.0 / macOS 27: "27.0.0"). Only picks UI copy — the screen
+// share picker's note about macOS's periodic "bypass the private window
+// picker" consent (macOS 15+).
+const MACOS_MAJOR: number | null = (() => {
+    if (process.platform !== 'darwin') return null;
+    try {
+        const major = parseInt(String(process.getSystemVersion()).split('.')[0], 10);
+        return Number.isFinite(major) && major > 0 ? major : null;
+    } catch { return null; }
+})();
+
 // ── File-path cache ─────────────────────────────────────────────────────────
 // Problem: when the renderer passes a File through contextBridge.exposeInMainWorld,
 // the structured-clone loses the native OS file handle that webUtils needs.
@@ -110,11 +123,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // synchronously in preload. Used to label devices in the pairing /
     // history-transfer flow and to gate platform-specific UI.
     platform: HOST_PLATFORM,
+    macOSMajor: MACOS_MAJOR,
     getDeviceName: (): Promise<string> => ipcRenderer.invoke('app:get-device-name'),
 
-    // Generate/load Signal identity and return the full bundle for server upload
-    ensureIdentityBundle: (deviceId: string) =>
-        ipcRenderer.invoke('crypto:ensure-identity-bundle', deviceId),
+    // Generate/load Signal identity and return the bundle for server upload.
+    // `opts.unclaimedPrekeyIds` (GET /v1/keys/status) gates which held one-time
+    // prekeys an EXISTING identity re-offers — see ensureSignalIdentity.
+    ensureIdentityBundle: (deviceId: string, opts?: { unclaimedPrekeyIds?: number[] }) =>
+        ipcRenderer.invoke('crypto:ensure-identity-bundle', deviceId, opts),
 
     // Generate a fresh rotation bundle (new SPK + 100 new OTPs) and return it.
     // Caller adds { device_id } and POSTs to /v1/keys/upload_bundle.
@@ -133,10 +149,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // older server) and the generator falls back to carrying what it holds and
     // deleting nothing. See generateRotationBundle for why conflating the two
     // lists would be a data-loss bug.
+    //
+    // `otpPoolLow` (boolean) = the status-aware mode: main mints only when the
+    // pool is low, rotates the signed prekey only when its OWN clock agrees,
+    // and answers null when nothing needs publishing.
     getRotationBundle: (opts?: {
         rotateSpk?: boolean;
         unclaimedPrekeyIds?: number[];
         retiredPrekeyIds?: number[];
+        otpPoolLow?: boolean;
     }): Promise<{
         identity_key_pub_b64: string;
         registration_id: number;
@@ -191,16 +212,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
     revealRecoveryKey: (): Promise<
         { ok: true; keyB64: string } | { ok: false; reason: 'locked' | 'declined' | 'busy' }
     > => ipcRenderer.invoke('secure:reveal-recovery-key'),
-    // SIGNUP CARVE-OUT (deliberate, owner decision 2026-09-20) — see the long
-    // comment in main.ts next to `secure:reveal-recovery-key-signup` and the
-    // UPDATE notice at the top of electron/recovery-key-gate.ts. No dialog:
-    // the only caller is the registration wizard, which shows the key
-    // automatically. `declined`/`busy` are structurally impossible here (there
-    // is nothing to decline or queue behind), but the result stays
-    // discriminated the same way so a caller can't treat it as a bare string.
-    revealRecoveryKeySignup: (): Promise<
-        { ok: true; keyB64: string } | { ok: false; reason: 'locked' | 'declined' | 'busy' }
-    > => ipcRenderer.invoke('secure:reveal-recovery-key-signup'),
     recoverWithKey: (keyB64: string): Promise<boolean> => ipcRenderer.invoke('secure:recover-with-key', keyB64),
     factoryResetSecureStore: (): Promise<boolean> => ipcRenderer.invoke('secure:factory-reset'),
     // Phase 7 / device sprawl: non-null when this session's Signal-identity
@@ -242,6 +253,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     notifShow: (payload: {
         id: string; title: string; body: string; conv_id: string;
         hasReply?: boolean; replyPlaceholder?: string;
+        /** Sender avatar as a small PNG data URL — validated in main (electron/notificationIcon.ts). */
+        iconDataUrl?: string;
     }): Promise<void> => ipcRenderer.invoke('notif:show', payload),
     notifSetBadge: (count: number): Promise<void> =>
         ipcRenderer.invoke('notif:set-badge', count),
@@ -323,9 +336,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
         return () => ipcRenderer.removeListener('show-screenshare-picker', callback);
     },
     // Desktop annotation overlay: strokes on your own screen share, drawn
-    // over the real display (electron/annotation-overlay.ts). Resolves false
-    // when there is nothing to overlay (window share, Linux).
-    annotationOverlayShow: (sourceId: string): Promise<boolean> =>
+    // over the real display (electron/annotation-overlay.ts). Resolves to the
+    // show result: `{ ok, how, captured }` or `{ ok: false, reason }`.
+    annotationOverlayShow: (sourceId: string): Promise<unknown> =>
         ipcRenderer.invoke('annot-overlay:show', sourceId),
     annotationOverlayHide: (): Promise<void> =>
         ipcRenderer.invoke('annot-overlay:hide'),
@@ -340,7 +353,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     openScreenRecordingSettings: (): Promise<boolean> =>
         ipcRenderer.invoke('screen-capture:open-privacy-settings'),
 
-    // Native per-process audio capture (Windows WASAPI ApplicationLoopback)
+    // Native per-app audio capture (Windows WASAPI ApplicationLoopback / macOS ScreenCaptureKit)
     getPidFromSourceId: (sourceId: string): Promise<number | null> =>
         ipcRenderer.invoke('audio:get-pid-from-source-id', sourceId),
     getOwnPid: (): Promise<number> =>
@@ -371,6 +384,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
     removeWindowAudioProcessExitedListener: () => {
         ipcRenderer.removeAllListeners('audio:capture-process-exited');
     },
+    // macOS ScreenCaptureKit: the capture could not start or was stopped
+    // (reason: 'permission' = Screen Recording not granted, 'no-target',
+    // 'stopped' = the system "Stop sharing" control, 'unsupported', 'error').
+    onWindowAudioFailed: (callback: (info: { reason: string }) => void) => {
+        ipcRenderer.removeAllListeners('audio:capture-failed');
+        ipcRenderer.on('audio:capture-failed', (_event, info) => callback({ reason: String(info?.reason ?? 'error') }));
+    },
+    removeWindowAudioFailedListener: () => {
+        ipcRenderer.removeAllListeners('audio:capture-failed');
+    },
 
     // Display refresh rates — the hard ceiling on screen-share frame rate.
     getDisplayRefreshRates: (): Promise<Array<{ id: string; displayFrequency: number; isPrimary: boolean }>> =>
@@ -384,13 +407,21 @@ contextBridge.exposeInMainWorld('electronAPI', {
         ipcRenderer.invoke('screenshare:get-diagnostics', sourceId),
     getScreenCaptureTiming: (): Promise<unknown> =>
         ipcRenderer.invoke('screenshare:get-capture-timing'),
+    // In-call performance helper: { renderer, gpu } CPU % of one core.
+    getProcessCpu: (): Promise<unknown> =>
+        ipcRenderer.invoke('perf:get-process-cpu'),
     // Settings → Advanced → screen capture method / capture timing log.
     // Stored by main in <userData>/startup-flags.json and applied as Chromium
     // switches on the NEXT launch (electron/startup-flags.ts). Replies are
     // `unknown` on purpose — src/utils/startupFlags.ts narrows them.
     getStartupFlags: (): Promise<unknown> => ipcRenderer.invoke('app:get-startup-flags'),
-    setStartupFlags: (patch: { screenCapturer?: 'auto' | 'dxgi' | 'wgc'; captureLog?: boolean }): Promise<unknown> =>
+    setStartupFlags: (patch: { screenCapturer?: 'auto' | 'dxgi' | 'wgc'; captureLog?: boolean; gamingVideo?: boolean }): Promise<unknown> =>
         ipcRenderer.invoke('app:set-startup-flags', patch),
+    // "Prioritize call video while gaming": tells main a call started/ended so
+    // it can raise / restore process priority (electron/gaming-video-mode.ts).
+    // Main rejects anything but a boolean.
+    setCallMediaActive: (active: boolean): Promise<void> =>
+        ipcRenderer.invoke('call:set-media-active', active),
     relaunchApp: (): Promise<void> => ipcRenderer.invoke('app:relaunch'),
 
     // System idle detection (for presence auto-away, and Screen Lock's inactivity timeout)
@@ -405,6 +436,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
     /** "Run a 60-second freeze capture": main lowers its stall threshold to
      *  100 ms and samples process CPU/memory every 2 s for `ms`. */
     perfStartCapture: (ms?: number): Promise<void> => ipcRenderer.invoke('perf:start-capture', ms),
+
+    // Crash / issue reporter (electron/diagnostics.ts). Replies are `unknown`
+    // on purpose — src/utils/diagnostics/ipc.ts narrows every field.
+    diagGetSystemInfo: (): Promise<unknown> => ipcRenderer.invoke('diag:get-system-info'),
+    diagGetPendingCrashes: (): Promise<unknown> => ipcRenderer.invoke('diag:get-pending-crashes'),
+    diagClearPendingCrashes: (signatures?: string[]): Promise<void> => ipcRenderer.invoke('diag:clear-pending-crashes', signatures),
+    diagMarkCrashesSeen: (signatures?: string[]): Promise<void> => ipcRenderer.invoke('diag:mark-crashes-seen', signatures),
+    diagRecordRendererCrash: (payload: { name?: string; message?: string; stack?: string }): Promise<void> =>
+        ipcRenderer.invoke('diag:record-renderer-crash', payload),
+    /** Main shows the save dialog; only the report TEXT crosses the bridge. */
+    diagSaveReport: (category: string, json: string): Promise<{ status: 'saved' | 'cancelled' }> =>
+        ipcRenderer.invoke('diag:save-report', category, json),
 
     // Screen Lock: fired when the OS locks its screen or the machine suspends
     // (Windows + macOS reliably; Linux best-effort via suspend only).

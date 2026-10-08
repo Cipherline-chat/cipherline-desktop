@@ -4,7 +4,7 @@
   "version": "1.0.17",
   "license": "Apache-2.0",
   "homepage": "https://cipherline.chat",
-  "main": "dist-electron/main.js",
+  "main": "dist-electron/entry.js",
   "scripts": {
     "dev": "concurrently -k \"vite\" \"npm run dev:electron\"",
     "dev:remote": "vite --host",
@@ -15,6 +15,7 @@
     "dev:vite": "vite --host --port 5174",
     "build": "vite build && tsc -p tsconfig.electron.json",
     "rebuild-native": "npx --package=@electron/rebuild -- electron-rebuild -f -w audio_capture -v 43.2.0",
+    "rebuild-native:mac": "bash scripts/rebuild-native-mac.sh",
     "package": "npm run rebuild-native && npm run build && npx electron-builder",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit -p tsconfig.app.json",

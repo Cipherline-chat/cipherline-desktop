@@ -1,7 +1,9 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Keys } from './mascot/Keys';
 import type { KeysSignal } from './mascot/Keys';
+import { HomeKeys, type PlayVerdict } from './mascot/HomeKeys';
+import { FirewallOverlay } from './FirewallOverlay';
+import { canUseWorker } from './loadingWorkerHost';
 import { HomeAmbient } from './HomeAmbient';
 import { useAmbientMotion } from '../hooks/useAmbientMotion';
 import { EncryptedAvatar } from './EncryptedAvatar';
@@ -20,11 +22,12 @@ import {
 } from '../utils/homeActiveCalls';
 import { computeBackupNudge } from '../utils/backupNudge';
 import { summarizeCallRoster, labelVoiceUsers } from '../utils/serverCallPresence';
+import { CallMediaSummary } from './CallMediaSummary';
+import { huddleCallMediaKey, voiceChannelMediaKey } from '../utils/callMediaPresence';
 import { getLastBackupMs } from '../services/driveBackup';
 import { readBackupBlocked } from '../hooks/useBackupAutoSchedule';
 import { ClInput } from './cl';
 import { useEscape } from '../hooks/useEscape';
-import { Volume2 } from 'lucide-react';
 import { shouldSpeak, pokeReaction, SLEEPY_AT } from '../utils/keysBrain';
 import { pokeLine, sleepyLine, type KeysContext } from '../utils/keysObservations';
 import { playSound } from '../utils/notificationSounds';
@@ -222,7 +225,10 @@ const PinCard: React.FC<{
                         disableClickProfile
                     />
                 </span>
-            ) : entry.kind === 'server' ? (
+            ) : (
+                // Server AND channel pins show the server's icon: a pinned
+                // channel's card already names the channel, and the icon is
+                // what tells you which server it lives in.
                 <ServerIcon
                     serverId={entry.server.server_id}
                     name={entry.server.name}
@@ -232,12 +238,6 @@ const PinCard: React.FC<{
                     token={token}
                     className="hd-chip"
                 />
-            ) : (
-                // Voice/huddle channels get a speaker, not a text-channel hash —
-                // ChannelInfo.kind distinguishes them.
-                <span className="hd-chip">
-                    {entry.channel.kind === 'text' ? '#' : <Volume2 size={14} />}
-                </span>
             )}
 
             <span className="hd-cardbody">
@@ -509,6 +509,24 @@ export const HomePanel: React.FC<HomePanelProps> = ({
     const keysSignal: KeysSignal = hasMentions ? 'alert' : hasUnreads ? 'pulse' : 'idle';
 
     useEffect(() => () => { if (quipTimerRef.current) clearTimeout(quipTimerRef.current); }, []);
+
+    // The easter egg: spam Keys and he opens the loading screen's game over
+    // this pane (HomeKeys + utils/keysBurst decide when; FirewallOverlay is
+    // the game). Never during a call: it would sit over the call's Home row
+    // and take Space; and a call starting mid-game closes it.
+    const [gameOpen, setGameOpen] = useState(false);
+    const inCall = !!localCallSession;
+    // A call starting closes it (state adjusted during render, so the
+    // overlay never paints a frame over a live call).
+    if (inCall && gameOpen) setGameOpen(false);
+    const canPlay = useCallback((): PlayVerdict => {
+        if (inCall) return 'call';
+        if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return 'motion';
+        if (!canUseWorker(document.createElement('canvas'))) return 'unavailable';
+        return 'ok';
+    }, [inCall]);
+    const openGame = useCallback(() => { if (!inCall) setGameOpen(true); }, [inCall]);
+    const closeGame = useCallback(() => setGameOpen(false), []);
 
     const { prefs: notifPrefs } = useNotificationPrefs();
     const notifPrefsRef = useRef(notifPrefs);
@@ -805,6 +823,7 @@ export const HomePanel: React.FC<HomePanelProps> = ({
     const alertCount = (backupNudge ? 1 : 0) + (activeCalls.length > 0 ? 1 : 0);
 
     return (
+        <div className="hd-frame">
         <div className="hd-host custom-scrollbar" data-ambient={ambientOn ? 'on' : 'off'}>
             <HomeAmbient enabled={ambientOn} />
             <div className="hd-inner">
@@ -814,6 +833,7 @@ export const HomePanel: React.FC<HomePanelProps> = ({
                     <div>
                         <motion.span
                             className="hd-eyebrow"
+                            data-ob-anchor="home-eyebrow"
                             initial={{ opacity: 0 }}
                             animate={{ opacity: 1 }}
                             transition={{ duration: 0.4 }}
@@ -821,6 +841,7 @@ export const HomePanel: React.FC<HomePanelProps> = ({
                             {new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })}
                         </motion.span>
                         <motion.h1
+                            data-ob-anchor="home-greeting"
                             initial={{ opacity: 0, y: 10 }}
                             animate={{ opacity: 1, y: 0 }}
                             transition={{ duration: 0.4, delay: 0.06, ease: 'easeOut' }}
@@ -828,6 +849,7 @@ export const HomePanel: React.FC<HomePanelProps> = ({
                             {greeting}{firstName ? `, ${firstName}` : ''}.
                         </motion.h1>
                         <motion.p
+                            data-ob-anchor="home-subline"
                             initial={{ opacity: 0 }}
                             animate={{ opacity: 1 }}
                             transition={{ duration: 0.4, delay: 0.14 }}
@@ -840,23 +862,29 @@ export const HomePanel: React.FC<HomePanelProps> = ({
                         </motion.p>
                     </div>
 
-                    {/* Keys — the articulated mascot (components/mascot/Keys.tsx).
-                        He owns his moods (pokes → happy → sleepy → asleep,
-                        hover wakes), the wave-on-mount hello, blink, and the
-                        speech bubble; this host owns WHICH line he says (the
-                        KEYS_QUIPS pool) and the app-state signal. */}
+                    {/* Keys — the articulated mascot (components/mascot/Keys.tsx),
+                        in his Home frame (mascot/HomeKeys.tsx: the swim, the
+                        glances, looking at the pointer, and the spam-click
+                        egg). He owns his moods (pokes → happy → sleepy →
+                        asleep, hover wakes), the wave-on-mount hello and
+                        blink; this host owns WHICH line he says (the
+                        KEYS_QUIPS pool), the app-state signal, and the game. */}
                     <motion.div
                         initial={{ opacity: 0, scale: 0.8 }}
                         animate={{ opacity: 1, scale: 1 }}
                         transition={{ duration: 0.5, delay: 0.18, ease: [0.34, 1.56, 0.64, 1] }}
                         className="hd-mascotbtn hd-mascotslot"
+                        data-ob-anchor="home-keys"
                     >
-                        <Keys
-                            fluid
+                        <HomeKeys
+                            key={userId}
+                            userId={userId}
                             lively={ambientOn}
                             signal={keysSignal}
                             speech={keysSpeech}
                             onPoke={handleKeysClick}
+                            canPlay={canPlay}
+                            onPlay={openGame}
                         />
                     </motion.div>
                 </div>
@@ -866,7 +894,7 @@ export const HomePanel: React.FC<HomePanelProps> = ({
 
                     {/* Backup — mounts only when there's something to act on. */}
                     {backupNudge && (
-                        <section className={`hd-tile hd-a--glow hd-t--attn hd-t--wide${backupNudge.critical ? ' is-critical' : ''}`}>
+                        <section className={`hd-tile hd-a--glow hd-t--attn hd-t--wide${backupNudge.critical ? ' is-critical' : ''}`} data-ob-anchor="home-tile">
                             <span className="hd-attnchip">{backupNudge.chip}</span>
                             <h2 className="hd-attntitle">{backupNudge.title}</h2>
                             <p className="hd-attnbody">{backupNudge.body}</p>
@@ -898,6 +926,7 @@ export const HomePanel: React.FC<HomePanelProps> = ({
                         <section
                             key={call.key}
                             className="hd-tile hd-a--lume hd-t--call hd-t--wide"
+                            data-ob-anchor="home-tile"
                             data-mine={mine ? 'true' : undefined}
                         >
                             <div className="hd-head">
@@ -927,6 +956,15 @@ export const HomePanel: React.FC<HomePanelProps> = ({
                                     <p className="hd-callwhere">
                                         {call.server.name} · {call.participantIds.length} in call
                                         {mine ? ' · you’re in this one' : ''}
+                                        {/* Who's sharing / on camera — server presence, so it
+                                            shows whether or not you're in this call. */}
+                                        <CallMediaSummary
+                                            mediaKey={call.row.kind === 'voice'
+                                                ? voiceChannelMediaKey(call.row.channelId)
+                                                : huddleCallMediaKey(call.row.callId)}
+                                            participantIds={call.participantIds}
+                                            names={voiceUserNames}
+                                        />
                                     </p>
                                 </div>
                                 {!mine ? (
@@ -954,7 +992,7 @@ export const HomePanel: React.FC<HomePanelProps> = ({
                     })}
 
                     {/* Pinned — servers, DMs, group chats and channels. */}
-                    <section className="hd-tile hd-a--lavender hd-t--full">
+                    <section className="hd-tile hd-a--lavender hd-t--full" data-ob-anchor="home-tile">
                         <div className="hd-head">
                             <span className="hd-ic">
                                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -1025,7 +1063,7 @@ export const HomePanel: React.FC<HomePanelProps> = ({
                     </section>
 
                     {/* While you were away. */}
-                    <section className="hd-tile hd-a--cyan hd-t--primary">
+                    <section className="hd-tile hd-a--cyan hd-t--primary" data-ob-anchor="home-tile">
                         <div className="hd-head">
                             <span className="hd-ic">
                                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -1094,7 +1132,7 @@ export const HomePanel: React.FC<HomePanelProps> = ({
                     </section>
 
                     {/* Friends — status, custom status, and what they're playing. */}
-                    <section className="hd-tile hd-a--ok hd-t--primary">
+                    <section className="hd-tile hd-a--ok hd-t--primary" data-ob-anchor="home-tile">
                         <div className="hd-head">
                             <span className="hd-ic">
                                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -1239,7 +1277,7 @@ export const HomePanel: React.FC<HomePanelProps> = ({
 
                     {/* Pick back up — conversations and servers alike. */}
                     {recentItems.length > 0 && (
-                        <section className="hd-tile hd-a--orange hd-t--full">
+                        <section className="hd-tile hd-a--orange hd-t--full" data-ob-anchor="home-tile">
                             <div className="hd-head">
                                 <span className="hd-ic">
                                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -1331,7 +1369,7 @@ export const HomePanel: React.FC<HomePanelProps> = ({
                 </div>
 
                 {/* ── The seabed — a glanceable closing strip ───────────── */}
-                <footer className="hd-floor">
+                <footer className="hd-floor" data-ob-anchor="home-floor">
                     <span className="hd-floor-sec">
                         <i className="hd-floor-dot" aria-hidden />
                         End-to-end encrypted — every message, every call
@@ -1346,6 +1384,8 @@ export const HomePanel: React.FC<HomePanelProps> = ({
                     <span className="hd-floor-ver">v{APP_VERSION}</span>
                 </footer>
             </div>
+        </div>
+        {gameOpen && <FirewallOverlay key={userId} userId={userId} onClose={closeGame} />}
         </div>
     );
 };

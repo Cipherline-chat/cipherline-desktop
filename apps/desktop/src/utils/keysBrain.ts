@@ -68,6 +68,11 @@ export function shouldArmRest(s: BrainState): boolean {
  *  pre-sleepy payoff. Sleepy pokes get a drowsy stir; poking someone asleep
  *  does nothing (he's asleep). */
 export type PokeReaction = 'wiggle' | 'hop' | 'flail' | 'spin' | 'squish' | 'stir' | 'none';
+
+/** A face the host holds for a while, over the mood's own brows: happy, or
+ *  'blank' (no brows drawn: the host draws his eyes itself, e.g. the Home
+ *  deck's spam shows, utils/keysSpam.ts). */
+export type KeysFace = 'happy' | 'blank';
 export function pokeReaction(pokes: number): PokeReaction {
     if (pokes >= ASLEEP_AT) return 'none';
     if (pokes >= SLEEPY_AT) return 'stir';

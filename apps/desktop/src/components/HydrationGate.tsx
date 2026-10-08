@@ -23,7 +23,10 @@ import { useHydration, HYDRATION_GATE_TIMEOUT_MS } from '../contexts/HydrationCo
  * the rise is dissolving into a live app, not into a blank frame.
  */
 export const HydrationGate: React.FC = () => {
-    const { ready, releaseGate } = useHydration();
+    const { ready, releaseGate, settled } = useHydration();
+    // The loading bar's real progress: how many core loads have settled.
+    const loads = Object.values(settled);
+    const progress = loads.length ? loads.filter(Boolean).length / loads.length : 0;
     const [gone, setGone] = React.useState(false);
     // Derived, not stored: readiness is one-way (HydrationContext keeps
     // `settled` sticky precisely so a later re-hydration can't drag the user
@@ -50,7 +53,7 @@ export const HydrationGate: React.FC = () => {
             className="fixed inset-0"
             style={{ zIndex: 150, pointerEvents: phase === 'surfacing' ? 'none' : 'auto' }}
         >
-            <AppLoadingScreen phase={phase} stage="sync" onSurfaced={() => setGone(true)} />
+            <AppLoadingScreen phase={phase} stage="sync" progress={progress} onSurfaced={() => setGone(true)} />
         </div>
     );
 };

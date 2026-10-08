@@ -16,6 +16,7 @@ import { AddFriendModal } from './AddFriendModal';
 import { useToast } from '../contexts/ToastContext';
 import { API_BASE } from '../constants';
 import { EncryptedAvatar } from './EncryptedAvatar';
+import { formatRailBadgeCount } from '../utils/unreadBadges';
 import { MascotEmpty } from './MascotEmpty';
 
 interface FriendsPaneProps {
@@ -230,9 +231,17 @@ const FriendsPane: React.FC<FriendsPaneProps> = ({
         f.username.toLowerCase().includes(search.toLowerCase())
     );
 
-    const tabs: { id: SubTab; label: string; icon: React.ReactNode; badge?: number }[] = [
+    // Requests that have come IN are what needs attention, so they get the red
+    // unread pill (the same look as the rail's badges). Requests you sent are
+    // only waiting on someone else: a plain count, shown when nothing is incoming.
+    const incomingCount = friends.pending_incoming.length;
+    const tabs: { id: SubTab; label: string; icon: React.ReactNode; badge?: number; unread?: number }[] = [
         { id: 'all', label: 'All Friends', icon: <UserCheck size={16} />, badge: friends.accepted.length },
-        { id: 'pending', label: 'Pending', icon: <Clock size={16} />, badge: pendingCount || undefined },
+        {
+            id: 'pending', label: 'Pending', icon: <Clock size={16} />,
+            unread: incomingCount || undefined,
+            badge: incomingCount ? undefined : (pendingCount || undefined),
+        },
         { id: 'blocked', label: 'Blocked', icon: <Ban size={16} />, badge: friends.blocked?.length ? friends.blocked.length : undefined },
     ];
 
@@ -295,6 +304,21 @@ const FriendsPane: React.FC<FriendsPaneProps> = ({
                                 <span className="inline-flex items-center gap-1.5">
                                     {tab.icon}
                                     <span className="leading-none">{tab.label}</span>
+                                    {tab.unread !== undefined && tab.unread > 0 && (
+                                        <span
+                                            role="img"
+                                            aria-label={`${tab.unread} new friend request${tab.unread === 1 ? '' : 's'}`}
+                                            style={{
+                                                minWidth: 17, height: 17, padding: '0 5px', borderRadius: 99,
+                                                background: 'var(--cl-flash)', color: 'var(--cl-on-flash)',
+                                                fontSize: 10, fontWeight: 800, lineHeight: 1,
+                                                fontFamily: 'var(--cl-font-body)', display: 'inline-flex',
+                                                alignItems: 'center', justifyContent: 'center', boxSizing: 'border-box',
+                                            }}
+                                        >
+                                            {formatRailBadgeCount(tab.unread)}
+                                        </span>
+                                    )}
                                     {tab.badge !== undefined && tab.badge > 0 && (
                                         <span
                                             className="text-[10px] font-bold leading-none opacity-80"
@@ -468,6 +492,7 @@ const FriendsPane: React.FC<FriendsPaneProps> = ({
                                                     token={token}
                                                     className="w-full h-full opacity-60"
                                                     fallbackSize={18}
+                                                    bypassFriendGate
                                                 />
                                             </div>
                                             <div className="absolute -bottom-0.5 -right-0.5 w-4.5 h-4.5 rounded-full bg-cl-surface flex items-center justify-center">
@@ -515,7 +540,9 @@ const FriendsPane: React.FC<FriendsPaneProps> = ({
                                     {friends.pending_incoming.map((f: any, i: number) => (
                                         <div key={f.friend_table_id} style={rowEntrance(i).style} className={`flex items-center gap-4 px-5 py-3.5 bg-cl-surface border border-cl-lume/20 rounded-xl ${rowEntrance(i).className}`}>
                                             <div className="w-10 h-10 rounded-full shrink-0 relative overflow-hidden">
-                                                <EncryptedAvatar attachmentId={f.avatar_url} userId={f.requester_id} token={token} className="w-full h-full" fallbackSize={18} />
+                                                {/* Not a friend yet: the friends-only gate would hide the picture the server
+                                                    now serves for an incoming request (see AttachmentsService.hasRequestOrBlockRelation). */}
+                                                <EncryptedAvatar attachmentId={f.avatar_url} userId={f.requester_id} token={token} className="w-full h-full" fallbackSize={18} bypassFriendGate />
                                             </div>
                                             <div className="flex-1 min-w-0">
                                                 <p className="font-semibold text-[14px] text-cl-text truncate">

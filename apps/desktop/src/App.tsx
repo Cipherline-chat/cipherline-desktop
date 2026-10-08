@@ -12,8 +12,11 @@ import { HydrationGate } from './components/HydrationGate';
 import { HydrationProvider, useHydration } from './contexts/HydrationContext';
 import { OfflineScreen } from './components/OfflineScreen';
 import { RendererHangBanner } from './components/RendererHangBanner';
+import { ReportProblemHost } from './components/diagnostics/ReportProblemHost';
 import { useNetworkStatus } from './hooks/useNetworkStatus';
+import { useOfflineGrace } from './hooks/useOfflineGrace';
 import { ClKitGallery } from './components/cl/ClKitGallery';
+import { OnboardingHarness } from './components/onboarding/dev/OnboardingHarness';
 import { useEscape } from './hooks/useEscape';
 import {
     clearPendingInvite, getPendingInvite, onPendingInviteChange, setPendingInvite,
@@ -22,6 +25,9 @@ import {
 function AppInner() {
   const { isAuthenticated, initializing } = useAuth();
   const isOnline = useNetworkStatus();
+  // Only the blocking full-screen overlay waits out a 10 s grace so a momentary
+  // drop never flashes it; everything else keeps the instant `isOnline` signal.
+  const overlayOnline = useOfflineGrace(isOnline);
   const [deepLinkInviteCode, setDeepLinkInviteCode] = useState<string | null>(null);
   // True when the prompt below is a REMEMBERED invite (arrived before/while the
   // account was being created) rather than a link opened by someone already
@@ -123,6 +129,13 @@ function AppInner() {
     setInviteIsArrival(false);
   };
 
+  // Dev-only onboarding harness (`?ob-harness=<step>`): the real setup flow
+  // with stubbed network calls — see components/onboarding/dev/. Guarded by
+  // import.meta.env.DEV so it is dead-code-eliminated from production builds.
+  if (import.meta.env.DEV && new URLSearchParams(window.location.search).has('ob-harness')) {
+    return <OnboardingHarness />;
+  }
+
   // Show a skeleton while the auth context reads localStorage.
   // This eliminates the one-frame flash of the login screen on startup.
   if (initializing) {
@@ -175,7 +188,7 @@ function AppInner() {
           Dismissed automatically when connectivity returns; the WebSocket
           reconnects via its own backoff loop and Dashboard re-fetches data. */}
       {isAuthenticated && (
-        <OfflineScreen isOnline={isOnline} />
+        <OfflineScreen isOnline={overlayOnline} />
       )}
 
       {/* Mounted at root so it covers every screen when the server forces
@@ -185,6 +198,11 @@ function AppInner() {
       {/* Main-process-detected renderer hang. Mounted unconditionally (even
           pre-auth) since a hang can happen at any time. */}
       <RendererHangBanner />
+
+      {/* Report a problem (Settings, in-call menu, freeze offer) and the
+          boot-time "closed unexpectedly" crash prompt. Signed-in only: a
+          report is tied to the account that sends it. */}
+      {isAuthenticated && <ReportProblemHost />}
     </div>
   );
 }

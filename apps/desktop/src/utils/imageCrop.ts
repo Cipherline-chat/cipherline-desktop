@@ -36,8 +36,20 @@ export const IDENTITY_CROP: CropTransform = { scale: 1, x: 0, y: 0 };
 /** Avatars, server icons and group icons — square, 512px. */
 export const AVATAR_OUTPUT = { width: 512, height: 512 } as const;
 
-/** Profile and server banners — 2.5:1, matching the display surfaces. */
-export const BANNER_OUTPUT = { width: 1500, height: 600 } as const;
+/**
+ * Profile and server banners — 2.5:1, matching the display surfaces.
+ *
+ * 1200 wide, down from 1500. The widest surface that shows a banner is the
+ * profile card at 360 CSS px (Settings' identity card and the DM panel are
+ * narrower), so 1200 still covers a 3x display; the phone app's full-width
+ * header (~390 pt @3x ≈ 1170 px) is the other ceiling. The 1500 export was
+ * ~1.6x the pixels for no visible gain and every one of them has to be
+ * downloaded and decrypted before a profile card can show it: measured on
+ * real 1920×1080 frames at this quality, median 131 KB → 91 KB (-31%).
+ * Banners already uploaded at 1500×600 keep working unchanged — only new
+ * uploads are encoded smaller.
+ */
+export const BANNER_OUTPUT = { width: 1200, height: 480 } as const;
 
 /**
  * One JPEG quality for every cropped upload. Replaces the 0.8/0.85 split that

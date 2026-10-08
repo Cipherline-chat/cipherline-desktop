@@ -2,6 +2,7 @@ import * as crypto from 'crypto';
 import { getChannelKey, getLatestEpoch } from './channel-keys';
 import { secureStore } from './storage';
 import { classifyChannelNonce, recordChannelNonce, flushChannelReplayLedger } from './channel-replay';
+import { SpkCandidateOrder } from './spk-candidates';
 
 // H4: in-memory replay cache — ephemeral keys are unique per message; a
 // duplicate eph means the server is replaying an already-processed envelope.
@@ -593,7 +594,11 @@ export interface SpkCandidate {
 export function decryptEnvelope(
     ciphertextB64: string,
     myDeviceId: string,
-    spkCandidates: SpkCandidate[],
+    // Any iterable, so a caller can produce candidates LAZILY (main.ts decrypts
+    // each signed-prekey private from the store only when it is tried).
+    spkCandidates: Iterable<SpkCandidate>,
+    /** Told which candidate opened the envelope (main.ts orders by it). */
+    onCandidateUsed?: (id: number) => void,
 ): DecryptResult {
     let envelope: any;
     try {
@@ -608,7 +613,7 @@ export function decryptEnvelope(
     // signature verification — v:1 had no signature and v:2's check was optional.
     if (envelope.v !== 3) throw new Error('LEGACY');
 
-    if (spkCandidates.length === 0) {
+    if (Array.isArray(spkCandidates) && spkCandidates.length === 0) {
         throw new Error('[E2EE:NO_SPK] No signed prekeys available in secure store');
     }
 
@@ -627,15 +632,93 @@ export function decryptEnvelope(
     // which SPK was used; retrying those wastes work without changing the
     // outcome, so fail fast on the first attempt instead.
     let lastErr: Error = new Error('[E2EE:WRAP_AUTH_FAILED] No signed prekey could unwrap this envelope');
-    for (const { privHex, pubB64 } of spkCandidates) {
+    let tried = 0;
+    for (const { id, privHex, pubB64 } of spkCandidates) {
+        tried++;
         try {
-            return _decryptV3(envelope, myDeviceId, privHex, pubB64);
+            const result = _decryptV3(envelope, myDeviceId, privHex, pubB64);
+            onCandidateUsed?.(id);
+            return result;
         } catch (err) {
             lastErr = err as Error;
             if (!lastErr.message.includes('[E2EE:WRAP_AUTH_FAILED]')) throw lastErr;
         }
     }
+    if (tried === 0) throw new Error('[E2EE:NO_SPK] No signed prekeys available in secure store');
     throw lastErr;
+}
+
+/** Longest one decrypt-message holds the main thread before yielding. */
+const SPK_WALK_SLICE_MS = 8;
+
+/**
+ * `crypto:decrypt-message`'s body: decrypt a DM envelope with this device's
+ * retained signed prekeys, without ever holding the Electron main thread for
+ * the length of the whole candidate walk.
+ *
+ *   - Candidate ids come from the store's prefix index (not a scan of the
+ *     whole vault), in `order` — active first, then the recently successful
+ *     ones (see spk-candidates.ts), then newest first.
+ *   - Each private is decrypted from the store only when its turn comes.
+ *   - The walk runs in slices of SPK_WALK_SLICE_MS, yielding the event loop
+ *     between them. The common case (the active key, or the one that opened
+ *     the previous envelope) finishes in the first slice, exactly as fast as
+ *     before. A walk across hundreds of retained keys no longer freezes the
+ *     window while it happens.
+ *
+ * Same acceptance semantics as one `decryptEnvelope` call over every
+ * candidate: the same keys are tried, a non-wrap failure (replay, signature,
+ * no recipient entry) still stops the walk at once, the replay set and
+ * one-time-prekey consumption are only touched by the attempt that succeeds,
+ * and if no key unwraps it the last wrap failure is thrown.
+ */
+export async function decryptWithRetainedSpks(
+    ciphertextB64: string,
+    myDeviceId: string,
+    order: SpkCandidateOrder,
+): Promise<DecryptResult> {
+    const activeIdStr = secureStore.get('signed_prekey_active_id');
+    const activeIdNum = activeIdStr ? parseInt(activeIdStr, 10) : NaN;
+    const activeId = Number.isFinite(activeIdNum) ? activeIdNum : null;
+
+    const ids = secureStore.keysWithPrefix('signed_prekey_priv_')
+        .map((k) => /^signed_prekey_priv_(\d+)$/.exec(k)?.[1])
+        .filter((v): v is string => v != null)
+        .map(Number);
+    const ordered = order.order(ids, activeId);
+    if (ordered.length === 0) {
+        throw new Error('[E2EE:NO_SPK] No signed prekeys found in secure store');
+    }
+
+    let next = 0;
+    let lastErr: Error | null = null;
+    while (next < ordered.length) {
+        const sliceStart = performance.now();
+        let triedThisSlice = 0;
+        const slice = function* (): Generator<SpkCandidate> {
+            while (next < ordered.length) {
+                if (triedThisSlice > 0 && performance.now() - sliceStart > SPK_WALK_SLICE_MS) return;
+                const id = ordered[next++];
+                const privHex = secureStore.get(`signed_prekey_priv_${id}`);
+                const pubB64 = secureStore.get(`signed_prekey_pub_${id}`);
+                if (!privHex || !pubB64) continue;
+                triedThisSlice++;
+                yield { id, privHex, pubB64 };
+            }
+        };
+        try {
+            return decryptEnvelope(ciphertextB64, myDeviceId, slice(), (id) => order.noteSuccess(id));
+        } catch (err) {
+            const e = err as Error;
+            // Only a wrap failure is something a different signed prekey could
+            // fix; NO_SPK here just means this slice had no usable candidate.
+            const wrap = e.message.includes('[E2EE:WRAP_AUTH_FAILED]');
+            if (!wrap && !e.message.includes('[E2EE:NO_SPK]')) throw e;
+            if (wrap) lastErr = e;
+        }
+        if (next < ordered.length) await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    throw lastErr ?? new Error('[E2EE:NO_SPK] No signed prekeys found in secure store');
 }
 
 function _decryptV3(

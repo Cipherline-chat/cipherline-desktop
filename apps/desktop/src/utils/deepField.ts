@@ -1,7 +1,7 @@
 /**
  * "Deep field" backdrop math — the slow-rising bioluminescent dots shared by the
  * sign-up screen (AuthScreen's AuthBackground) and the onboarding wizard
- * (RegistrationWizard's CinematicBackground). Centralising the generator keeps the
+ * (the onboarding shell's DeepField). Centralising the generator keeps the
  * two backdrops visually identical so the dots read as *persisting* across the
  * verify-email → wizard handoff. The actual look lives in CSS (.auth-bubble /
  * .auth-aurora in index.css); this only places them.

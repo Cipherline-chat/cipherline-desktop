@@ -4,13 +4,28 @@ import { API_BASE } from '../constants';
 import { importKeyFromBase64, decryptBlob } from '../utils/crypto';
 import { loadAvatarKey, saveAvatarKey, deleteAvatarKey } from '../utils/avatarKeyStore';
 import { useHydrationGeneration } from '../contexts/HydrationContext';
-import { getAvatarBlob, putAvatarBlob, deleteAvatarBlob } from '../utils/attachmentCache';
+import { getAvatarBlob, putAvatarBlob, deleteAvatarBlob, type AvatarBlobKind } from '../utils/attachmentCache';
 import { PrioritySemaphore, TokenBucket } from '../utils/avatarWarmQueue';
 
 // ── Session-level memory cache ─────────────────────────────────────────────
 // Survives component mount/unmount cycles for the lifetime of the app session.
 // Prevents redundant network+decrypt on every re-render or message arrival.
 const avatarMemoryCache = new Map<string, string>();
+/** Byte size of each cached avatar Blob — the bytes live in the BROWSER
+ *  process until the URL is revoked. Diagnostics only (memoryReport.ts). */
+const avatarBytes = new Map<string, number>();
+const cacheAvatarUrl = (id: string, blob: Blob): string => {
+    const url = URL.createObjectURL(blob);
+    avatarMemoryCache.set(id, url);
+    avatarBytes.set(id, blob.size);
+    return url;
+};
+/** Session avatar cache footprint, for the Performance log. */
+export function avatarCacheStats(): { entries: number; bytes: number } {
+    let bytes = 0;
+    for (const b of avatarBytes.values()) bytes += b;
+    return { entries: avatarMemoryCache.size, bytes };
+}
 
 // ── In-flight request deduplication ───────────────────────────────────────
 // When multiple components request the same attachment simultaneously (e.g. the
@@ -99,6 +114,7 @@ export function __preloadInFlightCount(): number { return preloadSemaphore.activ
  */
 export function __resetAvatarCaches(): void {
     avatarMemoryCache.clear();
+    avatarBytes.clear();
     inFlightRequests.clear();
     backgroundInFlight.clear();
     warmNetworkClaims = 0;
@@ -129,15 +145,16 @@ export async function loadAvatarToCache(
          *  once both caches have missed. Background warming passes the rate
          *  gate here so a cached avatar is never paced. */
         beforeNetwork?: () => Promise<void>;
+        /** Prune class for the persisted blob (see attachmentCache). Banners
+         *  pass 'banner' so they get their own budget. */
+        kind?: AvatarBlobKind;
     },
 ): Promise<string | null> {
     // Tier 2: IndexedDB persistent cache — fast path across sessions.
     try {
         const cachedBlob = await getAvatarBlob(attachmentId);
         if (cachedBlob) {
-            const objectUrl = URL.createObjectURL(cachedBlob);
-            avatarMemoryCache.set(attachmentId, objectUrl);
-            return objectUrl;
+            return cacheAvatarUrl(attachmentId, cachedBlob);
         }
     } catch {
         // IDB unavailable or corrupt entry — fall through to network.
@@ -150,6 +167,21 @@ export async function loadAvatarToCache(
     // to be fetched), so this is where a background warm asks permission. A hit
     // above never reaches it.
     if (opts?.beforeNetwork) await opts.beforeNetwork();
+
+    // The presigned download URL and the decryption key are INDEPENDENT
+    // lookups, and used to run back to back: key round trip, then URL round
+    // trip, then the media GET — three serial round trips for every cold
+    // avatar or banner that is not in the local key store (a friend's banner
+    // never is; its key only arrives by a live profile_update). The URL
+    // request now leaves at once and the key resolves alongside it, so a cold
+    // load is two round trips. Same requests, same gates — the server still
+    // authorises each one separately.
+    const urlPromise = axios.get(
+        `${API_BASE}/attachments/${attachmentId}/download`,
+        { headers: { Authorization: `Bearer ${token}` } },
+    );
+    // A key failure returns early below; never leave this rejection unhandled.
+    urlPromise.catch(() => {});
 
     // 1. Resolve the decryption key.
     let keyData: { keyB64: string; nonceB64: string } | null = null;
@@ -179,23 +211,18 @@ export async function loadAvatarToCache(
         }
     }
 
-    // 2. Fetch presigned download URL + download + decrypt.
+    // 2. Presigned download URL (already in flight) + download + decrypt.
     try {
-        const urlRes = await axios.get(
-            `${API_BASE}/attachments/${attachmentId}/download`,
-            { headers: { Authorization: `Bearer ${token}` } },
-        );
+        const urlRes = await urlPromise;
         const blobRes = await axios.get(urlRes.data.download_url, { responseType: 'blob' });
         const cryptoKey = await importKeyFromBase64(keyData.keyB64);
         const decryptedBlob = await decryptBlob(
             blobRes.data, cryptoKey, keyData.nonceB64, urlRes.data.mime_type,
         );
-        putAvatarBlob(attachmentId, decryptedBlob).catch(e =>
+        putAvatarBlob(attachmentId, decryptedBlob, opts?.kind ? { kind: opts.kind } : undefined).catch(e =>
             console.warn('[useEncryptedAvatar] IndexedDB persist failed', e),
         );
-        const objectUrl = URL.createObjectURL(decryptedBlob);
-        avatarMemoryCache.set(attachmentId, objectUrl);
-        return objectUrl;
+        return cacheAvatarUrl(attachmentId, decryptedBlob);
     } catch {
         // A stale or corrupt LOCALLY cached key fails decrypt every time, and
         // every retry used to reuse it - a permanent blank. Purge it and go
@@ -216,7 +243,7 @@ export async function loadAvatarToCache(
  */
 export function evictAvatar(attachmentId: string): void {
     const url = avatarMemoryCache.get(attachmentId);
-    if (url) { avatarMemoryCache.delete(attachmentId); try { URL.revokeObjectURL(url); } catch { /* already gone */ } }
+    if (url) { avatarMemoryCache.delete(attachmentId); avatarBytes.delete(attachmentId); try { URL.revokeObjectURL(url); } catch { /* already gone */ } }
     deleteAvatarBlob(attachmentId).catch(() => {});
 }
 
@@ -224,6 +251,13 @@ export interface PreloadOptions {
     /** Background warming: yields its slot to foreground work and, when the
      *  load actually has to go to the network, waits for the rate budget. */
     background?: boolean;
+    /** Prune class for the persisted blob — 'banner' for profile banners. */
+    kind?: AvatarBlobKind;
+}
+
+/** Synchronous memory-cache lookup: the decrypted blob URL, or null. */
+export function peekAvatarUrl(attachmentId: string | null | undefined): string | null {
+    return attachmentId ? (avatarMemoryCache.get(attachmentId) ?? null) : null;
 }
 
 /**
@@ -272,6 +306,7 @@ export async function preloadAvatar(
                 if (avatarMemoryCache.has(attachmentId)) return null;
                 return loadAvatarToCache(attachmentId, token, undefined, {
                     beforeNetwork: claimWarmNetworkBudget,
+                    kind: opts?.kind,
                 });
             })
             .catch(() => null)
@@ -282,7 +317,7 @@ export async function preloadAvatar(
     }
 
     const promise = preloadSemaphore
-        .run(false, () => loadAvatarToCache(attachmentId, token))
+        .run(false, () => loadAvatarToCache(attachmentId, token, undefined, opts?.kind ? { kind: opts.kind } : undefined))
         .catch(() => null)
         .finally(() => { inFlightRequests.delete(attachmentId); });
     inFlightRequests.set(attachmentId, promise);
@@ -333,7 +368,7 @@ export async function warmAvatarsFromDiskCache(attachmentIds: string[]): Promise
                 const blob = await getAvatarBlob(id);
                 if (!blob) continue;
                 if (avatarMemoryCache.has(id)) continue;
-                avatarMemoryCache.set(id, URL.createObjectURL(blob));
+                cacheAvatarUrl(id, blob);
                 restored++;
             } catch {
                 // Unreadable record (keystore locked, corrupt entry) — a miss,
@@ -388,10 +423,11 @@ export async function preloadAvatars(
 export async function preloadAvatarsBackground(
     attachmentIds: string[],
     token: string,
+    opts?: { kind?: AvatarBlobKind },
 ): Promise<void> {
     const unique = [...new Set(attachmentIds.filter(Boolean))];
     if (!unique.length) return;
-    await Promise.allSettled(unique.map(id => preloadAvatar(id, token, { background: true })));
+    await Promise.allSettled(unique.map(id => preloadAvatar(id, token, { background: true, kind: opts?.kind })));
 }
 
 /**
@@ -420,7 +456,9 @@ export function useEncryptedAvatar(
     attachmentId: string | null | undefined,
     token: string | null,
     inlineKey?: { keyB64: string; nonceB64: string } | null,
+    opts?: { kind?: AvatarBlobKind },
 ) {
+    const kind = opts?.kind;
     // Retry signal. A failed avatar load used to be permanent: the effect below
     // is keyed on [attachmentId, token], so one bad request during the
     // cold-start window (API not up yet, token mid-refresh, no network after a
@@ -474,7 +512,7 @@ export function useEncryptedAvatar(
             // attachment ID (e.g. same avatar in a long message list all mounting at once).
             let promise = inFlightRequests.get(attachmentId);
             if (!promise) {
-                promise = loadAvatarToCache(attachmentId, token, inlineKey)
+                promise = loadAvatarToCache(attachmentId, token, inlineKey, kind ? { kind } : undefined)
                     .catch(err => {
                         console.error(`[useEncryptedAvatar] failed to load ${attachmentId}`, err);
                         return null;
@@ -506,5 +544,13 @@ export function useEncryptedAvatar(
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [attachmentId, token, inlineKey?.keyB64, inlineKey?.nonceB64, hydrationGeneration]);
 
-    return avatarUrl;
+    // A memory hit is answered in the SAME render that asks for it. The
+    // initialiser above covers the first mount; this covers an id that
+    // ARRIVES later (a profile card whose banner id comes from the profile
+    // fetch) or changes on a reused row. Through the effect alone that render
+    // committed the placeholder first and swapped the picture in one commit
+    // later — a one-frame flash of the default banner/silhouette for an image
+    // that was already decrypted in memory.
+    const memHit = attachmentId && token ? avatarMemoryCache.get(attachmentId) : undefined;
+    return memHit ?? avatarUrl;
 }

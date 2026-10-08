@@ -29,7 +29,7 @@ vi.mock('electron', () => ({
     dialog: { showMessageBoxSync: vi.fn(), showMessageBox: vi.fn(async () => ({ response: 0 })) },
 }));
 
-const { SecureStore } = await import('../../electron/storage');
+const { SecureStore, OFF_THREAD_PARSE_MIN_BYTES } = await import('../../electron/storage');
 
 beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cl-securestore-test-'));
@@ -295,9 +295,10 @@ describe('SecureStore never regenerates the master key over an unreadable one', 
  * per burst without weakening when data is durable.
  */
 describe('SecureStore write coalescing', () => {
-    const diskKeys = () => Object.keys(JSON.parse(fs.readFileSync(path.join(tmpDir, 'secure-store.json'), 'utf8')));
+    const dbFile = () => path.join(tmpDir, 'secure-store.json');
+    const diskKeys = () => Object.keys(JSON.parse(fs.readFileSync(dbFile(), 'utf8')));
 
-    it('batch(): 200 sets are ONE vault write, and all of them are on disk when batch() returns', async () => {
+    it('batch(): 200 sets are ONE vault write, none of it synchronous, all of it on disk at whenDurable()', async () => {
         const store = new SecureStore();
         await store.initialize();
         const before = store.writeCount;
@@ -307,10 +308,16 @@ describe('SecureStore write coalescing', () => {
                 store.set(`otp_pub_${i}`, 'bb');
             }
         });
+        // The batch itself never touches the disk on the caller's stack —
+        // that synchronous whole-vault write is what used to freeze the window.
+        expect(store.writeCount - before).toBe(0);
+        expect(store.hasPendingWrites()).toBe(true);
+        await store.whenDurable();
         expect(store.writeCount - before).toBe(1);
         const keys = diskKeys();
         expect(keys.filter(k => k.startsWith('otp_priv_')).length).toBe(100);
         expect(keys.filter(k => k.startsWith('otp_pub_')).length).toBe(100);
+        expect(store.hasPendingWrites()).toBe(false);
     });
 
     it('batch(): nested batches join the outer one; a throw still persists what changed, then propagates', async () => {
@@ -323,6 +330,7 @@ describe('SecureStore write coalescing', () => {
             expect(store.writeCount - before).toBe(0); // inner batch did not write
             throw new Error('boom');
         })).toThrow('boom');
+        await store.whenDurable();
         expect(store.writeCount - before).toBe(1);
         expect(diskKeys()).toEqual(expect.arrayContaining(['a', 'b']));
     });
@@ -331,6 +339,7 @@ describe('SecureStore write coalescing', () => {
         const store = new SecureStore();
         await store.initialize();
         store.batch(() => { for (let i = 0; i < 50; i++) store.set(`otp_priv_${i}`, 'cc'); });
+        await store.whenDurable();
         const before = store.writeCount;
         for (let i = 0; i < 50; i++) store.deleteDeferred(`otp_priv_${i}`);
         // In memory: unusable immediately.
@@ -364,40 +373,46 @@ describe('SecureStore write coalescing', () => {
         await store.whenWritesSettled();
     });
 
-    it('flush() writes pending deferred changes synchronously', async () => {
+    it('flush() writes pending changes synchronously', async () => {
         const store = new SecureStore();
         await store.initialize();
         store.setDeferred('k', 'v1');
+        store.set('k2', 'v2');
         store.flush();
         expect(store.hasPendingWrites()).toBe(false);
-        expect(diskKeys()).toContain('k');
+        expect(diskKeys()).toEqual(expect.arrayContaining(['k', 'k2']));
     });
 
-    it('an async write that finishes after a newer synchronous save never rolls the file back', async () => {
+    it('an async write that finishes after a newer synchronous flush never rolls the file back', async () => {
         const store = new SecureStore();
         await store.initialize();
-        store.setDeferred('k', 'old');
-        // Start the async write-behind now, then immediately write synchronously.
-        const settling = store.whenWritesSettled();
+        store.set('k', 'old');
+        const durable = store.whenDurable();
+        // Let the scheduled write start: its snapshot (k=old, no k2) is now in flight.
+        await new Promise(r => setTimeout(r, 0));
+        store.set('k', 'new');
         store.set('k2', 'new');
-        await settling;
+        store.flush();                                  // newer, synchronous
+        await durable;
         await store.whenWritesSettled();
         const reread = new SecureStore();
         await reread.initialize();
-        expect(reread.get('k')).toBe('old');   // carried by the newer sync save
-        expect(reread.get('k2')).toBe('new');  // and not rolled back by the older async one
+        expect(reread.get('k')).toBe('new');           // not rolled back by the older snapshot
+        expect(reread.get('k2')).toBe('new');
+        expect(fs.existsSync(dbFile() + '.wb.tmp')).toBe(false);
     });
 
-    it('factoryReset() during an in-flight deferred write never resurrects the old vault', async () => {
+    it('factoryReset() during an in-flight write never resurrects the old vault', async () => {
         const store = new SecureStore();
         await store.initialize();
         store.set('identity_priv', 'old-identity');
         store.setDeferred('__eph_replay__', '["x"]');
         const settling = store.whenWritesSettled();   // old snapshot now being written
+        await new Promise(r => setTimeout(r, 0));
         store.factoryReset();
         await settling;
         await store.whenWritesSettled();
-        const onDisk = fs.existsSync(path.join(tmpDir, 'secure-store.json')) ? diskKeys() : [];
+        const onDisk = fs.existsSync(dbFile()) ? diskKeys() : [];
         expect(onDisk).not.toContain('identity_priv');
         expect(onDisk).not.toContain('__eph_replay__');
     });
@@ -411,4 +426,236 @@ describe('SecureStore write coalescing', () => {
         await reread.initialize();
         expect(reread.get('__ledger__')).toBe(JSON.stringify([['c:n', 't']]));
     });
+
+    // ── dirty tracking: no change, no write ──────────────────────────────
+    it('a set() of the value already stored, a delete() of an absent key and a read-only batch write NOTHING', async () => {
+        const store = new SecureStore();
+        await store.initialize();
+        store.set('startMinimized', 'true');
+        store.set('signed_prekey_active_id', '7');
+        await store.whenDurable();
+        const before = store.writeCount;
+        const mtime = fs.statSync(dbFile()).mtimeMs;
+
+        store.set('startMinimized', 'true');
+        store.delete('never-existed');
+        store.deleteDeferred('never-existed-either');
+        store.setMany({ signed_prekey_active_id: '7' });
+        store.batch(() => { store.get('signed_prekey_active_id'); store.keys(); });
+
+        expect(store.hasPendingWrites()).toBe(false);
+        await store.whenDurable();               // resolves at once: nothing owed
+        await new Promise(r => setTimeout(r, SecureStore.DEFER_MAX_MS + 50));
+        expect(store.writeCount - before).toBe(0);
+        expect(fs.statSync(dbFile()).mtimeMs).toBe(mtime);
+
+        // POSITIVE CONTROL: a real change does write.
+        store.set('startMinimized', 'false');
+        expect(store.hasPendingWrites()).toBe(true);
+        await store.whenDurable();
+        expect(store.writeCount - before).toBe(1);
+    });
+
+    it('whenDurable() resolves only once the change is in the file on disk', async () => {
+        const store = new SecureStore();
+        await store.initialize();
+        store.set('otp_priv_1', 'aa'.repeat(32));
+        // set() returned, but nothing was written on this stack.
+        expect(diskKeys()).not.toContain('otp_priv_1');
+        await store.whenDurable();
+        expect(diskKeys()).toContain('otp_priv_1');
+        // And it really is the encrypted envelope a fresh process can read.
+        const reread = new SecureStore();
+        await reread.initialize();
+        expect(reread.get('otp_priv_1')).toBe('aa'.repeat(32));
+    });
+
+    // ── crash safety of the asynchronous writer ──────────────────────────
+    it('a write that fails MID-WRITE rejects whenDurable(), leaves the previous vault intact and no temp file, then retries', async () => {
+        const store = new SecureStore();
+        await store.initialize();
+        store.set('identity_priv', 'the-real-identity');
+        await store.whenDurable();
+        const goodBytes = fs.readFileSync(dbFile(), 'utf8');
+
+        // Fault injection: the temp file gets PART of the vault, then the disk
+        // "fails" (EIO) — the shape of a crash or a full disk mid-write.
+        const realOpen = fs.promises.open;
+        const openSpy = vi.spyOn(fs.promises, 'open').mockImplementation(async (...args: Parameters<typeof realOpen>) => {
+            const fh = await realOpen(...args);
+            return new Proxy(fh, {
+                get(target, prop, receiver) {
+                    if (prop === 'writeFile') {
+                        return async (data: string) => {
+                            await target.writeFile(data.slice(0, Math.max(1, data.length >> 1)), 'utf8');
+                            throw Object.assign(new Error('EIO: simulated failure mid-write'), { code: 'EIO' });
+                        };
+                    }
+                    const v = Reflect.get(target, prop, receiver);
+                    return typeof v === 'function' ? v.bind(target) : v;
+                },
+            });
+        });
+        const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+        try {
+            store.set('otp_priv_9', 'bb'.repeat(32));
+            await expect(store.whenDurable()).rejects.toThrow(/EIO/);
+            // The vault on disk is byte-for-byte the last good one, still parses,
+            // and still holds the identity; the half-written temp file is gone.
+            expect(fs.readFileSync(dbFile(), 'utf8')).toBe(goodBytes);
+            expect(JSON.parse(goodBytes)).toHaveProperty('identity_priv');
+            expect(fs.existsSync(dbFile() + '.wb.tmp')).toBe(false);
+            // The change is still owed, not silently dropped.
+            expect(store.hasPendingWrites()).toBe(true);
+            expect(store.get('otp_priv_9')).toBe('bb'.repeat(32));
+        } finally {
+            openSpy.mockRestore();
+            err.mockRestore();
+        }
+        // Fault cleared: the next durability request writes it.
+        await store.whenDurable();
+        expect(diskKeys()).toEqual(expect.arrayContaining(['identity_priv', 'otp_priv_9']));
+        const reread = new SecureStore();
+        await reread.initialize();
+        expect(reread.get('identity_priv')).toBe('the-real-identity');
+        expect(reread.get('otp_priv_9')).toBe('bb'.repeat(32));
+    });
+
+    it('a failed COMMIT (rename) also leaves the previous vault intact and rejects', async () => {
+        const store = new SecureStore();
+        await store.initialize();
+        store.set('a', '1');
+        await store.whenDurable();
+        const goodBytes = fs.readFileSync(dbFile(), 'utf8');
+        // `fs` is an ESM namespace here; patch the CommonJS object behind it
+        // and re-sync the builtin's named exports so storage.ts sees the fault.
+        const cjsFs = (await import('module')).createRequire(import.meta.url)('fs') as typeof fs;
+        const { syncBuiltinESMExports } = await import('module');
+        const realRename = cjsFs.renameSync;
+        cjsFs.renameSync = ((from: fs.PathLike, to: fs.PathLike) => {
+            if (String(from).endsWith('.wb.tmp')) throw Object.assign(new Error('EPERM: simulated'), { code: 'EPERM' });
+            return realRename(from, to);
+        }) as typeof cjsFs.renameSync;
+        syncBuiltinESMExports();
+        const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+        try {
+            store.set('b', '2');
+            await expect(store.whenDurable()).rejects.toThrow(/EPERM/);
+            expect(fs.readFileSync(dbFile(), 'utf8')).toBe(goodBytes);
+        } finally {
+            cjsFs.renameSync = realRename;
+            syncBuiltinESMExports();
+            err.mockRestore();
+        }
+        await store.whenDurable();
+        expect(diskKeys()).toEqual(expect.arrayContaining(['a', 'b']));
+    });
+
+    it('changes made while a write is in flight are carried by the next write, in order', async () => {
+        const store = new SecureStore();
+        await store.initialize();
+        for (let round = 0; round < 5; round++) {
+            store.set('counter', String(round));
+            store.set(`k${round}`, 'x');
+            if (round % 2 === 0) store.delete(`k${round - 1}`);
+            await new Promise(r => setTimeout(r, 0));
+        }
+        await store.whenDurable();
+        const reread = new SecureStore();
+        await reread.initialize();
+        expect(reread.get('counter')).toBe('4');
+        expect(reread.keys().sort()).toEqual(store.keys().sort());
+    });
+
+    it('keysWithPrefix() matches a full scan and stays current across set/delete/factoryReset', async () => {
+        const store = new SecureStore();
+        await store.initialize();
+        store.batch(() => { for (let i = 1; i <= 30; i++) store.set(`otp_priv_${i}`, 'aa'); store.set('otp_pub_1', 'p'); });
+        const scan = () => store.keys().filter(k => k.startsWith('otp_priv_')).sort();
+        expect(store.keysWithPrefix('otp_priv_').sort()).toEqual(scan());
+        store.delete('otp_priv_3');
+        store.deleteDeferred('otp_priv_4');
+        store.set('otp_priv_31', 'bb');
+        store.set('otp_priv_1', 'changed');           // replace: still one key
+        expect(store.keysWithPrefix('otp_priv_').sort()).toEqual(scan());
+        expect(store.keysWithPrefix('otp_priv_')).toHaveLength(29);
+        store.factoryReset();
+        expect(store.keysWithPrefix('otp_priv_')).toEqual([]);
+    });
+});
+
+/**
+ * Large envelopes are parsed in a worker thread (storage.ts parseEnvelope):
+ * one JSON.parse of a 13-22 MB vault was the biggest block left at start-up.
+ * The outcomes must be exactly those of the main-thread parse.
+ */
+describe('SecureStore loads a LARGE envelope off the main thread, with identical outcomes', () => {
+    const dbFile = () => path.join(tmpDir, 'secure-store.json');
+
+    async function writeLargeVault(): Promise<Map<string, string>> {
+        const store = new SecureStore();
+        await store.initialize();
+        const values = new Map<string, string>();
+        store.batch(() => {
+            for (let i = 0; i < 12_000; i++) {
+                const v = `value-${i}-${'x'.repeat(40)}`;
+                store.set(`otp_priv_${i}`, v);
+                values.set(`otp_priv_${i}`, v);
+            }
+            store.set('identity_priv', 'the-identity');
+            values.set('identity_priv', 'the-identity');
+        });
+        await store.whenDurable();
+        return values;
+    }
+
+    it('round-trips every entry of a > 1 MB vault, and the event loop keeps turning while it loads', async () => {
+        const values = await writeLargeVault();
+        expect(fs.statSync(dbFile()).size).toBeGreaterThan(OFF_THREAD_PARSE_MIN_BYTES);
+        const reread = new SecureStore();
+        let turns = 0;
+        let stop = false;
+        const tick = () => { if (stop) return; turns++; setImmediate(tick); };
+        setImmediate(tick);
+        await reread.initialize();
+        stop = true;
+        expect(reread.status()).toBe('ok');
+        expect(reread.corruptionInfo()).toBeNull();
+        expect(reread.keys().length).toBe(values.size + 1);           // + the canary
+        for (const [k, v] of values) expect(reread.get(k)).toBe(v);
+        expect(reread.keysWithPrefix('otp_priv_')).toHaveLength(12_000);
+        expect(reread.loadStats().offThread).toBe(true);
+        expect(turns).toBeGreaterThan(5);
+    }, 60_000);
+
+    it('a large envelope that is not valid JSON is still treated as CORRUPT (moved aside, flagged)', async () => {
+        await writeLargeVault();
+        const good = fs.readFileSync(dbFile(), 'utf8');
+        const truncated = good.slice(0, good.length - 10);
+        fs.writeFileSync(dbFile(), truncated, 'utf8');
+        const reread = new SecureStore();
+        await reread.initialize();
+        expect(reread.corruptionInfo()).not.toBeNull();
+        expect(fs.readFileSync(path.join(tmpDir, reread.corruptionInfo()!.backupFileName), 'utf8')).toBe(truncated);
+    }, 60_000);
+
+    it('a large envelope that is valid JSON but not an object is corrupt too', async () => {
+        fs.writeFileSync(dbFile(), JSON.stringify(Array.from({ length: 100_000 }, (_, i) => `entry-${i}`)), 'utf8');
+        expect(fs.statSync(dbFile()).size).toBeGreaterThan(OFF_THREAD_PARSE_MIN_BYTES);
+        const reread = new SecureStore();
+        await reread.initialize();
+        expect(reread.corruptionInfo()).not.toBeNull();
+    });
+
+    it('a "__proto__" key survives as an own entry and never touches the prototype', async () => {
+        await writeLargeVault();
+        const raw = JSON.parse(fs.readFileSync(dbFile(), 'utf8'));
+        const entry = raw.identity_priv;
+        fs.writeFileSync(dbFile(), JSON.stringify(raw).replace(/^\{/, `{"__proto__":${JSON.stringify(entry)},`), 'utf8');
+        const reread = new SecureStore();
+        await reread.initialize();
+        expect(reread.keys()).toContain('__proto__');
+        expect(reread.get('__proto__')).toBe('the-identity');
+        expect(reread.get('identity_priv')).toBe('the-identity');
+    }, 60_000);
 });

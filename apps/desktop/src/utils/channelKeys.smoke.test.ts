@@ -29,6 +29,8 @@ vi.mock('../../electron/storage', () => ({
         deleteDeferred: (k: string) => { store.delete(k); },
         batch: <T>(fn: () => T): T => fn(),
         keys: () => [...store.keys()],
+        keysWithPrefix: (p: string) => [...store.keys()].filter(k => k.startsWith(p)),
+        whenDurable: async () => {},
     },
 }));
 
@@ -71,11 +73,11 @@ describe('pruneOldKeys disk-write batching (startup hang)', () => {
         return ids;
     }
 
-    it('writes the vault ONCE no matter how many channels are pruned', () => {
+    it('writes the vault ONCE no matter how many channels are pruned', async () => {
         const ids = seedPrunableChannels(12);
         saveCount = 0;
 
-        pruneOldKeys();
+        await pruneOldKeys();
 
         // The whole point: one full-vault write, not one per pruned channel.
         // `SecureStore.set()` re-serialises the entire vault and does a
@@ -91,57 +93,78 @@ describe('pruneOldKeys disk-write batching (startup hang)', () => {
         }
     });
 
-    it('writes nothing at all when there is nothing to prune', () => {
+    it('writes nothing at all when there is nothing to prune', async () => {
         const id = chan(100);
         setChannelKey(id, 1, fakeKeyB64(1), rotatesAtFor(1));
         setChannelKey(id, 2, fakeKeyB64(2), rotatesAtFor(1));
         saveCount = 0;
 
-        pruneOldKeys();
+        await pruneOldKeys();
 
         expect(saveCount).toBe(0);
         expect(listChannelEpochs(id)).toEqual([1, 2]);
     });
 
-    it('still respects pin-protected epochs when batching', () => {
+    it('still respects pin-protected epochs when batching', async () => {
         const id = chan(101);
         for (let e = 1; e <= 60; e++) setChannelKey(id, e, fakeKeyB64(e), rotatesAtFor(90));
         setProtectedEpochs(id, [1]);
         saveCount = 0;
 
-        pruneOldKeys();
+        await pruneOldKeys();
 
         const held = new Set(listChannelEpochs(id));
         expect(held.has(1)).toBe(true);  // pinned — survives the batched write
         expect(held.has(60)).toBe(true); // highest — always survives
         expect(held.has(2)).toBe(false); // unpinned, old, outside newest-50 — pruned
     });
+
+    it('yields while pruning, and a key stored MID-PRUNE is in the vault write (serialised at the end, from the live cache)', async () => {
+        const ids = [chan(200), chan(201), chan(202)];
+        for (const id of ids) for (let e = 1; e <= 60; e++) setChannelKey(id, e, fakeKeyB64(e), rotatesAtFor(90));
+        // Make every slice "expire" so the prune yields between channels.
+        let fakeNow = 0;
+        const nowSpy = vi.spyOn(performance, 'now').mockImplementation(() => (fakeNow += 20));
+        try {
+            const pruning = pruneOldKeys();
+            // One turn: the prune resumes, processes the FIRST channel, and
+            // yields again before the second. It has not written yet.
+            await new Promise<void>((r) => setImmediate(r));
+            setChannelKey(ids[0], 999, fakeKeyB64(9), rotatesAtFor(0));
+            await pruning;
+        } finally {
+            nowSpy.mockRestore();
+        }
+        const onDisk = JSON.parse(store.get(`channel_keys:${ids[0]}`)!);
+        expect(Object.keys(onDisk)).toContain('999');   // not overwritten by a stale serialisation
+        expect(Object.keys(onDisk)).not.toContain('1');  // and the prune still happened
+    });
 });
 
 describe('pruneOldKeys retention (RC-10)', () => {
-    it('always keeps the highest epoch regardless of age', () => {
+    it('always keeps the highest epoch regardless of age', async () => {
         setChannelKey(CHANNEL, 1, fakeKeyB64(1), rotatesAtFor(90));
-        pruneOldKeys();
+        await pruneOldKeys();
         expect(listChannelEpochs(CHANNEL)).toEqual([1]);
     });
 
-    it('prunes an old, non-latest, unprotected epoch outside both retention windows', () => {
+    it('prunes an old, non-latest, unprotected epoch outside both retention windows', async () => {
         // 60 epochs so epoch 1 falls outside both the highest-epoch rule and
         // the newest-50 rule; all old enough to clear PRUNE_AFTER_MS (30d).
         for (let e = 1; e <= 60; e++) {
             setChannelKey(CHANNEL, e, fakeKeyB64(e), rotatesAtFor(90 - e)); // epoch 1 oldest
         }
-        pruneOldKeys();
+        await pruneOldKeys();
         const held = new Set(listChannelEpochs(CHANNEL));
         expect(held.has(1)).toBe(false); // pruned: not latest, not in newest 50, old, unprotected
         expect(held.has(60)).toBe(true); // latest — always kept
     });
 
-    it('keeps the newest 50 epochs regardless of age even when the channel has more', () => {
+    it('keeps the newest 50 epochs regardless of age even when the channel has more', async () => {
         for (let e = 1; e <= 60; e++) {
             setChannelKey(CHANNEL, e, fakeKeyB64(e), rotatesAtFor(90)); // ALL old enough to prune by age
         }
-        pruneOldKeys();
+        await pruneOldKeys();
         const held = new Set(listChannelEpochs(CHANNEL));
         // Epochs 11..60 are the newest 50 (plus 60 is also the always-kept latest).
         for (let e = 11; e <= 60; e++) expect(held.has(e)).toBe(true);
@@ -149,35 +172,35 @@ describe('pruneOldKeys retention (RC-10)', () => {
         for (let e = 1; e <= 10; e++) expect(held.has(e)).toBe(false);
     });
 
-    it('never prunes an epoch marked protected (pinned), even if old and outside the newest-50 window', () => {
+    it('never prunes an epoch marked protected (pinned), even if old and outside the newest-50 window', async () => {
         for (let e = 1; e <= 60; e++) {
             setChannelKey(CHANNEL, e, fakeKeyB64(e), rotatesAtFor(90 - e));
         }
         setProtectedEpochs(CHANNEL, [1]); // epoch 1 would otherwise be pruned (see the unprotected test above)
-        pruneOldKeys();
+        await pruneOldKeys();
         expect(listChannelEpochs(CHANNEL)).toContain(1);
     });
 
-    it('setProtectedEpochs wholesale-replaces the protected set on each call', () => {
+    it('setProtectedEpochs wholesale-replaces the protected set on each call', async () => {
         for (let e = 1; e <= 60; e++) {
             setChannelKey(CHANNEL, e, fakeKeyB64(e), rotatesAtFor(90 - e));
         }
         setProtectedEpochs(CHANNEL, [1, 2]);
         setProtectedEpochs(CHANNEL, [2]); // epoch 1 no longer protected
-        pruneOldKeys();
+        await pruneOldKeys();
         const held = new Set(listChannelEpochs(CHANNEL));
         expect(held.has(1)).toBe(false);
         expect(held.has(2)).toBe(true);
     });
 
-    it('an unrelated channel is unaffected by another channel\'s protected epochs', () => {
+    it('an unrelated channel is unaffected by another channel\'s protected epochs', async () => {
         const OTHER = 'dddddddd-dddd-dddd-dddd-dddddddddddd';
         for (let e = 1; e <= 60; e++) {
             setChannelKey(CHANNEL, e, fakeKeyB64(e), rotatesAtFor(90 - e));
             setChannelKey(OTHER, e, fakeKeyB64(e), rotatesAtFor(90 - e));
         }
         setProtectedEpochs(CHANNEL, [1]);
-        pruneOldKeys();
+        await pruneOldKeys();
         expect(listChannelEpochs(CHANNEL)).toContain(1);
         expect(listChannelEpochs(OTHER)).not.toContain(1);
     });

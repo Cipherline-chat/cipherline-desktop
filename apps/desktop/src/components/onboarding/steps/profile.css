@@ -1,0 +1,121 @@
+/* ============================================================
+   Onboarding step 3: Profile ("Make it yours.").
+   Ported from the approved prototype (scratchpad ob6/css/wiz.css,
+   "step 3: profile" + the responsive rules). Scoped under `.ob`.
+   The card's own look comes from ProfileCardParts (the same markup
+   as the real ProfileModal); this file only adds the 3D, the
+   entrance, the pick hints and the form side.
+   ============================================================ */
+
+/* ---- the form side: two compact pickers, then name and bio ---- */
+.ob .pf-media { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 24px 0 18px; }
+.ob .pf-pick { position: relative; min-width: 0; }
+.ob .pf-btn { width: 100%; display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 14px; border: 1px solid var(--border);
+  background: rgba(19, 26, 48, .78); color: inherit; font: inherit; text-align: left; cursor: pointer; transition: border-color .2s, background .2s; }
+.ob .pf-btn:hover, .ob .pf-btn:focus-visible { border-color: var(--lume); outline: none; background: rgba(28, 37, 66, .8); }
+.ob .pf-thumb { position: relative; flex: none; display: grid; place-items: center; overflow: hidden; background: var(--surface); color: var(--faint); border: 1px dashed rgba(167, 179, 212, .3); }
+.ob .pf-thumb.has { border: 0; }
+.ob .pf-thumb > img, .ob .pf-thumb > div { width: 100%; height: 100%; }
+.ob .pf-thumb > img { object-fit: cover; display: block; }
+.ob .pf-thumb--round { width: 44px; height: 44px; border-radius: 50%; }
+.ob .pf-thumb--wide { width: 70px; height: 44px; border-radius: 9px; }
+.ob .pf-t { min-width: 0; padding-right: 26px; }
+.ob .pf-t b { display: block; font-size: 14px; font-weight: 800; color: var(--text); }
+.ob .pf-t small { display: block; font-size: 12px; font-weight: 600; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ob .pf-x { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); width: 28px; height: 28px; padding: 0; border: 0; border-radius: 8px;
+  background: transparent; color: var(--faint); display: grid; place-items: center; cursor: pointer; }
+.ob .pf-x:hover, .ob .pf-x:focus-visible { color: var(--flash); background: rgba(255, 107, 94, .1); outline: none; }
+.ob .pf-lbl { display: flex; align-items: baseline; }
+.ob .pf-lbl .sub { margin-left: 6px; text-transform: none; letter-spacing: 0; font-family: var(--body); font-weight: 600; }
+.ob .pf-lbl .cnt { margin-left: auto; font: 600 11px var(--mono); letter-spacing: 0; color: var(--faint); }
+.ob .fgrp + .fgrp { margin-top: 16px; }
+.ob .fmsg { margin: 6px 2px 0; font-size: 12px; line-height: 1.45; color: var(--faint); }
+.ob .fmsg b { color: var(--muted); font-weight: 700; }
+.ob .fmsg .pend { color: var(--faint); font-weight: 600; }
+.ob .fmsg.err { color: var(--flash); }
+.ob .fmsg .retry { margin-left: 6px; padding: 0; border: 0; background: none; color: var(--lume); font: inherit; font-weight: 700; cursor: pointer; text-decoration: underline; }
+.ob .pf-file-err { margin-top: -6px; margin-bottom: 14px; }
+.ob .pf-bio textarea { width: 100%; height: 84px; resize: none; }
+
+/* ---- the preview side: Keys + his bubble, then the card ---- */
+.ob .pv { position: relative; justify-self: center; width: 100%; max-width: 420px; padding-top: 66px; }
+.ob .keysbox { position: absolute; right: 0; top: 0; z-index: 2; display: flex; align-items: flex-end; gap: 10px; flex-direction: row-reverse; pointer-events: none; }
+.ob .keysbox .kk { width: 70px; transform-origin: 50% 85%; }
+/* Keys holds still here (no idle limb sway): the step is idle-free apart from the caret. */
+.ob .keysbox .k2-leg, .ob .keysbox .k2-fore, .ob .keysbox .k2-foot { animation: none; }
+.ob .keysbox .kk.bounce { animation: pf-kbounce .6s ease-out; }
+@keyframes pf-kbounce { 25% { transform: scale(1.2) rotate(-9deg); } 55% { transform: scale(.94) rotate(7deg); } 100% { transform: none; } }
+.ob .bubble { position: relative; margin-bottom: 22px; max-width: 230px; padding: 9px 13px; border-radius: 16px 16px 4px 16px; background: rgba(19, 26, 48, .9);
+  border: 1px solid rgba(37, 224, 200, .32); font: 600 14px/1.35 var(--display); color: var(--text); animation: pf-bub .35s var(--spr); }
+@keyframes pf-bub { from { opacity: 0; transform: translateY(6px) scale(.85); } }
+.ob .pv-cap { margin: 16px 0 0; text-align: center; font: 600 10.5px var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--faint); }
+
+/* ---- the card, in 3D (frame + parts from ProfileCardParts) ---- */
+.ob .obpc-persp { perspective: 1100px; display: flex; justify-content: center; }
+/* The tilt writes the card's inline `transform` and the sheen's own --sx/--sy/--sh
+   (set on the childless sheen, not inherited through the card: no subtree restyle per frame). */
+.ob .obpc { position: relative; width: 360px; max-width: 100%; transform-style: preserve-3d; }
+.ob .obpc-3d { transform-style: preserve-3d; }
+/* layer depths: banner 4, avatar 34, name 24, status 18, About 12, button 20, sheen 40 */
+.ob .obpc-banner { position: relative; display: block; width: 100%; padding: 0; border: 0; border-radius: 20px 20px 0 0; background: transparent; cursor: pointer; transform: translateZ(4px); }
+.ob .obpc-l-av { position: relative; transform: translateZ(34px); }
+.ob .obpc-l-id { transform: translateZ(24px); }
+.ob .obpc-l-st { transform: translateZ(18px); }
+.ob .obpc-l-ab { transform: translateZ(12px); }
+.ob .obpc-l-act { transform: translateZ(20px); pointer-events: none; }
+.ob .obpc-ph { color: var(--faint); font-weight: 500; }
+
+/* banner: "Add a banner" hint on hover / focus */
+.ob .obpc-hint { position: absolute; right: 12px; top: 12px; display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; border-radius: 9px;
+  background: rgba(5, 8, 19, .62); color: var(--text); font: 700 12px var(--body); opacity: 0; transform: translateY(-3px); pointer-events: none;
+  transition: opacity .18s, transform .25s var(--spr); }
+.ob .obpc-banner:hover .obpc-hint, .ob .obpc-banner:focus-visible .obpc-hint { opacity: 1; transform: none; }
+.ob .obpc-banner:focus-visible { outline: 2px solid var(--lume); outline-offset: -2px; }
+/* avatar: a camera on hover / focus */
+.ob .obpc-av { position: relative; }
+.ob .obpc-av:focus-visible { outline: 2px solid var(--lume); outline-offset: 4px; }
+.ob .obpc-avhint { position: absolute; inset: 0; display: grid; place-items: center; border-radius: 50%; background: rgba(0, 0, 0, .45); color: #fff; opacity: 0; transition: opacity .2s; pointer-events: none; }
+.ob .obpc-av:hover .obpc-avhint, .ob .obpc-av:focus-visible .obpc-avhint { opacity: 1; }
+
+/* a soft specular sheen that follows the tilt */
+.ob .obpc-sheen { --sx: 50%; --sy: 30%; --sh: 0; position: absolute; inset: 0; border-radius: 20px; pointer-events: none; transform: translateZ(40px); opacity: calc(var(--sh) * .9);
+  background: radial-gradient(70% 55% at var(--sx) var(--sy), rgba(255, 255, 255, .10), rgba(255, 255, 255, .03) 45%, transparent 70%); mix-blend-mode: screen; }
+
+/* the entrance: rise out of depth with a slight swing that settles, layers assemble in order */
+.ob .obpc.obpc-enter { animation: pf-rise 1.05s cubic-bezier(.2, .8, .25, 1) both; }
+@keyframes pf-rise {
+  0% { opacity: 0; transform: translate3d(0, 46px, -240px) rotateX(24deg) rotateY(-16deg); }
+  45% { opacity: 1; }
+  62% { transform: translate3d(0, -3px, 0) rotateX(-3deg) rotateY(4deg); }
+  82% { transform: translate3d(0, 0, 0) rotateX(1deg) rotateY(-1.2deg); }
+  100% { transform: none; }
+}
+.ob .obpc-enter .obpc-banner { animation: pf-l-banner .5s cubic-bezier(.2, .8, .25, 1) .12s both; }
+.ob .obpc-enter .obpc-l-av { animation: pf-l-av .55s cubic-bezier(.2, .8, .25, 1) .3s both; }
+.ob .obpc-enter .obpc-l-id { animation: pf-l-id .45s cubic-bezier(.2, .8, .25, 1) .46s both; }
+.ob .obpc-enter .obpc-l-st { animation: pf-l-st .45s cubic-bezier(.2, .8, .25, 1) .54s both; }
+.ob .obpc-enter .obpc-l-ab { animation: pf-l-ab .45s cubic-bezier(.2, .8, .25, 1) .62s both; }
+.ob .obpc-enter .obpc-l-act { animation: pf-l-act .45s cubic-bezier(.2, .8, .25, 1) .7s both; }
+.ob .obpc-enter .obpc-sheen { animation: pf-l-sheen 1.05s ease-out both; }
+@keyframes pf-l-banner { from { opacity: 0; transform: translateZ(4px) translateY(-12px); } to { opacity: 1; transform: translateZ(4px); } }
+@keyframes pf-l-av { from { opacity: 0; transform: translateZ(90px) translateY(14px); } to { opacity: 1; transform: translateZ(34px); } }
+@keyframes pf-l-id { from { opacity: 0; transform: translateZ(60px) translateY(10px); } to { opacity: 1; transform: translateZ(24px); } }
+@keyframes pf-l-st { from { opacity: 0; transform: translateZ(50px) translateY(8px); } to { opacity: 1; transform: translateZ(18px); } }
+@keyframes pf-l-ab { from { opacity: 0; transform: translateZ(40px) translateY(8px); } to { opacity: 1; transform: translateZ(12px); } }
+@keyframes pf-l-act { from { opacity: 0; transform: translateZ(50px) translateY(10px); } to { opacity: 1; transform: translateZ(20px); } }
+@keyframes pf-l-sheen { 0%, 40% { opacity: 0; } 70% { opacity: .9; } 100% { opacity: 0; } }
+
+/* ---- reduced motion: a flat card, no entrance, no bounce, no bubble pop ---- */
+.ob .obpc.obpc-flat { transform: none !important; }
+.ob.rm .obpc, .ob.rm .obpc *, .ob.rm .bubble, .ob.rm .keysbox .kk { animation: none !important; }
+@media (prefers-reduced-motion: reduce) {
+  .ob .obpc, .ob .obpc *, .ob .bubble, .ob .keysbox .kk { animation: none !important; }
+}
+
+/* ---- narrower windows (prototype responsive rules) ---- */
+@media (max-width: 980px) {
+  .ob .pv { max-width: 340px; }
+  .ob .step--profile.step:not(.step--one) { grid-template-columns: minmax(0, 1fr) minmax(0, 330px); }
+  .ob .pf-media { grid-template-columns: 1fr; gap: 8px; margin: 18px 0 14px; }
+}
+.ob .pf-name .inp[aria-invalid="true"] { border-color: var(--flash); }

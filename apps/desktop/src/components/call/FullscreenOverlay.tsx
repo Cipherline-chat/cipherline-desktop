@@ -1,7 +1,7 @@
 import React, { useEffect } from 'react';
 import ReactDOM from 'react-dom';
 import { useParticipants, useLocalParticipant } from '@livekit/components-react';
-import { Track, RemoteParticipant, VideoQuality, Participant } from 'livekit-client';
+import { Track, RemoteParticipant, Participant } from 'livekit-client';
 import { useCallContext } from '../../contexts/CallContext';
 import { useOsWindowFullscreen } from '../../hooks/useOsWindowFullscreen';
 import { useEscape } from '../../hooks/useEscape';
@@ -188,12 +188,16 @@ interface FullscreenOverlayProps {
     localAvatarUrl?: string;
     remoteAvatarUrl?: string;
     hiddenVideoIds: Set<string>;
+    /** Remote cameras over the decode cap ("Reduced" / "Data saver" incoming video) — shown as avatars. */
+    budgetHiddenVideoIds?: Set<string>;
     hiddenScreenShareIds: Set<string>;
     onHideVideoChange: (identity: string, hide: boolean) => void;
     onHideScreenShareChange: (identity: string, hide: boolean) => void;
     /** Which screenshares the user has subscribed to (passed from SidebarConference) */
     subscribedScreenshares: Set<string>;
     onSubscribeScreenshare: (identity: string) => void;
+    /** Stop watching a remote screen share (red X in the tile's name pill). */
+    onStopWatchingScreenshare?: (identity: string) => void;
     canServerMute?: boolean;
     onServerMuteTrack?: (targetUserId: string, trackType: 'audio' | 'video' | 'screenshare' | 'deafen', muted: boolean) => void;
 }
@@ -217,6 +221,9 @@ const CONSOLE_ROOT_ID = 'call-fullscreen-controls-root';
  */
 let sessionStripHeight: number | null = null;
 
+/** How long the stage must stay empty before fullscreen closes itself. */
+const FULLSCREEN_EMPTY_GRACE_MS = 1200;
+
 export const FullscreenOverlay = ({
     token,
     isLocalDeafened,
@@ -227,11 +234,13 @@ export const FullscreenOverlay = ({
     localAvatarUrl,
     remoteAvatarUrl,
     hiddenVideoIds,
+    budgetHiddenVideoIds,
     hiddenScreenShareIds,
     onHideVideoChange,
     onHideScreenShareChange,
     subscribedScreenshares,
     onSubscribeScreenshare,
+    onStopWatchingScreenshare,
     canServerMute,
     onServerMuteTrack,
 }: FullscreenOverlayProps) => {
@@ -285,7 +294,7 @@ export const FullscreenOverlay = ({
 
     for (const p of remoteParticipants) {
         const camPub = p.getTrackPublication(Track.Source.Camera);
-        if (camPub?.isSubscribed && !camPub.isMuted && !hiddenVideoIds.has(p.identity)) {
+        if (camPub?.isSubscribed && !camPub.isMuted && !hiddenVideoIds.has(p.identity) && !budgetHiddenVideoIds?.has(p.identity)) {
             cameras.push(p);
         }
         const ssPub = p.getTrackPublication(Track.Source.ScreenShare);
@@ -305,6 +314,22 @@ export const FullscreenOverlay = ({
 
     const staged = new Set(stage.map(t => t.identity));
     const audioOnly = participants.filter(p => !staged.has(p.identity)).map(p => p.identity);
+
+    // ── Nothing left to show: leave fullscreen ───────────────────────────────
+    // When the last camera/share goes away (everyone turned their video off),
+    // the cinema view used to stay up on an empty stage with no reason to be
+    // there — and the person in it had to find the exit themselves. Leave through
+    // the SAME path the Exit button and Escape use (setIsFullscreen(false)), so
+    // it gets the same exit fade. A short grace first: a video that blinks out
+    // for a second (a reconnect, a track re-publish, the camera restarting for a
+    // quality change) must not throw anyone out of fullscreen.
+    const stageEmpty = stage.length === 0;
+    useEffect(() => {
+        if (!isFullscreen || !stageEmpty) return;
+        const t = setTimeout(() => callCtx.setIsFullscreen(false), FULLSCREEN_EMPTY_GRACE_MS);
+        return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [isFullscreen, stageEmpty]);
 
     const layout = chooseFullscreenLayout({ stage, audioOnly, focused: focusedStream });
     const canToggleFocus = focusToggleMeaningful(layout);
@@ -687,6 +712,7 @@ export const FullscreenOverlay = ({
             onHideScreenShareChange: (v: boolean) => onHideScreenShareChange(identity, v),
             canServerMute,
             onServerMuteTrack,
+            onStopWatching: onStopWatchingScreenshare ? () => onStopWatchingScreenshare(identity) : undefined,
         };
     };
 
@@ -762,7 +788,6 @@ export const FullscreenOverlay = ({
                 <VideoTile
                     {...tileProps(tile.identity, tile.source)}
                     isFocusedView={true}
-                    quality={VideoQuality.HIGH}
                     // Solo mode: the click that used to cycle between two identical
                     // renderings is disabled at the source, not merely ignored.
                     focusToggleDisabled={!canToggleFocus}
@@ -790,8 +815,10 @@ export const FullscreenOverlay = ({
        larger than their cell on ultrawide and overlap the floating chrome. */
     const cellClass = 'rounded-xl overflow-hidden';
     const cellStyle: React.CSSProperties = { width: '100%', height: '100%', minWidth: 0, minHeight: 0 };
-    // Bandwidth: MEDIUM up to six cells, LOW above that.
-    const gridQuality = gridCount > 6 ? VideoQuality.LOW : VideoQuality.MEDIUM;
+    // Each grid tile picks its own simulcast layer from its rendered size ×
+    // DPR, capped by how many VIDEO tiles share the grid (≤4 / 5–9 / 10+) —
+    // utils/remoteVideoQuality.ts. Audio-only cells cost no video bandwidth.
+    const gridVideoCount = layout.mode === 'grid' ? layout.tiles.length : 0;
 
     return ReactDOM.createPortal(
         // #05070F is the deepest stop of the Descent's sea gradient — the call's
@@ -825,7 +852,7 @@ export const FullscreenOverlay = ({
                                 <div key={`${tile.identity}-${tile.source}-${tile.gated}`} className={cellClass} style={cellStyle}>
                                     {tile.gated
                                         ? <ScreenShareGate {...gateProps(tile.identity)} />
-                                        : <VideoTile {...tileProps(tile.identity, tile.source)} isGridView={true} quality={gridQuality} />}
+                                        : <VideoTile {...tileProps(tile.identity, tile.source)} isGridView={true} videoCount={gridVideoCount} />}
                                 </div>
                             ))}
                             {layout.people.map(identity => (
@@ -992,7 +1019,7 @@ export const FullscreenOverlay = ({
                                             // screenshare's own aspect drive the height
                                             // and break the fixed strip.
                                             isGridView={true}
-                                            quality={VideoQuality.LOW}
+                                            // No count: a ~100px thumbnail sizes itself to the low layer.
                                             // A ~100px thumbnail is not a drawing surface.
                                             // Strokes still RENDER here (AnnotationOverlay
                                             // always paints); only the pen toolbar / request

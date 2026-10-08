@@ -62,6 +62,37 @@ const threadPrefix = (kind: MessageKind, userId: string) => `${legacyKey(kind, u
 const lastWritten = new Map<string, any[]>();
 
 /**
+ * `lastWritten` is ALSO the in-memory copy of every thread record, so
+ * secureLocalStore does not need to keep the record's JSON text once it is on
+ * disk (it was a second, often two-byte, copy of the whole history — 23 MB for
+ * a 30k-message account, measured). Every write and read below vouches for the
+ * record with markDetachable(); the store then drops the text and, on the rare
+ * read that needs it, asks for it back here.
+ *
+ * Holds because `lastWritten` is only ever replaced alongside a write
+ * (saveAll / mergeThreads / replaceAll), a read that parsed the stored value
+ * (loadAll's seed), or a removeItem — and because these arrays are never mutated
+ * in place (saveAll's reference-equality change detection already depends on
+ * that; a mutated array would never be persisted at all).
+ */
+const regenerateThread = (key: string): string | null => {
+    const msgs = lastWritten.get(key);
+    return msgs ? JSON.stringify(msgs) : null;
+};
+// Optional calls: detaching is purely a memory optimisation, and a store that
+// does not offer it (a partial test double) simply keeps the text, as before.
+type DetachingStore = {
+    registerDetachableSource?: (prefix: string, regenerate: (key: string) => string | null) => void;
+    markDetachable?: (key: string) => void;
+    isDetached?: (key: string) => boolean;
+};
+const detaching = secureLocalStore as unknown as DetachingStore;
+const markDetachable = (key: string): void => { detaching.markDetachable?.(key); };
+const isDetached = (key: string): boolean => detaching.isDetached?.(key) ?? false;
+detaching.registerDetachableSource?.('cipherline_msgs_', regenerateThread);
+detaching.registerDetachableSource?.('cipherline_channel_msgs_', regenerateThread);
+
+/**
  * Monotonic write counter + the sequence number of the last write to each
  * thread key. This exists ONLY because loadAll() now yields (see YIELD_BATCH):
  * the read loop used to be one synchronous pass, so nothing could be persisted
@@ -220,6 +251,13 @@ export async function loadAll(kind: MessageKind, userId: string): Promise<Thread
     const keys = secureLocalStore.keysWithPrefix(prefix);
     for (let i = 0; i < keys.length; i++) {
         const key = keys[i];
+        // A detached record IS lastWritten (see regenerateThread): hand that
+        // back rather than serialising it only to parse it again.
+        const held = isDetached(key) ? lastWritten.get(key) : undefined;
+        if (held) {
+            out[key.slice(prefix.length)] = held;
+            continue;
+        }
         const raw = secureLocalStore.getItem(key);
         if (raw) {
             try {
@@ -249,6 +287,9 @@ export async function loadAll(kind: MessageKind, userId: string): Promise<Thread
     }
 
     seed(kind, userId, out);
+    // Every thread in `out` now has its parsed copy in lastWritten, matching
+    // what the store holds for it — the JSON text can leave memory.
+    for (const id of Object.keys(out)) markDetachable(prefix + id);
     return out;
 }
 
@@ -267,6 +308,7 @@ export function saveAll(kind: MessageKind, userId: string, map: ThreadMap): void
             secureLocalStore.setItem(key, JSON.stringify(msgs));
             lastWritten.set(key, msgs);
             noteWrite(key);
+            markDetachable(key);
         } catch (e) {
             console.error(`[messageStore] failed to persist thread ${id}`, e);
         }
@@ -313,8 +355,14 @@ export async function mergeThreads(
         if (!Array.isArray(msgs) || msgs.length === 0) continue;
         const key = prefix + id;
         let base: ThreadMap[string] = [];
-        const raw = secureLocalStore.getItem(key);
-        if (raw) {
+        // A detached record's stored value IS lastWritten (see
+        // regenerateThread) — merge onto it directly instead of serialising
+        // and re-parsing the whole thread for every pulled batch.
+        const held = isDetached(key) ? lastWritten.get(key) : undefined;
+        const raw = held ? null : secureLocalStore.getItem(key);
+        if (held) {
+            base = held;
+        } else if (raw) {
             // An unreadable record is treated exactly as loadAll treats it —
             // dropped, so the thread starts over — rather than thrown on: a
             // throw here would fail the whole batch's persist, so no envelope
@@ -331,6 +379,7 @@ export async function mergeThreads(
         secureLocalStore.setItem(key, JSON.stringify(next));
         lastWritten.set(key, next);
         noteWrite(key);
+        markDetachable(key);
         written.push(key);
     }
     return written;
@@ -349,6 +398,7 @@ export function replaceAll(kind: MessageKind, userId: string, map: ThreadMap): v
         secureLocalStore.setItem(prefix + id, JSON.stringify(msgs));
         lastWritten.set(prefix + id, msgs);
         noteWrite(prefix + id);
+        markDetachable(prefix + id);
     }
 }
 
@@ -397,6 +447,13 @@ export async function hasAny(kind: MessageKind, userId: string): Promise<boolean
     if (!(await awaitReadable(userId))) throw new HistoryNotReadableError(userId);
     if (secureLocalStore.getItem(legacyKey(kind, userId)) !== null) return true;
     return secureLocalStore.keysWithPrefix(threadPrefix(kind, userId)).length > 0;
+}
+
+/** How much history is resident (threads / messages), for the Performance log. */
+export function historyStats(): { threads: number; messages: number } {
+    let messages = 0;
+    for (const msgs of lastWritten.values()) messages += msgs.length;
+    return { threads: lastWritten.size, messages };
 }
 
 /** Test seam — drops the in-memory "what we last wrote" tracking. */

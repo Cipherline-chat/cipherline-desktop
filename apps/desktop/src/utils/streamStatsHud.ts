@@ -135,6 +135,15 @@ export interface SenderHudStats {
     nacks?: number;
     plis?: number;
     rttMs?: number;
+    /** Simulcast layers (camera), smallest first: rid, size, fps, and whether
+     *  the encoder is running it (dynacast pauses layers nobody watches). */
+    layers?: { rid: string; width?: number; height?: number; fps?: number; active: boolean }[];
+}
+
+/** One-line layer summary for the overlay: "320×180 30 · 640×360 30 · 1280×720 off". */
+export function formatLayers(layers: SenderHudStats['layers']): string | undefined {
+    if (!layers || layers.length < 2) return undefined;
+    return layers.map(l => `${l.width && l.height ? `${l.width}×${l.height}` : l.rid || '?'} ${l.active ? Math.round(l.fps ?? 0) : 'off'}`).join(' · ');
 }
 
 /**
@@ -152,6 +161,7 @@ export function summarizeSender(
     let bytesSent = 0;
     let target = 0;
     let hasTarget = false;
+    const layers: NonNullable<SenderHudStats['layers']> = [];
     for (const s of entries.values()) {
         if (s.type !== 'outbound-rtp' || s.kind !== 'video') continue;
         bytesSent += num(s.bytesSent) ?? 0;
@@ -159,8 +169,14 @@ export function summarizeSender(
         if (t !== undefined) { target += t; hasTarget = true; }
         const area = (num(s.frameWidth) ?? 0) * (num(s.frameHeight) ?? 0);
         const topArea = top ? (num(top.frameWidth) ?? 0) * (num(top.frameHeight) ?? 0) : -1;
-        if (!top || area > topArea) top = s;
+        // A dynacast-paused layer keeps reporting its last size: prefer the
+        // largest layer that is actually being encoded.
+        const active = s.active !== false;
+        const topActive = top ? top.active !== false : false;
+        if (!top || (active && !topActive) || (active === topActive && area > topArea)) top = s;
+        layers.push({ rid: str(s.rid) ?? '', width: num(s.frameWidth), height: num(s.frameHeight), fps: num(s.framesPerSecond), active });
     }
+    layers.sort((a, b) => (a.width ?? 0) * (a.height ?? 0) - (b.width ?? 0) * (b.height ?? 0));
     if (!top) return { stats: { hardware: null }, snapshot: null };
 
     const src = [...entries.values()].find(s => s.type === 'media-source' && s.kind === 'video');
@@ -197,6 +213,7 @@ export function summarizeSender(
         nacks: num(top.nackCount),
         plis: num(top.pliCount),
         rttMs: pair && num(pair.currentRoundTripTime) !== undefined ? (num(pair.currentRoundTripTime)! * 1000) : undefined,
+        layers: layers.length > 1 ? layers : undefined,
     };
     return { stats, snapshot };
 }
@@ -431,4 +448,76 @@ export function fpsTone(fps: number | undefined, target: number | undefined): 'o
     if (fps >= target * 0.95) return 'ok';
     if (fps >= target * 0.75) return 'warn';
     return 'bad';
+}
+
+// ── Static content: is the encoder padding? ─────────────────────────────────
+//
+// Chromium's hardware encode path runs CBR (rtc_video_encoder.cc configures
+// media::Bitrate::Mode::kConstant). A CBR hardware encoder on a STATIC screen
+// may keep spending close to its target by lowering QP instead of dropping to
+// a trickle the way libvpx does — in which case a static share (or a still
+// webcam) costs near its ceiling, and lowering maxBitrate for static content
+// WOULD save bits. Not measurable on the dev box (no working HW encoder);
+// this hint is how the owner's Windows test answers it.
+//
+// "Static" = the capture log says ≥ 80 % of polls had no new frame, or (no
+// log) the share encodes < 30 % of its target frame rate.
+
+export function paddingHint(i: {
+    sendMbps?: number;
+    capMbps?: number;
+    encodedFps?: number;
+    targetFps?: number;
+    unchangedRatio?: number | null;
+}): { padding: boolean; text: string } | null {
+    if (i.sendMbps === undefined || !i.capMbps) return null;
+    const staticByLog = typeof i.unchangedRatio === 'number' && i.unchangedRatio >= 0.8;
+    const staticByFps = i.unchangedRatio == null && !!i.targetFps && i.encodedFps !== undefined && i.encodedFps < 0.3 * i.targetFps;
+    if (!staticByLog && !staticByFps) return null;
+    const pct = Math.round((i.sendMbps / i.capMbps) * 100);
+    const mbps = i.sendMbps < 10 ? i.sendMbps.toFixed(1) : String(Math.round(i.sendMbps));
+    return pct >= 50
+        ? { padding: true, text: `static content at ${pct}% of cap (${mbps} Mbps) — encoder padding?` }
+        : { padding: false, text: `static content: ${mbps} Mbps (${pct}% of cap) — no padding` };
+}
+
+// ── HEVC (H.265) capability probe ───────────────────────────────────────────
+//
+// Information only: the app does not publish H.265 (Android cannot decode it
+// and E2EE removes LiveKit's backup-codec fallback — see the codec research).
+// Chromium 150 has H.265 send/receive on by default but HARDWARE-only, so
+// this tells us what the owner's machines would offer.
+
+export interface HevcSupport { send: boolean | null; recv: boolean | null; hwEncode: boolean | null }
+
+type CodecList = { codecs?: { mimeType: string }[] } | null | undefined;
+
+export async function probeHevc(deps: {
+    senderCaps?: () => CodecList;
+    receiverCaps?: () => CodecList;
+    encodingInfo?: (c: unknown) => Promise<{ supported: boolean; powerEfficient: boolean }>;
+} = {}): Promise<HevcSupport> {
+    const has = (list: CodecList) => (list?.codecs ? list.codecs.some(c => /^video\/h265$/i.test(c.mimeType)) : null);
+    const sc = deps.senderCaps ?? (() => (typeof RTCRtpSender !== 'undefined' ? RTCRtpSender.getCapabilities?.('video') : null));
+    const rc = deps.receiverCaps ?? (() => (typeof RTCRtpReceiver !== 'undefined' ? RTCRtpReceiver.getCapabilities?.('video') : null));
+    const ei = deps.encodingInfo ?? (typeof navigator !== 'undefined' && navigator.mediaCapabilities?.encodingInfo
+        ? (c: unknown) => navigator.mediaCapabilities.encodingInfo(c as MediaEncodingConfiguration)
+        : undefined);
+    let send: boolean | null = null;
+    let recv: boolean | null = null;
+    try { send = has(sc()); } catch { /* unknown */ }
+    try { recv = has(rc()); } catch { /* unknown */ }
+    let hwEncode: boolean | null = null;
+    if (ei) {
+        try {
+            const r = await ei({ type: 'webrtc', video: { contentType: 'video/H265', width: 2560, height: 1440, bitrate: 8_000_000, framerate: 30 } });
+            hwEncode = !!(r.supported && r.powerEfficient);
+        } catch { hwEncode = null; }
+    }
+    return { send, recv, hwEncode };
+}
+
+export function formatHevc(h: HevcSupport): string {
+    const m = (v: boolean | null) => (v === null ? '?' : v ? '✓' : '✗');
+    return `send ${m(h.send)} · recv ${m(h.recv)} · HW enc ${m(h.hwEncode)} (info only)`;
 }

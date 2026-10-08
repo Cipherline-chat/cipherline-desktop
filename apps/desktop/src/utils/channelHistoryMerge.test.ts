@@ -612,3 +612,17 @@ describe('handlePersonalChannelSaveRef / handleUnpinMessageRef are kept live', (
         expect(dashboardSrc.slice(refsAt, refsAt + 400)).toContain("useRef<(channelId: string, msgId: string, action: 'add' | 'remove') => void>(() => {})");
     });
 });
+
+describe('instant send: the server copy of our own pending row', () => {
+    it('takes over the local row (gets the server id) instead of duplicating it', () => {
+        const existing = [
+            { id: 'm1', timestamp: '2026-10-07T10:00:00.000Z', content: { type: 'text', text: 'hi' } },
+            { id: 'c-local', timestamp: '2026-10-07T10:01:00.000Z', content: { type: 'text', text: 'mine', client_msg_id: 'c-local' }, send_state: 'sending' as const },
+        ];
+        const incoming = [{ id: 'srv-7', timestamp: '2026-10-07T10:01:00.200Z', content: { type: 'text', text: 'mine', client_msg_id: 'c-local' } }];
+        const out = foldChannelHistory(existing, incoming);
+        expect(out).toHaveLength(2);
+        expect(out.map(m => m.id)).toEqual(['m1', 'srv-7']);
+        expect(out[1].send_state).toBeUndefined();
+    });
+});

@@ -610,6 +610,9 @@ export const BillingTab: React.FC = () => {
                                 {copied === 'link' ? 'Copied!' : 'Copy link'}
                             </span>
                         </button>
+                        <p className="text-[11.5px] mt-0 mb-3" style={{ color: 'var(--cl-faint)' }}>
+                            Anyone with this link sees your username and profile picture.
+                        </p>
 
                         {/* Progress */}
                         <div className="flex flex-col gap-1.5">

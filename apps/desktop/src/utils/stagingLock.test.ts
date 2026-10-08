@@ -5,7 +5,9 @@ import {
 } from './stagingLock';
 import {
     STAGING_LOCKED_ERROR, MAX_PASSWORD_LENGTH, isStagingVersion,
+    STAGING_UNLOCK_STORE_KEY, PREVIEW_UNLOCK_STORE_KEY,
 } from '../../electron/staging-lock';
+import { APP_PREF_KEYS, SECURE_STORE_EXCLUDED } from '../services/backupRegistry';
 
 describe('renderer staging-lock helpers', () => {
     it('stay in step with the main-process constants they mirror', () => {
@@ -70,5 +72,15 @@ describe('shouldShowStagingLockScreen', () => {
         for (const v of ['1.0.17-staging.5', '1.0.17-staging', '1.0.16', '1.0.17-beta.1', '1.0.17-stagingx']) {
             expect(shouldShowStagingLockScreen('error', v), v).toBe(isStagingVersion(v));
         }
+    });
+});
+
+describe('the remembered-unlock SecureStore key is never backed up', () => {
+    // A restored backup must not unlock staging on a machine that never
+    // entered the password. (main.ts writes it via a constant, which the
+    // source-scan in backupRegistry.test.ts cannot see — hence this pin.)
+    it.each([STAGING_UNLOCK_STORE_KEY, PREVIEW_UNLOCK_STORE_KEY])('%s is excluded, not an app pref', (key) => {
+        expect(SECURE_STORE_EXCLUDED.some((p) => key === p || key.startsWith(p))).toBe(true);
+        expect((APP_PREF_KEYS as readonly string[]).includes(key)).toBe(false);
     });
 });

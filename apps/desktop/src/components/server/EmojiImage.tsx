@@ -1,15 +1,17 @@
 /**
  * EmojiImage — renders one custom server emoji from its inline key material.
  *
- * Same shape as ServerIcon: the key/nonce travel with the emoji's own list
- * entry (server_emojis row — see docs/custom-emoji-design.md), not fetched
- * via GET /attachments/:id/key, so this always passes an inline key into
- * useEncryptedAvatar rather than relying on its server-fallback lookup.
+ * The key/nonce travel with the emoji's own list entry (server_emojis row —
+ * see docs/custom-emoji-design.md). Loading goes through serverEmojiLoader:
+ * memory → encrypted disk cache → ONE batched URL request per server per
+ * 100 emojis, with a bounded download pool — not one API request per emoji
+ * as the avatar hook it used to share would spend.
  */
 
-import React from 'react';
+import React, { useMemo } from 'react';
 import { Smile, Ghost } from 'lucide-react';
-import { useEncryptedAvatar } from '../../hooks/useEncryptedAvatar';
+import { useServerEmojiUrl } from '../../hooks/useServerEmojiUrl';
+import { evictEmoji } from '../../utils/serverEmojiLoader';
 import { useClTooltip } from '../cl/useClTooltip';
 
 interface PlaceholderProps {
@@ -95,6 +97,9 @@ export const MissingEmojiPlaceholder: React.FC<MissingEmojiPlaceholderProps> = (
 
 interface Props {
     name: string;
+    /** The emoji's server — lets the loader batch URL requests. Optional:
+     *  without it the emoji still loads, through the per-emoji route. */
+    serverId?: string | null;
     attachmentId: string;
     keyB64: string;
     nonceB64: string;
@@ -106,8 +111,16 @@ interface Props {
     style?: React.CSSProperties;
 }
 
-export const EmojiImage: React.FC<Props> = ({ name, attachmentId, keyB64, nonceB64, token, className, style }) => {
-    const url = useEncryptedAvatar(attachmentId, token, { keyB64, nonceB64 });
+/** Ids whose cached bytes already failed to decode once this session — one
+ *  eviction + refetch each, never a loop. */
+const evictedOnce = new Set<string>();
+
+export const EmojiImage: React.FC<Props> = ({ name, serverId, attachmentId, keyB64, nonceB64, token, className, style }) => {
+    const ref = useMemo(
+        () => ({ serverId: serverId ?? null, attachmentId, keyB64, nonceB64 }),
+        [serverId, attachmentId, keyB64, nonceB64],
+    );
+    const url = useServerEmojiUrl(ref, token);
 
     if (url) {
         return (
@@ -117,6 +130,13 @@ export const EmojiImage: React.FC<Props> = ({ name, attachmentId, keyB64, nonceB
                 title={`:${name}:`}
                 className={`object-contain ${className ?? ''}`}
                 style={style}
+                decoding="async"
+                draggable={false}
+                onError={() => {
+                    if (evictedOnce.has(attachmentId)) return;
+                    evictedOnce.add(attachmentId);
+                    evictEmoji(attachmentId);
+                }}
             />
         );
     }

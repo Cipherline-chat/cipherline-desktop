@@ -54,18 +54,18 @@ const { body: rnnoiseGlueBody, rnnoiseName, denoiseStateName } = extractRnnoiseV
 export const RNNOISE_INLINE_WORKLET_SOURCE = `
 ${nsKernelSrc}
 
-// ── Vendored RNNoise WASM glue (@shiguredo/rnnoise-wasm, pinned in package.json) ──
+// -- Vendored RNNoise WASM glue (@shiguredo/rnnoise-wasm, pinned in package.json) --
 const __rnnoiseVendor = (function() {
     // Environment shim: an AudioWorkletGlobalScope has neither \`window\` nor
     // \`WorkerGlobalScope\` (worklets are not workers), and the Emscripten
-    // glue's detection —
+    // glue's detection -
     //   if (!(typeof window == "object" || typeof WorkerGlobalScope < "u")) throw ...
-    // — therefore rejected EVERY load in this worklet ("not compiled for this
+    // - therefore rejected EVERY load in this worklet ("not compiled for this
     // environment"), which is an async failure the fallback path deliberately
     // does not live-swap on, so NS was simply unavailable on all machines.
     // Shadowing the name in this function scope makes \`typeof\` see it.
     // Safe because the glue's ONLY use of either name is that one check
-    // (zero window./self/document/importScripts/fetch uses — the WASM is an
+    // (zero window./self/document/importScripts/fetch uses - the WASM is an
     // inline base64 payload), an invariant pinned by the occurrence-count
     // canary in rnnoiseVendorExtract.test.ts.
     const WorkerGlobalScope = function EnvShimForEmscriptenDetection() {};
@@ -79,10 +79,10 @@ class RNNoiseInlineWorklet extends AudioWorkletProcessor {
     constructor() {
         super();
         this.FRAME = RNNOISE_FRAME;
-        // Input accumulation ring — chunks 128-sample render quanta into
+        // Input accumulation ring - chunks 128-sample render quanta into
         // 480-sample RNNoise frames. Unrelated to output buffering, which is
         // entirely owned by NsOutputRing below (unchanged from the Worker-fed
-        // worklet — see nsKernel.js's header comment for why this same state
+        // worklet - see nsKernel.js's header comment for why this same state
         // machine applies just as well to a synchronous producer).
         this.inSize = this.FRAME * RING_FRAMES;
         this.inRing = new Float32Array(this.inSize);
@@ -118,7 +118,7 @@ class RNNoiseInlineWorklet extends AudioWorkletProcessor {
         };
 
         // Kick off WASM loading. Deliberately NOT awaited before returning
-        // from the constructor — process() runs (and gracefully bypasses,
+        // from the constructor - process() runs (and gracefully bypasses,
         // since rnnoiseReady starts false) while this is in flight, the same
         // "connect the graph immediately, enable NS once actually ready"
         // approach voiceProcessor.ts's init() already uses for the Worker.
@@ -132,7 +132,7 @@ class RNNoiseInlineWorklet extends AudioWorkletProcessor {
             this.rnnoiseReady = true;
         } catch (err) {
             // Mirrors the Worker-fed worklet's {type:'error'} signal on WASM
-            // load failure — voiceProcessor.ts / useParticipantAudio.ts listen
+            // load failure - voiceProcessor.ts / useParticipantAudio.ts listen
             // for this to fall back to the Worker-based pipeline instead.
             this.port.postMessage({
                 type: 'rnnoiseLoadFailed',
@@ -155,12 +155,12 @@ class RNNoiseInlineWorklet extends AudioWorkletProcessor {
             }
             if (this.rnnoiseReady && this.denoiseState) {
                 // RNNoise expects int16-range values (same scaling the old
-                // rnnoise.worker.ts used) — AudioWorklet I/O is float [-1, 1].
+                // rnnoise.worker.ts used) - AudioWorklet I/O is float [-1, 1].
                 for (let i = 0; i < frame.length; i++) frame[i] *= 32768;
                 this.denoiseState.processFrame(frame);
                 for (let i = 0; i < frame.length; i++) frame[i] /= 32768;
             }
-            // If RNNoise isn't ready yet, this pushes the raw frame — harmless:
+            // If RNNoise isn't ready yet, this pushes the raw frame - harmless:
             // process() passes bypassed:true to outputRing while !rnnoiseReady,
             // so NsOutputRing's raw-passthrough branch never actually reads
             // from the ring in that state; these writes are simply overwritten

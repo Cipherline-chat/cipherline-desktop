@@ -48,6 +48,7 @@
  */
 import React, { useCallback, useEffect, useRef } from 'react';
 import { useReducedMotion } from 'framer-motion';
+import { filterStrokesByAuthor } from '../../utils/annotationOverlayCapture';
 import {
     annotationStore, useAnnotationStore, strokeAlpha, clock, STROKE_IDLE_MS,
     EMPTY_STROKES, type Stroke, type AnnotationState,
@@ -74,6 +75,12 @@ export interface AnnotationOverlayProps {
     /** The tile's right-click handler. While drawing, the canvas sits above
      *  the tile's context-menu hit surface, so it forwards right-clicks. */
     onContextMenu?: (e: React.MouseEvent<HTMLCanvasElement>) => void;
+    /**
+     * Draw only strokes authored by this identity (null/undefined = all).
+     * Set on a screen share whose sharer's desktop overlay is captured into
+     * the video (Linux) — see utils/annotationOverlayCapture.ts.
+     */
+    onlyBy?: string | null;
 }
 
 /** Points closer than this (in normalized units) are coalesced — keeps a
@@ -165,7 +172,7 @@ function effectiveDpr(width: number, height: number, rawDpr: number): number {
     return Math.max(0.05, Math.min(dpr, byDim, byArea));
 }
 
-export const AnnotationOverlay: React.FC<AnnotationOverlayProps> = ({ videoRef, trackKey, fit, canDraw, armed = canDraw, by, onContextMenu }) => {
+export const AnnotationOverlay: React.FC<AnnotationOverlayProps> = ({ videoRef, trackKey, fit, canDraw, armed = canDraw, by, onContextMenu, onlyBy = null }) => {
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const rectRef = useRef<ContentRect | null>(null);
     /** DPR actually used for the backing store — see effectiveDpr. draw()
@@ -182,10 +189,12 @@ export const AnnotationOverlay: React.FC<AnnotationOverlayProps> = ({ videoRef, 
     // subtree with it) at pointer rate on every client in the call.
     const strokesRef = useRef<readonly Stroke[]>(EMPTY_STROKES);
     useEffect(() => {
-        const read = () => { strokesRef.current = annotationStore.getState().strokes[trackKey] ?? EMPTY_STROKES; };
+        const read = () => {
+            strokesRef.current = filterStrokesByAuthor(annotationStore.getState().strokes[trackKey] ?? EMPTY_STROKES, onlyBy);
+        };
         read();
         return annotationStore.subscribe(read);
-    }, [trackKey]);
+    }, [trackKey, onlyBy]);
 
     /** Re-measure the tile box + the frame's intrinsic size and resize the
      *  backing store to (capped) device pixels. Cheap; called on every layout

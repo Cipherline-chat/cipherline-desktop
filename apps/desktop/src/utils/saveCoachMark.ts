@@ -103,7 +103,7 @@ export function saveCoachCopy(retention: MessageRetention): CoachCopy {
         body: after
             ? `Messages in this chat delete themselves after ${after}. Save the ones you want to keep and they stay.`
             : 'Messages in this chat delete themselves after a while. Save the ones you want to keep and they stay.',
-        hint: 'Hover a message and tap the save icon, or right-click it.',
+        hint: 'Hover a message to see when it expires, tap the message to save it.',
         save: 'Save this message',
         dismiss: 'Got it',
     };

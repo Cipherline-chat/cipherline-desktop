@@ -106,8 +106,7 @@ describe('copy', () => {
     it('names the real controls', () => {
         const c = saveCoachCopy('1wk');
         expect(c.save).toBe('Save this message');
-        expect(c.hint).toMatch(/save icon/i);
-        expect(c.hint).toMatch(/right-click/i);
+        expect(c.hint).toBe('Hover a message to see when it expires, tap the message to save it.');
     });
 });
 

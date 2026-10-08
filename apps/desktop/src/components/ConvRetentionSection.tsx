@@ -218,9 +218,6 @@ export const ConvRetentionSection: React.FC<Props> = ({
                     </div>
                 </div>
             </div>
-            <p style={{ margin: '7px 2px 0', fontSize: 11, lineHeight: 1.45, color: 'var(--cl-faint)' }}>
-                Applies to this device only — doesn’t sync to your other devices.
-            </p>
 
             {/* ── Retention change confirmation ─────────────────────────── */}
             {purgeConfirm && (

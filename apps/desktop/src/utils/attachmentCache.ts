@@ -27,7 +27,7 @@
  * protected by the per-message key, just without the additional at-rest layer.
  */
 
-import { wrapBlob, unwrapBlob } from './blobCacheKey';
+import { wrapBlob, unwrapBlob, getBlobCacheKey } from './blobCacheKey';
 
 const DB_NAME = 'cipherline';
 const STORE = 'attachments_enc';
@@ -166,16 +166,37 @@ export async function deleteEncryptedAttachment(attachmentId: string): Promise<v
 interface AvatarEntry {
     data: Blob;
     lastAccess: number;
+    /** Which prune budget the entry counts against. Absent = an avatar or
+     *  icon. 'emoji' = a custom server emoji (serverEmojiLoader), so a server
+     *  with hundreds of emojis cannot evict everyone's avatars. 'banner' = a
+     *  profile banner: ~3x an avatar's bytes, and only ever seen one profile
+     *  card at a time, so it gets its own smaller count and cannot push the
+     *  avatars that paint every chat row out of the cache either. */
+    kind?: AvatarBlobKind;
 }
+
+/** Prune class of a cached blob — see AvatarEntry.kind. */
+export type AvatarBlobKind = 'emoji' | 'banner';
 
 /** How stale `lastAccess` may get before a read refreshes it. */
 export const AVATAR_TOUCH_INTERVAL_MS = 12 * 60 * 60 * 1000;
 
 /** Persist a decrypted avatar/icon/banner blob so the next session can skip
- *  the MinIO download + decrypt.  Fire-and-forget — callers should not await. */
-export async function putAvatarBlob(attachmentId: string, blob: Blob): Promise<void> {
-    const wrapped = await wrapBlob(blob);
+ *  the MinIO download + decrypt.  Fire-and-forget — callers should not await.
+ *
+ *  Never writes PLAINTEXT. Unlike `attachments_enc` (whose payload is still
+ *  E2EE ciphertext, so `wrapBlob`'s unwrapped fallback leaves it protected by
+ *  the per-message key), this store holds the DECRYPTED image: with no
+ *  blob-cache key (no OS keyring, locked keystore) the raw fallback would put
+ *  the picture on disk in the clear. So without a key this is a no-op — the
+ *  image stays a memory-only cache for the session and is re-downloaded next
+ *  launch. */
+export async function putAvatarBlob(attachmentId: string, blob: Blob, opts?: { kind?: AvatarBlobKind }): Promise<void> {
+    const key = await getBlobCacheKey();
+    if (!key) return;
+    const wrapped = await wrapBlob(blob, key);
     const entry: AvatarEntry = { data: wrapped, lastAccess: Date.now() };
+    if (opts?.kind) entry.kind = opts.kind;
     await run<IDBValidKey>(AVATAR_STORE, 'readwrite', store => store.put(entry, attachmentId));
 }
 
@@ -197,6 +218,8 @@ export async function getAvatarBlob(attachmentId: string): Promise<Blob | null> 
         const lastAccess = stored instanceof Blob ? 0 : (stored as AvatarEntry).lastAccess;
         if (!(Date.now() - lastAccess < AVATAR_TOUCH_INTERVAL_MS)) {
             const entry: AvatarEntry = { data: rawBlob, lastAccess: Date.now() };
+            const kind = stored instanceof Blob ? undefined : (stored as AvatarEntry).kind;
+            if (kind) entry.kind = kind;
             run<IDBValidKey>(AVATAR_STORE, 'readwrite', store => store.put(entry, attachmentId)).catch(() => {});
         }
         return await unwrapBlob(rawBlob);
@@ -215,18 +238,33 @@ export async function deleteAvatarBlob(attachmentId: string): Promise<void> {
     }
 }
 
+/** Default prune budgets, per class. Exported so tests pin the contract. */
+export const AVATAR_CACHE_BUDGET = {
+    maxAgeMs: 90 * 24 * 60 * 60 * 1000,
+    /** Avatars + server/group icons: ~25-60 KB each (512² JPEG) → ≤ ~30 MB. */
+    avatars: 500,
+    /** Custom emojis: a few KB each (256 KiB hard cap server-side). */
+    emojis: 2000,
+    /** Profile banners: ~60-170 KB each (1200×480 / legacy 1500×600 JPEG)
+     *  → ≤ ~25 MB. Covers every friend plus the people you actually click. */
+    banners: 150,
+} as const;
+
 /**
  * P2-REND-16: Evict avatar cache entries older than maxAgeMs, keeping at
- * most maxCount entries (evicting LRU first). Called by the retention sweep.
- * Default: 90 days / 500 entries.
+ * most maxCount avatar entries, maxEmojiCount custom-emoji entries and
+ * maxBannerCount profile-banner entries (evicting LRU first within each
+ * class). Called by the retention sweep. Defaults: AVATAR_CACHE_BUDGET.
  */
 export async function pruneAvatarCache(
-    maxAgeMs = 90 * 24 * 60 * 60 * 1000,
-    maxCount = 500,
+    maxAgeMs: number = AVATAR_CACHE_BUDGET.maxAgeMs,
+    maxCount: number = AVATAR_CACHE_BUDGET.avatars,
+    maxEmojiCount: number = AVATAR_CACHE_BUDGET.emojis,
+    maxBannerCount: number = AVATAR_CACHE_BUDGET.banners,
 ): Promise<void> {
     try {
         const db = await openDb();
-        const entries: Array<{ id: IDBValidKey; lastAccess: number }> = [];
+        const entries: Array<{ id: IDBValidKey; lastAccess: number; kind: AvatarBlobKind | undefined }> = [];
 
         await new Promise<void>((resolve, reject) => {
             const tx = db.transaction(AVATAR_STORE, 'readonly');
@@ -236,7 +274,8 @@ export async function pruneAvatarCache(
                 if (!cursor) { resolve(); return; }
                 const val = cursor.value as AvatarEntry | Blob;
                 const lastAccess = val instanceof Blob ? 0 : (val as AvatarEntry).lastAccess;
-                entries.push({ id: cursor.key, lastAccess });
+                const kind = val instanceof Blob ? undefined : (val as AvatarEntry).kind;
+                entries.push({ id: cursor.key, lastAccess, kind });
                 cursor.continue();
             };
             req.onerror = () => reject(req.error);
@@ -247,7 +286,11 @@ export async function pruneAvatarCache(
         const expired = entries.filter(e => now - e.lastAccess > maxAgeMs);
         const fresh = entries.filter(e => now - e.lastAccess <= maxAgeMs);
         fresh.sort((a, b) => b.lastAccess - a.lastAccess); // newest first
-        const overCount = fresh.slice(maxCount);
+        const overCount = [
+            ...fresh.filter(e => e.kind !== 'emoji' && e.kind !== 'banner').slice(maxCount),
+            ...fresh.filter(e => e.kind === 'emoji').slice(maxEmojiCount),
+            ...fresh.filter(e => e.kind === 'banner').slice(maxBannerCount),
+        ];
 
         const toDelete = [...expired, ...overCount];
         await Promise.allSettled(toDelete.map(e =>

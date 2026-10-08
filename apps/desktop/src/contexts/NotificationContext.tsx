@@ -30,6 +30,13 @@ export interface NotificationPrefs {
     sounds_enabled: boolean;
     master_volume: number;
     show_preview: 'full' | 'sender_only' | 'hidden';
+    /**
+     * Show the sender's profile picture as the toast icon. Only ever applies
+     * when `show_preview` already shows who sent it ('full' / 'sender_only');
+     * see utils/notificationAvatar.ts. New field 2026-10; older stored blobs
+     * pick up the default through mergeStoredPrefs.
+     */
+    show_sender_avatar: boolean;
     quick_reply_enabled: boolean;
     keywords: string[];
     dnd_manual: boolean;
@@ -69,6 +76,7 @@ export const DEFAULT_PREFS: NotificationPrefs = {
     sounds_enabled: true,
     master_volume: 0.8,
     show_preview: 'full',
+    show_sender_avatar: true,
     quick_reply_enabled: true,
     keywords: [],
     dnd_manual: false,

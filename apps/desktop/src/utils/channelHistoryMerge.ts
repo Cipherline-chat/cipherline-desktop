@@ -14,6 +14,8 @@
  * window (as well as producing a visible empty→content flash in the pane).
  */
 
+import { adoptServerCopy } from './pendingSend';
+
 /** A cached or freshly-decrypted channel row, as far as the merge cares.
  *  Structurally a superset-tolerant view of Dashboard's `StoredChannelMsg`. */
 export interface ChannelRow {
@@ -28,6 +30,9 @@ export interface ChannelRow {
     content?: any;
     reactions?: Record<string, string[]>;
     edited?: boolean;
+    /** Instant-send marker on a row this device sent (utils/pendingSend.ts). */
+    send_state?: 'sending' | 'failed';
+    send_error?: string;
 }
 
 interface EditContent { type: 'edit'; target_id: string; text: string }
@@ -236,6 +241,14 @@ export function foldChannelHistory(
                 folded[idx] = { ...target, reactions };
             }
         } else if (!existingIds.has(m.id)) {
+            // Our own instantly-shown message, still under its local id: the
+            // server copy takes over that row rather than adding a second one.
+            const adopted = adoptServerCopy(folded, m);
+            if (adopted) {
+                folded.splice(0, folded.length, ...adopted);
+                existingIds.add(m.id);
+                continue;
+            }
             // Plain message — only insert if we don't already have it.
             folded.push(m);
             existingIds.add(m.id);

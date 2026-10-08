@@ -2,7 +2,8 @@ import { describe, it, expect } from 'vitest';
 import {
     parseScreenCapturerPref, windowsBuildFromRelease, buildChromiumMediaSwitches, expectedScreenCapturer,
     captureLogSwitches, parseCaptureTimingLog, summarizeGpuDevices, WIN11_24H2_BUILD,
-    decideAutoScreenCapturer, gpuTopologyFromInfo, parseGpuTopologyHint, serializeGpuTopologyHint, resolveCapturedDisplayHz,
+    decideAutoScreenCapturer, WINDOWS_NO_DXGI_FEATURE, dxgiEnabledInMainProcess, pickerEnumeration,
+    parseSourcesHelperFailure, serializeSourcesHelperFailure, SOURCES_HELPER_FAILURE_MAX_BYTES, gpuTopologyFromInfo, parseGpuTopologyHint, serializeGpuTopologyHint, resolveCapturedDisplayHz,
 } from './capture-flags';
 
 describe('parseScreenCapturerPref', () => {
@@ -36,10 +37,17 @@ describe('buildChromiumMediaSwitches', () => {
         });
     });
 
-    it('forcing WGC enables it', () => {
+    it('forcing WGC enables it AND keeps DXGI out of the process (the picker included)', () => {
         expect(buildChromiumMediaSwitches('win32', 'wgc')).toEqual({
-            enableFeatures: ['PlatformH264CbpEncoding', 'AllowWgcScreenCapturer'], disableFeatures: [],
+            enableFeatures: ['PlatformH264CbpEncoding', 'AllowWgcScreenCapturer'], disableFeatures: ['DirectXCapturer'],
         });
+        expect(WINDOWS_NO_DXGI_FEATURE).toBe('DirectXCapturer');
+    });
+
+    it('DXGI stays available as an explicit choice: DirectXCapturer is never disabled for it', () => {
+        for (const auto of ['wgc', 'dxgi', 'chromium-default'] as const) {
+            expect(buildChromiumMediaSwitches('win32', 'dxgi', auto).disableFeatures).not.toContain('DirectXCapturer');
+        }
     });
 
     it('Linux keeps PipeWire capture and ignores the Windows-only knobs', () => {
@@ -262,35 +270,62 @@ describe('parseCaptureTimingLog — measured interval', () => {
 describe('decideAutoScreenCapturer', () => {
     const DESKTOP = { hybrid: false, vendors: ['NVIDIA', 'AMD', 'Microsoft (software)'] };
     const LAPTOP = { hybrid: true, vendors: ['Intel', 'NVIDIA'] };
-    it.each<[string, string, number | null, typeof DESKTOP | null, 'dxgi' | 'chromium-default', RegExp]>([
-        ['owner: Win11 26200, NVIDIA + AMD desktop', 'win32', 26200, DESKTOP, 'dxgi', /DXGI/],
-        ['24H2 exactly', 'win32', WIN11_24H2_BUILD, DESKTOP, 'dxgi', /DXGI/],
-        ['hybrid laptop (Optimus / AMD switchable) keeps WGC', 'win32', 26200, LAPTOP, 'chromium-default', /hybrid/],
-        ['first launch: layout unknown → Chromium default', 'win32', 26200, null, 'chromium-default', /not known/],
-        ['pre-24H2: Chromium already uses DXGI', 'win32', 22631, DESKTOP, 'chromium-default', /< 24H2/],
-        ['Windows build unknown', 'win32', null, DESKTOP, 'chromium-default', /unknown/],
-        ['not Windows', 'linux', null, DESKTOP, 'chromium-default', /linux/],
-    ])('%s', (_l, platform, windowsBuild, gpu, backend, why) => {
-        const d = decideAutoScreenCapturer({ platform, windowsBuild, gpu });
+    it.each<[string, string, number | null, typeof DESKTOP | null, boolean, 'wgc' | 'dxgi' | 'chromium-default', RegExp]>([
+        ['owner: Win11 26200, NVIDIA + AMD desktop → DXGI share, picker out of process', 'win32', 26200, DESKTOP, false, 'dxgi', /picker out of process/],
+        ['24H2 exactly', 'win32', WIN11_24H2_BUILD, DESKTOP, false, 'dxgi', /DXGI/],
+        ['24H2 - 1 is pre-24H2', 'win32', WIN11_24H2_BUILD - 1, DESKTOP, false, 'chromium-default', /< 24H2/],
+        ['hybrid laptop → WGC, no DXGI', 'win32', 26200, LAPTOP, false, 'wgc', /hybrid/],
+        ['first launch: GPU layout unknown → WGC, no DXGI', 'win32', 26200, null, false, 'wgc', /not known/],
+        ['helper failed last launch → WGC even on the owner\'s desktop', 'win32', 26200, DESKTOP, true, 'wgc', /out-of-process picker failed/],
+        ['helper failed last launch → WGC pre-24H2 too (no in-process DXGI picker)', 'win32', 22631, DESKTOP, true, 'wgc', /failed/],
+        ['pre-24H2: Chromium already uses DXGI', 'win32', 22631, DESKTOP, false, 'chromium-default', /< 24H2/],
+        ['Windows build unknown', 'win32', null, DESKTOP, false, 'chromium-default', /unknown/],
+        ['not Windows (helper flag ignored)', 'linux', null, DESKTOP, true, 'chromium-default', /linux/],
+    ])('%s', (_l, platform, windowsBuild, gpu, helperFailed, backend, why) => {
+        const d = decideAutoScreenCapturer({ platform, windowsBuild, gpu, helperFailed });
         expect(d.backend).toBe(backend);
         expect(d.why).toMatch(why);
     });
 
-    it('only "auto → dxgi" adds a switch; an explicit pref still wins', () => {
+    it('auto → wgc enables WGC and disables DirectXCapturer; an explicit pref still wins', () => {
+        expect(buildChromiumMediaSwitches('win32', 'auto', 'wgc')).toEqual({
+            enableFeatures: ['PlatformH264CbpEncoding', 'AllowWgcScreenCapturer'], disableFeatures: ['DirectXCapturer'],
+        });
         expect(buildChromiumMediaSwitches('win32', 'auto', 'dxgi').disableFeatures).toEqual(['AllowWgcScreenCapturer']);
         expect(buildChromiumMediaSwitches('win32', 'auto', 'chromium-default').disableFeatures).toEqual([]);
-        expect(buildChromiumMediaSwitches('win32', 'wgc', 'dxgi')).toEqual({
-            enableFeatures: ['PlatformH264CbpEncoding', 'AllowWgcScreenCapturer'], disableFeatures: [],
+        expect(buildChromiumMediaSwitches('win32', 'dxgi', 'wgc')).toEqual({
+            enableFeatures: ['PlatformH264CbpEncoding'], disableFeatures: ['AllowWgcScreenCapturer'],
         });
-        expect(buildChromiumMediaSwitches('linux', 'auto', 'dxgi').disableFeatures).toEqual([]);
+        expect(buildChromiumMediaSwitches('win32', 'wgc', 'dxgi')).toEqual({
+            enableFeatures: ['PlatformH264CbpEncoding', 'AllowWgcScreenCapturer'], disableFeatures: ['DirectXCapturer'],
+        });
+        expect(buildChromiumMediaSwitches('linux', 'auto', 'wgc').disableFeatures).toEqual([]);
+    });
+
+    it('end to end for the owner\'s PC: DXGI for the share, and then the picker MUST be out of process', () => {
+        const auto = decideAutoScreenCapturer({ platform: 'win32', windowsBuild: 26200, gpu: DESKTOP });
+        const sw = buildChromiumMediaSwitches('win32', 'auto', auto.backend);
+        expect(sw.disableFeatures).toEqual(['AllowWgcScreenCapturer']);
+        expect(sw.disableFeatures).not.toContain('DirectXCapturer');
+        expect(dxgiEnabledInMainProcess('win32', 'auto', auto.backend)).toBe(true);
+        expect(pickerEnumeration({ platform: 'win32', pref: 'auto', autoBackend: auto.backend })).toBe('helper');
+        // After a helper failure: no DXGI anywhere, so listing in-process is safe again.
+        const fb = decideAutoScreenCapturer({ platform: 'win32', windowsBuild: 26200, gpu: DESKTOP, helperFailed: true });
+        expect(buildChromiumMediaSwitches('win32', 'auto', fb.backend).disableFeatures).toContain('DirectXCapturer');
+        expect(pickerEnumeration({ platform: 'win32', pref: 'auto', autoBackend: fb.backend })).toBe('in-process');
+        // Pre-24H2: Chromium's DXGI default, no switches — but the picker still leaves main.
+        const old = decideAutoScreenCapturer({ platform: 'win32', windowsBuild: 22631, gpu: DESKTOP });
+        expect(buildChromiumMediaSwitches('win32', 'auto', old.backend).disableFeatures).toEqual([]);
+        expect(pickerEnumeration({ platform: 'win32', pref: 'auto', autoBackend: old.backend })).toBe('helper');
     });
 
     it('the overlay reports what auto actually did', () => {
         const base = { platform: 'win32', windowsBuild: 26200, pref: 'auto' as const, sourceKind: 'screen' as const };
         expect(expectedScreenCapturer({ ...base, auto: decideAutoScreenCapturer({ platform: 'win32', windowsBuild: 26200, gpu: DESKTOP }) }))
-            .toEqual({ backend: 'dxgi', why: 'auto: DXGI (grabs ~2.7× faster than WGC)' });
-        expect(expectedScreenCapturer({ ...base, auto: decideAutoScreenCapturer({ platform: 'win32', windowsBuild: 26200, gpu: LAPTOP }) }))
-            .toEqual({ backend: 'wgc', why: 'auto: hybrid GPU — DXGI can fail there' });
+            .toEqual({ backend: 'dxgi', why: 'auto: DXGI for the share (grabs ~2.7× faster than WGC), picker out of process' });
+        expect(expectedScreenCapturer({ ...base, auto: decideAutoScreenCapturer({ platform: 'win32', windowsBuild: 26200, gpu: LAPTOP }) }).backend)
+            .toBe('wgc');
+        expect(expectedScreenCapturer({ ...base, auto: { backend: 'dxgi', why: 'x' } })).toEqual({ backend: 'dxgi', why: 'x' });
         // Window sources are WGC whatever auto decided.
         expect(expectedScreenCapturer({ ...base, sourceKind: 'window', auto: { backend: 'dxgi', why: 'x' } }).backend).toBe('wgc');
         // Without an auto decision the old behaviour stands.
@@ -345,5 +380,57 @@ describe('resolveCapturedDisplayHz', () => {
         expect(resolveCapturedDisplayHz({ sourceKind: 'screen', displayId: '1', displays: [{ id: 1, displayFrequency: 0 }], primaryId: 1 }))
             .toEqual({ hz: null, how: null });
         expect(resolveCapturedDisplayHz({ sourceKind: 'unknown', displays, primaryId: 111 })).toEqual({ hz: null, how: null });
+    });
+});
+
+// ── DXGI in main ⇒ the picker runs out of process (the 2026-10-07 freeze) ──
+describe('dxgiEnabledInMainProcess / pickerEnumeration', () => {
+    // Every (platform, pref, auto) combination, against the switches actually
+    // built: "DXGI in main" must mean exactly "DirectXCapturer not disabled".
+    const prefs = ['auto', 'dxgi', 'wgc'] as const;
+    const autos = ['wgc', 'dxgi', 'chromium-default'] as const;
+    for (const platform of ['win32', 'linux', 'darwin']) {
+        for (const pref of prefs) {
+            for (const auto of autos) {
+                it(`${platform} pref=${pref} auto=${auto}`, () => {
+                    const sw = buildChromiumMediaSwitches(platform, pref, auto);
+                    const dxgi = dxgiEnabledInMainProcess(platform, pref, auto);
+                    expect(dxgi).toBe(platform === 'win32' && !sw.disableFeatures.includes(WINDOWS_NO_DXGI_FEATURE));
+                    const where = pickerEnumeration({ platform, pref, autoBackend: auto });
+                    expect(where).toBe(dxgi ? 'helper' : 'in-process');
+                    // The test knob can only ADD the helper, never take it away.
+                    expect(pickerEnumeration({ platform, pref, autoBackend: auto, forceHelper: true })).toBe('helper');
+                });
+            }
+        }
+    }
+
+    it('positive controls: explicit DXGI on Windows is helper; explicit WGC is in-process', () => {
+        expect(pickerEnumeration({ platform: 'win32', pref: 'dxgi', autoBackend: 'wgc' })).toBe('helper');
+        expect(pickerEnumeration({ platform: 'win32', pref: 'wgc', autoBackend: 'dxgi' })).toBe('in-process');
+        expect(pickerEnumeration({ platform: 'linux', pref: 'dxgi', autoBackend: 'dxgi' })).toBe('in-process');
+    });
+});
+
+describe('sources-helper failure record (persisted for the next launch)', () => {
+    it('round-trips for the same version only', () => {
+        const text = serializeSourcesHelperFailure({ version: '1.0.18', reason: 'spawn failed: ENOENT', at: 1 });
+        expect(parseSourcesHelperFailure(text, '1.0.18')).toBe(true);
+        // An update retries the helper.
+        expect(parseSourcesHelperFailure(text, '1.0.19')).toBe(false);
+    });
+    it.each([
+        ['empty', ''],
+        ['null', null],
+        ['not JSON', '{nope'],
+        ['array', '[]'],
+        ['version not a string', '{"version":1}'],
+        ['too big', JSON.stringify({ version: '1.0.18', reason: 'x'.repeat(SOURCES_HELPER_FAILURE_MAX_BYTES) })],
+    ])('malformed (%s) is "no failure", never an error', (_l, text) => {
+        expect(parseSourcesHelperFailure(text as string | null, '1.0.18')).toBe(false);
+    });
+    it('bounds what it writes', () => {
+        const text = serializeSourcesHelperFailure({ version: '1'.repeat(500), reason: 'r'.repeat(5000), at: 2 });
+        expect(text.length).toBeLessThan(SOURCES_HELPER_FAILURE_MAX_BYTES);
     });
 });

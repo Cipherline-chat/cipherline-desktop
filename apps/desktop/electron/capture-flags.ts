@@ -38,6 +38,47 @@
  * behaviour at high refresh rates) — see ScreenCapturerPref — and whether we
  * can SEE the per-frame cost — see captureLogSwitches / parseCaptureTimingLog.
  *
+ * ── Why WGC in particular stops at ~52 fps at 1440p (re-read 2026-10-08) ────
+ * Line numbers are chromium/src @150.0.7871.129 and its webrtc pin
+ * 1f975dfd761af6e5d76d28333191973b258d82a8.
+ *   • The timed span: content/browser/media/capture/desktop_capture_device.cc
+ *     :869 stamps capture_start_time_ in CaptureFrame(); :912 measures
+ *     last_capture_duration in ScheduleNextCaptureFrame(), which runs only at
+ *     the END of OnCaptureResult (:850) — i.e. after the OS grab, the cursor
+ *     composite and OnIncomingCapturedData's ARGB→I420. :917-918 then sets
+ *     capture_period = max(duration × 100 / 50, requested period), 50 being
+ *     the file constant at :72. Owner's report (requested 113 fps → 8.85 ms):
+ *     a ~9.7 ms WGC grab gives a 19.4 ms period = 51.5 fps — exactly the
+ *     50-52 capture_fps in his report. To reach 90 the whole grab must stay
+ *     under ~5.5 ms.
+ *   • Why a WGC grab costs ~9.7 ms: webrtc modules/desktop_capture/win/
+ *     wgc_capture_session.cc ProcessFrame() copies every frame into a
+ *     D3D11_USAGE_STAGING texture (:629 CopySubresourceRegion), Maps it with
+ *     a BLOCKING read (:635-636, D3D11_MAP_FLAG_DO_NOT_WAIT deliberately 0 —
+ *     the capture thread waits for the GPU copy, which queues behind the
+ *     game's own GPU work) and memcpy()s it row by row into a CPU frame
+ *     (:722-733). A 2560×1440 BGRA frame is 14.7 MB per grab.
+ *   • NOT the cap: GraphicsCaptureSession.MinUpdateInterval is never set
+ *     anywhere in that file (OS default; frames are POLLED by the timer
+ *     above, not pushed); the frame pool is 2 buffers (wgc_capture_session.h
+ *     :75); 0 Hz only skips unchanged frames (desktop_capture_device.cc
+ *     :596-610); display scaling (125%) does not enter — WGC and DXGI both
+ *     grab physical pixels.
+ *   • No knob: media/webrtc/webrtc_features.cc has exactly three WGC features
+ *     (AllowWgcScreenCapturer, AllowWgcScreenZeroHz, WgcRequireBorder);
+ *     there is no feature, switch or param for the 50 % rule. webrtc DOES
+ *     have a zero-copy GPU-texture mode (desktop_capture_options.h:245
+ *     allow_wgc_using_texture, wgc_capture_session.cc:275 / :609), but
+ *     Chromium 150's DesktopCaptureDevice::Create (desktop_capture_device.cc
+ *     :952-1060) never sets it and that file has no texture-frame path.
+ * So the only lever for 90 fps on this Chromium is the OS capturer itself:
+ * DXGI Desktop Duplication grabs the same 1440p frame in ~3.6 ms (owner's
+ * capture log, 2026-09-29: 82-83 fps at a 90 request, before the request
+ * was raised to compensate the late timer). WINDOW shares are WGC whatever
+ * is chosen (desktop_capture_device.cc :991 set_allow_wgc_window_capturer
+ * (true); webrtc desktop_capturer.cc:83-88 picks WGC first), so a game shared
+ * as a WINDOW stays at the WGC ceiling — share the SCREEN for high fps.
+ *
  * ── Which Windows screen capturer Chromium 150 uses ─────────────────────────
  * desktop_capture_device.cc IsWgcEnabledForScreenCapture(): Windows.Graphics.
  * Capture (WGC) for screens iff the `AllowWgcScreenCapturer` feature is
@@ -116,13 +157,62 @@ export function buildChromiumMediaSwitches(
         enableFeatures.push('PlatformH264CbpEncoding');
         // Explicitly overriding AllowWgcScreenCapturer either way wins over
         // Chromium's Win11-24H2 default (IsFeatureOverridden check).
-        if (capturerPref === 'wgc') enableFeatures.push('AllowWgcScreenCapturer');
-        if (capturerPref === 'dxgi' || (capturerPref === 'auto' && autoBackend === 'dxgi')) {
-            disableFeatures.push('AllowWgcScreenCapturer');
+        const backend = capturerPref === 'auto' ? autoBackend : capturerPref;
+        if (backend === 'wgc') {
+            enableFeatures.push('AllowWgcScreenCapturer');
+            // ...and keep DXGI Desktop Duplication out of the process
+            // entirely: see WINDOWS_NO_DXGI_FEATURE.
+            disableFeatures.push(WINDOWS_NO_DXGI_FEATURE);
         }
+        if (backend === 'dxgi') disableFeatures.push('AllowWgcScreenCapturer');
     }
     return { enableFeatures, disableFeatures };
 }
+
+/**
+ * Chromium's `DirectXCapturer` feature (content/public/browser/
+ * desktop_capture.cc, FEATURE_ENABLED_BY_DEFAULT) is what sets
+ * `allow_directx_capturer` on EVERY DesktopCaptureOptions on Windows — the
+ * real share's AND Electron's desktopCapturer.getSources(). Disabling it is
+ * the only switch that keeps DXGI Desktop Duplication out of the screen-share
+ * PICKER, because Electron 43.2.0 (shell/browser/api/
+ * electron_api_desktop_capturer.cc) does, on the MAIN thread, inside every
+ * getSources() call:
+ *   - StartHandling(): `if (allow_directx_capturer()) IsSupported()` — a full
+ *     DxgiDuplicatorController initialisation (D3D11CreateDevice per adapter,
+ *     DuplicateOutput per monitor) that is torn down again at the end of the
+ *     block (its scoped_refptr is the only reference);
+ *   - MakeScreenCapturer() → webrtc CreateRawScreenCapturer: the same
+ *     IsSupported() again for a screen list (screen_capturer_win.cc);
+ *   - CollectSourcesFrom(screens): DxgiDuplicatorController::GetDeviceNames,
+ *     which waits on the mutex the thumbnail thread holds while it polls for
+ *     a frame (EnsureFrameCaptured, up to 500 ms per attempt).
+ * That is a duplicate-and-release of every display, synchronously on the
+ * main thread, for every picker refresh — window-only and thumbnail-less
+ * calls included. The owner's freeze report (RTX 2080 Ti + a second GPU,
+ * three 144-200 Hz monitors, NVENC busy with the camera) is the main thread
+ * stuck 19.3 s and 16.6 s inside getSources() while the machine froze black;
+ * nothing else in that call can block for seconds.
+ *
+ * With it disabled: the picker's screen previews come from GDI (a CPU copy of
+ * the composed desktop — no output duplication), window previews are GDI
+ * with WGC fallback as before, and the share itself is WGC (enabled
+ * alongside). Screen source ids are GDI device indices (EnumDisplayDevices
+ * index, webrtc win/screen_capture_utils.cc GetScreenList) on EVERY path:
+ * WgcScreenSource maps them back to a monitor (GetHmonitorFromDeviceIndex),
+ * and the DXGI capturer translates them too — ScreenCapturerWinDirectx::
+ * GetSourceList reports GDI ids (screen_capturer_win_directx.cc
+ * GetScreenListFromDeviceNames) and SelectSource maps a GDI id back to its
+ * own output index (GetIndexFromScreenId). (An earlier note here said DXGI
+ * ids were DXGI's own output order; not at this webrtc pin.) That is what
+ * lets a source listed WITHOUT DXGI be captured WITH it — see
+ * pickerEnumeration below. The cost:
+ * Electron fills `display_id` for screen sources ONLY on the DXGI path, so it
+ * is empty here (the HUD's Hz lookup and the annotation overlay fall back to
+ * the primary display / the id's index — see resolveCapturedDisplayHz and
+ * annotation-overlay.ts displayForSource).
+ */
+export const WINDOWS_NO_DXGI_FEATURE = 'DirectXCapturer';
 
 // ── What "Automatic" means on Windows ───────────────────────────────────────
 //
@@ -155,7 +245,51 @@ export function buildChromiumMediaSwitches(
 //     access lost on the secure desktop) — no reason to prefer either.
 //   • Chromium used DXGI for every Windows screen share before 24H2, on
 //     every laptop and desktop, for years — it is the well-trodden path.
-// Hence: DXGI unless the GPU layout is hybrid (or not known yet).
+// That reasoning made DXGI the 24H2+ default on 2026-09-29. On 2026-10-07 the
+// owner's PC froze black with the main thread stuck 19 s inside getSources(),
+// and Automatic went to WGC with DXGI disabled process-wide (a4146169) — at
+// the cost of ~52 fps instead of ~83+ at 1440p.
+//
+// ── 2026-10-08: DXGI for the share, never for the picker ───────────────────
+// The hazard was never "DXGI is in the process"; it is WHERE and HOW OFTEN
+// Electron's picker runs it:
+//   • Electron 43.2.0 shell/browser/api/electron_api_desktop_capturer.cc
+//     :339-351 StartHandling() — on the browser UI (= main) thread, every
+//     getSources() call — takes a DxgiDuplicatorController reference, calls
+//     IsSupported() and drops the reference again at the end of the block.
+//     webrtc dxgi_duplicator_controller.cc: IsSupported() → Initialize()
+//     (:112-115, :243-253) → DoInitialize() (:255-314: D3D11 device per
+//     adapter, DuplicateOutput per monitor) whenever nothing else holds it,
+//     and Release() at refcount 0 → Unload() → Deinitialize() (:102-110,
+//     :226-229). Then MakeScreenCapturer (:170-184 → webrtc
+//     screen_capturer_win.cc CreateRawScreenCapturer) does it again, and
+//     CollectSourcesFrom (:494-503) calls GetDeviceNames() under the mutex
+//     the thumbnail thread holds. Every picker refresh = several full
+//     duplicate/tear-down cycles of every display, synchronously on main.
+//   • A share does DXGI on OTHER threads, once: DesktopCaptureDevice::Create
+//     (desktop_capture_device.cc :952) runs on the browser's
+//     "VideoCaptureThread" (media_stream_manager.cc :1587-1599 →
+//     in_process_video_capture_device_launcher.cc :497-560 → :212), and the
+//     grabs on the device's own capture thread. The controller stays
+//     initialised for the whole share (ScreenCapturerWinDirectx holds the
+//     reference) — one duplication at share start, not one per refresh.
+//   • Screen ids are GDI device indices on every path (see
+//     WINDOWS_NO_DXGI_FEATURE), and Electron's display-media callback takes
+//     only `{ id, name }` (electron_browser_context.cc :753-758). So a source
+//     listed by a process WITHOUT DXGI can be captured by one WITH it.
+// The `DirectXCapturer` feature is process-wide (base::FeatureList), so the
+// picker cannot be kept off DXGI inside the process that captures with it.
+// Hence pickerEnumeration(): whenever DXGI is enabled in the main process,
+// every getSources() runs in a small, windowless helper copy of the app
+// launched with DirectXCapturer disabled (./sources-helper.ts) — main never
+// enumerates at all — and the share itself gets DXGI's frame rate.
+//
+// The residual risk, stated plainly: a DXGI share still duplicates the
+// displays ONCE when it starts (as every Chromium screen share did before
+// 24H2). Whether the 10-07 freeze needed the picker's repeated main-thread
+// cycles or just one duplication while NVENC was busy cannot be settled from
+// the source; the owner's Windows test (open the picker repeatedly AND start
+// shares with the camera on) is what settles it. WGC stays one click away.
 
 /**
  * The GPU layout seen on a previous launch, persisted because the capturer
@@ -203,29 +337,106 @@ export function serializeGpuTopologyHint(h: GpuTopologyHint): string {
 }
 
 export interface AutoCapturerDecision {
-    /** 'dxgi' = we disable AllowWgcScreenCapturer; 'chromium-default' = leave Chromium's choice. */
-    backend: 'dxgi' | 'chromium-default';
+    /**
+     * 'wgc' = enable AllowWgcScreenCapturer AND disable DirectXCapturer (no
+     * DXGI anywhere, picker included); 'dxgi' = disable AllowWgcScreenCapturer
+     * (DXGI for screen shares; the picker runs out of process — see
+     * pickerEnumeration); 'chromium-default' = leave Chromium's choice.
+     */
+    backend: 'wgc' | 'dxgi' | 'chromium-default';
     why: string;
 }
 
 /**
- * What Settings → Screen capture method → Automatic does. Only ever changes
- * Chromium's choice on Windows 11 24H2+ (where Chromium would pick WGC);
- * below that Chromium already uses DXGI.
+ * What Settings → Screen capture method → Automatic does on Windows.
+ *
+ *   • 24H2+ with a known, non-hybrid GPU layout → 'dxgi': Desktop
+ *     Duplication for the share (~3.6 ms per 1440p grab, room for 90+ fps),
+ *     picker out of process so main never touches DXGI.
+ *   • 24H2+ on a hybrid-GPU machine → 'wgc' (DuplicateOutput fails there and
+ *     DXGI's fallback is GDI, which is slower than WGC).
+ *   • 24H2+ on the very first launch (GPU layout not known before ready) →
+ *     'wgc'; the next launch decides.
+ *   • The out-of-process picker failed to start on a previous launch of THIS
+ *     version (`helperFailed`) → 'wgc' everywhere on Windows: the picker
+ *     must work, and it cannot run in-process while DXGI is enabled.
+ *   • Before 24H2 → Chromium's own choice (DXGI for the share; WGC would
+ *     draw a yellow border there) — with the picker out of process as well,
+ *     which it was NOT before 2026-10-08.
  */
 export function decideAutoScreenCapturer(opts: {
     platform: string;
     windowsBuild: number | null;
     gpu: GpuTopologyHint | null;
+    /** parseSourcesHelperFailure for the running version. */
+    helperFailed?: boolean;
 }): AutoCapturerDecision {
     if (opts.platform !== 'win32') return { backend: 'chromium-default', why: opts.platform };
+    if (opts.helperFailed) {
+        return { backend: 'wgc', why: 'auto: WGC, no DXGI (the out-of-process picker failed to start last launch)' };
+    }
     if (opts.windowsBuild === null) return { backend: 'chromium-default', why: 'Windows build unknown' };
     if (opts.windowsBuild < WIN11_24H2_BUILD) {
         return { backend: 'chromium-default', why: `auto: Windows build ${opts.windowsBuild} < 24H2` };
     }
-    if (!opts.gpu) return { backend: 'chromium-default', why: 'auto: GPU layout not known yet (next launch)' };
-    if (opts.gpu.hybrid) return { backend: 'chromium-default', why: 'auto: hybrid GPU — DXGI can fail there' };
-    return { backend: 'dxgi', why: 'auto: DXGI (grabs ~2.7× faster than WGC)' };
+    if (!opts.gpu) return { backend: 'wgc', why: 'auto: WGC, no DXGI (GPU layout not known yet — next launch decides)' };
+    if (opts.gpu.hybrid) return { backend: 'wgc', why: 'auto: WGC, no DXGI (hybrid GPU — Desktop Duplication can fail there)' };
+    return { backend: 'dxgi', why: 'auto: DXGI for the share (grabs ~2.7× faster than WGC), picker out of process' };
+}
+
+/**
+ * Whether DXGI Desktop Duplication is enabled in THIS (main) process: true
+ * unless DirectXCapturer is disabled, which buildChromiumMediaSwitches does
+ * exactly when the effective backend is 'wgc'.
+ */
+export function dxgiEnabledInMainProcess(
+    platform: string,
+    pref: ScreenCapturerPref,
+    autoBackend: AutoCapturerDecision['backend'],
+): boolean {
+    if (platform !== 'win32') return false;
+    const backend = pref === 'auto' ? autoBackend : pref;
+    return backend !== 'wgc';
+}
+
+/**
+ * Where desktopCapturer.getSources() may run. 'helper' whenever DXGI is
+ * enabled in main (see the 2026-10-08 section above) — there is NO
+ * in-process fallback in that case, by design. `forceHelper` is the
+ * unpackaged-build test knob (CIPHERLINE_SOURCES_HELPER=1) that exercises the
+ * helper on Linux/macOS harnesses.
+ */
+export function pickerEnumeration(opts: {
+    platform: string;
+    pref: ScreenCapturerPref;
+    autoBackend: AutoCapturerDecision['backend'];
+    forceHelper?: boolean;
+}): 'helper' | 'in-process' {
+    if (dxgiEnabledInMainProcess(opts.platform, opts.pref, opts.autoBackend)) return 'helper';
+    return opts.forceHelper ? 'helper' : 'in-process';
+}
+
+/**
+ * "The out-of-process picker could not start" — persisted so the NEXT launch
+ * of Automatic falls back to WGC (the switches are fixed before ready). Keyed
+ * to the app version: an update retries the helper.
+ */
+export const SOURCES_HELPER_FAILURE_FILENAME = 'sources-helper-failure.json';
+export const SOURCES_HELPER_FAILURE_MAX_BYTES = 2 * 1024;
+
+export function serializeSourcesHelperFailure(f: { version: string; reason: string; at: number }): string {
+    return JSON.stringify({ version: f.version.slice(0, 64), reason: f.reason.slice(0, 200), at: f.at }) + '\n';
+}
+
+/** True only for a well-formed record written by THIS app version. */
+export function parseSourcesHelperFailure(text: string | null | undefined, appVersion: string): boolean {
+    if (!text || text.length > SOURCES_HELPER_FAILURE_MAX_BYTES) return false;
+    try {
+        const v = JSON.parse(text) as Record<string, unknown>;
+        return !!v && typeof v === 'object' && typeof v.version === 'string' && v.version === appVersion;
+    } catch {
+        return false;
+    }
 }
 
 /** How the captured display's refresh rate was found (shown in the overlay). */
@@ -309,6 +520,7 @@ export function expectedScreenCapturer(opts: {
         if (pref === 'wgc') return { backend: 'wgc', why: forced('wgc') };
         if (pref === 'dxgi') return { backend: 'dxgi', why: forced('dxgi') };
         if (opts.auto?.backend === 'dxgi') return { backend: 'dxgi', why: opts.auto.why };
+        if (opts.auto?.backend === 'wgc') return { backend: 'wgc', why: opts.auto.why };
         if (opts.auto && windowsBuild !== null && windowsBuild >= WIN11_24H2_BUILD) {
             // Automatic left Chromium's WGC in place — say why.
             return { backend: 'wgc', why: opts.auto.why };

@@ -5,7 +5,7 @@ import Picker from '@emoji-mart/react';
 import { init, Data, SearchIndex } from 'emoji-mart';
 import { useDismissOnOutsideClick } from '../hooks/useDismissOnOutsideClick';
 import { useEscape } from '../hooks/useEscape';
-import { useEncryptedAvatar } from '../hooks/useEncryptedAvatar';
+import { useServerEmojiUrls } from '../hooks/useServerEmojiUrl';
 import type { ServerEmoji } from '../hooks/useServerEmojis';
 
 // Initialise the picker's own index once at module load (used by the
@@ -66,7 +66,18 @@ export type { EmojiSuggestion } from './emojiSearch';
  *  custom-emoji surface (autocomplete dropdown, reaction chips, inline
  *  message render) is ChatPane's own JSX and renders EmojiImage directly,
  *  with no resolver needed. */
-export type CustomEmojiInput = Pick<ServerEmoji, 'emoji_id' | 'name' | 'attachment_id' | 'key_b64' | 'nonce_b64'>;
+export type CustomEmojiInput = Pick<ServerEmoji, 'emoji_id' | 'name' | 'attachment_id' | 'key_b64' | 'nonce_b64'>
+    & Partial<Pick<ServerEmoji, 'server_id'>>;
+
+/** Stand-in `src` for a custom emoji whose image has not resolved yet, so the
+ *  server's category shows every emoji (in its final position) from the first
+ *  frame instead of growing one emoji at a time. A neutral rounded tile —
+ *  inline SVG data URI (CSP img-src allows data:), no network. */
+const CUSTOM_EMOJI_PLACEHOLDER_SRC =
+    'data:image/svg+xml,' + encodeURIComponent(
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">' +
+        '<rect x="2" y="2" width="20" height="20" rx="6" fill="#ffffff" fill-opacity="0.10"/></svg>',
+    );
 
 /** Payload emoji-mart's onEmojiSelect hands back. For a native pick, `native`
  *  is the unicode character and `id`/`src` describe emoji-mart's own dataset
@@ -97,30 +108,6 @@ export interface PickerProps {
     /** Needed to decrypt customEmojis' blobs — see EmojiPickerCustomResolver. */
     token?: string | null;
 }
-
-/**
- * Resolves each custom emoji's encrypted blob to a decrypted object URL and
- * reports the accumulated map back to the parent. One `useEncryptedAvatar`
- * call per emoji, each in its OWN component instance (hooks can't run in a
- * loop) — mounted only while the picker is open, so this pays the decrypt
- * cost lazily rather than for every server the app has ever joined. Reuses
- * the exact same 3-tier cache (memory/IndexedDB/network) as every other
- * encrypted image in the app, so a picker reopened later is instant.
- */
-const EmojiUrlProbe: React.FC<{
-    emoji: CustomEmojiInput;
-    token: string | null;
-    onUrl: (emojiId: string, url: string | null) => void;
-}> = ({ emoji, token, onUrl }) => {
-    const url = useEncryptedAvatar(emoji.attachment_id, token, { keyB64: emoji.key_b64, nonceB64: emoji.nonce_b64 });
-    const lastReported = useRef<string | null>(null);
-    useEffect(() => {
-        if (lastReported.current === url) return;
-        lastReported.current = url;
-        onUrl(emoji.emoji_id, url);
-    }, [url, emoji.emoji_id, onUrl]);
-    return null;
-};
 
 // Styles injected into emoji-mart's shadow root. emoji-mart's public CSS
 // custom properties (--rgb-*, --font-family) only reach so far — its own
@@ -167,14 +154,22 @@ const EmojiPickerPopover: React.FC<PickerProps> = ({ onEmojiSelect, onClose, anc
     const ref = useRef<HTMLDivElement>(null);
     const [style, setStyle] = useState<React.CSSProperties>({ opacity: 0, pointerEvents: 'none', position: 'fixed', top: -9999 });
 
-    // Resolved-URL cache for this server's custom emojis, fed by the probes
-    // below. Empty entries (not yet resolved, or failed) are simply omitted
-    // from emoji-mart's `custom` category — a still-decrypting emoji just
-    // doesn't appear in the grid yet rather than showing a broken image.
-    const [resolvedUrls, setResolvedUrls] = useState<Record<string, string | null>>({});
-    const handleUrl = useCallback((emojiId: string, url: string | null) => {
-        setResolvedUrls(prev => (prev[emojiId] === url ? prev : { ...prev, [emojiId]: url }));
-    }, []);
+    // This server's custom emojis → decrypted object URLs, through the
+    // batched emoji loader (one URL request per 100 emojis, bounded download
+    // pool, encrypted disk cache). `useServerEmojiUrls` coalesces resolutions:
+    // emoji-mart rebuilds its WHOLE grid on every `custom` change, so 100
+    // cold emojis must not mean 100 rebuilds. Unresolved emojis render a
+    // placeholder tile in their final slot meanwhile.
+    const emojiRefs = useMemo(
+        () => (customEmojis ?? []).map(e => ({
+            serverId: e.server_id ?? null,
+            attachmentId: e.attachment_id,
+            keyB64: e.key_b64,
+            nonceB64: e.nonce_b64,
+        })),
+        [customEmojis],
+    );
+    const resolvedUrls = useServerEmojiUrls(emojiRefs, token ?? null);
 
     const customCategories = useMemo(() => {
         const list = customEmojis ?? [];
@@ -191,11 +186,12 @@ const EmojiPickerPopover: React.FC<PickerProps> = ({ onEmojiSelect, onClose, anc
         scopeCustomEmojis(new Set(list.map(e => e.emoji_id)));
 
         if (list.length === 0) return undefined;
-        const emojis = list
-            .map(e => ({ id: e.emoji_id, name: e.name, url: resolvedUrls[e.emoji_id] }))
-            .filter((e): e is { id: string; name: string; url: string } => !!e.url)
-            .map(e => ({ id: e.id, name: e.name, keywords: [e.name], skins: [{ src: e.url }] }));
-        if (emojis.length === 0) return undefined;
+        const emojis = list.map(e => ({
+            id: e.emoji_id,
+            name: e.name,
+            keywords: [e.name],
+            skins: [{ src: resolvedUrls[e.attachment_id] ?? CUSTOM_EMOJI_PLACEHOLDER_SRC }],
+        }));
         return [{ id: 'server_emojis', name: 'This Server', emojis }];
     }, [customEmojis, resolvedUrls]);
 
@@ -332,9 +328,6 @@ const EmojiPickerPopover: React.FC<PickerProps> = ({ onEmojiSelect, onClose, anc
 
     return createPortal(
         <>
-            {(customEmojis ?? []).map(e => (
-                <EmojiUrlProbe key={e.emoji_id} emoji={e} token={token ?? null} onUrl={handleUrl} />
-            ))}
             <div
             ref={ref}
             style={{

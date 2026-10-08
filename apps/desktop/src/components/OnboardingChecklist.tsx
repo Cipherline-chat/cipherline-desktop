@@ -191,6 +191,7 @@ export const OnboardingChecklist: React.FC<Props> = ({ onOpenSettings, refreshSi
             {gateOpen && (
             <motion.div
                 key="checklist-card"
+                data-ob-anchor="onboarding-checklist"
                 initial={{ opacity: 0, y: 20, scale: 0.97 }}
                 animate={{ opacity: 1, y: 0, scale: 1 }}
                 exit={{ y: 180, opacity: 0, transition: { duration: 0.42, ease: [0.4, 0, 1, 1] } }}

@@ -17,6 +17,8 @@ import type { ScreenShareCodecPref } from './screenShare';
 
 const HUD_KEY = 'cipherline_stream_stats_hud';
 const CODEC_KEY = 'cipherline_screenshare_codec';
+const HEVC_KEY = 'cipherline_allow_hevc';
+const SHARE_LOW_KEY = 'cipherline_share_low_layer';
 
 const CODEC_PREFS: readonly ScreenShareCodecPref[] = ['auto', 'h264', 'vp9', 'vp8'];
 
@@ -56,4 +58,34 @@ export function useStreamStatsHudEnabled(): boolean {
 
 export function useScreenShareCodecPref(): ScreenShareCodecPref {
     return useSyncExternalStore(subscribe, getScreenShareCodecPref, () => 'auto' as const);
+}
+
+// ── Advanced → video encoding (device-local, excluded from backups) ────────
+
+/** "Allow H.265 when everyone supports it" — default ON (stored '0' = off). */
+export function getAllowHevc(): boolean {
+    return read(HEVC_KEY) !== '0';
+}
+
+export function setAllowHevc(on: boolean): void {
+    try { secureLocalStore.setItem(HEVC_KEY, on ? '1' : '0'); } catch { /* locked store */ }
+    emit();
+}
+
+export function useAllowHevc(): boolean {
+    return useSyncExternalStore(subscribe, getAllowHevc, () => true);
+}
+
+/** "Lighter copy for viewers (saves bandwidth)" — default OFF (shareLowLayer.ts). */
+export function getShareLowLayerEnabled(): boolean {
+    return read(SHARE_LOW_KEY) === '1';
+}
+
+export function setShareLowLayerEnabled(on: boolean): void {
+    try { secureLocalStore.setItem(SHARE_LOW_KEY, on ? '1' : '0'); } catch { /* locked store */ }
+    emit();
+}
+
+export function useShareLowLayerEnabled(): boolean {
+    return useSyncExternalStore(subscribe, getShareLowLayerEnabled, () => false);
 }

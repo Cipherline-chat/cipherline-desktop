@@ -8,6 +8,8 @@
  *   getPidFromSourceId(sourceId: string): number | null
  *   startCapture(pid: number, callback: Function): void
  *   stopCapture(): void
+ *   + getScreenRectFromDeviceIndex / getWindowInfo / placeOverlayAbove
+ *     (window_geometry.cc — annotation overlay geometry)
  *
  * Requires Windows 10 2004 (build 19041+) for AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK.
  */
@@ -651,6 +653,10 @@ static napi_value StopCapture(napi_env env, napi_callback_info /*info*/)
 // Module init
 // ────────────────────────────────────────────────────────────────────────────
 
+// window_geometry.cc — display/window geometry for the annotation
+// overlay (see that file). Linked into this addon so there is one .node file.
+void RegisterWindowGeometry(napi_env env, napi_value exports);
+
 static napi_value Init(napi_env env, napi_value exports)
 {
     napi_value fn;
@@ -663,6 +669,8 @@ static napi_value Init(napi_env env, napi_value exports)
 
     napi_create_function(env, nullptr, 0, StopCapture, nullptr, &fn);
     napi_set_named_property(env, exports, "stopCapture", fn);
+
+    RegisterWindowGeometry(env, exports);
 
     return exports;
 }

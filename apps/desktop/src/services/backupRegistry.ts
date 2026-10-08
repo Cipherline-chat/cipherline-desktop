@@ -53,7 +53,12 @@ export const KV_RULES: KvRule[] = [
     { pattern: 'cipherline_server_notif_prefs_{uid}',   match: 'exact',  include: true,  why: 'Per-server notification overrides' },
     { pattern: 'cipherline_channel_notif_prefs_{uid}',  match: 'exact',  include: true,  why: 'Per-channel notification overrides' },
     { pattern: 'cipherline_home_pins_{uid}',            match: 'exact',  include: true,  why: 'Home-screen pins' },
-    { pattern: 'cipherline_server_rail_order_{uid}',    match: 'exact',  include: true,  why: 'Server rail drag-to-reorder order' },
+    { pattern: 'cipherline_server_rail_order_{uid}',    match: 'exact',  include: true,  why: 'Server rail order — legacy flat list, still written as the flattened order for pre-folder builds' },
+    // Folders are a personal UI preference (and part of the on-device social
+    // graph): names, colours, membership and the interleaved rail order. The
+    // server never sees them, so the encrypted backup is their only way to
+    // survive a reinstall.
+    { pattern: 'cipherline_server_rail_layout_{uid}',   match: 'exact',  include: true,  why: 'Server rail layout: order + server folders (name, colour, members)' },
     { pattern: 'cipherline_category_collapsed_{uid}_',  match: 'prefix', include: true,  why: 'Collapsed channel categories' },
     { pattern: 'cipherline_ignored_{uid}_',             match: 'prefix', include: true,  why: 'Ignored/blocked server members (safety)' },
     { pattern: 'kv_verify_v2_{uid}_',                   match: 'prefix', include: true,  why: 'Safety-number verification state per contact' },
@@ -117,12 +122,34 @@ export const KV_RULES: KvRule[] = [
     // device on defaults nobody picked.
     { pattern: 'cipherline_notif_ask_{uid}',            match: 'exact',  include: false, why: 'Notification ask marker — "this device has been asked"; the OS permission is per machine, so it never travels' },
     { pattern: 'cipherline_device_storage_setup_{uid}', match: 'exact',  include: false, why: 'Device storage-setup marker — "this device has chosen its retention"; device-local by definition' },
+    { pattern: 'cipherline_onboarding_r6_{uid}',        match: 'exact',  include: false, why: 'First-run setup resume point on THIS device (utils/onboardingProgress.ts); a restore must never reopen onboarding' },
     // Settings → Advanced → Screen share & stream stats (streamDiagnosticsPrefs.ts).
     // The codec choice describes THIS machine's GPU encoder; restored onto a
     // machine without that encoder it would force a software encode. The
     // overlay is a testing aid, not a preference worth carrying.
     { pattern: 'cipherline_screenshare_codec',          match: 'exact',  include: false, why: 'Screen-share encoder override — about this device’s GPU, never travels' },
+    { pattern: 'cipherline_loading_game_best',          match: 'exact',  include: false, why: 'Firewall mini-game best score on the loading/offline screens — device-local, shown before sign-in' },
     { pattern: 'cipherline_stream_stats_hud',           match: 'exact',  include: false, why: 'Stream-stats overlay toggle — device-local testing aid' },
+    // The "video froze while gaming" offer's snooze / don't-ask-again flags
+    // (utils/gamingVideoOffer.ts). About THIS machine's gaming load, like the
+    // mode it offers (which lives in main's startup-flags.json, not here).
+    { pattern: 'cipherline_gaming_video_offer',         match: 'exact',  include: false, why: 'Gaming-video freeze offer snooze — about this device’s gaming load, never travels' },
+    { pattern: 'cipherline_allow_hevc',                 match: 'exact',  include: false, why: 'Allow H.265 when everyone supports it — about this device’s GPU, never travels' },
+    { pattern: 'cipherline_share_low_layer',            match: 'exact',  include: false, why: 'Screen share lighter copy for viewers — about this device’s encoder, never travels' },
+    // Camera quality (cameraQualityPrefs.ts) and the "PC is struggling" offer
+    // (performanceOffer.ts): both describe THIS machine's CPU/GPU/camera.
+    { pattern: 'cipherline_camera_quality',             match: 'exact',  include: false, why: 'Camera quality tier — what this PC/camera can sustain, never travels' },
+    { pattern: 'cipherline_camera_codec',               match: 'exact',  include: false, why: 'Camera encoder override — about this device’s GPU, never travels' },
+    { pattern: 'cipherline_incoming_video',             match: 'exact',  include: false, why: 'Incoming video quality (Auto/Reduced/Data saver) — about this PC and its connection, never travels' },
+    { pattern: 'cipherline_perf_offer',                 match: 'exact',  include: false, why: 'Performance offer snooze / don’t-ask — about this machine, never travels' },
+    // Crash / issue reporter (utils/diagnostics/autoSend.ts). Per account (the
+    // report is linked to the account that sends it) but EXCLUDED: consent to
+    // upload crash reports automatically is given on each device and must
+    // never be switched on by restoring a backup onto a new machine — same
+    // device-local class as the two diagnostics prefs above. The log is
+    // bookkeeping (hashed crash signatures + times for the daily cap/dedupe).
+    { pattern: 'cipherline_diag_auto_send_{uid}',       match: 'exact',  include: false, why: 'Automatically send crash reports — per-device consent, never restored' },
+    { pattern: 'cipherline_diag_auto_send_log_{uid}',   match: 'exact',  include: false, why: 'Auto-send bookkeeping (hashed signatures + times) for the daily cap / dedupe' },
 
     // ── Excluded: carried by structured vault fields (don't duplicate) ────
     { pattern: 'cipherline_convs_{uid}',                match: 'exact',  include: false, why: 'vault.topics' },
@@ -216,6 +243,11 @@ export const KV_RULES: KvRule[] = [
     // One directory fetch per conversation rebuilds the whole thing.
     { pattern: 'cipherline_peer_identity_{uid}',        match: 'exact',  include: false, why: 'Avatar-id / username cache — social-graph metadata that must not travel in a file; rebuilt by one directory fetch, and the blobs it points at are not backed up either' },
     { pattern: 'cipherline_first_friend_{uid}',         match: 'exact',  include: false, why: 'One-shot celebration' },
+    // The Home easter-egg game's best score (utils/firewallBest.ts). A bit of
+    // fun on this device, not account data: not worth a record in a file that
+    // travels to Drive or a USB stick, and losing it to a restore costs nothing.
+    { pattern: 'cipherline_firewall_best_{uid}',        match: 'exact',  include: false, why: 'Home easter-egg game best score — a toy, not account data; never travels' },
+    { pattern: 'cipherline_keys_spam_bag_{uid}',        match: 'exact',  include: false, why: 'Which Home spam-egg show Keys does next (utils/keysSpamStore.ts) — a toy, not account data; never travels' },
     { pattern: 'cipherline_pro_welcomed_{uid}',         match: 'exact',  include: false, why: 'One-shot' },
     { pattern: 'cipherline_trial_banner_dismissed_{uid}', match: 'exact', include: false, why: 'Billing banner state' },
     { pattern: 'cipherline_pastdue_banner_shows_{uid}', match: 'exact',  include: false, why: 'Billing banner state' },
@@ -231,6 +263,15 @@ export const KV_RULES: KvRule[] = [
     // announcements.ts) restoring it could evict recent, still-relevant
     // dismissals in favor of stale ones.
     { pattern: 'cipherline_announcement_dismissed_{uid}', match: 'exact', include: false, why: 'Announcement-banner dismissal state (ephemeral per-device UI state)' },
+    // Crash-recovery rejoin record (utils/callRejoinStore.ts). MUST stay
+    // excluded, and for a security reason rather than a size one: for a DM/
+    // group call it carries the call's E2EE key, which is deliberately
+    // short-lived (rewritten every 30 s while the call is live, deleted when
+    // it ends, ignored and deleted at startup once 150 s stale). A backup
+    // would turn a key that is meant to die with the call into a durable
+    // artifact — and the record is meaningless on another device or later
+    // anyway: it names a live session on THIS device's call.
+    { pattern: 'cipherline_call_rejoin_{uid}',          match: 'exact',  include: false, why: 'Crash-recovery call record incl. a DM call E2EE key — ephemeral by design, never backed up' },
     { pattern: 'cl_referral_welcome_{uid}',             match: 'exact',  include: false, why: 'One-shot' },
     // Signup attribution (utils/signupAttribution.ts). All four are one-shot or
     // install-local carry-over state — a referral/invite code waiting to be used
@@ -274,6 +315,17 @@ export const SECURE_STORE_EXCLUDED = [
     // G8: "you've seen the weak-keystore notice" — describes THIS machine's
     // keystore, so restoring it elsewhere would suppress a true warning.
     'keyprot_notice_ack',
+    // Crash reporter (electron/diagnostics.ts): crash records waiting for the
+    // user to send or dismiss them. About THIS machine's crashes, and a backup
+    // restored elsewhere would re-offer reports for crashes that machine never
+    // had — device-local by definition.
+    'diag_pending_crashes',
+    // Staging lock (electron/staging-lock.ts): "this device passed the staging
+    // password check", bound to the current verifier. Device-local by
+    // definition, and a security exclusion like 'updateChannel': restoring it
+    // would unlock staging builds on a machine that never entered the
+    // password. Prefix also covers the dev-preview key.
+    'staging_unlock',
 ];
 
 const UID = '{uid}';

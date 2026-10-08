@@ -10,6 +10,12 @@
  *     the stream-stats overlay's `grab` row.
  * Both are set from Settings → Advanced and take effect on the next launch.
  *
+ * And one user-facing setting whose launch-time half lives here:
+ *   - `gamingVideo`:    Settings → Voice & Video → "Prioritize call video
+ *     while gaming" (./gaming-video-mode.ts). Its Chromium switches apply on
+ *     the next launch; its runtime half (process priority during a call, the
+ *     camera's degradation preference) follows the SAVED value immediately.
+ *
  * ── Why a plain JSON file and not SecureStore / secureLocalStore ─────────
  * They are read at the top of main.ts, before `app.ready`. SecureStore needs
  * `safeStorage`, which is not usable before ready, and secureLocalStore lives
@@ -54,15 +60,18 @@ export const CAPTURE_LOG_MAX_BYTES = 5 * 1024 * 1024;
 export interface StartupFlags {
     screenCapturer: ScreenCapturerPref;
     captureLog: boolean;
+    /** "Prioritize call video while gaming" — see ./gaming-video-mode.ts. */
+    gamingVideo: boolean;
 }
 
 export const DEFAULT_STARTUP_FLAGS: Readonly<StartupFlags> = Object.freeze({
     screenCapturer: 'auto',
     captureLog: false,
+    gamingVideo: false,
 });
 
 const CAPTURERS: ReadonlySet<string> = new Set<ScreenCapturerPref>(['auto', 'dxgi', 'wgc']);
-const KNOWN_KEYS: ReadonlySet<string> = new Set<keyof StartupFlags>(['screenCapturer', 'captureLog']);
+const KNOWN_KEYS: ReadonlySet<string> = new Set<keyof StartupFlags>(['screenCapturer', 'captureLog', 'gamingVideo']);
 
 const own = (o: object, k: string): boolean => Object.prototype.hasOwnProperty.call(o, k);
 
@@ -86,6 +95,7 @@ export function parseStartupFlags(text: string | null | undefined): StartupFlags
         out.screenCapturer = raw.screenCapturer as ScreenCapturerPref;
     }
     if (own(raw, 'captureLog') && raw.captureLog === true) out.captureLog = true;
+    if (own(raw, 'gamingVideo') && raw.gamingVideo === true) out.gamingVideo = true;
     return out;
 }
 
@@ -110,12 +120,20 @@ export function validateStartupFlagsPatch(input: unknown): Partial<StartupFlags>
         if (typeof input.captureLog !== 'boolean') throw new Error('startup flags: bad captureLog');
         out.captureLog = input.captureLog;
     }
+    if (own(input, 'gamingVideo')) {
+        if (typeof input.gamingVideo !== 'boolean') throw new Error('startup flags: bad gamingVideo');
+        out.gamingVideo = input.gamingVideo;
+    }
     return out;
 }
 
 /** Only the known fields, in a fixed order — never echoes anything else to disk. */
 export function serializeStartupFlags(f: StartupFlags): string {
-    return JSON.stringify({ screenCapturer: f.screenCapturer, captureLog: f.captureLog === true }, null, 2) + '\n';
+    return JSON.stringify({
+        screenCapturer: f.screenCapturer,
+        captureLog: f.captureLog === true,
+        gamingVideo: f.gamingVideo === true,
+    }, null, 2) + '\n';
 }
 
 /** Synchronous read for the top of main.ts. Missing / unreadable / not a
@@ -145,7 +163,7 @@ export type StartupFlagSource = 'env' | 'file' | 'default';
 export interface ResolvedStartupFlags extends StartupFlags {
     /** Where each value came from — the Settings UI says so when an env var
      *  is overriding the saved choice. */
-    source: { screenCapturer: StartupFlagSource; captureLog: StartupFlagSource };
+    source: { screenCapturer: StartupFlagSource; captureLog: StartupFlagSource; gamingVideo: StartupFlagSource };
 }
 
 /** env > file > default. See the header for which env vars count when. */
@@ -182,7 +200,14 @@ export function resolveStartupFlags(opts: {
         logSrc = 'default';
     }
 
-    return { screenCapturer, captureLog, source: { screenCapturer: capSrc, captureLog: logSrc } };
+    // No environment override: a user setting, not a test knob.
+    const gamingVideo = file.gamingVideo === true;
+    const gvSrc: StartupFlagSource = gamingVideo !== DEFAULT_STARTUP_FLAGS.gamingVideo ? 'file' : 'default';
+
+    return {
+        screenCapturer, captureLog, gamingVideo,
+        source: { screenCapturer: capSrc, captureLog: logSrc, gamingVideo: gvSrc },
+    };
 }
 
 const unlinkQuiet = (p: string): void => { try { fs.unlinkSync(p); } catch { /* absent */ } };

@@ -1,0 +1,104 @@
+/* ── Server rail folders ───────────────────────────────────────────────────
+ * Folder tile (2×2 preview), the dwell-armed merge highlight, and the
+ * Android-style folder popover. See components/rail/ServerFolderTile.tsx,
+ * ServerFolderPopover.tsx and useRailFolderDnd.ts.
+ *
+ * Colour roles: lume = you/selection (the merge target is "where YOUR server
+ * is going", the open folder is your selection). Badges keep flash.
+ */
+
+/* Merge target: a lume ring + tint behind the tile, and the tile lifts. Shown
+   only after the dwell, so it never flickers on a pass-over. */
+.cl-rail-merge{
+  position:absolute;inset:-3px;z-index:0;pointer-events:none;
+  border-radius:15px;
+  background:rgba(37,224,200,.16);
+  box-shadow:0 0 0 2px var(--cl-lume),0 0 18px rgba(37,224,200,.35);
+  animation:cl-rail-merge-in .16s ease-out both;
+}
+@keyframes cl-rail-merge-in{from{opacity:0;transform:scale(.86)}to{opacity:1;transform:scale(1)}}
+.cl-rail-merge-lift{position:relative;z-index:1;transition:transform .16s ease}
+.cl-rail-merge-lift[data-merge="true"]{transform:scale(1.08)}
+
+/* Folder tile: a 40×40 rounded box (same footprint as a server icon) holding
+   a 2×2 grid of 14px server icons (the first four), notched under the
+   tile's corner badges — see rail/folderTileStyle.ts. */
+.cl-folder-box{
+  position:relative;width:40px;height:40px;border-radius:10px;box-sizing:border-box;
+  padding:5px;display:grid;grid-template-columns:14px 14px;grid-template-rows:14px 14px;gap:2px;
+  background:var(--cl-folder-tint, rgba(255,255,255,.07));
+  box-shadow:inset 0 0 0 1px var(--cl-folder-ring, rgba(255,255,255,.10));
+  transition:box-shadow .16s ease,background-color .16s ease,transform .18s cubic-bezier(.22,1.22,.36,1);
+}
+/* Open: the tile reads as pressed — sunk a little, darker, lume-ringed —
+   while its contents are "out" in the popover. */
+.cl-folder-box[data-open="true"]{
+  transform:scale(.9);
+  background:color-mix(in srgb, var(--cl-folder-tint, rgba(255,255,255,.07)) 60%, rgba(0,0,0,.35));
+  box-shadow:inset 0 0 0 1.5px rgba(37,224,200,.6),inset 0 2px 5px rgba(0,0,0,.45);
+}
+.cl-folder-cell{width:14px;height:14px;border-radius:4px;overflow:hidden;display:block}
+.cl-folder-cell > *{width:14px!important;height:14px!important;border-radius:4px!important;font-size:6px!important;line-height:1}
+
+/* The popover */
+.cl-folder-pop{
+  position:fixed;z-index:60;
+  min-width:150px;max-width:min(320px, calc(100vw - 16px));
+  /* A step above cl-deep: it floats over the server/channel sidebar, which
+     IS cl-deep, and must not melt into it. */
+  background:color-mix(in srgb, var(--cl-deep) 68%, var(--cl-surface));
+  border:1.5px solid var(--cl-raise);
+  border-radius:18px;
+  box-shadow:0 18px 44px rgba(0,0,0,.55),0 2px 8px rgba(0,0,0,.35);
+  padding:10px 10px 12px;
+  font-family:var(--cl-font-body);
+  color:var(--cl-text);
+  display:flex;flex-direction:column;gap:8px;
+}
+.cl-folder-pop[data-color]{border-color:color-mix(in srgb, var(--cl-folder-accent) 45%, var(--cl-border))}
+.cl-folder-pop-head{display:flex;align-items:center;gap:8px;min-height:30px;padding:0 4px}
+.cl-folder-pop-swatch{width:10px;height:10px;border-radius:99px;flex:none;background:var(--cl-folder-accent, var(--cl-faint))}
+.cl-folder-pop-name{
+  flex:1;min-width:0;text-align:left;border:none;background:none;cursor:text;
+  font-family:var(--cl-font-display);font-weight:600;font-size:15px;color:var(--cl-text);
+  padding:4px 6px;border-radius:8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.cl-folder-pop-name:hover{background:var(--cl-surface)}
+.cl-folder-pop-name:focus-visible{outline:2px solid var(--cl-lume);outline-offset:1px}
+.cl-folder-pop-input{
+  flex:1;min-width:0;font-family:var(--cl-font-display);font-weight:600;font-size:15px;
+  color:var(--cl-text);background:var(--cl-surface);border:1.5px solid var(--cl-lume);
+  border-radius:8px;padding:3px 6px;outline:none;
+}
+.cl-folder-pop-count{font-size:11px;font-weight:700;color:var(--cl-faint);flex:none}
+.cl-folder-pop-grid{
+  display:grid;gap:6px 4px;justify-content:start;
+  overflow-y:auto;overscroll-behavior:contain;
+  padding:2px;
+}
+.cl-folder-pop-cell{position:relative;width:72px;display:flex;flex-direction:column;align-items:center}
+.cl-folder-pop-btn{
+  position:relative;display:flex;flex-direction:column;align-items:center;gap:4px;
+  width:72px;padding:6px 2px 4px;border:none;background:none;cursor:pointer;border-radius:12px;
+  color:var(--cl-muted);font-family:var(--cl-font-body);
+}
+.cl-folder-pop-btn:hover{background:var(--cl-surface);color:var(--cl-text)}
+.cl-folder-pop-btn:focus-visible{outline:2px solid var(--cl-lume);outline-offset:-2px;color:var(--cl-text)}
+.cl-folder-pop-btn[data-active="true"]{color:var(--cl-text)}
+.cl-folder-pop-icon{position:relative;width:44px;height:44px;border-radius:12px;display:flex;align-items:center;justify-content:center}
+.cl-folder-pop-btn[data-active="true"] .cl-folder-pop-icon{box-shadow:0 0 0 2px var(--cl-lume),0 0 14px rgba(37,224,200,.25)}
+.cl-folder-pop-label{
+  font-size:11px;font-weight:700;line-height:1.25;max-width:68px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.cl-folder-pop-drop{position:absolute;top:8px;bottom:22px;width:2px;border-radius:2px;background:var(--cl-lume);pointer-events:none;z-index:3}
+.cl-folder-pop-drop[data-side="left"]{left:-3px}
+.cl-folder-pop-drop[data-side="right"]{right:-3px}
+.cl-folder-pop[data-drop-target="true"]{box-shadow:0 18px 44px rgba(0,0,0,.55),0 0 0 2px rgba(37,224,200,.45)}
+.cl-folder-pop-hint{font-size:11px;color:var(--cl-faint);padding:0 6px;font-weight:600}
+
+@media (prefers-reduced-motion: reduce){
+  .cl-rail-merge{animation:none}
+  .cl-rail-merge-lift,.cl-folder-box{transition:none}
+  .cl-rail-merge-lift[data-merge="true"],.cl-folder-box[data-open="true"]{transform:none}
+}

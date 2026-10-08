@@ -45,6 +45,14 @@ export class RootErrorBoundary extends Component<Props, State> {
         // Goes to the main-process log (and DevTools in dev). This is the only
         // breadcrumb we get without a crash-reporting backend, so make it loud.
         console.error('[RootErrorBoundary] Uncaught render error:', error, info.componentStack);
+        // Crash reporter: hand the error to main as a pending crash record so
+        // the next boot can offer to send it (main scrubs it again before
+        // storing; nothing is uploaded from here). Optional-chained and
+        // swallowed on purpose — this component must survive anything.
+        try {
+            const bridge = (window as unknown as { electronAPI?: { diagRecordRendererCrash?: (p: { name?: string; message?: string; stack?: string }) => Promise<void> } }).electronAPI;
+            void bridge?.diagRecordRendererCrash?.({ name: error?.name, message: error?.message, stack: error?.stack })?.catch?.(() => {});
+        } catch { /* never let reporting break the fallback screen */ }
     }
 
     private details(): string {

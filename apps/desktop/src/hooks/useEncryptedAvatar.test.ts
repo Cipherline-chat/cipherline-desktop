@@ -14,9 +14,10 @@ vi.mock('../utils/avatarKeyStore', () => ({
 }));
 
 const blobStore = new Map<string, Blob>();
+const putKinds = new Map<string, string | undefined>();
 vi.mock('../utils/attachmentCache', () => ({
     getAvatarBlob: async (id: string) => blobStore.get(id) ?? null,
-    putAvatarBlob: async (id: string, b: Blob) => { blobStore.set(id, b); },
+    putAvatarBlob: async (id: string, b: Blob, opts?: { kind?: string }) => { blobStore.set(id, b); putKinds.set(id, opts?.kind); },
     deleteAvatarBlob: async (id: string) => { blobStore.delete(id); },
 }));
 
@@ -75,10 +76,51 @@ describe('loadAvatarToCache', () => {
         expect(url('/key')).toBe(0);
     });
 
-    it('a key fetch failure (403 for a non-friend) yields null with no download attempt', async () => {
-        axiosGet.mockImplementation(async (u: string) => { if (u.includes('/key')) throw new Error('403'); throw new Error('unexpected'); });
+    it('a key fetch failure (403 for a non-friend) yields null and never downloads the media', async () => {
+        // The presigned-URL request now leaves IN PARALLEL with the key fetch
+        // (it is the same server-side gate, so it 403s too) — the price of
+        // taking a round trip off every cold load is that one extra, equally
+        // gated request on this failure path. What must never happen is the
+        // media GET or a decrypt.
+        axiosGet.mockImplementation(async (u: string) => { if (u.includes('/key') || u.includes('/download')) throw new Error('403'); throw new Error('unexpected ' + u); });
         expect(await loadAvatarToCache(ID, TOKEN)).toBeNull();
-        expect(url('/download')).toBe(0);
+        expect(url('/download')).toBeLessThanOrEqual(1);
+        expect(url('https://media')).toBe(0);
+        expect(decryptBlob).not.toHaveBeenCalled();
+    });
+
+    it('a cold load asks for the key and the download URL in PARALLEL, not back to back', async () => {
+        // Hold every API response until both requests have been made. Serial
+        // code would deadlock here (the URL request waits on the key), so the
+        // assertion is that both are outstanding at once.
+        const gates: Array<() => void> = [];
+        axiosGet.mockImplementation((u: string) => new Promise((resolve, reject) => {
+            const answer = () => {
+                if (u.includes('/key')) resolve({ data: { file_key_b64: 'SERVER-KEY', file_nonce_b64: 'n' } });
+                else if (u.includes('/download')) resolve({ data: { download_url: 'https://media/x', mime_type: 'image/jpeg' } });
+                else if (u.startsWith('https://media')) resolve({ data: new Blob(['cipher']) });
+                else reject(new Error('unexpected ' + u));
+            };
+            if (u.startsWith('https://media')) answer(); else gates.push(answer);
+        }));
+        decryptBlob.mockResolvedValue(new Blob(['plain']));
+        const p = loadAvatarToCache(ID, TOKEN);
+        for (let i = 0; i < 10 && gates.length < 2; i++) await Promise.resolve();
+        expect(url('/key')).toBe(1);
+        expect(url('/download')).toBe(1);
+        gates.forEach(g => g());
+        expect(await p).toMatch(/^blob:/);
+        expect(url('https://media')).toBe(1);
+    });
+
+    it('persists with the caller\'s prune class (banners get their own budget)', async () => {
+        const kinds: Array<string | undefined> = [];
+        decryptBlob.mockResolvedValue(new Blob(['plain']));
+        blobStore.clear();
+        await loadAvatarToCache('banner-1', TOKEN, undefined, { kind: 'banner' });
+        await loadAvatarToCache('avatar-1', TOKEN);
+        kinds.push(putKinds.get('banner-1'), putKinds.get('avatar-1'));
+        expect(kinds).toEqual(['banner', undefined]);
     });
 
     it('evictAvatar drops the session URL and the persisted blob', async () => {

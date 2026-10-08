@@ -6,6 +6,9 @@ import axios from 'axios';
 import { API_BASE } from '../constants';
 import * as ed from '@noble/ed25519';
 import { dropSessionMedia } from '../utils/sessionMedia';
+import { clearRosterCache } from '../utils/serverRosterCache';
+import { clearCallEvents } from '../utils/callEventLog';
+import { clearDesktopSourceCache } from '../utils/desktopSourceCache';
 import { settleBootRefresh, BOOT_REFRESH_WAIT_MS } from '../utils/bootRefresh';
 
 interface AuthState {
@@ -13,7 +16,13 @@ interface AuthState {
     token: string | null;
     userId: string | null;
     deviceId: string | null;
-    user: { user_id: string, username: string, email: string | null, discriminator: number | null, bio: string | null, avatar_url: string | null, banner_url: string | null, created_at?: string | null } | null;
+    user: {
+        user_id: string, username: string, email: string | null, discriminator: number | null, bio: string | null, avatar_url: string | null, banner_url: string | null, created_at?: string | null,
+        /** /auth/me: the account still has the temporary name signup gave it
+         *  (the onboarding profile step has not run). Absent until /auth/me
+         *  answers, and on an API that predates it. See utils/onboardingProgress.ts. */
+        username_pending?: boolean,
+    } | null;
     /** Set when this session was force-revoked by the server (password change / disable).
      *  Shown as a banner on the login screen, then cleared on next login. */
     logoutReason: string | null;
@@ -134,6 +143,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
                 // that only finds out this way gets silently bounced with no
                 // explanation at all.
                 dropSessionMedia();
+                clearRosterCache(); // other people's member lists never outlive the session
                 secureLocalStore.removeItem('cipherline_token');
                 secureLocalStore.removeItem('cipherline_refresh_token');
                 secureLocalStore.removeItem('cipherline_user_id');
@@ -296,6 +306,9 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
     const logout = (reason: string | null = null) => {
         dropSessionMedia();
+        clearRosterCache(); // other people's member lists never outlive the session
+        clearCallEvents(); // the in-memory call event log never outlives a session
+        clearDesktopSourceCache(); // share-picker previews are pictures of the user's screen
         secureLocalStore.removeItem('cipherline_token');
         secureLocalStore.removeItem('cipherline_refresh_token');
         secureLocalStore.removeItem('cipherline_user_id');

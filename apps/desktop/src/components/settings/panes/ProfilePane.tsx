@@ -14,6 +14,7 @@ import { useAttachments } from '../../../hooks/useAttachments';
 import { useAvatarBroadcast } from '../../../hooks/useAvatarBroadcast';
 import { saveAvatarKey } from '../../../utils/avatarKeyStore';
 import { uploadAvatarBlob } from '../../../utils/avatarUpload';
+import { noteProfileEdited } from '../../../utils/profileCache';
 import { AVATAR_OUTPUT, BANNER_OUTPUT } from '../../../utils/imageCrop';
 import { useReportDirty } from '../../../hooks/useUnsavedChangesGuard';
 import { IMAGE_ACCEPT_ATTR, validateImageUpload } from '../../../utils/imageUploadValidation';
@@ -40,8 +41,9 @@ const BIO_PLACEHOLDERS = [
 export const ProfilePane: React.FC<{ onDirtyChange?: (dirty: boolean) => void }> = ({ onDirtyChange }) => {
     const { user, token, refreshProfile } = useAuth();
     const subscription = useSubscription();
-    // Same rule as the server's badge: paying or comped, not a trial.
-    const isPro = subscription.isPaid && subscription.status?.subscription_status !== 'trial';
+    // Same rule as the server's badge (getPublicProfile): effective status
+    // 'active' - paying, comped, or in a live trial. Display only.
+    const isPro = subscription.isPaid;
     const toast = useToast();
 
     const [usernameDraft, setUsernameDraft] = useState(user?.username || '');
@@ -165,6 +167,7 @@ export const ProfilePane: React.FC<{ onDirtyChange?: (dirty: boolean) => void }>
             await axios.patch(`${API_BASE}/auth/profile`, patchBody, {
                 headers: { Authorization: `Bearer ${token}` }
             });
+            noteProfileEdited(user?.user_id, patchBody as { avatar_url?: string | null; banner_url?: string | null });
             await refreshProfile();
             // Sync drafts to the just-saved ids so the save bar retracts
             // (blob previews keep displaying the new image either way).
@@ -267,6 +270,12 @@ export const ProfilePane: React.FC<{ onDirtyChange?: (dirty: boolean) => void }>
 
                     {/* Fields */}
                     <div className="sd-id-fields">
+                        {/* Truthful copy (2026-10-06): the avatar is the one
+                            profile image with a public, unencrypted copy (the
+                            referral page shows it). utils/publicAvatar.ts. */}
+                        <p className="text-[11.5px] m-0" style={{ color: 'var(--cl-faint)' }}>
+                            Your profile picture is public: it appears on your invite link. Messages, files and calls stay end-to-end encrypted.
+                        </p>
                         <div className="cl-fld">
                             <label>Username</label>
                             <div className="flex items-stretch gap-2">

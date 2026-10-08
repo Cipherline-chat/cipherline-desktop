@@ -1,0 +1,28 @@
+/* Labels pinned to points in the dot field (DotTagLayer). Ported from the
+   round-6 prototype's .tag3d rules (ob6/css/wiz.css). Tokens come from the
+   app's --cl-* set, with the prototype's values as fallbacks. */
+.dot-tags {
+  position: fixed;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+}
+.tag3d {
+  position: absolute;
+  transform: translate(-50%, 0);
+  padding: 4px 9px;
+  border-radius: 8px;
+  font: 700 11.5px var(--cl-font-body, 'Nunito', system-ui, sans-serif);
+  white-space: nowrap;
+  color: var(--cl-lume, #25E0C8);
+  background: rgba(11, 15, 30, .72);
+  border: 1px solid rgba(37, 224, 200, .3);
+  pointer-events: none;
+  transition: color .3s, border-color .3s, opacity .3s;
+}
+.tag3d.faded { color: var(--cl-faint, #5E6B8F); border-color: rgba(94, 107, 143, .35); }
+.tag3d.name { color: var(--cl-text, #F4F7FF); border-color: rgba(255, 255, 255, .14); font-size: 12.5px; }
+.tag3d.key { color: var(--cl-glow, #FFC94D); border-color: rgba(255, 201, 77, .35); }
+@media (prefers-reduced-motion: reduce) {
+  .tag3d { transition: none; }
+}

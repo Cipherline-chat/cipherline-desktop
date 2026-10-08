@@ -53,3 +53,51 @@ export interface OverlayDelta {
     append?: Array<{ id: string; points: OverlayPoint[]; updatedAt: number; closedAt: number }>;
     remove?: string[];
 }
+
+/**
+ * Why the main process did not put an overlay up (electron/annotation-
+ * overlay.ts). Reason enums only: they end up in the call event log
+ * (`annot_overlay`), so nothing here may ever carry an id, a name or a
+ * window title.
+ */
+export type OverlayRefusal =
+    /** Not a screen:/window: id, or malformed. */
+    | 'bad_source'
+    /** The id was never offered by this session's picker (admission). */
+    | 'not_offered'
+    /** This OS cannot overlay this kind of share (window shares on Linux). */
+    | 'platform'
+    /** Linux under Wayland: a client can neither place nor stack its windows. */
+    | 'wayland'
+    /** Linux X11 without a known compositing desktop: a transparent window would paint black over the share. */
+    | 'no_compositor'
+    /** Several displays and no signal saying which one the share captures. */
+    | 'no_display_match'
+    /** The audio_capture addon (window_geometry) is missing or predates it. */
+    | 'addon_missing'
+    /** The shared window is gone. */
+    | 'window_gone'
+    /** BrowserWindow creation / content protection / page write failed. */
+    | 'create_failed';
+
+/** `annot-overlay:show`'s answer. A main process older than this answers a bare boolean. */
+export type OverlayShowResult =
+    | {
+        ok: true;
+        /** How the target was resolved: display-id | monitor-rect | only-display | window. */
+        how: string;
+        /**
+         * The overlay window is INSIDE the captured stream, because this OS has
+         * no per-window capture exclusion (Linux). Viewers then see the strokes
+         * in the video itself, so their own stroke layer for this share must not
+         * draw other people's strokes a second time (utils/annotationOverlayCapture.ts).
+         */
+        captured: boolean;
+    }
+    | {
+        ok: false;
+        reason: OverlayRefusal;
+        /** Diagnostics only: how many displays main sees, and whether the addon's geometry calls exist. */
+        displays?: number;
+        addon?: boolean;
+    };

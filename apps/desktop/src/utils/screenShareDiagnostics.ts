@@ -110,6 +110,9 @@ export interface ScreenShareSession {
     sourceId: string;
     /** The frame rate the user asked to SEND (encoder maxFramerate). */
     requestedFps: number;
+    /** The resolution the user picked ('source', '1440p', …) — for the issue
+     *  reporter. Absent on sessions written before it existed. */
+    resolution?: string;
     /** What the capturer was asked for — above requestedFps on purpose
      *  (captureFrameRateFor). Absent on sessions written before pacing. */
     captureFps?: number;

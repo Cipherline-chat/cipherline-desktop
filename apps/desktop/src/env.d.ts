@@ -17,15 +17,18 @@ declare global {
         getLocalIdentity: () => Promise<string | null>;
         /** Host platform, resolved synchronously in preload via process.platform. */
         platform: 'windows' | 'mac' | 'linux';
+        /** macOS major version (15 = Sequoia); null off macOS or when unreadable. Absent on an older preload. */
+        macOSMajor?: number | null;
         /** Machine hostname (from the main process), used as a friendly device label. */
         getDeviceName: () => Promise<string>;
         getDesktopSources: (types?: Array<'window' | 'screen'>, opts?: { thumbnails?: boolean }) => Promise<Array<{ id: string, name: string, thumbnailDataUrl: string }>>;
         resolveDesktopSource: (sourceId: string | null, withAudio?: boolean) => Promise<void>;
         onShowScreensharePicker: (callback: () => void) => () => void;
-        /** Desktop annotation overlay for the local SCREEN share
-         *  (docs/video-annotation-design.md, Phase 5). `show` resolves false
-         *  when nothing can be overlaid (window share, Linux). */
-        annotationOverlayShow?: (sourceId: string) => Promise<boolean>;
+        /** Desktop annotation overlay for the local screen / window share
+         *  (docs/video-annotation-design.md, Phase 5). Resolves to the show
+         *  result, with a refusal reason when nothing can be overlaid; a main
+         *  process older than that resolves a bare boolean. */
+        annotationOverlayShow?: (sourceId: string) => Promise<boolean | import('./utils/annotationOverlayTypes').OverlayShowResult>;
         annotationOverlayHide?: () => Promise<void>;
         annotationOverlayPush?: (delta: import('./utils/annotationOverlayTypes').OverlayDelta) => void;
         /** macOS Screen Recording (TCC) status — exactly Electron's
@@ -47,6 +50,15 @@ declare global {
         /** Lower main's stall threshold to 100 ms and sample per-process
          *  CPU/memory every 2 s for `ms` (default 60 s). */
         perfStartCapture?: (ms?: number) => Promise<void>;
+        /** Crash / issue reporter (electron/diagnostics.ts). `unknown` replies
+         *  are narrowed by src/utils/diagnostics/ipc.ts. Optional: an older
+         *  main process does not have them. */
+        diagGetSystemInfo?: () => Promise<unknown>;
+        diagGetPendingCrashes?: () => Promise<unknown>;
+        diagClearPendingCrashes?: (signatures?: string[]) => Promise<void>;
+        diagMarkCrashesSeen?: (signatures?: string[]) => Promise<void>;
+        diagRecordRendererCrash?: (payload: { name?: string; message?: string; stack?: string }) => Promise<void>;
+        diagSaveReport?: (category: string, json: string) => Promise<{ status: 'saved' | 'cancelled' }>;
         onOsLockScreen: (callback: () => void) => () => void;
         onOsResume: (callback: () => void) => () => void;
         /** Per-display refresh rate. Screen capture cannot exceed it — a
@@ -67,9 +79,13 @@ declare global {
          *  an older main process does not have them. */
         getStartupFlags?: () => Promise<unknown>;
         /** Rejects on an unknown key or a value outside the enum. */
-        setStartupFlags?: (patch: { screenCapturer?: 'auto' | 'dxgi' | 'wgc'; captureLog?: boolean }) => Promise<unknown>;
+        setStartupFlags?: (patch: { screenCapturer?: 'auto' | 'dxgi' | 'wgc'; captureLog?: boolean; gamingVideo?: boolean }) => Promise<unknown>;
         /** Quit normally and start again (Electron relauncher). */
         relaunchApp?: () => Promise<void>;
+        /** A call started (true) / ended (false) — main raises / restores
+         *  process priority while "Prioritize call video while gaming" is on
+         *  (electron/gaming-video-mode.ts). Optional: older main processes. */
+        setCallMediaActive?: (active: boolean) => Promise<void>;
 
         // On-disk GIF library — each favorite lives as an AES-GCM-encrypted
         // `.enc` file under userData/cipherline-gifs/. Backup reads every
@@ -78,14 +94,33 @@ declare global {
         readGifFile: (id: string) => Promise<Uint8Array>;
         writeGifFile: (id: string, data: Uint8Array) => Promise<void>;
 
-        // Generate/load Signal identity and return full bundle for server upload
-        ensureIdentityBundle: (deviceId: string) => Promise<{
+        // Generate/load Signal identity and return the bundle for server upload.
+        // `is_new`: this call minted the identity. For an existing identity the
+        // one-time prekeys are newest-first, capped at 200, and gated by
+        // `opts.unclaimedPrekeyIds` when given (may then be EMPTY).
+        ensureIdentityBundle: (deviceId: string, opts?: { unclaimedPrekeyIds?: number[] }) => Promise<{
             device_id: string;
+            is_new?: boolean;
             identity_key_pub_b64: string;
             registration_id: number;
             signed_prekey: { id: number; pub_b64: string; sig_b64: string };
             one_time_prekeys: { prekey_id: number; prekey_pub_b64: string }[];
         }>;
+        // Top-up / signed-prekey rotation bundle (see preload.ts). With
+        // `otpPoolLow` set, null means "nothing needs publishing".
+        getRotationBundle?: (opts?: {
+            rotateSpk?: boolean;
+            unclaimedPrekeyIds?: number[];
+            retiredPrekeyIds?: number[];
+            otpPoolLow?: boolean;
+        }) => Promise<{
+            identity_key_pub_b64: string;
+            registration_id: number;
+            signed_prekey: { id: number; pub_b64: string; sig_b64: string };
+            one_time_prekeys: { prekey_id: number; prekey_pub_b64: string }[];
+        } | null>;
+        // Paging cursor for GET /v1/keys/status `held_from`. Integer or null.
+        getLowestHeldOtpId?: () => Promise<number | null>;
 
         // E2EE message encryption/decryption (ECIES v:3 sealed sender, runs in main process)
         // senderDeviceId is optional (RC-7 / Phase 5 — TOFU per (user, device)).
@@ -111,6 +146,8 @@ declare global {
          *  mid-share (distinct from silence — see audio_capture.cc's IsProcessAlive). */
         onWindowAudioProcessExited: (callback: () => void) => void;
         removeWindowAudioProcessExitedListener: () => void;
+        onWindowAudioFailed: (callback: (info: { reason: string }) => void) => void;
+        removeWindowAudioFailedListener: () => void;
 
         // Filesystem & dialogs (for backup/restore)
         saveFileAs: (opts: {
@@ -278,16 +315,6 @@ declare global {
             | { ok: false; reason: 'locked' | 'declined' | 'busy' }
             | null
         >;
-        /** SIGNUP CARVE-OUT (deliberate, owner decision 2026-09-20): the
-         *  registration wizard's ungated reveal — no confirmation dialog. See
-         *  main.ts's "SIGNUP CARVE-OUT" comment and the UPDATE notice at the
-         *  top of electron/recovery-key-gate.ts. Settings (RecoveryKeyCard.tsx)
-         *  keeps using the gated `revealRecoveryKey` above, unchanged. */
-        revealRecoveryKeySignup: () => Promise<
-            | { ok: true; keyB64: string }
-            | { ok: false; reason: 'locked' | 'declined' | 'busy' }
-            | null
-        >;
         recoverWithKey: (keyB64: string) => Promise<boolean>;
         factoryResetSecureStore: () => Promise<boolean>;
         getSecureStoreCorruption: () => Promise<{ backupFileName: string } | null>;
@@ -376,6 +403,8 @@ declare global {
         notifShow: (payload: {
             id: string; title: string; body: string; conv_id: string;
             hasReply?: boolean; replyPlaceholder?: string;
+            /** Sender avatar, 96x96 PNG data URL; main validates it and falls back to the app icon. */
+            iconDataUrl?: string;
         }) => Promise<void>;
         notifSetBadge: (count: number) => Promise<void>;
         notifFlashTaskbar: () => Promise<void>;

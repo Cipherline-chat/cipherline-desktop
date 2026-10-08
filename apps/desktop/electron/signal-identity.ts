@@ -1,6 +1,8 @@
 import { secureStore } from './storage';
 import * as crypto from 'crypto';
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
 // ---------------------------------------------------------------------------
 // C5 — bounding the lifetime of superseded signed-prekey private keys
 // ---------------------------------------------------------------------------
@@ -70,7 +72,9 @@ export function pruneSupersededSignedPrekeys(now: number = Date.now()): number[]
     // Invariant 3: fail closed — never prune when we cannot identify the active key.
     if (!Number.isFinite(activeId)) return [];
 
-    const ids = secureStore.keys()
+    // The prefix index, not a scan of the whole vault (which also holds every
+    // one-time prekey, both replay sets and every channel key).
+    const ids = secureStore.keysWithPrefix('signed_prekey_priv_')
         .map((k) => /^signed_prekey_priv_(\d+)$/.exec(k)?.[1])
         .filter((v): v is string => v != null)
         .map(Number);
@@ -107,6 +111,7 @@ export function pruneSupersededSignedPrekeys(now: number = Date.now()): number[]
             secureStore.delete(`signed_prekey_pub_${id}`);
             secureStore.delete(`signed_prekey_sig_${id}`);
             secureStore.delete(`signed_prekey_superseded_${id}`);
+            secureStore.delete(`${SPK_CREATED_PREFIX}${id}`);
             deleted.push(id);
         }
     }
@@ -130,13 +135,9 @@ export async function migrateSpkPubIfMissing(): Promise<void> {
     if (!privHex) return;
 
     try {
-        const privKey = crypto.createPrivateKey({
-            key: { kty: 'OKP', crv: 'X25519', d: Buffer.from(privHex, 'hex').toString('base64url') },
-            format: 'jwk',
-        });
-        const pubKey = crypto.createPublicKey(privKey);
-        const pubJwk = pubKey.export({ format: 'jwk' }) as { x: string };
-        const pubB64 = Buffer.from(pubJwk.x, 'base64url').toString('base64');
+        // (A d-only JWK import here always threw on Node 22 and fell through
+        // to REPLACING the signed prekey private below — see deriveX25519Pub.)
+        const pubB64 = deriveX25519Pub(privHex);
         secureStore.set(`signed_prekey_pub_${spkId}`, pubB64);
         console.log('[E2EE] Migration: derived and stored signed prekey public key.');
         return;
@@ -157,6 +158,111 @@ export async function migrateSpkPubIfMissing(): Promise<void> {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
+type KeyPairHex = { privHex: string; pubB64: string };
+
+function exportPair(privateKey: crypto.KeyObject): KeyPairHex {
+    const jwk = privateKey.export({ format: 'jwk' }) as { d: string; x: string };
+    return {
+        privHex: Buffer.from(jwk.d, 'base64url').toString('hex'),
+        pubB64:  Buffer.from(jwk.x, 'base64url').toString('base64'),
+    };
+}
+
+/**
+ * Key generation OFF the main thread. `crypto.generateKeyPair` (the async
+ * variant) runs in libuv's thread pool; the result is the same key the
+ * synchronous call would have produced from the same CSPRNG. A top-up mints a
+ * hundred of these, and the main thread owns every window.
+ */
+function generatePairAsync(type: 'x25519' | 'ed25519'): Promise<KeyPairHex> {
+    return new Promise((resolve, reject) => {
+        const done = (err: Error | null, _pub: crypto.KeyObject, priv: crypto.KeyObject) => {
+            if (err) reject(err);
+            else resolve(exportPair(priv));
+        };
+        if (type === 'x25519') crypto.generateKeyPair('x25519', undefined, done);
+        else crypto.generateKeyPair('ed25519', undefined, done);
+    });
+}
+
+function generateX25519PairsAsync(n: number): Promise<KeyPairHex[]> {
+    return Promise.all(Array.from({ length: n }, () => generatePairAsync('x25519')));
+}
+
+/**
+ * One key operation at a time. ensureSignalIdentity and generateRotationBundle
+ * read the store, generate keys asynchronously, then write; two of them
+ * interleaving across that await could both decide to mint (two identities, or
+ * two batches over the same id range). Serialising them makes each one see the
+ * other's finished result.
+ */
+let keyOpTail: Promise<unknown> = Promise.resolve();
+function serializedKeyOp<T>(op: () => Promise<T>): Promise<T> {
+    const run = keyOpTail.then(op, op);
+    keyOpTail = run.catch(() => {});
+    return run;
+}
+
+const OTP_PRIV_PREFIX = 'otp_priv_';
+
+/**
+ * Ids of every one-time prekey this device still holds a private for, read
+ * from the store's prefix index.
+ *
+ * This replaced walking `1..otp_max_id` with a `get()` per id. `otp_max_id`
+ * grows by 100 on every top-up and never shrinks, and every `get()` of a held
+ * id is an AES-GCM decrypt — on a long-lived install that walk was the single
+ * biggest block on the main thread (measured ~1.2 s for 20k held prekeys, and
+ * it ran on every `crypto:ensure-identity-bundle`).
+ */
+function heldOtpIds(): number[] {
+    const out: number[] = [];
+    for (const k of secureStore.keysWithPrefix(OTP_PRIV_PREFIX)) {
+        const digits = k.slice(OTP_PRIV_PREFIX.length);
+        const id = Number(digits);
+        // Canonical decimal only (same set the old /^otp_priv_(\d+)$/ matched,
+        // minus leading zeros, which no writer produces) — without a regex per
+        // key, because a long-lived device holds tens of thousands of these.
+        if (Number.isSafeInteger(id) && id > 0 && String(id) === digits) out.push(id);
+    }
+    return out;
+}
+
+/** Stamp when a signed prekey was minted: `signed_prekey_created_<id>` (ms). */
+const SPK_CREATED_PREFIX = 'signed_prekey_created_';
+
+/**
+ * Rotate the active signed prekey once it is this old by THIS DEVICE'S clock.
+ * Same 25 days the server uses for `spk_age_days` (KeysService.getKeyStatus).
+ *
+ * Why the client keeps its own clock: the server's `spk_age_days` is computed
+ * from `signed_prekey_created`, a TypeORM CreateDateColumn — set when the
+ * device's bundle row is first INSERTED and never updated by a later upload.
+ * So 25 days after a device's first upload the server reports "rotate" on
+ * EVERY status check, forever, and a client that obeys mints a new signed
+ * prekey every 15 minutes (each one retained 35 days and tried on every
+ * decrypt). The local stamp is what makes "roughly monthly" true.
+ */
+export const SPK_ROTATE_AFTER_MS = 25 * DAY_MS;
+
+/**
+ * Is the active signed prekey due for rotation by the local clock?
+ *
+ * A key with no creation stamp (every key minted before this existed) or a
+ * stamp in the future (clock moved back) is STAMPED NOW and reported not due —
+ * the same "start the clock, never act on an unknown age" rule the
+ * superseded-key pruning uses. Costs at most one extra rotation period once.
+ */
+function localSpkRotationDue(spkId: number, now: number): boolean {
+    const raw = secureStore.get(`${SPK_CREATED_PREFIX}${spkId}`);
+    const created = raw != null ? Number(raw) : NaN;
+    if (!Number.isFinite(created) || created > now) {
+        secureStore.set(`${SPK_CREATED_PREFIX}${spkId}`, String(now));
+        return false;
+    }
+    return now - created >= SPK_ROTATE_AFTER_MS;
+}
+
 function generateEd25519Pair(): { privHex: string; pubB64: string } {
     const { privateKey } = crypto.generateKeyPairSync('ed25519');
     const jwk = privateKey.export({ format: 'jwk' }) as { d: string; x: string };
@@ -175,13 +281,30 @@ function generateX25519Pair(): { privHex: string; pubB64: string } {
     };
 }
 
-/** Derive X25519 public key from its private key raw bytes (hex). */
+/**
+ * PKCS#8 header for a raw 32-byte X25519 private key (RFC 8410: SEQUENCE {
+ * version 0, AlgorithmIdentifier id-X25519 (1.3.101.110), OCTET STRING {
+ * OCTET STRING key } }). Only an ENCODING of the key for Node's importer.
+ */
+const X25519_PKCS8_PREFIX = Buffer.from('302e020100300506032b656e04220420', 'hex');
+
+/** Import a raw X25519 private key (hex) with no public half to hand. */
+function importRawX25519Priv(privHex: string): crypto.KeyObject {
+    const raw = Buffer.from(privHex, 'hex');
+    if (raw.length !== 32) throw new Error('X25519 private key must be 32 bytes');
+    return crypto.createPrivateKey({ key: Buffer.concat([X25519_PKCS8_PREFIX, raw]), format: 'der', type: 'pkcs8' });
+}
+
+/**
+ * Derive X25519 public key from its private key raw bytes (hex).
+ *
+ * This used to import a JWK carrying only `d`. Node 22 (and the Node inside
+ * Electron 43) rejects an OKP JWK without `x` — "The "key.x" property must be
+ * of type string" — so every derivation threw. It is only reached when a
+ * stored public half is missing, which is why it went unnoticed.
+ */
 function deriveX25519Pub(privHex: string): string {
-    const privKey = crypto.createPrivateKey({
-        key: { kty: 'OKP', crv: 'X25519', d: Buffer.from(privHex, 'hex').toString('base64url') },
-        format: 'jwk',
-    });
-    const pubJwk = crypto.createPublicKey(privKey).export({ format: 'jwk' }) as { x: string };
+    const pubJwk = crypto.createPublicKey(importRawX25519Priv(privHex)).export({ format: 'jwk' }) as { x: string };
     return Buffer.from(pubJwk.x, 'base64url').toString('base64');
 }
 
@@ -208,28 +331,63 @@ export interface IdentityBundle {
 
 /**
  * Ensures a Signal-style identity exists locally. Generates one if missing.
- * Always returns the full bundle so the caller can upload it to the server.
+ * Returns the bundle the caller uploads to POST /v1/keys/upload_bundle.
+ *
+ * For an EXISTING identity the one-time prekeys in the bundle are what this
+ * device can safely re-offer, bounded by the server's upload cap:
+ *
+ *   • newest first, at most OTP_UPLOAD_CAP (200). The bundle used to carry
+ *     EVERY held prekey. Once a device held more than 200 — which every device
+ *     whose top-ups were failing did (see useKeyRotation) — the upload was a
+ *     guaranteed 400 (UploadBundleDto @ArrayMaxSize(200)), useKeyBundleSync
+ *     retried it three times, and each try rebuilt the whole list on the main
+ *     thread: the "ensure-identity-bundle ×3, ~2.5 s each" freeze.
+ *   • `unclaimedPrekeyIds` (from GET /v1/keys/status), when given, is the same
+ *     carry gate generateRotationBundle applies: only ids the server still
+ *     lists as unclaimed are re-offered, so a prekey that was claimed — or a
+ *     legacy orphan the server has no row for — is never served twice. Absent
+ *     means the server said nothing; the bundle then falls back to "newest
+ *     held", exactly as generateRotationBundle does without the lists.
+ *
+ * Every key it writes is on disk before this resolves, and so before the
+ * renderer can upload a public half.
  */
-export async function ensureSignalIdentity(): Promise<{ isNew: boolean; bundle: IdentityBundle }> {
-    await secureStore.initialize();
-    // A new identity writes ~200 keys (100 one-time prekeys, each a priv+pub
-    // pair). batch() lands them in ONE vault write instead of one per key;
-    // everything is still on disk before this resolves (and so before the
-    // renderer can upload the public half).
-    return secureStore.batch(ensureSignalIdentitySync);
+export async function ensureSignalIdentity(
+    opts: { unclaimedPrekeyIds?: unknown } = {},
+): Promise<{ isNew: boolean; bundle: IdentityBundle }> {
+    const unclaimed = sanitizeIdList(opts.unclaimedPrekeyIds);
+    return serializedKeyOp(async () => {
+        await secureStore.initialize();
+        // A brand-new identity needs 102 key pairs; generate them in the
+        // thread pool BEFORE taking the store, not one by one on this thread.
+        const isNew = !secureStore.get('identity_priv') || !secureStore.get('registration_id');
+        const fresh = isNew
+            ? { identity: await generatePairAsync('ed25519'), spk: await generatePairAsync('x25519'), otps: await generateX25519PairsAsync(100) }
+            : null;
+        const result = secureStore.batch(() => ensureSignalIdentitySync(fresh, unclaimed ? new Set(unclaimed) : null));
+        // The vault write is asynchronous now: wait for it. Nothing generated
+        // above may reach the renderer (and from there the server) before its
+        // private half is on disk.
+        await secureStore.whenDurable();
+        return result;
+    });
 }
 
-function ensureSignalIdentitySync(): { isNew: boolean; bundle: IdentityBundle } {
+function ensureSignalIdentitySync(
+    fresh: { identity: KeyPairHex; spk: KeyPairHex; otps: KeyPairHex[] } | null,
+    unclaimedGate: Set<number> | null,
+): { isNew: boolean; bundle: IdentityBundle } {
     const identityPrivHex   = secureStore.get('identity_priv');
     const registrationIdStr = secureStore.get('registration_id');
 
     if (!identityPrivHex || !registrationIdStr) {
         console.log('[E2EE] Generating new Signal Identity...');
+        const now = Date.now();
 
-        const identity        = generateEd25519Pair();
+        const identity        = fresh?.identity ?? generateEd25519Pair();
         const registrationId  = crypto.randomInt(1, 16380);
         const signedPreKeyId  = 1;
-        const signedPreKey    = generateX25519Pair();
+        const signedPreKey    = fresh?.spk ?? generateX25519Pair();
         const spkPubBytes     = Buffer.from(signedPreKey.pubB64, 'base64');
         const signature       = signWithEd25519(identity.privHex, identity.pubB64, spkPubBytes);
 
@@ -239,11 +397,12 @@ function ensureSignalIdentitySync(): { isNew: boolean; bundle: IdentityBundle } 
         secureStore.set(`signed_prekey_priv_${signedPreKeyId}`, signedPreKey.privHex);
         secureStore.set(`signed_prekey_pub_${signedPreKeyId}`,  signedPreKey.pubB64);
         secureStore.set(`signed_prekey_sig_${signedPreKeyId}`,  signature.toString('base64'));
+        secureStore.set(`${SPK_CREATED_PREFIX}${signedPreKeyId}`, String(now));
         secureStore.set('signed_prekey_active_id',    signedPreKeyId.toString());
 
         const oneTimePrekeys: { prekey_id: number; prekey_pub_b64: string }[] = [];
         for (let i = 1; i <= 100; i++) {
-            const otp = generateX25519Pair();
+            const otp = fresh?.otps[i - 1] ?? generateX25519Pair();
             secureStore.set(`otp_priv_${i}`, otp.privHex);
             secureStore.set(`otp_pub_${i}`,  otp.pubB64);
             oneTimePrekeys.push({ prekey_id: i, prekey_pub_b64: otp.pubB64 });
@@ -251,7 +410,7 @@ function ensureSignalIdentitySync(): { isNew: boolean; bundle: IdentityBundle } 
         secureStore.set('otp_max_id', '100');
         // Mint stamp for ids 1..100 — the floor that lets `mayRetireOtp` refuse
         // an impossible retirement instruction from the server.
-        stampOtpBatch(1);
+        stampOtpBatch(1, now);
 
         return {
             isNew: true,
@@ -265,11 +424,12 @@ function ensureSignalIdentitySync(): { isNew: boolean; bundle: IdentityBundle } 
     }
 
     // Keys already exist — reconstruct the bundle from the store
-    return { isNew: false, bundle: _buildBundleFromStore(identityPrivHex, registrationIdStr) };
+    return { isNew: false, bundle: _buildBundleFromStore(identityPrivHex, registrationIdStr, unclaimedGate) };
 }
 
-/** Reconstruct the key bundle entirely from the local secure store. */
-function _buildBundleFromStore(identityPrivHex: string, registrationIdStr: string): IdentityBundle {
+/** Reconstruct the key bundle from the local secure store (see
+ *  ensureSignalIdentity for which one-time prekeys it carries and why). */
+function _buildBundleFromStore(identityPrivHex: string, registrationIdStr: string, unclaimedGate: Set<number> | null): IdentityBundle {
     const identityPubB64 = secureStore.get('identity_pub')!;
     const spkId          = parseInt(secureStore.get('signed_prekey_active_id')!, 10);
     const spkPubB64      = secureStore.get(`signed_prekey_pub_${spkId}`) ?? deriveX25519Pub(secureStore.get(`signed_prekey_priv_${spkId}`)!);
@@ -281,17 +441,25 @@ function _buildBundleFromStore(identityPrivHex: string, registrationIdStr: strin
         secureStore.set(`signed_prekey_sig_${spkId}`, sigB64);
     }
 
-    // Collect all OTPs we have stored
+    // Held prekeys from the index (never the 1..otp_max_id range), newest
+    // first, gated, capped — so the cost is bounded by what is published,
+    // not by the device's whole prekey history.
     const oneTimePrekeys: { prekey_id: number; prekey_pub_b64: string }[] = [];
-    const maxIdStr = secureStore.get('otp_max_id');
-    if (maxIdStr) {
-        const maxId = parseInt(maxIdStr, 10);
-        for (let i = 1; i <= maxId; i++) {
-            const privHex = secureStore.get(`otp_priv_${i}`);
-            if (!privHex) continue;
-            const pubB64 = secureStore.get(`otp_pub_${i}`) ?? deriveX25519Pub(privHex);
-            if (!secureStore.get(`otp_pub_${i}`)) secureStore.set(`otp_pub_${i}`, pubB64);
-            oneTimePrekeys.push({ prekey_id: i, prekey_pub_b64: pubB64 });
+    const maxId = parseInt(secureStore.get('otp_max_id') ?? '', 10);
+    if (Number.isFinite(maxId)) {
+        const ids = heldOtpIds()
+            .filter((id) => id <= maxId && (!unclaimedGate || unclaimedGate.has(id)))
+            .sort((a, b) => b - a);
+        for (const id of ids) {
+            if (oneTimePrekeys.length >= OTP_UPLOAD_CAP) break;
+            let pubB64 = secureStore.get(`otp_pub_${id}`);
+            if (!pubB64) {
+                const privHex = secureStore.get(`otp_priv_${id}`);
+                if (!privHex) continue;
+                pubB64 = deriveX25519Pub(privHex);
+                secureStore.set(`otp_pub_${id}`, pubB64);
+            }
+            oneTimePrekeys.push({ prekey_id: id, prekey_pub_b64: pubB64 });
         }
     }
 
@@ -321,25 +489,43 @@ function stampOtpBatch(startId: number, now: number = Date.now()): void {
 }
 
 /**
+ * The mint stamps, read ONCE per operation: ascending batch starts and their
+ * epoch-ms (only stamps with a readable time — an unreadable stamp covers
+ * nothing, exactly as before).
+ */
+interface MintTable { starts: number[]; times: number[] }
+
+function loadMintTable(): MintTable {
+    const rows: [number, number][] = [];
+    for (const k of secureStore.keysWithPrefix(OTP_MINT_PREFIX)) {
+        const start = Number(k.slice(OTP_MINT_PREFIX.length));
+        if (!Number.isInteger(start)) continue;
+        const ts = Number(secureStore.get(k));
+        if (!Number.isFinite(ts)) continue;
+        rows.push([start, ts]);
+    }
+    rows.sort((a, b) => a[0] - b[0]);
+    return { starts: rows.map((r) => r[0]), times: rows.map((r) => r[1]) };
+}
+
+/**
  * When was prekey `id` minted? `null` = unknown (no stamp covers it).
  *
  * Batches are contiguous and non-overlapping by construction — each starts at
  * the previous `otp_max_id + 1` — so the batch covering `id` is the one with
- * the greatest `startId <= id`.
+ * the greatest `startId <= id`. A binary search over the table: this used to
+ * scan every key in the vault AND decrypt every stamp, once per retired id —
+ * with the server's 500-id page that was ~6.6 s on one main-thread turn.
  */
-function otpMintTime(id: number): number | null {
-    let bestStart = -1;
-    let bestTs: number | null = null;
-    for (const k of secureStore.keys()) {
-        if (!k.startsWith(OTP_MINT_PREFIX)) continue;
-        const start = Number(k.slice(OTP_MINT_PREFIX.length));
-        if (!Number.isInteger(start) || start > id || start <= bestStart) continue;
-        const ts = Number(secureStore.get(k));
-        if (!Number.isFinite(ts)) continue;
-        bestStart = start;
-        bestTs = ts;
+function otpMintTime(id: number, table: MintTable): number | null {
+    let lo = 0;
+    let hi = table.starts.length - 1;
+    let best = -1;
+    while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (table.starts[mid] <= id) { best = mid; lo = mid + 1; } else { hi = mid - 1; }
     }
-    return bestTs;
+    return best >= 0 ? table.times[best] : null;
 }
 
 /**
@@ -382,8 +568,8 @@ function otpMintTime(id: number): number | null {
  * `apps/api/src/common/retention.ts`) and the same one `SPK_RETENTION_MS` is
  * built on — deliberately reused rather than introducing a third notion of it.
  */
-function mayRetireOtp(id: number, now: number = Date.now()): boolean {
-    const mintedAt = otpMintTime(id);
+function mayRetireOtp(id: number, table: MintTable, now: number = Date.now()): boolean {
+    const mintedAt = otpMintTime(id, table);
     if (mintedAt === null) return false;
     return now - mintedAt > SERVER_ENVELOPE_RETENTION_MS;
 }
@@ -405,28 +591,27 @@ function mayRetireOtp(id: number, now: number = Date.now()): boolean {
  * removed while `otp_max_id` ids could still exist under it.
  */
 function pruneOtpMintStamps(): void {
-    const starts = secureStore.keys()
-        .filter((k) => k.startsWith(OTP_MINT_PREFIX))
+    const starts = secureStore.keysWithPrefix(OTP_MINT_PREFIX)
         .map((k) => Number(k.slice(OTP_MINT_PREFIX.length)))
         .filter((n) => Number.isInteger(n))
         .sort((a, b) => a - b);
     if (starts.length === 0) return;
 
-    const held = new Set<number>();
-    for (const k of secureStore.keys()) {
-        const m = /^otp_priv_(\d+)$/.exec(k);
-        if (m) held.add(Number(m[1]));
-    }
+    const held = heldOtpIds().sort((a, b) => a - b);
 
     for (let i = 0; i < starts.length; i++) {
         const from = starts[i];
         // The last batch is open-ended: anything at or above its start belongs
         // to it, including ids not yet minted.
         const to = i + 1 < starts.length ? starts[i + 1] - 1 : Infinity;
-        let occupied = false;
-        for (const id of held) {
-            if (id >= from && id <= to) { occupied = true; break; }
+        // Lowest held id >= from (binary search), then: is it inside the batch?
+        let lo = 0;
+        let hi = held.length;
+        while (lo < hi) {
+            const mid = (lo + hi) >> 1;
+            if (held[mid] < from) lo = mid + 1; else hi = mid;
         }
+        const occupied = lo < held.length && held[lo] <= to;
         if (!occupied) secureStore.delete(`${OTP_MINT_PREFIX}${from}`);
     }
 }
@@ -468,12 +653,7 @@ function sanitizeIdList(v: unknown): number[] | null {
  */
 export function lowestHeldOtpId(): number | null {
     let min: number | null = null;
-    for (const k of secureStore.keys()) {
-        const m = /^otp_priv_(\d+)$/.exec(k);
-        if (!m) continue;
-        const id = Number(m[1]);
-        if (Number.isInteger(id) && id > 0 && (min === null || id < min)) min = id;
-    }
+    for (const id of heldOtpIds()) if (min === null || id < min) min = id;
     return min;
 }
 
@@ -508,18 +688,49 @@ export function lowestHeldOtpId(): number | null {
  * failed) means "carry what you hold, delete nothing" — exactly the behaviour
  * that existed before this contract.
  */
-export async function generateRotationBundle(
-    opts: {
-        rotateSpk?: boolean;
-        /** Ids the server says are still UNCLAIMED. Omitted => unknown. */
-        unclaimedPrekeyIds?: number[];
-        /** Ids the server says are safe to FORGET. Omitted => delete nothing. */
-        retiredPrekeyIds?: number[];
-    } = {},
-): Promise<IdentityBundle> {
+/** Options as the legacy callers pass them: always mint, rotate per flag. */
+export interface RotationOptions {
+    rotateSpk?: boolean;
+    /** Ids the server says are still UNCLAIMED. Omitted => unknown. */
+    unclaimedPrekeyIds?: number[];
+    /** Ids the server says are safe to FORGET. Omitted => delete nothing. */
+    retiredPrekeyIds?: number[];
+}
+
+/**
+ * STATUS-AWARE mode (what useKeyRotation sends): the renderer says whether the
+ * server's one-time-prekey pool is low, and this decides whether anything
+ * needs publishing at all.
+ *
+ *   • pool low                       -> mint 100 and top up (as before)
+ *   • signed prekey due (server says
+ *     >= 25 days AND the LOCAL stamp
+ *     agrees, see SPK_ROTATE_AFTER_MS) -> rotate it, carry the live pool
+ *   • neither                        -> null: nothing minted, nothing to upload
+ *
+ * The third case is the fix for unbounded growth. The server's `needs_rotation`
+ * is stuck true for any device older than 25 days, and a top-up whose pool is
+ * already healthy pushes 100 still-unclaimed prekeys OUT of the upload (the cap
+ * is 200, new ones first) — the server deletes those rows, so their privates
+ * are in neither status list and are held forever. Minting only when the pool
+ * is actually low is what keeps "carried + new" under the cap.
+ */
+export interface StatusAwareRotationOptions extends RotationOptions {
+    otpPoolLow: boolean;
+}
+
+export function generateRotationBundle(opts?: RotationOptions): Promise<IdentityBundle>;
+export function generateRotationBundle(opts: StatusAwareRotationOptions): Promise<IdentityBundle | null>;
+export function generateRotationBundle(
+    opts: RotationOptions & { otpPoolLow?: unknown } = {},
+): Promise<IdentityBundle | null> {
     // Default true: preserves the original behaviour for any caller that does
     // not pass the flag.
     const rotateSpk = opts.rotateSpk !== false;
+    // Status-aware only when the flag is a real boolean. Anything else from
+    // the IPC boundary degrades to the legacy behaviour, never to "skip".
+    const statusAware = typeof opts.otpPoolLow === 'boolean';
+    const otpPoolLow = opts.otpPoolLow === true;
 
     // Both sets are validated rather than trusted in shape: these arrive over
     // IPC from the renderer, which got them over the network. A non-array, or a
@@ -527,18 +738,50 @@ export async function generateRotationBundle(
     const unclaimed = sanitizeIdList(opts.unclaimedPrekeyIds);
     const retired = sanitizeIdList(opts.retiredPrekeyIds);
 
-    await secureStore.initialize();
+    return serializedKeyOp(async () => {
+        await secureStore.initialize();
+        if (!secureStore.get('identity_priv') || !secureStore.get('identity_pub') || !secureStore.get('registration_id')) {
+            throw new Error('[E2EE] Identity not initialized — cannot generate rotation bundle');
+        }
 
-    // ONE vault write for the whole top-up. Each set()/delete() below used to
-    // rewrite the entire vault synchronously on the main thread — 200+ full
-    // rewrites for a 100-prekey batch, on the thread that owns the window, and
-    // this runs right after a wake (the WebSocket reconnect triggers the
-    // prekey check). batch() keeps the durability contract: every key is on
-    // disk before this resolves, so before the renderer uploads the publics.
-    return secureStore.batch(() => buildRotationBundle(rotateSpk, unclaimed, retired));
+        // Decide BEFORE generating anything.
+        const currentSpkId = parseInt(secureStore.get('signed_prekey_active_id') ?? '1', 10);
+        const spkDue = !statusAware ? rotateSpk : rotateSpk && localSpkRotationDue(currentSpkId, Date.now());
+        if (statusAware && !otpPoolLow && !spkDue) {
+            // The only possible write above is a first-sighting SPK stamp.
+            await secureStore.whenDurable();
+            return null;
+        }
+
+        // Key generation in the thread pool, not on the window's thread. A
+        // batch is always pre-generated: even an SPK-only rotation mints one
+        // when there is nothing live to carry (an upload needs >= 1 prekey).
+        const pairs = await generateX25519PairsAsync(100);
+        const newSpk = spkDue ? await generatePairAsync('x25519') : null;
+
+        // ONE coalesced vault write for the whole top-up.
+        const bundle = secureStore.batch(() => buildRotationBundle({
+            mintOtps: !statusAware || otpPoolLow,
+            newSpk,
+            pairs,
+        }, unclaimed, retired));
+        // Durability before publication: every private is on disk before the
+        // renderer can upload its public half.
+        await secureStore.whenDurable();
+        return bundle;
+    });
 }
 
-function buildRotationBundle(rotateSpk: boolean, unclaimed: number[] | null, retired: number[] | null): IdentityBundle {
+interface RotationPlan {
+    /** Mint a fresh batch (else only when there is nothing live to carry). */
+    mintOtps: boolean;
+    /** The new signed prekey, when rotating it; null keeps the active one. */
+    newSpk: KeyPairHex | null;
+    /** 100 pre-generated X25519 pairs for the batch. */
+    pairs: KeyPairHex[];
+}
+
+function buildRotationBundle(plan: RotationPlan, unclaimed: number[] | null, retired: number[] | null): IdentityBundle {
     const identityPrivHex   = secureStore.get('identity_priv');
     const identityPubB64    = secureStore.get('identity_pub');
     const registrationIdStr = secureStore.get('registration_id');
@@ -552,16 +795,23 @@ function buildRotationBundle(rotateSpk: boolean, unclaimed: number[] | null, ret
     // for decrypting already-claimed OTPs) are never overwritten.
     const currentMaxOtpId = parseInt(secureStore.get('otp_max_id') ?? '100', 10);
     const newOtps: { prekey_id: number; prekey_pub_b64: string }[] = [];
-    for (let i = currentMaxOtpId + 1; i <= currentMaxOtpId + 100; i++) {
-        const otp = generateX25519Pair();
-        secureStore.set(`otp_priv_${i}`, otp.privHex);
-        secureStore.set(`otp_pub_${i}`,  otp.pubB64);
-        newOtps.push({ prekey_id: i, prekey_pub_b64: otp.pubB64 });
-    }
-    // Stamp the batch BEFORE the retirement loop below runs. A freshly minted id
-    // can never be legitimately retired, and `mayRetireOtp` is what enforces
-    // that — so the stamp has to exist by the time it is consulted.
-    stampOtpBatch(currentMaxOtpId + 1);
+    const mintBatch = () => {
+        for (let n = 0; n < 100; n++) {
+            const i = currentMaxOtpId + 1 + n;
+            const otp = plan.pairs[n] ?? generateX25519Pair();
+            secureStore.set(`otp_priv_${i}`, otp.privHex);
+            secureStore.set(`otp_pub_${i}`,  otp.pubB64);
+            newOtps.push({ prekey_id: i, prekey_pub_b64: otp.pubB64 });
+        }
+        // Stamp the batch BEFORE the retirement loop below runs. A freshly
+        // minted id can never be legitimately retired, and `mayRetireOtp` is
+        // what enforces that — so the stamp has to exist by the time it is
+        // consulted. `otp_max_id` moves with the mint, so ids stay strictly
+        // monotonic and never overwrite a private an in-flight envelope needs.
+        stampOtpBatch(currentMaxOtpId + 1);
+        secureStore.set('otp_max_id', (currentMaxOtpId + 100).toString());
+    };
+    if (plan.mintOtps) mintBatch();
 
     // Retire first: drop the privates the SERVER has told us are safe to forget,
     // so they cannot be considered for carry-forward below.
@@ -590,9 +840,11 @@ function buildRotationBundle(rotateSpk: boolean, unclaimed: number[] | null, ret
     // not trust, and this is the client refusing to destroy its own data on an
     // impossible request. The check can only ever PREVENT a deletion.
     const unclaimedGuard = unclaimed ? new Set(unclaimed) : null;
+    // The mint stamps, read once (after this batch's stamp was written).
+    const mintTable = retired && retired.length > 0 ? loadMintTable() : null;
     for (const id of retired ?? []) {
         if (unclaimedGuard?.has(id)) continue;
-        if (!mayRetireOtp(id)) continue;
+        if (!mintTable || !mayRetireOtp(id, mintTable)) continue;
         secureStore.delete(`otp_priv_${id}`);
         secureStore.delete(`otp_pub_${id}`);
     }
@@ -656,19 +908,34 @@ function buildRotationBundle(rotateSpk: boolean, unclaimed: number[] | null, ret
     // Ids themselves are safe: `otp_max_id` is bumped on BOTH branches below,
     // so newly minted ids are strictly monotonic and never overwrite a private
     // that an in-flight envelope still needs.
+    //
+    // Walks the HELD ids (the store's index), newest first — not every id from
+    // otp_max_id down to 1 with a decrypt per id, which on a long-lived device
+    // was tens of thousands of decrypts per top-up.
     const carried: { prekey_id: number; prekey_pub_b64: string }[] = [];
-    for (let i = currentMaxOtpId; i >= 1 && carried.length < OTP_UPLOAD_CAP; i--) {
-        const privHex = secureStore.get(`otp_priv_${i}`);
-        if (!privHex) continue;
+    const carryIds = heldOtpIds()
         // `unclaimedGuard === null` (the server said nothing) skips the gate
         // entirely — the pre-contract fail-safe.
-        if (unclaimedGuard && !unclaimedGuard.has(i)) continue;
-        const pubB64 = secureStore.get(`otp_pub_${i}`) ?? deriveX25519Pub(privHex);
+        .filter((i) => i <= currentMaxOtpId && (!unclaimedGuard || unclaimedGuard.has(i)))
+        .sort((a, b) => b - a);
+    for (const i of carryIds) {
+        if (carried.length >= OTP_UPLOAD_CAP) break;
+        let pubB64 = secureStore.get(`otp_pub_${i}`);
+        if (!pubB64) {
+            const privHex = secureStore.get(`otp_priv_${i}`);
+            if (!privHex) continue;
+            pubB64 = deriveX25519Pub(privHex);
+        }
         carried.push({ prekey_id: i, prekey_pub_b64: pubB64 });
     }
+    // An upload needs at least one prekey (UploadBundleDto @ArrayMinSize(1)).
+    // A status-aware SPK-only rotation with nothing live to carry mints after
+    // all — after the retirement loop, so these ids were never candidates for
+    // it, and still stamped.
+    if (!plan.mintOtps && carried.length === 0) mintBatch();
     const allOtps = [...newOtps, ...carried].slice(0, OTP_UPLOAD_CAP);
 
-    if (!rotateSpk) {
+    if (!plan.newSpk) {
         // OTP-only top-up: reuse the active signed prekey exactly as the server
         // already has it. Nothing is superseded, so nothing is stamped.
         const spkPubB64 = secureStore.get(`signed_prekey_pub_${currentSpkId}`)
@@ -678,7 +945,6 @@ function buildRotationBundle(rotateSpk: boolean, unclaimed: number[] | null, ret
             sigB64 = signWithEd25519(identityPrivHex, identityPubB64, Buffer.from(spkPubB64, 'base64')).toString('base64');
             secureStore.set(`signed_prekey_sig_${currentSpkId}`, sigB64);
         }
-        secureStore.set('otp_max_id', (currentMaxOtpId + 100).toString());
 
         console.log(`[E2EE] OTP top-up: ${newOtps.length} new + ${allOtps.length - newOtps.length} carried, SPK ${currentSpkId} unchanged`);
 
@@ -694,7 +960,7 @@ function buildRotationBundle(rotateSpk: boolean, unclaimed: number[] | null, ret
     // private key is kept locally for decrypting any in-flight messages that were
     // already wrapped for the old SPK.
     const newSpkId     = currentSpkId + 1;
-    const newSpk       = generateX25519Pair();
+    const newSpk       = plan.newSpk;
     const newSpkSig    = signWithEd25519(identityPrivHex, identityPubB64, Buffer.from(newSpk.pubB64, 'base64'));
 
     // Persist new active SPK. The old private key STAYS in the store — it is
@@ -710,14 +976,14 @@ function buildRotationBundle(rotateSpk: boolean, unclaimed: number[] | null, ret
     secureStore.set(`signed_prekey_priv_${newSpkId}`, newSpk.privHex);
     secureStore.set(`signed_prekey_pub_${newSpkId}`,  newSpk.pubB64);
     secureStore.set(`signed_prekey_sig_${newSpkId}`,  newSpkSig.toString('base64'));
+    secureStore.set(`${SPK_CREATED_PREFIX}${newSpkId}`, String(Date.now()));
     secureStore.set('signed_prekey_active_id', newSpkId.toString());
-    secureStore.set('otp_max_id', (currentMaxOtpId + 100).toString());
 
     // Opportunistic prune: rotation is exactly when a key becomes superseded,
     // so it is the natural moment to retire anything that aged out.
     pruneSupersededSignedPrekeys();
 
-    console.log(`[E2EE] Rotation bundle: SPK ${newSpkId}, OTPs ${currentMaxOtpId + 1}–${currentMaxOtpId + 100}`);
+    console.log(`[E2EE] Rotation bundle: SPK ${newSpkId}, ${newOtps.length} new + ${allOtps.length - newOtps.length} carried OTPs`);
 
     return {
         identity_key_pub_b64: identityPubB64,

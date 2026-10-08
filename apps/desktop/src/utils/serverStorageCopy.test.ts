@@ -5,7 +5,10 @@ import {
     storageLimitForMembers,
     tierLabelForServer,
 } from '@cipherline/shared';
-import { quotaExceededMessage, nearLimitMessage, isFlatStoragePlan } from './serverStorageCopy';
+import {
+    quotaExceededMessage, nearLimitMessage, isFlatStoragePlan, emojiQuotaExceededMessage, isStorageQuotaError,
+    emojiCountLimitMessage, emojiCountNearMessage, isEmojiCountLimitError, EMOJI_COUNT_NOTE_AT,
+} from './serverStorageCopy';
 
 const MB = 1024 * 1024;
 
@@ -68,5 +71,55 @@ describe('serverStorageCopy', () => {
     it('near-limit warning follows the plan', () => {
         expect(nearLimitMessage('flat25')).toMatch(/owner can upgrade to Pro/);
         expect(nearLimitMessage('ladder')).toMatch(/member count/);
+    });
+});
+
+describe('custom emojis share the server storage quota', () => {
+    it('emoji over-quota toast says storage, not a count cap, and shows usage', () => {
+        const msg = emojiQuotaExceededMessage({ used_bytes: 25 * MB, limit_bytes: 25 * MB, storage_plan: 'flat25' });
+        expect(msg).toContain("doesn't fit in the server's storage");
+        expect(msg).toContain('25 MB of 25 MB used');
+        expect(msg).toMatch(/Pro/);
+        expect(msg).not.toMatch(/\b50\b|maximum/);
+    });
+
+    it('paid-owner emoji toast has no upgrade pitch', () => {
+        const msg = emojiQuotaExceededMessage({ used_bytes: 100 * MB, limit_bytes: 100 * MB, storage_plan: 'ladder' });
+        expect(msg).not.toMatch(/Pro/);
+    });
+
+    it('recognises only the STORAGE_QUOTA_EXCEEDED body', () => {
+        expect(isStorageQuotaError({ code: 'STORAGE_QUOTA_EXCEEDED', kind: 'emoji' })).toBe(true);
+        expect(isStorageQuotaError({ code: 'EMOJI_TOO_LARGE' })).toBe(false);
+        expect(isStorageQuotaError(undefined)).toBe(false);
+        expect(isStorageQuotaError('STORAGE_QUOTA_EXCEEDED')).toBe(false);
+    });
+
+    it('the save toasts and near-limit warning mention emojis as something to remove', () => {
+        expect(quotaExceededMessage({ limit_bytes: 25 * MB, storage_plan: 'flat25' })).toMatch(/custom emojis/);
+        expect(nearLimitMessage('ladder')).toMatch(/custom emojis/);
+    });
+});
+
+describe('the 1,000-emoji backstop copy', () => {
+    it('names the limit from the API payload, with a way out', () => {
+        expect(emojiCountLimitMessage({ limit: 1000 })).toBe(
+            'This server has reached its maximum of 1,000 custom emojis. Remove one you no longer use to add another.',
+        );
+        expect(emojiCountLimitMessage({ limit: 1500 })).toMatch(/1,500/);
+        expect(emojiCountLimitMessage()).toMatch(/1,000/);
+    });
+
+    it('the near-limit note starts at 950 and is not an x/1000 counter', () => {
+        expect(EMOJI_COUNT_NOTE_AT).toBe(950);
+        const note = emojiCountNearMessage(962);
+        expect(note).toMatch(/962/);
+        expect(note).not.toMatch(/\d+\s*\/\s*1,?000/);
+    });
+
+    it('recognises only the EMOJI_COUNT_LIMIT body', () => {
+        expect(isEmojiCountLimitError({ code: 'EMOJI_COUNT_LIMIT', limit: 1000 })).toBe(true);
+        expect(isEmojiCountLimitError({ code: 'STORAGE_QUOTA_EXCEEDED' })).toBe(false);
+        expect(isEmojiCountLimitError(null)).toBe(false);
     });
 });

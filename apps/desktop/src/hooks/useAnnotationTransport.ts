@@ -39,6 +39,7 @@ import {
 } from '../utils/annotationTransport';
 import { useNotificationPrefsSafe, DEFAULT_PREFS } from '../contexts/NotificationContext';
 import { playSound } from '../utils/notificationSounds';
+import { logCallEvent } from '../utils/callEventLog';
 
 const VIDEO_SOURCES: ReadonlySet<string> = new Set([Track.Source.Camera, Track.Source.ScreenShare]);
 
@@ -262,9 +263,12 @@ export function useAnnotationTransport(room: Room | null | undefined): void {
             if (topic !== ANNOT_TOPIC) return;
             // No participant = server-originated. Nobody granted the server.
             if (!participant) return;
-            if (!limiter.allow(participant.identity)) return; // over budget: drop, never queue
+            // Drops are counted into the call event log (reason only, coalesced
+            // as NOISY): an annotation packet that never reaches the store is
+            // otherwise invisible — "they're drawing but nothing shows".
+            if (!limiter.allow(participant.identity)) { logCallEvent('annot_rx_drop', { reason: 'rate' }); return; } // over budget: drop, never queue
             const msg = decode(payload, roomId());
-            if (!msg) return;
+            if (!msg) { logCallEvent('annot_rx_drop', { reason: 'decode' }); return; }
             const sender = participant.identity;
             switch (msg.t) {
                 case 'snapshot.request':
@@ -282,6 +286,10 @@ export function useAnnotationTransport(room: Room | null | undefined): void {
                     // we own, and diffLocalForWire only publishes those.
                     let res: ApplyResult | undefined;
                     silently(() => { res = applyRemote(msg, sender, me()); });
+                    // A stroke from someone the owner's grant list does not
+                    // (yet) include. Other refusals are routine (own echo, a
+                    // request meant for someone else's track).
+                    if (res && !res.applied && res.reason === 'not allowed') logCallEvent('annot_rx_drop', { reason: 'not_granted' });
                     // A NEW person asking to draw on something of ours is the
                     // one annotation event that happens while the owner is
                     // looking somewhere else entirely, so it gets a sound.

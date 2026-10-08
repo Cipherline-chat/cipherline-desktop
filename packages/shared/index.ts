@@ -24,3 +24,4 @@ export * from './storage-tiers';
 export * from './billing';
 export * from './call-naming';
 export * from './attribution';
+export * from './call-media';

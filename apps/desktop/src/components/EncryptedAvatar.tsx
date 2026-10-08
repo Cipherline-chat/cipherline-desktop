@@ -1,9 +1,10 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { User, Users } from 'lucide-react';
 import { useEncryptedAvatar , evictAvatar } from '../hooks/useEncryptedAvatar';
 import { userColor } from '../utils/avatarColor';
 import { useOpenProfile } from '../contexts/ProfileOpenContext';
 import { useIsFriendOrSelf } from '../contexts/FriendshipContext';
+import { scheduleProfilePrefetch } from '../utils/profileCache';
 
 interface EncryptedAvatarProps {
     attachmentId?: string | null;
@@ -95,6 +96,36 @@ export const EncryptedAvatar: React.FC<EncryptedAvatarProps> = ({
         : undefined;
     const clickableClass = clickable ? 'cursor-pointer enc-av-poke' : '';
 
+    // Profile prefetch: a pointer RESTING on a clickable avatar is intent, so
+    // the profile and both its images start loading before the click (bounded
+    // and rate-limited in utils/profileCache — a pointer sweeping across a
+    // member list costs nothing). Pressing the button starts it immediately:
+    // the click that opens the card lands ~100 ms later and joins it.
+    //
+    // The HOVER half is friends-and-self only. It is a guess, and for anyone
+    // else it would fetch a picture the friend gate above deliberately does
+    // not fetch for this row, and tell the server whose card you merely
+    // pointed at. A press is different: it IS the open, one event early, so
+    // it makes exactly the requests the card would have made anyway.
+    const hoverPrefetchOk = clickable && !!userId && isFriendOrSelf(userId);
+    const cancelPrefetch = useRef<(() => void) | null>(null);
+    useEffect(() => () => { cancelPrefetch.current?.(); }, []);
+    const prefetchHandlers = clickable
+        ? {
+              onMouseEnter: () => {
+                  cancelPrefetch.current?.();
+                  cancelPrefetch.current = hoverPrefetchOk ? scheduleProfilePrefetch(userId, token) : null;
+              },
+              onMouseLeave: () => { cancelPrefetch.current?.(); cancelPrefetch.current = null; },
+              onPointerDown: (e: React.PointerEvent) => {
+                  if (e.button !== 0) return;
+                  cancelPrefetch.current?.();
+                  cancelPrefetch.current = null;
+                  scheduleProfilePrefetch(userId, token, { immediate: true });
+              },
+          }
+        : undefined;
+
     if (avatarUrl && broken !== attachmentId) {
         return (
             <img
@@ -123,6 +154,7 @@ export const EncryptedAvatar: React.FC<EncryptedAvatarProps> = ({
                     setBroken(attachmentId ?? null);
                 }}
                 onClick={handleClick}
+                {...prefetchHandlers}
             />
         );
     }
@@ -147,6 +179,7 @@ export const EncryptedAvatar: React.FC<EncryptedAvatarProps> = ({
             className={`flex items-center justify-center rounded-full ${clickableClass} ${className}`}
             style={{ backgroundColor: bg, color: userId ? '#000000' : 'var(--cl-faint)', ...style }}
             onClick={handleClick}
+            {...prefetchHandlers}
         >
             <User size={fallbackSize} strokeWidth={2.2} />
         </div>

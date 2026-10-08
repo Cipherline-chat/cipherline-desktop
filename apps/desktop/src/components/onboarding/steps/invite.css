@@ -1,0 +1,76 @@
+/* ============================================================
+   Onboarding step 4: "You were referred" / "Bring one friend" /
+   the server-invite acknowledgement / the official-server row.
+   Port of ob6/css/wiz.css "step 4: invite / referral" (+ the
+   narrower-window rules). Scoped under `.ob .ob-invite`.
+   ============================================================ */
+
+.ob .ob-invite .viz { position: relative; align-self: stretch; min-height: 460px; }
+
+/* the referral chip: CODE  [APPLIED]  +7 days of Pro for you both */
+.ob .ob-invite .refchip { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 18px; padding: 8px 14px 8px 8px; border-radius: 14px; background: rgba(37, 224, 200, .08); border: 1px solid rgba(37, 224, 200, .3); font-size: 13.5px; font-weight: 700; color: var(--text); }
+.ob .ob-invite .refchip code { font: 700 13px var(--mono); letter-spacing: .14em; padding: 4px 8px; border-radius: 8px; background: rgba(37, 224, 200, .14); color: var(--lume); }
+.ob .ob-invite .refchip .bn { padding-left: 12px; margin-left: 2px; border-left: 1px solid rgba(37, 224, 200, .25); color: var(--glow); }
+.ob .ob-invite .refchip .ok { color: var(--lume); display: inline-flex; align-items: center; gap: 5px; }
+.ob .ob-invite .refchip.pop { animation: ob-inv-chip-pop .55s var(--spr) both; }
+@keyframes ob-inv-chip-pop { from { opacity: 0; transform: translateY(8px) scale(.92); } }
+.ob .ob-invite .stamp { display: inline-block; margin-left: 2px; padding: 2px 7px; text-transform: uppercase; border-radius: 6px; border: 1.5px solid var(--lume); font: 700 10px var(--mono); letter-spacing: .14em; color: var(--lume); transform: rotate(-6deg); }
+.ob .ob-invite .stamp.slam { animation: ob-inv-slam .45s var(--spr) both; }
+@keyframes ob-inv-slam { from { opacity: 0; transform: rotate(-6deg) scale(2.2); } }
+.ob .ob-invite .bonus { display: block; margin-top: 10px; font-size: 13px; font-weight: 700; color: var(--glow); }
+.ob .ob-invite .bonus.pop { animation: ob-inv-chip-pop .5s var(--spr) .18s both; }
+.ob .ob-invite .bonus.muted { color: var(--faint); font-weight: 600; }
+
+/* boxes: the friend request, your link, the server invite */
+.ob .ob-invite .box { margin-top: 18px; padding: 14px 16px; border-radius: 16px; background: rgba(19, 26, 48, .78); border: 1px solid var(--border); }
+.ob .ob-invite .box + .box { margin-top: 12px; }
+.ob .ob-invite .fr-row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.ob .ob-invite .fr-t { flex: 1; min-width: 180px; }
+.ob .ob-invite .fr-t b { display: block; font-size: 14px; font-weight: 800; color: var(--text); }
+.ob .ob-invite .fr-t span { display: block; font-size: 12.5px; color: var(--muted); }
+.ob .ob-invite .ob-inv-btn { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
+.ob .ob-invite .done-line { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 700; color: var(--ok); }
+.ob .ob-invite .done-line svg { flex: none; }
+
+.ob .ob-invite .lbox { display: flex; align-items: center; gap: 10px; padding: 6px 6px 6px 16px; border-radius: 14px; background: var(--surface); border: 1.5px solid var(--border); }
+.ob .ob-invite .lbox-url { flex: 1; min-width: 0; font: 600 14px var(--mono); color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; user-select: all; }
+.ob .ob-invite .lbox-url em { font-style: normal; color: var(--lume); }
+.ob .ob-invite .lbox-skel { display: inline-block; vertical-align: middle; width: 88px; height: 12px; margin-left: 2px; border-radius: 4px; background: rgba(255, 255, 255, .07); }
+.ob .ob-invite .lbox .clb { flex: none; }
+/* "Copied": the prototype's .clb.is-done (a pressed, green, settled button) */
+.ob .ob-invite .clb.is-done .cap { background: rgba(74, 222, 128, .12); color: var(--ok); box-shadow: inset 0 0 0 1.5px rgba(74, 222, 128, .4); transform: translateY(2px); }
+.ob .ob-invite .clb.is-done .l { opacity: 0; }
+.ob .ob-invite .clb.is-done:hover .cap { background: rgba(74, 222, 128, .16); color: var(--ok); }
+.ob .ob-invite .small { margin: 8px 2px 0; font-size: 12.5px; line-height: 1.5; color: var(--faint); }
+.ob .ob-invite .small b { color: var(--muted); font-weight: 700; }
+
+.ob .ob-invite .inv { display: flex; align-items: center; gap: 14px; }
+.ob .ob-invite .inv-ic { width: 48px; height: 48px; border-radius: 14px; flex: none; font-size: 17px; overflow: hidden; }
+.ob .ob-invite .inv-ic--none { display: grid; place-items: center; background: rgba(37, 224, 200, .1); border: 1px solid rgba(37, 224, 200, .22); color: var(--lume); }
+.ob .ob-invite .inv .t { flex: 1; min-width: 0; }
+.ob .ob-invite .inv .t > b { display: block; font-size: 15px; font-weight: 800; color: var(--text); overflow-wrap: anywhere; }
+.ob .ob-invite .inv .t > span { display: block; font-size: 12.5px; color: var(--muted); }
+.ob .ob-invite .inv-skel { display: inline-block; vertical-align: middle; width: 96px; height: 13px; border-radius: 4px; background: rgba(255, 255, 255, .08); }
+
+/* the official server: Keys mark tile + copy + toggle */
+.ob .ob-invite .off { display: flex; align-items: center; gap: 12px; margin-top: 12px; padding: 10px 12px; border-radius: 14px; background: rgba(255, 255, 255, .03); border: 1px solid rgba(255, 255, 255, .06); }
+.ob .ob-invite .off .mk { width: 38px; height: 38px; flex: none; border-radius: 11px; display: grid; place-items: center; background: radial-gradient(circle at 50% 35%, #16304A, #0E1730); box-shadow: inset 0 0 0 1px rgba(37, 224, 200, .25); }
+.ob .ob-invite .off .mk img { width: 24px; height: auto; display: block; }
+.ob .ob-invite .off .t { flex: 1; min-width: 0; }
+.ob .ob-invite .off .t > b { display: block; font-size: 13.5px; font-weight: 800; color: var(--text); }
+.ob .ob-invite .off .t > span { display: block; font-size: 12px; color: var(--faint); }
+
+/* a friend joined: the new headline rises in */
+.ob .ob-invite .ob-inv-h1-in { animation: ob-inv-h1-in .45s cubic-bezier(.22, 1, .36, 1) both; }
+@keyframes ob-inv-h1-in { from { opacity: 0; transform: translateY(10px); } }
+
+/* ---- narrower windows ---- */
+@media (max-width: 980px) {
+  .ob .ob-invite .viz { min-height: 400px; }
+}
+
+/* ---- reduced motion: the static path ---- */
+.ob.rm .ob-invite .refchip.pop, .ob.rm .ob-invite .stamp.slam, .ob.rm .ob-invite .bonus.pop, .ob.rm .ob-invite .ob-inv-h1-in { animation: none; }
+@media (prefers-reduced-motion: reduce) {
+  .ob .ob-invite .refchip.pop, .ob .ob-invite .stamp.slam, .ob .ob-invite .bonus.pop, .ob .ob-invite .ob-inv-h1-in { animation: none; }
+}

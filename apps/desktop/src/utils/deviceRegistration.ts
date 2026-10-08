@@ -9,20 +9,14 @@
 import axios from 'axios';
 import secureLocalStore from './secureLocalStore';
 import { API_BASE } from '../constants';
+import { publishIdentityBundle } from './keyBundleUpload';
 
 async function uploadKeyBundle(deviceId: string, token: string) {
-    if (!window.electronAPI?.ensureIdentityBundle) return;
     try {
-        const bundle = await window.electronAPI.ensureIdentityBundle(deviceId);
-        await axios.post(`${API_BASE}/keys/upload_bundle`, {
-            device_id:              bundle.device_id,
-            identity_key_pub_b64:   bundle.identity_key_pub_b64,
-            registration_id:        bundle.registration_id,
-            signed_prekey_id:       bundle.signed_prekey.id,
-            signed_prekey_pub_b64:  bundle.signed_prekey.pub_b64,
-            signed_prekey_sig_b64:  bundle.signed_prekey.sig_b64,
-            one_time_prekeys:       bundle.one_time_prekeys,
-        }, { headers: { Authorization: `Bearer ${token}` } });
+        // Same publish flow as the Dashboard's bundle sync: current signed
+        // prekey, one-time prekeys gated by the server's unclaimed list and
+        // capped at its 200 — see keyBundleUpload.ts.
+        await publishIdentityBundle(deviceId, token);
     } catch (err) {
         console.error('[Auth] Failed to upload key bundle:', err);
     }
