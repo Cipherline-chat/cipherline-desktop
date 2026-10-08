@@ -1,0 +1,24 @@
+# Dependabot for the public desktop repo.
+#
+# npm: version-update PRs are OFF here (open-pull-requests-limit: 0) because this tree is replaced by every stable
+# release: dependency upgrades are made in the development repo and arrive with the next release. Security updates
+# are not affected by that limit; with Dependabot security updates enabled in Settings, they still open PRs here as a
+# signal, and the fix is applied upstream.
+#
+# github-actions: weekly, grouped into one PR. A bump to release-stable.yml must also be made to its template in the
+# development repo (scripts/release/public/release-stable.yml), or the next release puts the old pin back.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ['*']
