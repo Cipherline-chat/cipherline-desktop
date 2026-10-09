@@ -69,7 +69,8 @@ import { markAttachmentsRemoved } from '../utils/removedAttachmentTracker';
 import { PurgeConfirmModal } from './PurgeControls';
 import { formatLastSeen } from '../utils/formatLastSeen';
 import { chatBucket, chatBucketLabel } from '../utils/chatListDividers';
-import { computeMissingKeyChannels, computeUnmintedChannels, splitMissingKeyChannels, canMintChannelKey, decideChannelEntryAction, shouldMintAfterKeyRequest, chunkEnvelopes, buildChannelKeyContent, pickJitterMs, resolveEpochClaim, resolveEpochDivergence, computeMissingEpochsForChannel, coalesceKeyRequestEvents, coalesceEnvelopesReadyEvents, decideEnvelopesReadyAction, channelEpochKey, shouldGiveUpOnChannelKey, computeCoolOffUntil, isCoolingOff, computeEpochsToDistribute, channelCarriesSenderKeys, coalesceRotationEvents, epochReasonForRotationSignal, decideRotationAction, decideRotationScheduling, computeRotationEpoch, resolveRotationClaim, normalizeRotationReason, type ServerEpochInfo } from '../utils/channelKeyDistribution';
+import { HandshakeBackoff, Pacer, DeliveryLedger, KeyedMutex, SingleFlight, ResumeTimers, runKeyDistribution, keyRequestVersion, SERVE_PASS_SUBMISSION_CAP, MAX_DISTRIBUTION_RESUMES, type DistributionOutcome } from '../utils/keyDistributionThrottle';
+import { computeMissingKeyChannels, computeUnmintedChannels, splitMissingKeyChannels, canMintChannelKey, decideChannelEntryAction, shouldMintAfterKeyRequest, buildChannelKeyContent, pickJitterMs, resolveEpochClaim, resolveEpochDivergence, computeMissingEpochsForChannel, coalesceKeyRequestEvents, coalesceEnvelopesReadyEvents, decideEnvelopesReadyAction, channelEpochKey, shouldGiveUpOnChannelKey, computeCoolOffUntil, isCoolingOff, computeEpochsToDistribute, channelCarriesSenderKeys, coalesceRotationEvents, epochReasonForRotationSignal, decideRotationAction, decideRotationScheduling, computeRotationEpoch, resolveRotationClaim, normalizeRotationReason, type ServerEpochInfo } from '../utils/channelKeyDistribution';
 import { HistoryRequestModal } from './HistoryRequestModal';
 import { HistorySyncBanner } from './HistorySyncBanner';
 import { DeviceStorageSetupModal } from './DeviceStorageSetupModal';
@@ -8095,11 +8096,41 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
     // on top of the first mint's still-in-flight epoch 1.
     const bootstrapInFlightRef = useRef<Set<string>>(new Set());
 
+    // ── Key-handshake flow control (2026-10-09 storm) ─────────────────────
+    // One instance of each per signed-in session, shared by EVERY path that
+    // posts key-handshake envelopes (serve, member_joined, bootstrap,
+    // rotation, recovery): the server's `keyHandshake` bucket is per user, so
+    // pacing and back-off must be too. See utils/keyDistributionThrottle.ts.
+    const [handshakeBackoff] = useState(() => new HandshakeBackoff());
+    const [handshakePacer] = useState(() => new Pacer());
+    const [deliveryLedger] = useState(() => new DeliveryLedger());
+    const [distributionMutex] = useState(() => new KeyedMutex());
+    const [keyServeFlight] = useState(() => new SingleFlight());
+    const [keyResumeTimers] = useState(() => new ResumeTimers());
+    // Request versions (request_id@created_at) this device has finished
+    // answering — or found nothing to wrap for — so a pass does not GET the
+    // requester's devices again for the same, unchanged ask.
+    const answeredKeyRequestVersionsRef = useRef<Set<string>>(new Set());
+    useEffect(() => () => keyResumeTimers.clearAll(), [keyResumeTimers]);
+    // Sign-out / account switch: nothing learned about the previous
+    // account's deliveries may suppress the next one's.
+    useEffect(() => {
+        answeredKeyRequestVersionsRef.current.clear();
+        deliveryLedger.prune();
+    }, [token, deliveryLedger]);
+
     /**
      * Encrypt the given epochs of a channel's Sender Keys to each recipient
      * device and POST them as key-handshake envelopes (grouped per recipient
-     * user, chunked ≤20 per call — the API's hard cap). Failures are
-     * non-fatal warns: the request/retry protocol re-covers them.
+     * user, chunked ≤20 per call — the API's hard cap).
+     *
+     * Flow-controlled (see runKeyDistribution): every POST goes through the
+     * account-wide pacer, nothing already delivered is re-sent, and a 429 /
+     * 5xx / network failure STOPS the pass instead of being swallowed while the
+     * loop carries on. `opts.requestVersion` / `opts.budget` come from a serve
+     * pass, which handles its own resumption; any other (one-shot) caller is
+     * resumed here after the back-off, a bounded number of times — the ledger
+     * makes the resumed pass send only what is still missing.
      */
     const distributeChannelKeys = useCallback(async (
         serverId: string,
@@ -8111,66 +8142,70 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
         // envelopes for every recipient.
         recipients: ChannelKeyRecipient[],
         rotationReason: string,
-    ) => {
-        if (!token || !userId || !epochs.length || !recipients.length) return;
-        const byUser = new Map<string, Omit<ChannelKeyRecipient, 'user_id'>[]>();
-        for (const r of recipients) {
-            if (!byUser.has(r.user_id)) byUser.set(r.user_id, []);
-            byUser.get(r.user_id)!.push({
-                device_id: r.device_id,
-                spk_pub_b64: r.spk_pub_b64,
-                sig_b64: r.sig_b64,
-                identity_pub_b64: r.identity_pub_b64,
-            });
-        }
-        for (const epoch of epochs) {
-            const keyB64 = await window.electronAPI!.getChannelKey(channelId, epoch);
-            if (!keyB64) continue; // pruned locally — another holder may still cover it
-            for (const [recipientUserId, devices] of byUser) {
-                const envelopes: { device_id: string; ciphertext_b64: string }[] = [];
-                for (const dev of devices) {
-                    try {
-                        const content = buildChannelKeyContent({
-                            channelId, epoch, keyB64, deviceId: dev.device_id, rotationReason,
-                        });
-                        // RC-7 / Phase 5: pass our own device id so the recipient can pin
-                        // this distributor per (us, this-device) instead of per-user —
-                        // the channel-key path is where the old per-user TOFU pin hard-
-                        // rejected a second device of an already-known contact.
-                        const ct = await window.electronAPI!.encryptMessage(JSON.stringify(content), userId, [dev], deviceId ?? undefined);
-                        envelopes.push({ device_id: dev.device_id, ciphertext_b64: ct });
-                    } catch (e) {
-                        // Per-device failure is non-fatal, but must never be silent:
-                        // a 100%-failing wrap used to look identical to "nothing to do".
-                        console.warn('[Channels] Failed to wrap channel key for device', dev.device_id, e);
-                        recordDelivery('channel_key_distribute', e, {
-                            server_id: serverId, channel_id: channelId, epoch, recipient_user_id: recipientUserId, device_id: dev.device_id,
-                        });
-                    }
-                }
-                if (devices.length && !envelopes.length) {
-                    console.error(
-                        `[Channels] Wrapped 0/${devices.length} envelopes for channel ${channelId} epoch ${epoch} ` +
-                        `— recipient ${recipientUserId} will stay stuck waiting for keys. ` +
-                        `Check that the devices endpoint returns sig_b64 + identity_pub_b64.`,
-                    );
-                }
-                for (const chunk of chunkEnvelopes(envelopes)) {
-                    await axios.post(
-                        `${API_BASE}/servers/${serverId}/key-handshake`,
-                        { recipient_user_id: recipientUserId, channel_id: channelId, epoch, envelopes: chunk },
-                        { headers: { Authorization: `Bearer ${token}` } }
-                    ).catch(e => {
-                        console.warn('[Channels] key-handshake failed for', channelId, 'epoch', epoch, e);
-                        recordDelivery('channel_key_distribute', e, {
-                            server_id: serverId, channel_id: channelId, epoch, recipient_user_id: recipientUserId, envelopes: chunk.length,
-                        });
-                    });
-                    await new Promise(r => setTimeout(r, 100)); // throttle headroom
-                }
+        opts: { requestVersion?: string; budget?: { remaining: number }; resumeAttempt?: number } = {},
+    ): Promise<DistributionOutcome> => {
+        if (!token || !userId || !epochs.length || !recipients.length) return { status: 'done', posted: 0 };
+        const outcome = await runKeyDistribution({
+            backoff: handshakeBackoff,
+            pacer: handshakePacer,
+            ledger: deliveryLedger,
+            mutex: distributionMutex,
+            getChannelKey: (cid, epoch) => window.electronAPI!.getChannelKey(cid, epoch),
+            wrap: async ({ epoch, keyB64, device: dev }) => {
+                const content = buildChannelKeyContent({
+                    channelId, epoch, keyB64, deviceId: dev.device_id, rotationReason,
+                });
+                // RC-7 / Phase 5: pass our own device id so the recipient can pin
+                // this distributor per (us, this-device) instead of per-user —
+                // the channel-key path is where the old per-user TOFU pin hard-
+                // rejected a second device of an already-known contact.
+                return window.electronAPI!.encryptMessage(JSON.stringify(content), userId, [dev], deviceId ?? undefined);
+            },
+            onWrapError: (e, ctx) => {
+                // Per-device failure is non-fatal, but must never be silent:
+                // a 100%-failing wrap used to look identical to "nothing to do".
+                console.warn('[Channels] Failed to wrap channel key for device', ctx.deviceId, e);
+                recordDelivery('channel_key_distribute', e, {
+                    server_id: serverId, channel_id: channelId, epoch: ctx.epoch, recipient_user_id: ctx.recipientUserId, device_id: ctx.deviceId,
+                });
+            },
+            onNothingWrapped: (ctx) => {
+                console.error(
+                    `[Channels] Wrapped 0/${ctx.devices} envelopes for channel ${channelId} epoch ${ctx.epoch} ` +
+                    `— recipient ${ctx.recipientUserId} will stay stuck waiting for keys. ` +
+                    `Check that the devices endpoint returns sig_b64 + identity_pub_b64.`,
+                );
+            },
+            post: (sid, body) => axios.post(
+                `${API_BASE}/servers/${sid}/key-handshake`,
+                body,
+                { headers: { Authorization: `Bearer ${token}` } },
+            ),
+            onPostError: (e, ctx) => {
+                console.warn('[Channels] key-handshake failed for', channelId, 'epoch', ctx.epoch, e);
+                recordDelivery('channel_key_distribute', e, {
+                    server_id: serverId, channel_id: channelId, epoch: ctx.epoch, recipient_user_id: ctx.recipientUserId, envelopes: ctx.envelopes,
+                });
+            },
+        }, { serverId, channelId, epochs, recipients, requestVersion: opts.requestVersion, budget: opts.budget });
+
+        // One-shot callers (no serve pass to resume them): try again after the
+        // back-off. Bounded — the key-request path covers anything left after.
+        if (outcome.status === 'deferred' && opts.requestVersion === undefined && opts.budget === undefined) {
+            const attempt = (opts.resumeAttempt ?? 0) + 1;
+            if (attempt <= MAX_DISTRIBUTION_RESUMES) {
+                const key = `dist:${serverId}:${channelId}:${rotationReason}:${epochs.join(',')}:${recipients.map(r => r.device_id).sort().join(',')}`;
+                keyResumeTimers.schedule(key, outcome.retryInMs, () => {
+                    void distributeChannelKeysRef.current(serverId, channelId, epochs, recipients, rotationReason, { resumeAttempt: attempt });
+                });
+            } else {
+                console.warn(`[Channels] Gave up resuming ${rotationReason} distribution for channel ${channelId} after ${MAX_DISTRIBUTION_RESUMES} deferrals; recipients will key-request`);
             }
         }
-    }, [token, userId, deviceId]);
+        return outcome;
+    }, [token, userId, deviceId, handshakeBackoff, handshakePacer, deliveryLedger, distributionMutex, keyResumeTimers]);
+    const distributeChannelKeysRef = useRef(distributeChannelKeys);
+    useEffect(() => { distributeChannelKeysRef.current = distributeChannelKeys; }, [distributeChannelKeys]);
 
     /** Can this member record an epoch for the channel (see canMintChannelKey)?
      *  Reads the live channel list, so a permission change takes effect on the
@@ -8505,70 +8540,115 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
      * `server:key_requested` push. Re-fetching the pending list right before
      * answering collapses multi-holder storms: the first delivery marks the
      * request fulfilled server-side and later responders see an empty list.
+     *
+     * Single-flight per server: a trigger that lands while a pass is running
+     * (connect sweep, a push, a resume) rides it as ONE trailing re-run instead
+     * of starting a concurrent loop. Each pass is capped at
+     * SERVE_PASS_SUBMISSION_CAP POSTs; an epoch already delivered to the
+     * requesting device for this request version (or within the re-delivery
+     * cool-down) is not sent again; and a 429 / failure stops the pass and
+     * schedules ONE resume after the back-off.
      */
-    const serveKeyRequests = useCallback(async (serverId: string) => {
-        if (!token || !deviceId) return;
-        try {
-            const res = await axios.get(`${API_BASE}/servers/${serverId}/key-requests/pending`, {
-                headers: { Authorization: `Bearer ${token}`, 'x-device-id': deviceId },
-            });
-            const pending: { request_id: string; channel_id: string; requester_user_id: string; requester_device_id: string }[] = res.data ?? [];
-            // RC-10: fetched (and used to refresh main-process protection) once
-            // per sweep, not once per request — a request storm shouldn't cost
-            // one GET each just to log the same per-channel pin gaps repeatedly.
-            const pinnedByChannel = pending.length ? await refreshProtectedEpochs(serverId) : new Map<string, number[]>();
-            for (const req of pending) {
-                if (servingKeyRequestsRef.current.has(req.request_id)) continue;
-                servingKeyRequestsRef.current.add(req.request_id);
-                try {
+    const serveKeyRequests = useCallback((serverId: string): Promise<void> => {
+        if (!token || !deviceId) return Promise.resolve();
+        const scheduleResume = (delayMs: number) => {
+            keyResumeTimers.schedule(`serve:${serverId}`, delayMs, () => { void serveKeyRequestsRef.current(serverId); });
+        };
+        return keyServeFlight.run(serverId, async () => {
+            if (handshakeBackoff.isBlocked()) {
+                scheduleResume(handshakeBackoff.remainingMs());
+                return;
+            }
+            try {
+                const res = await axios.get(`${API_BASE}/servers/${serverId}/key-requests/pending`, {
+                    headers: { Authorization: `Bearer ${token}`, 'x-device-id': deviceId },
+                });
+                const pending: { request_id: string; channel_id: string; requester_user_id: string; requester_device_id: string; created_at: string }[] = res.data ?? [];
+                const answered = answeredKeyRequestVersionsRef.current;
+                if (answered.size > 5_000) answered.clear();
+                // Only requests this device has not already answered as-is.
+                const open: { req: typeof pending[number]; version: string; epochs: number[] }[] = [];
+                for (const req of pending) {
+                    const version = keyRequestVersion(req);
+                    if (answered.has(version)) continue;
                     const epochs = await window.electronAPI!.listChannelEpochs(req.channel_id);
                     if (!epochs.length) continue; // we hold nothing for this channel
-                    const { unservable } = computeEpochsToDistribute(epochs, pinnedByChannel.get(req.channel_id) ?? [], undefined);
-                    if (unservable.length) {
-                        console.error(`[Channels] Pinned epoch(s) ${unservable.join(',')} for channel ${req.channel_id} not held by this device — cannot serve them; another holder may still cover it`);
-                    }
-                    const devRes = await axios.get(
-                        `${API_BASE}/servers/${serverId}/members/${req.requester_user_id}/devices`,
-                        { headers: { Authorization: `Bearer ${token}` } }
-                    );
-                    const dev = (devRes.data ?? []).find((d: { device_id: string }) => d.device_id === req.requester_device_id);
-                    if (!dev) {
-                        // The members/:uid/devices listing only carries APPROVED,
-                        // un-revoked devices WITH a published key bundle — so this
-                        // is a revoked device, or one whose bundle the server does
-                        // not have (yet). Nothing can be wrapped for it either way;
-                        // it used to be skipped silently, which made "the keyless
-                        // device never published its bundle" indistinguishable
-                        // from "nobody answered".
-                        recordDelivery('channel_key_distribute', new Error('[E2EE:NO_RECIPIENT_BUNDLE] requesting device is not listed with a key bundle; nothing to wrap for'), {
-                            server_id: serverId, channel_id: req.channel_id, recipient_user_id: req.requester_user_id, device_id: req.requester_device_id,
-                        });
+                    if (deliveryLedger.allDelivered(req.channel_id, epochs, req.requester_device_id, version)) {
+                        answered.add(version);
                         continue;
                     }
-                    await distributeChannelKeys(
-                        serverId, req.channel_id, epochs,
-                        [{ user_id: req.requester_user_id, ...dev }],
-                        'backfill',
-                    );
-                } catch (e) {
-                    // One request failing (a 429, a member who left between the
-                    // list and this fetch) must not abort every request after it
-                    // in this pass: the list is oldest-first, so the newest
-                    // request — usually the member who just joined — was the one
-                    // that always lost.
-                    console.warn('[Channels] serving key request failed:', req.request_id, e);
-                    recordDelivery('channel_key_distribute', e, {
-                        server_id: serverId, channel_id: req.channel_id, recipient_user_id: req.requester_user_id, device_id: req.requester_device_id,
-                    });
-                } finally {
-                    servingKeyRequestsRef.current.delete(req.request_id);
+                    open.push({ req, version, epochs });
                 }
+                // RC-10: fetched (and used to refresh main-process protection) once
+                // per sweep, not once per request — a request storm shouldn't cost
+                // one GET each just to log the same per-channel pin gaps repeatedly.
+                const pinnedByChannel = open.length ? await refreshProtectedEpochs(serverId) : new Map<string, number[]>();
+                const budget = { remaining: SERVE_PASS_SUBMISSION_CAP };
+                for (const { req, version, epochs } of open) {
+                    if (servingKeyRequestsRef.current.has(req.request_id)) continue;
+                    servingKeyRequestsRef.current.add(req.request_id);
+                    let stop = false;
+                    try {
+                        const { unservable } = computeEpochsToDistribute(epochs, pinnedByChannel.get(req.channel_id) ?? [], undefined);
+                        if (unservable.length) {
+                            console.error(`[Channels] Pinned epoch(s) ${unservable.join(',')} for channel ${req.channel_id} not held by this device — cannot serve them; another holder may still cover it`);
+                        }
+                        const devRes = await axios.get(
+                            `${API_BASE}/servers/${serverId}/members/${req.requester_user_id}/devices`,
+                            { headers: { Authorization: `Bearer ${token}` } }
+                        );
+                        const dev = (devRes.data ?? []).find((d: { device_id: string }) => d.device_id === req.requester_device_id);
+                        if (!dev) {
+                            // The members/:uid/devices listing only carries APPROVED,
+                            // un-revoked devices WITH a published key bundle — so this
+                            // is a revoked device, or one whose bundle the server does
+                            // not have (yet). Nothing can be wrapped for it either way;
+                            // it used to be skipped silently, which made "the keyless
+                            // device never published its bundle" indistinguishable
+                            // from "nobody answered". Not re-checked until it re-asks.
+                            recordDelivery('channel_key_distribute', new Error('[E2EE:NO_RECIPIENT_BUNDLE] requesting device is not listed with a key bundle; nothing to wrap for'), {
+                                server_id: serverId, channel_id: req.channel_id, recipient_user_id: req.requester_user_id, device_id: req.requester_device_id,
+                            });
+                            answered.add(version);
+                            continue;
+                        }
+                        const outcome = await distributeChannelKeys(
+                            serverId, req.channel_id, epochs,
+                            [{ user_id: req.requester_user_id, ...dev }],
+                            'backfill',
+                            { requestVersion: version, budget },
+                        );
+                        if (outcome.status === 'deferred') {
+                            // 429 / failure / pass budget spent: stop THIS pass
+                            // (no more POSTs from it) and resume once, later.
+                            scheduleResume(outcome.retryInMs);
+                            stop = true;
+                        } else {
+                            answered.add(version);
+                        }
+                    } catch (e) {
+                        // One request failing (a member who left between the list
+                        // and this fetch) must not abort every request after it in
+                        // this pass: the list is oldest-first, so the newest
+                        // request — usually the member who just joined — was the
+                        // one that always lost.
+                        console.warn('[Channels] serving key request failed:', req.request_id, e);
+                        recordDelivery('channel_key_distribute', e, {
+                            server_id: serverId, channel_id: req.channel_id, recipient_user_id: req.requester_user_id, device_id: req.requester_device_id,
+                        });
+                    } finally {
+                        servingKeyRequestsRef.current.delete(req.request_id);
+                    }
+                    if (stop) break;
+                }
+            } catch (e) {
+                console.warn('[Channels] serveKeyRequests failed:', e);
+                recordDelivery('channel_key_distribute', e, { server_id: serverId, stage: 'list_pending' });
             }
-        } catch (e) {
-            console.warn('[Channels] serveKeyRequests failed:', e);
-            recordDelivery('channel_key_distribute', e, { server_id: serverId, stage: 'list_pending' });
-        }
-    }, [token, deviceId, distributeChannelKeys, refreshProtectedEpochs]);
+        });
+    }, [token, deviceId, distributeChannelKeys, refreshProtectedEpochs, keyServeFlight, keyResumeTimers, handshakeBackoff, deliveryLedger]);
+    const serveKeyRequestsRef = useRef(serveKeyRequests);
+    useEffect(() => { serveKeyRequestsRef.current = serveKeyRequests; }, [serveKeyRequests]);
 
     // Always-current ref so the earlier-defined handleSelectChannel can call
     // into the protocol without dependency churn (serverChannelsRef pattern).
