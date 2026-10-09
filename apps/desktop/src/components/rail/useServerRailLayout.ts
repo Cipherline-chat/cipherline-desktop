@@ -24,6 +24,7 @@
  */
 
 import secureLocalStore from '../../utils/secureLocalStore';
+import { BACKUP_RESTORED_EVENT } from '../../services/backupRegistry';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
     EMPTY_LAYOUT, addServerToFolder, applyRailDrop, createFolder, flattenServerIds, forgetServer,
@@ -79,6 +80,41 @@ export function useServerRailLayout(userId: string | null | undefined, currentId
         dirtyRef.current = false;
         setSaved(loadRailLayout(userId));
     }, [userId]);
+
+    // Re-read when the persisted record changes UNDER a running hook, without
+    // the user having touched the rail. Two sources:
+    //   - a backup / device-history import landing in a running app
+    //     (importLocalHistory fires BACKUP_RESTORED_EVENT; the Settings restore
+    //     reloads the page, history sync does not). Without this the rail keeps
+    //     showing the pre-restore layout and the user's next drag persists THAT
+    //     over the restored one.
+    //   - a hook mounted while the account's records were still cold, which
+    //     read "nothing saved" (secure_local_store_account_rebind).
+    // The cold-start read yields to a layout the user already changed this
+    // session; an explicit restore always wins (the user asked for the backup).
+    const reread = useCallback((force: boolean) => {
+        if (!userId || (dirtyRef.current && !force)) return;
+        const next = loadRailLayout(userId);
+        dirtyRef.current = false;
+        setSaved(prev => (serializeRailLayout(prev) === serializeRailLayout(next) ? prev : next));
+    }, [userId]);
+
+    useEffect(() => {
+        if (!userId) return;
+        const onRestored = (e: Event) => {
+            const who = (e as CustomEvent<{ userId?: string }>).detail?.userId;
+            if (who === userId) reread(true);
+        };
+        window.addEventListener(BACKUP_RESTORED_EVENT, onRestored);
+        return () => window.removeEventListener(BACKUP_RESTORED_EVENT, onRestored);
+    }, [userId, reread]);
+
+    useEffect(() => {
+        if (!userId || secureLocalStore.isAccountReady(userId)) return;
+        let cancelled = false;
+        void secureLocalStore.whenAccountReady().then(() => { if (!cancelled) reread(false); }, () => { /* keep what we have */ });
+        return () => { cancelled = true; };
+    }, [userId, reread]);
 
     useEffect(() => {
         if (!dirtyRef.current || !userId || !secureLocalStore.isAccountReady(userId)) return;

@@ -9,6 +9,7 @@ import secureLocalStore from '../../utils/secureLocalStore';
 import {
     PublishOrder,
     collectFocusCandidates,
+    isFocusableShare,
     isStreamLive,
     pickNextFocus,
     type FocusCandidate,
@@ -139,13 +140,18 @@ export const FocusedStreamBanner = ({
     const orderRef = React.useRef(new PublishOrder());
     const candidatesRef = React.useRef<FocusCandidate[]>([]);
 
+    // The viewer's Watch set (SidebarConference's, mirrored via CallContext):
+    // a remote share is only ever on this stage while it is being watched.
+    const watchedShares = callCtx.watchedScreenShareIds;
+
     React.useEffect(() => {
         candidatesRef.current = collectFocusCandidates(
             participants as unknown as ParticipantLike[],
             orderRef.current,
             { video: hiddenVideoIds, screenShare: hiddenScreenShareIds },
+            watchedShares,
         );
-    }, [participants, hiddenVideoIds, hiddenScreenShareIds]);
+    }, [participants, hiddenVideoIds, hiddenScreenShareIds, watchedShares]);
 
     // When the focused stream ends — camera off, share stopped, participant
     // gone — hand the pane to another live video if there is one, otherwise
@@ -184,6 +190,22 @@ export const FocusedStreamBanner = ({
             : hiddenScreenShareIds.has(focusedStream.identity);
         if (isHidden) callCtx.setFocusedStream(null);
     }, [focusedStream, hiddenVideoIds, hiddenScreenShareIds]);
+
+    // Auto-unfocus a remote share this client is not watching. The stage
+    // renders a live VideoTile (picture AND share audio) for whatever is
+    // focused, so a focus that outlived the watch — restored after Home /
+    // Friends parked it, kept across a call-panel remount that reset the
+    // Watch set — would show and play a share nobody opted into. Unfocusing
+    // drops it back to the context panel, where it is a Watch gate again.
+    // (Stop-watching already clears its own focus; this is the backstop.)
+    React.useEffect(() => {
+        if (!focusedStream) return;
+        const isLocalFocus = focusedStream.identity === localParticipant?.identity;
+        if (!isFocusableShare({ identity: focusedStream.identity, isLocal: isLocalFocus }, focusedStream.source, watchedShares)) {
+            callCtx.setFocusedStream(null);
+        }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [focusedStream, watchedShares, localParticipant?.identity]);
 
     // Notify parent whenever focus becomes active / inactive
     React.useEffect(() => {

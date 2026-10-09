@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { displayHuddleCalls, voiceJoinPeers, type JoinView } from './joinView';
+import { displayHuddleCalls, voiceJoinPeers, dropEmptyCalls, removeParticipantFromCall, type JoinView } from './joinView';
 import type { HuddleCallInfo } from '../hooks/useServers';
 
 const ME = 'me';
@@ -73,5 +73,57 @@ describe('voiceJoinPeers', () => {
     });
     it('an empty channel → nobody (a new call with just you)', () => {
         expect(voiceJoinPeers(undefined, ME, () => ({ name: '', avatarId: null }))).toEqual([]);
+    });
+});
+
+// Ghost-call fix (owner report 2026-10-08): "If there is not a call / it has
+// nobody in it, it should never show that there is one", and "I leave a call
+// and it shows me still in it … including myself".
+describe('empty calls are never drawn', () => {
+    it('drops a call with no participants from the drawn list', () => {
+        const d = displayHuddleCalls({ h1: [call('c1', ['a']), call('ghost', [])] }, null, ME, null);
+        expect(d.calls.h1.map(c => c.call_id)).toEqual(['c1']);
+    });
+
+    it('drops it even with no signed-in user (no join-view merge at all)', () => {
+        const d = displayHuddleCalls({ h1: [call('ghost', [])] }, null, null, null);
+        expect(d.calls.h1).toEqual([]);
+    });
+
+    it('control: the call I am joining is kept even though the server has nobody in it yet', () => {
+        const view: JoinView = { kind: 'huddle', huddleId: 'h1', callId: 'c1', renderKey: 'c1', spawnedAt: '' };
+        const d = displayHuddleCalls({ h1: [call('c1', [])] }, view, ME, null);
+        expect(d.calls.h1.map(c => [c.call_id, c.participants])).toEqual([['c1', [ME]]]);
+    });
+
+    it('control: a call I am starting (client-side card) is kept', () => {
+        const view: JoinView = { kind: 'huddle', huddleId: 'h1', callId: null, renderKey: 'joining:h1:1', spawnedAt: '' };
+        const d = displayHuddleCalls({}, view, ME, null);
+        expect(d.calls.h1).toHaveLength(1);
+    });
+
+    it('keeps reference identity when nothing is empty', () => {
+        const same = { h1: [call('c1', ['a'])] };
+        expect(dropEmptyCalls(same)).toBe(same);
+    });
+});
+
+describe('removeParticipantFromCall — a local leave', () => {
+    it('takes the leaver out of exactly that call', () => {
+        const before = { h1: [call('c1', ['a', ME]), call('c2', [ME])] };
+        const after = removeParticipantFromCall(before, 'c1', ME);
+        expect(after.h1.map(c => c.participants)).toEqual([['a'], [ME]]);
+        expect(before.h1[0].participants).toEqual(['a', ME]); // not mutated
+    });
+
+    it('a call left empty by it is then not drawn', () => {
+        const after = removeParticipantFromCall({ h1: [call('c1', [ME])] }, 'c1', ME);
+        expect(displayHuddleCalls(after, null, ME, null).calls.h1).toEqual([]);
+    });
+
+    it('control: same object back when the user was not in that call (no re-render)', () => {
+        const before = { h1: [call('c1', ['a'])] };
+        expect(removeParticipantFromCall(before, 'c1', ME)).toBe(before);
+        expect(removeParticipantFromCall(before, 'nope', ME)).toBe(before);
     });
 });

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
     deriveCallJoinPhase, isJoinPending, joinPhaseLabel,
-    createJoinAttemptTracker, describeCallJoinFailure,
+    createJoinAttemptTracker, describeCallJoinFailure, isSameJoinInFlight, huddleJoinHeaders,
     startJoinTimeline, markJoinStage, formatJoinTimeline,
     type CallJoinPhaseInput,
 } from './callJoinFlow';
@@ -188,5 +188,48 @@ describe('join timeline', () => {
         const line = formatJoinTimeline(t);
         expect(line).toBe('dm-join · ui 250ms · request +0ms · connected +350ms · total 600ms');
         expect(line).not.toMatch(/\+-/);
+    });
+});
+
+// Ghost-call fix (2026-10-08): a second click on "start a call" while the
+// first spawn was in flight created a second call room.
+describe('isSameJoinInFlight — re-entrancy guard', () => {
+    it('a repeat of the in-flight join is recognised', () => {
+        const t = createJoinAttemptTracker();
+        t.begin('spawn:h1');
+        expect(isSameJoinInFlight(t, 'spawn:h1')).toBe(true);
+    });
+
+    it('control: a different target is not a repeat (it supersedes, as before)', () => {
+        const t = createJoinAttemptTracker();
+        t.begin('spawn:h1');
+        expect(isSameJoinInFlight(t, 'spawn:h2')).toBe(false);
+        expect(isSameJoinInFlight(t, 'huddle-call:c1')).toBe(false);
+    });
+
+    it('control: once the join settled, failed or was cancelled, the same target may start again', () => {
+        const t = createJoinAttemptTracker();
+        const a = t.begin('spawn:h1');
+        t.settle(a);
+        expect(isSameJoinInFlight(t, 'spawn:h1')).toBe(false);
+        const b = t.begin('spawn:h1');
+        t.fail(b);
+        expect(isSameJoinInFlight(t, 'spawn:h1')).toBe(false);
+        t.begin('spawn:h1');
+        t.cancel();
+        expect(isSameJoinInFlight(t, 'spawn:h1')).toBe(false);
+    });
+
+    it('control: nothing in flight → not a repeat', () => {
+        expect(isSameJoinInFlight(createJoinAttemptTracker(), 'spawn:h1')).toBe(false);
+    });
+});
+
+describe('huddleJoinHeaders', () => {
+    it('carries the device id so the server can retire this device\'s other calls', () => {
+        expect(huddleJoinHeaders('tok', 'dev-1')).toEqual({ Authorization: 'Bearer tok', 'x-device-id': 'dev-1' });
+    });
+    it('control: omits it when unknown', () => {
+        expect(huddleJoinHeaders('tok', null)).toEqual({ Authorization: 'Bearer tok' });
     });
 });

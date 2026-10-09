@@ -31,7 +31,7 @@ export const SETTINGS_INDEX: Record<PaneId, SettingsIndexEntry[]> = {
         { label: 'Recovery key', keywords: ['backup key', 'account recovery'] },
     ],
     appearance: [
-        { label: 'Start with Windows', keywords: ['autostart', 'auto start', 'login', 'boot', 'startup'] },
+        { label: 'Start with Windows', keywords: ['autostart', 'auto start', 'login', 'boot', 'startup', 'open at login', 'start on login', 'login items', 'launch at login'] },
         { label: 'Start minimized', keywords: ['taskbar', 'launch minimized'] },
         { label: 'Minimize to tray', keywords: ['system tray', 'close to tray', 'background'] },
         { label: 'Seasonal ambience', keywords: ['marine snow', 'effects', 'decorations'] },

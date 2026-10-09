@@ -98,11 +98,10 @@ export const ScreenShareGate = ({
     // dedupe kicks in — if the participant has a camera tile showing somewhere
     // else, that tile handles mic playback and we skip setting up a duplicate.
     // screenShareSubscribed: false because the gate is by definition the
-    // unsubscribed state. Without this flag the hook would attach to the
-    // ScreenShareAudio track and play it — which is exactly the "audio
-    // comes through before I click watch" bug. The hook also defensively
-    // calls setSubscribed(false) on the audio pub when the flag is false,
-    // undoing LiveKit's default autoSubscribe behaviour.
+    // not-watching state, so the share's audio must never play from here.
+    // Whether it is even RECEIVED is not this component's call any more:
+    // useScreenShareAudioSubscriptions (SidebarConference) owns that from the
+    // watch set — see utils/screenShareAudioWatch.ts.
     useParticipantAudio(p, localParticipant?.identity, {
         volume,
         isLocalMuted,
@@ -133,10 +132,12 @@ export const ScreenShareGate = ({
     const handleWatch = async () => {
         setSubscribing(true);
         try {
+            // Video only. Joining the watch set (onSubscribed) is what brings
+            // the share's audio: useScreenShareAudioSubscriptions subscribes
+            // ScreenShareAudio for exactly the watched sharers, so audio and
+            // video follow one decision and cannot drift apart.
             const ssPub = p.getTrackPublication(Track.Source.ScreenShare) as RemoteTrackPublication | undefined;
-            const ssAudioPub = p.getTrackPublication(Track.Source.ScreenShareAudio) as RemoteTrackPublication | undefined;
             if (ssPub) await ssPub.setSubscribed(true);
-            if (ssAudioPub) await ssAudioPub.setSubscribed(true);
             onSubscribed(p.identity);
         } catch (e) {
             console.error('Failed to subscribe to screenshare', e);

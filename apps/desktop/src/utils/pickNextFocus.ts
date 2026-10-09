@@ -122,11 +122,19 @@ const NOTHING_HIDDEN: HiddenStreams = { video: new Set(), screenShare: new Set()
  *
  * Hidden streams are excluded from the returned candidates but still tracked in
  * the ledger — un-hiding one should not make it look brand new.
+ *
+ * `watchedShares`, when given, is the viewer's Watch set: a REMOTE screen share
+ * outside it is not a candidate either (also still tracked in the ledger).
+ * Without this, "has a live track" was the whole test — and the room's
+ * autoSubscribe gives every share a track — so when the focused stream ended
+ * the stage could jump to a share the viewer never opened and play its audio
+ * (utils/screenShareAudioWatch.ts). Your own share is not gated by it.
  */
 export function collectFocusCandidates(
     participants: readonly ParticipantLike[],
     order: PublishOrder,
     hidden: HiddenStreams = NOTHING_HIDDEN,
+    watchedShares?: ReadonlySet<string>,
 ): FocusCandidate[] {
     const liveKeys: string[] = [];
     const candidates: FocusCandidate[] = [];
@@ -140,6 +148,7 @@ export function collectFocusCandidates(
                 ? hidden.video.has(p.identity)
                 : hidden.screenShare.has(p.identity);
             if (isHidden) continue;
+            if (!isFocusableShare(p, source, watchedShares)) continue;
             candidates.push({
                 identity: p.identity,
                 source,
@@ -154,6 +163,20 @@ export function collectFocusCandidates(
         c.publishedAt = order.get(focusKey(c.identity, c.source));
     }
     return candidates;
+}
+
+/**
+ * May `source` of `p` be focused, given the viewer's Watch set? Cameras and
+ * your own share always; a remote share only while watched. With no set (the
+ * caller has no notion of watching) everything passes, as before.
+ */
+export function isFocusableShare(
+    p: Pick<ParticipantLike, 'identity' | 'isLocal'>,
+    source: FocusSource,
+    watchedShares?: ReadonlySet<string>,
+): boolean {
+    if (source !== Track.Source.ScreenShare || p.isLocal || !watchedShares) return true;
+    return watchedShares.has(p.identity);
 }
 
 /**

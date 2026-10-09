@@ -375,6 +375,35 @@ export function collectIncludedKv(
     return out;
 }
 
+/** Dispatched on `window` once importLocalHistory has finished applying a
+ *  backup / history transfer to a RUNNING app. Hooks that cached a restored
+ *  setting at mount (the server rail layout) re-read it on this, so a live
+ *  restore — device-to-device history sync does not reload the page — is not
+ *  left showing the pre-restore state that the user's next drag would then
+ *  persist over the restored value. `detail.userId` is the restored account. */
+export const BACKUP_RESTORED_EVENT = 'cipherline:backup-restored';
+
+/**
+ * The server rail is TWO keys for one setting: the v2 layout (order + folders)
+ * and the legacy flat order. loadRailLayout prefers v2 when it exists. A backup
+ * from a pre-folder build carries only the legacy order, so restored over a
+ * device that already has a v2 record the restored order would be written but
+ * never read — the restore would silently do nothing. When the backup has the
+ * legacy order and NO layout, drop the local layout so the restored order is
+ * authoritative. (A backup with neither key leaves the local rail alone.)
+ * Returns whether a local layout was dropped.
+ */
+export function dropShadowingRailLayout(
+    store: { removeItem(key: string): void },
+    kv: Record<string, string>,
+    userId: string,
+): boolean {
+    if (typeof kv['cipherline_server_rail_order_' + UID] !== 'string') return false;
+    if (typeof kv['cipherline_server_rail_layout_' + UID] === 'string') return false;
+    store.removeItem(`cipherline_server_rail_layout_${userId}`);
+    return true;
+}
+
 // ── Custom notification sounds ──────────────────────────────────────────────
 // Notification prefs point at custom sounds by absolute `file://` path on the
 // machine that saved them. After a restore those paths belong to another

@@ -2,8 +2,8 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Keys, type KeysFace, type KeysMood, type KeysSignal, type PokeReaction } from './Keys';
 import { isMotionActive } from '../../utils/idleMotion';
 import {
-    registerClick, isBroken, reached, lineIndex, SPAM_GAP_MS, SPAM_COUNTS_AT,
-    type SpamStreak,
+    registerClick, isBroken, reached, lineIndex, inputTime, SPAM_GAP_MS, SPAM_COUNTS_AT,
+    type SpamStreak, type PlayVerdict,
 } from '../../utils/keysBurst';
 import { SHOWS, REST, ready, upNext, deal, type Move, type Personality, type Target } from '../../utils/keysSpam';
 import { readSpamBag, writeSpamBag } from '../../utils/keysSpamStore';
@@ -33,19 +33,26 @@ import '../../styles/home-keys.css';
  *    down his own way. The streak rule is utils/keysBurst.ts. Every show's
  *    motion is Web Animations on html elements (transform / opacity:
  *    compositor), started from the click handler, so nothing runs between
- *    clicks.
+ *    clicks. Under reduced motion the shows' motion is skipped (his lines
+ *    still build), and the game still opens: see keysBurst homeGameVerdict.
  */
 
-export type PlayVerdict = 'ok' | 'call' | 'motion' | 'unavailable';
+export type { PlayVerdict };
 
 export const BURST_LINES = {
     call: 'fine, but after your call.',
-    motion: 'I’d play, but motion is turned down.',
     unavailable: 'I’d play, but this machine can’t draw the game.',
 } as const;
 
 /** From the 5-second click to the game opening: long enough to see the finale. */
 export const PLAY_DELAY_MS = 750;
+/** How long past the gap the "streak is over" settle waits before it starts.
+ *  Only the settle's start: whether a click continues the streak is decided
+ *  by the clicks' own timestamps. The slack is for a busy main thread: a
+ *  click that happened inside the gap but is still queued must get handled
+ *  (and cancel this) before the settle could throw the streak away. */
+export const SETTLE_SLACK_MS = 200;
+const SETTLE_AFTER_MS = SPAM_GAP_MS + SETTLE_SLACK_MS;
 const LINE_MS = 2400;
 
 export interface HomeKeysProps {
@@ -195,8 +202,9 @@ export const HomeKeys: React.FC<HomeKeysProps> = ({ userId, signal, speech, live
     // Every click asks here first (Keys' interceptPoke). A click that starts
     // a streak returns null: the rig runs its normal poke ladder. Clicks that
     // keep a streak going are the show's.
-    const interceptPoke = useCallback((): PokeReaction | null => {
-        const now = performance.now();
+    const interceptPoke = useCallback((timeStamp: number | undefined): PokeReaction | null => {
+        // When the click happened, not when we got to it (keysBurst inputTime).
+        const now = inputTime(timeStamp, performance.now());
         // Mid-finale: he's busy. The clicks that are still coming in must not
         // start a new streak (that would cut the finale off).
         if (now < busyUntil.current) return 'none';
@@ -218,7 +226,7 @@ export const HomeKeys: React.FC<HomeKeysProps> = ({ userId, signal, speech, live
             showRef.current = upNext(bag);
             clickN.current = 0;
             dealt.current = false;
-            timers.current.settle = setTimeout(recover, SPAM_GAP_MS + 20);
+            timers.current.settle = setTimeout(recover, SETTLE_AFTER_MS);
             return null;
         }
 
@@ -262,7 +270,7 @@ export const HomeKeys: React.FC<HomeKeysProps> = ({ userId, signal, speech, live
         rootRef.current?.classList.toggle('hk-avoid', !!s.avoid);
         say(s.lines[lineIndex(r.progress)], s.speech);
         // No click within the gap: the streak is over.
-        timers.current.settle = setTimeout(recover, SPAM_GAP_MS + 20);
+        timers.current.settle = setTimeout(recover, SETTLE_AFTER_MS);
         return 'none';
     }, [endShow, play, recover, say]);
 
@@ -272,14 +280,16 @@ export const HomeKeys: React.FC<HomeKeysProps> = ({ userId, signal, speech, live
     // that has not moved is soon NOT over him, and a measured 1-4 clicks per
     // streak (real Chromium pointer, still cursor) missed him and threw away
     // the streak. Outside a live streak this does nothing, so the padding
-    // never steals a click from a neighbour.
+    // never steals a click from a neighbour. It goes straight to the streak
+    // with the event's own timestamp (a re-dispatched rig.click() would be
+    // stamped with the moment it was re-dispatched).
     const onZoneClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
         const rig = reactRef.current?.querySelector<HTMLElement>('[role="img"]');
         if (!rig || rig.contains(e.target as Node)) return;
         const s = streak.current;
-        if (!s || isBroken(s, performance.now())) return;
-        rig.click();
-    }, []);
+        if (!s || isBroken(s, inputTime(e.timeStamp, performance.now()))) return;
+        interceptPoke(e.timeStamp);
+    }, [interceptPoke]);
 
     // Look at the pointer while it is over him (a generous hit zone, see
     // home-keys.css): -1..1 from his centre, written straight to CSS.

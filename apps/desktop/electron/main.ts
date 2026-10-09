@@ -30,6 +30,28 @@ import {
 import { setBadgeCount, flashTaskbar, applyWindowsCallOverlay } from './badge';
 import { setupTray, updateTrayMenu, getTray, setTrayCallState } from './tray';
 import type { TrayMenuState } from './tray';
+import {
+  loginItemTarget,
+  electronLoginItemQuery,
+  electronLoginItemSettings,
+  interpretElectronLoginItem,
+  windowsLoginItemNeedsRetrofit,
+  leftoverWindowsLaunchItemNames,
+  xdgAutostartPath,
+  buildXdgDesktopEntry,
+  interpretXdgEntry,
+  xdgEntryNeedsRewrite,
+  shouldApplyLoginDefault,
+  wasLaunchedAtLogin,
+  shouldStartMinimized,
+  shouldHideToTrayOnClose,
+  resolveBoolPref,
+  encodeBoolPref,
+  DEFAULT_START_MINIMIZED,
+  DEFAULT_MINIMIZE_TO_TRAY,
+  type LoginItemTarget,
+  type LoginItemState,
+} from './login-item';
 import { encryptForDevices, decryptWithRetainedSpks, encryptChannelMessage, decryptChannelMessage, flushReplayCache, type DevicePub } from './e2ee-engine';
 import { setChannelKey, getChannelKey, getLatestEpoch, listChannelEpochs, rotateChannelKey, pruneOldKeys, getChannelKeyFingerprint, listChannelEpochFingerprints, discardChannelKey, setProtectedEpochs } from './channel-keys';
 import { installerSplashHtml } from './installer-splash';
@@ -630,6 +652,79 @@ function updateTray(enabled: boolean): void {
   setupTray(enabled, mainWindow, isQuittingRef, trayState);
 }
 
+// ── Start at login (Windows / macOS / Linux) ─────────────────────────────────
+// The decisions live in ./login-item.ts (pure, unit tested); these wrappers
+// only perform the Electron / filesystem calls. Every read and every write is
+// built from the SAME `loginItemTarget()` — reading with different path/args
+// than the item was written with is what made the toggle snap back OFF.
+
+function currentLoginItemTarget(): LoginItemTarget {
+  return loginItemTarget({
+    platform: process.platform,
+    isPackaged: IS_PACKAGED,
+    execPath: process.execPath,
+    appImage: process.env.APPIMAGE,
+    portableExecutable: process.env.PORTABLE_EXECUTABLE_FILE,
+  });
+}
+
+function xdgAutostartFile(): string {
+  return xdgAutostartPath(os.homedir(), process.env.XDG_CONFIG_HOME);
+}
+
+function readXdgAutostart(): string | null {
+  try { return fs.readFileSync(xdgAutostartFile(), 'utf8'); } catch { return null; }
+}
+
+function readLoginItemState(target: LoginItemTarget = currentLoginItemTarget()): LoginItemState {
+  switch (target.kind) {
+    case 'windows':
+    case 'mac':
+      return interpretElectronLoginItem(target, app.getLoginItemSettings(electronLoginItemQuery(target)));
+    case 'xdg':
+      return { supported: true, enabled: interpretXdgEntry(readXdgAutostart()).enabled, needsApproval: false };
+    default:
+      return { supported: false, enabled: false, needsApproval: false };
+  }
+}
+
+function writeLoginItem(enabled: boolean, target: LoginItemTarget = currentLoginItemTarget()): void {
+  switch (target.kind) {
+    case 'windows': {
+      app.setLoginItemSettings(electronLoginItemSettings(target, enabled));
+      if (!enabled) {
+        // An entry for this exe under another value name (an older build's
+        // default AppUserModelId) survives the by-name delete and would keep
+        // launching the app — and keep the toggle reading ON.
+        const after = app.getLoginItemSettings(electronLoginItemQuery(target));
+        for (const name of leftoverWindowsLaunchItemNames(after.launchItems, target.path)) {
+          app.setLoginItemSettings({ openAtLogin: false, path: target.path, name });
+        }
+      }
+      return;
+    }
+    case 'mac':
+      app.setLoginItemSettings(electronLoginItemSettings(target, enabled));
+      return;
+    case 'xdg': {
+      const file = xdgAutostartFile();
+      if (enabled) {
+        fs.mkdirSync(path.dirname(file), { recursive: true });
+        const tmp = `${file}.tmp`;
+        fs.writeFileSync(tmp, buildXdgDesktopEntry(target.exec), { mode: 0o644 });
+        fs.renameSync(tmp, file);
+      } else {
+        try { fs.unlinkSync(file); } catch (e) {
+          if ((e as NodeJS.ErrnoException)?.code !== 'ENOENT') throw e;
+        }
+      }
+      return;
+    }
+    default:
+      return;
+  }
+}
+
 // ── Window geometry persistence ───────────────────────────────────────────────
 // Saves/restores window size, position and maximised state across launches.
 // Uses a plain JSON file in the Electron userData directory (no encryption
@@ -867,7 +962,9 @@ async function createWindow(csp: string, startHidden = false) {
   // Windows force-shutdown / restart / log-off: the OS ends the session
   // without a normal quit. That is a clean end, not a crash — drop the
   // unclean-exit marker (powerMonitor 'shutdown' covers macOS/Linux).
-  mainWindow.on('session-end', () => endSessionMarker());
+  // Also lets the close through: with minimize-to-tray on (the default), a
+  // close that hides instead of closing must never stall a log-off.
+  mainWindow.on('session-end', () => { setIsQuitting(true); endSessionMarker(); });
   mainWindow.on('close', (e) => {
     if (_saveStateTimer) { clearTimeout(_saveStateTimer); _saveStateTimer = null; }
     saveWindowState(mainWindow!);
@@ -878,8 +975,11 @@ async function createWindow(csp: string, startHidden = false) {
     // Read defensively here and treat any failure as "tray disabled", which is
     // the safe default: the window closes.
     let minimizeToTray = false;
-    try { minimizeToTray = secureStore.get('minimizeToTray') === 'true'; } catch { /* store unavailable */ }
-    if (!isQuitting && minimizeToTray) {
+    try { minimizeToTray = resolveBoolPref(secureStore.get('minimizeToTray'), DEFAULT_MINIMIZE_TO_TRAY); } catch { /* store unavailable */ }
+    // Only hide when a tray icon really exists — otherwise (tray creation
+    // failed, or the store was unreadable at boot so no tray was made) the
+    // window would vanish with no way back but relaunching.
+    if (shouldHideToTrayOnClose({ isQuitting, minimizeToTray, trayExists: getTray() !== null })) {
       e.preventDefault();
       mainWindow?.hide();
     }
@@ -1935,7 +2035,7 @@ app.whenReady().then(async () => {
     recordCrash(() => crashFromChildGone(details, Date.now(), app.getVersion()));
   });
   // macOS / Linux OS shutdown: a clean end of the session, not a crash.
-  powerMonitor.on('shutdown', () => endSessionMarker());
+  powerMonitor.on('shutdown', () => { setIsQuitting(true); endSessionMarker(); });
   // Resource snapshot every 15 s while the window is on screen (nothing while
   // minimized / in the tray — the log is about what the user sees).
   setInterval(() => {
@@ -2262,39 +2362,43 @@ app.whenReady().then(async () => {
   // after mainWindow is assigned (P2-ELEC-8: optional-chain here would no-op on null).
 
   // ── System behavior settings ──────────────────────────────────────────────
-  // "Start with Windows" uses the OS login-item API; "start minimized" and
-  // "minimize to tray" are persisted in secureStore (simple string flags).
+  // "Start at login" is OS state (Windows Run key / macOS login item / Linux
+  // XDG autostart file) — see readLoginItemState/writeLoginItem. "Start
+  // minimized" and "minimize to tray" are SecureStore string flags. All three
+  // default ON while nothing is stored (./login-item.ts).
 
-  ipcMain.handle('app:get-start-with-windows', () => {
-    if (process.platform !== 'win32' && process.platform !== 'darwin') return false;
-    return app.getLoginItemSettings().openAtLogin;
-  });
-  ipcMain.handle('app:set-start-with-windows', (_e, enabled: boolean) => {
-    if (process.platform !== 'win32' && process.platform !== 'darwin') return;
-    // `--autostart` marks login-item launches so startup can tell them apart
-    // from the user double-clicking the app: only login launches honor the
-    // start-minimized preference. (macOS ignores `args`; detection there uses
-    // getLoginItemSettings().wasOpenedAtLogin instead.)
-    app.setLoginItemSettings(enabled ? { openAtLogin: true, args: ['--autostart'] } : { openAtLogin: false });
+  // Kept for older renderers: the plain boolean.
+  ipcMain.handle('app:get-start-with-windows', () => readLoginItemState().enabled);
+  ipcMain.handle('app:get-login-item-state', () => readLoginItemState());
+  // Returns the state RE-READ from the OS after the write, so the toggle shows
+  // what the OS actually has — never merely what was requested.
+  ipcMain.handle('app:set-start-with-windows', (_e, enabled: unknown) => {
+    if (typeof enabled !== 'boolean') throw new Error('app:set-start-with-windows expects a boolean');
+    const target = currentLoginItemTarget();
+    if (target.kind !== 'unsupported') {
+      try { writeLoginItem(enabled, target); }
+      catch (err) { console.warn('[LoginItem] write failed:', err); }
+    }
+    return readLoginItemState(target);
   });
 
   ipcMain.handle('app:get-start-minimized', () => {
-    // Default ON: the preference now means "minimized when auto-started at
-    // login" (manual launches always show the window), and a quiet login
-    // launch is the behavior people expect from that. Only an explicit
-    // 'false' (user flipped the toggle off) disables it.
-    return secureStore.get('startMinimized') !== 'false';
+    // Means "minimized when auto-started at login" — manual launches always
+    // show the window. Default ON; only an explicit 'false' disables it.
+    return resolveBoolPref(secureStore.get('startMinimized'), DEFAULT_START_MINIMIZED);
   });
-  ipcMain.handle('app:set-start-minimized', (_e, enabled: boolean) => {
-    secureStore.set('startMinimized', enabled ? 'true' : 'false');
+  ipcMain.handle('app:set-start-minimized', (_e, enabled: unknown) => {
+    if (typeof enabled !== 'boolean') throw new Error('app:set-start-minimized expects a boolean');
+    secureStore.set('startMinimized', encodeBoolPref(enabled));
   });
 
   ipcMain.handle('app:get-minimize-to-tray', () => {
-    return secureStore.get('minimizeToTray') === 'true';
+    return resolveBoolPref(secureStore.get('minimizeToTray'), DEFAULT_MINIMIZE_TO_TRAY);
   });
-  ipcMain.handle('app:set-minimize-to-tray', (_e, enabled: boolean) => {
-    secureStore.set('minimizeToTray', enabled ? 'true' : 'false');
-    updateTray(!!enabled);
+  ipcMain.handle('app:set-minimize-to-tray', (_e, enabled: unknown) => {
+    if (typeof enabled !== 'boolean') throw new Error('app:set-minimize-to-tray expects a boolean');
+    secureStore.set('minimizeToTray', encodeBoolPref(enabled));
+    updateTray(enabled);
   });
 
   // navigator.clipboard.readText() in the renderer requires a browser-trust
@@ -2809,6 +2913,12 @@ app.whenReady().then(async () => {
     }
     secureStore.setMany(filtered); // one vault write, never half-applied (P2-ELEC-10)
     await secureStore.whenDurable();
+    // A backup restore writes minimizeToTray through here — bring the tray
+    // icon in line now rather than at the next launch, so the restored
+    // "close to tray" choice has its icon (and an OFF removes it).
+    if ('minimizeToTray' in filtered) {
+      updateTray(resolveBoolPref(filtered.minimizeToTray, DEFAULT_MINIMIZE_TO_TRAY));
+    }
     return true;
   });
 
@@ -5076,48 +5186,73 @@ app.whenReady().then(async () => {
     });
   }
 
-  // ── Start with Windows: default ON (packaged only) + login-item refresh ──
-  // One-time default so a fresh install auto-starts at login without a trip to
-  // Settings; the flag means the user's later choice (either way) is never
-  // overridden again. The else-branch re-registers an already-enabled login
-  // item every boot — idempotent, and it retrofits the `--autostart` marker
-  // onto login items created before the marker existed (without it, their
-  // login launches would be indistinguishable from manual ones below).
-  // Never in dev: setLoginItemSettings would register the bare electron
-  // binary as a login item. Never under the CI smoke test either, for two
-  // reasons: it would register Cipherline as a login item on the shared CI
-  // runner, and SecureStore.initialize() deliberately skips assigning its
-  // file paths under CIPHERLINE_SMOKE_TEST ("doesn't exercise the store"),
-  // so the unguarded set() below became rename('.tmp', '') → ENOENT and
-  // failed every staging build at the smoke gate.
-  // `storeOk` (see the barrier above) is load-bearing here, not belt-and-braces:
-  // without a readable store, `loginItemDefaultApplied` reads as absent and this
-  // would re-enable "start with Windows" for a user who deliberately turned it
-  // off — then fail on the set() that is supposed to record the decision.
-  if (storeOk && IS_PACKAGED && !IS_SMOKE_TEST
-      && (process.platform === 'win32' || process.platform === 'darwin')) {
-    if (secureStore.get('loginItemDefaultApplied') !== 'true') {
-      app.setLoginItemSettings({ openAtLogin: true, args: ['--autostart'] });
-      secureStore.set('loginItemDefaultApplied', 'true');
-    } else if (app.getLoginItemSettings().openAtLogin) {
-      app.setLoginItemSettings({ openAtLogin: true, args: ['--autostart'] });
+  // ── Start at login: default ON once per install + login-item refresh ──────
+  // One-time default so a fresh install starts at login on Windows, macOS AND
+  // Linux without a trip to Settings; `loginItemDefaultApplied` then means the
+  // user's later choice (either way) is never overridden again.
+  // Packaged only: a dev build would register the bare Electron binary
+  // (loginItemTarget() returns 'unsupported' there). Never under the CI smoke
+  // test: it would register Cipherline as a login item on the shared CI
+  // runner, and SecureStore.initialize() deliberately skips assigning its file
+  // paths under CIPHERLINE_SMOKE_TEST, so the set() below would become
+  // rename('.tmp', '') → ENOENT and fail every staging build at the smoke gate.
+  // `storeOk` is load-bearing: without a readable store the flag reads as
+  // absent and this would re-enable an item the user deliberately turned off.
+  // The first launch after install is never a login launch, so it still shows
+  // the window (shouldStartMinimized below) — a new user can sign up.
+  {
+    const target = currentLoginItemTarget();
+    let defaultFlag: string | null = null;
+    let flagReadable = storeOk && !IS_SMOKE_TEST;
+    if (flagReadable) {
+      try { defaultFlag = secureStore.get('loginItemDefaultApplied'); } catch { flagReadable = false; }
+    }
+    try {
+      if (shouldApplyLoginDefault({ target, storeOk: flagReadable, isSmokeTest: IS_SMOKE_TEST, defaultAppliedFlag: defaultFlag })) {
+        writeLoginItem(true, target);
+        secureStore.set('loginItemDefaultApplied', 'true');
+      } else if (flagReadable) {
+        // Retrofit, never create: re-register an existing item that lacks the
+        // `--autostart` marker (Windows, pre-c965df32 builds) or points at an
+        // old path (Linux: AppImage moved). Without the marker its login
+        // launches would look like manual opens and ignore "start minimized".
+        if (target.kind === 'windows') {
+          if (windowsLoginItemNeedsRetrofit(app.getLoginItemSettings(electronLoginItemQuery(target)))) {
+            writeLoginItem(true, target);
+          }
+        } else if (target.kind === 'xdg') {
+          if (xdgEntryNeedsRewrite(readXdgAutostart(), target.exec)) writeLoginItem(true, target);
+        }
+      }
+    } catch (err) {
+      console.warn('[LoginItem] startup default/refresh failed:', err);
     }
   }
 
   // Apply the start-minimized preference — but ONLY to login-item launches.
-  // A manual open (double-clicking the icon) always shows the window: the
-  // user just asked for the app, minimizing it at them is never right. Login
-  // launches are identified by the `--autostart` arg the login item carries
-  // (Windows) or wasOpenedAtLogin (macOS). Skipped during the installer flow —
+  // A manual open (double-clicking the icon, the installer's "Run Cipherline",
+  // the first open after install) always shows the window. Login launches are
+  // identified by the `--autostart` arg the login item carries (Windows,
+  // Linux) or wasOpenedAtLogin (macOS). Skipped during the installer flow —
   // the splash owns window visibility and reveals the main window itself.
-  const launchedAtLogin = process.argv.includes('--autostart') ||
-    (process.platform === 'darwin' && app.getLoginItemSettings().wasOpenedAtLogin);
-  if (!showInstaller && launchedAtLogin && storeOk && secureStore.get('startMinimized') !== 'false') {
+  const launchedAtLogin = wasLaunchedAtLogin(
+    process.argv,
+    process.platform,
+    process.platform === 'darwin' && app.getLoginItemSettings().wasOpenedAtLogin,
+  );
+  let startMinimizedStored: string | null = null;
+  if (storeOk) { try { startMinimizedStored = secureStore.get('startMinimized'); } catch { /* default */ } }
+  if (shouldStartMinimized({ launchedAtLogin, showInstaller, storeOk, startMinimizedStored })) {
     mainWindow?.minimize();
   }
 
-  // Initialize tray icon if minimize-to-tray was previously enabled.
-  updateTray(storeOk && secureStore.get('minimizeToTray') === 'true');
+  // Tray icon: on unless the user turned "minimize to tray" off. An
+  // unreadable store means no tray — and the close handler then never hides.
+  let minimizeToTrayStored: string | null = null;
+  if (storeOk) { try { minimizeToTrayStored = secureStore.get('minimizeToTray'); } catch { /* default */ } }
+  // Not under the CI smoke test: a throwaway launch on a (possibly headless)
+  // runner gains nothing from a tray, and without one close() always closes.
+  updateTray(storeOk && !IS_SMOKE_TEST && resolveBoolPref(minimizeToTrayStored, DEFAULT_MINIMIZE_TO_TRAY));
 
   // ── Cold-start deep link (Windows / Linux) ────────────────────────────────
   // When the user clicks a cipherline:// URL on a fresh launch, the OS passes
@@ -5326,6 +5461,10 @@ app.whenReady().then(async () => {
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createWindow(csp);
+    } else if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible() && !installerSplash) {
+      // macOS: a Dock click must bring back a window hidden by "minimize to
+      // tray" — otherwise the menu-bar icon would be the only way back.
+      showAndFocusWindow(mainWindow);
     }
   });
   } catch (err) {

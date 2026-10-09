@@ -1,6 +1,6 @@
 import React from 'react';
 import ReactDOM from 'react-dom';
-import { PhoneCall, Mic, MicOff, Video, VideoOff, ScreenShare, X, ChevronDown, ChevronLeft, Headphones, HeadphoneOff, Maximize2, Minimize2, Monitor, Sliders, Check, Volume2, VolumeX, LifeBuoy } from 'lucide-react';
+import { PhoneCall, Mic, MicOff, Video, VideoOff, ScreenShare, Loader2, X, ChevronDown, ChevronLeft, Headphones, HeadphoneOff, Maximize2, Minimize2, Monitor, Sliders, Check, Volume2, VolumeX, LifeBuoy } from 'lucide-react';
 import { useCallContextSafe } from '../../contexts/CallContext';
 import { useSubscription } from '../../contexts/SubscriptionContext';
 import { useDismissOnOutsideClick } from '../../hooks/useDismissOnOutsideClick';
@@ -34,6 +34,10 @@ interface ControlBarProps {
     currentShareResolution?: ScreenShareOptions['resolution'];
     currentShareFrameRate?: ScreenShareOptions['frameRate'];
     currentShareAudio?: boolean;
+    /** A share start is in flight — a source was confirmed and LiveKit has not
+     *  published it yet (SidebarConference / utils/screenShareStartState.ts).
+     *  The share control shows a spinner and takes no clicks meanwhile. */
+    screenShareStarting?: boolean;
     onLeave: () => void;
     showFullscreenButton?: boolean;
     compact?: boolean;
@@ -136,8 +140,15 @@ const Chip = ({ active, onClick, children }: { active: boolean; onClick: () => v
 // animating. `bumpSpam` (a stable useCallback from useSpamStreak) is passed
 // in as a prop instead of closed over, since this no longer lives inside
 // ControlBar's scope.
-const CtrlBtn = ({ tone = 'neutral', disabled, title, onClick, onContextMenu, onMouseEnter, onMouseLeave, children, style, className = '', spamKey, pulse, bumpSpam }: {
+/** Accessible name + tooltip of the share control while a share is starting. */
+const STARTING_SHARE_LABEL = 'Starting screen share…';
+
+const CtrlBtn = ({ tone = 'neutral', disabled, busy, title, onClick, onContextMenu, onMouseEnter, onMouseLeave, children, style, className = '', spamKey, pulse, bumpSpam }: {
     tone?: Tone; disabled?: boolean; title?: string;
+    /** Working on it (a share starting): takes no clicks, announces itself as
+     *  busy, and keeps its normal colours — it is not unavailable, just not
+     *  done. `title` becomes the accessible name. */
+    busy?: boolean;
     /** Standing state worth a slow glow: 'off' (muted/deafened, red) or
      *  'live' (publishing something, lume). Omitted = no glow. */
     pulse?: 'off' | 'live';
@@ -155,15 +166,19 @@ const CtrlBtn = ({ tone = 'neutral', disabled, title, onClick, onContextMenu, on
     <button
         type="button"
         title={title}
-        disabled={disabled}
+        aria-label={busy ? title : undefined}
+        aria-busy={busy || undefined}
+        disabled={disabled || busy}
         onClick={e => {
+            if (busy) return;
             if (spamKey) bumpSpam?.(spamKey, e.currentTarget as HTMLElement);
             onClick?.(e);
         }}
         onContextMenu={onContextMenu}
         onMouseEnter={onMouseEnter}
         onMouseLeave={onMouseLeave}
-        data-pulse={disabled ? undefined : pulse}
+        data-pulse={disabled || busy ? undefined : pulse}
+        data-busy={busy || undefined}
         data-tone={tone}
         className={`cl-ctrlbtn ${className}`}
         style={{
@@ -288,6 +303,7 @@ export const ControlBar = ({
     currentShareResolution,
     currentShareFrameRate,
     currentShareAudio,
+    screenShareStarting,
     onLeave,
     showFullscreenButton,
     canSpeak = true,
@@ -322,6 +338,7 @@ export const ControlBar = ({
     const videoLocked = !canPublishVideo;
     const callCtx = useCallContextSafe();
     const isScreensharing = !!localParticipant?.isScreenShareEnabled;
+    const shareStarting = !!screenShareStarting;
     const bumpSpam = useSpamStreak();
 
     // Mic dizzy (catalog: "mute toggled 5× in 2.5s → mic spins dizzy").
@@ -505,8 +522,11 @@ export const ControlBar = ({
     );
 
     React.useEffect(() => {
-        if (!isScreensharing) { setSsMenuOpen(false); setSsMenuMode('main'); }
-    }, [isScreensharing]);
+        if (!isScreensharing || shareStarting) { setSsMenuOpen(false); setSsMenuMode('main'); }
+        // A disabled button gets no mouseleave, so a hover that was on the
+        // stop face when the restart began would otherwise stick (red X).
+        if (shareStarting) setSsHovered(false);
+    }, [isScreensharing, shareStarting]);
 
     // ── Quality sub-panel state ───────────────────────────────────────────────
     const has1440p = typeof window !== 'undefined' && window.screen.height >= 1440;
@@ -884,19 +904,30 @@ export const ControlBar = ({
                         {/* Stop button */}
                         <button
                             type="button"
-                            title="Stop Screen Share"
-                            onClick={onToggleScreenshare}
+                            title={shareStarting ? STARTING_SHARE_LABEL : 'Stop Screen Share'}
+                            aria-label={shareStarting ? STARTING_SHARE_LABEL : undefined}
+                            aria-busy={shareStarting || undefined}
+                            data-busy={shareStarting || undefined}
+                            disabled={shareStarting}
+                            onClick={shareStarting ? undefined : onToggleScreenshare}
                             onMouseEnter={() => setSsHovered(true)}
                             onMouseLeave={() => setSsHovered(false)}
                             className={`cl-ctrlbtn cl-share-stop overflow-hidden
                                 ${!ssHovered && ssTransReady ? 'ss-stop-btn-pulse' : ''}
                                 ${justStartedSharing ? 'ss-start-flash' : ''}`}
                             style={{
-                                background: ssHovered ? 'color-mix(in srgb, var(--cl-flash) 90%, transparent)' : 'var(--cl-lume)',
+                                background: ssHovered && !shareStarting ? 'color-mix(in srgb, var(--cl-flash) 90%, transparent)' : 'var(--cl-lume)',
                                 color: ssHovered ? 'var(--cl-text)' : 'var(--cl-on-lume)',
                                 transition: ssTransReady ? 'background 220ms cubic-bezier(0.4,0,0.2,1)' : 'none',
                             } as React.CSSProperties}
                         >
+                            {shareStarting ? (
+                                /* Changing source / audio: the live share is being
+                                   republished. Spinner until it is out again. */
+                                <span className="cl-ico cl-share-starting absolute" aria-hidden="true">
+                                    <Loader2 />
+                                </span>
+                            ) : (<>
                             <ScreenShare className="absolute" style={{
                                 width: 'clamp(16px, 42%, 22px)', height: 'auto',
                                 opacity: ssHovered ? 0 : 1,
@@ -909,6 +940,7 @@ export const ControlBar = ({
                                 transform: ssHovered ? 'scale(1) rotate(0deg)' : 'scale(0.5) rotate(15deg)',
                                 transition: ssIconTransition,
                             }} />
+                            </>)}
                         </button>
 
                         {/* Chevron — slim attached flag, fixed width so only the
@@ -917,7 +949,8 @@ export const ControlBar = ({
                             <button
                                 type="button"
                                 title="Screen share options"
-                                onClick={openMenu}
+                                disabled={shareStarting}
+                                onClick={shareStarting ? undefined : openMenu}
                                 className="cl-ctrlbtn cl-share-chev"
                                 style={{
                                     background: ssMenuOpen ? 'var(--cl-lume)' : 'rgba(37,224,200,0.55)',
@@ -937,21 +970,27 @@ export const ControlBar = ({
                 ) : (
                     <CtrlBtn
                         bumpSpam={bumpSpam}
-                        disabled={shareDisabled}
+                        disabled={shareDisabled && !shareStarting}
+                        busy={shareStarting}
                         tone="neutral"
                         onClick={() => {
                             if (videoLocked) { promptUpgrade('screenshare'); return; }
                             onToggleScreenshare();
                         }}
-                        onMouseEnter={videoLocked || shareDisabled ? undefined : () => onScreenShareIntent?.()}
+                        onMouseEnter={videoLocked || shareDisabled || shareStarting ? undefined : () => onScreenShareIntent?.()}
                         title={
-                            videoLocked ? 'Screen sharing is a Pro feature — upgrade for $2.50/mo + tax'
+                            shareStarting ? STARTING_SHARE_LABEL
+                            : videoLocked ? 'Screen sharing is a Pro feature — upgrade for $2.50/mo + tax'
                             : serverMutedScreenShare ? "Screen sharing has been disabled by a moderator"
                             : shareDisabled        ? "You don't have permission to screen share in this channel"
                             : 'Share Screen'
                         }
                     >
-                        <span className="cl-ico"><ScreenShare className={iconSize} /></span>
+                        {shareStarting ? (
+                            <span className="cl-ico cl-share-starting" aria-hidden="true"><Loader2 className={iconSize} /></span>
+                        ) : (
+                            <span className="cl-ico"><ScreenShare className={iconSize} /></span>
+                        )}
                     </CtrlBtn>
                 )}
 

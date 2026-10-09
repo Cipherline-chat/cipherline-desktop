@@ -145,6 +145,31 @@ export function createJoinAttemptTracker(): JoinAttemptTracker {
     };
 }
 
+/**
+ * Re-entrancy guard (ghost-call fix, 2026-10-08): is a join for exactly this
+ * target already in flight? A double-click, a keyboard + mouse activation, or
+ * a click while a slow spawn is still pending used to start a SECOND spawn —
+ * a second call room on the server — while the first was still being made.
+ * The caller ignores the repeat instead. A join to a DIFFERENT target is not a
+ * repeat: it supersedes the open one, as before.
+ */
+export function isSameJoinInFlight(tracker: Pick<JoinAttemptTracker, 'pending'>, target: string): boolean {
+    return tracker.pending()?.target === target;
+}
+
+/**
+ * Headers for a Calls-channel spawn / join. `x-device-id` lets the server
+ * enforce "one device, one call" precisely: a newer join from this device
+ * retires any other call this device's presence is still attached to (a spawn
+ * whose response was lost, a leave that failed). Omitted when unknown — the
+ * server then falls back to a LiveKit-verified check.
+ */
+export function huddleJoinHeaders(token: string, deviceId?: string | null): Record<string, string> {
+    const h: Record<string, string> = { Authorization: `Bearer ${token}` };
+    if (deviceId) h['x-device-id'] = deviceId;
+    return h;
+}
+
 // ── Failure → what the user is told ─────────────────────────────────────────
 
 export type CallJoinKind = 'voice' | 'huddle-spawn' | 'huddle-join' | 'dm-start' | 'dm-join';

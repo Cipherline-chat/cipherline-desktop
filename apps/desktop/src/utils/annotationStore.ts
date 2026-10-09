@@ -126,6 +126,17 @@ export interface AnnotationState {
      *  `${track}\n${identity}`, outgoing keyed by track. Bookkeeping for
      *  expireRequests(); never part of any diff the transport sends. */
     requestedAt: Record<string, number>;
+    /**
+     * VIEWER side. trackKey -> ms epoch (LOCAL clock) at which the owner
+     * APPROVED OUR OWN pending request on that track. A one-shot marker for
+     * the auto-arm in useAnnotationAutoArm ("you were just let in, so start
+     * drawing"): set by markApproved, spent by consumeApproval, pruned by
+     * dropTrack / expireRequests / reset. Bookkeeping only - never part of any
+     * diff the transport sends, and never set by a snapshot, a grant list or
+     * anyone else's approval, so a re-sync of an already-approved state can
+     * not re-arm the tool.
+     */
+    approvedAt: Record<string, number>;
     /** May the local user ASK to annotate in this call? True in DM/group
      *  calls; in a server channel it mirrors the ANNOTATE permission. Set by
      *  the call surface, read by every remote tile's request affordance. */
@@ -191,6 +202,11 @@ export const REQUEST_TTL_MS = 60_000;
  * "sorry, wrong button" is a minute of waiting, not a dead end for the call.
  */
 export const DENY_COOLDOWN_MS = 60_000;
+/** How long an approval stays claimable by the auto-arm. Long enough for the
+ *  tile to be on a drawable surface at the moment the grant lands (or to get
+ *  there a beat later); short enough that "you were approved a while ago"
+ *  never starts a pen under a click that was aimed at something else. */
+export const AUTO_ARM_WINDOW_MS = 10_000;
 export const DEFAULT_WIDTH = 4;
 export const PALETTE = ['#25E0C8', '#FFC94D', '#FF6B5E', '#5E8EE0', '#4ADE80', '#FFFFFF'] as const;
 
@@ -221,6 +237,7 @@ let state: AnnotationState = {
     cooldownUntil: {},
     outgoing: [],
     requestedAt: {},
+    approvedAt: {},
     canRequest: true,
     ownedSurfaces: [],
 };
@@ -413,7 +430,7 @@ export const annotationStore = {
     dropTrack(key: string) {
         if (!(key in state.strokes) && !(key in state.grants) && !(key in state.requests)
             && !(key in state.cooldownUntil) && !state.outgoing.includes(key)
-            && !state.ownedSurfaces.includes(key)
+            && !state.ownedSurfaces.includes(key) && !(key in state.approvedAt)
             && !Object.keys(state.deniedUntil).some(k => k.startsWith(key + '\n'))) return;
         const strokes = { ...state.strokes }; delete strokes[key];
         const grants = { ...state.grants }; delete grants[key];
@@ -425,7 +442,8 @@ export const annotationStore = {
         const requestedAt = { ...state.requestedAt };
         for (const k of Object.keys(requestedAt)) if (k === key || k.startsWith(key + '\n')) delete requestedAt[k];
         const ownedSurfaces = state.ownedSurfaces.filter(k => k !== key);
-        set({ ...state, strokes, grants, requests, deniedUntil, cooldownUntil, outgoing, requestedAt, ownedSurfaces });
+        const approvedAt = { ...state.approvedAt }; delete approvedAt[key];
+        set({ ...state, strokes, grants, requests, deniedUntil, cooldownUntil, outgoing, requestedAt, ownedSurfaces, approvedAt });
     },
 
     // -- Phase 3: grants -----------------------------------------------------
@@ -579,6 +597,30 @@ export const annotationStore = {
         set({ ...state, outgoing: state.outgoing.filter(k => k !== key), requestedAt });
     },
     /**
+     * Viewer side: the owner just APPROVED our request on `key`. Leaves a
+     * one-shot marker for the auto-arm (see AUTO_ARM_WINDOW_MS); it does not
+     * arm anything itself - whether the track is on a surface where drawing
+     * exists is the tile's knowledge, not the store's. Only the transport's
+     * live `grant.grant` naming us, with a request of ours pending, calls this.
+     */
+    markApproved(key: string) {
+        if (!key) return;
+        set({ ...state, approvedAt: { ...state.approvedAt, [key]: now() } });
+    },
+    /**
+     * Spend the approval marker for `key`. True only when a marker exists and
+     * is still inside `windowMs`; either way a marker that is found is removed
+     * (a stale one is garbage, a fresh one is being used right now), so each
+     * approval can arm at most once.
+     */
+    consumeApproval(key: string, windowMs: number = AUTO_ARM_WINDOW_MS): boolean {
+        const at = state.approvedAt[key];
+        if (at === undefined) return false;
+        const approvedAt = { ...state.approvedAt }; delete approvedAt[key];
+        set({ ...state, approvedAt });
+        return now() - at <= windowMs;
+    },
+    /**
      * Viewer side: the owner said no. Ends the pending request and starts the
      * cooldown, so the asker sees a countdown rather than a request that just
      * evaporated. Called from the transport when a `grant.deny` naming us
@@ -616,13 +658,15 @@ export const annotationStore = {
         for (const [k, until] of Object.entries(state.deniedUntil)) if (at >= until) { delete deniedUntil[k]; changed = true; }
         const cooldownUntil = { ...state.cooldownUntil };
         for (const [k, until] of Object.entries(state.cooldownUntil)) if (at >= until) { delete cooldownUntil[k]; changed = true; }
-        if (changed) set({ ...state, requests, outgoing, requestedAt, deniedUntil, cooldownUntil });
+        const approvedAt = { ...state.approvedAt };
+        for (const [k, t] of Object.entries(state.approvedAt)) if (at - t > AUTO_ARM_WINDOW_MS) { delete approvedAt[k]; changed = true; }
+        if (changed) set({ ...state, requests, outgoing, requestedAt, deniedUntil, cooldownUntil, approvedAt });
         return changed;
     },
 
     /** Call end. */
     reset() {
-        set({ enabled: false, color: PALETTE[0], width: DEFAULT_WIDTH, strokes: {}, grants: {}, requests: {}, deniedUntil: {}, cooldownUntil: {}, outgoing: [], requestedAt: {}, canRequest: true, ownedSurfaces: [] });
+        set({ enabled: false, color: PALETTE[0], width: DEFAULT_WIDTH, strokes: {}, grants: {}, requests: {}, deniedUntil: {}, cooldownUntil: {}, outgoing: [], requestedAt: {}, approvedAt: {}, canRequest: true, ownedSurfaces: [] });
     },
 };
 

@@ -84,6 +84,59 @@ export function displayHuddleCalls(
     me: string | null,
     activeHuddleCallId: string | null,
 ): { calls: Record<string, DisplayHuddleCall[]>; mineCallId: string | null } {
+    const r = withJoiningUser(calls, view, me, activeHuddleCallId);
+    return { calls: dropEmptyCalls(r.calls), mineCallId: r.mineCallId };
+}
+
+/**
+ * A call nobody is in is not drawn — anywhere. Owner rule (2026-10-08): "If
+ * there is not a call / it has nobody in it, it should never show that there
+ * is one." The server stopped returning empty calls and destroys them, but the
+ * client can still hold one briefly (the last participant's leave event lands
+ * before the destroy event, or a call row arrives from an older API). The call
+ * you are in or joining always has you in it (withJoiningUser), so it is never
+ * dropped. Returns the same object when nothing is dropped.
+ */
+export function dropEmptyCalls<T extends { participants: string[] }>(
+    calls: Record<string, T[]>,
+): Record<string, T[]> {
+    let changed = false;
+    const out: Record<string, T[]> = {};
+    for (const [hid, list] of Object.entries(calls)) {
+        const kept = list.filter(c => c.participants.length > 0);
+        if (kept.length !== list.length) changed = true;
+        out[hid] = kept.length === list.length ? list : kept;
+    }
+    return changed ? out : calls;
+}
+
+/**
+ * Take `userId` out of one call's participant list (a local leave). Same
+ * object back when they were not in it, so a setState updater is a no-op.
+ */
+export function removeParticipantFromCall<T extends { call_id: string; participants: string[] }>(
+    calls: Record<string, T[]>,
+    callId: string,
+    userId: string,
+): Record<string, T[]> {
+    for (const [hid, list] of Object.entries(calls)) {
+        const idx = list.findIndex(c => c.call_id === callId);
+        if (idx === -1) continue;
+        const call = list[idx];
+        if (!call.participants.includes(userId)) return calls;
+        const next = list.slice();
+        next[idx] = { ...call, participants: call.participants.filter(u => u !== userId) };
+        return { ...calls, [hid]: next };
+    }
+    return calls;
+}
+
+function withJoiningUser(
+    calls: Record<string, HuddleCallInfo[]>,
+    view: JoinView | null,
+    me: string | null,
+    activeHuddleCallId: string | null,
+): { calls: Record<string, DisplayHuddleCall[]>; mineCallId: string | null } {
     if (!me) return { calls, mineCallId: activeHuddleCallId };
     const huddleView = view?.kind === 'huddle' ? view : null;
     const targetId = huddleView ? (huddleView.callId ?? huddleView.realCallId ?? huddleView.renderKey) : null;

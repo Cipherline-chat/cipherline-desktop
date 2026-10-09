@@ -104,6 +104,13 @@ interface CallContextValue {
     setLocalMutedIds: (s: Set<string>) => void;
     setHiddenVideoIds: (s: Set<string>) => void;
     setHiddenScreenShareIds: (s: Set<string>) => void;
+    /** Remote sharers this client is WATCHING (opted in via Watch) — a mirror
+     *  of SidebarConference's `subscribedScreenshares`, which owns it. Read by
+     *  the screen-share tiles to decide whether to PLAY a share's audio, and
+     *  by the focused-stream banner so it never puts an unwatched share on
+     *  stage. See utils/screenShareAudioWatch.ts. */
+    watchedScreenShareIds: Set<string>;
+    setWatchedScreenShareIds: (s: Set<string>) => void;
     /** Mark an identity as "mid-screenshare-adjustment" for ~2s. Consumers
      *  (sound cues, focused-stream tear-down, fullscreen) treat track
      *  transitions on this identity as transparent so a republish doesn't
@@ -224,6 +231,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const [localMutedIds, setLocalMutedIds] = useState<Set<string>>(new Set());
     const [hiddenVideoIds, setHiddenVideoIds] = useState<Set<string>>(new Set());
     const [hiddenScreenShareIds, setHiddenScreenShareIds] = useState<Set<string>>(new Set());
+    const [watchedScreenShareIds, setWatchedScreenShareIds] = useState<Set<string>>(new Set());
     // Ref so we can swap toggle impls without re-creating the context value.
     const toggleImplsRef = useRef<{
         toggleLocalMute?: (identity: string, muted: boolean) => void;
@@ -310,7 +318,9 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setLocalMutedIds,
         setHiddenVideoIds,
         setHiddenScreenShareIds,
-    }), [focusedStream, isFullscreen, endCallFullscreen, soloKickDialog, toggleFocusedStream, markAdjusting, isAdjusting, isRecentManualFocus, localMutedIds, hiddenVideoIds, hiddenScreenShareIds, toggleLocalMute, toggleHideVideo, toggleHideScreenShare, registerLocalToggles]);
+        watchedScreenShareIds,
+        setWatchedScreenShareIds,
+    }), [focusedStream, isFullscreen, endCallFullscreen, soloKickDialog, toggleFocusedStream, markAdjusting, isAdjusting, isRecentManualFocus, localMutedIds, hiddenVideoIds, hiddenScreenShareIds, watchedScreenShareIds, toggleLocalMute, toggleHideVideo, toggleHideScreenShare, registerLocalToggles]);
 
     // High-frequency telemetry — separate memo so 30 Hz speaking-flag updates
     // only re-render CallTelemetryContext subscribers (ServerContextPanel, ParticipantCard).

@@ -46,6 +46,8 @@ import { logCallEvent } from '../utils/callEventLog';
 import { getCameraQualityTier, getCameraCodecPref, subscribeCameraQualityPrefs, useIncomingVideoMode } from '../utils/cameraQualityPrefs';
 import { chooseDecodedSet, DECODE_CAP } from '../utils/remoteVideoQuality';
 import { parseMainDiagnostics, setScreenShareSession, updateScreenShareSession } from '../utils/screenShareDiagnostics';
+import { installShareStartBitrate, type StartBitrateParticipant } from '../utils/shareStartBitrate';
+import { ShareStartTracker, describeShareStartError, type ShareStartOutcome } from '../utils/screenShareStartState';
 
 /** The subset of RTCOutboundRtpStreamStats used for screenshare frame-rate
  *  diagnostics. All optional — several are non-standard-but-widely-implemented
@@ -117,6 +119,7 @@ import { ROSTER_ONLY } from '../utils/callRosterEvents';
 import { setCallParticipantSpeaking, clearCallSpeaking } from '../utils/callSpeakingStore';
 import { isKeyComboClaimed } from '../utils/keyClaims';
 import { canPublishMicrophone } from '../utils/livekitPublishGrants';
+import { useScreenShareAudioSubscriptions } from '../hooks/useScreenShareAudioSubscriptions';
 
 interface SidebarConferenceProps {
     token: string;
@@ -381,6 +384,7 @@ export const SidebarConference = ({
     const setLocalMutedIdsCtx       = callCtx?.setLocalMutedIds;
     const setHiddenVideoIdsCtx      = callCtx?.setHiddenVideoIds;
     const setHiddenScreenShareIdsCtx = callCtx?.setHiddenScreenShareIds;
+    const setWatchedScreenShareIdsCtx = callCtx?.setWatchedScreenShareIds;
     const registerLocalToggles      = callCtx?.registerLocalToggles;
 
     // Push live stats into CallContext so HuddleButton (outside LiveKit tree) can read them.
@@ -1602,6 +1606,19 @@ export const SidebarConference = ({
         setSubscribedScreenshares(prev => new Set([...prev, identity]));
     };
 
+    // Screen-share AUDIO follows this set and nothing else: subscribed only
+    // while watching (this hook is the one owner of that subscription — the
+    // room autoSubscribes every ScreenShareAudio publication for everyone),
+    // and played only by a tile for a share in this set (VideoTile reads the
+    // mirror below). See utils/screenShareAudioWatch.ts.
+    useScreenShareAudioSubscriptions(room, subscribedScreenshares);
+    React.useEffect(() => {
+        setWatchedScreenShareIdsCtx?.(subscribedScreenshares);
+    }, [setWatchedScreenShareIdsCtx, subscribedScreenshares]);
+    // CallProvider outlives the call: never let the next call start with this
+    // call's watch set (an identity watching here must not play there).
+    React.useEffect(() => () => { setWatchedScreenShareIdsCtx?.(new Set()); }, [setWatchedScreenShareIdsCtx]);
+
     // ── Screenshare viewer count + streamer cues ────────────────────────────
     //
     // "Viewer" is the Watch click (ScreenShareGate.handleWatch → this set),
@@ -1746,17 +1763,18 @@ export const SidebarConference = ({
     // someone we were already watching, transparently re-take the subscription
     // on the new track. This is what makes "change source / adjust quality /
     // toggle audio" feel like an in-place update instead of a stop+restart.
+    // VIDEO only: the share's audio is owned by useScreenShareAudioSubscriptions,
+    // which re-takes a republished ScreenShareAudio for a watched sharer on its
+    // TrackPublished event (and releases it for everyone else).
     // NOTE: setSubscribed returns void in some LiveKit versions — wrap in an
     // async IIFE rather than chaining `.catch` directly on the return value.
     React.useEffect(() => {
         screenShareParticipants.forEach(p => {
             if (!subscribedScreenshares.has(p.identity)) return;
             const ssPub = p.getTrackPublication(Track.Source.ScreenShare) as RemoteTrackPublication | undefined;
-            const ssAudioPub = p.getTrackPublication(Track.Source.ScreenShareAudio) as RemoteTrackPublication | undefined;
             (async () => {
                 try {
                     if (ssPub && !ssPub.isSubscribed) await ssPub.setSubscribed(true);
-                    if (ssAudioPub && !ssAudioPub.isSubscribed) await ssAudioPub.setSubscribed(true);
                 } catch (e) {
                     console.warn('[ScreenShare] auto-resubscribe failed', e);
                 }
@@ -1842,6 +1860,30 @@ export const SidebarConference = ({
             () => wantH264HighRef.current,
         );
     }, [localParticipant]);
+
+    // Start every screen share at a real bitrate instead of WebRTC's 300 kbps
+    // estimate (utils/shareStartBitrate.ts): without it a 1440p/4K share went
+    // out at 360p–720p and took 30 s+ to sharpen. The ref is the current
+    // share's encoding ceiling, set just before it is published.
+    const shareMaxBitrateRef = React.useRef<number | null>(null);
+    React.useEffect(() => {
+        if (!localParticipant) return;
+        return installShareStartBitrate(
+            localParticipant as unknown as StartBitrateParticipant,
+            () => shareMaxBitrateRef.current,
+        );
+    }, [localParticipant]);
+
+    // "Starting screen share…": from a confirmed source until LiveKit has
+    // published the track (or the attempt failed). Drives the share button's
+    // spinner and refuses a second start meanwhile (screenShareStartState.ts).
+    // The tracker is a ref so a double click inside one frame is refused too;
+    // the boolean mirrors it for rendering.
+    const [shareStarting, setShareStarting] = React.useState(false);
+    const shareStartRef = React.useRef<ShareStartTracker | null>(null);
+    if (shareStartRef.current === null) {
+        shareStartRef.current = new ShareStartTracker(st => setShareStarting(st.phase === 'starting'));
+    }
 
     // Camera: the same H.264 High transceiver preference, when the camera's
     // encoder decision (cameraQuality.decideCameraCodec) picked hardware High.
@@ -2496,10 +2538,10 @@ export const SidebarConference = ({
             const p = participants.find(part => part.identity === id);
             if (p && !subscribedScreenshares.has(id)) {
                 try {
+                    // Video only — joining the watch set below is what brings
+                    // the share's audio (useScreenShareAudioSubscriptions).
                     const ssPub = p.getTrackPublication(Track.Source.ScreenShare) as RemoteTrackPublication | undefined;
-                    const ssAudioPub = p.getTrackPublication(Track.Source.ScreenShareAudio) as RemoteTrackPublication | undefined;
                     if (ssPub && !ssPub.isSubscribed) await ssPub.setSubscribed(true);
-                    if (ssAudioPub && !ssAudioPub.isSubscribed) await ssAudioPub.setSubscribed(true);
                     setSubscribedScreenshares(prev => {
                         const next = new Set(prev);
                         next.add(id);
@@ -2991,6 +3033,9 @@ export const SidebarConference = ({
 
     const toggleScreenshare = () => {
         if (!localParticipant) return;
+        // A start in flight owns the share until it publishes or fails (the
+        // button is disabled; this covers the keybind).
+        if (shareStartRef.current?.starting) return;
         if (localParticipant.isScreenShareEnabled) {
             stopNativeWindowAudio();
             localParticipant.setScreenShareEnabled(false);
@@ -3012,6 +3057,7 @@ export const SidebarConference = ({
     // Open the picker while the current share is still running (change source / quality mid-share).
     // handleScreenShareSelect will call setScreenShareEnabled(true, ...) which replaces the live track.
     const openScreenSharePicker = () => {
+        if (shareStartRef.current?.starting) return;
         markPickerRequested();
         warmScreenSharePicker();
         setIsScreenSharePickerOpen(true);
@@ -3255,7 +3301,44 @@ export const SidebarConference = ({
             window.electronAPI?.resolveDesktopSource(null);
             return;
         }
+        const tracker = shareStartRef.current!;
+        const attempt = tracker.begin();
+        if (attempt === null) {
+            console.info('[ScreenShare] a share is already starting — ignoring this selection');
+            return;
+        }
+        let outcome: ShareStartOutcome = 'failed';
+        try {
+            outcome = await startScreenShareFrom(options, () => tracker.settle(attempt, 'published', true));
+        } catch (err) {
+            console.warn('[ScreenShare] start threw:', err);
+        } finally {
+            // No-op once published; otherwise releases the button. A failed
+            // change-source can leave the previous share running.
+            tracker.settle(attempt, outcome, !!localParticipant.isScreenShareEnabled);
+        }
+    };
 
+    /** A capture or publish error → the share notice (or nothing, for a cancel). */
+    const reportShareStartError = (err: unknown): ShareStartOutcome => {
+        const view = describeShareStartError(err, window.electronAPI?.platform);
+        if (view.kind === 'cancelled') {
+            console.info('[ScreenShare] start cancelled:', err);
+            return 'cancelled';
+        }
+        console.warn('[ScreenShare] start failed:', err);
+        // The DOMException type only (e.g. NotAllowedError) — never the message.
+        const errType = String((err as { name?: unknown } | null)?.name ?? 'unknown').slice(0, 40);
+        logCallEvent('share_start', { verdict: 'failed', why: errType });
+        setScreenShareNotice({ tone: 'warn', text: view.text });
+        return 'failed';
+    };
+
+    // The body of a share start. Calls onPublished the moment LiveKit has
+    // published the video (that ends the button's loading state); returns the
+    // outcome for the paths that never get there.
+    const startScreenShareFrom = async (options: ScreenShareOptions, onPublished: () => void): Promise<ShareStartOutcome> => {
+        if (!localParticipant) return 'cancelled';
         const tStart = performance.now();
         const since = (t: number) => (performance.now() - t).toFixed(0);
 
@@ -3322,7 +3405,7 @@ export const SidebarConference = ({
             && !hasLoopbackAudioPublished
         ) {
             const swapped = await tryHotSwapScreenShare(options, useNativeAudio, nativeMode, tStart);
-            if (swapped) return;
+            if (swapped) return 'published';
         }
 
         // If we're republishing an existing share (Change Source / Adjust
@@ -3416,6 +3499,7 @@ export const SidebarConference = ({
         // plus captured display Hz and capturer) are time-boxed so a slow IPC
         // can never hold up the share; without them the decision just loses
         // the NVIDIA refinement.
+        const tProbeStart = performance.now();
         const codecPref = getScreenShareCodecPref();
         // Not raced away: if main answers after the 750 ms cut-off, the
         // overlay still gets it (patched in below) — only the codec decision
@@ -3449,6 +3533,7 @@ export const SidebarConference = ({
         // Ask the capturer for headroom above the send rate (see
         // captureFrameRateFor); the encoder's maxFramerate stays at the target.
         const captureFps = captureFrameRateFor(options.frameRate);
+        const tProbed = performance.now();
         setScreenShareSession({
             sourceId: options.sourceId,
             requestedFps: options.frameRate,
@@ -3533,6 +3618,9 @@ export const SidebarConference = ({
             audio: useNativeAudio ? false : options.audio,
         };
 
+        // The share's ceiling, for its start bitrate (installShareStartBitrate
+        // arms on the sender LiveKit creates inside this publish).
+        shareMaxBitrateRef.current = maxBitrate;
         const tPublish = performance.now();
         try {
             await localParticipant.setScreenShareEnabled(true, {
@@ -3567,17 +3655,31 @@ export const SidebarConference = ({
                 publishOptions,
             );
         } catch (err) {
-            console.warn('Screen share failed or cancelled:', err);
             pendingScreenShareRef.current = null;
-            return;
+            return reportShareStartError(err);
         }
-        // acquire (OS capture + the Electron resolve handshake) and the publish
-        // renegotiation are the two costs here; they are reported together
-        // because setScreenShareEnabled owns both internally.
+        onPublished();
+        const tPublished = performance.now();
+        // Where a start's time goes, so a "share is slow to start" report can be
+        // attributed from the call log instead of re-derived: the codec probe
+        // (encodingInfo + main-process diagnostics, ≤ 750 ms), then acquire +
+        // publish — the OS capture with the Electron resolve handshake, and the
+        // SFU addTrack + SDP negotiation; setScreenShareEnabled owns both.
+        // (Starting the capture alongside the probe was tried and measured: no
+        // consistent gain — the two contend for the browser process — so the
+        // order is unchanged.)
+        const ms = (a: number, b: number) => Math.max(0, Math.round(b - a));
         console.info(
-            `[ScreenShare] acquire+publish took ${since(tPublish)}ms; ` +
-            `total ${since(tStart)}ms from selection`
+            `[ScreenShare] started in ${ms(tStart, tPublished)}ms from selection ` +
+            `(codec probe ${ms(tProbeStart, tProbed)}ms, acquire+publish ${ms(tPublish, tPublished)}ms)`
         );
+        logCallEvent('share_start', {
+            verdict: 'published',
+            ms: ms(tStart, tPublished),
+            probe_ms: ms(tProbeStart, tProbed),
+            publish_ms: ms(tPublish, tPublished),
+            res: options.resolution,
+        });
         updateScreenShareSession(options.sourceId, { startedAt: performance.now() });
 
         // H.264 High has no software encoder in Chromium: if the hardware one
@@ -3725,6 +3827,7 @@ export const SidebarConference = ({
         };
         currentShareRef.current = recorded;
         setCurrentShare(recorded);
+        return 'published';
     };
     React.useEffect(() => {
         republishShareRef.current = (o: ScreenShareOptions) => { void handleScreenShareSelect(o); };
@@ -4096,6 +4199,7 @@ export const SidebarConference = ({
                 // window, fall back to the primary display. Always default
                 // preset (1080p/30fps) with audio.
                 if (!localParticipant) return;
+                if (shareStartRef.current?.starting) return;
                 if (localParticipant.isScreenShareEnabled) {
                     stopNativeWindowAudio();
                     localParticipant.setScreenShareEnabled(false);
@@ -5086,6 +5190,7 @@ export const SidebarConference = ({
                             currentShareResolution={currentShare?.resolution}
                             currentShareFrameRate={currentShare?.frameRate}
                             currentShareAudio={currentShare?.audio}
+                            screenShareStarting={shareStarting}
                             onLeave={handleLeave}
                             showFullscreenButton={anyVideo}
                             canSpeak={canSpeak}

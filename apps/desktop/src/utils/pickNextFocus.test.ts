@@ -4,6 +4,7 @@ import {
     pickNextFocus,
     collectFocusCandidates,
     isStreamLive,
+    isFocusableShare,
     PublishOrder,
     focusKey,
     type FocusCandidate,
@@ -287,5 +288,55 @@ describe('collectFocusCandidates', () => {
             participant('alice', {}),
         ], o);
         expect(pickNextFocus(cands, { identity: 'alice', source: SS })).toBeNull();
+    });
+});
+
+describe('watch set: an unwatched remote share is never a focus candidate', () => {
+    const NOTHING_HIDDEN = { video: new Set<string>(), screenShare: new Set<string>() };
+    // autoSubscribe gives every share a live track, so "live" alone used to
+    // make an unopened share eligible for the focus stage.
+    const room = (camOn: boolean) => [
+        participant('bob', camOn ? { [CAM]: livePub } : {}),
+        participant('carol', { [SS]: livePub }),
+    ];
+
+    it('negative control: without a watch set (the old call) the camera ending advances onto Carol\'s unwatched share', () => {
+        const o = new PublishOrder();
+        collectFocusCandidates(room(true), o, NOTHING_HIDDEN);
+        const next = pickNextFocus(collectFocusCandidates(room(false), o, NOTHING_HIDDEN), { identity: 'bob', source: CAM });
+        expect(next).toMatchObject({ identity: 'carol', source: SS });
+    });
+
+    it('with the watch set the same room closes focus instead', () => {
+        const o = new PublishOrder();
+        collectFocusCandidates(room(true), o, NOTHING_HIDDEN, new Set());
+        const next = pickNextFocus(collectFocusCandidates(room(false), o, NOTHING_HIDDEN, new Set()), { identity: 'bob', source: CAM });
+        expect(next).toBeNull();
+    });
+
+    it('a WATCHED share is still preferred, exactly as before', () => {
+        const o = new PublishOrder();
+        const next = pickNextFocus(
+            collectFocusCandidates(room(false), o, NOTHING_HIDDEN, new Set(['carol'])),
+            { identity: 'bob', source: CAM },
+        );
+        expect(next).toMatchObject({ identity: 'carol', source: SS });
+    });
+
+    it('an unwatched share is still ledgered, so watching it later does not make it look brand new', () => {
+        const o = new PublishOrder();
+        collectFocusCandidates(room(true), o, NOTHING_HIDDEN, new Set());
+        expect(o.get(focusKey('carol', SS))).toBeGreaterThan(0);
+    });
+
+    it('isFocusableShare: cameras and your own share always; remote shares only while watched', () => {
+        const remote = { identity: 'carol', isLocal: false };
+        const me = { identity: 'me', isLocal: true };
+        expect(isFocusableShare(remote, SS, new Set())).toBe(false);
+        expect(isFocusableShare(remote, SS, new Set(['carol']))).toBe(true);
+        expect(isFocusableShare(remote, CAM, new Set())).toBe(true);
+        expect(isFocusableShare(me, SS, new Set())).toBe(true);
+        // no notion of watching (no set) = old behaviour
+        expect(isFocusableShare(remote, SS)).toBe(true);
     });
 });

@@ -21,7 +21,7 @@
 .clc.on .cbox{background:var(--lume);box-shadow:inset 0 0 0 1.5px var(--lume)}
 .clc.on .csh{background:var(--lume-deep)}
 .clc .chk{stroke:var(--on-lume);stroke-width:3;fill:none;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:16;stroke-dashoffset:16}
-.clc.on .chk{animation:draw .28s ease-out .05s forwards}
+.clc.on .chk{stroke-dashoffset:0;animation:draw .28s ease-out .05s backwards}
 .clc.on{color:var(--text)}
 .clc:focus-visible,.clr:focus-visible{outline:none}
 .clc:focus-visible .cbox{box-shadow:inset 0 0 0 1.5px var(--lume),0 0 0 3px rgba(37,224,200,.3)}

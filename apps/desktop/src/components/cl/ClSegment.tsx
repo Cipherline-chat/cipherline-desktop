@@ -28,7 +28,8 @@ export function ClSegment<T extends string>({
     const measure = () => {
         const btn = btnRefs.current[value];
         if (!btn) return;
-        setInd({ left: btn.offsetLeft, width: btn.offsetWidth });
+        const next = { left: btn.offsetLeft, width: btn.offsetWidth };
+        setInd((prev) => (prev && prev.left === next.left && prev.width === next.width ? prev : next));
     };
 
     useLayoutEffect(measure, [value, options.length]);
@@ -38,9 +39,23 @@ export function ClSegment<T extends string>({
         const fonts = (document as Document & { fonts?: { ready?: Promise<unknown> } }).fonts;
         if (fonts?.ready) fonts.ready.then(measure);
         const t = setTimeout(measure, 300);
-        return () => { window.removeEventListener('resize', onResize); clearTimeout(t); };
+        // Any segment can change width without the value changing: a badge
+        // count appearing/disappearing (Friends → Pending), late-loading
+        // content, or the control laying out while its view is still hidden or
+        // settling. Watch every button and the track so the cap always
+        // follows the active button's real box.
+        let ro: ResizeObserver | undefined;
+        if (typeof ResizeObserver !== 'undefined') {
+            ro = new ResizeObserver(() => measure());
+            if (wrapRef.current) ro.observe(wrapRef.current);
+            for (const o of options) {
+                const b = btnRefs.current[o.value];
+                if (b) ro.observe(b);
+            }
+        }
+        return () => { window.removeEventListener('resize', onResize); clearTimeout(t); ro?.disconnect(); };
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [value]);
+    }, [value, options.map((o) => o.value).join('\u0000')]);
 
     return (
         <span className="cl-kit" style={{ display: 'contents' }}>

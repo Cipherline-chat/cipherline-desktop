@@ -61,8 +61,10 @@ export interface KeysProps {
     face?: KeysFace | null;
     /** Asked first on every poke. Return a reaction to play it INSTEAD of
      *  the poke ladder (the brain does not advance and onPoke is not
-     *  called: the host owns that poke); null = the ladder as usual. */
-    interceptPoke?: () => PokeReaction | null;
+     *  called: the host owns that poke); null = the ladder as usual.
+     *  `timeStamp` is the click event's own (when the press happened, not
+     *  when this handler ran: see utils/keysBurst.ts inputTime). */
+    interceptPoke?: (timeStamp: number | undefined) => PokeReaction | null;
     /** The twelve-segment leg sway (a main-thread SVG loop, see the note at
      *  the bottom of keys.css). Default true. A host that moves Keys with its
      *  own compositor-only swim turns it off; one-shots (wave, flail, perk)
@@ -128,9 +130,9 @@ export const Keys: React.FC<KeysProps> = ({
     const interceptRef = useRef(interceptPoke);
     useEffect(() => { interceptRef.current = interceptPoke; });
 
-    const poke = useCallback(() => {
+    const poke = useCallback((e?: React.MouseEvent) => {
         if (!interactive) return;
-        const forced = interceptRef.current?.() ?? null;
+        const forced = interceptRef.current?.(e?.timeStamp) ?? null;
         if (forced) {
             setReaction(forced);
             setWig(w => w + 1);

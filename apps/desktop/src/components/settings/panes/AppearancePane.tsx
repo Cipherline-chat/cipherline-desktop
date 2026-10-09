@@ -4,6 +4,11 @@ import { ClToggle } from '../../cl';
 import type { GifSettingsHook } from '../../../hooks/useGifSettings';
 import { useSeasonalEffects } from '../../../hooks/useSeasonalEffects';
 import { useAmbientMotion } from '../../../hooks/useAmbientMotion';
+import { BACKUP_RESTORED_EVENT } from '../../../services/backupRegistry';
+import {
+    INITIAL_START_MINIMIZED, INITIAL_MINIMIZE_TO_TRAY, loginToggleLabel, loginToggleDesc,
+    startMinimizedDesc, minimizeToTrayDesc, loginStateAfterSet, type LoginItemView,
+} from '../../../utils/startupSettings';
 
 /**
  * Surface · Appearance — Descent redesign (phase 4): sd-card sections with
@@ -17,23 +22,46 @@ export const AppearancePane: React.FC<AppearancePaneProps> = ({ gif }) => {
     const [seasonalEffects, setSeasonalEffects] = useSeasonalEffects();
     const [ambientMotion, setAmbientMotion] = useAmbientMotion();
 
-    const [startWithWindows, setStartWithWindowsState] = useState(false);
-    // Default true — matches the main process's default ("minimized at login"
-    // is on unless explicitly disabled), so the toggle doesn't flash off→on.
-    const [startMinimized, setStartMinimizedState] = useState(true);
-    const [minimizeToTray, setMinimizeToTrayState] = useState(false);
+    const platform = window.electronAPI?.platform;
+    // null = not read yet (toggle disabled meanwhile, so it can't flash or be
+    // flipped against an unknown state).
+    const [loginState, setLoginState] = useState<LoginItemView | null>(null);
+    // Initial values match the main process's defaults (ON unless explicitly
+    // disabled), so these toggles don't flash off→on.
+    const [startMinimized, setStartMinimizedState] = useState(INITIAL_START_MINIMIZED);
+    const [minimizeToTray, setMinimizeToTrayState] = useState(INITIAL_MINIMIZE_TO_TRAY);
 
     useEffect(() => {
         const api = window.electronAPI;
         if (!api) return;
-        api.getStartWithWindows?.().then(v => setStartWithWindowsState(v)).catch(() => {});
-        api.getStartMinimized?.().then(v => setStartMinimizedState(v)).catch(() => {});
-        api.getMinimizeToTray?.().then(v => setMinimizeToTrayState(v)).catch(() => {});
+        const load = () => {
+            const legacy = () => api.getStartWithWindows?.()
+                .then(v => setLoginState({ supported: true, enabled: v, needsApproval: false }))
+                .catch(() => setLoginState({ supported: true, enabled: false, needsApproval: false }));
+            if (api.getLoginItemState) {
+                api.getLoginItemState().then(s => setLoginState(s)).catch(legacy);
+            } else {
+                legacy();
+            }
+            api.getStartMinimized?.().then(v => setStartMinimizedState(v)).catch(() => {});
+            api.getMinimizeToTray?.().then(v => setMinimizeToTrayState(v)).catch(() => {});
+        };
+        load();
+        // A backup restore can rewrite the two stored prefs under an open pane.
+        window.addEventListener(BACKUP_RESTORED_EVENT, load);
+        return () => window.removeEventListener(BACKUP_RESTORED_EVENT, load);
     }, []);
 
     const handleStartWithWindows = async (enabled: boolean) => {
-        setStartWithWindowsState(enabled);
-        await window.electronAPI?.setStartWithWindows?.(enabled);
+        const prev = loginState;
+        setLoginState(s => ({ supported: s?.supported ?? true, needsApproval: false, enabled }));
+        try {
+            const result = await window.electronAPI?.setStartWithWindows?.(enabled);
+            // Show what the OS actually has now, not what we asked for.
+            setLoginState(loginStateAfterSet(enabled, result, prev));
+        } catch {
+            setLoginState(prev);
+        }
     };
     const handleStartMinimized = async (enabled: boolean) => {
         setStartMinimizedState(enabled);
@@ -45,9 +73,9 @@ export const AppearancePane: React.FC<AppearancePaneProps> = ({ gif }) => {
     };
 
     const rows = [
-        { icon: <Rocket size={16} />, label: 'Start with Windows', desc: 'Launch Cipherline automatically when you sign in to Windows.', checked: startWithWindows, onChange: handleStartWithWindows },
-        { icon: <PanelBottomClose size={16} />, label: 'Start minimized', desc: 'When Cipherline starts with Windows, open to the taskbar instead of the window. Opening it yourself always shows the window.', checked: startMinimized, onChange: handleStartMinimized },
-        { icon: <Monitor size={16} />, label: 'Minimize to tray', desc: 'Closing the window hides Cipherline to the system tray. Double-click the tray icon to reopen.', checked: minimizeToTray, onChange: handleMinimizeToTray },
+        { icon: <Rocket size={16} />, label: loginToggleLabel(platform), desc: loginToggleDesc(platform, loginState), checked: loginState?.enabled ?? false, onChange: handleStartWithWindows, disabled: !loginState || !loginState.supported },
+        { icon: <PanelBottomClose size={16} />, label: 'Start minimized', desc: startMinimizedDesc(platform), checked: startMinimized, onChange: handleStartMinimized, disabled: false },
+        { icon: <Monitor size={16} />, label: 'Minimize to tray', desc: minimizeToTrayDesc(platform), checked: minimizeToTray, onChange: handleMinimizeToTray, disabled: false },
     ];
 
     return (
@@ -64,7 +92,7 @@ export const AppearancePane: React.FC<AppearancePaneProps> = ({ gif }) => {
                                 <span>{row.desc}</span>
                             </div>
                             <div className="sd-rc">
-                                <ClToggle checked={row.checked} onChange={row.onChange} />
+                                <ClToggle checked={row.checked} onChange={row.onChange} disabled={row.disabled} aria-label={row.label} />
                             </div>
                         </div>
                     ))}

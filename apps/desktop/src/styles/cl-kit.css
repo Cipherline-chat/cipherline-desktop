@@ -41,7 +41,7 @@
 @keyframes settle{0%{transform:translateY(2px)}45%{transform:translateY(-2.5px)}100%{transform:translateY(0)}}
 @keyframes confgo{0%{transform:translate(0,0) rotate(0);opacity:1}100%{transform:translate(var(--dx),var(--dy)) rotate(var(--rot));opacity:0}}
 @keyframes jig{0%,100%{transform:translateX(22px)}25%{transform:translateX(17px)}55%{transform:translateX(26px)}80%{transform:translateX(20px)}}
-@keyframes draw{to{stroke-dashoffset:0}}
+@keyframes draw{from{stroke-dashoffset:16}to{stroke-dashoffset:0}}
 @keyframes focusin{0%{box-shadow:0 0 0 rgba(37,224,200,0)}55%{box-shadow:0 0 20px rgba(37,224,200,.3)}100%{box-shadow:0 0 14px rgba(37,224,200,.22)}}
 @keyframes fshake{0%,100%{transform:none}30%{transform:translateX(-4px)}70%{transform:translateX(4px)}}
 @keyframes shrug{20%{transform:rotate(-16deg)}55%{transform:rotate(14deg)}80%{transform:rotate(-6deg)}100%{transform:rotate(0)}}
@@ -179,7 +179,7 @@
   .clc.on .cbox{background:var(--lume);box-shadow:inset 0 0 0 1.5px var(--lume)}
   .clc.on .csh{background:var(--lume-deep)}
   .clc .chk{stroke:var(--on-lume);stroke-width:3;fill:none;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:16;stroke-dashoffset:16}
-  .clc.on .chk{animation:draw .28s ease-out .05s forwards}
+  .clc.on .chk{stroke-dashoffset:0;animation:draw .28s ease-out .05s backwards}
   .clc.on{color:var(--text)}
   /* Focus ring belongs on the box, not the whole (often multi-line) label —
      the global button:focus-visible outline would draw a big rectangle around

@@ -17,9 +17,9 @@ vi.mock('../../utils/secureLocalStore', () => {
     return { default: api, secureLocalStore: api };
 });
 
-import { HomeKeys, BURST_LINES, PLAY_DELAY_MS, type PlayVerdict } from './HomeKeys';
+import { HomeKeys, BURST_LINES, PLAY_DELAY_MS, SETTLE_SLACK_MS, type PlayVerdict } from './HomeKeys';
 import { __resetWaveGuard } from './Keys';
-import { SPAM_GAP_MS } from '../../utils/keysBurst';
+import { SPAM_GAP_MS, homeGameVerdict } from '../../utils/keysBurst';
 import { SHOWS, PERSONALITIES, type Personality } from '../../utils/keysSpam';
 import { spamBagKey, __resetSpamBagMemory } from '../../utils/keysSpamStore';
 
@@ -38,6 +38,7 @@ const UID = 'acct-1';
 let root: Root | null = null;
 let host: HTMLDivElement;
 let now = 0;
+let reduce = false;
 
 function mount(verdict: PlayVerdict = 'ok', userId = UID) {
     const onPlay = vi.fn();
@@ -70,8 +71,9 @@ beforeEach(() => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     now = 1_000;
     vi.spyOn(performance, 'now').mockImplementation(() => now);
+    reduce = false;
     window.matchMedia = ((q: string) => ({
-        matches: false, media: q, onchange: null,
+        matches: reduce && q.includes('prefers-reduced-motion: reduce'), media: q, onchange: null,
         addEventListener: () => {}, removeEventListener: () => {},
         addListener: () => {}, removeListener: () => {}, dispatchEvent: () => false,
     })) as unknown as typeof window.matchMedia;
@@ -120,7 +122,7 @@ describe('HomeKeys: each of the five shows', () => {
         const { onPlay } = mount();
         spamFor(4900);
         expect(showing()).toBe(id);
-        act(() => { vi.advanceTimersByTime(SPAM_GAP_MS + 50); });
+        act(() => { vi.advanceTimersByTime(SPAM_GAP_MS + SETTLE_SLACK_MS + 50); });
         expect(speech()).toBe(SHOWS[id].recoveredLine);
         act(() => { vi.advanceTimersByTime(3000); });
         expect(showing()).toBeNull();
@@ -208,7 +210,6 @@ describe('HomeKeys: the rotation', () => {
 describe('HomeKeys: refusals and slow clicking', () => {
     it.each([
         ['call', BURST_LINES.call],
-        ['motion', BURST_LINES.motion],
         ['unavailable', BURST_LINES.unavailable],
     ] as const)('when the host says "%s", he says why and the game stays shut', (verdict, line) => {
         const { onPlay, canPlay } = mount(verdict);
@@ -309,6 +310,121 @@ describe('HomeKeys: the streak survives a human', () => {
         const svg = host.querySelector('svg.k2-svg');
         for (let i = 0; i < 6; i++) clicks(1, 100);
         expect(host.querySelector('svg.k2-svg')).toBe(svg);
+    });
+});
+
+describe('HomeKeys: reduced motion (Windows "Animation effects" off) still opens the game', () => {
+    // The owner's report: spamming him never opened the game. With reduced
+    // motion on, the host's rule said 'motion' and he only ever replied
+    // "I'd play, but motion is turned down": 0 of 25 real-pointer attempts in
+    // headless Chromium (harness/keys-egg-drive.mjs, reducedMotion 'reduce'),
+    // 25 of 25 with the rule fixed.
+    const animateSpy = () => {
+        const proto = Element.prototype as unknown as { animate?: unknown };
+        const had = proto.animate;
+        let calls = 0;
+        proto.animate = function () { calls++; return { cancel() {}, playState: 'running' } as unknown as Animation; };
+        return { calls: () => calls, restore: () => { proto.animate = had; } };
+    };
+
+    it('homeGameVerdict ignores reduced motion: ok, unless in a call or the machine cannot draw it', () => {
+        reduce = true;
+        expect(window.matchMedia('(prefers-reduced-motion: reduce)').matches).toBe(true); // the premise
+        expect(homeGameVerdict(false, () => true)).toBe('ok');
+        // controls: the two refusals that remain
+        expect(homeGameVerdict(true, () => true)).toBe('call');
+        expect(homeGameVerdict(false, () => false)).toBe('unavailable');
+    });
+
+    it('5 s of spam under reduced motion opens the game, with no show motion on the way', () => {
+        reduce = true;
+        const spy = animateSpy();
+        try {
+            lineUp('dodge');
+            const onPlay = vi.fn();
+            act(() => {
+                root!.render(React.createElement(HomeKeys, {
+                    userId: UID, signal: 'idle', speech: null, lively: true, onPoke: vi.fn(),
+                    canPlay: () => homeGameVerdict(false, () => true), onPlay,
+                }));
+            });
+            spamFor(5000);
+            act(() => { vi.advanceTimersByTime(PLAY_DELAY_MS); });
+            expect(onPlay).toHaveBeenCalledTimes(1);
+            // reduced motion really was in effect: the shows started no animation
+            expect(spy.calls()).toBe(0);
+        } finally {
+            spy.restore();
+        }
+    });
+
+    it('positive control: the same spam without reduced motion does animate (the spy sees shows)', () => {
+        const spy = animateSpy();
+        try {
+            lineUp('dodge');
+            mount();
+            spamFor(1000);
+            expect(spy.calls()).toBeGreaterThan(0);
+        } finally {
+            spy.restore();
+        }
+    });
+});
+
+describe('HomeKeys: a busy main thread does not break the streak', () => {
+    // A click, stamped with WHEN it happened (event.timeStamp, the
+    // performance clock), handled whenever the renderer gets to it.
+    const stampedClick = (el: Element, at: number) => {
+        const ev = new MouseEvent('click', { bubbles: true, cancelable: true });
+        Object.defineProperty(ev, 'timeStamp', { value: at });
+        act(() => { el.dispatchEvent(ev); });
+    };
+    /**
+     * Spam for 5 s at a steady 500 ms cadence, every other click handled
+     * 150 ms late (the main thread was busy), so some handler-to-handler gaps
+     * are 650 ms although no input gap is over 500. `stamp` false = the
+     * events carry no usable timestamp (the old behaviour: handler time).
+     */
+    const lateSpam = (stamp: boolean, on: (i: number) => Element) => {
+        const t0 = now;
+        for (let i = 0; i <= 10; i++) {
+            const made = t0 + i * 500;
+            const handled = made + (i % 2 === 0 ? 0 : 150);
+            act(() => { vi.advanceTimersByTime(handled - now); });
+            now = handled;
+            stampedClick(on(i), stamp ? made : Number.NaN);
+        }
+        act(() => { vi.advanceTimersByTime(PLAY_DELAY_MS * 3); });
+    };
+    /** Beside him: in the hit zone, not on the rig. */
+    const zone = () => host.querySelector('.hk')!;
+
+    it('clicks every 500 ms, every other one handled 150 ms late, still open the game', () => {
+        lineUp('dance');
+        const { onPlay } = mount();
+        lateSpam(true, rig);
+        expect(onPlay).toHaveBeenCalledTimes(1);
+    });
+
+    it('positive control: the same clicks judged by handler time break the streak', () => {
+        lineUp('dance');
+        const { onPlay } = mount();
+        lateSpam(false, rig);
+        expect(onPlay).not.toHaveBeenCalled();
+    });
+
+    it('zone clicks (beside him, mid-streak) are judged by their own timestamps too', () => {
+        lineUp('dodge');
+        const { onPlay } = mount();
+        lateSpam(true, i => (i === 0 ? rig() : zone()));
+        expect(onPlay).toHaveBeenCalledTimes(1);
+    });
+
+    it('positive control: unstamped zone clicks handled late break the streak', () => {
+        lineUp('dodge');
+        const { onPlay } = mount();
+        lateSpam(false, i => (i === 0 ? rig() : zone()));
+        expect(onPlay).not.toHaveBeenCalled();
     });
 });
 

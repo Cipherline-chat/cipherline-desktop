@@ -876,8 +876,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // ── System behavior settings ──────────────────────────────────────────────
     // These are persisted on the main-process side (OS login items / secureStore).
     // The renderer reads on mount and writes on toggle — no server involvement.
+    // "Start at login" (all platforms; the name predates mac/Linux support).
     getStartWithWindows: (): Promise<boolean> => ipcRenderer.invoke('app:get-start-with-windows'),
-    setStartWithWindows: (enabled: boolean): Promise<void> => ipcRenderer.invoke('app:set-start-with-windows', enabled),
+    /** supported=false in dev builds; needsApproval = macOS "allow in Login Items". */
+    getLoginItemState: (): Promise<{ supported: boolean; enabled: boolean; needsApproval: boolean }> =>
+        ipcRenderer.invoke('app:get-login-item-state'),
+    /** Resolves with the state re-read from the OS after the write. */
+    setStartWithWindows: (enabled: boolean): Promise<{ supported: boolean; enabled: boolean; needsApproval: boolean }> =>
+        ipcRenderer.invoke('app:set-start-with-windows', enabled),
     getStartMinimized: (): Promise<boolean> => ipcRenderer.invoke('app:get-start-minimized'),
     setStartMinimized: (enabled: boolean): Promise<void> => ipcRenderer.invoke('app:set-start-minimized', enabled),
     getMinimizeToTray: (): Promise<boolean> => ipcRenderer.invoke('app:get-minimize-to-tray'),

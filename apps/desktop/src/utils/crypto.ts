@@ -1,7 +1,7 @@
 import { encryptBlobOffThread, decryptBlobOffThread } from './attachmentCryptoWorker';
 import secureLocalStore from './secureLocalStore';
 import * as messageStore from './messageStore';
-import { collectIncludedKv, applyIncludedKv, repairSoundPaths, APP_PREF_KEYS } from '../services/backupRegistry';
+import { collectIncludedKv, applyIncludedKv, dropShadowingRailLayout, repairSoundPaths, APP_PREF_KEYS, BACKUP_RESTORED_EVENT } from '../services/backupRegistry';
 import { extractPortableSaves, portableSavesFromVault, applyRestoredSaves, type PortableRetentionSaves } from './retentionPortability';
 import { snapshotWarnings, mergeWarnings } from './senderWarningStore';
 import { classifyHistoryPayload } from './historyPayloadFormat';
@@ -657,6 +657,9 @@ export async function importLocalHistory(userId: string, blob: Blob): Promise<vo
     // an out-of-band verification, because the restored pins carry that.
     const localWarnings = snapshotWarnings(userId);
     if (vault.kv && typeof vault.kv === 'object') {
+        // BEFORE the apply: a legacy-order-only backup must remove the local v2
+        // rail layout that would otherwise shadow the order it restores.
+        dropShadowingRailLayout(secureLocalStore, vault.kv as Record<string, string>, userId);
         applyIncludedKv(secureLocalStore, vault.kv as Record<string, string>, userId);
     }
     mergeWarnings(userId, localWarnings);
@@ -676,6 +679,10 @@ export async function importLocalHistory(userId: string, blob: Blob): Promise<vo
     // (restored just before this by the container reader) or fall back to
     // the bundled default so nothing references a file that isn't here.
     await repairCustomSoundPaths(userId);
+    // Tell a running app its settings changed under it (see BACKUP_RESTORED_EVENT).
+    if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
+        try { window.dispatchEvent(new CustomEvent(BACKUP_RESTORED_EVENT, { detail: { userId } })); } catch { /* non-fatal */ }
+    }
 }
 
 async function repairCustomSoundPaths(userId: string): Promise<void> {

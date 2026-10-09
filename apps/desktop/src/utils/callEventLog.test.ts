@@ -163,6 +163,8 @@ const ALLOWED_KEYS = new Set([
     'capable', 'total', 'self_encode',
     // Share picker timings (ScreenSharePickerModal): durations and a cache flag only.
     'open_ms', 'list_ms', 'preview_ms', 'cached', 'tab',
+    // Share start stages (SidebarConference.startScreenShareFrom): durations only.
+    'probe_ms', 'publish_ms',
     // A/V sync (avSyncMonitor.ts, SidebarConference share-audio ring). `slot`
     // is a per-call placeholder (remote-av-N) built in avSyncMonitor, never an identity.
     'slot', 'stream', 'path', 'chain', 'offset_ms', 'uncertainty_ms', 'audio_path_ms', 'video_path_ms',

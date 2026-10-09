@@ -17,6 +17,7 @@
 import React from 'react';
 import { Pencil, X } from 'lucide-react';
 import { annotationStore, useAnnotationStore, PALETTE } from '../../utils/annotationStore';
+import { useEscape } from '../../hooks/useEscape';
 
 /**
  * No props: draw mode and colour are call-wide, and nothing left in here acts
@@ -29,6 +30,11 @@ const size = { width: 26, height: 26 } as const;
 export const AnnotationToolbar: React.FC = () => {
     const enabled = useAnnotationStore(s => s.enabled);
     const color = useAnnotationStore(s => s.color);
+    // Esc leaves drawing mode, the same as the X. The auto-arm announces
+    // "Esc to stop", and it is the one key that works when the pointer is busy
+    // drawing. Goes through the shared Escape stack, so a press backs out of
+    // exactly one thing: this first, then (next press) fullscreen underneath.
+    useEscape(() => annotationStore.setEnabled(false), enabled);
 
     return (
         <div

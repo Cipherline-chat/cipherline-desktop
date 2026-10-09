@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
-    registerClick, isBroken, reached, lineIndex,
-    SPAM_GAP_MS, SPAM_DURATION_MS, SPAM_COUNTS_AT,
+    registerClick, isBroken, reached, lineIndex, inputTime,
+    SPAM_GAP_MS, SPAM_DURATION_MS, SPAM_COUNTS_AT, MAX_INPUT_LAG_MS,
     type SpamStreak, type ClickResult,
 } from './keysBurst';
 
@@ -106,5 +106,31 @@ describe('keysBurst: lines and progress', () => {
 
     it('a streak only counts (uses up a show) from half a second', () => {
         expect(SPAM_COUNTS_AT * SPAM_DURATION_MS).toBe(500);
+    });
+});
+
+describe('keysBurst: inputTime (when the click happened, not when it was handled)', () => {
+    it('uses the event’s own timestamp when it is on the performance clock', () => {
+        expect(inputTime(9_400, 10_000)).toBe(9_400);
+        expect(inputTime(10_000, 10_000)).toBe(10_000);
+        expect(inputTime(10_000 - MAX_INPUT_LAG_MS, 10_000)).toBe(10_000 - MAX_INPUT_LAG_MS);
+    });
+
+    it.each([
+        ['missing', undefined],
+        ['NaN', Number.NaN],
+        ['in the future', 10_001],
+        ['implausibly old', 10_000 - MAX_INPUT_LAG_MS - 1],
+        ['on the epoch clock (a test DOM)', 1_760_000_000_000],
+    ] as const)('falls back to now when the stamp is %s', (_label, ts) => {
+        expect(inputTime(ts, 10_000)).toBe(10_000);
+    });
+
+    it('a click made inside the gap but handled after it still continues the streak', () => {
+        // handled 650 ms after the last click (a busy main thread), made at +520
+        const s = registerClick(null, 10_000).streak;
+        expect(registerClick(s, inputTime(10_520, 10_650)).continued).toBe(true);
+        // positive control: judged by when it was handled, the same click broke it
+        expect(registerClick(s, 10_650).continued).toBe(false);
     });
 });

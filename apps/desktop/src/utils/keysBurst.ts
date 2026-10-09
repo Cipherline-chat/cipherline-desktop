@@ -90,6 +90,52 @@ export function reached(streak: SpamStreak | null): number {
     return Math.min(1, Math.max(0, (streak.last - streak.start) / SPAM_DURATION_MS));
 }
 
+/** The host's answer when the streak completes (HomeKeys says why on a refusal). */
+export type PlayVerdict = 'ok' | 'call' | 'unavailable';
+
+/**
+ * May the egg open the game right now? HomePanel's canPlay (HomeKeys asks it
+ * when a streak completes), here so it is testable on its own.
+ *
+ * Deliberately NOT gated on prefers-reduced-motion. It used to be, and with
+ * Windows' "Animation effects" off (which Electron reports as reduce) the
+ * egg could NEVER open: five seconds of spam, a "motion is turned down"
+ * bubble, no game, 0 of 25 real-pointer attempts. Reduced motion is about
+ * motion nobody asked for; this game opens only after five seconds of
+ * deliberate, sustained clicking, its motion IS the thing asked for, and
+ * Esc or the close button puts it away. (The loading and offline screens
+ * still do not offer it under reduced motion: there nobody asked.)
+ */
+export function homeGameVerdict(inCall: boolean, canDraw: () => boolean): PlayVerdict {
+    if (inCall) return 'call';
+    if (!canDraw()) return 'unavailable';
+    return 'ok';
+}
+
+/** An input timestamp older than this (ms) is not trusted (see inputTime). */
+export const MAX_INPUT_LAG_MS = 2000;
+
+/**
+ * WHEN a click happened, for the streak rule: the event's own timestamp
+ * (`event.timeStamp`, the moment the press reached the browser, on the same
+ * clock as performance.now()), not the moment the handler got to run.
+ *
+ * The two differ whenever the renderer's main thread is busy: clicks queue
+ * up and are handled late, and in a burst. Judged by handler time, a person
+ * clicking every 500 ms could show a 650 ms "gap" (measured: under a 6x CPU
+ * throttle, handler gaps ran up to ~100 ms longer than the input gaps) and
+ * the streak broke for something they did not do.
+ *
+ * Falls back to `now` when the stamp cannot be on that clock: missing, in
+ * the future, or implausibly old (a synthetic event, a test DOM whose clock
+ * is the epoch).
+ */
+export function inputTime(timeStamp: number | undefined, now: number): number {
+    if (typeof timeStamp !== 'number' || !Number.isFinite(timeStamp)) return now;
+    if (timeStamp > now || now - timeStamp > MAX_INPUT_LAG_MS) return now;
+    return timeStamp;
+}
+
 /** Which of a show's five lines a click at `progress` gets: a new one each second. */
 export function lineIndex(progress: number): 0 | 1 | 2 | 3 | 4 {
     return Math.min(4, Math.max(0, Math.floor(progress * 5))) as 0 | 1 | 2 | 3 | 4;

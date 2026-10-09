@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { motion, AnimatePresence } from 'framer-motion';
 import type { KeysSignal } from './mascot/Keys';
 import { HomeKeys, type PlayVerdict } from './mascot/HomeKeys';
+import { homeGameVerdict } from '../utils/keysBurst';
 import { FirewallOverlay } from './FirewallOverlay';
 import { canUseWorker } from './loadingWorkerHost';
 import { HomeAmbient } from './HomeAmbient';
@@ -519,12 +520,11 @@ export const HomePanel: React.FC<HomePanelProps> = ({
     // A call starting closes it (state adjusted during render, so the
     // overlay never paints a frame over a live call).
     if (inCall && gameOpen) setGameOpen(false);
-    const canPlay = useCallback((): PlayVerdict => {
-        if (inCall) return 'call';
-        if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return 'motion';
-        if (!canUseWorker(document.createElement('canvas'))) return 'unavailable';
-        return 'ok';
-    }, [inCall]);
+    // Not gated on reduced motion: see homeGameVerdict.
+    const canPlay = useCallback(
+        (): PlayVerdict => homeGameVerdict(inCall, () => canUseWorker(document.createElement('canvas'))),
+        [inCall],
+    );
     const openGame = useCallback(() => { if (!inCall) setGameOpen(true); }, [inCall]);
     const closeGame = useCallback(() => setGameOpen(false), []);
 

@@ -8,18 +8,22 @@ import { createRoot, type Root } from 'react-dom/client';
 const store = new Map<string, string>();
 const writes: string[] = [];
 let readyUser: string | null = null;
+// Resolves when the (fake) account finishes loading; tests swap it to hold a cold start open.
+let accountGate: Promise<void> = Promise.resolve();
 vi.mock('../../utils/secureLocalStore', () => {
     const api = {
         getItem: (k: string) => store.get(k) ?? null,
         setItem: (k: string, v: string) => { store.set(k, v); writes.push(k); },
         removeItem: (k: string) => { store.delete(k); },
         isAccountReady: (u: string) => readyUser === u,
+        whenAccountReady: () => accountGate,
     };
     return { default: api, secureLocalStore: api };
 });
 
 import { useServerRailLayout, serverRailOrderKey, serverRailLayoutKey, loadRailLayout } from './useServerRailLayout';
 import { flattenServerIds, folderKey, serverKey, type RailLayout } from './serverFolders';
+import { BACKUP_RESTORED_EVENT } from '../../services/backupRegistry';
 
 const A = 'user-a', B = 'user-b';
 type Hook = ReturnType<typeof useServerRailLayout>;
@@ -40,7 +44,7 @@ const order = () => flattenServerIds(latest!.layout);
 const shape = (l: RailLayout) => l.items.map(it => it.kind === 'server' ? it.id : `[${it.folder.serverIds.join(',')}]`);
 const savedV2 = (u: string) => JSON.parse(store.get(serverRailLayoutKey(u)) ?? 'null');
 
-beforeEach(() => { store.clear(); writes.length = 0; readyUser = null; latest = null; });
+beforeEach(() => { store.clear(); writes.length = 0; readyUser = null; latest = null; accountGate = Promise.resolve(); });
 afterEach(() => { act(() => { root?.unmount(); }); root = null; });
 
 describe('useServerRailLayout — legacy order compatibility', () => {
@@ -188,5 +192,78 @@ describe('useServerRailLayout — operations', () => {
         mount(A, ['s2', 's3', 's4']);
         rerender(A, ['s2', 's3', 's4', 's1']);
         expect(shape(latest!.layout)).toEqual(['[s1,s2,s3]', 's4']);
+    });
+});
+
+const restoreEvent = (userId: string) => act(() => { window.dispatchEvent(new CustomEvent(BACKUP_RESTORED_EVENT, { detail: { userId } })); });
+
+describe('useServerRailLayout — live restore (importLocalHistory into a RUNNING app)', () => {
+    const RESTORED = JSON.stringify({ v: 2, items: ['s3', { id: 'fr', name: 'Restored', color: 'glow', servers: ['s1', 's2'] }] });
+
+    it('re-reads the restored layout on BACKUP_RESTORED_EVENT without the user touching the rail, and writes nothing back', () => {
+        readyUser = A;
+        mount(A, ['s1', 's2', 's3']);
+        expect(shape(latest!.layout)).toEqual(['s1', 's2', 's3']); // nothing saved yet
+        store.set(serverRailLayoutKey(A), RESTORED); // what applyIncludedKv does
+        restoreEvent(A);
+        expect(shape(latest!.layout)).toEqual(['s3', '[s1,s2]']);
+        expect(writes).toEqual([]);
+    });
+
+    it('the next drag after a live restore builds on the RESTORED layout, not the pre-restore one', () => {
+        readyUser = A;
+        mount(A, ['s1', 's2', 's3']);
+        store.set(serverRailLayoutKey(A), RESTORED);
+        restoreEvent(A);
+        act(() => { latest!.rename('fr', 'Renamed'); });
+        expect(savedV2(A).items).toEqual(['s3', { id: 'fr', name: 'Renamed', color: 'glow', servers: ['s1', 's2'] }]);
+    });
+
+    it('an explicit restore wins over a layout the user changed earlier this session', () => {
+        readyUser = A;
+        mount(A, ['s1', 's2', 's3']);
+        act(() => { latest!.moveBy(serverKey('s1'), 1); });
+        store.set(serverRailLayoutKey(A), RESTORED);
+        restoreEvent(A);
+        expect(shape(latest!.layout)).toEqual(['s3', '[s1,s2]']);
+        // ...and the stale in-memory layout is not written back over it afterwards.
+        expect(store.get(serverRailLayoutKey(A))).toBe(RESTORED);
+    });
+
+    it('CONTROL: a restore event for a different account is ignored', () => {
+        readyUser = A;
+        mount(A, ['s1', 's2', 's3']);
+        store.set(serverRailLayoutKey(A), RESTORED);
+        restoreEvent(B);
+        expect(shape(latest!.layout)).toEqual(['s1', 's2', 's3']);
+    });
+
+    it('CONTROL: without the event the hook keeps its mount-time state (what the event exists to fix)', () => {
+        readyUser = A;
+        mount(A, ['s1', 's2', 's3']);
+        store.set(serverRailLayoutKey(A), RESTORED);
+        expect(shape(latest!.layout)).toEqual(['s1', 's2', 's3']);
+    });
+
+    it('a hook mounted while the account was still cold picks up the real layout once it is ready', async () => {
+        let release!: () => void;
+        accountGate = new Promise<void>(r => { release = r; });
+        store.set(serverRailLayoutKey(A), RESTORED);
+        readyUser = null;
+        mount(A, ['s1', 's2', 's3']);
+        await act(async () => { release(); await accountGate; });
+        expect(shape(latest!.layout)).toEqual(['s3', '[s1,s2]']);
+        expect(writes).toEqual([]);
+    });
+
+    it('the cold-start re-read yields to a change the user already made', async () => {
+        let release!: () => void;
+        accountGate = new Promise<void>(r => { release = r; });
+        readyUser = null;
+        mount(A, ['s1', 's2', 's3']);
+        act(() => { latest!.moveBy(serverKey('s1'), 1); }); // dirty (write itself is held back: not ready)
+        store.set(serverRailLayoutKey(A), RESTORED);
+        await act(async () => { release(); await accountGate; });
+        expect(shape(latest!.layout)).toEqual(['s2', 's1', 's3']);
     });
 });

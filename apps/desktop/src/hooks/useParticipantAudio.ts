@@ -37,10 +37,12 @@
  *
  * Lifecycle correctness:
  *   - Local participant is skipped (no self-monitor playback).
- *   - Screenshare-audio chain is gated on screenShareSubscribed AND defensively
- *     calls setSubscribed(false) when the caller hasn't opted in — this
- *     undoes LiveKit's autoSubscribe default, so we don't even decode the
- *     track until the user clicks Watch.
+ *   - Screenshare-audio chain is gated on screenShareSubscribed, which callers
+ *     set ONLY for a remote share the user is watching (shouldPlayShareAudio).
+ *     This hook decides playback only; whether the track is RECEIVED at all
+ *     is owned by useScreenShareAudioSubscriptions (one owner — a second,
+ *     render-timed setSubscribed here could fight it, e.g. an exiting Watch
+ *     gate unsubscribing the audio its own Watch click had just asked for).
  *   - Per-participant noise suppression: if any caller flips nsEnabled, the
  *     chain rebuilds. Since usePersistentNsEnabled is a single source of
  *     truth per identity, callers always pass the same value — no thrashing.
@@ -825,15 +827,8 @@ export function useParticipantAudio(
     // ── Screenshare-audio chain ref-counted acquire ─────────────────────────
     useEffect(() => {
         if (isLocal || !isScreenShare) return;
-        const pub = remote.getTrackPublication?.(Track.Source.ScreenShareAudio) as RemoteTrackPublication | undefined;
-        if (!screenShareSubscribed) {
-            // Defensively undo LiveKit's autoSubscribe so we don't even
-            // decode audio the user hasn't opted in to.
-            if (pub?.isSubscribed) {
-                try { pub.setSubscribed(false); } catch { /* ignore */ }
-            }
-            return;
-        }
+        // Not watching → never attach. (Not received either: see the header.)
+        if (!screenShareSubscribed) return;
         if (!ssAudioTrack) return;
         const chain = acquireSSAudioChain(remote);
         if (!chain) return;

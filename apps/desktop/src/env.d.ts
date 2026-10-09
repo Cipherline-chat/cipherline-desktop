@@ -347,8 +347,12 @@ declare global {
         getRunningProcesses: () => Promise<string[]>;
 
         // System behavior toggles (Appearance → System section in Settings)
+        // "Start at login" on every platform (the name predates mac/Linux).
         getStartWithWindows: () => Promise<boolean>;
-        setStartWithWindows: (enabled: boolean) => Promise<void>;
+        /** supported=false in dev builds; needsApproval = macOS 13+ "allow in Login Items". */
+        getLoginItemState?: () => Promise<{ supported: boolean; enabled: boolean; needsApproval: boolean }>;
+        /** Resolves with the state re-read from the OS after the write (older builds: void). */
+        setStartWithWindows: (enabled: boolean) => Promise<{ supported: boolean; enabled: boolean; needsApproval: boolean } | void>;
         getStartMinimized: () => Promise<boolean>;
         setStartMinimized: (enabled: boolean) => Promise<void>;
         getMinimizeToTray: () => Promise<boolean>;

@@ -17,6 +17,7 @@ import { AnnotationToolbar } from './AnnotationToolbar';
 import { AnnotationRequestButton } from './AnnotationRequestButton';
 import { AnnotationRequestsMenu } from './AnnotationRequestsMenu';
 import { AnnotationGrantBadge } from './AnnotationGrantBadge';
+import { useAnnotationAutoArm } from '../../hooks/useAnnotationAutoArm';
 import { ViewerCountBadge } from './ViewerCountBadge';
 import { StopWatchingButton } from './StopWatchingButton';
 import { canStopWatching } from '../../utils/stopWatchingScreenshare';
@@ -36,6 +37,7 @@ import {
 } from '../../utils/remoteVideoQuality';
 import { useIncomingVideoMode } from '../../utils/cameraQualityPrefs';
 import { logCallEvent, trackPlaceholder } from '../../utils/callEventLog';
+import { shouldPlayShareAudio } from '../../utils/screenShareAudioWatch';
 // vtMeta is derived inline from useParticipantMetadata (the reactive source)
 // so we don't need the string-input parser here.
 
@@ -506,6 +508,14 @@ export const VideoTile = ({
     const annotOnlyBy = strokeAuthorFilter({ isScreenShare, captured: overlayCaptured, me: annotMe || p.identity });
     const annotGranted = useAnnotationStore(st => !isLocal && !!annotMe && annotationIsGranted(st, annotKey, annotMe));
     const annotCanDraw = annotSurface && annotEnabled && annotGranted;
+    // The owner just approved OUR request for this track: if this tile is a
+    // drawing surface right now (focused / fullscreen - `annotSurface`, which is
+    // false for the right-hand column), start drawing exactly as the pencil
+    // would. Returns the screen-reader announcement for the live region below.
+    const annotAutoArmNote = useAnnotationAutoArm({
+        trackKey: annotKey, ownerName: displayName, isScreenShare,
+        surfaceActive: annotSurface, granted: annotGranted,
+    });
     /**
      * The z-index the <video>+canvas group must take when this tile is a live
      * drawing surface. Mirrors AnnotationOverlay's own `canDraw ? z-[11] :
@@ -592,10 +602,18 @@ export const VideoTile = ({
     const isMuted = useIsMicMuted(p);
 
     // Audio management via shared hook.
-    // For ScreenShare tiles: VideoTile only renders the SUBSCRIBED variant
-    // (the unsubscribed case uses ScreenShareGate). So if isScreenShare is
-    // true here, the user has explicitly chosen to watch — pass
-    // screenShareSubscribed=true to let the hook attach to the audio track.
+    // Share audio plays only for a remote share this client is WATCHING (the
+    // Watch set, mirrored into CallContext by SidebarConference) — NOT merely
+    // because a share VideoTile is mounted. The focused-stream banner mounts
+    // one for whatever `focusedStream` names, and focus can land on a share
+    // nobody opened (auto-advance, a restored focus); keying playback on
+    // "this tile exists" played that share's audio. No CallProvider = not
+    // watching (fail closed). See utils/screenShareAudioWatch.ts.
+    const playShareAudio = shouldPlayShareAudio({
+        isLocal,
+        isScreenShareTile: isScreenShare,
+        watched: callCtx?.watchedScreenShareIds?.has(p.identity) ?? false,
+    });
     useParticipantAudio(p, localParticipant?.identity, {
         volume,
         isLocalMuted,
@@ -604,7 +622,7 @@ export const VideoTile = ({
         screenShareVolume,
         isScreenShareMuted,
         nsEnabled,
-        screenShareSubscribed: isScreenShare,
+        screenShareSubscribed: playShareAudio,
     });
 
     // Determine if this tile's stream is currently focused — must be before the quality effect.
@@ -1384,6 +1402,12 @@ export const VideoTile = ({
                 interactive controls with fixed hit targets, and squeezing them
                 to fit a narrow picture would make the tool harder to press
                 rather than tidier. Text is the only thing worth clamping. */}
+            {/* Announces "Drawing on <name>'s screen - Esc to stop" when the tool
+                arms itself after an approved request. Always mounted on a remote
+                tile so the live region exists BEFORE its text changes. */}
+            {!isLocal && (
+                <span className="sr-only" role="status" aria-live="polite">{annotAutoArmNote}</span>
+            )}
             {annotSurface && !chromeHidden && (
                 <TileToolCluster insets={chrome} corner={slots.tools}>
                     {annotSurface && isLocal && (

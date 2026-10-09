@@ -5,6 +5,9 @@ import { secureLocalStore } from '../utils/secureLocalStore';
 import type { CallNamingSettings, CallMediaByUser } from '@cipherline/shared';
 import { isQuietRenameRefusal } from '../utils/callNaming';
 import { applyCallMediaSeed, callMediaEntriesFromCalls } from '../utils/callMediaPresence';
+import { fetchWithRetry } from '../utils/fetchWithRetry';
+import { huddleJoinHeaders } from '../utils/callJoinFlow';
+import { removeParticipantFromCall } from '../utils/joinView';
 
 /**
  * Local cache for the server list and each server's channels/categories.
@@ -137,7 +140,7 @@ export interface ServerMemberInfo {
     joined_at: string;
 }
 
-export function useServers(token: string | null, userId?: string | null) {
+export function useServers(token: string | null, userId?: string | null, deviceId?: string | null) {
     const [servers, setServers] = useState<ServerInfo[]>([]);
     const [loading, setLoading] = useState(false);
     const [serversError, setServersError] = useState<string | null>(null);
@@ -372,7 +375,7 @@ export function useServers(token: string | null, userId?: string | null) {
         const res = await axios.post(
             `${API_BASE}/huddles/${huddleId}/calls`,
             {},
-            { headers: { Authorization: `Bearer ${token}` }, timeout: 15000 },
+            { headers: huddleJoinHeaders(token, deviceId), timeout: 15000 },
         );
         return res.data as {
             call_id: string;
@@ -385,7 +388,7 @@ export function useServers(token: string | null, userId?: string | null) {
             livekit_url: string;
             e2ee_key_b64: string;
         };
-    }, [token]);
+    }, [token, deviceId]);
 
     /** POST a join-call request for an existing call. */
     const joinHuddleCall = useCallback(async (callId: string) => {
@@ -393,7 +396,7 @@ export function useServers(token: string | null, userId?: string | null) {
         const res = await axios.post(
             `${API_BASE}/huddles/calls/${callId}/join`,
             {},
-            { headers: { Authorization: `Bearer ${token}` }, timeout: 15000 },
+            { headers: huddleJoinHeaders(token, deviceId), timeout: 15000 },
         );
         return res.data as {
             call_id: string;
@@ -402,7 +405,7 @@ export function useServers(token: string | null, userId?: string | null) {
             livekit_url: string;
             e2ee_key_b64: string;
         };
-    }, [token]);
+    }, [token, deviceId]);
 
     /** Force-move another member into an existing call (needs MOVE_MEMBERS).
      *  The server derives the source call itself — we only say who and where
@@ -430,15 +433,30 @@ export function useServers(token: string | null, userId?: string | null) {
         return res.data as { ok: true; call_id: string; source_call_id: string };
     }, [token]);
 
-    /** POST a leave-call request. */
+    /** POST a leave-call request.
+     *
+     *  Retried (network errors, 5xx, 429): leave is idempotent server-side,
+     *  and a leave that silently failed once used to strand the user in the
+     *  call for everyone — themselves included — because the server never
+     *  emitted their `huddle:participant` leave (owner report 2026-10-08,
+     *  during a Postgres connection-exhaustion window). The server's
+     *  reconciler is the backstop if every attempt fails. */
     const leaveHuddleCall = useCallback(async (callId: string) => {
         if (!token) return;
+        // Take ourselves out of the call's card NOW, on every leave path
+        // (Leave, switching calls, undoing a superseded join) — not when the
+        // server's `huddle:participant` leave event arrives. When that event
+        // was slow or lost the leaver kept seeing themselves in the call
+        // "from the outside". Everyone else still follows the server.
+        if (userId) {
+            setHuddleCalls(prev => removeParticipantFromCall(prev, callId, userId));
+        }
         try {
-            const res = await axios.post(
+            const res = await fetchWithRetry(() => axios.post(
                 `${API_BASE}/huddles/calls/${callId}/leave`,
                 {},
-                { headers: { Authorization: `Bearer ${token}` } },
-            );
+                { headers: { Authorization: `Bearer ${token}` }, timeout: 15000 },
+            ), { attempts: 4, baseDelayMs: 1000 });
             // Eagerly remove the call card when the server confirms it was
             // destroyed (last participant left). The WS event will also come
             // in and be a no-op since the call is already gone from state.
@@ -456,7 +474,7 @@ export function useServers(token: string | null, userId?: string | null) {
                 });
             }
         } catch { /* non-fatal */ }
-    }, [token]);
+    }, [token, userId]);
 
     /** PATCH a rename. */
     const renameHuddleCall = useCallback(async (callId: string, name: string) => {

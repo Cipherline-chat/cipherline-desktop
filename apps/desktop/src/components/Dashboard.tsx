@@ -12,7 +12,7 @@ import ChatPane, { messageTextMentionsUser, messageTextMentionsRole } from './Ch
 import { CallPane } from './CallPane';
 import { useCallsChannelKey } from '../hooks/useCallsChannelKey';
 import { resolveCallKeyGate, CALL_KEY_STALL_MS, CALL_KEY_DEGRADED_GRACE_MS } from '../utils/callKeyGate';
-import { createJoinAttemptTracker, deriveCallJoinPhase, isJoinPending, describeCallJoinFailure, type CallJoinKind, type JoinAttempt } from '../utils/callJoinFlow';
+import { createJoinAttemptTracker, deriveCallJoinPhase, isJoinPending, describeCallJoinFailure, isSameJoinInFlight, type CallJoinKind, type JoinAttempt } from '../utils/callJoinFlow';
 import { startCallJoinTrace, markCallJoinTrace, finishCallJoinTrace } from '../utils/callJoinTrace';
 import { prewarmMic, releaseMicPrewarm } from '../utils/micPrewarm';
 import { prefetchRnnoiseSources } from '../utils/rnnoiseSources';
@@ -1604,7 +1604,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
         loadHuddleCalls, applyHuddleCallsSnapshot, applyHuddleSpawn, applyHuddleDestroy, applyHuddleRename, applyHuddleParticipant,
         spawnHuddleCall, joinHuddleCall, leaveHuddleCall, renameHuddleCall,
         createServer, joinServer,
-    } = useServers(token, userId);
+    } = useServers(token, userId, deviceId);
 
     // Settle the 'servers' core load once useServers' own initial fetch stops
     // running. That fetch is kicked off inside useServers, not by
@@ -9635,6 +9635,10 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
      *  Phase M plan). Drops any prior server call. */
     const handleSpawnHuddleCall = useCallback(async (huddle: ChannelInfo) => {
         if (!token || !deviceId) return;
+        // A second activation while this channel's spawn is still in flight
+        // (double-click, Enter + click, an impatient re-click on a slow
+        // server) would create a second call room. Ignore it.
+        if (isSameJoinInFlight(joinTracker, `spawn:${huddle.channel_id}`)) return;
 
         const doSpawn = async () => {
             // ── Optimistic: the joining UI renders immediately; prior
@@ -9711,12 +9715,13 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
         }
 
         await doSpawn();
-    }, [token, deviceId, activeVoiceChannelId, activeHuddleCallId, activeCall, spawnHuddleCall, leaveHuddleCall, beginCallJoin, settleCallJoin, failCallJoin, huddleCalls, serverMemberNicknames, userId, user?.username]);
+    }, [token, deviceId, activeVoiceChannelId, activeHuddleCallId, activeCall, spawnHuddleCall, leaveHuddleCall, beginCallJoin, settleCallJoin, failCallJoin, huddleCalls, serverMemberNicknames, userId, user?.username, joinTracker]);
 
     /** Join an *existing* call under a Huddle (clicked from the active-calls list). */
     const handleJoinExistingHuddleCall = useCallback(async (callId: string, displayName: string) => {
         if (!token || !deviceId) return;
         if (activeHuddleCallId === callId) return;
+        if (isSameJoinInFlight(joinTracker, `huddle-call:${callId}`)) return;
 
         const doJoin = async () => {
             // Optimistic — same shape as doSpawn above. The huddle this call

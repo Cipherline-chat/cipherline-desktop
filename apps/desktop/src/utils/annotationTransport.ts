@@ -177,7 +177,17 @@ export function applyRemote(msg: AnnotMsg, sender: string, me: string): ApplyRes
             return { applied: true };
         case 'grant.grant':
             if (ownerOf(msg.track) !== sender) return { applied: false, reason: 'not owner' };
-            if (msg.identity === me) annotationStore.clearOutgoing(msg.track);
+            if (msg.identity === me) {
+                // The ONE signal that means "my request was just approved":
+                // a live grant.grant from the owner, naming us, while a
+                // request of ours is pending. Read BEFORE clearOutgoing. A
+                // snapshot / grant.list re-sync of an already-approved state,
+                // an unasked grant and everyone else's approval never reach
+                // this branch with a request pending, so none of them mark.
+                const wasAsking = annotationStore.getState().outgoing.includes(msg.track);
+                annotationStore.clearOutgoing(msg.track);
+                if (wasAsking) annotationStore.markApproved(msg.track);
+            }
             return { applied: true }; // the list message that follows carries the state
         case 'grant.deny':
             if (ownerOf(msg.track) !== sender) return { applied: false, reason: 'not owner' };

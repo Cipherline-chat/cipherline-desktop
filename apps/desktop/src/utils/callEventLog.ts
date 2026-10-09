@@ -40,6 +40,9 @@ export const CALL_EVENT_KINDS = [
     'camera_capture', 'camera_codec', 'camera_start_check', 'camera_fallback', 'camera_ladder',
     'camera_layering', 'camera_tier', 'camera_encoder_stall',
     'share_codec', 'share_start_check', 'share_fallback', 'share_low_layer', 'share_picker',
+    // A share start: stage timings (codec probe, acquire + publish), or the
+    // DOMException type when it failed (SidebarConference.startScreenShareFrom).
+    'share_start',
     'dynacast_layers', 'quality_limitation', 'freeze_start', 'freeze_end',
     'focus_upgrade', 'focus_switched',
     'incoming_mode', 'decode_cap',
