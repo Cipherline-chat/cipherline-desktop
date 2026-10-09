@@ -12,6 +12,11 @@ import {
     keyRequestVersion,
     REDELIVERY_COOLDOWN_MS,
     PASS_CONTINUATION_DELAY_MS,
+    SERVER_ERROR_GIVE_UP,
+    latestFirstPhases,
+    recordOwed,
+    takeOwed,
+    OWED_SERVE_TTL_MS,
     type KeyDistributionDeps,
     type DistributionRecipient,
 } from './keyDistributionThrottle';
@@ -192,19 +197,95 @@ describe('DeliveryLedger — no re-send of delivered epochs', () => {
         expect(deps.getChannelKey).toHaveBeenCalledTimes(3); // no IPC either
     });
 
-    it('a re-filed ask INSIDE the cool-down is not re-served (that re-ask loop was the storm)…', async () => {
+    // ── A RE-ASK is a real need (regression in 1.0.20) ──────────────────────
+    // The device asked again after our delivery: its envelope was purged (VIEW
+    // revoked, then re-granted), refused, unusable, or the key was discarded.
+    // 1.0.20 skipped ANY re-ask for 10 minutes after a delivery.
+
+    it('a RE-ASK (new request version) shortly after a delivery is served at once', async () => {
         const { deps, posts, clock } = makeDeps();
-        await runKeyDistribution(deps, { serverId: SID, channelId: CID, epochs: [1], recipients: [recipient('u', 'd')], requestVersion: 'req@v1' });
-        clock.advance(75_000); // the 75 s retry timer re-files
-        await runKeyDistribution(deps, { serverId: SID, channelId: CID, epochs: [1], recipients: [recipient('u', 'd')], requestVersion: 'req@v2' });
-        expect(posts).toHaveLength(1);
+        const r = [recipient('u', 'd')];
+        await runKeyDistribution(deps, { serverId: SID, channelId: CID, epochs: [1], recipients: r, requestVersion: 'req@v1' });
+        clock.advance(20_000); // access re-granted 20 s later; the device re-files
+        const out = await runKeyDistribution(deps, { serverId: SID, channelId: CID, epochs: [1], recipients: r, requestVersion: 'req@v2' });
+        // Control: the 1.0.20 ledger (flat 10-min cool-down) made this 1, not 2.
+        expect(posts).toHaveLength(2);
+        expect(out).toEqual({ status: 'done', posted: 1 });
     });
 
-    it('…but IS re-served after the cool-down — a device that genuinely lost the key still gets it', async () => {
+    it('EVERY re-ask is served at once — an unacked delivery is never treated as received', async () => {
         const { deps, posts, clock } = makeDeps();
-        await runKeyDistribution(deps, { serverId: SID, channelId: CID, epochs: [1], recipients: [recipient('u', 'd')], requestVersion: 'req@v1' });
-        clock.advance(REDELIVERY_COOLDOWN_MS + 1);
-        await runKeyDistribution(deps, { serverId: SID, channelId: CID, epochs: [1], recipients: [recipient('u', 'd')], requestVersion: 'req@v2' });
+        const r = [recipient('u', 'd')];
+        let v = 0;
+        const ask = () => runKeyDistribution(deps, { serverId: SID, channelId: CID, epochs: [1], recipients: r, requestVersion: `req@v${++v}` });
+        await ask();
+        for (let i = 0; i < 5; i++) { clock.advance(5_000); await ask(); }
+        // Control: 1.0.20 answered only the first (6 asks → 1 POST within 10 min).
+        expect(posts).toHaveLength(6);
+    });
+
+    // ── 2026-10-09 prod incident: calls broke ───────────────────────────────
+    // A participant's envelope for the call channel's epoch was UNDECRYPTABLE
+    // (wrapped to a bundle it no longer had). It stays unacked, the device
+    // re-files its request, and the holder must send a FRESH envelope — wrapped
+    // to the device's CURRENT bundle — right away. Skipping because "already
+    // sent" left participants on different epochs, so their derived call keys
+    // did not match: nobody could hear anyone.
+    it('incident: the earlier envelope was undecryptable; the re-request gets a FRESH envelope, to the CURRENT bundle, at once', async () => {
+        const { deps, posts, clock } = makeDeps();
+        const stale = { ...recipient('u', 'd'), spk_pub_b64: 'OLD-SPK' };
+        const current = { ...recipient('u', 'd'), spk_pub_b64: 'NEW-SPK' };
+        await runKeyDistribution(deps, { serverId: SID, channelId: CID, epochs: [7], recipients: [stale], requestVersion: 'req@t0' });
+        clock.advance(3_000); // the device fails to decrypt it and re-files
+        await runKeyDistribution(deps, { serverId: SID, channelId: CID, epochs: [7], recipients: [current], requestVersion: 'req@t3' });
+        expect(posts.map(x => x.epoch)).toEqual([7, 7]);
+        const wraps = vi.mocked(deps.wrap).mock.calls.map(c => c[0].device.spk_pub_b64);
+        expect(wraps).toEqual(['OLD-SPK', 'NEW-SPK']);
+    });
+
+    it('incident (one-shot first): a rotation delivered an undecryptable envelope; the re-request is served at once', async () => {
+        const { deps, posts, clock } = makeDeps();
+        const r = [recipient('u', 'd')];
+        await runKeyDistribution(deps, { serverId: SID, channelId: CID, epochs: [7], recipients: r }); // rotation fan-out
+        clock.advance(2_000);
+        const askSeenAt = clock.now(); // the re-filed request is first seen AFTER the delivery
+        await runKeyDistribution(deps, { serverId: SID, channelId: CID, epochs: [7], recipients: r, requestVersion: 'req@t2', requestSeenAt: askSeenAt });
+        expect(posts).toHaveLength(2);
+    });
+
+    it('one-shot paths (no request version) keep the duplicate-trigger cool-down', async () => {
+        const { deps, posts, clock } = makeDeps();
+        const r = [recipient('u', 'd')];
+        await runKeyDistribution(deps, { serverId: SID, channelId: CID, epochs: [1], recipients: r }); // member_join
+        clock.advance(60_000);
+        await runKeyDistribution(deps, { serverId: SID, channelId: CID, epochs: [1], recipients: r }); // a second trigger
+        expect(posts).toHaveLength(1);
+        clock.advance(REDELIVERY_COOLDOWN_MS);
+        await runKeyDistribution(deps, { serverId: SID, channelId: CID, epochs: [1], recipients: r });
+        expect(posts).toHaveLength(2);
+    });
+
+    it('a re-ask after a one-shot delivery (member_join) is served at once', async () => {
+        const { deps, posts, clock } = makeDeps();
+        const r = [recipient('u', 'd')];
+        await runKeyDistribution(deps, { serverId: SID, channelId: CID, epochs: [1], recipients: r }); // member_join
+        clock.advance(5_000);
+        await runKeyDistribution(deps, { serverId: SID, channelId: CID, epochs: [1], recipients: r, requestVersion: 'req@v1' });
+        expect(posts).toHaveLength(2);
+    });
+
+    it('a 403 for one ask is retried when the device asks again (access re-granted)', async () => {
+        let refuse = true;
+        const { deps, posts, clock } = makeDeps({
+            post: async () => { if (refuse) throw axiosError(403); return {}; },
+        });
+        const r = [recipient('u', 'd')];
+        await runKeyDistribution(deps, { serverId: SID, channelId: CID, epochs: [1], recipients: r, requestVersion: 'req@v1' });
+        await runKeyDistribution(deps, { serverId: SID, channelId: CID, epochs: [1], recipients: r, requestVersion: 'req@v1' });
+        expect(posts).toHaveLength(1); // same ask: not retried
+        refuse = false;
+        clock.advance(30_000);
+        await runKeyDistribution(deps, { serverId: SID, channelId: CID, epochs: [1], recipients: r, requestVersion: 'req@v2' });
         expect(posts).toHaveLength(2);
     });
 
@@ -237,6 +318,56 @@ describe('DeliveryLedger — no re-send of delivered epochs', () => {
             .not.toBe(keyRequestVersion({ request_id: 'r', created_at: '2026-10-09T00:01:15.000Z' }));
         expect(keyRequestVersion({ request_id: 'r', created_at: new Date('2026-10-09T00:00:00.000Z') }))
             .toBe(keyRequestVersion({ request_id: 'r', created_at: '2026-10-09T00:00:00.000Z' }));
+    });
+});
+
+describe('HTTP 500 for one submission does not hold everyone else back', () => {
+    it(`after ${SERVER_ERROR_GIVE_UP} consecutive 500s for the same POST it is skipped (for this ask) and the pass goes on`, async () => {
+        const { deps, posts, clock } = makeDeps({
+            post: async (_s, body) => { if (body.recipient_user_id === 'bad') throw axiosError(500); return {}; },
+        });
+        const args = { serverId: SID, channelId: CID, epochs: [1], recipients: [recipient('bad', 'b1'), recipient('ok', 'o1')], requestVersion: 'v1' };
+        for (let i = 0; i < SERVER_ERROR_GIVE_UP - 1; i++) {
+            const out = await runKeyDistribution(deps, args);
+            expect(out).toMatchObject({ status: 'deferred', reason: 'unavailable' });
+            clock.advance(10 * 60_000);
+        }
+        const last = await runKeyDistribution(deps, args);
+        expect(last).toEqual({ status: 'done', posted: 1 });
+        expect(posts.map(p => p.recipient_user_id)).toEqual([...Array(SERVER_ERROR_GIVE_UP).fill('bad'), 'ok']);
+    });
+
+    it('502/503/504 (a rollout, an overloaded ingress) never count toward that — they only back off', async () => {
+        const { deps, posts, clock } = makeDeps({ post: async () => { throw axiosError(503); } });
+        const args = { serverId: SID, channelId: CID, epochs: [1], recipients: [recipient('u', 'd')], requestVersion: 'v1' };
+        for (let i = 0; i < SERVER_ERROR_GIVE_UP + 2; i++) {
+            expect(await runKeyDistribution(deps, args)).toMatchObject({ status: 'deferred' });
+            clock.advance(10 * 60_000);
+        }
+        expect(posts.length).toBe(SERVER_ERROR_GIVE_UP + 2);
+    });
+});
+
+describe('latestFirstPhases — every channel usable before any history', () => {
+    it('sends each channel\'s newest epoch first, then history newest-first, without changing the volume', () => {
+        const items = [
+            { id: 'a', epochs: [1, 2, 3] },
+            { id: 'b', epochs: [5] },
+            { id: 'c', epochs: [2, 1] },
+            { id: 'empty', epochs: [] as number[] },
+        ];
+        const phases = latestFirstPhases(items).map(x => `${x.item.id}:${x.epochs.join(',')}`);
+        expect(phases).toEqual(['a:3', 'b:5', 'c:2', 'a:2,1', 'c:1']);
+        // Control: the 1.0.20 order was channel by channel, all epochs each.
+        const sent = latestFirstPhases(items).flatMap(x => x.epochs.map(e => `${x.item.id}${e}`)).sort();
+        expect(sent).toEqual(['a1', 'a2', 'a3', 'b5', 'c1', 'c2']);
+    });
+
+    it('20 channels × 3 epochs: the 20th channel is usable after 20 POSTs, not 58', () => {
+        const items = Array.from({ length: 20 }, (_, i) => ({ id: `c${i}`, epochs: [1, 2, 3] }));
+        const order = latestFirstPhases(items).flatMap(x => x.epochs.map(e => ({ id: x.item.id, e })));
+        const lastLatest = order.findIndex(x => x.id === 'c19' && x.e === 3);
+        expect(lastLatest).toBe(19); // 0-based: the 20th POST
     });
 });
 
@@ -313,6 +444,25 @@ describe('single-flight / no concurrent loops', () => {
         expect(flight.isRunning('srv')).toBe(false);
     });
 
+    it('SingleFlight.hasPendingRerun: true exactly while a trigger is queued behind the current run', async () => {
+        const flight = new SingleFlight();
+        const seen: boolean[] = [];
+        let release!: () => void;
+        let runs = 0;
+        const p1 = flight.run('srv', async () => {
+            if (++runs > 1) return;                            // the trailing re-run
+            seen.push(flight.hasPendingRerun('srv'));          // nothing queued yet
+            await new Promise<void>(r => { release = r; });
+            seen.push(flight.hasPendingRerun('srv'));          // a push landed mid-run
+        });
+        const p2 = flight.run('srv', async () => undefined);
+        release();
+        await Promise.all([p1, p2]);
+        expect(seen).toEqual([false, true]);
+        expect(runs).toBe(2);
+        expect(flight.hasPendingRerun('srv')).toBe(false);
+    });
+
     it('SingleFlight: different servers run independently', async () => {
         const flight = new SingleFlight();
         const seen: string[] = [];
@@ -329,21 +479,93 @@ describe('single-flight / no concurrent loops', () => {
         await expect(m.run('k', async () => 'next')).resolves.toBe('next');
     });
 
-    it('ResumeTimers keeps ONE pending resume per key', () => {
+    it('ResumeTimers keeps ONE pending resume per key — the EARLIEST', () => {
         vi.useFakeTimers();
         try {
             const t = new ResumeTimers();
             const fn = vi.fn();
             t.schedule('serve:s', 1_000, fn);
             t.schedule('serve:s', 10, fn);
+            // Control: 1.0.20 rode the first (1 s) timer, so at 50 ms nothing had run.
+            vi.advanceTimersByTime(50);
+            expect(fn).toHaveBeenCalledTimes(1);
             vi.advanceTimersByTime(2_000);
             expect(fn).toHaveBeenCalledTimes(1);
+            // A LATER request rides the pending earlier one.
+            t.schedule('serve:s', 10, fn);
+            t.schedule('serve:s', 5_000, fn);
+            vi.advanceTimersByTime(100);
+            expect(fn).toHaveBeenCalledTimes(2);
+            vi.advanceTimersByTime(10_000);
+            expect(fn).toHaveBeenCalledTimes(2);
             t.schedule('serve:s', 10, fn);
             t.clearAll();
             vi.advanceTimersByTime(2_000);
-            expect(fn).toHaveBeenCalledTimes(1);
+            expect(fn).toHaveBeenCalledTimes(2);
         } finally {
             vi.useRealTimers();
         }
+    });
+});
+
+describe('join race: an ask seen BEFORE our delivery was answered by it', () => {
+    it('a request first seen before a member_join delivery is not re-served for the same epoch', async () => {
+        const { deps, posts, clock } = makeDeps();
+        const r = [recipient('u', 'd')];
+        const seenAt = clock.now();          // serve pass lists the joiner's request…
+        clock.advance(2_000);
+        await runKeyDistribution(deps, { serverId: SID, channelId: CID, epochs: [3], recipients: r }); // …member_join posts epoch 3
+        clock.advance(2_000);
+        await runKeyDistribution(deps, { serverId: SID, channelId: CID, epochs: [3], recipients: r, requestVersion: 'req@v1', requestSeenAt: seenAt });
+        // Control: without requestSeenAt this is a "re-ask after a one-shot" and is re-sent.
+        expect(posts).toHaveLength(1);
+    });
+
+    it('a request first seen AFTER our delivery is a re-ask and is served', async () => {
+        const { deps, posts, clock } = makeDeps();
+        const r = [recipient('u', 'd')];
+        await runKeyDistribution(deps, { serverId: SID, channelId: CID, epochs: [3], recipients: r });
+        clock.advance(2_000);
+        const seenAt = clock.now();
+        await runKeyDistribution(deps, { serverId: SID, channelId: CID, epochs: [3], recipients: r, requestVersion: 'req@v2', requestSeenAt: seenAt });
+        expect(posts).toHaveLength(2);
+    });
+});
+
+describe('recordOwed / takeOwed — a stopped pass finishes its history after the request closes', () => {
+    const req = (channel_id: string, requester_device_id = 'dev') => ({ channel_id, requester_device_id });
+
+    it('what a stopped pass still owed is served by the next pass even though the request is no longer listed', () => {
+        const owed = new Map();
+        const now = 1_000;
+        recordOwed(owed, [
+            { item: { req: req('c1'), version: 'r1@a', seenAt: 1 }, epochs: [2, 1] },
+            { item: { req: req('c2'), version: 'r2@a', seenAt: 1 }, epochs: [5] },
+        ], now);
+        // Next pass: r1 closed server-side (the device acked the newest epoch), r2 still listed.
+        const take = takeOwed(owed, [{ req: req('c2'), version: 'r2@a' }], new Set(), now + 1_000);
+        expect(take).toEqual([{ req: req('c1'), version: 'r1@a', seenAt: 1, epochs: [2, 1] }]);
+        // The listed one is dropped from `owed` — the server's view supersedes it.
+        expect([...owed.keys()]).toEqual(['r1@a']);
+    });
+
+    it('drops owed work that was answered, expired, or superseded by a newer ask for the same channel+device', () => {
+        const owed = new Map();
+        recordOwed(owed, [
+            { item: { req: req('c1'), version: 'r1@a', seenAt: 1 }, epochs: [1] },
+            { item: { req: req('c2'), version: 'r2@a', seenAt: 1 }, epochs: [1] },
+            { item: { req: req('c3'), version: 'r3@a', seenAt: 1 }, epochs: [1] },
+        ], 0);
+        const out = takeOwed(owed, [{ req: req('c3'), version: 'r3@b' }], new Set(['r1@a']), 1_000);
+        expect(out.map(o => o.version)).toEqual(['r2@a']);
+        expect(takeOwed(owed, [], new Set(), OWED_SERVE_TTL_MS + 10)).toEqual([]);
+        expect(owed.size).toBe(0);
+    });
+
+    it('merges repeated stops for the same request', () => {
+        const owed = new Map();
+        recordOwed(owed, [{ item: { req: req('c1'), version: 'v', seenAt: 1 }, epochs: [3] }], 0);
+        recordOwed(owed, [{ item: { req: req('c1'), version: 'v', seenAt: 1 }, epochs: [2, 1] }], 10);
+        expect(owed.get('v')!.epochs).toEqual([3, 2, 1]);
     });
 });

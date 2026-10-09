@@ -18,6 +18,12 @@ import { ClButton } from './ClButton';
 import { ClCheckbox } from './cl';
 import { createPortal } from 'react-dom';
 import { useMessagePagination, MESSAGE_PAGE_SIZE } from '../hooks/useMessagePagination';
+import { HistoryGapRow } from './HistoryGapRow';
+import { ChannelKeyWait } from './ChannelKeyWait';
+import { useChannelKeyWait } from '../hooks/useChannelKeyWait';
+import type { HistoryGap } from '../utils/channelHistoryCoverage';
+import { placeholderLabel, placeholderReason } from '../utils/channelDecryptFailure';
+import { isStaleEpochError } from '../utils/pendingSend';
 import { acquireDecryptedMedia, peekDecryptedMedia, putDecryptedMediaBlob, releaseDecryptedMedia } from '../utils/decryptedMediaCache';
 import { backgroundCacheEncryptedAttachment } from '../utils/attachmentBackgroundCache';
 import { peekRemoteImage, acquireRemoteImage, releaseRemoteImage, loadRemoteImage, rememberRemoteImageSize, type RemoteImage } from '../utils/remoteImageCache';
@@ -59,7 +65,10 @@ import { encryptAndAddress } from '../utils/encryptAndAddress';
 import { classifySubmit, decideViewportAction, correctedScrollTop } from '../utils/feedScrollDecision';
 import { isUnconfirmedSend, sendFailureReason, type SendPatch } from '../utils/pendingSend';
 import { assignRowKeys, createEntranceTracker, createRevealGate, messageRowKey, type EntranceTracker, type RevealGate } from '../utils/messageEntrance';
-import { deliveryQueue, withRateLimitRetry } from '../utils/deliveryQueue';
+import { deliveryQueue, withRateLimitRetry, SEND_POST_TIMEOUT_MS } from '../utils/deliveryQueue';
+import { sendClock, markDelivered, wasDelivered, markCancelled, wasCancelled, clearCancelled, undeliveredMenu } from '../utils/undeliveredSend';
+import { useUndeliveredSends } from '../hooks/useUndeliveredSends';
+import { UndeliveredIndicator } from './UndeliveredIndicator';
 import { recipientBundles, recipientBundleKey, type RecipientDevice } from '../utils/recipientBundles';
 import { clampFutureTimestamp } from '../utils/retentionSweeper';
 import { GroupSettingsModal } from './GroupSettingsModal';
@@ -347,6 +356,42 @@ function emojiSelectionToToken(emoji: EmojiSelection): string | null {
  *  the emoji is the content and the count is an annotation, so tying them to
  *  one font-size (which `1em` did) is what made reactions read as small. */
 const REACTION_GLYPH_PX = 18;
+
+/**
+ * Keeps a reaction's emoji centred in its chip WHEREVER the chip lands on the
+ * screen.
+ *
+ * The emoji is TEXT, and Chromium snaps a text baseline to a whole device
+ * pixel while the chip's border and fill follow the chip's true, fractional
+ * position. At a whole-number display scale (100%, 200%) the two snap the same
+ * way and the emoji is dead centre. At a fractional scale (125%, 150%, 175% -
+ * the usual Windows laptop settings) they disagree by up to one device pixel,
+ * and WHICH way depends on the chip's fractional y in the feed. Every row
+ * height contributes to that y: an image is `320 * h / w` tall, a text line is
+ * 22.75px, so the same chip is dead centre under one message and a pixel high
+ * under the next - and appending a message can move it into the other phase.
+ * Measured on painted pixels at 125% scale: the identical chip DOM sat anywhere
+ * from 0.23 css px high to 0.39 css px low (0.6 css px = 0.76 device px apart)
+ * depending only on position. The DOM was never the difference; the position
+ * was, and no flex/grid centring can see it.
+ *
+ * A (near-)identity 3D transform hands the emoji's cell to the compositor as
+ * its own layer, rastered at the cell's own origin and positioned as a unit:
+ * it follows the chip's fractional position exactly instead of snapping on its
+ * own. Measured across 32 sub-pixel phases at 100/125/150/175/200/250/300%:
+ * emoji-to-chip-centre error <= 0.07 css px at every one, identical for every
+ * message shape. Only the emoji cell is moved, so the border and the count keep
+ * their crisp ClearType rendering (putting the whole chip in the layer made
+ * the count visibly softer).
+ *
+ * Why not a plain `translateZ(0)` / `will-change: transform` (both tried): a
+ * 2D-equivalent transform does not leave the snapped paint path - measured
+ * unchanged. The `perspective()` is what makes it genuinely 3D, and 0.0001deg
+ * of rotateX (~1.7e-6 rad) is far below one pixel over a 20px glyph. Inline and
+ * constant, so React never rewrites it. Applies to every glyph kind (native
+ * text, custom-emoji <img>, placeholders) because it wraps the cell.
+ */
+const REACTION_GLYPH_UNSNAPPED: React.CSSProperties = { transform: 'perspective(1000px) rotateX(0.0001deg)' };
 
 /**
  * Renders one reaction's glyph — a plain string reaction key (native glyph,
@@ -769,7 +814,7 @@ export function ReactionPill({
                     an <img>, a skeleton, or a text emoji, and a bare text emoji
                     would otherwise sit on its baseline rather than on the
                     pill's centre line. */}
-                <span className="flex items-center justify-center leading-none">
+                <span className="flex items-center justify-center leading-none" style={REACTION_GLYPH_UNSNAPPED}>
                     {renderReactionGlyph(emoji, resolveEmoji, token, emojisLoading, noServerContext, REACTION_GLYPH_PX)}
                 </span>
                 <span className="flex items-center justify-center tabular-nums leading-none">{count}</span>
@@ -1328,25 +1373,28 @@ const MessageEmbed: React.FC<{ url: string }> = ({ url }) => {
     );
 };
 
+/** Stable default for `historyGaps` (DMs/groups have none). */
+const NO_HISTORY_GAPS: HistoryGap[] = [];
+
 interface ChatPaneProps {
-    /** Server channels only: fetch a page of history older than `beforeIso` from
-     *  the API and merge it into the store. Resolves with how many rows came
-     *  back, so an empty page can retire the control. Local windowing
-     *  (useMessagePagination) never touches the network, so without this the
-     *  feed could never show anything past the newest 50 messages. */
-    onLoadOlderFromServer?: (channelId: string, beforeIso: string) => Promise<number>;
-    /** Server channels only: true once Dashboard has proof (a sub-page-sized
-     *  response, on either the initial catch-up fetch or a page fetched via
-     *  onLoadOlderFromServer) that the server has no messages older than
-     *  what's already loaded for the active channel. Dashboard never remounts,
-     *  so this persists across channel switches — unlike this component's own
-     *  local exhaustedByChannel state below, which is a same-mount-only latch
-     *  and resets (button reappears) every time this pane remounts, which
-     *  happens on every conversation switch. Without this signal the button
-     *  defaulted to visible for any channel until a wasted round trip proved
-     *  otherwise, which is why it showed up "constantly... even when there's
-     *  no old messages to view". */
-    channelHistoryExhausted?: boolean;
+    /** Server channels only: the holes in the loaded history, placed against
+     *  `messages` (utils/channelHistoryCoverage.ts). The one above the first
+     *  row is "load older history"; others sit between rows (after a jump,
+     *  around a server-saved message, between a stale cache and the newest
+     *  page). Each is filled a page (100) at a time as it scrolls into view. */
+    historyGaps?: HistoryGap[];
+    /** Server channels only: the channel's first message is loaded — nothing
+     *  older exists. Lives in Dashboard (it never remounts; this pane does on
+     *  every conversation switch). */
+    historyStart?: boolean;
+    /** Server channels only: fill one gap a page at a time from the side the
+     *  reader is approaching it (`before` = scrolling up, `after` = scrolling
+     *  down after a jump). `progressed: false` = it failed / could not move,
+     *  so the pane stops auto-retrying it until the reader clicks. */
+    onFillHistoryGap?: (channelId: string, gap: HistoryGap, direction: 'before' | 'after') => Promise<{ shown: number; progressed: boolean }>;
+    /** Server channels only: load the page around a message that isn't loaded
+     *  (jump to a reply / pin / search hit). Resolves false if it can't be. */
+    onLoadMessageContext?: (channelId: string, messageId: string) => Promise<boolean>;
     bundleReady?: boolean;
     activeChat: { id: string, title?: string, type?: string, other_user_id?: string, avatar_url?: string };
     /** C2: contact userIds whose identity key changed since first-seen (unacknowledged). */
@@ -1580,7 +1628,7 @@ const QUICK_REACTION_EMOJIS = ['👍', '❤️', '😂', '🎉'];
 
 const NOOP_TYPING: (event: 'typing:start' | 'typing:stop', cid: string) => void = () => {};
 
-const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, keyChangedSenders, senderWarnings = {}, onKeyChangeResolved, messages, messagesFetching = false, onMessageSent, onAddToGroup, typingUsers, sendTypingEvent: sendTypingEventProp, activeCall, onCallChange, onStartingCallChange, chatSearch = '', friendRemovedEvent, onCloseChatRequest, notifPref = 'all', onSetNotifMode, retention, friendStatuses, pinnedMsgIds, onPinMessage, onUnpinMessage, serverSavedIds = [], onServerSaveMessage, onServerUnsaveMessage, pinnedSidebarExpanded, onTogglePinnedSidebar, onOpenPinnedCallOverlay, pinnedSearchQuery, jumpToMessageRef, onOpenProfile, avatarUpdatedEvent, activeChannel = null, emojisChangedEvent, onChannelMessageSent, onPatchSentMessage, memberRoleColors, serverMemberNicknames, channelMessageRetention, channelAttachmentRetention, convType, servers = [], onInviteJoin, onInviteCodeClick, channelPermissions, channelKeyMissing = false, channelKeyCoolingOff = false, onChannelKeyMissing, onLoadOlderFromServer, channelHistoryExhausted = false, readReceipts = {}, sendReadReceipt, showReadReceipts = true, myUserId = '', onReport }) => {
+const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, keyChangedSenders, senderWarnings = {}, onKeyChangeResolved, messages, messagesFetching = false, onMessageSent, onAddToGroup, typingUsers, sendTypingEvent: sendTypingEventProp, activeCall, onCallChange, onStartingCallChange, chatSearch = '', friendRemovedEvent, onCloseChatRequest, notifPref = 'all', onSetNotifMode, retention, friendStatuses, pinnedMsgIds, onPinMessage, onUnpinMessage, serverSavedIds = [], onServerSaveMessage, onServerUnsaveMessage, pinnedSidebarExpanded, onTogglePinnedSidebar, onOpenPinnedCallOverlay, pinnedSearchQuery, jumpToMessageRef, onOpenProfile, avatarUpdatedEvent, activeChannel = null, emojisChangedEvent, onChannelMessageSent, onPatchSentMessage, memberRoleColors, serverMemberNicknames, channelMessageRetention, channelAttachmentRetention, convType, servers = [], onInviteJoin, onInviteCodeClick, channelPermissions, channelKeyMissing = false, channelKeyCoolingOff = false, onChannelKeyMissing, historyGaps = NO_HISTORY_GAPS, historyStart = false, onFillHistoryGap, onLoadMessageContext, readReceipts = {}, sendReadReceipt, showReadReceipts = true, myUserId = '', onReport }) => {
     const { token, deviceId, user } = useAuth();
     const openProfileCtx = useOpenProfile();
     const toast = useToast();
@@ -2139,44 +2187,136 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
     const keyMissing     = isServerChannel && channelKeyMissing
                            && (channelPermissions === undefined
                                || !!(channelPermissions & Permissions.SEND_MESSAGES));
+    /** The newest page is nothing but "waiting on this channel's key" pills:
+     *  the whole feed shows the key-wait layer instead, until the page is
+     *  decrypted (components/ChannelKeyWait.tsx, utils/channelKeyWait.ts).
+     *  Server channels only — DMs have no shared channel key to wait for.
+     *  The composer keeps its own gate (keyMissing, above). */
+    const keyWait = useChannelKeyWait({
+        enabled: isServerChannel,
+        channelId: activeChannel?.channel_id ?? null,
+        messages,
+    });
 
     // ── Server-side history paging (server channels only) ────────────────────
-    // useMessagePagination only widens a window over what's already in memory,
-    // so once it's exhausted the feed used to simply stop — leaving everything
-    // past the newest 50 messages unreachable. `exhaustedServerHistory` latches
-    // once a fetch comes back empty so the control retires instead of looping.
-    // Both maps are keyed by channel id rather than reset in an effect —
-    // resetting via setState-in-effect triggers a cascading render, and keying
-    // means switching channels mid-fetch can't leave a stale spinner behind.
-    const [exhaustedByChannel, setExhaustedByChannel] = useState<Record<string, boolean>>({});
-    const [loadingOlderFor, setLoadingOlderFor] = useState<string | null>(null);
-
+    // useMessagePagination only widens a window over what's already in memory.
+    // Server history comes in 100-row pages through the GAPS Dashboard derives
+    // from what it has loaded (utils/channelHistoryCoverage.ts): the gap above
+    // the oldest loaded row is "older history"; gaps between rows appear after
+    // a jump to an old message or a long absence. Each fills itself as it
+    // scrolls near the viewport (HistoryGapRow), from the side the reader is
+    // coming from. State is keyed by gap key, so switching channels mid-fetch
+    // can't leave a stale spinner behind (this pane remounts per channel).
     const channelId = activeChannel?.channel_id ?? null;
-    const loadingOlder = !!channelId && loadingOlderFor === channelId;
+    const [fillingGapKey, setFillingGapKey] = useState<string | null>(null);
+    const fillingGapRef = useRef<string | null>(null);
+    /** Gaps whose last fill failed: they wait for a click instead of
+     *  auto-retrying every time they are in view. */
+    const [stalledGapKeys, setStalledGapKeys] = useState<ReadonlySet<string>>(() => new Set());
+    /** Which way the reader last scrolled — decides which side of a gap
+     *  between two loaded stretches to fill from. */
+    const lastScrollDirRef = useRef<'up' | 'down'>('up');
+    /** The row the reader is looking at while a fill is in flight, and where
+     *  it sat in the viewport; the layout effect further down holds it there
+     *  when rows land ABOVE it (see captureFillAnchor). */
+    const fillAnchorRef = useRef<{ msgId: string; top: number } | null>(null);
 
-    const oldestLoadedIso = messages.length
-        ? messages.reduce(
-            (min: string, m: { timestamp: string }) => (m.timestamp < min ? m.timestamp : min),
-            messages[0].timestamp as string,
-        )
-        : null;
+    const gapByRowId = useMemo(() => {
+        const m = new Map<string, HistoryGap>();
+        if (isServerChannel) for (const g of historyGaps) m.set(g.beforeRowId, g);
+        return m;
+    }, [historyGaps, isServerChannel]);
+    /** The gap above the very first cached row — "older history". */
+    const topGap = messages.length ? gapByRowId.get(messages[0].id) ?? null : null;
+    /** The gap below the oldest proven page, wherever it sits (search uses it). */
+    const olderHistoryGap = useMemo(() => historyGaps.find(g => g.older === null) ?? null, [historyGaps]);
 
-    const canLoadOlderFromServer =
-        isServerChannel && !!onLoadOlderFromServer && !!oldestLoadedIso && !!channelId
-        && !exhaustedByChannel[channelId] && !channelHistoryExhausted && !loadingOlder;
-
-    const fetchOlderFromServer = useCallback(async () => {
-        if (!channelId || !onLoadOlderFromServer || !oldestLoadedIso) return;
-        setLoadingOlderFor(channelId);
-        try {
-            const got = await onLoadOlderFromServer(channelId, oldestLoadedIso);
-            // An empty page means the server has nothing older — latch it so the
-            // control retires for this channel instead of re-asking forever.
-            if (got === 0) setExhaustedByChannel(prev => ({ ...prev, [channelId]: true }));
-        } finally {
-            setLoadingOlderFor(prev => (prev === channelId ? null : prev));
+    /** Remember the first row visible in the feed and its viewport offset. */
+    const captureFillAnchor = useCallback(() => {
+        const feed = feedRef.current;
+        if (!feed) return;
+        const feedTop = feed.getBoundingClientRect().top;
+        for (const row of Array.from(feed.querySelectorAll<HTMLElement>('[id^="msg-"]'))) {
+            const r = row.getBoundingClientRect();
+            if (r.bottom > feedTop) {
+                fillAnchorRef.current = { msgId: row.id.slice(4), top: r.top - feedTop };
+                return;
+            }
         }
-    }, [channelId, onLoadOlderFromServer, oldestLoadedIso]);
+    }, []);
+
+    const fillGap = useCallback(async (gap: HistoryGap, how: 'auto' | 'click') => {
+        if (!channelId || !onFillHistoryGap || fillingGapRef.current) return;
+        if (how === 'auto' && stalledGapKeys.has(gap.key)) return;
+        // From the side the reader is approaching: scrolling DOWN into a gap
+        // that has a loaded stretch above it (after a jump) fills newer rows
+        // after that stretch; otherwise fill older rows before the stretch below.
+        const direction: 'before' | 'after' =
+            gap.older && (!gap.newer || lastScrollDirRef.current === 'down') ? 'after' : 'before';
+        fillingGapRef.current = gap.key;
+        setFillingGapKey(gap.key);
+        captureFillAnchor();
+        const anchorAtStart = fillAnchorRef.current;
+        let progressed = false;
+        try {
+            progressed = (await onFillHistoryGap(channelId, gap, direction)).progressed;
+        } finally {
+            fillingGapRef.current = null;
+            setFillingGapKey(null);
+            setStalledGapKeys(prev => {
+                if (progressed === !prev.has(gap.key)) return prev;
+                const next = new Set(prev);
+                if (progressed) next.delete(gap.key); else next.add(gap.key);
+                return next;
+            });
+            // Let the commit that renders the new rows run with the anchor
+            // still held, then release it.
+            window.setTimeout(() => {
+                if (fillAnchorRef.current === anchorAtStart) fillAnchorRef.current = null;
+            }, 300);
+        }
+    }, [channelId, onFillHistoryGap, stalledGapKeys, captureFillAnchor]);
+
+    // Prefetch: once the reader is within two local pages of the top of what
+    // is loaded, fetch the next server page in the background. Its rows land
+    // above the pagination anchor, out of the DOM, so nothing on screen moves;
+    // scrolling then reveals them like any other loaded rows.
+    useEffect(() => {
+        if (!topGap || chatSearch.trim() || fillingGapRef.current) return;
+        if (pagination.hiddenAbove === 0 || pagination.hiddenAbove > 2 * MESSAGE_PAGE_SIZE) return;
+        // Next tick, not inside the effect: coalesces a burst of scroll
+        // renders into one request.
+        const t = window.setTimeout(() => { void fillGap(topGap, 'auto'); }, 0);
+        return () => window.clearTimeout(t);
+    }, [topGap, pagination.hiddenAbove, chatSearch, fillGap]);
+
+    /** Render the feed's rows with each gap marker placed above its row. */
+    const withHistoryGaps = (rows: React.ReactNode[], shown: ReadonlyArray<{ id: string }>): React.ReactNode[] => {
+        if (gapByRowId.size === 0 || chatSearch.trim()) return rows;
+        const out: React.ReactNode[] = [];
+        for (let i = 0; i < rows.length; i++) {
+            const gap = shown[i] ? gapByRowId.get(shown[i].id) : undefined;
+            if (gap) {
+                out.push(
+                    <HistoryGapRow
+                        key={`gap:${gap.key}`}
+                        gap={gap}
+                        variant={gap.older ? 'missing' : (gap === topGap ? 'top' : 'seam')}
+                        loading={fillingGapKey === gap.key}
+                        stalled={stalledGapKeys.has(gap.key)}
+                        rootRef={feedRef}
+                        onFill={(g, how) => { void fillGap(g, how); }}
+                    />,
+                );
+            }
+            out.push(rows[i]);
+        }
+        return out;
+    };
+
+    // Jump to a message that isn't loaded: Dashboard loads the page around it;
+    // this completes the jump once the row is in `messages` (effect below).
+    const pendingJumpRef = useRef<string | null>(null);
     /** User can post text messages in this channel. */
     const canSend        = (!isServerChannel || channelPermissions === undefined
                            || !!(channelPermissions & Permissions.SEND_MESSAGES)) && !keyMissing;
@@ -3022,7 +3162,9 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
     // transition and re-snaps once messages are in the DOM.
     const wasLoadingRef = useRef(false);
     useLayoutEffect(() => {
-        const isLoading = chatLoading || membersFetching || messagesFetching;
+        // The key-wait layer holds the list back like a loading gate: when it
+        // hands over, the list mounts and snaps to the bottom before paint.
+        const isLoading = chatLoading || membersFetching || messagesFetching || keyWait.holdList;
         if (isLoading) { wasLoadingRef.current = true; return; }
         if (!wasLoadingRef.current) return;
         wasLoadingRef.current = false;
@@ -3035,7 +3177,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         followBottomRef.current       = true;
         isAtBottomRef.current         = true;
         setShowScrollBtn(false);
-    }, [chatLoading, membersFetching, messagesFetching]);
+    }, [chatLoading, membersFetching, messagesFetching, keyWait.holdList]);
 
     // ── Snap to bottom on every new message (any sender) ─────────────────────
     // The existing pagination.displayed effect below ONLY snaps if
@@ -4155,6 +4297,14 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
             await sendClientContent(content);
         } catch (err) {
             console.error('Failed to dispatch action:', err);
+            // An edit / delete / reaction refused because this device's key is
+            // behind the channel's (409 STALE_EPOCH), or never arrived: start
+            // fetching it and say so — this used to fail silently.
+            const msg = err instanceof Error ? err.message : String(err);
+            if (activeChannel && (isStaleEpochError(err) || /No channel key|Channel key for epoch/.test(msg))) {
+                onChannelKeyMissing?.(activeChannel.server_id, activeChannel.channel_id);
+                toast.push({ kind: 'error', title: 'Not sent', message: 'This channel’s newest encryption key hasn’t reached this device yet. Try again in a moment.' });
+            }
         }
     };
 
@@ -4389,6 +4539,20 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
 
         if (doScroll(resolvedId)) return;
 
+        // Not loaded at all (a server channel's history arrives a page at a
+        // time): ask Dashboard for the page AROUND it. The effect below
+        // finishes the jump once the row is in `messages`.
+        if (isServerChannel && channelId && onLoadMessageContext
+            && !messages.some((m: { id?: string }) => m.id === resolvedId)) {
+            pendingJumpRef.current = resolvedId;
+            void onLoadMessageContext(channelId, resolvedId).then(ok => {
+                if (ok || pendingJumpRef.current !== resolvedId) return;
+                pendingJumpRef.current = null;
+                toast.push({ kind: 'info', title: 'Message unavailable', message: 'That message is no longer available in this channel.' });
+            });
+            return;
+        }
+
         // Not in the DOM yet — expand pagination window; the effect below will
         // fire once the new rows are painted.
         pendingScrollMsgIdRef.current = resolvedId;
@@ -4400,12 +4564,20 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
             if (!pending) return; // already handled by the effect below
             if (doScroll(pending)) pendingScrollMsgIdRef.current = null;
         }, 200);
-    }, [pagination, messages]);
+    }, [pagination, messages, isServerChannel, channelId, onLoadMessageContext, toast]);
 
     // Keep the jumpToMessage function accessible to Dashboard (for call-overlay jump).
     useEffect(() => {
         if (jumpToMessageRef) jumpToMessageRef.current = jumpToMessage;
     }, [jumpToMessage, jumpToMessageRef]);
+
+    // The page around a jumped-to message has landed: finish the jump.
+    useEffect(() => {
+        const id = pendingJumpRef.current;
+        if (!id || !messages.some((m: { id?: string }) => m.id === id)) return;
+        pendingJumpRef.current = null;
+        jumpToMessage(id);
+    }, [messages, jumpToMessage]);
 
     // After pagination expands (new rows painted), complete a pending jump.
     useEffect(() => {
@@ -4540,7 +4712,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
             const msg = err instanceof Error ? err.message : String(err);
             // This device hasn't got the channel's Sender Key: start fetching it
             // so a Retry can succeed.
-            if (job.kind === 'channel' && job.serverId && /No channel key|Channel key for epoch/.test(msg)) {
+            if (job.kind === 'channel' && job.serverId && (/No channel key|Channel key for epoch/.test(msg) || isStaleEpochError(err))) {
                 onChannelKeyMissing?.(job.serverId, job.conversationId);
             }
         };
@@ -4551,6 +4723,8 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
             void deliveryQueue.enqueue(deliveryKey('channel', job.conversationId), {
                 prepare: () => trackActivity('send:encrypt', () => window.electronAPI!.encryptChannelMessage(contentJson, job.conversationId, { user_id: user?.user_id, device_id: deviceId })),
                 post: async ({ epoch, nonce_b64, ciphertext_b64, signature_b64 }) => {
+                    // An earlier attempt already landed (late) or the user discarded it.
+                    if (wasDelivered(clientMsgId) || wasCancelled(clientMsgId)) return;
                     // A 429 waits out the server's window and tries again (the
                     // limit is respected, never exceeded) instead of failing.
                     const resp = await trackActivity('send:post', () => withRateLimitRetry(() => axios.post(`${API_BASE}/channels/${job.conversationId}/messages`, {
@@ -4562,7 +4736,8 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                         ...(c.reply_to_id ? { reply_to_id: c.reply_to_id } : {}),
                         ...(mentionsEveryone ? { mentions_everyone: true } : {}),
                         ...(containsUrl ? { contains_url: true } : {}),
-                    }, { headers })));
+                    }, { headers, timeout: SEND_POST_TIMEOUT_MS })));
+                    markDelivered(clientMsgId);
                     onPatchSentMessage?.('channel', job.conversationId, clientMsgId, {
                         send_state: null,
                         id: resp.data?.id,
@@ -4582,17 +4757,19 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                     return trackActivity('send:encrypt', () => encryptAndAddress(contentJson, user!.user_id, devices, deviceId ?? undefined));
                 },
                 post: async ({ ciphertext_b64, recipient_device_ids }) => {
+                    if (wasDelivered(clientMsgId) || wasCancelled(clientMsgId)) return;
                     const resp = await trackActivity('send:post', () => withRateLimitRetry(() => axios.post(`${API_BASE}/messages/send`, {
                         conversation_id: job.conversationId,
                         recipient_device_ids,
                         envelope_type: 'signal_chat',
                         ciphertext_b64,
                         sent_at_client: new Date().toISOString()
-                    }, { headers })));
+                    }, { headers, timeout: SEND_POST_TIMEOUT_MS })));
                     // The server's received_at_server: the ordering key (and time)
                     // every recipient gets for this message. An older API does not
                     // return it; the row then simply stays where it is.
                     const serverTs = typeof resp.data?.received_at_server === 'string' ? resp.data.received_at_server : undefined;
+                    markDelivered(clientMsgId);
                     onPatchSentMessage?.('dm', job.conversationId, clientMsgId, serverTs
                         ? { send_state: null, server_ts: serverTs, timestamp: clampFutureTimestamp(serverTs) }
                         : { send_state: null });
@@ -4610,12 +4787,18 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         if (!content || !clientMsgId) return;
         const kind: 'dm' | 'channel' = activeChannel ? 'channel' : 'dm';
         const conversationId = activeChannel ? activeChannel.channel_id : activeChat.id;
+        // Back to pending: the "!" hides and the 10 s clock starts over.
+        clearCancelled(clientMsgId);
+        sendClock.restart(clientMsgId);
         onPatchSentMessage?.(kind, conversationId, clientMsgId, { send_state: 'sending' });
         enqueueDelivery({ kind, conversationId, serverId: activeChannel?.server_id, content });
     };
 
     /** Delete a message that never reached anyone — local only, nothing to tell the server. */
-    const discardUnsent = (msg: { id: string }) => {
+    const discardUnsent = (msg: { id: string; content?: unknown }) => {
+        // An attempt still waiting its turn in the queue must not send it after all.
+        const cid = (msg.content as { client_msg_id?: string } | undefined)?.client_msg_id;
+        if (cid) markCancelled(cid);
         const del = {
             id: `unsend-${msg.id}`,
             content: { type: 'delete', target_id: msg.id } as unknown as ClientContent,
@@ -4924,7 +5107,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
             // permission-specific message; everything else falls back to a
             // generic "couldn't send" toast.
             const serverMsg = (err as any)?.response?.data?.message as string | undefined;
-            if (/No channel key|Channel key for epoch/.test(errMsg)) {
+            if (/No channel key|Channel key for epoch/.test(errMsg) || isStaleEpochError(err)) {
                 // e2ee-engine threw before any network call — this device
                 // hasn't received the channel's Sender Key yet.
                 toast.push({
@@ -5155,6 +5338,34 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
             preservedScrollHeightRef.current = null;
         }
     }, [pagination.visibleCount]);
+
+    // ── Hold the reader's row still while a history gap fills ────────────────
+    // A gap fill lands rows in the middle of the window (after a jump, or the
+    // "older history" page once its anchor row is on screen). Rows landing
+    // ABOVE the row the reader is looking at would push it down; rows below
+    // it don't move it. So rather than guess from heights, re-measure that one
+    // row (captured by captureFillAnchor, refreshed on every user scroll) on
+    // each commit and correct scrollTop by exactly its drift. Runs after the
+    // local "load earlier" preservation above, so it only ever sees what that
+    // one didn't already correct.
+    useLayoutEffect(() => {
+        const anchor = fillAnchorRef.current;
+        const el = feedRef.current;
+        if (!anchor || !el) return;
+        if (followBottomRef.current || pendingScrollMsgIdRef.current) return;
+        const row = findMsgRow(anchor.msgId);
+        if (!row) return;
+        const top = row.getBoundingClientRect().top - el.getBoundingClientRect().top;
+        const next = correctedScrollTop({
+            scrollTop:    el.scrollTop,
+            maxScrollTop: el.scrollHeight - el.clientHeight,
+            rowTopBefore: anchor.top,
+            rowTopAfter:  top,
+        });
+        if (next === el.scrollTop) return;
+        el.scrollTop = next;
+        lastKnownScrollTopRef.current = el.scrollTop;
+    }, [messages, pagination.displayed]);
 
     // ── Hold the edited message still when an in-place edit commits ───────────
     // Preserving raw scrollTop is not enough: the new text can be taller or
@@ -5530,6 +5741,25 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         msgContextMenu.open(e, items);
     };
 
+    /** Right-click on a message that did not go through: Retry send / Discard
+     *  under a "Message not delivered" header (utils/undeliveredSend.ts). */
+    const openUndeliveredMenu = (e: React.MouseEvent, msg: any) => {
+        e.preventDefault();
+        (e.currentTarget as HTMLElement).focus?.();
+        msgCtxOpenIdRef.current = msg.id ?? null;
+        const isText = msg.content?.type === 'text';
+        const { title, items } = undeliveredMenu({
+            onRetry: () => retrySend(msg),
+            onDiscard: () => discardUnsent(msg),
+            onCopyText: isText ? () => {
+                writeToClipboard(displayTextOf(msg.content) ?? '').catch(() =>
+                    toast.push({ kind: 'error', message: 'Could not copy — try selecting and copying manually.' }));
+            } : undefined,
+            icons: { retry: <RotateCcw />, discard: <Trash2 />, copy: <Copy /> },
+        });
+        msgContextMenu.open(e, items, title);
+    };
+
     const downloadAttachment = (msg: any) => {
         const url = objectUrls[msg.id];
         if (!url) return;
@@ -5561,6 +5791,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
     const rowLive = useLiveCallbacks({
         decryptManual, cancelDecrypt, retryDecrypt, ensureAttachmentCached,
         requestDelete, startEdit, handleAddReaction, handleContextMenu, jumpToMessage, handleMentionClick,
+        openUndeliveredMenu, retrySend, discardUnsent,
         onKeyChangeResolved, onPinMessage, onUnpinMessage, onServerSaveMessage, onServerUnsaveMessage,
         onOpenProfile, onInviteJoin, onInviteCodeClick,
         saveMessage: retention.saveMessage, unsaveMessage: retention.unsaveMessage,
@@ -5605,6 +5836,9 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
     ];
     // Reply quotes: one id/client-id index per `messages` change instead of
     // two linear scans of the whole conversation per reply row per render.
+    // The red "!" on a message that has not been delivered (10 s unconfirmed, or
+    // the queue reported a failure). Pending messages otherwise look sent.
+    const isUndelivered = useUndeliveredSends(messages);
     const replyLookup = useMemo(() => {
         const byId = new Map<string, (typeof messages)[number]>();
         const byClientId = new Map<string, (typeof messages)[number]>();
@@ -6090,22 +6324,35 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                 );
             })()}
 
-            {/* Messages Scroll Area */}
+            {/* Messages Scroll Area — wrapped so the key-wait layer can sit over
+                exactly the feed (header and composer stay usable). */}
+            <div className="relative flex-1 min-h-0 flex flex-col min-w-0">
             <div
                 ref={feedRef}
                 onScroll={() => {
                     const el = feedRef.current;
                     // Sync lastKnownScrollTopRef on every scroll so the layout effect
                     // comparison stays accurate between React commit phases.
-                    if (el) lastKnownScrollTopRef.current = el.scrollTop;
+                    if (el) {
+                        if (el.scrollTop !== lastKnownScrollTopRef.current) {
+                            lastScrollDirRef.current = el.scrollTop < lastKnownScrollTopRef.current ? 'up' : 'down';
+                        }
+                        lastKnownScrollTopRef.current = el.scrollTop;
+                        // The reader moved: a gap fill in flight holds the row
+                        // they are looking at NOW, not where it was at the start.
+                        const anchor = fillAnchorRef.current;
+                        const row = anchor ? findMsgRow(anchor.msgId) : null;
+                        if (anchor && row) anchor.top = row.getBoundingClientRect().top - el.getBoundingClientRect().top;
+                    }
                     checkBottom();
                     if (el && el.scrollTop < 80 && !chatSearch.trim()) {
                         if (pagination.hasMore) {
                             preservedScrollHeightRef.current = el.scrollHeight;
                             pagination.loadMore();
-                        } else if (canLoadOlderFromServer) {
-                            preservedScrollHeightRef.current = el.scrollHeight;
-                            void fetchOlderFromServer();
+                        } else if (topGap) {
+                            // Also driven by the gap row's IntersectionObserver;
+                            // fillGap ignores a second call while one is running.
+                            void fillGap(topGap, 'auto');
                         }
                     }
                 }}
@@ -6116,7 +6363,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                 style={{ overflowAnchor: 'none' }}
             >
                 {/* Pagination: "load earlier" indicator at the top of the feed */}
-                {pagination.hasMore && !chatSearch.trim() && (
+                {pagination.hasMore && !chatSearch.trim() && !keyWait.holdList && (
                     <ClButton
                         variant="ghost"
                         size="sm"
@@ -6131,24 +6378,35 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                     </ClButton>
                 )}
 
-                {/* Local window exhausted — go to the server for older history.
-                    Server-saved messages are exempt from retention, so they're
-                    usually the oldest rows in the channel and only reachable
-                    this way. */}
-                {!pagination.hasMore && canLoadOlderFromServer && !chatSearch.trim() && (
-                    <ClButton
-                        variant="ghost"
-                        size="sm"
-                        loading={loadingOlder}
-                        onClick={() => {
-                            const el = feedRef.current;
-                            if (el) preservedScrollHeightRef.current = el.scrollHeight;
-                            void fetchOlderFromServer();
-                        }}
-                        style={{ alignSelf: 'center', marginBottom: 12, fontSize: 11, borderRadius: 999, padding: '6px 12px' }}
-                    >
-                        {loadingOlder ? 'Loading…' : 'Load older history'}
-                    </ClButton>
+                {/* Local window exhausted and the server has nothing older: the
+                    start of the channel. (Older server history, when there is
+                    some, is the gap row rendered above the first message.) */}
+                {isServerChannel && historyStart && !pagination.hasMore && !chatSearch.trim() && messages.length > 0 && !keyWait.holdList && (
+                    <div className="text-center text-[11px] select-none" style={{ color: 'var(--cl-faint)', margin: '4px 0 14px' }}>
+                        This is the beginning of {activeChannel?.name ? `#${activeChannel.name}` : 'this channel'}.
+                    </div>
+                )}
+
+                {/* Search runs over the messages loaded on this device (they are
+                    end-to-end encrypted; the server cannot search them). Offer
+                    to pull in the next older page while a search is open. */}
+                {isServerChannel && chatSearch.trim() && !keyWait.holdList && (
+                    <div className="flex items-center justify-center gap-2 select-none" style={{ margin: '0 0 12px' }}>
+                        <span className="text-[11px]" style={{ color: 'var(--cl-faint)' }}>
+                            {historyStart && historyGaps.length === 0 ? 'Searched the whole channel.' : 'Searching loaded messages only.'}
+                        </span>
+                        {olderHistoryGap && (
+                            <ClButton
+                                variant="ghost"
+                                size="sm"
+                                loading={fillingGapKey === olderHistoryGap.key}
+                                onClick={() => { void fillGap(olderHistoryGap, 'click'); }}
+                                style={{ fontSize: 11, borderRadius: 999, padding: '6px 12px' }}
+                            >
+                                Search older messages
+                            </ClButton>
+                        )}
+                    </div>
                 )}
 
                 <div ref={contentRef} className="flex flex-col flex-1" style={{ willChange: 'transform' }}>
@@ -6166,7 +6424,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                     patches in any names that arrive after this paint, so there's
                     no correctness reason to hide content we already have just
                     because a supplementary fetch hasn't resolved yet. */}
-                {messages.length === 0 ? (
+                {keyWait.holdList ? null : messages.length === 0 ? (
                     (membersFetching || chatLoading || messagesFetching) ? (
                         <div className="flex-1 flex items-center justify-center">
                             <div className="w-5 h-5 border-2 border-white/20 border-t-primary rounded-full animate-spin" />
@@ -6189,7 +6447,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                     // gap. When the list overflows, the auto margin collapses to 0 and
                     // normal scrolling resumes — unlike justify-end, this never clips the
                     // top out of scroll reach.
-                    <div className="flex flex-col mt-auto">
+                    <div className={keyWait.handoff ? 'flex flex-col mt-auto ckw-list-in' : 'flex flex-col mt-auto'}>
                     {/* ── Read receipt "Seen" indicator pre-computation ─────────
                         Only shown in DMs. Find the other user's last read timestamp,
                         then walk back from the end to find the last sent (isMe) message
@@ -6240,7 +6498,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                 if (displayMessages[i]?.content?.type !== 'system') lastNonSystem = displayMessages[i];
                             }
                         }
-                        return displayMessages.map((msg, index) => {
+                        const rowEls = displayMessages.map((msg, index) => {
                         const rowKey = rowKeys[index];
                         const entering = enteringKeys.has(rowKey);
                         const replyToId = msg.content?.reply_to_id;
@@ -6251,8 +6509,9 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                             : undefined;
                         const callId: string | undefined = msg.content?.type === 'call_key' ? msg.content.call_id : undefined;
                         const rowCall = callId ? callDurations[callId] : undefined;
+                        const undelivered = isUndelivered(msg);
                         const rowDeps = [
-                            ...rowGlobals, msg, index > 0 ? displayMessages[index - 1] : null, groupPrev[index],
+                            ...rowGlobals, msg, index > 0 ? displayMessages[index - 1] : null, groupPrev[index], undelivered,
                             index === lastSeenMsgIndex, entering,
                             hoveredMsgId === msg.id, highlightedMsgId === msg.id,
                             showEmojiPicker === msg.id ? (reactionPickerAnchor ?? 'open') : null,
@@ -6266,6 +6525,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                         const {
                             decryptManual, cancelDecrypt, retryDecrypt, ensureAttachmentCached,
                             requestDelete, startEdit, handleAddReaction, handleContextMenu, jumpToMessage, handleMentionClick,
+                            openUndeliveredMenu, retrySend, discardUnsent,
                             onPinMessage, onUnpinMessage, onKeyChangeResolved, onServerSaveMessage, onServerUnsaveMessage,
                             onInviteJoin,
                         } = rowLive;
@@ -6361,7 +6621,10 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                             <div className="flex-1 h-px bg-white/[0.05]" />
                                             <div className="flex items-center gap-1.5 px-3 py-1 rounded-full border border-cl-glow/20 bg-cl-glow/[0.05] text-cl-glow/70 text-[11px] font-medium">
                                                 <Lock className="w-3 h-3 flex-shrink-0" />
-                                                <span>Couldn't decrypt — waiting on this channel's key</span>
+                                                {/* Says WHY (utils/channelDecryptFailure.ts): only a missing
+                                                    key is "waiting"; an unverifiable sender or a key withheld
+                                                    by permission says so instead. */}
+                                                <span>{placeholderLabel(placeholderReason(msg))}</span>
                                             </div>
                                             <div className="flex-1 h-px bg-white/[0.05]" />
                                         </div>
@@ -6683,9 +6946,16 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                     hoverLeaveTimerRef.current = setTimeout(() => setHoveredMsgId(null), 200);
                                 }}
                                 // A message that never reached the server has nothing to
-                                // react to, pin, edit or reply to yet — Retry / Delete sit
-                                // under it instead.
-                                onContextMenu={(e) => { if (isUnconfirmedSend(msg)) { e.preventDefault(); return; } handleContextMenu(e, msg); }}
+                                // react to, pin, edit or reply to yet. Once it is flagged
+                                // undelivered its menu is Retry send / Discard; while it is
+                                // merely still sending there is no menu.
+                                onContextMenu={(e) => {
+                                    if (isUnconfirmedSend(msg)) {
+                                        if (undelivered) openUndeliveredMenu(e, msg); else e.preventDefault();
+                                        return;
+                                    }
+                                    handleContextMenu(e, msg);
+                                }}
                                 onMouseDown={onRowMouseDown}
                                 onClick={onRowClick}
                                 // The action bar only mounts while the row is "hovered", which
@@ -6860,7 +7130,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
 
                                                 return (
                                                     <div
-                                                        className={`text-white/90 break-words whitespace-pre-wrap overflow-hidden${msg.send_state === 'sending' ? ' cl-send-pending' : ''}`}
+                                                        className="text-white/90 break-words whitespace-pre-wrap overflow-hidden"
                                                         style={{ fontSize, lineHeight, wordBreak: 'break-word' }}
                                                     >
                                                         {emojiOnly
@@ -6868,6 +7138,13 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                                             : renderTextWithMentions(rawText, user?.user_id ?? null, memberRoleColors, onInviteCodeClick, resolveEmoji, token, serverEmojisLoading, noServerEmojiContext, mentionedUserIsKnown, handleMentionClick)}
                                                         {msg.edited && !showHeader && (
                                                             <span className="text-[10px] opacity-40 ml-2 italic">(edited)</span>
+                                                        )}
+                                                        {undelivered && (
+                                                            <UndeliveredIndicator
+                                                                reason={msg.send_state === 'failed' ? msg.send_error : undefined}
+                                                                onRetry={() => retrySend(msg)}
+                                                                onDiscard={() => discardUnsent(msg)}
+                                                            />
                                                         )}
                                                     </div>
                                                 );
@@ -7114,30 +7391,25 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                         </div>
                                     )}
 
-                                    {/* Instant send: this message never reached the server. It
-                                        stays in the feed rather than vanishing; Retry re-sends
-                                        the same content, Delete drops it (local only). */}
-                                    {msg.send_state === 'failed' && (
-                                        <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 mt-1 text-[12px] text-cl-flash" role="status">
-                                            <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
-                                            <span>Not delivered{msg.send_error ? ` — ${msg.send_error}` : ''}</span>
-                                            <button
-                                                type="button"
-                                                onClick={(e) => { e.stopPropagation(); retrySend(msg); }}
-                                                className="ml-1 inline-flex items-center gap-1 font-semibold text-cl-text hover:underline focus-visible:underline outline-none"
-                                            >
-                                                <RotateCcw className="w-3 h-3" /> Retry
-                                            </button>
-                                            <span className="text-cl-faint" aria-hidden>·</span>
-                                            <button
-                                                type="button"
-                                                onClick={(e) => { e.stopPropagation(); discardUnsent(msg); }}
-                                                className="text-cl-muted hover:text-cl-text hover:underline focus-visible:underline outline-none"
-                                            >
-                                                Delete
-                                            </button>
-                                        </div>
-                                    )}
+                                    {/* Instant send: a message that did not go through keeps its
+                                        place in the feed and carries a red "!" (UndeliveredIndicator
+                                        → Retry / Discard). For a text message the "!" sits at the end
+                                        of its text (above); this is the home for a body that renders
+                                        no text node — a bare image link, an invite card. */}
+                                    {undelivered && (() => {
+                                        const t = String(msg.content?.text ?? '').trim();
+                                        const textShown = msg.content?.type === 'text'
+                                            && !(/^https?:\/\/\S+$/.test(t) && isImageUrl(t)) && !INVITE_URL_RE.test(t);
+                                        return textShown ? null : (
+                                            <div className="mt-1">
+                                                <UndeliveredIndicator
+                                                    reason={msg.send_state === 'failed' ? msg.send_error : undefined}
+                                                    onRetry={() => retrySend(msg)}
+                                                    onDiscard={() => discardUnsent(msg)}
+                                                />
+                                            </div>
+                                        );
+                                    })()}
                                 </div>
 
                                 {/* Discord-style: no right-side avatar — every row is left-aligned. */}
@@ -7355,11 +7627,21 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                         }} />
                         );
                         });
+                        return withHistoryGaps(rowEls, displayMessages);
                     })()}
                     </div>
                 )}
                 </div>
                 <div className="shrink-0" style={{ height: composerH + 16 }} />
+            </div>
+            {keyWait.phase !== 'hidden' && (
+                <ChannelKeyWait
+                    phase={keyWait.phase}
+                    stage={keyWait.stage}
+                    reduced={keyWait.reduced}
+                    bottomInset={composerH + 16}
+                />
+            )}
             </div>
 
             {/* Right-click message menu — portalled to body by the shared

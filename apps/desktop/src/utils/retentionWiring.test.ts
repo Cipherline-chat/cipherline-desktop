@@ -73,15 +73,29 @@ describe('Dashboard retention call sites', () => {
     });
 
     it('the channel history fetchers filter incoming rows through retention before folding', () => {
+        // Every history read (newest page, gap fills, jump-around, rows by id)
+        // folds through ONE function, so the filter lives — and is pinned — there.
+        const ingest = src.slice(src.indexOf('const ingestChannelRows = useCallback'));
+        const ingestBody = ingest.slice(0, ingest.indexOf('const loadChannelMessagesById = useCallback'));
+        expect(ingestBody).toContain('splitExpiredIncoming(');
+        expect(ingestBody.indexOf('splitExpiredIncoming(')).toBeLessThan(ingestBody.indexOf('foldChannelHistory('));
+        // the folded rows are the FILTERED ones
+        expect(ingestBody).toMatch(/foldChannelHistory\(prev\[channelId\] \?\? \[\], sorted,/);
+
         const refresh = src.slice(src.indexOf('const refreshChannelHistory = useCallback'));
-        const refreshBody = refresh.slice(0, refresh.indexOf('const channelKeyEnsureInFlightRef'));
-        expect(refreshBody).toContain('splitExpiredIncoming(');
-        expect(refreshBody.indexOf('splitExpiredIncoming(')).toBeLessThan(refreshBody.indexOf('foldChannelHistory('));
-        // and the key request is decided from the FILTERED page
+        const refreshBody = refresh.slice(0, refresh.indexOf('useEffect(() => { refreshChannelHistoryRef.current'));
+        expect(refreshBody).toContain('ingestChannelRows(');
+        // and the key request is decided from the FILTERED page ingest returns
+        expect(refreshBody).toContain('const { kept: sorted, purgedIds } = await ingestChannelRows(');
         expect(refreshBody).toContain('pageNeedsKeyRequest(sorted, purgedIds)');
 
-        const older = src.slice(src.indexOf('const loadOlderChannelMessages = useCallback'));
-        const olderBody = older.slice(0, older.indexOf('const refreshChannelHistory'));
-        expect(olderBody).toContain('splitExpiredIncoming(');
+        // no history read folds on its own, bypassing ingestChannelRows
+        const folds = src.split('foldChannelHistory(').length - 1;
+        expect(folds).toBe(1);
+        for (const fn of ['const fillChannelHistoryGap = useCallback', 'const loadChannelMessageContext = useCallback', 'const loadChannelMessagesById = useCallback']) {
+            const at = src.indexOf(fn);
+            expect(at, fn).toBeGreaterThan(0);
+            expect(src.slice(at, at + 6000)).toContain('ingestChannelRows(');
+        }
     });
 });

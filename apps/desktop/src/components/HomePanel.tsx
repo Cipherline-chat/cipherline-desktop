@@ -25,7 +25,8 @@ import { computeBackupNudge } from '../utils/backupNudge';
 import { summarizeCallRoster, labelVoiceUsers } from '../utils/serverCallPresence';
 import { CallMediaSummary } from './CallMediaSummary';
 import { huddleCallMediaKey, voiceChannelMediaKey } from '../utils/callMediaPresence';
-import { getLastBackupMs } from '../services/driveBackup';
+import { getLastBackupMs, BACKUP_STATE_EVENT } from '../services/driveBackup';
+import { BACKUP_RESTORED_EVENT } from '../services/backupRegistry';
 import { readBackupBlocked } from '../hooks/useBackupAutoSchedule';
 import { ClInput } from './cl';
 import { useEscape } from '../hooks/useEscape';
@@ -812,6 +813,21 @@ export const HomePanel: React.FC<HomePanelProps> = ({
         setBackupMuted(true);
         try { secureLocalStore.setItem(muteKey, '1'); } catch { /* non-fatal */ }
     }, [muteKey]);
+
+    // The nudge is read from secureLocalStore on render, and nothing about a
+    // backup finishing (or being set up in Settings) re-renders Home — so the
+    // "You have no backup yet" tile used to stay up after the user did exactly
+    // what it asked. Re-render whenever backup state changes.
+    const [, setBackupStateTick] = useState(0);
+    useEffect(() => {
+        const bump = () => setBackupStateTick(t => t + 1);
+        window.addEventListener(BACKUP_STATE_EVENT, bump);
+        window.addEventListener(BACKUP_RESTORED_EVENT, bump);
+        return () => {
+            window.removeEventListener(BACKUP_STATE_EVENT, bump);
+            window.removeEventListener(BACKUP_RESTORED_EVENT, bump);
+        };
+    }, []);
 
     const backupNudge = backupMuted
         ? null

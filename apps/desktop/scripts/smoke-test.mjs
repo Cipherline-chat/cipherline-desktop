@@ -112,8 +112,12 @@ const TIMEOUT_MS = 30_000;
     const t0 = Date.now();
     let app;
     try {
+        // Optional throwaway profile (set by the self-hosted macOS CI job so the smoke run never
+        // touches a real installed profile on a persistent machine). Unset = unchanged behaviour.
+        const smokeUserDataDir = process.env.SMOKE_USER_DATA_DIR;
         app = await electron.launch({
             executablePath,
+            ...(smokeUserDataDir ? { args: [`--user-data-dir=${smokeUserDataDir}`] } : {}),
             // Block any auto-updater check from racing the smoke test —
             // we don't want a network failure during the update probe to
             // shake the test. Empty string opts the renderer back to dev

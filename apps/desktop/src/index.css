@@ -2229,9 +2229,7 @@ button,.cl-btn,.cl-toggle,.cl-check,.cl-radio,.cl-seg,.cl-selt,.cl-selm,.cl-pill
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
 }
 
-/* Instant send (utils/pendingSend.ts): a message still on its way dims only
-   if it is SLOW to land. A normal send is confirmed long before the delay
-   ends, so the usual case never flickers. */
-@keyframes cl-send-pending { from { opacity: 1; } to { opacity: 0.55; } }
-.cl-send-pending { animation: cl-send-pending 300ms ease 700ms both; }
-@media (prefers-reduced-motion: reduce) { .cl-send-pending { animation-duration: 1ms; } }
+/* Instant send (utils/pendingSend.ts): a message still on its way is drawn
+   exactly like a delivered one — no dimming. If it has not been confirmed after
+   10 s (or the queue reports a failure) it gets the red "!" instead
+   (components/UndeliveredIndicator.tsx, utils/undeliveredSend.ts). */

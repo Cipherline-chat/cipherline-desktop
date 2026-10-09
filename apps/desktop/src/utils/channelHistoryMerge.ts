@@ -53,6 +53,24 @@ export function isUndecryptablePlaceholder(m: { content?: unknown } | null | und
 const tsOf = (m: ChannelRow): number => new Date(m.timestamp).getTime();
 
 /**
+ * The content of a message after an edit is applied.
+ *
+ * An edit carries the message's complete new text, so it does not need the
+ * original at all. When the target is a "couldn't decrypt" placeholder — the
+ * original is under an epoch this reader lacks, but the edit (always written
+ * under the current epoch) decrypted — the edit becomes the message: a text
+ * row with the latest text. Merging the text into the placeholder instead (as
+ * this used to) left `type: 'system', kind: 'encrypted'` in place, so the
+ * reader kept seeing "waiting on this channel's key" for a message whose
+ * latest text it held. A later real decrypt of the original never downgrades
+ * it back: the upgrade path only replaces PLACEHOLDERS.
+ */
+export function editedContent(targetContent: unknown, text: string): Record<string, unknown> {
+    if (isUndecryptablePlaceholder({ content: targetContent })) return { type: 'text', text };
+    return { ...(targetContent as object), text };
+}
+
+/**
  * The slice of server history that one `GET /v1/channels/:id/messages`
  * response is known to cover COMPLETELY. Half-open: `[fromTs, toTs)`.
  *
@@ -211,13 +229,25 @@ export function foldChannelHistory(
         // otherwise re-seat it whenever a stale copy was still cached.
         if (purgedIds.has(m.id)) continue;
 
+        // An edit / delete / reaction that once could NOT be decrypted was
+        // cached as a "couldn't decrypt" placeholder under its own id — nothing
+        // could tell it was an action. Now that it decrypts, it is applied
+        // below and, like every action envelope, must not stay in the thread:
+        // drop its placeholder. Without this the upgrade path never reached it
+        // (that path only handles plain rows), so the pill stayed in the middle
+        // of fully readable history for good, even after the key arrived.
+        if (c?.type === 'edit' || c?.type === 'delete' || c?.type === 'reaction') {
+            const self = folded.findIndex(t => t.id === m.id);
+            if (self !== -1 && isUndecryptablePlaceholder(folded[self])) folded.splice(self, 1);
+        }
+
         if (c?.type === 'edit') {
             const { target_id, text } = c as EditContent;
             const idx = indexOfTarget(target_id);
             if (idx !== -1) {
                 folded[idx] = {
                     ...folded[idx],
-                    content: { ...(folded[idx].content as object), text },
+                    content: editedContent(folded[idx].content, text),
                     edited: true,
                 };
             }

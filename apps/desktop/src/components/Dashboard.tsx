@@ -60,8 +60,16 @@ import { clampFutureTimestamp, sweepRetention } from '../utils/retentionSweeper'
 import { parseRetentionOverride, pinnedIdsForChannel, serverRetentionKey, sweepPolicyFor } from '../utils/retentionResolve';
 import { pageNeedsKeyRequest, splitExpiredIncoming, type IncomingRetention } from '../utils/channelHistoryRetention';
 import { attachmentToDeleteWithMessage } from '../utils/attachmentOnDelete';
-import { foldChannelHistory, isUndecryptablePlaceholder, coveredServerWindow, pruneVanishedPlaceholders, deletedChannelTargetIds } from '../utils/channelHistoryMerge';
+import { foldChannelHistory, isUndecryptablePlaceholder, deletedChannelTargetIds, editedContent } from '../utils/channelHistoryMerge';
+import { classifyChannelDecryptFailure, channelPlaceholderContent, placeholderRetryable, placeholderWantsKey, isChannelTombstone } from '../utils/channelDecryptFailure';
+import { beginChannelPageDecrypt, noteChannelKeyReceived, noteKeyRequestAcked, resetKeyWaitSignals } from '../utils/channelKeyWait';
 import { splitReusableChannelRows } from '../utils/channelRowReuse';
+import {
+    HISTORY_PAGE_SIZE, addCoveredRange, rangeForPage, demoteLiveTop, shrinkToCached, reachesHistoryStart, historyGaps, proofWindow, isUuid,
+    type ChannelCoverage, type CoveredSegment, type HistoryGap, type PageRequest,
+} from '../utils/channelHistoryCoverage';
+import { findOrphanActions, addOrphans, readyOrphans, applyOrphans } from '../utils/channelOrphanActions';
+import type { ChannelRow, ServerWindow } from '../utils/channelHistoryMerge';
 import { isChannelServeRejection, oldestFirst } from '../utils/channelIntegrity';
 import { notePrekeyUsage } from '../utils/prekeyHealth';
 import { getPurgedMessageIds, markMessagesPurged } from '../utils/retentionTombstones';
@@ -69,7 +77,7 @@ import { markAttachmentsRemoved } from '../utils/removedAttachmentTracker';
 import { PurgeConfirmModal } from './PurgeControls';
 import { formatLastSeen } from '../utils/formatLastSeen';
 import { chatBucket, chatBucketLabel } from '../utils/chatListDividers';
-import { HandshakeBackoff, Pacer, DeliveryLedger, KeyedMutex, SingleFlight, ResumeTimers, runKeyDistribution, keyRequestVersion, SERVE_PASS_SUBMISSION_CAP, MAX_DISTRIBUTION_RESUMES, type DistributionOutcome } from '../utils/keyDistributionThrottle';
+import { HandshakeBackoff, Pacer, DeliveryLedger, KeyedMutex, SingleFlight, ResumeTimers, runKeyDistribution, keyRequestVersion, latestFirstPhases, recordOwed, takeOwed, SERVE_PASS_SUBMISSION_CAP, MAX_DISTRIBUTION_RESUMES, type DistributionOutcome, type OwedServe } from '../utils/keyDistributionThrottle';
 import { computeMissingKeyChannels, computeUnmintedChannels, splitMissingKeyChannels, canMintChannelKey, decideChannelEntryAction, shouldMintAfterKeyRequest, buildChannelKeyContent, pickJitterMs, resolveEpochClaim, resolveEpochDivergence, computeMissingEpochsForChannel, coalesceKeyRequestEvents, coalesceEnvelopesReadyEvents, decideEnvelopesReadyAction, channelEpochKey, shouldGiveUpOnChannelKey, computeCoolOffUntil, isCoolingOff, computeEpochsToDistribute, channelCarriesSenderKeys, coalesceRotationEvents, epochReasonForRotationSignal, decideRotationAction, decideRotationScheduling, computeRotationEpoch, resolveRotationClaim, normalizeRotationReason, type ServerEpochInfo } from '../utils/channelKeyDistribution';
 import { HistoryRequestModal } from './HistoryRequestModal';
 import { HistorySyncBanner } from './HistorySyncBanner';
@@ -271,6 +279,9 @@ interface RawChannelRow {
     // time. Used for sleep-resync Phase 4's mention reconciliation, which
     // needs it alongside the decrypted text (see reconcileChannelMentions).
     mentions_everyone?: boolean;
+    // A deleted message: the server cleared its ciphertext (tombstone).
+    // Removed from the thread without decrypting (ingestChannelRows).
+    deleted?: boolean;
 }
 
 /**
@@ -1934,19 +1945,17 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
     /** Bumps when a server-save/unsave lands so StoragePanel refetches its quota. */
     const [storageRefreshKey, setStorageRefreshKey] = useState(0);
     const [channelMessages, setChannelMessages] = useState<Record<string, any[]>>({});
-    /** channelId → true once a channel-messages GET (the initial catch-up
-     *  fetch OR a page from loadOlderChannelMessages) came back with fewer
-     *  rows than the page limit — proof the server has nothing older than
-     *  what's already loaded, since a short/empty page can only happen at
-     *  the true start of history. Persists here (Dashboard never remounts)
-     *  rather than in ChatPane's own local exhaustedByChannel latch, which
-     *  resets — and un-hides the "Load older history" button — every time
-     *  ChatPane remounts, which happens on every conversation switch. Without
-     *  this, EVERY channel showed the button by default until a wasted round
-     *  trip proved there was nothing to load, which is most channels, most
-     *  of the time. Monotonic: only ever set true, never cleared — sending
-     *  new messages doesn't add anything OLDER than what's already resident. */
-    const [channelHistoryExhausted, setChannelHistoryExhausted] = useState<Record<string, boolean>>({});
+    /** channelId → the stretches of server history this session has loaded
+     *  COMPLETELY (utils/channelHistoryCoverage.ts). Replaces the old
+     *  `channelHistoryExhausted` latch: "reached the start" is now just
+     *  `coverage[0].lo === null`, and the same structure says where the holes
+     *  are (below the oldest page, around a jumped-to message, between a
+     *  stale cache and a newer newest page) so ChatPane can show and fill
+     *  them. Lives here, not in ChatPane, because ChatPane remounts on every
+     *  conversation switch. Session-only by design — see the module doc. */
+    const [channelCoverage, setChannelCoverage] = useState<Record<string, ChannelCoverage>>({});
+    const channelCoverageRef = useRef<Record<string, ChannelCoverage>>({});
+    useEffect(() => { channelCoverageRef.current = channelCoverage; }, [channelCoverage]);
     /** True while a channel's catch-up fetch (handleSelectChannel) hasn't
      *  resolved even once — lets ChatPane hold its loading spinner instead of
      *  flashing the "no history yet" empty state before channelMessages[id]
@@ -3671,8 +3680,29 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
     // so the interval closure doesn't capture stale state.
     const channelMessagesRef = useRef<Record<string, any[]>>({});
     useEffect(() => { channelMessagesRef.current = channelMessages; });
+    /** Per channel: edits / deletes / reactions whose target message is not
+     *  loaded yet — replayed when it is (utils/channelOrphanActions.ts).
+     *  Fed by the live handler and by every history read (ingestChannelRows). */
+    const channelOrphansRef = useRef<Record<string, ChannelRow[]>>({});
     const serverChannelsRef = useRef<typeof serverChannels>({});
     useEffect(() => { serverChannelsRef.current = serverChannels; });
+    /** What a channel decrypt failure needs to be classified honestly
+     *  (utils/channelDecryptFailure.ts): the row's epoch, the channel's latest
+     *  known epoch, and whether this member may read its history. */
+    const channelFailureContext = useCallback((channelId: string, epoch: number) => {
+        for (const chs of Object.values(serverChannelsRef.current)) {
+            const ch = (chs as ChannelInfo[]).find(c => c.channel_id === channelId);
+            if (!ch) continue;
+            let canReadHistory: boolean | undefined;
+            try {
+                canReadHistory = ch.my_permissions
+                    ? (BigInt(ch.my_permissions) & Permissions.READ_MESSAGE_HISTORY) === Permissions.READ_MESSAGE_HISTORY
+                    : undefined;
+            } catch { canReadHistory = undefined; }
+            return { epoch, latestKnownEpoch: ch.latest_epoch, canReadHistory };
+        }
+        return { epoch };
+    }, []);
     // Same pattern: rehydrateAll runs from long-lived listeners (WS reconnect,
     // OS resume), so it reads the active server through a ref rather than
     // closing over state that would be stale by the time it fires.
@@ -4396,6 +4426,22 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                 )[0] ?? null
                 : null;
 
+            // An edit / delete / reaction for a message that isn't loaded yet
+            // (it's further up than the pages read so far): park it, so it is
+            // applied when that message's page arrives instead of being lost.
+            {
+                const orphans = findOrphanActions(channelMessagesRef.current[evt.channel_id] ?? [], [{
+                    id: evt.message_id, timestamp: evt.created_at, content,
+                    sender_user_id: evt.sender_user_id, sender_device_id: evt.sender_device_id,
+                }]);
+                if (orphans.length) {
+                    channelOrphansRef.current = {
+                        ...channelOrphansRef.current,
+                        [evt.channel_id]: addOrphans(channelOrphansRef.current[evt.channel_id] ?? [], orphans),
+                    };
+                }
+            }
+
             setChannelMessages(prev => {
                 const existing = prev[evt.channel_id] ?? [];
                 let thread = [...existing];
@@ -4406,7 +4452,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                 if (content?.type === 'edit') {
                     const idx = thread.findIndex(t => t.id === content.target_id || t.content?.client_msg_id === content.target_id);
                     if (idx !== -1) {
-                        thread[idx] = { ...thread[idx], content: { ...thread[idx].content, text: content.text }, edited: true };
+                        thread[idx] = { ...thread[idx], content: editedContent(thread[idx].content, content.text), edited: true };
                     }
                     return { ...prev, [evt.channel_id]: thread };
                 }
@@ -4578,12 +4624,16 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
             // that placeholder IS the "it says it has no encryption keys for it
             // instead of just disappearing" symptom.
             if (userId && getPurgedMessageIds(userId, evt.channel_id).has(evt.message_id)) return;
+            // Classified (utils/channelDecryptFailure.ts): an unverifiable
+            // sender or a key withheld by permission is not "waiting on a key",
+            // and must not file a request that can never be answered.
+            const reason = classifyChannelDecryptFailure(err, channelFailureContext(evt.channel_id, evt.epoch));
             setChannelMessages(prev => {
                 const existing = prev[evt.channel_id] ?? [];
                 if (existing.some(m => m.id === evt.message_id)) return prev;
                 const placeholder = {
                     id: evt.message_id,
-                    content: { type: 'system', kind: 'encrypted', data: { reason: 'key_missing' } },
+                    content: channelPlaceholderContent(reason, evt.epoch),
                     sender_device_id: evt.sender_device_id,
                     sender_user_id: evt.sender_user_id,
                     timestamp: evt.created_at,
@@ -4594,12 +4644,14 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                 );
                 return { ...prev, [evt.channel_id]: merged };
             });
-            undecryptableChannelsRef.current.add(evt.channel_id);
-            void channelKeyOpsRef.current.maybeFileKeyRequest(evt.server_id, evt.channel_id);
+            if (reason === 'key_missing') {
+                undecryptableChannelsRef.current.add(evt.channel_id);
+                void channelKeyOpsRef.current.maybeFileKeyRequest(evt.server_id, evt.channel_id);
+            }
         }
-    }, [userId, notify]);
+    }, [userId, notify, channelFailureContext]);
 
-    const { typingUsers, sendTypingEvent, clearTypingUsers, readReceipts, sendReadReceipt, selfReadEvent, historyRequest, setHistoryRequest, historyDelivered, clearHistoryDelivered, historyDeclined, setHistoryDeclined, deviceLinkedEvent, friendRemovedEvent, friendAcceptedEvent, friendRequestEvent, statusChangedEvent, sendPresenceIdle, callEndedEvent, soloKickEvent, answeredElsewhereEvent, groupMemberAddedEvent, groupUpdatedEvent, avatarUpdatedEvent, usernameUpdatedEvent, voiceStateEvent, huddleSpawnEvent, huddleDestroyEvent, huddleRenameEvent, huddleParticipantEvent, huddleForceMoveEvent, serverRemovedEvent, serverMemberJoinedEvent, permissionsChangedEvent, channelsChangedEvent, serverUpdatedEvent, serverMembersChangedEvent, channelPinsChangedEvent, emojisChangedEvent, serverGraceStatusEvent, channelKeyEnvelopesReadyEvents, setChannelKeyEnvelopesReadyEvents, channelReadEvents, setChannelReadEvents, keyRequestedEvents, setKeyRequestedEvents, channelKeyRotationEvents, setChannelKeyRotationEvents, channelSystemEvent, wsConnectCount, sendCallMediaReport } = useRealtime(token, pullMessages, handleChannelMessage, deviceId, userId);
+    const { typingUsers, sendTypingEvent, clearTypingUsers, readReceipts, sendReadReceipt, selfReadEvent, historyRequest, setHistoryRequest, historyDelivered, clearHistoryDelivered, historyDeclined, setHistoryDeclined, deviceLinkedEvent, friendRemovedEvent, friendAcceptedEvent, friendRequestEvent, statusChangedEvent, sendPresenceIdle, callEndedEvent, soloKickEvent, answeredElsewhereEvent, groupMemberAddedEvent, groupUpdatedEvent, avatarUpdatedEvent, usernameUpdatedEvent, voiceStateEvent, huddleSpawnEvent, huddleDestroyEvent, huddleRenameEvent, huddleParticipantEvent, huddleForceMoveEvent, serverRemovedEvent, serverMemberJoinedEvents, setServerMemberJoinedEvents, permissionsChangedEvent, channelsChangedEvent, serverUpdatedEvent, serverMembersChangedEvent, channelPinsChangedEvent, emojisChangedEvent, serverGraceStatusEvent, channelKeyEnvelopesReadyEvents, setChannelKeyEnvelopesReadyEvents, channelReadEvents, setChannelReadEvents, keyRequestedEvents, setKeyRequestedEvents, channelKeyRotationEvents, setChannelKeyRotationEvents, channelSystemEvent, wsConnectCount, sendCallMediaReport } = useRealtime(token, pullMessages, handleChannelMessage, deviceId, userId);
 
     // ── Ghost-device fix: own-device alarm (docs/ghost-device.md §2.5) ───────
     // A COMPLETE listing of this account's devices at boot and on every
@@ -6255,9 +6307,18 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
     // a debounced doorbell. (The first sweep after login is still held by the
     // device-storage gate inside `run`.)
     useEffect(() => {
-        // A widened window can bring back rows "Load older history" skipped as
-        // expired under the old one, so forget how far it had already looked.
-        olderCursorRef.current = {};
+        // A widened window can bring back rows a history page dropped at the
+        // door as expired under the old one: un-cover what isn't cached so
+        // those stretches become fillable gaps again.
+        setChannelCoverage(cov => {
+            let changed = false;
+            const next: Record<string, ChannelCoverage> = {};
+            for (const [cid, segs] of Object.entries(cov)) {
+                next[cid] = shrinkToCached(segs, channelMessagesRef.current[cid] ?? []);
+                if (next[cid] !== segs) changed = true;
+            }
+            return changed ? next : cov;
+        });
         const t = window.setTimeout(() => { void sweepRunRef.current?.(); }, 1500);
         return () => window.clearTimeout(t);
     }, [retention.policy, channelRetentionVersion, convRetentionVersion]);
@@ -7034,6 +7095,8 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
      * shape can't drift between the two.
      */
     const decryptChannelRow = useCallback(async (channelId: string, m: RawChannelRow): Promise<StoredChannelMsg | null> => {
+        // A tombstone (a deleted message — ciphertext cleared server-side)
+        // never reaches here: ingestChannelRows removes it before decrypting.
         try {
             // Reject before decryption if wire sender key ≠ pinned key for this
             // device (RC-7 — see the identical check in handleChannelMessage above).
@@ -7076,16 +7139,21 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                 console.warn('[Dashboard] Dropped a channel history row the server served wrongly:', m.id, err);
                 return null;
             }
+            // Say WHY (utils/channelDecryptFailure.ts): only a missing key is
+            // "waiting on this channel's key", and only that files a request.
             return {
                 id: m.id,
-                content: { type: 'system', kind: 'encrypted', data: { reason: 'key_missing' } },
+                content: channelPlaceholderContent(
+                    classifyChannelDecryptFailure(err, channelFailureContext(channelId, m.epoch)),
+                    m.epoch,
+                ),
                 sender_device_id: m.sender_device_id,
                 sender_user_id: m.sender_user_id ?? null,
                 timestamp: m.created_at,
                 conversation_id: channelId,
             };
         }
-    }, [userId, pinAndDetect]);
+    }, [userId, pinAndDetect, channelFailureContext]);
 
     /**
      * Decrypt a page of channel rows: OLDEST FIRST (so a re-post can never
@@ -7204,109 +7272,303 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
         };
     }, [userId, serverSweepPolicy]);
 
-    /** channelId -> created_at of the oldest server row "Load older history" has
-     *  looked at, INCLUDING rows retention dropped. The cursor the UI passes is
-     *  the oldest row it can see; once a page is entirely past retention that
-     *  would never advance and the control would re-ask the same page forever. */
-    const olderCursorRef = useRef<Record<string, string>>({});
+    // ── Channel history: paging, gaps, jump-to-message, saved rows ───────────
+    //
+    // Opening a channel fetches and decrypts ONE page (the newest
+    // HISTORY_PAGE_SIZE = 100 rows; rows already cached as real content are
+    // reused, not re-decrypted). Older history arrives a page at a time as the
+    // user scrolls up (ChatPane auto-fills the gap above the oldest loaded
+    // page), "jump to message" loads the page AROUND the target, and
+    // server-saved / pinned messages are loaded by id however old they are.
+    // What has been loaded is tracked as coverage segments
+    // (utils/channelHistoryCoverage.ts) so every hole is visible and fillable
+    // from either side. Nothing is prefetched for channels that aren't open.
+
+    /** Session-wide: does the API understand before_id / after_id / around /
+     *  ids? undefined = not probed yet. An API that predates them ignores the
+     *  params and answers with the newest page instead, which is harmless for
+     *  before_id (the legacy `before` still applies) and for ids (we keep only
+     *  what we asked for) — but an `after_id` fill would then claim a range it
+     *  never proved, and an absent id would wrongly read as deleted. */
+    const historyModesRef = useRef<boolean | undefined>(undefined);
+
+    const serverIdOfChannel = useCallback((channelId: string): string | undefined => {
+        for (const [sid, chs] of Object.entries(serverChannelsRef.current)) {
+            if (chs.some(c => c.channel_id === channelId)) return sid;
+        }
+        return undefined;
+    }, []);
+
+    const getChannelRows = useCallback(async (channelId: string, params: Record<string, string | number>): Promise<RawChannelRow[]> => {
+        const res = await axios.get(`${API_BASE}/channels/${channelId}/messages`, {
+            headers: { Authorization: `Bearer ${token}`, 'x-device-id': deviceId ?? '' },
+            params,
+        });
+        return Array.isArray(res.data) ? res.data : [];
+    }, [token, deviceId]);
+
+    /** One `around=<known row>&limit=1` request per session: the new API
+     *  answers exactly that row (or 404 if it is gone); an old one answers
+     *  the newest row. `knownId` must not be the newest row — callers pass an
+     *  id from below a gap, which by definition has newer rows above it. */
+    const probeHistoryModes = useCallback(async (channelId: string, knownId: string): Promise<boolean> => {
+        if (historyModesRef.current !== undefined) return historyModesRef.current;
+        try {
+            const rows = await getChannelRows(channelId, { around: knownId, limit: 1 });
+            historyModesRef.current = rows.length === 1 && rows[0].id === knownId;
+        } catch (e) {
+            const status = (e as { response?: { status?: number } })?.response?.status;
+            // 404/400 can only come from the new handler; anything else
+            // (offline, 5xx) settles nothing — ask again next time.
+            if (status !== 404 && status !== 400) return false;
+            historyModesRef.current = true;
+        }
+        return historyModesRef.current;
+    }, [getChannelRows]);
 
     /**
-     * Fetch a page of OLDER channel history from the server.
-     *
-     * Until now the client only ever fetched `limit=50` with no `before=`, and
-     * the "Load earlier messages" control just widened a window over what was
-     * already in memory — `useMessagePagination` makes no network calls. So a
-     * member who joined a server could never see anything past the newest 50
-     * messages, no matter what channel keys they held. That hit server-saved
-     * messages hardest: they're exempt from the retention sweep, so they're
-     * usually the OLDEST rows in the channel and therefore always out of reach.
-     *
-     * Returns how many rows the server had before this point, so the caller can
-     * tell "no more history" from "fetched a page".
+     * Fold fetched channel rows into the local cache. EVERY history read goes
+     * through here (newest page, gap fills either way, the page around a
+     * jumped-to message, rows loaded by id), so they cannot drift apart:
+     *  - rows already cached as real content are reused, the rest decrypted
+     *    oldest-first in bounded batches (decryptChannelRows);
+     *  - retention at the door: a row already past this device's "Keep for"
+     *    window is not folded in only for the 5-minute sweep to delete it
+     *    (utils/channelHistoryRetention.ts), and retention-purged ids stay out
+     *    (utils/retentionTombstones.ts);
+     *  - a personally-saved ("Save for me") row a delete marker removes is
+     *    unpinned (computed against the pre-merge snapshot, outside the pure
+     *    state updater);
+     *  - edits / deletes / reactions whose target isn't loaded are parked and
+     *    replayed when it arrives (utils/channelOrphanActions.ts);
+     *  - `window`: placeholders the response proves the server no longer
+     *    holds are dropped (pruneVanishedPlaceholders);
+     *  - `range`: the server range the response proved complete is recorded.
      */
-    const loadOlderChannelMessages = useCallback(async (channelId: string, beforeIso: string): Promise<number> => {
-        if (!token) return 0;
-        // Pages that are ENTIRELY past this device's retention window carry
-        // nothing to show (and would be swept straight away), so skip over a
-        // few of them per click to reach what is still inside the window - a
-        // server-saved message, say, that sits behind weeks of expired rows.
+    const ingestChannelRows = useCallback(async (
+        serverId: string | undefined,
+        channelId: string,
+        raw: RawChannelRow[],
+        opts: { range?: CoveredSegment | null; window?: ServerWindow | null; savedIds?: Promise<string[] | undefined> } = {},
+    ): Promise<{ kept: StoredChannelMsg[]; purgedIds: Set<string> }> => {
+        const savedIdsP = opts.savedIds ?? ensureChannelSaves(channelId);
+        // Deleted messages arrive as tombstones (ciphertext cleared by the
+        // server when the delete was posted). They are removed from the thread
+        // outright — no decrypt, so no key is ever needed to see a deletion,
+        // and a cached copy (decrypted, or a "couldn't decrypt" pill) goes too.
+        const tombstoned = new Set(raw.filter(isChannelTombstone).map(r => r.id));
+        if (tombstoned.size) raw = raw.filter(r => !tombstoned.has(r.id));
+        const { reused, toDecrypt } = splitReusableChannelRows(raw, channelMessagesRef.current[channelId]);
+        // Key-wait layer (utils/channelKeyWait.ts): "building the chat" is
+        // exactly this decrypt, and it ends once the rows are folded in below.
+        const endPageDecrypt = toDecrypt.length ? beginChannelPageDecrypt(channelId) : null;
+        try {
+            const decrypted = [...reused, ...await decryptChannelRows(channelId, toDecrypt)];
+            const { kept } = splitExpiredIncoming(
+                decrypted,
+                incomingRetentionFor(channelId, serverId, await savedIdsP),
+            );
+            const sorted = [...kept].sort(
+                (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime(),
+            );
+            const purgedIds = userId ? getPurgedMessageIds(userId, channelId) : new Set<string>();
+            const snapshot: ChannelRow[] = channelMessagesRef.current[channelId] ?? [];
+            for (const id of deletedChannelTargetIds(snapshot, sorted, purgedIds)) {
+                if (localChannelPinsRef.current[channelId]?.includes(id)) {
+                    handlePersonalChannelSaveRef.current(channelId, id, 'remove');
+                }
+            }
+            const admitted = sorted.filter(m => !purgedIds.has(m.id));
+            const pending = addOrphans(channelOrphansRef.current[channelId] ?? [], findOrphanActions(snapshot, admitted));
+            const { ready, waiting } = readyOrphans(pending, [...snapshot, ...admitted]);
+            channelOrphansRef.current = { ...channelOrphansRef.current, [channelId]: waiting };
+            setChannelMessages(prev => {
+                const folded = applyOrphans(
+                    foldChannelHistory(prev[channelId] ?? [], sorted, purgedIds, opts.window ?? undefined),
+                    ready,
+                );
+                const next = tombstoned.size ? folded.filter(m => !tombstoned.has(m.id)) : folded;
+                // Nothing new (the usual re-open): keep the same array so the open
+                // pane and everything keyed on it doesn't re-render.
+                const before = prev[channelId];
+                if (before && next.length === before.length && next.every((m, i) => m === before[i])) return prev;
+                return { ...prev, [channelId]: next };
+            });
+            if (opts.range) {
+                const range = opts.range;
+                setChannelCoverage(prev => ({ ...prev, [channelId]: addCoveredRange(prev[channelId] ?? [], range) }));
+            }
+            return { kept: sorted, purgedIds };
+        } finally {
+            endPageDecrypt?.();
+        }
+    }, [userId, decryptChannelRows, ensureChannelSaves, incomingRetentionFor]);
+
+    /**
+     * Load specific messages by id (≤ 100 per request) — server-saved / pinned
+     * messages outside the loaded pages, and "couldn't decrypt" rows being
+     * re-tried. Proves no continuity, so it records no coverage. With a
+     * new-enough API an asked-for PLACEHOLDER that doesn't come back is gone
+     * server-side (hard-deleted by the 30-day sweep) and can never decrypt,
+     * so it is dropped — the same rule as pruneVanishedPlaceholders, scoped
+     * to exactly the ids asked about.
+     */
+    const loadChannelMessagesById = useCallback(async (
+        serverId: string | undefined,
+        channelId: string,
+        ids: string[],
+    ): Promise<{ loaded: number; undecryptable: number }> => {
+        const MAX_IDS = 1000;
+        const unique = [...new Set(ids.filter(isUuid))].slice(0, MAX_IDS);
+        let loaded = 0;
+        let undecryptable = 0;
+        for (let i = 0; i < unique.length; i += HISTORY_PAGE_SIZE) {
+            const chunk = unique.slice(i, i + HISTORY_PAGE_SIZE);
+            const asked = new Set(chunk);
+            const response = await getChannelRows(channelId, { ids: chunk.join(','), limit: HISTORY_PAGE_SIZE });
+            // An old API answers the newest page — keep only what we asked for.
+            const raw = response.filter(r => asked.has(r.id));
+            if (raw.length) {
+                const { kept } = await ingestChannelRows(serverId, channelId, raw);
+                loaded += kept.length;
+                undecryptable += kept.filter(placeholderWantsKey).length;
+            }
+            const answeredExactly = response.length === raw.length;
+            if (answeredExactly && historyModesRef.current === true) {
+                const returned = new Set(raw.map(r => r.id));
+                const gone = new Set(chunk.filter(id => !returned.has(id)));
+                if (gone.size) {
+                    setChannelMessages(prev => {
+                        const cur = prev[channelId];
+                        if (!cur) return prev;
+                        const next = cur.filter(m => !(gone.has(m.id) && isUndecryptablePlaceholder(m)));
+                        return next.length === cur.length ? prev : { ...prev, [channelId]: next };
+                    });
+                }
+            }
+        }
+        return { loaded, undecryptable };
+    }, [getChannelRows, ingestChannelRows]);
+
+    /** Re-try this channel's cached "couldn't decrypt" rows by id (newest 100
+     *  first). The newest page re-reads its own rows anyway; this reaches the
+     *  ones further up — older pages, server-saved messages — so a key that
+     *  arrives heals them without the user paging back to them. */
+    const healChannelPlaceholders = useCallback(async (serverId: string | undefined, channelId: string, skip?: ReadonlySet<string>) => {
+        if (!token) return;
+        const purged = userId ? getPurgedMessageIds(userId, channelId) : new Set<string>();
+        const ids = (channelMessagesRef.current[channelId] ?? [])
+            .filter((m: StoredChannelMsg) => placeholderRetryable(m) && !purged.has(m.id) && !skip?.has(m.id))
+            .map((m: StoredChannelMsg) => m.id)
+            .slice(-HISTORY_PAGE_SIZE);
+        if (!ids.length) return;
+        if (historyModesRef.current === undefined) await probeHistoryModes(channelId, ids[0]);
+        try {
+            await loadChannelMessagesById(serverId, channelId, ids);
+        } catch (e) {
+            console.warn('[Channels] placeholder re-try failed:', e);
+        }
+    }, [token, userId, probeHistoryModes, loadChannelMessagesById]);
+
+    /**
+     * Fill one hole in a channel's loaded history, a page at a time, from the
+     * side the user is approaching it: `before` (scrolling up — the page older
+     * than the gap's newer bound) or `after` (scrolling down after a jump —
+     * the page newer than its older bound). Returns how many rows became
+     * visible and whether the gap moved at all (so ChatPane can stop
+     * auto-retrying a gap that fails).
+     *
+     * `before` skips over pages that are ENTIRELY past this device's
+     * retention window (nothing to show, and they'd be swept at once) — a few
+     * per call — to reach what is still inside it, e.g. a server-saved message
+     * behind weeks of expired rows. Coverage still advances over them.
+     */
+    const fillChannelHistoryGap = useCallback(async (
+        channelId: string,
+        gap: HistoryGap,
+        direction: 'before' | 'after',
+    ): Promise<{ shown: number; progressed: boolean }> => {
+        if (!token) return { shown: 0, progressed: false };
+        const serverId = serverIdOfChannel(channelId);
         const MAX_SKIPPED_PAGES = 4;
         try {
-            const savedIds = await ensureChannelSaves(channelId);
-            let cursor = beforeIso;
-            const remembered = olderCursorRef.current[channelId];
-            if (remembered && Date.parse(remembered) < Date.parse(cursor)) cursor = remembered;
-            let shown = 0;
-            let exhausted = false;
-            for (let page = 0; page <= MAX_SKIPPED_PAGES; page++) {
-                const res = await axios.get(`${API_BASE}/channels/${channelId}/messages`, {
-                    headers: { Authorization: `Bearer ${token}`, 'x-device-id': deviceId ?? '' },
-                    params: { limit: 50, before: cursor },
+            if (direction === 'after') {
+                const cursor = gap.older;
+                if (!cursor) return { shown: 0, progressed: false };
+                if (!await probeHistoryModes(channelId, cursor.id)) return { shown: 0, progressed: false };
+                const requestedAt = Date.now();
+                const req: PageRequest = { kind: 'after', limit: HISTORY_PAGE_SIZE, cursor };
+                const raw = await getChannelRows(channelId, {
+                    limit: HISTORY_PAGE_SIZE, after_id: cursor.id, after: new Date(cursor.ts).toISOString(),
                 });
-                const raw: RawChannelRow[] = res.data ?? [];
-                // Fewer rows than the page limit (including zero) can only mean
-                // we've reached the true start of this channel's history - latch
-                // it so the "Load older history" button retires for good instead
-                // of needing one more round trip next time to find out.
-                if (raw.length < 50) {
-                    exhausted = true;
-                    setChannelHistoryExhausted(prev => (prev[channelId] ? prev : { ...prev, [channelId]: true }));
-                }
-                if (!raw.length) break;
-                const decrypted = await decryptChannelRows(channelId, raw);
-                // "Load older history" re-reads the server, so it is the other way a
-                // retention-purged message can come back. Retention is a standing
-                // instruction, not a one-off - honour it here too, both the
-                // ledger of what the sweep deleted and the window itself.
-                const purgedIds = userId ? getPurgedMessageIds(userId, channelId) : new Set<string>();
-                const { kept } = splitExpiredIncoming(decrypted, incomingRetentionFor(channelId, undefined, savedIds));
-                setChannelMessages(prev => {
-                    const existing = prev[channelId] ?? [];
-                    const byId = new Map<string, StoredChannelMsg>(
-                        (existing as StoredChannelMsg[]).map(m => [m.id, m]),
-                    );
-                    for (const m of kept) {
-                        if (purgedIds.has(m.id)) continue;
-                        const have = byId.get(m.id);
-                        // Same upgrade rule as the main merge: a real decrypt beats a
-                        // cached "couldn't decrypt" placeholder.
-                        if (!have || (isUndecryptablePlaceholder(have) && !isUndecryptablePlaceholder(m))) {
-                            byId.set(m.id, m);
-                        }
-                    }
-                    // Same absence rule as refreshChannelHistory, with the window
-                    // capped at the `before=` cursor this page was fetched under:
-                    // this response completely covers [oldest row returned,
-                    // cursor), so a cached pill in there that the server no
-                    // longer holds is unhealable and gets dropped. Measured on
-                    // the rows the server RETURNED (`decrypted`), not the ones
-                    // kept, so a dropped-as-expired row still counts as present.
-                    const olderWindow = coveredServerWindow(decrypted, cursor);
-                    const merged = pruneVanishedPlaceholders(
-                        [...byId.values()],
-                        new Set(decrypted.map(m => m.id)),
-                        olderWindow,
-                    ).sort(
-                        (a: StoredChannelMsg, b: StoredChannelMsg) =>
-                            new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime(),
-                    );
-                    return { ...prev, [channelId]: merged };
+                const range = rangeForPage(req, raw);
+                const { kept, purgedIds } = await ingestChannelRows(serverId, channelId, raw, {
+                    range,
+                    // `after` pages prove (cursor, newest]; the cursor's own
+                    // millisecond is excluded by windowForRange.
+                    window: proofWindow(range, requestedAt),
+                });
+                return { shown: kept.filter(m => !purgedIds.has(m.id)).length, progressed: true };
+            }
+
+            let cursor = gap.newer;
+            if (!cursor) return { shown: 0, progressed: false };
+            let shown = 0;
+            for (let page = 0; page <= MAX_SKIPPED_PAGES; page++) {
+                const req: PageRequest = { kind: 'before', limit: HISTORY_PAGE_SIZE, cursor };
+                const raw = await getChannelRows(channelId, {
+                    limit: HISTORY_PAGE_SIZE, before_id: cursor.id, before: new Date(cursor.ts).toISOString(),
+                });
+                const range = rangeForPage(req, raw);
+                const { kept, purgedIds } = await ingestChannelRows(serverId, channelId, raw, {
+                    range,
+                    window: proofWindow(range, Date.now()),
                 });
                 shown += kept.filter(m => !purgedIds.has(m.id)).length;
-                const oldestRow = raw.reduce((min, m) => (m.created_at < min ? m.created_at : min), raw[0].created_at);
-                olderCursorRef.current[channelId] = oldestRow;
-                if (shown > 0 || raw.length < 50) break;
-                cursor = oldestRow;
+                // Stop at anything visible, at the start of history, or when
+                // this page reached the segment below the gap (it merged).
+                if (shown > 0 || raw.length < HISTORY_PAGE_SIZE || !range?.lo) break;
+                if (gap.older && range.lo.ts <= gap.older.ts) break;
+                cursor = range.lo;
             }
-            // 0 retires the control (nothing older exists). If we only gave up
-            // after skipping expired pages, the control must stay: the cursor
-            // is remembered, so the next click carries on from there.
-            return shown > 0 ? shown : (exhausted ? 0 : 1);
+            return { shown, progressed: true };
         } catch (e) {
-            console.warn('[Channels] loadOlderChannelMessages failed:', e);
-            return 0;
+            console.warn('[Channels] history gap fill failed:', e);
+            return { shown: 0, progressed: false };
         }
-    }, [token, deviceId, userId, decryptChannelRows, ensureChannelSaves, incomingRetentionFor]);
+    }, [token, serverIdOfChannel, probeHistoryModes, getChannelRows, ingestChannelRows]);
+
+    /**
+     * "Jump to message" for a message outside the loaded pages (reply quote,
+     * pinned panel, search result): load the page AROUND it. Resolves false
+     * when the message can't be placed (gone server-side, or an API too old
+     * to answer `around`) — the caller then leaves the viewport alone.
+     */
+    const loadChannelMessageContext = useCallback(async (channelId: string, messageId: string): Promise<boolean> => {
+        if (!token || !isUuid(messageId)) return false;
+        const requestedAt = Date.now();
+        const req: PageRequest = { kind: 'around', limit: HISTORY_PAGE_SIZE, targetId: messageId };
+        let raw: RawChannelRow[];
+        try {
+            raw = await getChannelRows(channelId, { around: messageId, limit: HISTORY_PAGE_SIZE });
+        } catch (e) {
+            const status = (e as { response?: { status?: number } })?.response?.status;
+            if (status === 404) historyModesRef.current = true;
+            return false;
+        }
+        const range = rangeForPage(req, raw);
+        if (!range) return false; // target not in the answer: an API without `around`
+        historyModesRef.current = true;
+        await ingestChannelRows(serverIdOfChannel(channelId), channelId, raw, {
+            range,
+            window: proofWindow(range, requestedAt),
+        });
+        return (channelMessagesRef.current[channelId] ?? []).some((m: StoredChannelMsg) => m.id === messageId)
+            || raw.some(r => r.id === messageId);
+    }, [token, getChannelRows, ingestChannelRows, serverIdOfChannel]);
+
+    /** Channels whose cached placeholders have been re-tried this session. */
+    const placeholdersRetriedRef = useRef<Set<string>>(new Set());
 
     /**
      * Catch-up fetch for ONE channel: pull the API's newest page of history and
@@ -7322,112 +7584,44 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
      *
      * Local cache is the source of truth; the API only contributes rows we
      * don't have yet, plus real decrypts that upgrade cached "couldn't
-     * decrypt" placeholders in place.
+     * decrypt" placeholders in place. One page (HISTORY_PAGE_SIZE) — older
+     * history is paged in by ChatPane as the user scrolls.
      */
     const refreshChannelHistory = useCallback((serverId: string, channelId: string) => trackActivity('channel:history', async () => {
         if (!token) return;
         try {
             // Stamped BEFORE the request so the absence check below can't blame
             // the server for a message that did not exist yet when we asked.
-            const requestedAtIso = new Date().toISOString();
+            const requestedAt = Date.now();
             // The pin / server-save set decides which old rows retention may
-            // drop at the door (below). Asked for alongside the history so the
-            // first visit to a channel doesn't wait on it afterwards.
+            // drop at the door. Asked for alongside the history so the first
+            // visit to a channel doesn't wait on it afterwards.
             const savedIdsP = ensureChannelSaves(channelId);
-            const res = await axios.get(`${API_BASE}/channels/${channelId}/messages`, {
-                headers: { Authorization: `Bearer ${token}`, 'x-device-id': deviceId ?? '' },
-                params: { limit: 50 },
-            });
-            // Decrypt all messages in parallel (shared with the older-history
-            // fetch — see decryptChannelRow).
-            const raw: RawChannelRow[] = res.data ?? [];
-            // No `before` param above — this is the server's newest 50, so
-            // fewer than that means the channel's entire history is ≤ 50
-            // messages and already resident once the merge below lands.
-            // Same latch as loadOlderChannelMessages; see channelHistoryExhausted's doc comment.
-            if (raw.length < 50) {
-                setChannelHistoryExhausted(prev => (
-                    prev[channelId] ? prev : { ...prev, [channelId]: true }
-                ));
-            }
-            // Rows already cached as real content are reused, not re-decrypted
-            // (see utils/channelRowReuse — fold would discard the new copy).
-            const { reused, toDecrypt } = splitReusableChannelRows(raw, channelMessagesRef.current[channelId]);
-            const decrypted = [...reused, ...await decryptChannelRows(channelId, toDecrypt)];
-            // Retention at the door. A row already past this device's "Keep
-            // for" window - one this cache never held, so no tombstone knows it
-            // (a freshly-added device, a just-joined server, a long absence) -
-            // must not be folded in only for the 5-minute sweep to delete it
-            // again: for those minutes it would show, and once its epoch key
-            // has aged out it would show as "Couldn't decrypt - waiting on this
-            // channel's key" and file a key request. See
-            // utils/channelHistoryRetention.ts.
-            const { kept: keptRows } = splitExpiredIncoming(
-                decrypted,
-                incomingRetentionFor(channelId, serverId, await savedIdsP),
-            );
-            // Sort chronologically (oldest first) — sort() is non-mutating
-            // on the intermediate array and idempotent.
-            const sorted = [...keptRows].sort(
-                (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
-            );
-            // Merge into the local cache, applying action messages (edit /
-            // delete / reaction) on top. The base array is the existing
-            // local cache so we don't lose anything that's been swept off
-            // the API (e.g. messages older than the API's 30-day window
-            // that the user wants to keep locally).
+            const raw = await getChannelRows(channelId, { limit: HISTORY_PAGE_SIZE });
+            const range = rangeForPage({ kind: 'newest', limit: HISTORY_PAGE_SIZE }, raw);
+            // ingestChannelRows does the retention-at-the-door filter
+            // (splitExpiredIncoming) BEFORE foldChannelHistory, and its
+            // `sorted` result is the FILTERED page.
             //
-            // foldChannelHistory (utils/channelHistoryMerge.ts, unit-tested)
-            // inserts genuinely new rows, applies edit/delete/reaction
-            // envelopes, and — critically — upgrades a cached "couldn't
-            // decrypt" placeholder in place once a decrypted copy of the same
-            // id arrives. That in-place heal is what makes dropping the whole
-            // channel's cache unnecessary when a key finally lands.
-            // `purgedIds` is what stops the server's copy of a retention-deleted
-            // message from being read as "new" and re-inserted — see
-            // utils/retentionTombstones.ts.
-            const purgedIds = userId ? getPurgedMessageIds(userId, channelId) : new Set<string>();
-            // No `before=` on this fetch, so the response is the top of the
-            // channel: it completely covers [oldest row returned, requestedAt).
-            // A cached "couldn't decrypt" pill inside that window that the
-            // server did NOT return has been hard-deleted server-side
-            // (retention sweep), so no key will ever decrypt it — drop it
-            // instead of leaving a permanent "waiting on this channel's key"
-            // pill for content that no longer exists. Decrypted rows are
-            // untouched: the local cache is meant to outlive the server's
-            // 30-day retention. The requestedAt cap spares a live
+            // No cursor, so the response is the top of the channel: it
+            // completely covers [oldest row returned, requestedAt). A cached
+            // "couldn't decrypt" pill inside that window that the server did
+            // NOT return has been hard-deleted server-side (retention sweep),
+            // so no key will ever decrypt it — dropped instead of leaving a
+            // permanent "waiting on this channel's key" pill. Decrypted rows
+            // are untouched. The requestedAt cap spares a live
             // channel:message_new placeholder that arrived mid-flight.
-            // Measured on what the server RETURNED, not on what retention kept:
-            // a row dropped at the door is still a row the server holds.
-            const serverWindow = coveredServerWindow(decrypted, requestedAtIso);
-            // Unpin any personally-saved ("Save for me") channel message this
-            // batch's delete markers will remove — computed against
-            // channelMessagesRef (the same pre-merge snapshot foldChannelHistory
-            // below starts from) and OUTSIDE the setChannelMessages updater,
-            // which must stay pure. This is the catch-up path: a delete that
-            // happened while this device wasn't looking at the channel is
-            // caught here on next open/reconnect, same intent as the live
-            // handler in handleChannelMessage.
-            for (const id of deletedChannelTargetIds(channelMessagesRef.current[channelId] ?? [], sorted, purgedIds)) {
-                if (localChannelPinsRef.current[channelId]?.includes(id)) {
-                    handlePersonalChannelSaveRef.current(channelId, id, 'remove');
-                }
-            }
-            setChannelMessages(prev => {
-                const next = foldChannelHistory(prev[channelId] ?? [], sorted, purgedIds, serverWindow);
-                // Nothing new (the usual re-open): keep the same array so the
-                // open pane and everything keyed on it doesn't re-render.
-                const before = prev[channelId];
-                if (before && next.length === before.length && next.every((m, i) => m === before[i])) return prev;
-                return { ...prev, [channelId]: next };
+            const { kept: sorted, purgedIds } = await ingestChannelRows(serverId, channelId, raw, {
+                savedIds: savedIdsP,
+                range,
+                window: proofWindow(range, requestedAt),
             });
             // At least one history message couldn't decrypt (missing/stale
             // epoch key) — file a request once for the whole batch instead
-            // of per-message. Previously this placeholder was purely
-            // cosmetic: nothing ever asked for the key that would clear it.
-            // Purged rows are excluded from the question: a message the user
-            // deliberately retention-deleted must not send this device begging
-            // other members for the key that would decrypt it.
+            // of per-message. Purged rows are excluded from the question: a
+            // message the user deliberately retention-deleted must not send
+            // this device begging other members for the key that would
+            // decrypt it.
             if (pageNeedsKeyRequest(sorted, purgedIds)) {
                 undecryptableChannelsRef.current.add(channelId);
                 void channelKeyOpsRef.current.maybeFileKeyRequest(serverId, channelId);
@@ -7436,16 +7630,94 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                 // recovered. Clearing the flag matters: the 75s retry timer
                 // sweeps `undecryptableChannelsRef` and re-files a key request
                 // for every entry, and until now only a successful LIVE decrypt
-                // ever removed one. A channel healed by history alone stayed in
-                // the set for the whole session, re-requesting every 75s
-                // forever — one more engine driving the envelopes-ready churn.
+                // ever removed one.
                 undecryptableChannelsRef.current.delete(channelId);
+            }
+            // Once per channel per session: re-try placeholders this page did
+            // not cover (older pages, server-saved rows) — a key may well have
+            // arrived while the channel wasn't open.
+            if (!placeholdersRetriedRef.current.has(channelId)) {
+                placeholdersRetriedRef.current.add(channelId);
+                void healChannelPlaceholders(serverId, channelId, new Set(raw.map(r => r.id)));
             }
         } catch (err) {
             console.error('[Dashboard] Failed to load channel history:', err);
         }
-    }), [token, deviceId, userId, decryptChannelRows, ensureChannelSaves, incomingRetentionFor]);
+    }), [token, getChannelRows, ensureChannelSaves, ingestChannelRows, healChannelPlaceholders]);
     useEffect(() => { refreshChannelHistoryRef.current = refreshChannelHistory; }, [refreshChannelHistory]);
+
+    // A key landed for the channel on screen: besides the newest-page re-read
+    // (the envelopes-ready consumer further down), re-try the placeholders
+    // above that page — older pages, server-saved and pinned messages — so
+    // they heal without the user scrolling back to them. A separate effect on
+    // purpose: it leaves the key-delivery consumer untouched.
+    useEffect(() => {
+        const open = activeChannelRef.current;
+        if (!open || channelKeyEnvelopesReadyEvents.length === 0) return;
+        if (!channelKeyEnvelopesReadyEvents.some(e => e.channel_id === open.channel_id)) return;
+        void healChannelPlaceholders(open.server_id, open.channel_id);
+    }, [channelKeyEnvelopesReadyEvents, healChannelPlaceholders]);
+
+    // Server-saved and pinned messages are always loaded, however far back
+    // they are: by id, independent of paging, as soon as the open channel's
+    // saved set is known (channel entry, a saves_changed push, a reconnect).
+    // Each id is asked for once per session; a row that comes back
+    // undecryptable shows the usual "couldn't decrypt" state, is re-tried when
+    // a key lands (the effect above), and files one (deduped) key request.
+    const savedLoadAttemptedRef = useRef<Record<string, Set<string>>>({});
+    const openTextChannel = activeChannel?.kind === 'text' ? activeChannel : null;
+    const openChannelSavedIds = openTextChannel ? channelServerSaves[openTextChannel.channel_id] : undefined;
+    useEffect(() => {
+        if (!openTextChannel || !openChannelSavedIds?.length || !token) return;
+        const { server_id: sid, channel_id: cid } = openTextChannel;
+        const attempted = (savedLoadAttemptedRef.current[cid] ??= new Set<string>());
+        const cached = new Map<string, StoredChannelMsg>(
+            (channelMessagesRef.current[cid] ?? []).map((m: StoredChannelMsg) => [m.id, m]),
+        );
+        const purged = userId ? getPurgedMessageIds(userId, cid) : new Set<string>();
+        const missing = openChannelSavedIds.filter(id => {
+            if (attempted.has(id) || purged.has(id)) return false;
+            const have = cached.get(id);
+            return !have || placeholderRetryable(have);
+        });
+        if (!missing.length) return;
+        for (const id of missing) attempted.add(id);
+        void (async () => {
+            const { undecryptable } = await loadChannelMessagesById(sid, cid, missing);
+            if (undecryptable > 0) void channelKeyOpsRef.current.maybeFileKeyRequest(sid, cid);
+        })().catch(e => {
+            // Let a later trigger try these again.
+            for (const id of missing) attempted.delete(id);
+            console.warn('[Channels] loading server-saved messages failed:', e);
+        });
+    }, [openTextChannel, openChannelSavedIds, token, userId, loadChannelMessagesById]);
+
+    // The socket dropped and came back: whatever was posted meanwhile was
+    // never delivered live, so no channel's top segment may keep claiming it
+    // reaches the live top. Pin each to the newest row cached right now; the
+    // next newest-page read either touches it (merged) or exposes the gap.
+    const coverageConnRef = useRef(0);
+    useEffect(() => {
+        if (wsConnectCount === 0) return;
+        const prev = coverageConnRef.current;
+        coverageConnRef.current = wsConnectCount;
+        if (prev === 0 || prev === wsConnectCount) return;
+        setChannelCoverage(cov => {
+            let changed = false;
+            const next: Record<string, ChannelCoverage> = {};
+            for (const [cid, segs] of Object.entries(cov)) {
+                next[cid] = demoteLiveTop(segs, channelMessagesRef.current[cid] ?? []);
+                if (next[cid] !== segs) changed = true;
+            }
+            return changed ? next : cov;
+        });
+    }, [wsConnectCount]);
+
+    const openChannelId = activeChannel?.channel_id;
+    const openChannelGaps = useMemo<HistoryGap[]>(
+        () => (openChannelId ? historyGaps(channelCoverage[openChannelId], channelMessages[openChannelId] ?? []) : []),
+        [openChannelId, channelCoverage, channelMessages],
+    );
 
     /** Channels with an ensureChannelKeyBootstrap pass currently running.
      *  Purely an in-flight guard (cleared in `finally`), NOT a "done" set:
@@ -7548,6 +7820,15 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                                 delete next[channel.channel_id];
                                 return next;
                             });
+                            // Envelopes that were already waiting install here, with no
+                            // envelopes_ready push to follow — and the entry fetch may
+                            // have decrypted its page before they landed. Re-read the
+                            // open channel so its pills (or the key-wait layer) heal now
+                            // instead of on the next unrelated trigger.
+                            if (activeChannelRef.current?.channel_id === channel.channel_id
+                                && (channelMessagesRef.current[channel.channel_id] ?? []).some(isUndecryptablePlaceholder)) {
+                                void refreshChannelHistoryRef.current(channel.server_id, channel.channel_id);
+                            }
                         } else {
                             await channelKeyOpsRef.current.fileKeyRequest(channel.server_id, channel.channel_id);
                         }
@@ -7574,6 +7855,15 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                     delete next[channel.channel_id];
                     return next;
                 });
+                // Held, but OLDER than the server's newest epoch: ask for it
+                // (60 s per-channel dedup). For a Calls channel this is not
+                // cosmetic — the room key is derived from the newest epoch we
+                // hold, so a stale participant derives a different key from
+                // everyone else and hears nothing. Every call-join path runs
+                // through here with a FRESH latest_epoch.
+                if (existingEpoch != null && latestEpoch !== undefined && existingEpoch < latestEpoch) {
+                    void channelKeyOpsRef.current.maybeFileKeyRequest(channel.server_id, channel.channel_id);
+                }
             }
         } catch (err) {
             console.warn('[Channels] Key bootstrap failed (non-fatal):', err);
@@ -7841,15 +8131,8 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
     // pullChannelKeys: fetches pending channel key envelopes from the server for
     // a given server's channels, decrypts them in the main process, and stores
     // them locally. Called after joining a server and on dashboard mount.
-    const pullChannelKeys = useCallback(async (serverId: string) => {
+    const pullChannelKeysOnce = useCallback(async (serverId: string) => {
         if (!token || !deviceId) return;
-        // Phase 4c: WS push, the connect/repair sweep, and the 75s retry timer
-        // can all trigger a pull for the same server around the same time.
-        // Without this guard two overlapping calls could both decrypt-and-
-        // install the same envelope batch, double-counting failures against
-        // the retry bound and racing on which one's ACK POST lands last.
-        if (pullChannelKeysInFlightRef.current.has(serverId)) return;
-        pullChannelKeysInFlightRef.current.add(serverId);
         try {
             const res = await axios.get(`${API_BASE}/servers/${serverId}/channel-keys/pending`, {
                 headers: { Authorization: `Bearer ${token}`, 'x-device-id': deviceId }
@@ -7966,6 +8249,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                             continue;
                         }
                         console.log(`[Channels] Received epoch ${env.epoch} key for channel ${env.channel_id} (${stored})`);
+                        noteChannelKeyReceived(env.channel_id);
                     }
                     ackIds.push(env.envelope_id);
                     envelopeFailureCountRef.current.delete(channelEpochKey(env.channel_id, env.epoch));
@@ -7999,6 +8283,15 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                         setChannelKeyCoolOff(prev => ({ ...prev, [env.channel_id]: until }));
                     } else {
                         envelopeFailureCountRef.current.set(key, failCount);
+                        // Say so: re-ask NOW (60 s per-channel dedup) instead of
+                        // waiting for some unrelated trigger. The usual cause is
+                        // an envelope wrapped to a bundle this device no longer
+                        // has; a holder answering the re-ask wraps to the CURRENT
+                        // bundle and the API replaces the unusable envelope. A
+                        // device that could not decrypt its call channel's newest
+                        // epoch and did not ask again is how participants ended up
+                        // on different epochs (2026-10-09: no audio, no video).
+                        void channelKeyOpsRef.current.maybeFileKeyRequest(serverId, env.channel_id);
                     }
                 }
             }
@@ -8014,10 +8307,30 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
             // Non-fatal — new members will get keys on next pullChannelKeys call
             console.warn('[Channels] pullChannelKeys failed:', e);
             recordDelivery('channel_key_pull', e, { server_id: serverId });
-        } finally {
-            pullChannelKeysInFlightRef.current.delete(serverId);
         }
     }, [token, deviceId]);
+    // One pull per server at a time, and a trigger that lands mid-pull gets
+    // ONE trailing re-pull instead of being dropped.
+    // Phase 4c: WS push, the connect/repair sweep, and the 75s retry timer
+    // can all trigger a pull for the same server around the same time.
+    // Two overlapping pulls would both decrypt-and-install the same
+    // envelope batch, double-counting failures against the retry bound
+    // and racing on which one's ACK POST lands last — so they never
+    // overlap. But the old guard simply RETURNED when a pull was in
+    // flight, and that dropped real work: a holder posts one channel's
+    // envelope every ~350 ms, each post pushes envelopes_ready, and a
+    // push landing while the previous pull was still decrypting found the
+    // guard set and did nothing. The envelope it announced sat on the
+    // server until the next unrelated trigger (the 75 s retry timer, or
+    // opening the channel), so a new member's LAST channels were the
+    // ones left "Waiting for channel keys". SingleFlight runs exactly one
+    // trailing re-pull for anything that arrived mid-pull, and every
+    // caller awaits the run that covers its trigger.
+    const [keyPullFlight] = useState(() => new SingleFlight());
+    const pullChannelKeys = useCallback(
+        (serverId: string): Promise<void> => keyPullFlight.run(serverId, () => pullChannelKeysOnce(serverId)),
+        [keyPullFlight, pullChannelKeysOnce],
+    );
 
     // ── Channel key backfill protocol ────────────────────────────────────────
     // Persistent key-requests + on-demand distribution. Pure decision logic
@@ -8037,12 +8350,6 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
     const [channelKeyCoolOff, setChannelKeyCoolOff] = useState<Record<string, number>>({});
     // 60s in-session dedup of filed key requests (channelId → last POST ts).
     const keyRequestDedupRef = useRef<Map<string, number>>(new Map());
-    // Requests currently being served, so overlapping sweeps don't double-send.
-    const servingKeyRequestsRef = useRef<Set<string>>(new Set());
-    // Phase 4c (RC-9 follow-on): serverIds currently mid-pullChannelKeys, so
-    // an overlapping WS push + sweep + 75s timer can't decrypt/process the
-    // same envelope batch concurrently from two call stacks at once.
-    const pullChannelKeysInFlightRef = useRef<Set<string>>(new Set());
     // Per-(channel,epoch) failed-install attempt counter — see
     // channelEpochKey / CHANNEL_KEY_RETRY_LIMIT in channelKeyDistribution.ts.
     const envelopeFailureCountRef = useRef<Map<string, number>>(new Map());
@@ -8050,6 +8357,11 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
     // — read by the retry timer below so history gets periodic recovery
     // attempts too, not just a one-shot request at the moment of failure.
     const undecryptableChannelsRef = useRef<Set<string>>(new Set());
+    // channel_id → server_id for every keyed channel requestMissingChannelKeys
+    // has looked at, including servers whose channel list was never loaded
+    // into serverChannels (never opened this session). Lets the retry timer
+    // re-request a gated channel of a background server.
+    const keyChannelServerRef = useRef<Map<string, string>>(new Map());
     // channelId → when a key request was FIRST filed for it (unlike
     // keyRequestDedupRef, which tracks the MOST RECENT request). Read by the
     // retry timer's fallback-rotation check: "has this been stuck long
@@ -8099,7 +8411,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
     // ── Key-handshake flow control (2026-10-09 storm) ─────────────────────
     // One instance of each per signed-in session, shared by EVERY path that
     // posts key-handshake envelopes (serve, member_joined, bootstrap,
-    // rotation, recovery): the server's `keyHandshake` bucket is per user, so
+    // rotation, recovery): the server's throttle bucket is per user, so
     // pacing and back-off must be too. See utils/keyDistributionThrottle.ts.
     const [handshakeBackoff] = useState(() => new HandshakeBackoff());
     const [handshakePacer] = useState(() => new Pacer());
@@ -8111,13 +8423,24 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
     // answering — or found nothing to wrap for — so a pass does not GET the
     // requester's devices again for the same, unchanged ask.
     const answeredKeyRequestVersionsRef = useRef<Set<string>>(new Set());
+    // Request version → when this device first saw it in a pending list (see
+    // DeliveryLedger.decide: an ask seen before our delivery was answered by it).
+    const keyRequestSeenAtRef = useRef<Map<string, number>>(new Map());
+    // History a stopped serve pass still owes (see recordOwed / takeOwed).
+    const owedKeyServesRef = useRef<Map<string, OwedServe<{ request_id: string; channel_id: string; requester_user_id: string; requester_device_id: string; created_at: string }>>>(new Map());
     useEffect(() => () => keyResumeTimers.clearAll(), [keyResumeTimers]);
     // Sign-out / account switch: nothing learned about the previous
     // account's deliveries may suppress the next one's.
     useEffect(() => {
         answeredKeyRequestVersionsRef.current.clear();
+        keyRequestSeenAtRef.current.clear();
+        owedKeyServesRef.current.clear();
         deliveryLedger.prune();
     }, [token, deliveryLedger]);
+    // The key-wait layer's signals (request acked / key received) belong to
+    // the signed-in account — keyed on the user, not the token, which rotates
+    // on every refresh mid-wait.
+    useEffect(() => { resetKeyWaitSignals(); }, [userId]);
 
     /**
      * Encrypt the given epochs of a channel's Sender Keys to each recipient
@@ -8142,7 +8465,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
         // envelopes for every recipient.
         recipients: ChannelKeyRecipient[],
         rotationReason: string,
-        opts: { requestVersion?: string; budget?: { remaining: number }; resumeAttempt?: number } = {},
+        opts: { requestVersion?: string; requestSeenAt?: number; budget?: { remaining: number }; resumeAttempt?: number } = {},
     ): Promise<DistributionOutcome> => {
         if (!token || !userId || !epochs.length || !recipients.length) return { status: 'done', posted: 0 };
         const outcome = await runKeyDistribution({
@@ -8187,7 +8510,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                     server_id: serverId, channel_id: channelId, epoch: ctx.epoch, recipient_user_id: ctx.recipientUserId, envelopes: ctx.envelopes,
                 });
             },
-        }, { serverId, channelId, epochs, recipients, requestVersion: opts.requestVersion, budget: opts.budget });
+        }, { serverId, channelId, epochs, recipients, requestVersion: opts.requestVersion, requestSeenAt: opts.requestSeenAt, budget: opts.budget });
 
         // One-shot callers (no serve pass to resume them): try again after the
         // back-off. Bounded — the key-request path covers anything left after.
@@ -8341,6 +8664,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                 {},
                 { headers: { Authorization: `Bearer ${token}`, 'x-device-id': deviceId } }
             );
+            noteKeyRequestAcked(channelId);
             if (shouldMintAfterKeyRequest(res.data?.latest_epoch)) {
                 void channelKeyOpsRef.current.bootstrapAndDistributeChannelKey(serverId, channelId);
             }
@@ -8379,6 +8703,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                 // Calls channels carry Sender Keys too — their room key is
                 // derived from one, so they need the same backfill sweep.
                 if (!channelCarriesSenderKeys(c.kind)) continue;
+                keyChannelServerRef.current.set(c.channel_id, serverId);
                 localLatest[c.channel_id] = await window.electronAPI!.getLatestChannelEpoch(c.channel_id);
             }
             const missing = computeMissingKeyChannels(channels, localLatest);
@@ -8536,17 +8861,23 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
 
     /**
      * Answer open key requests in a server with every epoch this device
-     * holds. Runs on connect (all servers) and after a jittered delay on the
-     * `server:key_requested` push. Re-fetching the pending list right before
-     * answering collapses multi-holder storms: the first delivery marks the
-     * request fulfilled server-side and later responders see an empty list.
+     * holds. Runs on connect (all servers, whatever the UI is showing) and
+     * after a jittered delay on the `server:key_requested` push. Re-fetching
+     * the pending list right before answering collapses multi-holder storms:
+     * the first delivery's ACK marks the request fulfilled server-side and
+     * later responders see an empty list.
+     *
+     * Order: every request's NEWEST epoch first, then history
+     * (latestFirstPhases) — a new member can send and read new messages in
+     * every channel before any channel's history goes out.
      *
      * Single-flight per server: a trigger that lands while a pass is running
      * (connect sweep, a push, a resume) rides it as ONE trailing re-run instead
      * of starting a concurrent loop. Each pass is capped at
      * SERVE_PASS_SUBMISSION_CAP POSTs; an epoch already delivered to the
-     * requesting device for this request version (or within the re-delivery
-     * cool-down) is not sent again; and a 429 / failure stops the pass and
+     * requesting device for this request version is not sent again, but a
+     * RE-ASK (new version) is always served at once — an unacked delivery is
+     * never treated as received; and a 429 / failure stops the pass and
      * schedules ONE resume after the back-off.
      */
     const serveKeyRequests = useCallback((serverId: string): Promise<void> => {
@@ -8565,39 +8896,78 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                 });
                 const pending: { request_id: string; channel_id: string; requester_user_id: string; requester_device_id: string; created_at: string }[] = res.data ?? [];
                 const answered = answeredKeyRequestVersionsRef.current;
+                const seenAt = keyRequestSeenAtRef.current;
                 if (answered.size > 5_000) answered.clear();
+                if (seenAt.size > 5_000) seenAt.clear();
+                const now = Date.now();
                 // Only requests this device has not already answered as-is.
-                const open: { req: typeof pending[number]; version: string; epochs: number[] }[] = [];
+                const listed: { req: typeof pending[number]; version: string; seenAt: number; epochs: number[] }[] = [];
+                const open: typeof listed = [];
                 for (const req of pending) {
                     const version = keyRequestVersion(req);
+                    if (!seenAt.has(version)) seenAt.set(version, now);
+                    const askSeenAt = seenAt.get(version)!;
+                    listed.push({ req, version, seenAt: askSeenAt, epochs: [] });
                     if (answered.has(version)) continue;
                     const epochs = await window.electronAPI!.listChannelEpochs(req.channel_id);
                     if (!epochs.length) continue; // we hold nothing for this channel
-                    if (deliveryLedger.allDelivered(req.channel_id, epochs, req.requester_device_id, version)) {
+                    if (deliveryLedger.allDelivered(req.channel_id, epochs, req.requester_device_id, version, askSeenAt)) {
                         answered.add(version);
                         continue;
                     }
-                    open.push({ req, version, epochs });
+                    open.push({ req, version, seenAt: askSeenAt, epochs });
                 }
+                // …plus history an earlier, stopped pass started and still owes
+                // (its request is closed server-side once the newest epoch is
+                // acked, so it is not in `pending` any more — see recordOwed).
+                open.push(...takeOwed(owedKeyServesRef.current, listed, answered, now));
+                if (!open.length) return;
                 // RC-10: fetched (and used to refresh main-process protection) once
                 // per sweep, not once per request — a request storm shouldn't cost
                 // one GET each just to log the same per-channel pin gaps repeatedly.
-                const pinnedByChannel = open.length ? await refreshProtectedEpochs(serverId) : new Map<string, number[]>();
+                const pinnedByChannel = await refreshProtectedEpochs(serverId);
+                for (const { req, epochs } of open) {
+                    const { unservable } = computeEpochsToDistribute(epochs, pinnedByChannel.get(req.channel_id) ?? [], undefined);
+                    if (unservable.length) {
+                        console.error(`[Channels] Pinned epoch(s) ${unservable.join(',')} for channel ${req.channel_id} not held by this device — cannot serve them; another holder may still cover it`);
+                    }
+                }
+                // One device-list GET per requesting USER per pass (a new
+                // member's 20 channel requests used to cost 20 identical GETs).
+                const devicesByUser = new Map<string, Promise<Omit<ChannelKeyRecipient, 'user_id'>[]>>();
+                const devicesOf = (uid: string) => {
+                    let p = devicesByUser.get(uid);
+                    if (!p) {
+                        p = axios.get(
+                            `${API_BASE}/servers/${serverId}/members/${uid}/devices`,
+                            { headers: { Authorization: `Bearer ${token}` } },
+                        ).then(r => (r.data ?? []) as Omit<ChannelKeyRecipient, 'user_id'>[]);
+                        devicesByUser.set(uid, p);
+                    }
+                    return p;
+                };
                 const budget = { remaining: SERVE_PASS_SUBMISSION_CAP };
-                for (const { req, version, epochs } of open) {
-                    if (servingKeyRequestsRef.current.has(req.request_id)) continue;
-                    servingKeyRequestsRef.current.add(req.request_id);
-                    let stop = false;
+                // Versions that still owe something after this pass (a request
+                // that threw).
+                const unfinished = new Set<string>();
+                let stop = false;
+                // Every request's NEWEST epoch first, then history — see
+                // latestFirstPhases. Same POSTs, same pacing, different order.
+                const phases = latestFirstPhases(open);
+                const latestCount = open.filter(o => o.epochs.length > 0).length;
+                let stoppedAt = -1;
+                for (let i = 0; i < phases.length; i++) {
+                    const { item: { req, version, seenAt: askSeenAt }, epochs } = phases[i];
+                    if (answered.has(version)) continue; // e.g. no listed device (below)
+                    if (i >= latestCount && keyServeFlight.hasPendingRerun(serverId)) {
+                        // New asks arrived mid-pass (a joiner files one request per
+                        // channel, ~150 ms apart): yield before more HISTORY so the
+                        // trailing re-run sends their NEWEST epochs first. What is
+                        // left here is owed to that re-run (below), not dropped.
+                        stop = true; stoppedAt = i; break;
+                    }
                     try {
-                        const { unservable } = computeEpochsToDistribute(epochs, pinnedByChannel.get(req.channel_id) ?? [], undefined);
-                        if (unservable.length) {
-                            console.error(`[Channels] Pinned epoch(s) ${unservable.join(',')} for channel ${req.channel_id} not held by this device — cannot serve them; another holder may still cover it`);
-                        }
-                        const devRes = await axios.get(
-                            `${API_BASE}/servers/${serverId}/members/${req.requester_user_id}/devices`,
-                            { headers: { Authorization: `Bearer ${token}` } }
-                        );
-                        const dev = (devRes.data ?? []).find((d: { device_id: string }) => d.device_id === req.requester_device_id);
+                        const dev = (await devicesOf(req.requester_user_id)).find(d => d.device_id === req.requester_device_id);
                         if (!dev) {
                             // The members/:uid/devices listing only carries APPROVED,
                             // un-revoked devices WITH a published key bundle — so this
@@ -8614,17 +8984,15 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                         }
                         const outcome = await distributeChannelKeys(
                             serverId, req.channel_id, epochs,
-                            [{ user_id: req.requester_user_id, ...dev }],
+                            [{ ...dev, user_id: req.requester_user_id }],
                             'backfill',
-                            { requestVersion: version, budget },
+                            { requestVersion: version, requestSeenAt: askSeenAt, budget },
                         );
                         if (outcome.status === 'deferred') {
                             // 429 / failure / pass budget spent: stop THIS pass
                             // (no more POSTs from it) and resume once, later.
                             scheduleResume(outcome.retryInMs);
                             stop = true;
-                        } else {
-                            answered.add(version);
                         }
                     } catch (e) {
                         // One request failing (a member who left between the list
@@ -8632,14 +9000,20 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                         // this pass: the list is oldest-first, so the newest
                         // request — usually the member who just joined — was the
                         // one that always lost.
+                        unfinished.add(version);
                         console.warn('[Channels] serving key request failed:', req.request_id, e);
                         recordDelivery('channel_key_distribute', e, {
                             server_id: serverId, channel_id: req.channel_id, recipient_user_id: req.requester_user_id, device_id: req.requester_device_id,
                         });
-                    } finally {
-                        servingKeyRequestsRef.current.delete(req.request_id);
                     }
-                    if (stop) break;
+                    if (stop) { stoppedAt = i; break; }
+                }
+                if (stop) {
+                    // The rest — this item included (the ledger skips whatever of
+                    // it did go out) — is owed to the resume.
+                    recordOwed(owedKeyServesRef.current, phases.slice(stoppedAt), Date.now());
+                } else {
+                    for (const { version } of open) if (!unfinished.has(version)) answered.add(version);
                 }
             } catch (e) {
                 console.warn('[Channels] serveKeyRequests failed:', e);
@@ -8682,13 +9056,20 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
         // storm the reactive (server:key_requested) path achieves via its own
         // jitter. Spreading the START of the sweep is enough; requests are
         // idempotent either way, this just avoids the burst.
+        //
+        // Two lanes, side by side, over EVERY joined server (not just the one
+        // on screen): this device's own pull + key requests, and serving other
+        // members' requests. They used to alternate in one serial loop, so a
+        // member in several servers waited for every earlier server's serve
+        // pass (up to SERVE_PASS_SUBMISSION_CAP paced POSTs each) before its
+        // own requests for a later server were even filed — and the requests
+        // waiting on THIS device waited for its own sweep likewise.
         const t = setTimeout(() => {
-            (async () => {
-                for (const srv of servers) {
-                    await serveKeyRequests(srv.server_id);
-                    await requestMissingChannelKeys(srv.server_id);
-                }
-            })().catch(() => { /* non-fatal */ });
+            const list = [...servers];
+            void Promise.all([
+                (async () => { for (const srv of list) await requestMissingChannelKeys(srv.server_id); })(),
+                (async () => { for (const srv of list) await serveKeyRequests(srv.server_id); })(),
+            ]).catch(() => { /* non-fatal */ });
         }, pickJitterMs());
         return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -8815,10 +9196,31 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
         reason: string,
     ) => {
         if (!token || !deviceId) return;
-        if (!mayMintChannelKey(serverId, channelId)) return; // server would 403 the epoch record
 
-        const kind = (serverChannelsRef.current[serverId] ?? [])
-            .find(c => c.channel_id === channelId)?.kind;
+        // The channel's kind (and my permissions on it) come from the loaded
+        // channel list — which only exists for servers opened this session.
+        // An idle holder that never opened this server used to answer every
+        // rotation signal with skip_unknown_channel, so a removed member's key
+        // stayed live until someone who HAD the server open happened to be
+        // online. Fetch it instead (VIEW-filtered by the API: a channel we
+        // cannot see stays unknown and is skipped, as before).
+        let loaded = (serverChannelsRef.current[serverId] ?? []).find(c => c.channel_id === channelId);
+        if (loaded) {
+            if (!mayMintChannelKey(serverId, channelId)) return; // server would 403 the epoch record
+        } else {
+            try {
+                const res = await axios.get(`${API_BASE}/servers/${serverId}/channels`, {
+                    headers: { Authorization: `Bearer ${token}` },
+                });
+                loaded = ((res.data ?? []) as ChannelInfo[]).find(c => c.channel_id === channelId);
+            } catch { /* stays unknown → skip_unknown_channel below */ }
+            if (loaded) {
+                let perms: bigint | undefined;
+                if (loaded.my_permissions) { try { perms = BigInt(loaded.my_permissions); } catch { /* unknown */ } }
+                if (!canMintChannelKey(loaded.kind, perms)) return; // same gate as mayMintChannelKey
+            }
+        }
+        const kind = loaded?.kind;
         let localLatest: number | null = null;
         try {
             localLatest = await window.electronAPI!.getLatestChannelEpoch(channelId);
@@ -9008,6 +9410,18 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                     affectedServerIds.add(srv.server_id);
                     channelToServer.set(c.channel_id, srv.server_id);
                 }
+            }
+            // A server this session never OPENED has no serverChannels entry,
+            // so its gated channels were invisible here and were only ever
+            // re-requested on reconnect. requestMissingChannelKeys records the
+            // server of every keyed channel it looks at — use that too (for
+            // the re-request only; the fallback rotation below stays scoped to
+            // servers whose channel list is loaded, as before).
+            const joined = new Set(serversRef.current.map(s => s.server_id));
+            for (const cid of affectedChannelIds) {
+                if (channelToServer.has(cid)) continue;
+                const sid = keyChannelServerRef.current.get(cid);
+                if (sid && joined.has(sid)) affectedServerIds.add(sid);
             }
             for (const sid of affectedServerIds) void requestMissingChannelKeys(sid);
 
@@ -9250,12 +9664,15 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
     // On server:member_joined (existing member receives this event):
     // distribute EVERY channel epoch key this device holds to the new
     // member's devices — full history, not just {latest ∪ pinned} (all
-    // pinned epochs we still hold are in the full set by definition).
-    useEffect(() => {
-        if (!serverMemberJoinedEvent || !token || !userId || !deviceId) return;
-        const { server_id, user_id: newUserId } = serverMemberJoinedEvent;
-        if (newUserId === userId) return; // Don't distribute to ourselves
-
+    // pinned epochs we still hold are in the full set by definition) — every
+    // channel's NEWEST epoch first (latestFirstPhases), so the joiner can use
+    // every channel before any history goes out.
+    //
+    // Drains a QUEUE: the single nullable slot this used to read kept only the
+    // last of two joins that reached the socket before React rendered, and the
+    // earlier joiner got nothing from this holder (only their own key requests
+    // could recover it).
+    const distributeKeysToNewMember = (server_id: string, newUserId: string) => {
         // Refresh the right-panel member list so the new joiner appears immediately.
         // (Other servers' cached rosters are only marked stale: they revalidate on open.)
         invalidateRoster(server_id);
@@ -9291,6 +9708,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                 // also refreshes the main process's prune-protection for every
                 // pinned channel on this server as a side effect.
                 const pinnedByChannel = await refreshProtectedEpochs(server_id);
+                const plan: { channelId: string; epochs: number[] }[] = [];
                 for (const ch of channels) {
                     if (!channelCarriesSenderKeys(ch.kind)) continue;
                     const epochs = await window.electronAPI!.listChannelEpochs(ch.channel_id);
@@ -9299,19 +9717,32 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                     if (unservable.length) {
                         console.error(`[Channels] Pinned epoch(s) ${unservable.join(',')} for channel ${ch.channel_id} not held by this device — new member ${newUserId} won't get them from us; another holder may still cover it`);
                     }
-                    await distributeChannelKeys(
-                        server_id, ch.channel_id, epochs,
-                        newMemberDevices.map(d => ({ user_id: newUserId, ...d })),
-                        'member_join',
-                    );
+                    plan.push({ channelId: ch.channel_id, epochs });
+                }
+                const recipients = newMemberDevices.map(d => ({ user_id: newUserId, ...d }));
+                for (const { item, epochs } of latestFirstPhases(plan)) {
+                    await distributeChannelKeys(server_id, item.channelId, epochs, recipients, 'member_join');
                 }
             } catch (e) {
                 console.warn('[Dashboard] Failed to distribute channel keys to new member:', e);
                 recordDelivery('channel_key_distribute', e, { server_id, recipient_user_id: newUserId, stage: 'member_joined' });
             }
         })();
+    };
+    useEffect(() => {
+        if (serverMemberJoinedEvents.length === 0) return;
+        const batch = serverMemberJoinedEvents;
+        setServerMemberJoinedEvents([]);
+        if (!token || !userId || !deviceId) return;
+        const seenJoins = new Set<string>();
+        for (const { server_id, user_id: newUserId } of batch) {
+            if (newUserId === userId) continue; // Don't distribute to ourselves
+            if (seenJoins.has(`${server_id}:${newUserId}`)) continue;
+            seenJoins.add(`${server_id}:${newUserId}`);
+            distributeKeysToNewMember(server_id, newUserId);
+        }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [serverMemberJoinedEvent]);
+    }, [serverMemberJoinedEvents]);
 
     // Handle server:permissions_changed — a moderator on `server_id` mutated
     // role permissions, role assignments, or channel/category overrides. Pull
@@ -10140,7 +10571,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
             if (content?.type === 'edit') {
                 const idx = thread.findIndex(t => t.id === content.target_id || t.content?.client_msg_id === content.target_id);
                 if (idx !== -1) {
-                    thread[idx] = { ...thread[idx], content: { ...thread[idx].content, text: content.text }, edited: true };
+                    thread[idx] = { ...thread[idx], content: editedContent(thread[idx].content, content.text), edited: true };
                 }
                 return { ...prev, [cid]: thread };
             }
@@ -11061,11 +11492,21 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                                                                         fallbackSize={24}
                                                                     />
                                                                 </div>
-                                                                {activeChat.other_user_id && (
-                                                                    <span className="absolute bottom-0 right-0 z-20 flex items-center justify-center rounded-full" style={{ border: '3px solid var(--cl-surface)' }}>
-                                                                        <StatusIcon status={liveStatus} currentGame={game && liveStatus !== 'offline' ? game : null} onMobile={onMobile} size={14} />
-                                                                    </span>
-                                                                )}
+                                                                {activeChat.other_user_id && (() => {
+                                                                    const shownGame = game && liveStatus !== 'offline' && !onMobile ? game : null;
+                                                                    // The punched-out ring suits the plain status dot; around the
+                                                                    // controller it reads as a stray circle (same rule as the member
+                                                                    // list and DM rows: the controller badge goes ringless).
+                                                                    return shownGame ? (
+                                                                        <span className="absolute bottom-0 right-[-2px] z-20 flex items-center justify-center">
+                                                                            <StatusIcon status={liveStatus} currentGame={shownGame} size={14} />
+                                                                        </span>
+                                                                    ) : (
+                                                                        <span className="absolute bottom-0 right-0 z-20 flex items-center justify-center rounded-full" style={{ border: '3px solid var(--cl-surface)' }}>
+                                                                            <StatusIcon status={liveStatus} currentGame={null} onMobile={onMobile} size={14} />
+                                                                        </span>
+                                                                    );
+                                                                })()}
                                                             </div>
                                                             <div
                                                                 className="font-display cursor-pointer hover:text-[var(--cl-lume)] transition-colors"
@@ -12960,8 +13401,10 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                                                 }
                                                 channelKeyMissing={!!awaitingChannelKeys[activeChannel.channel_id]}
                                                 channelKeyCoolingOff={isCoolingOff(channelKeyCoolOff[activeChannel.channel_id], Date.now())}
-                                                onLoadOlderFromServer={loadOlderChannelMessages}
-                                                channelHistoryExhausted={!!channelHistoryExhausted[activeChannel.channel_id]}
+                                                historyGaps={openChannelGaps}
+                                                historyStart={reachesHistoryStart(channelCoverage[activeChannel.channel_id])}
+                                                onFillHistoryGap={fillChannelHistoryGap}
+                                                onLoadMessageContext={loadChannelMessageContext}
                                                 onChannelKeyMissing={(serverId, channelId) => {
                                                     setAwaitingChannelKeys(prev => ({ ...prev, [channelId]: true }));
                                                     void channelKeyOpsRef.current.maybeFileKeyRequest(serverId, channelId);

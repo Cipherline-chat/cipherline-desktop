@@ -122,8 +122,13 @@ describe('emoji picker', () => {
 describe('channel history refresh', () => {
     it('does not re-decrypt rows already cached as real content', () => {
         const dash = read('Dashboard.tsx');
-        const fn = dash.slice(dash.indexOf('const refreshChannelHistory = useCallback'), dash.indexOf('const channelKeyEnsureInFlightRef'));
+        // Every history read (the newest page on open, older/newer gap fills,
+        // the page around a jumped-to message, rows by id) folds through
+        // ingestChannelRows — so the reuse rule lives there, once.
+        const fn = dash.slice(dash.indexOf('const ingestChannelRows = useCallback'), dash.indexOf('const loadChannelMessagesById = useCallback'));
         expect(fn).toMatch(/splitReusableChannelRows\(raw, channelMessagesRef\.current\[channelId\]\)/);
         expect(fn).toMatch(/decryptChannelRows\(channelId, toDecrypt\)/);
+        const refresh = dash.slice(dash.indexOf('const refreshChannelHistory = useCallback'), dash.indexOf('const channelKeyEnsureInFlightRef'));
+        expect(refresh).toContain('await ingestChannelRows(serverId, channelId, raw,');
     });
 });

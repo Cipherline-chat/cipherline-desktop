@@ -128,22 +128,32 @@ describe('enqueueDelivery — delivery behind the feed', () => {
     });
 });
 
-describe('the failed message in the feed', () => {
-    it('shows "Not delivered" with its reason, Retry and Delete', () => {
-        const ui = src.slice(src.indexOf("{msg.send_state === 'failed' && ("));
-        expect(ui.slice(0, 2000)).toContain('Not delivered');
-        expect(ui.slice(0, 2000)).toContain('retrySend(msg)');
-        expect(ui.slice(0, 2000)).toContain('discardUnsent(msg)');
+describe('the undelivered message in the feed', () => {
+    it('carries the red "!" indicator, whose popover offers Retry and Discard (utils/undeliveredSend.ts)', () => {
+        expect(src).toContain('<UndeliveredIndicator');
+        expect(src).toContain('onRetry={() => retrySend(msg)}');
+        expect(src).toContain('onDiscard={() => discardUnsent(msg)}');
+        // The old always-visible "Not delivered — reason · Retry · Delete" line is gone.
+        expect(src).not.toContain("{msg.send_state === 'failed' && (");
     });
 
-    it('an unconfirmed message offers no hover actions or context menu (nothing server-side to act on yet)', () => {
+    it('an unconfirmed message has no hover actions; its context menu appears only once flagged undelivered', () => {
         expect(src).toContain('hoveredMsgId === msg.id && !isUnconfirmedSend(msg) &&');
-        expect(src).toMatch(/onContextMenu=\{\(e\) => \{ if \(isUnconfirmedSend\(msg\)\)/);
+        expect(src).toContain('if (undelivered) openUndeliveredMenu(e, msg); else e.preventDefault();');
     });
 
-    it('a slow send dims late (CSS delay), so a normal send never flickers', () => {
-        expect(src).toContain("msg.send_state === 'sending' ? ' cl-send-pending' : ''");
+    it('a pending message is drawn like a sent one: no dimming class, no .cl-send-pending rule', () => {
+        expect(src).not.toContain('cl-send-pending');
         const css = readFileSync(join(__dirname, '..', 'index.css'), 'utf8');
-        expect(css).toMatch(/\.cl-send-pending \{ animation: cl-send-pending 300ms ease 700ms both; \}/);
+        expect(css).not.toContain('cl-send-pending');
+    });
+
+    it('Retry restarts the 10 s clock and a discarded message is never sent by a queued attempt', () => {
+        const retry = src.slice(src.indexOf('const retrySend = '), src.indexOf('const discardUnsent = '));
+        expect(retry).toContain('sendClock.restart(clientMsgId);');
+        expect(src.slice(src.indexOf('const discardUnsent = '), src.indexOf('const handleSendAll = async'))).toContain('markCancelled(cid);');
+        // Both POST paths skip when an earlier attempt already landed or the user discarded it.
+        expect(deliver.split('if (wasDelivered(clientMsgId) || wasCancelled(clientMsgId)) return;').length - 1).toBe(2);
+        expect(deliver.split('markDelivered(clientMsgId);').length - 1).toBe(2);
     });
 });

@@ -33,8 +33,8 @@ function body(startMarker: string, endMarker: string): string {
 const serve = () => body('const serveKeyRequests = useCallback', 'const channelKeyOpsRef = useRef(');
 const distribute = () => body('const distributeChannelKeys = useCallback', 'const mayMintChannelKey = useCallback');
 const fileReq = () => body('const fileKeyRequest = useCallback', 'const maybeFileKeyRequest = useCallback');
-const pull = () => body('const pullChannelKeys = useCallback', '// ── Channel key backfill protocol');
-const memberJoined = () => body('if (!serverMemberJoinedEvent || !token || !userId || !deviceId) return;', '}, [serverMemberJoinedEvent]);');
+const pull = () => body('const pullChannelKeysOnce = useCallback', '// ── Channel key backfill protocol');
+const memberJoined = () => body('const distributeKeysToNewMember = (server_id: string, newUserId: string) => {', '}, [serverMemberJoinedEvents]);');
 
 describe('holder side: serving a key request', () => {
     it('records a requester device that is not listed with a key bundle instead of skipping it silently', () => {
@@ -46,8 +46,8 @@ describe('holder side: serving a key request', () => {
 
     it('isolates each request: a throw is caught and recorded INSIDE the loop, so later requests are still served', () => {
         const fn = serve();
-        const loop = fn.slice(fn.indexOf('for (const req of pending)'));
-        const perRequest = loop.slice(0, loop.indexOf('} finally {'));
+        const loop = fn.slice(fn.indexOf('const phases = latestFirstPhases(open);'));
+        const perRequest = loop.slice(0, loop.indexOf('if (stop) { stoppedAt = i; break; }'));
         // The per-request try must have its own catch before its finally.
         expect(perRequest).toMatch(/\} catch \(e\) \{[\s\S]*recordDelivery\('channel_key_distribute', e/);
     });

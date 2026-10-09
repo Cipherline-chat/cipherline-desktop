@@ -153,6 +153,69 @@ describe('native and custom emoji occupy the SAME box', () => {
     });
 });
 
+describe('the emoji follows the chip at ANY fractional position (fractional display scales)', () => {
+    // The bug: the emoji is text, and Chromium snaps a text baseline to a whole
+    // device pixel while the chip's border and fill sit at the chip's true,
+    // fractional position. At 125% / 150% / 175% scale the two disagree by up to
+    // a device pixel, and which way depends on the chip's y in the feed - so the
+    // identical chip DOM was centred under one message and a pixel high under
+    // the next (an image row is 320*h/w tall, a text line 22.75px). Measured in
+    // headless Chromium, harness/reaction-center-*.mjs: 0.61 css px spread
+    // across message shapes at 125% before this, 0.06 after. jsdom does no
+    // layout or painting, so this pins the STRUCTURE that fixes it: the emoji's
+    // cell is a genuine 3D-transformed (compositor) layer that places the glyph
+    // as a unit with the chip instead of snapping it on its own.
+    const cellOf = () => host.querySelector('button')!.children[0] as HTMLElement;
+    const countOf = () => host.querySelector('button')!.children[1] as HTMLElement;
+
+    it('puts the emoji cell on a real 3D transform, not a 2D-equivalent one', () => {
+        render(1, false);
+        const t = cellOf().style.transform;
+        // `translateZ(0)` and `will-change: transform` were both tried and
+        // measured: neither leaves the snapped paint path. perspective() is
+        // what makes the transform genuinely 3D.
+        expect(t).toMatch(/perspective\(\d+px\)/);
+        expect(t).toMatch(/rotateX\(/);
+    });
+
+    it('keeps the transform imperceptible: the glyph is not visibly tilted', () => {
+        render(1, false);
+        const deg = Number(/rotateX\(([\d.]+)deg\)/.exec(cellOf().style.transform)![1]);
+        expect(deg).toBeGreaterThan(0);
+        expect(deg).toBeLessThan(0.01);   // far below one pixel over a 20px glyph
+    });
+
+    it('applies to every glyph kind, because it wraps the cell not the glyph', () => {
+        // A custom emoji whose list has not loaded renders a placeholder: no
+        // network, and a different element than the native text span.
+        act(() => {
+            root!.render(React.createElement(ReactionPill, {
+                ...BASE, emoji: '<:party:abc123>', animKey: 'msg-1:custom', count: 1, hasMine: false, emojisLoading: true,
+            }));
+        });
+        expect(cellOf().style.transform).toMatch(/perspective\(/);
+    });
+
+    // CONTROLS: the assertions above would pass if EVERYTHING were transformed.
+    it('control: the count cell and the chip itself are NOT transformed', () => {
+        render(1, false);
+        // The count stays in the normal text path (crisp ClearType); putting
+        // the whole chip in the layer was measured to soften it. And the
+        // button's own transform belongs to popReactionPill's animation.
+        expect(countOf().style.transform).toBe('');
+        expect(host.querySelector('button')!.style.transform).toBe('');
+    });
+
+    it('control: the glyph inside the cell carries no transform of its own', () => {
+        // The transform is on the cell, which wraps every glyph kind; the
+        // text span keeps the flex-centred square the earlier fix gave it, and
+        // the "who reacted" tooltip (no cell, no size) is untouched.
+        render(1, false);
+        const glyph = cellOf().children[0] as HTMLElement;
+        expect(glyph.style.transform).toBe('');
+    });
+});
+
 describe('pill layout is two equal centred halves', () => {
     // jsdom does no layout, so this asserts the STRUCTURE that produces the
     // centring rather than measured pixels: an exact 2-column grid with both

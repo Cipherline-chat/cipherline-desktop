@@ -10,6 +10,7 @@
  */
 
 import { repositionByServerOrder } from './messageOrder';
+import { markDelivered } from './undeliveredSend';
 
 export type SendState = 'sending' | 'failed';
 
@@ -110,6 +111,9 @@ export function adoptServerCopy<T extends SendMarked & { sender_user_id?: string
     if (row.timestamp) (next as { timestamp?: string }).timestamp = row.timestamp;
     delete (next as SendMarked).send_state;
     delete (next as SendMarked).send_error;
+    // The server has it (an attempt that timed out client-side landed after all):
+    // a Retry still waiting in the delivery queue must not POST a second copy.
+    markDelivered(cid);
     if (row.sender_user_id) (next as { sender_user_id?: string | null }).sender_user_id = row.sender_user_id;
     const out = [...thread];
     out[idx] = next;
@@ -135,15 +139,29 @@ export function settleInterruptedSends<T extends SendMarked>(map: Record<string,
 }
 
 /** A short, human reason for a failed send, from whatever was thrown. */
+/**
+ * The API refused a channel write encrypted under an epoch older than the
+ * channel's current one (409 STALE_EPOCH, apps/api ChannelMessagesService
+ * .requireCurrentEpoch): this device missed a key rotation. Treated exactly
+ * like "no channel key" — fetch the key, the user retries.
+ */
+export function isStaleEpochError(err: unknown): boolean {
+    const r = (err as { response?: { status?: number; data?: { code?: unknown } } })?.response;
+    return r?.status === 409 && r.data?.code === 'STALE_EPOCH';
+}
+
 export function sendFailureReason(err: unknown): string {
     const status = (err as { response?: { status?: number } })?.response?.status;
     const msg = err instanceof Error ? err.message : String(err ?? '');
     if (/No channel key|Channel key for epoch/.test(msg)) return "This channel's key hasn't arrived yet";
+    if (isStaleEpochError(err)) return "This channel's newest key hasn't arrived yet";
     if (status === 429) return 'Sending too fast';
     if (status === 403) return "You don't have permission to send here";
     if (status === 413) return 'Message too large';
     if (status && status >= 500) return 'Server problem';
-    if (!status && /network|timeout|ECONN|Failed to fetch/i.test(msg)) return 'No connection';
+    const code = (err as { code?: string } | null)?.code;
+    if (!status && (code === 'ECONNABORTED' || code === 'ETIMEDOUT' || /timeout/i.test(msg))) return 'Timed out';
+    if (!status && /network|ECONN|Failed to fetch/i.test(msg)) return 'No connection';
     if (status === 401) return 'Signed out';
     return 'Not delivered';
 }

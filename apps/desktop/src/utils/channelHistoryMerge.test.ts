@@ -524,7 +524,7 @@ const dashboardSrc = readFileSync(join(__dirname, '..', 'components', 'Dashboard
 
 describe('handleChannelMessage (live WS) unpins a personally-saved deleted message', () => {
     const start = dashboardSrc.indexOf('const handleChannelMessage = useCallback');
-    const end = dashboardSrc.indexOf('}, [userId, notify]);', start);
+    const end = dashboardSrc.indexOf('}, [userId, notify, channelFailureContext]);', start);
     const fn = dashboardSrc.slice(start, end);
 
     it('meta: found the function', () => {
@@ -577,22 +577,26 @@ describe('handleChannelMessageSent (sender-side optimistic) unpins its own delet
     });
 });
 
-describe('refreshChannelHistory (catch-up fetch) unpins a message deleted while this device was elsewhere', () => {
-    const start = dashboardSrc.indexOf('const refreshChannelHistory = useCallback');
-    // The body is wrapped in trackActivity('channel:history', …) for the freeze
-    // log, so it closes with `}), [deps]` — match the dep list, not the brace.
-    const end = dashboardSrc.indexOf(', [token, deviceId, userId, decryptChannelRows, ensureChannelSaves, incomingRetentionFor]);', start);
+describe('channel history reads (catch-up fetch, gap fills, jump, by id) unpin a message deleted while this device was elsewhere', () => {
+    // Every history read folds through ingestChannelRows (the catch-up fetch
+    // refreshChannelHistory included), so the unpin rule is pinned there.
+    const start = dashboardSrc.indexOf('const ingestChannelRows = useCallback');
+    const end = dashboardSrc.indexOf('}, [userId, decryptChannelRows, ensureChannelSaves, incomingRetentionFor]);', start);
     const fn = dashboardSrc.slice(start, end);
 
-    it('meta: found the function', () => {
+    it('meta: found the function, and the catch-up fetch goes through it', () => {
         expect(start).toBeGreaterThan(0);
         expect(end).toBeGreaterThan(start);
+        const refresh = dashboardSrc.slice(dashboardSrc.indexOf('const refreshChannelHistory = useCallback'));
+        expect(refresh.slice(0, 4000)).toContain('await ingestChannelRows(serverId, channelId, raw,');
     });
 
     it('computes deletedChannelTargetIds against the pre-merge snapshot, BEFORE folding, and unpins via the ref', () => {
-        const unpinAt = fn.indexOf('deletedChannelTargetIds(channelMessagesRef.current[channelId] ?? [], sorted, purgedIds)');
-        const foldAt = fn.indexOf('foldChannelHistory(prev[channelId] ?? [], sorted, purgedIds, serverWindow)');
-        expect(unpinAt).toBeGreaterThan(0);
+        const snapAt = fn.indexOf('const snapshot: ChannelRow[] = channelMessagesRef.current[channelId] ?? [];');
+        const unpinAt = fn.indexOf('deletedChannelTargetIds(snapshot, sorted, purgedIds)');
+        const foldAt = fn.indexOf('foldChannelHistory(prev[channelId] ?? [], sorted, purgedIds, opts.window ?? undefined)');
+        expect(snapAt).toBeGreaterThan(0);
+        expect(snapAt).toBeLessThan(unpinAt);
         expect(unpinAt).toBeLessThan(foldAt);
         expect(fn).toContain("handlePersonalChannelSaveRef.current(channelId, id, 'remove')");
     });

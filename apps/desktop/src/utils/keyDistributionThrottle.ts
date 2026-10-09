@@ -15,8 +15,8 @@
  *    serve per `server:key_requested`, member_joined, rotations — each with
  *    its own 100 ms pacing, so their rates added up.
  *      → Pacer: ONE account-wide minimum interval between POST starts,
- *        shared by every caller, sized just under the server's
- *        `keyHandshake` bucket (30 / 10 s).
+ *        shared by every caller (≈2.9 POSTs/s, well inside the API's
+ *        per-user `default` bucket).
  *      → SingleFlight (serve passes, per server) and KeyedMutex (any
  *        distribution, per server+channel): no two loops ever walk the same
  *        server's requests or the same channel's recipients concurrently.
@@ -26,8 +26,21 @@
  *    forever.
  *      → DeliveryLedger: an epoch delivered to a device is not re-sent for the
  *        same request version (request_id + its created_at, which the server
- *        bumps whenever the device asks again), nor within a cool-down even
- *        if the device re-asks — that re-ask loop is the storm.
+ *        bumps whenever the device asks again). A NEW version — the device
+ *        asked again after our delivery — is ALWAYS served, at once. A
+ *        delivery is never treated as "received": the only proof is that the
+ *        device stops asking. Its re-ask is the protocol's one signal that
+ *        what it got did not work (undecryptable — wrapped to a bundle it no
+ *        longer has — purged, refused), and skipping it is exactly how calls
+ *        broke on 2026-10-09: participants re-asked for the epoch their call
+ *        key derives from, kept being told "already sent", and ended up on
+ *        different epochs.
+ *
+ *        (1.0.20 skipped ANY re-ask for 10 minutes after a delivery and marked
+ *        it answered — the same failure mode, client side.) What bounds the
+ *        cost of a device that keeps re-asking is its own cadence (60 s
+ *        per-channel dedup, the API's key-request throttle) and the Pacer /
+ *        back-off below — not a refusal to answer.
  *      → a per-pass submission cap, so one pass is bounded and the rest
  *        continues in a later pass rather than in one unbounded burst.
  *
@@ -40,22 +53,34 @@
 import { chunkEnvelopes } from './channelKeyDistribution';
 
 /** Account-wide minimum spacing between key-handshake POST starts. 350 ms ≈
- *  2.9/s, just under the API's `keyHandshake` bucket (30 per 10 s), so a
- *  well-behaved client never trips it by itself. */
+ *  2.9/s (≈171/min). The route shares the API's per-user `default` bucket
+ *  (300/min), so a distribution burst leaves headroom for everything else
+ *  the user is doing; a 429 still stops the pass (HandshakeBackoff). */
 export const KEY_HANDSHAKE_MIN_INTERVAL_MS = 350;
 
 /** Max key-handshake POSTs one serve pass may make before yielding and
  *  continuing in a later pass. */
 export const SERVE_PASS_SUBMISSION_CAP = 40;
 
-/** Delay before a pass that hit its submission cap continues. */
-export const PASS_CONTINUATION_DELAY_MS = 5_000;
+/** Delay before a pass that hit its submission cap continues. The Pacer is
+ *  what bounds the POST rate; this only yields so the continuation re-lists
+ *  the pending requests (dropping any another holder answered meanwhile).
+ *  Was 5 s, which added 5 s of dead air to every join burst > 40 POSTs. */
+export const PASS_CONTINUATION_DELAY_MS = 1_000;
 
-/** An epoch delivered to a device is not re-sent to it within this window,
- *  even for a re-filed request. Matches the recipient's own give-up cool-off
- *  (CHANNEL_KEY_COOL_OFF_MS): a device that genuinely failed to install a key
- *  only re-asks after that window anyway. */
+/** ONE-SHOT distributions (member_join / create / rotation / recovery) carry
+ *  no request version, so nothing tells a repeat apart from a duplicate
+ *  trigger: an epoch already handed to a device by one of them is not handed
+ *  to it again by ANOTHER ONE-SHOT within this window. It never applies to a
+ *  key request — a device that needs the key again asks, and an ask is always
+ *  answered (see DeliveryLedger.decide). */
 export const REDELIVERY_COOLDOWN_MS = 10 * 60 * 1000;
+
+/** Consecutive HTTP 500s for the same POST after which it is treated like a
+ *  definitive refusal (skipped for this ask) so one deterministically failing
+ *  submission cannot hold every other recipient behind a growing back-off.
+ *  502/503/504 (a rollout, an overloaded ingress) never count. */
+export const SERVER_ERROR_GIVE_UP = 3;
 
 export const BACKOFF_BASE_MS = 2_000;
 export const BACKOFF_MAX_MS = 5 * 60 * 1000;
@@ -215,11 +240,20 @@ export function keyRequestVersion(req: { request_id: string; created_at: string 
 
 interface LedgerEntry { at: number; version?: string }
 
+/** What the ledger says about handing (channel, epoch) to a device now. */
+export type LedgerDecision =
+    | { action: 'send' }
+    /** Already delivered for this exact ask (or, for a one-shot, recently). */
+    | { action: 'skip' };
+
 /**
  * What this device has already handed to whom: (channel, epoch, recipient
- * device) → when, and for which request version. In-memory, per session —
- * a restart forgets it, which costs at most one redundant re-serve (and the
- * server's own idempotency suppresses even that write).
+ * device) → when, and for which request version. In-memory, per session — a
+ * restart forgets it, which costs at most one redundant re-serve.
+ *
+ * It only ever suppresses a REPEAT of the same thing: the same ask answered
+ * again, or a one-shot repeated by another one-shot. It never suppresses an
+ * answer to a new ask (see decide).
  */
 export class DeliveryLedger {
     private readonly map = new Map<string, LedgerEntry>();
@@ -243,21 +277,36 @@ export class DeliveryLedger {
     }
 
     /**
-     * Skip when this exact request version was already answered with this
-     * epoch for this device, or when we delivered it within the cool-down —
-     * a re-filed request inside that window is the storm's loop, not a new
-     * need. After the cool-down a re-ask is served again.
+     * • Nothing delivered yet → send.
+     * • One-shot (no version) → skip within the one-shot cool-down.
+     * • This exact request version already answered → skip (the storm's
+     *   same-ask re-serve on every sweep / push / reconnect).
+     * • A different version that this device first SAW at or before our
+     *   delivery (`askSeenAt <= delivered at`) → skip: our delivery came AFTER
+     *   that ask, so it is the answer to it (the join race — the joiner's
+     *   requests land while member_join is still posting the same epochs). If
+     *   that answer did not work, the device asks again, and that new version
+     *   is first seen after our delivery.
+     * • Otherwise — the device asked again after our delivery → SEND, now.
      */
-    shouldSkip(channelId: string, epoch: number, deviceId: string, version?: string): boolean {
+    decide(channelId: string, epoch: number, deviceId: string, version?: string, askSeenAt?: number): LedgerDecision {
         const e = this.map.get(DeliveryLedger.key(channelId, epoch, deviceId));
-        if (!e) return false;
-        if (version !== undefined && e.version === version) return true;
-        return this.now() - e.at < this.cooldownMs;
+        if (!e) return { action: 'send' };
+        if (version === undefined) {
+            return this.now() - e.at < this.cooldownMs ? { action: 'skip' } : { action: 'send' };
+        }
+        if (e.version === version) return { action: 'skip' };
+        if (askSeenAt !== undefined && askSeenAt <= e.at) return { action: 'skip' };
+        return { action: 'send' };
     }
 
-    /** True iff every one of `epochs` would be skipped for this device. */
-    allDelivered(channelId: string, epochs: number[], deviceId: string, version?: string): boolean {
-        return epochs.length > 0 && epochs.every(ep => this.shouldSkip(channelId, ep, deviceId, version));
+    shouldSkip(channelId: string, epoch: number, deviceId: string, version?: string, askSeenAt?: number): boolean {
+        return this.decide(channelId, epoch, deviceId, version, askSeenAt).action === 'skip';
+    }
+
+    /** True iff every one of `epochs` was already answered for this ask. */
+    allDelivered(channelId: string, epochs: number[], deviceId: string, version?: string, askSeenAt?: number): boolean {
+        return epochs.length > 0 && epochs.every(ep => this.shouldSkip(channelId, ep, deviceId, version, askSeenAt));
     }
 
     get size(): number {
@@ -287,6 +336,14 @@ export class SingleFlight {
 
     isRunning(key: string): boolean {
         return this.running.has(key);
+    }
+
+    /** A trigger arrived while this run was in flight: a trailing re-run is
+     *  already queued. A long run can use this to YIELD early (it re-runs at
+     *  once) — e.g. a serve pass stops sending history so the new asks'
+     *  newest epochs go out first. */
+    hasPendingRerun(key: string): boolean {
+        return this.rerun.has(key);
     }
 
     run(key: string, fn: () => Promise<void>): Promise<void> {
@@ -331,18 +388,28 @@ export class KeyedMutex {
     }
 }
 
-/** One pending timer per key; a second schedule for a key that already has
- *  one rides it (the earlier timer will re-check everything anyway). */
+/** One pending timer per key. A second schedule for a key that already has
+ *  one keeps whichever fires EARLIER: every resume re-checks everything, so
+ *  the earliest is enough — but riding a LATER one (1.0.20) let a 5-minute
+ *  back-off resume swallow a 1-second continuation scheduled after it. */
 export class ResumeTimers {
-    private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
+    private readonly timers = new Map<string, { t: ReturnType<typeof setTimeout>; at: number }>();
+    private readonly now: () => number;
+
+    constructor(opts: { now?: () => number } = {}) {
+        this.now = opts.now ?? Date.now;
+    }
 
     schedule(key: string, delayMs: number, fn: () => void): void {
-        if (this.timers.has(key)) return;
+        const at = this.now() + Math.max(0, delayMs);
+        const existing = this.timers.get(key);
+        if (existing && existing.at <= at) return;
+        if (existing) clearTimeout(existing.t);
         const t = setTimeout(() => {
             this.timers.delete(key);
             fn();
         }, Math.max(0, delayMs));
-        this.timers.set(key, t);
+        this.timers.set(key, { t, at });
     }
 
     has(key: string): boolean {
@@ -350,7 +417,7 @@ export class ResumeTimers {
     }
 
     clearAll(): void {
-        for (const t of this.timers.values()) clearTimeout(t);
+        for (const { t } of this.timers.values()) clearTimeout(t);
         this.timers.clear();
     }
 }
@@ -388,6 +455,8 @@ export interface KeyDistributionArgs {
     recipients: DistributionRecipient[];
     /** Set when answering a key request — see DeliveryLedger. */
     requestVersion?: string;
+    /** When this device first saw that request version (see DeliveryLedger.decide). */
+    requestSeenAt?: number;
     /** Shared, mutable per-pass POST budget (serve passes only). */
     budget?: { remaining: number };
 }
@@ -404,7 +473,7 @@ export async function runKeyDistribution(
     deps: KeyDistributionDeps,
     args: KeyDistributionArgs,
 ): Promise<DistributionOutcome> {
-    const { serverId, channelId, epochs, recipients, requestVersion, budget } = args;
+    const { serverId, channelId, epochs, recipients, requestVersion, requestSeenAt, budget } = args;
     if (!epochs.length || !recipients.length) return { status: 'done', posted: 0 };
 
     return deps.mutex.run(`${serverId}:${channelId}`, async (): Promise<DistributionOutcome> => {
@@ -428,7 +497,7 @@ export async function runKeyDistribution(
             // Who still needs THIS epoch — decided before any IPC.
             const pending: [string, Omit<DistributionRecipient, 'user_id'>[]][] = [];
             for (const [uid, devices] of byUser) {
-                const need = devices.filter(d => !deps.ledger.shouldSkip(channelId, epoch, d.device_id, requestVersion));
+                const need = devices.filter(d => !deps.ledger.shouldSkip(channelId, epoch, d.device_id, requestVersion, requestSeenAt));
                 if (need.length) pending.push([uid, need]);
             }
             if (!pending.length) continue;
@@ -463,10 +532,12 @@ export async function runKeyDistribution(
                     const blockedAfterWait = stopIfBlocked();
                     if (blockedAfterWait) return blockedAfterWait;
                     if (budget) budget.remaining -= 1;
+                    const failKey = `${channelId}:${epoch}:${chunk.map(env => env.device_id).join(',')}`;
                     try {
                         await deps.post(serverId, { recipient_user_id: recipientUserId, channel_id: channelId, epoch, envelopes: chunk });
                         posted += 1;
                         deps.backoff.onSuccess();
+                        serverErrorCounts.delete(failKey);
                         for (const env of chunk) deps.ledger.record(channelId, epoch, env.device_id, requestVersion);
                     } catch (e) {
                         deps.onPostError?.(e, { epoch, recipientUserId, envelopes: chunk.length });
@@ -477,6 +548,19 @@ export async function runKeyDistribution(
                             for (const env of chunk) deps.ledger.record(channelId, epoch, env.device_id, requestVersion);
                             continue;
                         }
+                        if ((e as HttpErrorLike)?.response?.status === 500) {
+                            const n = (serverErrorCounts.get(failKey) ?? 0) + 1;
+                            if (n >= SERVER_ERROR_GIVE_UP) {
+                                // Deterministic for THIS submission: stop it
+                                // holding every other recipient behind a
+                                // growing back-off. Recorded like a refusal,
+                                // so a re-ask still gets it re-tried.
+                                serverErrorCounts.delete(failKey);
+                                for (const env of chunk) deps.ledger.record(channelId, epoch, env.device_id, requestVersion);
+                                continue;
+                            }
+                            serverErrorCounts.set(failKey, n);
+                        }
                         const retryInMs = deps.backoff.onFailure(kind === 'throttled' ? parseRetryAfterMs(e) : undefined);
                         return deferred(kind === 'throttled' ? 'throttled' : 'unavailable', retryInMs);
                     }
@@ -485,4 +569,108 @@ export async function runKeyDistribution(
         }
         return { status: 'done', posted };
     });
+}
+
+/** Consecutive HTTP-500 counts per (channel, epoch, device set). Module-wide:
+ *  one renderer is one signed-in session, and entries are removed on success
+ *  or on give-up, so it stays tiny. */
+const serverErrorCounts = new Map<string, number>();
+
+// ── Ordering ────────────────────────────────────────────────────────────────
+
+/**
+ * Order a set of per-channel distributions so every channel's NEWEST epoch
+ * goes out before ANY channel's history: [latest of #1, latest of #2, …,
+ * then #1's older epochs newest-first, #2's, …].
+ *
+ * The newest epoch is what makes a channel usable — it is the key to send
+ * with and to read everything from now on. Walking channel by channel and
+ * sending each one's whole history first (1.0.20) left the LAST channel of a
+ * 20-channel server unusable until ~60 POSTs (~21 s at the pacer's rate) had
+ * gone out for the others' history. The Pacer, ledger and cap are untouched:
+ * this only changes the ORDER, never the volume.
+ */
+export function latestFirstPhases<T extends { epochs: number[] }>(items: T[]): { item: T; epochs: number[] }[] {
+    const latest: { item: T; epochs: number[] }[] = [];
+    const history: { item: T; epochs: number[] }[] = [];
+    for (const item of items) {
+        const sorted = [...new Set(item.epochs)].sort((a, b) => b - a);
+        if (!sorted.length) continue;
+        latest.push({ item, epochs: [sorted[0]] });
+        if (sorted.length > 1) history.push({ item, epochs: sorted.slice(1) });
+    }
+    return [...latest, ...history];
+}
+
+// ── Finishing what a stopped serve pass started ─────────────────────────────
+
+/** How long a holder keeps owing the rest of a request it started serving. */
+export const OWED_SERVE_TTL_MS = 15 * 60 * 1000;
+
+export interface ServeRequestLike {
+    channel_id: string;
+    requester_device_id: string;
+}
+
+export interface OwedServe<R extends ServeRequestLike> {
+    req: R;
+    version: string;
+    seenAt: number;
+    epochs: number[];
+    until: number;
+}
+
+/**
+ * A serve pass stopped part-way (429, transient failure, its POST budget):
+ * remember what it still owed, per request version.
+ *
+ * Needed because of latest-first: the API closes a key request as soon as
+ * the requesting device ACKs the channel's NEWEST epoch, which is now the
+ * first thing sent. A pass that stops after the newest epochs but before
+ * the history therefore finds those requests GONE when it resumes and
+ * re-lists the pending set — and the history would never go out from this
+ * holder (the device, no longer gated, has no timer that asks again).
+ */
+export function recordOwed<R extends ServeRequestLike>(
+    owed: Map<string, OwedServe<R>>,
+    remaining: { item: { req: R; version: string; seenAt: number }; epochs: number[] }[],
+    now: number,
+): void {
+    for (const { item, epochs } of remaining) {
+        const prev = owed.get(item.version);
+        owed.set(item.version, {
+            req: item.req,
+            version: item.version,
+            seenAt: item.seenAt,
+            epochs: [...new Set([...(prev?.epochs ?? []), ...epochs])].sort((a, b) => b - a),
+            until: now + OWED_SERVE_TTL_MS,
+        });
+    }
+}
+
+/**
+ * The owed entries a new pass should serve alongside what it just listed:
+ * not answered, not expired, and not superseded by a LISTED request for the
+ * same (channel, device) — a listed request is the server's current view
+ * and so is always the better source. Expired,
+ * answered and superseded entries are removed from `owed`.
+ */
+export function takeOwed<R extends ServeRequestLike>(
+    owed: Map<string, OwedServe<R>>,
+    listed: { req: R; version: string }[],
+    answered: Set<string>,
+    now: number,
+): { req: R; version: string; seenAt: number; epochs: number[] }[] {
+    const listedVersions = new Set(listed.map(l => l.version));
+    const listedTargets = new Set(listed.map(l => `${l.req.channel_id}:${l.req.requester_device_id}`));
+    const out: { req: R; version: string; seenAt: number; epochs: number[] }[] = [];
+    for (const [version, o] of owed) {
+        if (answered.has(version) || now > o.until || listedVersions.has(version)
+            || listedTargets.has(`${o.req.channel_id}:${o.req.requester_device_id}`)) {
+            owed.delete(version);
+            continue;
+        }
+        out.push({ req: o.req, version, seenAt: o.seenAt, epochs: o.epochs });
+    }
+    return out;
 }

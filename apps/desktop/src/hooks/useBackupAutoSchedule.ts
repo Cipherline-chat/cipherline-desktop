@@ -19,7 +19,7 @@ import secureLocalStore from '../utils/secureLocalStore';
 import { trackActivity } from '../utils/freezeLog';
 import { useEffect, useRef } from 'react';
 import { useAuth } from '../contexts/AuthContext';
-import { runBackup, getCachedPassword, getLastBackupMs, getDestinationLastMs, DEFAULT_MAX_ATTACHMENT_BYTES } from '../services/driveBackup';
+import { runBackup, getCachedPassword, getLastBackupMs, getDestinationLastMs, DEFAULT_MAX_ATTACHMENT_BYTES, notifyBackupStateChanged } from '../services/driveBackup';
 
 const CHECK_EVERY_MS = 5 * 60 * 1000; // 5 minutes
 
@@ -84,6 +84,7 @@ export function readBackupCfg(userId: string): BackupCfg {
 
 export function writeBackupCfg(userId: string, cfg: BackupCfg): void {
     try { secureLocalStore.setItem(`cipherline_backup_cfg_${userId}`, JSON.stringify(cfg)); } catch { /* ignore */ }
+    notifyBackupStateChanged();
 }
 
 /** Why automatic backups aren't currently running, or null when healthy.
@@ -98,6 +99,7 @@ function writeBackupBlocked(userId: string, reason: BackupBlockedReason | null):
         if (reason) secureLocalStore.setItem(BLOCKED_KEY(userId), reason);
         else secureLocalStore.removeItem(BLOCKED_KEY(userId));
     } catch { /* ignore */ }
+    notifyBackupStateChanged();
 }
 
 /**

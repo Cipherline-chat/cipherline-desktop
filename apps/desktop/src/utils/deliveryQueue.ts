@@ -21,6 +21,18 @@
  * other.
  */
 
+/**
+ * How long one message-send POST may take before it is abandoned. Without a
+ * limit a request that never answers holds this conversation's lane forever
+ * (POSTs run strictly one at a time) and a Retry would queue behind it. On
+ * timeout the job's `fail` runs, the message is marked failed (the red "!"),
+ * and the lane moves on. The abandoned attempt may still have reached the
+ * server; Retry reuses the same client_msg_id and the server's copy, when it
+ * shows up, is adopted onto the local row (pendingSend.adoptServerCopy), which
+ * clears the "!" — see utils/undeliveredSend.ts for the no-duplicate ledger.
+ */
+export const SEND_POST_TIMEOUT_MS = 20_000;
+
 export interface DeliveryJob<P> {
     /** Recipients + encryption. Starts immediately; may run concurrently with earlier POSTs. */
     prepare: () => Promise<P>;

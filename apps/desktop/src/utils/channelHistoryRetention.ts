@@ -1,6 +1,7 @@
 import type { StoragePolicy } from '../hooks/useRetentionPolicy';
 import { sweepRetention } from './retentionSweeper';
 import { isUndecryptablePlaceholder, type ChannelRow } from './channelHistoryMerge';
+import { placeholderWantsKey } from './channelDecryptFailure';
 
 /**
  * Retention applied at the DOOR of a server channel's cache.
@@ -78,5 +79,8 @@ export function pageNeedsKeyRequest(
     kept: readonly ChannelRow[],
     purgedIds: ReadonlySet<string>,
 ): boolean {
-    return kept.some(m => !purgedIds.has(m.id) && isUndecryptablePlaceholder(m));
+    // Only a placeholder that is waiting on a KEY: a row whose sender could not
+    // be verified, or whose key is withheld by permission, is not helped by
+    // asking other members for one (utils/channelDecryptFailure.ts).
+    return kept.some(m => !purgedIds.has(m.id) && isUndecryptablePlaceholder(m) && placeholderWantsKey(m));
 }

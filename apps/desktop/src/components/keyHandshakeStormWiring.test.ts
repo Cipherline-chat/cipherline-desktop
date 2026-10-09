@@ -75,8 +75,8 @@ describe('serveKeyRequests: single-flight, budgeted, deduped, and it stops on a 
     it('caps each pass and passes the request version so delivered epochs are not re-sent', () => {
         const fn = serve();
         expect(fn).toContain('const budget = { remaining: SERVE_PASS_SUBMISSION_CAP };');
-        expect(fn).toContain('{ requestVersion: version, budget }');
-        expect(fn).toContain('deliveryLedger.allDelivered(req.channel_id, epochs, req.requester_device_id, version)');
+        expect(fn).toContain('{ requestVersion: version, requestSeenAt: askSeenAt, budget }');
+        expect(fn).toContain('deliveryLedger.allDelivered(req.channel_id, epochs, req.requester_device_id, version, askSeenAt)');
     });
 
     it('a deferred distribution ends the pass (no further POSTs from it) and schedules one resume', () => {
@@ -84,7 +84,7 @@ describe('serveKeyRequests: single-flight, budgeted, deduped, and it stops on a 
         const branch = fn.slice(fn.indexOf("if (outcome.status === 'deferred') {"));
         expect(branch.slice(0, 300)).toContain('scheduleResume(outcome.retryInMs);');
         expect(branch.slice(0, 300)).toContain('stop = true;');
-        expect(fn).toContain('if (stop) break;');
+        expect(fn).toContain('if (stop) { stoppedAt = i; break; }');
     });
 
     it('the key_requested push and the connect sweep both go through serveKeyRequests (so through the single-flight)', () => {

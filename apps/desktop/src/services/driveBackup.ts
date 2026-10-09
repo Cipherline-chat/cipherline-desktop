@@ -884,6 +884,21 @@ export function getDestinationLastMs(userId: string, label: DestinationLabel): n
     return getLastBackupMs(userId);
 }
 
+/** Fired on window whenever backup state the UI summarises changes: a backup
+ *  completed (stampLastBackup), the backup config was saved, or the
+ *  scheduler's blocked reason changed. The Home backup tile computes its
+ *  nudge from secureLocalStore on render, so without this it kept showing
+ *  "You have no backup yet" after the user set backups up and ran one. */
+export const BACKUP_STATE_EVENT = 'cipherline:backup-state';
+
+export function notifyBackupStateChanged(): void {
+    try {
+        if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
+            window.dispatchEvent(new Event(BACKUP_STATE_EVENT));
+        }
+    } catch { /* non-fatal: the next render still reads fresh state */ }
+}
+
 /** Record a successful backup. The ONLY place either timestamp is written —
  *  see LAST_BACKUP_MS_KEY for why there are two. */
 export function stampLastBackup(userId: string, atIso: string): void {
@@ -892,6 +907,7 @@ export function stampLastBackup(userId: string, atIso: string): void {
         const ms = Date.parse(atIso);
         if (Number.isFinite(ms)) secureLocalStore.setItem(LAST_BACKUP_MS_KEY(userId), String(ms));
     } catch { /* ignore */ }
+    notifyBackupStateChanged();
 }
 
 /** Locally-recorded timestamp of the last successful backup, ISO-8601.

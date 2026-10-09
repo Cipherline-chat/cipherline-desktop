@@ -1,0 +1,261 @@
+/* ── "Waiting for this channel's keys" (components/ChannelKeyWait.tsx) ────────
+   A padlock over a soft halo, two quiet rings going out (the request reaching
+   other members), and a few rows of ciphertext where the chat will be. A key
+   landing opens the shackle; decrypting resolves the ciphertext rows into
+   plain lines; the exit settles the lock and fades the rows while the real
+   list fades up into the same place.
+
+   Rules (ChannelKeyWait.test.ts checks them):
+   1. Only transform and opacity are animated or transitioned.
+   2. No keyframe references a custom property (custom properties only in
+      delays), no filter / backdrop-filter / box-shadow.
+   3. Every RESTING rule is the visible end state: intros fill `backwards`,
+      outros run toward a resting opacity:0. With animations off (reduced
+      motion) everything that should be seen is seen, and nothing that should
+      be gone lingers.
+   4. Loops pause while the window is hidden ([data-paused]).
+   5. Reduced motion: no movement at all; opacity-only fades of ≤160 ms. */
+
+.ckw-root {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  overflow: hidden;
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-select: none;
+  font-family: var(--cl-font-body, 'Nunito', system-ui, sans-serif);
+  animation: ckw-fade-in 280ms ease-out backwards;
+}
+
+/* ── ciphertext rows, bottom-up where the messages will be ───────────────── */
+.ckw-ghosts {
+  flex: none;
+  align-self: stretch;
+  margin: 0 24px;
+  height: 40%;
+  max-height: 320px;
+  display: flex;
+  flex-direction: column-reverse;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to top, #000 35%, transparent 100%);
+  mask-image: linear-gradient(to top, #000 35%, transparent 100%);
+  transition: opacity 320ms ease 120ms;
+}
+.ckw-ghost {
+  display: flex;
+  gap: 14px;
+  padding: 7px 0;
+  animation: ckw-ghost-in 460ms cubic-bezier(.2, .8, .2, 1) backwards;
+  animation-delay: calc(140ms + var(--i, 0) * 45ms);
+}
+.ckw-ghost-av {
+  flex: none;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: rgba(167, 179, 212, .07);
+}
+.ckw-ghost-col { flex: 1; min-width: 0; padding-top: 2px; }
+.ckw-ghost-name {
+  height: 9px;
+  border-radius: 5px;
+  background: rgba(167, 179, 212, .11);
+  margin: 2px 0 8px;
+}
+.ckw-ghost-line {
+  position: relative;
+  height: 18px;
+  margin-bottom: 4px;
+  overflow: hidden;
+  border-radius: 6px;
+}
+.ckw-ghost-glyphs {
+  position: absolute;
+  inset: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  font-family: var(--cl-font-mono, 'JetBrains Mono', ui-monospace, monospace);
+  font-size: 12px;
+  line-height: 18px;
+  letter-spacing: .02em;
+  color: rgba(37, 224, 200, .26);
+  transition: opacity 360ms ease;
+  transition-delay: calc(var(--i, 0) * 40ms + var(--j, 0) * 20ms);
+}
+.ckw-ghost-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 4px;
+  bottom: 4px;
+  border-radius: 5px;
+  background: rgba(167, 179, 212, .11);
+  opacity: 0;
+  transition: opacity 360ms ease;
+  transition-delay: calc(var(--i, 0) * 40ms + var(--j, 0) * 20ms);
+}
+/* a slow ripple of brightness up the rows: still ciphertext, still waiting */
+.ckw-ghost-pulse {
+  animation: ckw-pulse 3.8s ease-in-out infinite;
+  animation-delay: calc(var(--i, 0) * -520ms + var(--j, 0) * -180ms);
+}
+/* decrypting: the ciphertext resolves into plain lines */
+.ckw-root.is-resolved .ckw-ghost-glyphs { opacity: 0; }
+.ckw-root.is-resolved .ckw-ghost-bar { opacity: 1; }
+
+/* ── the lock ──────────────────────────────────────────────────────────── */
+.ckw-center {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding-top: 12px;
+  transition: opacity 220ms ease, transform 420ms cubic-bezier(.4, 0, .2, 1);
+}
+.ckw-emblem {
+  position: relative;
+  width: 132px;
+  height: 132px;
+  margin-bottom: 10px;
+  animation: ckw-emblem-in 560ms cubic-bezier(.34, 1.56, .64, 1) 40ms backwards;
+}
+.ckw-halo {
+  position: absolute;
+  inset: 6px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(37, 224, 200, .17) 0%, rgba(37, 224, 200, .06) 42%, transparent 68%);
+  animation: ckw-breathe 4.8s ease-in-out infinite;
+}
+.ckw-rings {
+  position: absolute;
+  inset: 0;
+  transition: opacity 420ms ease;
+}
+.ckw-ring {
+  position: absolute;
+  inset: 32px;
+  border-radius: 50%;
+  border: 1.5px solid rgba(37, 224, 200, .55);
+  opacity: 0;
+  animation: ckw-ring 3.4s cubic-bezier(.2, .6, .3, 1) infinite;
+}
+.ckw-ring-2 { animation-delay: 1.7s; }
+/* nobody has answered: the rings keep going, quieter */
+.ckw-root.is-stalled .ckw-rings { opacity: .4; }
+.ckw-root.is-unlocked .ckw-rings { opacity: 0; }
+.ckw-bloom {
+  position: absolute;
+  inset: 32px;
+  border-radius: 50%;
+  border: 2px solid rgba(37, 224, 200, .6);
+  opacity: 0;
+  animation: ckw-bloom 1000ms cubic-bezier(.2, .7, .3, 1);
+}
+
+.ckw-lock {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 52px;
+  height: 60px;
+  margin: -32px 0 0 -26px;
+  color: var(--cl-lume, #25E0C8);
+  animation: ckw-bob 5.2s ease-in-out infinite;
+}
+.ckw-shackle {
+  position: absolute;
+  left: 6px;
+  top: 0;
+  width: 40px;
+  height: 30px;
+  line-height: 0;
+  transform: translateY(2px);
+  transition: transform 620ms cubic-bezier(.34, 1.56, .64, 1);
+}
+.ckw-root.is-unlocked .ckw-shackle { transform: translateY(-7px); }
+.ckw-body {
+  position: absolute;
+  left: 0;
+  top: 20px;
+  width: 52px;
+  height: 40px;
+  line-height: 0;
+}
+.ckw-shackle svg, .ckw-body svg { display: block; }
+
+/* ── copy ──────────────────────────────────────────────────────────────── */
+.ckw-copy { max-width: 440px; padding: 0 24px; text-align: center; }
+.ckw-title, .ckw-detail { text-wrap: balance; }
+.ckw-copy-stack { display: grid; min-height: 86px; align-content: start; }
+.ckw-copy-item { grid-area: 1 / 1; }
+.ckw-title {
+  margin: 0;
+  font-family: var(--cl-font-display, 'Fredoka', sans-serif);
+  font-weight: 500;
+  font-size: 17px;
+  line-height: 1.35;
+  letter-spacing: .01em;
+  color: var(--cl-text, #F4F7FF);
+}
+.ckw-detail {
+  margin: 6px 0 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--cl-muted, #A7B3D4);
+}
+.ckw-copy-in > * { animation: ckw-copy-in 380ms cubic-bezier(.2, .8, .2, 1) 90ms backwards; }
+.ckw-copy-in > .ckw-detail { animation-delay: 140ms; }
+.ckw-copy-out > * { opacity: 0; animation: ckw-copy-out 240ms ease-in; }
+/* the title didn't change: keep it still, only the detail changes */
+.ckw-copy-in > .ckw-steady { animation: none; }
+.ckw-copy-out > .ckw-steady { animation: none; }
+
+/* ── exit: the lock settles, the rows give way to the real list ─────────── */
+.ckw-root.is-exiting .ckw-center { opacity: 0; transform: scale(.96) translateY(-4px); }
+.ckw-root.is-exiting .ckw-ghosts { opacity: 0; }
+.ckw-list-in { animation: ckw-list-in 320ms cubic-bezier(.2, .8, .2, 1) 150ms backwards; }
+
+/* window hidden: nothing ticks */
+.ckw-root[data-paused],
+.ckw-root[data-paused] * { animation-play-state: paused !important; }
+
+@keyframes ckw-fade-in { from { opacity: 0; } }
+@keyframes ckw-emblem-in { from { opacity: 0; transform: translateY(8px) scale(.86); } }
+@keyframes ckw-ghost-in { from { opacity: 0; transform: translateY(8px); } }
+@keyframes ckw-copy-in { from { opacity: 0; transform: translateY(5px); } }
+@keyframes ckw-copy-out { from { opacity: 1; transform: none; } to { opacity: 0; transform: translateY(-4px); } }
+@keyframes ckw-breathe { 0%, 100% { opacity: .7; } 50% { opacity: 1; } }
+@keyframes ckw-ring {
+  0% { opacity: 0; transform: scale(.78); }
+  14% { opacity: .65; }
+  100% { opacity: 0; transform: scale(1.9); }
+}
+@keyframes ckw-bloom { from { opacity: .75; transform: scale(.85); } to { opacity: 0; transform: scale(2.1); } }
+@keyframes ckw-bob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-3px); } }
+@keyframes ckw-pulse { 0%, 100% { opacity: .5; } 50% { opacity: 1; } }
+@keyframes ckw-list-in { from { opacity: 0; transform: translateY(10px); } }
+
+/* Reduced motion: a still picture. The lock, halo and rows are drawn at rest;
+   the copy still changes (instantly); the only fades are opacity, ≤160 ms. */
+@media (prefers-reduced-motion: reduce) {
+  .ckw-root,
+  .ckw-root *,
+  .ckw-list-in { animation: none !important; }
+  .ckw-root { animation: ckw-fade-in 160ms ease-out backwards !important; }
+  .ckw-list-in { animation: ckw-fade-in 160ms ease-out backwards !important; }
+  .ckw-ring { opacity: .22; transform: scale(1.3); }
+  .ckw-ring-2 { opacity: 0; }
+  .ckw-ghost-glyphs, .ckw-ghost-bar, .ckw-rings { transition: opacity 160ms ease; transition-delay: 0s; }
+  .ckw-shackle { transition: none; }
+  .ckw-center { transition: opacity 160ms ease; }
+  .ckw-root.is-exiting .ckw-center { transform: none; }
+  .ckw-ghosts { transition: opacity 160ms ease; }
+  .ckw-list-in { animation-delay: 0s !important; }
+}

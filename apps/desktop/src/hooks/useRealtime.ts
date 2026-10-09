@@ -415,7 +415,12 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
         livekit_url: string; livekit_token: string; moved_by: string; nonce: number;
     } | null>(null);
     const [serverRemovedEvent, setServerRemovedEvent] = useState<{ server_id: string; reason: 'kick' | 'ban' | 'deleted' } | null>(null);
-    const [serverMemberJoinedEvent, setServerMemberJoinedEvent] = useState<{ server_id: string; user_id: string } | null>(null);
+    /** `server:member_joined` — append-only queue (capped), drained by
+     *  Dashboard, which distributes this device's channel keys to each joiner.
+     *  A single nullable slot kept only the last of two joins that reached the
+     *  socket before React rendered, and the earlier joiner got nothing from
+     *  this holder. */
+    const [serverMemberJoinedEvents, setServerMemberJoinedEvents] = useState<{ server_id: string; user_id: string; ts: number }[]>([]);
     /** Fires when ANY permission-affecting mutation lands on the server
      *  (role create/update/delete, role assign/unassign, channel/category
      *  override changes). Dashboard's consumer refetches myPermissions +
@@ -1094,10 +1099,11 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
                         });
                     }
                     if (msg.event === 'server:member_joined') {
-                        setServerMemberJoinedEvent({
+                        setServerMemberJoinedEvents(prev => [...prev, {
                             server_id: msg.data.server_id,
                             user_id: msg.data.user_id,
-                        });
+                            ts: Date.now(),
+                        }].slice(-EVENT_QUEUE_CAP));
                     }
                     if (msg.event === 'server:permissions_changed') {
                         // Use Date.now() as the timestamp so repeated permission
@@ -1519,7 +1525,8 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
         huddleParticipantEvent,
         huddleForceMoveEvent,
         serverRemovedEvent,
-        serverMemberJoinedEvent,
+        serverMemberJoinedEvents,
+        setServerMemberJoinedEvents,
         permissionsChangedEvent,
         channelsChangedEvent,
         serverUpdatedEvent,
