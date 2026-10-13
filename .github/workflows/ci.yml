@@ -1,0 +1,60 @@
+name: CI
+
+# Builds the desktop app and runs its full Vitest suite on every pull request and every push to main. This is the
+# public repo's own test gate (the same steps `promote-stable.sh` runs on the exported tree before a release), so a
+# change proposed here is exercised before anyone applies it upstream. "Build and test" is a required status check
+# of the "Protect main" ruleset.
+#
+# Builds nothing that ships and signs nothing: no installer, no electron-builder, no native addon rebuild, no secrets.
+# `--ignore-scripts` keeps dependency install scripts (and the Electron binary download) out of the run; the tests
+# do not need them. GitHub-hosted runner, every action pinned to a full commit SHA.
+#
+# Exported with the desktop code; its template is scripts/release/public/ci.yml in the development repo. Edit it
+# THERE: an edit made only in this repo is put back by the next export.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Build and test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Node 22: one test (e2eeActivatorTiming) depends on the Node 22 jsdom/WebCrypto realm behaviour.
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --legacy-peer-deps --ignore-scripts --no-audit --no-fund
+
+      - name: Build the shared package
+        run: npm run build -w @cipherline/shared
+
+      - name: Build the desktop app (renderer + Electron main)
+        working-directory: apps/desktop
+        run: npm run build
+
+      # Generous per-test limit and one retry, as in the release gate: a heavy test must not flake on a busy runner.
+      # A real break fails every attempt.
+      - name: Test
+        working-directory: apps/desktop
+        run: npx vitest run --testTimeout=300000 --retry=1
