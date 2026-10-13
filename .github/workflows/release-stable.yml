@@ -20,6 +20,11 @@ name: Release Stable Desktop
 #   3. Installers are NEVER uploaded as workflow artifacts or GitHub release assets. In a public repo those
 #      are downloadable by any signed-in GitHub user, which would bypass the website's download code.
 #      The only thing recorded publicly is each installer's SHA-256 inside the provenance attestation.
+#      The `github-release` job publishes a GitHub Release for the tag that carries ONLY hashes (SHA256SUMS + its
+#      sigstore bundle), the provenance bundle (provenance.intoto.jsonl), the already-public update manifests
+#      (latest*.yml) and release notes. Each platform job hands it just those files, and both the platform jobs and
+#      the release job FAIL if an installer-like file (.exe .dmg .AppImage .deb .zip .blockmap ...) or anything
+#      outside an explicit allow-list is in the set. That job is non-blocking: the update feeds do not depend on it.
 #   4. Stable builds are always signed. A missing signing secret fails the job; it never ships unsigned.
 #
 #   5. CLIENT_ATTEST_SECRET is OPTIONAL: it is only needed once the API enforces client attestation
@@ -163,6 +168,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
       - name: Attest build provenance
+        id: attest
         if: needs.prepare.outputs.publish == 'true'
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
         with:
@@ -198,6 +204,39 @@ jobs:
           BODY="$(curl -fsS https://updates.cipherline.chat/latest.yml)"
           echo "$BODY" | head -3
           echo "$BODY" | grep -q "^version: $V\$" || { echo "::error::latest.yml does not advertise $V"; exit 1; }
+      # Hand the github-release job hashes + manifests (+ the provenance bundle on a tag run). NEVER an installer: the
+      # staging directory is checked below and the step fails if one is in it. Runs on dry runs too (no bundle then).
+      - name: Collect release metadata (hashes and manifests only, never installers)
+        id: meta
+        continue-on-error: true
+        shell: bash
+        env:
+          ATTEST_BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          OUT="$PWD/release-meta"; mkdir -p "$OUT"
+          cd apps/desktop/release
+          sums() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$@"; else shasum -a 256 "$@"; fi; }
+          FILES=(*.exe)
+          [ "${#FILES[@]}" -gt 0 ] || { echo "::error::no installer found to hash"; exit 1; }
+          sums "${FILES[@]}" > "$OUT/sums-windows.txt"
+          for m in latest.yml latest.yml.sig; do
+            if [ -f "$m" ]; then cp "$m" "$OUT/"; fi
+          done
+          if [ -n "${ATTEST_BUNDLE:-}" ] && [ -f "$ATTEST_BUNDLE" ]; then cp "$ATTEST_BUNDLE" "$OUT/provenance-windows.jsonl"; fi
+          BAD="$(find "$OUT" -type f \( -iname '*.exe' -o -iname '*.dmg' -o -iname '*.appimage' -o -iname '*.deb' -o -iname '*.zip' -o -iname '*.blockmap' -o -iname '*.msi' -o -iname '*.pkg' -o -size +1M \))"
+          if [ -n "$BAD" ]; then echo "::error::installer-like or oversized file in the release metadata: $BAD"; exit 1; fi
+          ls -l "$OUT"
+      - name: Upload release metadata (hashes and manifests; no installers)
+        if: steps.meta.outcome == 'success'
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-meta-windows
+          path: release-meta
+          if-no-files-found: error
+          retention-days: 1
 
   macos:
     needs: prepare
@@ -284,6 +323,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
       - name: Attest build provenance
+        id: attest
         if: needs.prepare.outputs.publish == 'true'
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
         with:
@@ -326,6 +366,38 @@ jobs:
           BODY="$(curl -fsS https://updates.cipherline.chat/latest-mac.yml)"
           echo "$BODY" | head -3
           echo "$BODY" | grep -q "^version: $V\$" || { echo "::error::latest-mac.yml does not advertise $V"; exit 1; }
+      # See the Windows job: hashes + manifests only, never an installer.
+      - name: Collect release metadata (hashes and manifests only, never installers)
+        id: meta
+        continue-on-error: true
+        shell: bash
+        env:
+          ATTEST_BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          OUT="$PWD/release-meta"; mkdir -p "$OUT"
+          cd apps/desktop/release
+          sums() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$@"; else shasum -a 256 "$@"; fi; }
+          FILES=(*.dmg *-mac.zip)
+          [ "${#FILES[@]}" -gt 0 ] || { echo "::error::no installer found to hash"; exit 1; }
+          sums "${FILES[@]}" > "$OUT/sums-macos.txt"
+          for m in latest-mac.yml latest-mac.yml.sig; do
+            if [ -f "$m" ]; then cp "$m" "$OUT/"; fi
+          done
+          if [ -n "${ATTEST_BUNDLE:-}" ] && [ -f "$ATTEST_BUNDLE" ]; then cp "$ATTEST_BUNDLE" "$OUT/provenance-macos.jsonl"; fi
+          BAD="$(find "$OUT" -type f \( -iname '*.exe' -o -iname '*.dmg' -o -iname '*.appimage' -o -iname '*.deb' -o -iname '*.zip' -o -iname '*.blockmap' -o -iname '*.msi' -o -iname '*.pkg' -o -size +1M \))"
+          if [ -n "$BAD" ]; then echo "::error::installer-like or oversized file in the release metadata: $BAD"; exit 1; fi
+          ls -l "$OUT"
+      - name: Upload release metadata (hashes and manifests; no installers)
+        if: steps.meta.outcome == 'success'
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-meta-macos
+          path: release-meta
+          if-no-files-found: error
+          retention-days: 1
 
   linux:
     needs: prepare
@@ -397,6 +469,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
       - name: Attest build provenance
+        id: attest
         if: needs.prepare.outputs.publish == 'true'
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
         with:
@@ -433,6 +506,38 @@ jobs:
           BODY="$(curl -fsS https://updates.cipherline.chat/latest-linux.yml)"
           echo "$BODY" | head -6
           echo "$BODY" | grep -q "^version: $V\$" || { echo "::error::latest-linux.yml does not advertise $V"; exit 1; }
+      # See the Windows job: hashes + manifests only, never an installer.
+      - name: Collect release metadata (hashes and manifests only, never installers)
+        id: meta
+        continue-on-error: true
+        shell: bash
+        env:
+          ATTEST_BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          OUT="$PWD/release-meta"; mkdir -p "$OUT"
+          cd apps/desktop/release
+          sums() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$@"; else shasum -a 256 "$@"; fi; }
+          FILES=(*.AppImage *.deb)
+          [ "${#FILES[@]}" -gt 0 ] || { echo "::error::no installer found to hash"; exit 1; }
+          sums "${FILES[@]}" > "$OUT/sums-linux.txt"
+          for m in latest-linux.yml latest-linux.yml.sig; do
+            if [ -f "$m" ]; then cp "$m" "$OUT/"; fi
+          done
+          if [ -n "${ATTEST_BUNDLE:-}" ] && [ -f "$ATTEST_BUNDLE" ]; then cp "$ATTEST_BUNDLE" "$OUT/provenance-linux.jsonl"; fi
+          BAD="$(find "$OUT" -type f \( -iname '*.exe' -o -iname '*.dmg' -o -iname '*.appimage' -o -iname '*.deb' -o -iname '*.zip' -o -iname '*.blockmap' -o -iname '*.msi' -o -iname '*.pkg' -o -size +1M \))"
+          if [ -n "$BAD" ]; then echo "::error::installer-like or oversized file in the release metadata: $BAD"; exit 1; fi
+          ls -l "$OUT"
+      - name: Upload release metadata (hashes and manifests; no installers)
+        if: steps.meta.outcome == 'success'
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-meta-linux
+          path: release-meta
+          if-no-files-found: error
+          retention-days: 1
 
   report:
     needs: [prepare, windows, macos, linux]
@@ -453,3 +558,161 @@ jobs:
             echo "- $PLATFORM: job \`$JOB\`, feed \`${PUB:-unreachable}\` ($MARK)" >> "$GITHUB_STEP_SUMMARY"
           done
           exit "$STALE"
+
+  # A GitHub Release for the tag that carries ONLY verification material: hashes, their sigstore bundle, the provenance
+  # bundle, the (already public) update manifests and notes. This is what OpenSSF Scorecard's Signed-Releases check reads.
+  # NEVER installers (see safety point 3): the "Assert the asset set" step fails the job on anything else.
+  #
+  # Non-blocking: nothing depends on this job and the update feeds are published by the platform jobs. A failure here
+  # leaves the feeds shipped; fix and re-run just this job (it is idempotent: an existing release is updated).
+  # On a dry run (branch, workflow_dispatch) everything runs up to and including the asset guard, which prints the asset
+  # list, but nothing is signed or created.
+  github-release:
+    needs: [prepare, windows, macos, linux]
+    if: always() && needs.prepare.result == 'success'
+    runs-on: ubuntu-24.04
+    continue-on-error: true
+    timeout-minutes: 15
+    permissions:
+      contents: write        # create the release (this job only)
+      id-token: write        # sign SHA256SUMS with Sigstore (tag runs only)
+      attestations: write
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      PUBLISH: ${{ needs.prepare.outputs.publish }}
+      RESULT_WINDOWS: ${{ needs.windows.result }}
+      RESULT_MACOS: ${{ needs.macos.result }}
+      RESULT_LINUX: ${{ needs.linux.result }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Download release metadata
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: release-meta-*
+          merge-multiple: true
+          path: release-meta
+
+      - name: Assemble the asset set
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          for r in "$RESULT_WINDOWS" "$RESULT_MACOS" "$RESULT_LINUX"; do
+            [ "$r" = success ] || { echo "::error::a platform job did not succeed (windows=$RESULT_WINDOWS macos=$RESULT_MACOS linux=$RESULT_LINUX); not assembling a release from a partial build"; exit 1; }
+          done
+          ls -l release-meta
+          mkdir -p assets
+          # hashes of every installer, all platforms, in one stable order
+          cat release-meta/sums-windows.txt release-meta/sums-macos.txt release-meta/sums-linux.txt | LC_ALL=C sort -k2 > assets/SHA256SUMS
+          grep -q '\.exe$' assets/SHA256SUMS || { echo "::error::no Windows installer hash"; exit 1; }
+          grep -q '\.dmg$' assets/SHA256SUMS || { echo "::error::no macOS installer hash"; exit 1; }
+          grep -q '\.AppImage$' assets/SHA256SUMS || { echo "::error::no Linux installer hash"; exit 1; }
+          # the update manifests (already served publicly by the feed), each of which must advertise this version
+          for m in latest.yml latest-mac.yml latest-linux.yml; do
+            [ -f "release-meta/$m" ] || { echo "::error::manifest $m is missing"; exit 1; }
+            grep -q "^version: $VERSION\$" "release-meta/$m" || { echo "::error::$m does not advertise $VERSION"; exit 1; }
+            cp "release-meta/$m" assets/
+            if [ -f "release-meta/$m.sig" ]; then cp "release-meta/$m.sig" assets/; fi
+          done
+          # provenance: the three platform attestation bundles, one JSON bundle per line (tag runs only; a dry run does not attest)
+          if [ "$PUBLISH" = true ]; then
+            PROV=(release-meta/provenance-*.jsonl)
+            [ "${#PROV[@]}" -eq 3 ] || { echo "::error::expected 3 provenance bundles, found ${#PROV[@]}"; exit 1; }
+            for p in "${PROV[@]}"; do jq -e . "$p" >/dev/null || { echo "::error::$p is not valid JSON"; exit 1; }; done
+            cat "${PROV[@]}" > assets/provenance.intoto.jsonl
+          fi
+          cat > notes.md <<EOF
+          Cipherline Desktop $VERSION (stable).
+
+          This release page carries **verification material only**. Installers are not published here: download them
+          from [cipherline.chat](https://cipherline.chat) or let the app update itself.
+
+          What is attached:
+
+          - \`SHA256SUMS\`: the SHA-256 of every installer in this release, and \`SHA256SUMS.sigstore.json\`, a Sigstore
+            bundle that signs that file.
+          - \`provenance.intoto.jsonl\`: the build-provenance attestations (in-toto statements in Sigstore bundles) for the
+            Windows, macOS and Linux installers: proof they were built from this repository's tag by its release workflow.
+          - \`latest.yml\`, \`latest-mac.yml\`, \`latest-linux.yml\`: the update manifests served at updates.cipherline.chat.
+
+          Check a download:
+
+          \`\`\`bash
+          sha256sum -c --ignore-missing SHA256SUMS
+          gh attestation verify <installer> --repo $GITHUB_REPOSITORY
+          \`\`\`
+
+          Security advisories for fixes shipped in a release are published under this repository's Security tab.
+          EOF
+
+      - name: Sign SHA256SUMS (Sigstore)
+        id: sign
+        if: env.PUBLISH == 'true'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
+        with:
+          subject-path: assets/SHA256SUMS
+
+      - name: Add the signature bundle
+        if: env.PUBLISH == 'true'
+        shell: bash
+        env:
+          SIGN_BUNDLE: ${{ steps.sign.outputs.bundle-path }}
+        run: |
+          set -euo pipefail
+          [ -n "$SIGN_BUNDLE" ] && [ -f "$SIGN_BUNDLE" ] || { echo "::error::no sigstore bundle was produced for SHA256SUMS"; exit 1; }
+          cp "$SIGN_BUNDLE" assets/SHA256SUMS.sigstore.json
+
+      - name: Assert the asset set (no installers, nothing outside the allow-list)
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob dotglob
+          FAIL=0
+          # 1. explicit deny: anything installer-shaped, or large
+          DENY="$(find assets -type f \( -iname '*.exe' -o -iname '*.dmg' -o -iname '*.appimage' -o -iname '*.deb' -o -iname '*.zip' -o -iname '*.blockmap' -o -iname '*.msi' -o -iname '*.pkg' -o -iname '*.7z' -o -iname '*.tar' -o -iname '*.tar.gz' -o -iname '*.tgz' -o -size +1M \))"
+          if [ -n "$DENY" ]; then echo "::error::installer-like or oversized file in the release assets:"; echo "$DENY"; FAIL=1; fi
+          # 2. allow-list: every asset must be one of these exact names
+          for f in assets/*; do
+            n="$(basename "$f")"
+            if ! printf '%s\n' "$n" | grep -Eq '^(SHA256SUMS|SHA256SUMS\.sigstore\.json|provenance\.intoto\.jsonl|latest(-mac|-linux)?\.yml|latest(-mac|-linux)?\.yml\.sig)$'; then
+              echo "::error::unexpected release asset: $n"; FAIL=1
+            fi
+          done
+          # 3. a real release needs the signature and the provenance
+          if [ "$PUBLISH" = true ]; then
+            for need in SHA256SUMS.sigstore.json provenance.intoto.jsonl; do
+              [ -s "assets/$need" ] || { echo "::error::missing release asset $need"; FAIL=1; }
+            done
+          fi
+          [ "$FAIL" = 0 ] || exit 1
+          {
+            echo "## GitHub Release assets for v$VERSION"
+            if [ "$PUBLISH" = true ]; then echo "Will be attached to the release:"; else echo "**DRY RUN: nothing is signed or created.** The release would carry:"; fi
+            echo ""
+            echo '| asset | bytes | sha256 |'
+            echo '|---|---|---|'
+            for f in assets/*; do printf '| `%s` | %s | `%s` |\n' "$(basename "$f")" "$(wc -c < "$f" | tr -d ' ')" "$(sha256sum "$f" | cut -d' ' -f1)"; done
+            if [ "$PUBLISH" != true ]; then
+              echo '| `SHA256SUMS.sigstore.json` | (tag run only) | Sigstore bundle of SHA256SUMS |'
+              echo '| `provenance.intoto.jsonl` | (tag run only) | the 3 platform attestation bundles |'
+            fi
+            echo ""
+            echo '`SHA256SUMS` content:'
+            echo '```'
+            cat assets/SHA256SUMS
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Create the GitHub Release
+        if: env.PUBLISH == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="v$VERSION"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $TAG exists; updating its assets and notes"
+            gh release upload "$TAG" assets/* --clobber --repo "$GITHUB_REPOSITORY"
+            gh release edit "$TAG" --notes-file notes.md --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$TAG" assets/* --verify-tag --title "Cipherline Desktop $VERSION" --notes-file notes.md --repo "$GITHUB_REPOSITORY"
+          fi
