@@ -1,0 +1,9 @@
+{
+  "name": "cipherline-smoke-test-deps",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Lockfile-pinned dependencies of scripts/smoke-test.mjs only (playwright-core). CI installs them with `npm ci` in this directory, so the smoke test is reproducible and integrity-pinned instead of an unpinned `npm install --no-save`. Not a workspace and not shipped in the app.",
+  "dependencies": {
+    "playwright-core": "1.64.0"
+  }
+}

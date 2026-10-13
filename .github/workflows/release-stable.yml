@@ -151,7 +151,8 @@ jobs:
         shell: bash
         run: |
           cd apps/desktop
-          npm install --no-save playwright-core@^1.49.0
+          # lockfile-pinned (scripts/package-lock.json, integrity hashes): `npm ci`, not an unpinned `npm install`
+          npm ci --prefix scripts --ignore-scripts --no-audit --no-fund
           node scripts/smoke-test.mjs
       - name: Upload smoke screenshot (failures only)
         if: failure()
@@ -271,7 +272,8 @@ jobs:
         shell: bash
         run: |
           cd apps/desktop
-          npm install --no-save playwright-core@^1.49.0
+          # lockfile-pinned (scripts/package-lock.json, integrity hashes): `npm ci`, not an unpinned `npm install`
+          npm ci --prefix scripts --ignore-scripts --no-audit --no-fund
           node scripts/smoke-test.mjs
       - name: Upload smoke screenshot (failures only)
         if: failure()
@@ -383,7 +385,8 @@ jobs:
         shell: bash
         run: |
           cd apps/desktop
-          npm install --no-save playwright-core@^1.49.0
+          # lockfile-pinned (scripts/package-lock.json, integrity hashes): `npm ci`, not an unpinned `npm install`
+          npm ci --prefix scripts --ignore-scripts --no-audit --no-fund
           xvfb-run --auto-servernum node scripts/smoke-test.mjs
       - name: Upload smoke screenshot (failures only)
         if: failure()
