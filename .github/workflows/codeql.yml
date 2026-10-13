@@ -1,0 +1,55 @@
+name: CodeQL
+
+# Static analysis (SAST) with GitHub CodeQL: the desktop app's TypeScript/JavaScript, and the workflow files themselves
+# (script injection, unsafe triggers, over-broad permissions). Results go to the Security tab as code scanning alerts.
+#
+# Triggers: every push to main, every pull request into main (so "Analyze (...)" can be a required status check in the
+# "Protect main" ruleset: do not add path filters here, or a PR that skips the workflow could never merge), and a weekly
+# run so new queries are applied to unchanged code.
+#
+# Builds and signs nothing, reads no secrets, GitHub-hosted runners only. Every action is pinned to a full commit SHA.
+# The C++ native addon (src-native/) is not analysed: CodeQL's c-cpp needs a node-gyp build of the addon, which is a
+# self-contained Windows/macOS-specific toolchain step that is not worth reproducing on a Linux runner.
+#
+# This file is exported with the desktop code: its template is scripts/release/public/codeql.yml in the development
+# repo. Edit it THERE; an edit made only in the public repo is put back by the next export.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '23 5 * * 2'
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      security-events: write   # upload results to code scanning
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [javascript-typescript, actions]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          category: /language:${{ matrix.language }}
