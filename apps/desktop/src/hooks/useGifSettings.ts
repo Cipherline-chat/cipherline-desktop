@@ -100,7 +100,7 @@ export function useGifSettings() {
     const setAutoPlayGifs = useCallback((v: boolean) => {
         setSettings(prev => {
             const next = { ...prev, autoPlayGifs: v };
-            try { secureLocalStore.setItem(STORAGE_KEY, JSON.stringify(next)); } catch {}
+            try { secureLocalStore.setItem(STORAGE_KEY, JSON.stringify(next)); } catch { /* persisting a UI preference is best-effort; a failed write must not break the UI */ }
             // Notify all other mounted instances of the hook.
             window.dispatchEvent(new CustomEvent(CHANGE_EVENT));
             return next;

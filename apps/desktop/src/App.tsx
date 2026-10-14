@@ -21,6 +21,7 @@ import { useEscape } from './hooks/useEscape';
 import {
     clearPendingInvite, getPendingInvite, onPendingInviteChange, setPendingInvite,
 } from './utils/signupAttribution';
+import { installGpuRestartListener } from './utils/gpuRecovery';
 
 function AppInner() {
   const { isAuthenticated, initializing } = useAuth();
@@ -36,6 +37,11 @@ function AppInner() {
   const { ready: hydrated } = useHydration();
   const [showKit, setShowKit] = useState(false);
   const [seasonalEffects] = useSeasonalEffects();
+
+  // GPU process restart ("graphics driver reset") from main: the live call
+  // recovers its video, otherwise main is told there was no call to recover
+  // (utils/gpuRecovery.ts). Installed once, signed in or not.
+  useEffect(() => installGpuRestartListener(window.electronAPI), []);
 
   // Fade-in curtain: when the user logs in or registers, briefly overlay
   // the Dashboard with a solid ABYSS curtain that fades out (0.4 s). This
@@ -145,8 +151,11 @@ function AppInner() {
   return (
     <div className="app-container">
       {import.meta.env.DEV && showKit && <ClKitGallery onClose={() => setShowKit(false)} />}
-      {/* Draggable Top Bar for Electron Frameless UI */}
-      <div style={{ height: '32px', width: '100%', WebkitAppRegion: 'drag', position: 'fixed', top: 0, left: 0, zIndex: 9999 } as any} />
+      {/* Draggable Top Bar for Electron Frameless UI. data-lock-exempt: no
+          interactive content, and the window must stay draggable under the
+          Screen Lock (utils/lockIsolation.ts leaves it alone). */}
+      {/* eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap) */}
+      <div data-lock-exempt style={{ height: '32px', width: '100%', WebkitAppRegion: 'drag', position: 'fixed', top: 0, left: 0, zIndex: 9999 } as any} />
 
       {isAuthenticated
         ? <Dashboard

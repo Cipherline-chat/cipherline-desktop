@@ -150,7 +150,6 @@ async function buildVault(shape: Shape) {
 }
 
 type Variant = 'old' | 'new';
-/* eslint-disable @typescript-eslint/no-explicit-any */
 async function loadVariant(v: Variant, srcDir: string): Promise<any> {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), `cl-vault-bench-${v}-`));
     fs.cpSync(srcDir, tmpDir, { recursive: true });

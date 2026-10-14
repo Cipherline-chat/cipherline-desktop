@@ -152,7 +152,6 @@ function applyOverlay(win: BrowserWindow, kind: OverlayKind, description: string
 export function setBadgeCount(
     win: BrowserWindow,
     count: number,
-    trayRef?: { setToolTip: (s: string) => void } | null,
 ): void {
     currentCount = Math.max(0, count);
 
@@ -160,7 +159,7 @@ export function setBadgeCount(
     if (process.platform === 'darwin') {
         try {
             app.dock?.setBadge(currentCount > 0 ? String(currentCount) : '');
-        } catch {}
+        } catch { /* best-effort; failure is non-fatal and intentionally ignored */ }
     }
 
     // Windows taskbar overlay icon — call states take priority over unread badge.
@@ -176,25 +175,18 @@ export function setBadgeCount(
             } else {
                 applyOverlay(win, 'none', '');
             }
-        } catch {}
+        } catch { /* best-effort; failure is non-fatal and intentionally ignored */ }
     }
 
     // Linux Unity/GNOME badge
     if (process.platform === 'linux') {
-        try { app.setBadgeCount(currentCount); } catch {}
+        try { app.setBadgeCount(currentCount); } catch { /* OS badge / taskbar flash is cosmetic; failure is non-fatal */ }
     }
 
-    // Tray tooltip
-    if (trayRef) {
-        try {
-            const tip = currentCount > 0
-                ? `Cipherline · ${currentCount} unread`
-                : 'Cipherline';
-            trayRef.setToolTip(tip);
-        } catch {}
-    }
-
-    // Tray icon: swap to badge variant when unreads present.
+    // Tray icon AND tooltip ("Cipherline · N unread", or the call state, which
+    // outranks it): tray.ts owns both and sends only what changed. This used
+    // to set the tooltip here too — a second Shell_NotifyIcon round trip per
+    // unread change that tray.ts then immediately overwrote.
     // setTrayBadgeIcon is a no-op when the tray isn't enabled.
     setTrayBadgeIcon(currentCount);
 }
@@ -215,11 +207,11 @@ export function flashTaskbar(win: BrowserWindow): void {
                 _flashPending = true;
                 win.once('focus', () => {
                     _flashPending = false;
-                    try { win.flashFrame(false); } catch {}
+                    try { win.flashFrame(false); } catch { /* OS badge / taskbar flash is cosmetic; failure is non-fatal */ }
                 });
             }
         }
-    } catch {}
+    } catch { /* teardown is best-effort; the node/handle may already be closed */ }
 }
 
 /**
@@ -242,7 +234,7 @@ export function applyWindowsCallOverlay(win: BrowserWindow): void {
         } else {
             applyOverlay(win, 'none', '');
         }
-    } catch {}
+    } catch { /* best-effort; failure is non-fatal and intentionally ignored */ }
 }
 
 export function getCurrentBadgeCount(): number {

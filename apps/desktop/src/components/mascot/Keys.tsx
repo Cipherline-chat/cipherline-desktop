@@ -27,6 +27,7 @@ export type { KeysMood, KeysSignal, KeysFace, PokeReaction } from '../../utils/k
 // pattern as emitMascotCue's session guard.
 let wavedThisSession = false;
 /** Test/dev escape hatch. */
+// eslint-disable-next-line react-refresh/only-export-components -- co-located helper export; splitting the file would only affect dev Fast Refresh, not runtime behaviour
 export function __resetWaveGuard() { wavedThisSession = false; }
 
 export interface KeysProps {

@@ -111,6 +111,40 @@ export function dropEmptyCalls<T extends { participants: string[] }>(
 }
 
 /**
+ * Who is in a call at the moment the `huddle:call_spawned` event creates its
+ * card. The server's `participants` is authoritative: a force-move spawn sends
+ * `[]` because the actor who dropped someone onto an empty Calls channel never
+ * joins it. Only an older server omits the field, and only then do we fall back
+ * to the legacy assumption that the spawner is inside what they spawned (true
+ * for an ordinary spawn, which is all an older server could describe).
+ */
+export function spawnedCallParticipants(call: { spawner_user_id: string; participants?: unknown }): string[] {
+    if (Array.isArray(call.participants)) {
+        return call.participants.filter((p): p is string => typeof p === 'string');
+    }
+    return [call.spawner_user_id];
+}
+
+/**
+ * Reduce a `huddle:call_spawned` event into the call map. Idempotent: a call
+ * already present is left alone (same object back). The roster is
+ * `spawnedCallParticipants` — authoritative from the server, never inferred
+ * from who spawned the call.
+ */
+export function addSpawnedCall(
+    calls: Record<string, HuddleCallInfo[]>,
+    huddleId: string,
+    call: Omit<HuddleCallInfo, 'huddle_id' | 'participants'> & { participants?: string[] },
+): Record<string, HuddleCallInfo[]> {
+    const bucket = calls[huddleId] ?? [];
+    if (bucket.some(c => c.call_id === call.call_id)) return calls;
+    return {
+        ...calls,
+        [huddleId]: [...bucket, { ...call, huddle_id: huddleId, participants: spawnedCallParticipants(call) }],
+    };
+}
+
+/**
  * Take `userId` out of one call's participant list (a local leave). Same
  * object back when they were not in it, so a setState updater is a no-op.
  */

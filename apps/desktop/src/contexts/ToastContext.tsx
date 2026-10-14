@@ -10,12 +10,15 @@ export interface ToastInput {
     message: string;
     /** Override the 4.5s default. Set to 0 to disable auto-dismiss. */
     durationMs?: number;
+    /** One optional button. Clicking it dismisses the toast, then runs `onClick`. */
+    action?: { label: string; onClick: () => void };
 }
 
 interface Toast extends Required<Pick<ToastInput, 'message'>> {
     id: string;
     kind: ToastKind;
     title?: string;
+    action?: ToastInput['action'];
 }
 
 interface ToastContextValue {
@@ -27,6 +30,7 @@ const ToastContext = createContext<ToastContextValue | null>(null);
 
 /** Safe no-op hook when used outside the provider (lets a component render without
  *  forcing every test to wrap itself). */
+// eslint-disable-next-line react-refresh/only-export-components -- co-located helper export; splitting the file would only affect dev Fast Refresh, not runtime behaviour
 export function useToast(): ToastContextValue {
     const ctx = useContext(ToastContext);
     return ctx ?? { push: () => {}, dismiss: () => {} };
@@ -59,6 +63,7 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
     const push = useCallback((input: ToastInput) => {
         const id = (typeof crypto !== 'undefined' && 'randomUUID' in crypto)
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
             ? (crypto as any).randomUUID()
             : `toast-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
         const toast: Toast = {
@@ -66,6 +71,7 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             kind: input.kind ?? 'info',
             title: input.title,
             message: input.message,
+            action: input.action,
         };
         setToasts(prev => [...prev, toast]);
         const dur = input.durationMs ?? 4500;
@@ -97,6 +103,21 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                                 <p className={`text-[12px] text-cl-muted leading-snug m-0 ${t.title ? 'mt-0.5' : ''} whitespace-pre-wrap break-words`}>
                                     {t.message}
                                 </p>
+                                {t.action && (
+                                    <div className="mt-2">
+                                        <ClButton
+                                            size="sm"
+                                            variant="ghost"
+                                            onClick={() => {
+                                                const run = t.action!.onClick;
+                                                dismiss(t.id);
+                                                try { run(); } catch { /* the action's own failure must not break the toast stack */ }
+                                            }}
+                                        >
+                                            {t.action.label}
+                                        </ClButton>
+                                    </div>
+                                )}
                             </div>
                             <ClButton
                                 icon

@@ -155,6 +155,61 @@ export function focusToggleMeaningful(layout: FullscreenLayout): boolean {
     return layout.mode === 'grid' || layout.mode === 'focus';
 }
 
+// ── Focus across the fullscreen toggle ──────────────────────────────────────
+//
+// Owner: "When you have a non-fullscreen focused video and go to full screen,
+// I want it to have the focused full screen window."
+//
+// The overlay used to CLEAR `focusedStream` on entry, so fullscreen always
+// opened on the grid and the stream you were watching was demoted to one cell
+// among many — the opposite of what pressing "fullscreen" on a focused stream
+// means. The comment that justified it ("landing on a focus carried over from
+// the docked view was disorienting") is overruled by that request.
+//
+// The docked view and fullscreen now share ONE focus, in both directions:
+//
+//   ENTER  whatever is focused stays focused, so `chooseFullscreenLayout`
+//          resolves it to `focus` mode on the same stream (or `solo`, when it
+//          is the only stage tile). Nothing focused → nothing changes, so the
+//          default is exactly what it always was: grid for several videos,
+//          solo for one.
+//   EXIT   whatever is focused AT THAT MOMENT stays focused — the stream you
+//          entered with if you left it alone, the one you switched to inside
+//          fullscreen if you clicked another, and none if you clicked the
+//          stage to go back to the grid. "What I was looking at is what I
+//          keep looking at" is the only rule that is the same in both
+//          directions; restoring the pre-fullscreen focus on exit would undo
+//          a choice the user just made.
+//
+// A focused stream that ENDS mid-fullscreen is not handled here: that is
+// FocusedStreamBanner's auto-advance (utils/pickNextFocus.ts), which stays
+// mounted for the whole call, fullscreen included. Until it advances,
+// `resolveFocus` sees a dead focus and the overlay falls back to the grid
+// rather than an empty stage.
+
+/**
+ * The focus in effect after fullscreen is entered (`_entering` true) or left.
+ *
+ * The overlay routes every toggle through this rather than writing a
+ * hard-coded value, so the rule above lives in one tested place.
+ */
+export function focusAfterFullscreenToggle(
+    _entering: boolean,
+    current: FocusRef | null,
+): FocusRef | null {
+    // Deliberately the same answer in both directions — see the section
+    // comment. The direction stays in the signature (underscored: unread
+    // today) because enter and exit are distinct decisions that happen to
+    // agree; a future rule for one of them must not need a call-site change.
+    return current;
+}
+
+/** Same stream? (null-safe; two nulls are the same "nothing focused"). */
+export function sameFocus(a: FocusRef | null, b: FocusRef | null): boolean {
+    if (!a || !b) return a === b;
+    return a.identity === b.identity && a.source === b.source;
+}
+
 // ── Participant strip sizing ────────────────────────────────────────────────
 //
 // The bar the rebuild replaced was drag-resizable with an 80px floor. A

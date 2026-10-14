@@ -15,6 +15,9 @@ import { join } from 'node:path';
  */
 const src = readFileSync(join(__dirname, 'Dashboard.tsx'), 'utf8');
 const realtime = readFileSync(join(__dirname, '..', 'hooks', 'useRealtime.ts'), 'utf8');
+// The serve pass and the member_join decision live in utils/keyServePass.ts
+// since 2026-10-11 (so a simulation can drive them); Dashboard wires effects.
+const servePassSrc = readFileSync(join(__dirname, '..', 'utils', 'keyServePass.ts'), 'utf8');
 
 function body(text: string, startMarker: string, endMarker: string): string {
     const a = text.indexOf(startMarker);
@@ -26,6 +29,8 @@ function body(text: string, startMarker: string, endMarker: string): string {
 
 const pull = () => body(src, 'const pullChannelKeysOnce = useCallback', '// ── Channel key backfill protocol');
 const serve = () => body(src, 'const serveKeyRequests = useCallback', 'const serveKeyRequestsRef = useRef(');
+const pass = () => body(servePassSrc, 'export function serveKeyRequestsPass(', 'export interface MemberJoinDeps');
+const joinDecision = () => body(servePassSrc, 'export async function runMemberJoinDistribution(', "return 'distributed';");
 const memberJoined = () => body(src, 'const distributeKeysToNewMember = (server_id: string, newUserId: string) => {', '}, [serverMemberJoinedEvents]);');
 const connectSweep = () => body(src, '// Connect-time sweep over every server', '// RC-10 / Phase 6: refresh which epochs');
 const retryTimer = () => body(src, 'const FALLBACK_ROTATION_AFTER_MS', '}, [token, deviceId, requestMissingChannelKeys, attemptFallbackRotation]);');
@@ -43,53 +48,62 @@ describe('keyless side: a pull triggered mid-pull is not dropped', () => {
 });
 
 describe('holder side: serving key requests', () => {
-    it('answering is keyed on the request VERSION only: no time window, no "already sent" skip (2026-10-09 call incident)', () => {
+    it('Dashboard delegates the pass to serveKeyRequestsPass with the session-wide ledger / back-off / single-flight', () => {
         const fn = serve();
+        expect(fn).toContain('return serveKeyRequestsPass({');
+        for (const dep of ['backoff: handshakeBackoff', 'ledger: deliveryLedger', 'flight: keyServeFlight', 'distribute: distributeChannelKeys', 'owed: owedKeyServesRef.current']) {
+            expect(fn).toContain(dep);
+        }
+    });
+
+    it('answering is keyed on the request VERSION only: no time window, no "already sent" skip (2026-10-09 call incident)', () => {
+        const fn = pass();
         // An unacked envelope is not proof of delivery; the device re-asking
         // (a new version) must always be served. Nothing in the pass may skip
         // a request because something was sent to it earlier.
-        expect(fn).toContain('deliveryLedger.allDelivered(req.channel_id, epochs, req.requester_device_id, version, askSeenAt)');
+        expect(fn).toContain('ledger.allDelivered(req.channel_id, epochs, req.requester_device_id, version, askSeenAt)');
         expect(fn).not.toMatch(/REDELIVERY_COOLDOWN|cooldown|satisfied_epochs|respace/i);
     });
 
     it('sends every request\'s newest epoch before any history', () => {
-        expect(serve()).toContain('const phases = latestFirstPhases(open);');
+        expect(pass()).toContain('const phases = latestFirstPhases(walk);');
     });
 
     it('a request that threw is NOT marked answered (the next trigger retries it)', () => {
-        const fn = serve();
-        const loop = fn.slice(fn.indexOf('const phases = latestFirstPhases(open);'));
+        const fn = pass();
+        const loop = fn.slice(fn.indexOf('const phases = latestFirstPhases(walk);'));
         const branch = loop.slice(loop.indexOf('} catch (e) {'));
         expect(branch.slice(0, 600)).toContain('unfinished.add(version);');
         expect(fn).toContain('if (!unfinished.has(version)) answered.add(version);');
     });
 
     it('a pass that stops part-way OWES the rest to its resume — even once the request closes server-side', () => {
-        const fn = serve();
+        const fn = pass();
         // Latest-first means the device acks the newest epoch first, which
         // closes its request; the history must still go out from this holder.
-        expect(fn).toContain('recordOwed(owedKeyServesRef.current, phases.slice(stoppedAt), Date.now());');
-        expect(fn).toContain('open.push(...takeOwed(owedKeyServesRef.current, listed, answered, now));');
+        expect(fn).toContain('recordOwed(deps.owed, phases.slice(stoppedAt), deps.now());');
+        expect(fn).toContain('const owedItems = takeOwed(deps.owed, listed, answered, now);');
+        expect(fn).toContain('open.push(...owedItems);');
     });
 
     it('yields before more HISTORY when new asks arrived mid-pass (their newest epochs go first)', () => {
-        const fn = serve();
-        const guard = fn.slice(fn.indexOf('if (i >= latestCount && keyServeFlight.hasPendingRerun(serverId)) {'));
+        const fn = pass();
+        const guard = fn.slice(fn.indexOf('if (i >= latestCount && flight.hasPendingRerun(serverId)) {'));
         expect(guard.length).toBeGreaterThan(0);
         expect(guard.slice(0, 700)).toContain('stop = true; stoppedAt = i; break;');
     });
 
     it('passes when it first saw each ask, so an ask that a member_join delivery already answered is not re-sent', () => {
-        const fn = serve();
+        const fn = pass();
         expect(fn).toContain('if (!seenAt.has(version)) seenAt.set(version, now);');
         expect(fn).toContain('{ requestVersion: version, requestSeenAt: askSeenAt, budget }');
-        expect(fn).toContain('deliveryLedger.allDelivered(req.channel_id, epochs, req.requester_device_id, version, askSeenAt)');
+        expect(fn).toContain('ledger.allDelivered(req.channel_id, epochs, req.requester_device_id, version, askSeenAt)');
     });
 
     it('fetches each requesting user\'s devices once per pass, not once per request', () => {
-        const fn = serve();
-        expect(fn).toContain('const devicesByUser = new Map<string,');
-        expect(fn.match(/\/members\/\$\{[a-z_.]+\}\/devices`/g)).toHaveLength(1);
+        expect(pass()).toContain('const devicesByUser = new Map<string,');
+        expect(pass()).toContain('p = deps.getMemberDevices(serverId, uid);');
+        expect(serve().match(/\/members\/\$\{[a-z_.]+\}\/devices`/g)).toHaveLength(1);
     });
 });
 
@@ -103,8 +117,11 @@ describe('holder side: server:member_joined', () => {
         const fn = memberJoined();
         expect(fn).toContain('for (const { server_id, user_id: newUserId } of batch) {');
         expect(fn).toContain('distributeKeysToNewMember(server_id, newUserId);');
-        expect(fn).toContain('for (const { item, epochs } of latestFirstPhases(plan)) {');
-        expect(fn).toContain("await distributeChannelKeys(server_id, item.channelId, epochs, recipients, 'member_join');");
+        expect(fn).toContain('void runMemberJoinDistribution({');
+        expect(fn).toContain('distribute: distributeChannelKeys,');
+        const join = joinDecision();
+        expect(join).toContain('for (const { item, epochs } of latestFirstPhases(plan)) {');
+        expect(join).toContain("await deps.distribute(serverId, item.channelId, epochs, recipients, 'member_join');");
     });
 });
 
@@ -164,5 +181,39 @@ describe('idle holder: rotation for a server never opened this session', () => {
         expect(fn).toContain('if (!canMintChannelKey(loaded.kind, perms)) return;');
         // Control (before): the kind came ONLY from serverChannelsRef.
         expect(fn).not.toMatch(/const kind = \(serverChannelsRef\.current\[serverId\] \?\? \[\]\)\s*\.find/);
+    });
+});
+
+describe('2026-10-11 key-delivery latency ("had to wait 5 mins for the keys")', () => {
+    const fileReq = () => body(src, 'const fileKeyRequest = useCallback', 'const maybeFileKeyRequest = useCallback');
+    const reaskTick = () => body(src, 'reaskTickRef.current = (sid) => runReaskTick({', '}, sid);');
+
+    it('a key request filed while holding NO key arms the fast re-ask (never a stale channel — 2026-10-07 storm)', () => {
+        const fn = fileReq();
+        expect(fn).toContain('keyless = (await window.electronAPI!.getLatestChannelEpoch(channelId)) === null;');
+        const arm = fn.slice(fn.indexOf('if (keyless && latestEpoch !== 0) {'));
+        expect(arm.slice(0, 400)).toContain('keyReaskTargets.add(serverId, channelId,');
+        expect(arm.slice(0, 400)).toContain('keyReaskScheduler.arm(serverId);');
+        // Arming happens only inside that branch.
+        expect(fn.match(/keyReaskScheduler\.arm\(/g)).toHaveLength(1);
+    });
+
+    it('the re-ask check works on those targets and is satisfied only by the NEWEST epoch the API named', () => {
+        const fn = reaskTick();
+        expect(fn).toContain('wantedChannels: (s) => keyReaskTargets.forServer(s),');
+        expect(fn).toContain('return held !== null && held >= (keyReaskTargets.latestOf(cid) ?? 1);');
+        expect(fn).toContain('fileKeyRequest: (s, cid) => channelKeyOpsRef.current.fileKeyRequest(s, cid),');
+        expect(body(src, 'onExhausted: (sid) => {', 'keyReaskTargets.clearServer(sid);')).toContain('noteNewestKeyPending(cid, false)');
+    });
+
+    it('every key-handshake POST has a timeout (a hung POST no longer holds the account\'s distributions for ~100 s)', () => {
+        const fn = body(src, 'const distributeChannelKeys = useCallback', 'const mayMintChannelKey = useCallback');
+        const post = fn.slice(fn.indexOf('/key-handshake`'));
+        expect(post.slice(0, 400)).toContain('timeout: KEY_HANDSHAKE_POST_TIMEOUT_MS');
+    });
+
+    it('holders answer a key_requested push after the short serve jitter, each from its own walk offset', () => {
+        expect(src).toContain('}, pickServeJitterMs());');
+        expect(serve()).toContain('walkOffset: walkOffsetFor(deviceId),');
     });
 });

@@ -30,17 +30,17 @@ describe('retention sweeps are local-only', () => {
         const fs = await import('node:fs');
         const path = await import('node:path');
         const src = fs.readFileSync(path.resolve(__dirname, '../components/Dashboard.tsx'), 'utf8');
-        expect(src).not.toMatch(/axios\.delete\(`\$\{API_BASE\}\/attachments\//);
+        expect(src).not.toMatch(/axios\.delete\(apiUrl`\/attachments\//);
     });
 
     it('ChatPane deletes the server copy only from the explicit delete path', async () => {
         const fs = await import('node:fs');
         const path = await import('node:path');
         const src = fs.readFileSync(path.resolve(__dirname, '../components/ChatPane.tsx'), 'utf8');
-        const hits = src.match(/axios\.delete\(`\$\{API_BASE\}\/attachments\//g) ?? [];
+        const hits = src.match(/axios\.delete\(apiUrl`\/attachments\//g) ?? [];
         expect(hits.length).toBe(1);
         const at = src.indexOf('const performDelete');
         expect(at).toBeGreaterThan(-1);
-        expect(src.indexOf('axios.delete(`${API_BASE}/attachments/', at)).toBeLessThan(src.indexOf('const requestDelete', at));
+        expect(src.indexOf('axios.delete(apiUrl`/attachments/', at)).toBeLessThan(src.indexOf('const requestDelete', at));
     });
 });

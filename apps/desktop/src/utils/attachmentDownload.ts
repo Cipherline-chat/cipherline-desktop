@@ -19,6 +19,7 @@
  */
 
 import axios from 'axios';
+import { apiPath } from './apiPath';
 
 export type AttachmentDownloadErrorCode =
     | 'metadata_timeout'
@@ -115,11 +116,12 @@ export async function downloadEncryptedAttachment(
     let downloadUrl: string;
     try {
         const res = await axios.get(
-            `${apiBase}/attachments/${attachmentId}/download`,
+            apiBase + apiPath`/attachments/${attachmentId}/download`,
             {
                 headers: { Authorization: `Bearer ${token}` },
                 timeout: metadataTimeoutMs,
                 // Forward the abort signal so Cancel works during the metadata phase.
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
                 signal: externalSignal as any,
             },
         );
@@ -127,6 +129,7 @@ export async function downloadEncryptedAttachment(
         if (!downloadUrl) {
             throw new AttachmentDownloadError('metadata_http_error', 'Server did not return a download URL');
         }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
     } catch (err: any) {
         if (err instanceof AttachmentDownloadError) throw err;
         if (axios.isCancel?.(err) || err?.code === 'ERR_CANCELED' || externalSignal?.aborted) {
@@ -202,6 +205,7 @@ export async function downloadEncryptedAttachment(
 
         try {
             xhr.send();
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (err: any) {
             cleanup();
             reject(new AttachmentDownloadError('network', err?.message));

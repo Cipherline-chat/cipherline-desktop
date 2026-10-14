@@ -22,9 +22,15 @@ import { useAuth } from './AuthContext';
 import { InAppCheckout } from '../components/billing/InAppCheckout';
 import { UpgradePromptModal, type UpgradeReason } from '../components/billing/UpgradePromptModal';
 import { secureLocalStore } from '../utils/secureLocalStore';
+import { observeProStatus, recordProPurchase } from '../utils/proCelebration';
+import { cancellationOutcome } from '../components/billing/cancellationOutcome';
 import type { PaymentMethodView, InvoiceView } from '@cipherline/shared';
 
-export type SubscriptionStatus = 'trial' | 'active' | 'canceled_pending' | 'past_due' | 'expired';
+/** How long the in-app checkout stays mounted under the Pro celebration's veil
+ *  (the veil fades in over 420 ms; see styles/pro-celebration.css). */
+const CHECKOUT_HANDOFF_MS = 480;
+
+export type SubscriptionStatus ='trial' | 'active' | 'canceled_pending' | 'past_due' | 'expired';
 export type EffectiveStatus = 'active' | 'expired';
 
 interface BillingStatus {
@@ -93,19 +99,25 @@ interface SubscriptionContextValue {
     promptUpgrade: (reason: UpgradeReason, detail?: string) => void;
     /** Open the animated in-app Stripe Payment Element checkout (upgrade path). */
     openInAppCheckout: () => void;
-    /** Resolves `{ ok:false, message }` on failure so callers can surface it. */
-    openCheckout: () => Promise<{ ok: boolean; url?: string; message?: string }>;
     /**
      * Cancel at period end, or undo a pending cancellation. Refreshes status on
      * success so the pane reflects it immediately — the server writes through
      * from Stripe's response rather than waiting for the webhook, so there is
      * nothing to poll for.
      */
-    setCancellation: (cancel: boolean) => Promise<{ ok: boolean; message?: string }>;
+    setCancellation: (cancel: boolean) => Promise<{ ok: boolean; message?: string; settled?: boolean }>;
     /** The card that will be charged next renewal. `null` when none is on file. */
     fetchPaymentMethod: () => Promise<{ ok: boolean; paymentMethod?: PaymentMethodView | null; message?: string }>;
     /** Past charges, newest first. */
     fetchInvoices: () => Promise<{ ok: boolean; invoices?: InvoiceView[]; message?: string }>;
+    /**
+     * A purchase just completed and the "you're Pro" celebration should play
+     * (Dashboard renders it; utils/proCelebration.ts says exactly when this
+     * turns on). It is already recorded as seen by the time it is true, so a
+     * reload never replays it.
+     */
+    proCelebration: boolean;
+    dismissProCelebration: () => void;
 }
 
 const SubscriptionContext = createContext<SubscriptionContextValue | undefined>(undefined);
@@ -122,6 +134,8 @@ export const SubscriptionProvider: React.FC<{ children: ReactNode }> = ({ childr
     useEffect(() => { statusRef.current = status; }, [status]);
     const [checkoutOpen, setCheckoutOpen] = useState(false);
     const [upgradePrompt, setUpgradePrompt] = useState<{ reason: UpgradeReason; detail?: string } | null>(null);
+    const [proCelebration, setProCelebration] = useState(false);
+    const dismissProCelebration = useCallback(() => setProCelebration(false), []);
 
     const refresh = useCallback(async () => {
         if (!isAuthenticated || !token) {
@@ -146,6 +160,27 @@ export const SubscriptionProvider: React.FC<{ children: ReactNode }> = ({ childr
     }, [isAuthenticated, token]);
 
     useEffect(() => { refresh(); }, [refresh]);
+
+    // Celebrate a purchase this device OBSERVES: a payment on the website (which
+    // is also where the in-app checkout's "open your account page" fallback
+    // sends people), trial → paid while the app was closed. The
+    // record is per account, so wait for this account's secureLocalStore
+    // namespace: read cold right after a sign-in it would look like "no record".
+    useEffect(() => {
+        if (!status || !userId) return;
+        let cancelled = false;
+        const observe = () => {
+            if (cancelled || !secureLocalStore.isAccountReady(userId)) return;
+            // No "browser checkout pending" signal any more: the desktop no longer
+            // opens hosted Stripe Checkout, so a free -> paid edge is simply
+            // observed (a first-ever status read with no record does not celebrate).
+            const celebrate = observeProStatus(secureLocalStore, userId, status, false);
+            if (celebrate) setProCelebration(true);
+        };
+        if (secureLocalStore.isAccountReady(userId)) observe();
+        else void secureLocalStore.whenAccountReady().then(observe, () => { /* stays unobserved */ });
+        return () => { cancelled = true; };
+    }, [status, userId]);
 
     // Periodic refresh so the trial countdown updates and the read-only flip
     // happens promptly without a reload. Every 5 minutes.
@@ -202,44 +237,6 @@ export const SubscriptionProvider: React.FC<{ children: ReactNode }> = ({ childr
     }, [token, refresh]);
 
     /**
-     * Open the external-browser Stripe Checkout flow — the fallback when the
-     * in-app Payment Element can't be used (InAppCheckout's "Continue in
-     * browser" / IntentError path).
-     *
-     * Returns `{ok, message}` rather than a bare null, for the same reason
-     * openPortal does below — but here it matters MORE: this is called from
-     * onFallback AFTER the checkout modal has already been closed
-     * (setCheckoutOpen(false) fires first), so a silently-swallowed failure
-     * left the user looking at nothing at all, no modal, no error, no
-     * explanation. See the fallbackError banner rendered below for where this
-     * result actually goes.
-     */
-    const openCheckout = useCallback(async (): Promise<{ ok: boolean; url?: string; message?: string }> => {
-        if (!token) return { ok: false, message: 'You need to be signed in.' };
-        try {
-            const res = await axios.post(`${API_BASE}/billing/checkout`, {}, {
-                headers: { Authorization: `Bearer ${token}` },
-            });
-            const url = res.data?.checkout_url;
-            // Same scheme check as openPortal — defence in depth against a
-            // compromised/misconfigured backend, since the main process's own
-            // allowlist fails silently.
-            if (typeof url !== 'string' || !/^https:\/\//i.test(url)) {
-                return { ok: false, message: 'Received an unexpected checkout URL.' };
-            }
-            if (!window.electronAPI?.openExternal) {
-                return { ok: false, message: 'Could not open your browser.' };
-            }
-            await window.electronAPI.openExternal(url);
-            return { ok: true, url };
-        } catch (err: unknown) {
-            const message = axios.isAxiosError(err) ? err.response?.data?.message : undefined;
-            console.warn('[SubscriptionContext] checkout failed', err);
-            return { ok: false, message: message || 'Could not start checkout. Please try again.' };
-        }
-    }, [token]);
-
-    /**
      * Open the Stripe billing portal.
      *
      * Returns `{ ok: false, message }` rather than a bare null so callers can
@@ -257,14 +254,16 @@ export const SubscriptionProvider: React.FC<{ children: ReactNode }> = ({ childr
     const apiMessage = (err: unknown, fallback: string): string =>
         (axios.isAxiosError(err) ? err.response?.data?.message : undefined) || fallback;
 
-    const setCancellation = useCallback(async (cancel: boolean): Promise<{ ok: boolean; message?: string }> => {
+    const setCancellation = useCallback(async (cancel: boolean): Promise<{ ok: boolean; message?: string; settled?: boolean }> => {
         if (!token) return { ok: false, message: 'You need to be signed in.' };
         try {
-            await axios.post(`${API_BASE}/billing/cancellation`, { cancel }, {
+            const res = await axios.post(`${API_BASE}/billing/cancellation`, { cancel }, {
                 headers: { Authorization: `Bearer ${token}` },
             });
             await refresh();
-            return { ok: true };
+            // Never trust a 2xx alone: judge the response against the request
+            // so the UI cannot announce "cancelled" beside a still-renewing plan.
+            return cancellationOutcome(cancel, res.data);
         } catch (err: unknown) {
             console.warn('[SubscriptionContext] cancellation failed', err);
             return {
@@ -325,7 +324,6 @@ export const SubscriptionProvider: React.FC<{ children: ReactNode }> = ({ childr
     }, [refresh]);
 
     const openInAppCheckout = useCallback(() => setCheckoutOpen(true), []);
-    const [checkoutFallbackError, setCheckoutFallbackError] = useState<string | null>(null);
     const promptUpgrade = useCallback((reason: UpgradeReason, detail?: string) => setUpgradePrompt({ reason, detail }), []);
 
     // Tier derivation. Until status loads we treat the account as free tier so
@@ -337,8 +335,8 @@ export const SubscriptionProvider: React.FC<{ children: ReactNode }> = ({ childr
     const maxUploadBytes = isPaid ? MAX_ATTACHMENT_BYTES : FREE_TIER_MAX_UPLOAD_BYTES;
 
     const value = useMemo(
-        () => ({ status, statusError, isPaid, isFreeTier, canPublishVideo, maxUploadBytes, refresh, extendTrial, promptUpgrade, openInAppCheckout, openCheckout, setCancellation, fetchPaymentMethod, fetchInvoices }),
-        [status, statusError, isPaid, isFreeTier, canPublishVideo, maxUploadBytes, refresh, extendTrial, promptUpgrade, openInAppCheckout, openCheckout, setCancellation, fetchPaymentMethod, fetchInvoices],
+        () => ({ status, statusError, isPaid, isFreeTier, canPublishVideo, maxUploadBytes, refresh, extendTrial, promptUpgrade, openInAppCheckout, setCancellation, fetchPaymentMethod, fetchInvoices, proCelebration, dismissProCelebration }),
+        [status, statusError, isPaid, isFreeTier, canPublishVideo, maxUploadBytes, refresh, extendTrial, promptUpgrade, openInAppCheckout, setCancellation, fetchPaymentMethod, fetchInvoices, proCelebration, dismissProCelebration],
     );
 
     return (
@@ -357,50 +355,32 @@ export const SubscriptionProvider: React.FC<{ children: ReactNode }> = ({ childr
                 <InAppCheckout
                     context="upgrade"
                     onSuccess={() => {
-                        setCheckoutOpen(false);
-                        // Poll until the webhook lands rather than firing one
-                        // refresh that races it. Only suppress ProWelcome once
-                        // we've actually SEEN the account go active — marking it
-                        // unconditionally meant a user whose activation lagged
-                        // lost the celebration entirely.
-                        void pollUntilActive().then(active => {
-                            if (active && userId) {
-                                try { secureLocalStore.setItem(`cipherline_pro_welcomed_${userId}`, '1'); } catch { /* noop */ }
-                            }
-                        });
+                        // InAppCheckout reports success only once the SERVER says
+                        // the subscription is active (POST /billing/activate or
+                        // its status poll), so this is a confirmed purchase:
+                        // record it and celebrate now. Recording first means the
+                        // status refresh below sees 'pro' → 'pro' and cannot
+                        // start a second celebration. The celebration layer sits
+                        // above this modal (z 2200 > 2100), so the checkout stays
+                        // mounted underneath until the veil has faded in fully
+                        // and only then unmounts: no flash of the app between
+                        // the two.
+                        if (userId) recordProPurchase(secureLocalStore, userId);
+                        setProCelebration(true);
+                        setTimeout(() => setCheckoutOpen(false), CHECKOUT_HANDOFF_MS);
+                        // Bring the shared status (isPaid etc.) up to date. Poll
+                        // rather than fetch once: one fetch can lose the race
+                        // with the webhook.
+                        void pollUntilActive();
                     }}
                     onClose={() => setCheckoutOpen(false)}
-                    onFallback={() => {
-                        setCheckoutOpen(false);
-                        void openCheckout().then(r => {
-                            if (!r.ok) setCheckoutFallbackError(r.message ?? 'Could not start checkout.');
-                        });
-                    }}
                 />
-            )}
-            {/* Only reachable from the external-browser checkout fallback
-                above — everything else in this file has a real toast/modal to
-                report into. Fixed + dismissible since it can appear over any
-                view in the app. */}
-            {checkoutFallbackError && (
-                <div
-                    className="fixed top-3 left-1/2 -translate-x-1/2 z-[10000] flex items-center gap-3 px-4 py-2.5 rounded-xl border text-sm shadow-lg"
-                    style={{ background: 'rgba(20,8,10,0.95)', borderColor: 'rgba(255,92,122,0.35)', color: '#ff9fb2' }}
-                >
-                    <span>{checkoutFallbackError}</span>
-                    <button
-                        type="button"
-                        onClick={() => setCheckoutFallbackError(null)}
-                        style={{ background: 'none', border: 'none', color: 'inherit', cursor: 'pointer', fontSize: 13, opacity: 0.8 }}
-                    >
-                        Dismiss
-                    </button>
-                </div>
             )}
         </SubscriptionContext.Provider>
     );
 };
 
+// eslint-disable-next-line react-refresh/only-export-components -- co-located helper export; splitting the file would only affect dev Fast Refresh, not runtime behaviour
 export const useSubscription = (): SubscriptionContextValue => {
     const ctx = useContext(SubscriptionContext);
     if (!ctx) throw new Error('useSubscription must be used within a SubscriptionProvider');

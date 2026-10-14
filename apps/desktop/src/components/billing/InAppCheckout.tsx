@@ -1,23 +1,54 @@
 /**
  * InAppCheckout — the in-app, Keys-hosted Stripe Payment Element checkout.
  *
- * Replaces the old "open hosted Checkout in the system browser" flow so the whole
- * payment lives inside the app, wrapped in motion + the Keys mascot. Card data
- * stays inside Stripe's iframe (`js.stripe.com`); we never see a PAN.
+ * The whole payment lives inside the app, wrapped in motion + the Keys mascot.
+ * Card data stays inside Stripe's iframe (`js.stripe.com`); we never see a PAN.
  *
- * Flow: POST /v1/billing/subscription-intent → loadStripe(pk) → <Elements> with a
- * "glow in the deep" appearance → <PaymentElement> → confirmPayment({ redirect:
- * 'if_required' }) (mandatory in Electron — no top-level redirect). Activation is
- * then confirmed SYNCHRONOUSLY via POST /billing/activate — the server asks
- * Stripe directly rather than waiting for a webhook, which is what once left a
- * paying customer on the free tier for ~42 hours. The status poll remains as a
- * fallback for payments still settling at the bank.
+ * ONE STEP. The Payment Element mounts straight away (Elements
+ * `mode: 'subscription'`, a "deferred intent": no PaymentIntent exists yet) and
+ * collects the card AND its country / ZIP in the same panel. On Pay:
+ *
+ *   1. elements.submit()
+ *   2. stripe.createConfirmationToken({ elements })
+ *   3. POST /v1/billing/subscribe { confirmation_token_id }
+ *        — the server reads the billing address off the token, stores it on the
+ *          Stripe Customer, creates the taxed incomplete subscription, and
+ *          returns the PaymentIntent secret AND the exact total
+ *   4. only if that total differs from the quoted price (tax applies): show
+ *      "Confirm $2.68/mo" in this same panel — nothing has been charged yet
+ *   5. stripe.confirmPayment({ elements, clientSecret, redirect: 'if_required' })
+ *      (mandatory in Electron — never a top-level redirect)
+ *
+ * This replaced a flow that answered `tax_location_required` with a separate
+ * country/ZIP screen before the card form ever appeared.
+ *
+ * Activation is then confirmed SYNCHRONOUSLY via POST /billing/activate — the
+ * server asks Stripe directly rather than waiting for a webhook, which is what
+ * once left a paying customer on the free tier for ~42 hours. The status poll
+ * remains as a fallback for payments still settling at the bank.
+ *
+ * Layout: hosted in ClModal (the app's modal chrome: overlay, spring-in, focus
+ * trap, Escape via useEscape). Two columns when the window allows (plan summary |
+ * payment form), one column when narrow; the card is capped to the viewport so
+ * nothing clips, only the form body scrolls, and Pay + the fine print live in a
+ * sticky footer. See CheckoutLayout.tsx and styles/checkout.css.
+ *
+ * Payment methods: card + Link only, enforced client-side (checkoutPaymentMethods.ts). Apple Pay / Google Pay need a browser
+ * payment sheet Electron does not have, and every redirect-based method (Amazon
+ * Pay, bank redirects) needs a top-level navigation the main window refuses by
+ * design (setWindowOpenHandler deny + will-navigate allow-list). The server
+ * enforces the same restriction on the subscription's PaymentIntent. Those
+ * wallets live on the website checkout (cipherline.chat/account).
+ *
+ * There is deliberately NO "continue in browser" fallback and no hosted Stripe
+ * Checkout from here; if Stripe cannot load the user is pointed at the website
+ * account page, which runs this same native checkout.
  *
  * Reused from both onboarding (after finalize, account+token exist) and the
  * BillingTab / expired upgrade path.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
+import { motion, useReducedMotion } from 'framer-motion';
 // `/pure`, not the default entry point. Importing '@stripe/stripe-js' has a
 // SIDE EFFECT: it injects <script src="https://js.stripe.com/v3"> as soon as the
 // module is evaluated. This component is pulled into the boot graph by
@@ -34,45 +65,42 @@ import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 // at compile time, so it emits no require/import and therefore does NOT
 // re-introduce the side-effectful script load this change exists to remove.
 import { loadStripe } from '@stripe/stripe-js/pure';
-import type { Stripe } from '@stripe/stripe-js';
+import type { Stripe, StripeElementsOptions } from '@stripe/stripe-js';
 import { Elements, PaymentElement, useStripe, useElements } from '@stripe/react-stripe-js';
 import axios from 'axios';
-import { Lock, ShieldCheck, X, Crown, Sparkles, Globe, AlertTriangle } from 'lucide-react';
+import { Lock, ShieldCheck, X, Globe, AlertTriangle, RefreshCw, Loader2 } from 'lucide-react';
 import {
-    FALLBACK_PLAN_PRICE_LABEL,
-    TAX_LOCATION_REQUIRED_CODE,
-    taxCountryOptions,
-    taxPostalCodeRequired,
+    FALLBACK_PLAN_AMOUNT_MINOR,
+    FALLBACK_PLAN_CURRENCY,
+    WEBSITE_ACCOUNT_URL,
+    apiErrorMessage,
+    formatConfirmedTotal,
+    formatPlanPrice,
+    formatTotalBreakdown,
+    prepareOneStepSubscription,
+    type CheckoutConfig,
+    type SubscribeResult,
 } from '@cipherline/shared';
 import { API_BASE } from '../../constants';
 import { useAuth } from '../../contexts/AuthContext';
+import { openExternalLink } from '../../utils/openExternalLink';
 import { ClButton } from '../ClButton';
-import { Keys, type KeysSignal } from '../mascot/Keys';
+import { ClModal } from '../cl/ClModal';
+import type { KeysSignal } from '../mascot/Keys';
 import { STRIPE_APPEARANCE, STRIPE_FONTS } from './stripeAppearance';
-
-/**
- * The plan price, as the user sees it. Tax-EXCLUSIVE: Stripe Tax adds the
- * customer's tax on top at invoice time, so we cannot render an all-in total
- * here and must not pretend to. The Payment Element's own order summary shows
- * the real total once Stripe knows the tax location.
- *
- * Resolved from the live Price via GET /billing/status where available; this
- * module-level constant is the fallback for the pre-status render.
- */
-const PRICE_LABEL = FALLBACK_PLAN_PRICE_LABEL;
+import { DESKTOP_PAYMENT_ELEMENT_OPTIONS, desktopPaymentMethodTypes } from './checkoutPaymentMethods';
+import { CheckoutShell, CheckoutSummary } from './CheckoutLayout';
+import { useCheckoutWide } from './useCheckoutLayout';
 
 // Shared with the card-update modal (and available to the website) so the
 // three Elements surfaces can't drift apart — see stripeAppearance.ts.
 const APPEARANCE = STRIPE_APPEARANCE;
 const FONTS = STRIPE_FONTS;
 
-const COLORS = ['#25E0C8', '#5e8ee0', '#FFC94D', '#4ADE80', '#FF8FB1'];
-
 export interface InAppCheckoutProps {
     context: 'onboarding' | 'upgrade';
     onSuccess: () => void;
     onClose: () => void;
-    onFallback?: () => void;
     /** Onboarding mounts this BEFORE login() runs, so AuthContext isn't
      *  authenticated yet — pass the freshly-issued access token here. */
     authToken?: string | null;
@@ -81,278 +109,179 @@ export interface InAppCheckoutProps {
     inline?: boolean;
 }
 
-export const InAppCheckout: React.FC<InAppCheckoutProps> = ({ context, onSuccess, onClose, onFallback, authToken, inline }) => {
+/** What the Elements need to mount, resolved from GET /billing/checkout-config. */
+interface Mounted {
+    stripe: Promise<Stripe | null>;
+    options: StripeElementsOptions;
+    /** Minor units the Pay button quotes (the plan price, before tax). */
+    amount: number;
+    currency: string;
+}
+
+export const InAppCheckout: React.FC<InAppCheckoutProps> = ({ context, onSuccess, onClose, authToken, inline }) => {
     const { token: ctxToken } = useAuth();
     const token = authToken ?? ctxToken;
-    const [clientSecret, setClientSecret] = useState<string | null>(null);
-    const [stripePromise, setStripePromise] = useState<Promise<Stripe | null> | null>(null);
+    const [mounted, setMounted] = useState<Mounted | null>(null);
     const [loadError, setLoadError] = useState<string | null>(null);
-    /** Set when the API says it needs a tax location before it can create the
-     *  subscription. Incremented (rather than cleared) to re-run the intent
-     *  fetch after the step is submitted. */
-    const [needTaxLocation, setNeedTaxLocation] = useState(false);
-    const [intentAttempt, setIntentAttempt] = useState(0);
+    /** Bumped by "Try again" to re-run the load. */
+    const [attempt, setAttempt] = useState(0);
 
     useEffect(() => {
         let cancelled = false;
         (async () => {
             try {
-                const res = await axios.post(`${API_BASE}/billing/subscription-intent`, {}, {
+                const res = await axios.get<CheckoutConfig>(`${API_BASE}/billing/checkout-config`, {
+                    params: { platform: 'desktop' },
                     headers: { Authorization: `Bearer ${token}` },
                 });
                 if (cancelled) return;
-                const { client_secret, publishable_key } = res.data || {};
-                if (!client_secret || !publishable_key) throw new Error('Billing is not configured.');
-                const stripeInst = await loadStripe(publishable_key);
+                const cfg = res.data;
+                if (!cfg?.publishable_key) throw new Error('Billing is not configured.');
+                const stripeInst = await loadStripe(cfg.publishable_key);
                 if (cancelled) return;
                 if (!stripeInst) {
-                    setLoadError('Payment system could not load. Continue in your browser instead.');
+                    setLoadError('The payment system could not load.');
                     return;
                 }
-                setNeedTaxLocation(false);
-                setClientSecret(client_secret);
-                setStripePromise(Promise.resolve(stripeInst));
+                const amount = cfg.amount ?? FALLBACK_PLAN_AMOUNT_MINOR;
+                const currency = (cfg.currency ?? FALLBACK_PLAN_CURRENCY).toLowerCase();
+                setMounted({
+                    stripe: Promise.resolve(stripeInst),
+                    amount,
+                    currency,
+                    options: {
+                        // Deferred intent: Elements first, subscription second.
+                        mode: 'subscription',
+                        amount,
+                        currency,
+                        // card + link on desktop (see file header), ALWAYS explicit:
+                        // omitted = the Dashboard decides, which is how a "Bank"
+                        // tab appeared that the server then refuses. The server's
+                        // list can only narrow this, never widen it.
+                        paymentMethodTypes: desktopPaymentMethodTypes(cfg.payment_method_types),
+                        appearance: APPEARANCE,
+                        fonts: FONTS,
+                    },
+                });
             } catch (err) {
                 if (cancelled) return;
-                // Stripe Tax needs a jurisdiction before the subscription (and
-                // therefore its first invoice) can be created at all, so this is
-                // a step in the flow rather than an error. Match on the CODE, not
-                // the message — the message is user-facing copy.
-                if (isTaxLocationRequired(err)) { setNeedTaxLocation(true); return; }
-                setLoadError(errMsg(err) || 'Could not start checkout.');
+                setLoadError(apiErrorMessage(err, 'Could not start checkout.'));
             }
         })();
         return () => { cancelled = true; };
-    }, [token, intentAttempt]);
+    }, [token, attempt]);
 
-    const options = useMemo(
-        () => (clientSecret ? { clientSecret, appearance: APPEARANCE, fonts: FONTS } : null),
-        [clientSecret],
-    );
+    // Esc must not abandon a charge that is already in flight. The X button is
+    // deliberately NOT guarded (it never was, and a hung 3-D Secure frame must
+    // never trap the customer); only the accidental keypress is.
+    const busyRef = useRef(false);
+    const onBusyChange = useCallback((b: boolean) => { busyRef.current = b; }, []);
+    const requestClose = useCallback(() => { if (!busyRef.current) onClose(); }, [onClose]);
+
+    // ClModal restores focus when `open` flips, but this component is unmounted
+    // by its host instead, so hand focus back to whatever opened the checkout.
+    useEffect(() => {
+        if (inline) return;
+        const opener = document.activeElement;
+        return () => { if (opener instanceof HTMLElement && opener.isConnected) opener.focus(); };
+    }, [inline]);
 
     const content = loadError ? (
-        <IntentError message={loadError} onFallback={onFallback} onClose={onClose} />
-    ) : needTaxLocation ? (
-        <TaxLocationStep
-            token={token}
-            onDone={() => setIntentAttempt((n) => n + 1)}
-            onFallback={onFallback}
-        />
-    ) : options && stripePromise ? (
-        <Elements stripe={stripePromise} options={options}>
-            <CheckoutForm context={context} onSuccess={onSuccess} onClose={onClose} onFallback={onFallback} token={token} />
+        <LoadError message={loadError} inline={inline} onRetry={() => { setLoadError(null); setMounted(null); setAttempt((n) => n + 1); }} onClose={onClose} />
+    ) : mounted ? (
+        <Elements stripe={mounted.stripe} options={mounted.options}>
+            <CheckoutForm
+                context={context} onSuccess={onSuccess} onClose={onClose} token={token}
+                amount={mounted.amount} currency={mounted.currency}
+                inline={inline} onBusyChange={onBusyChange} onEscape={inline ? undefined : requestClose}
+            />
         </Elements>
     ) : (
-        <LoadingView />
+        <LoadingView inline={inline} />
     );
 
     if (inline) {
         return <div className="pt-2 w-full">{content}</div>;
     }
 
+    // ClModal supplies the app's modal chrome: the blurred overlay, the spring-in
+    // card, role=dialog + aria-modal, a Tab trap, and Escape through the shared
+    // escape stack (useEscape). The overlay stays above every other layer
+    // (z 2100; ProWelcome's veil is 2200) and does not close on a stray click,
+    // as before: a half-typed card should not vanish.
     return (
-        <motion.div
-            className="fixed inset-0 flex items-center justify-center px-6"
-            style={{ zIndex: 2100, background: 'rgba(5,8,16,0.78)', backdropFilter: 'blur(6px)' }}
-            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+        <ClModal
+            open
+            onClose={requestClose}
+            width={920}
+            closeOnOverlay={false}
+            cardClassName="ckt-card"
+            overlayStyle={{ zIndex: 2100, background: 'rgba(5,8,16,0.78)', backdropFilter: 'blur(6px)' }}
+            label="Upgrade to Cipherline Pro"
         >
-            <motion.div
-                className="relative rounded-3xl px-7 py-8"
-                style={{ background: 'var(--cl-deep)', border: '1px solid rgba(37,224,200,0.18)', maxWidth: 440, width: '100%', boxShadow: '0 24px 70px rgba(0,0,0,0.65)' }}
-                initial={{ scale: 0.85, y: 28, opacity: 0 }}
-                animate={{ scale: 1, y: 0, opacity: 1, transition: { type: 'spring', stiffness: 220, damping: 20 } }}
-            >
-                <button onClick={onClose} className="absolute top-3.5 right-3.5 text-cl-faint hover:text-cl-text transition-colors" aria-label="Close" style={{ zIndex: 5 }}>
-                    <X size={18} />
-                </button>
-                {content}
-            </motion.div>
-        </motion.div>
+            <button type="button" onClick={onClose} className="ckt-close" aria-label="Close">
+                <X size={18} aria-hidden />
+            </button>
+            {content}
+        </ClModal>
     );
 };
 
-/* ── Shared header: Keys + a speech bubble ── */
-/* size 80 ≈ the old 64px square mark — Keys' wider viewBox pads the sides,
-   so the visible body stays the same width. Display-only: the checkout owns
-   the bubble, so pokes/speech stay off. */
-const KeysHeader: React.FC<{ signal: KeysSignal; bubble: string }> = ({ signal, bubble }) => (
-    <div className="flex flex-col items-center text-center mb-5">
-        <Keys size={80} signal={signal} interactive={false} waveOnMount={false} />
-        <AnimatePresence mode="wait">
-            <motion.div
-                key={bubble}
-                className="mt-2 px-3.5 py-1.5 rounded-2xl text-[13px] font-semibold"
-                style={{ background: 'var(--cl-surface)', color: 'var(--cl-text)', maxWidth: 300 }}
-                initial={{ opacity: 0, y: 6, scale: 0.96 }}
-                animate={{ opacity: 1, y: 0, scale: 1 }}
-                exit={{ opacity: 0, y: -6, scale: 0.96 }}
-                transition={{ type: 'spring', stiffness: 320, damping: 22 }}
-            >
-                {bubble}
-            </motion.div>
-        </AnimatePresence>
-    </div>
-);
+/** Fallback plan price for the shells that render before the live price is known. */
+const FALLBACK_PRICE_LABEL = formatPlanPrice(FALLBACK_PLAN_AMOUNT_MINOR, FALLBACK_PLAN_CURRENCY);
 
-const LoadingView: React.FC = () => (
-    <div className="pt-3">
-        <KeysHeader signal="idle" bubble="Spinning up a secure line…" />
-        <div className="space-y-2.5">
-            {[0, 1, 2].map((i) => (
-                <div key={i} className="h-11 rounded-xl" style={{ background: 'linear-gradient(90deg, var(--cl-surface) 25%, var(--cl-raise) 50%, var(--cl-surface) 75%)', backgroundSize: '200% 100%', animation: 'shimmer 1.4s linear infinite' }} />
-            ))}
-        </div>
-    </div>
-);
-
-const IntentError: React.FC<{ message: string; onFallback?: () => void; onClose: () => void }> = ({ message, onFallback, onClose }) => (
-    <div className="pt-3 text-center">
-        <KeysHeader signal="alert" bubble="Hmm — couldn’t open the till." />
-        <p className="text-sm text-cl-muted mb-6" style={{ maxWidth: 320, marginInline: 'auto' }}>{message}</p>
-        <div className="space-y-2.5">
-            {onFallback && (
-                <ClButton fullWidth onClick={onFallback}>
-                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}><Globe size={16} /> Continue in browser</span>
-                </ClButton>
-            )}
-            <ClButton variant="ghost" fullWidth onClick={onClose}>Not now</ClButton>
-        </div>
-    </div>
-);
-
-/**
- * Did the API ask for a tax location?
- *
- * Keyed on the machine-readable code the service sends inside the 400 body, so
- * rewording the user-facing message can never silently turn this step into a
- * hard error. Tolerates both `{ code }` and Nest's `{ message: { code } }`
- * envelope shapes, because a BadRequestException given an object puts it in
- * `message` on some Nest versions and spreads it on others.
- */
-function isTaxLocationRequired(err: unknown): boolean {
-    const body = axios.isAxiosError(err) ? err.response?.data : undefined;
-    if (!body || typeof body !== 'object') return false;
-    const b = body as Record<string, unknown>;
-    if (b.code === TAX_LOCATION_REQUIRED_CODE) return true;
-    const inner = b.message;
-    return !!inner && typeof inner === 'object'
-        && (inner as Record<string, unknown>).code === TAX_LOCATION_REQUIRED_CODE;
-}
-
-/**
- * Tax-location step — shown only when the server says it needs a jurisdiction
- * before it can create the subscription.
- *
- * Asks for the MINIMUM that makes a tax rate calculable: country, plus a postal
- * code where rates vary below the country level (US/CA). No street address, no
- * city, no name — we don't need them for a rate lookup and the data-minimisation
- * rule says don't ask. The server re-validates both fields; this form's checks
- * are for the user's benefit, not the server's.
- *
- * Deliberately NOT a Stripe AddressElement: that would have to mount inside an
- * <Elements> provider, which needs the clientSecret this step exists to unblock.
- */
-const TaxLocationStep: React.FC<{
-    token: string | null | undefined;
-    onDone: () => void;
-    onFallback?: () => void;
-}> = ({ token, onDone, onFallback }) => {
-    const [country, setCountry] = useState('');
-    const [postal, setPostal] = useState('');
-    const [busy, setBusy] = useState(false);
-    const [error, setError] = useState<string | null>(null);
-    const options = useMemo(() => taxCountryOptions(), []);
-    const postalNeeded = !!country && taxPostalCodeRequired(country);
-    const canSubmit = !!country && (!postalNeeded || postal.trim().length > 0);
-
-    const submit = useCallback(async () => {
-        if (!canSubmit || busy) return;
-        setBusy(true);
-        setError(null);
-        try {
-            await axios.post(
-                `${API_BASE}/billing/tax-location`,
-                { country, ...(postal.trim() ? { postal_code: postal.trim() } : {}) },
-                { headers: { Authorization: `Bearer ${token}` } },
-            );
-            onDone();
-        } catch (err) {
-            setError(errMsg(err) || 'Could not save that. Try again?');
-            setBusy(false);
-        }
-    }, [canSubmit, busy, country, postal, token, onDone]);
-
+const LoadingView: React.FC<{ inline?: boolean }> = ({ inline }) => {
+    const wide = useCheckoutWide() && !inline;
     return (
-        <div className="pt-3">
-            <KeysHeader signal="idle" bubble="Where are you? Tax depends on it." />
-            <p className="text-sm text-cl-muted mb-5 text-center" style={{ maxWidth: 330, marginInline: 'auto' }}>
-                {PRICE_LABEL} — we need your country to work out the tax that gets
-                added. That’s all we store; no street address.
-            </p>
-            <form
-                className="space-y-3"
-                onSubmit={(e) => { e.preventDefault(); void submit(); }}
-            >
-                <label className="block">
-                    <span className="block text-[12px] font-semibold mb-1.5 text-cl-muted">Country</span>
-                    <select
-                        value={country}
-                        onChange={(e) => setCountry(e.target.value)}
-                        autoFocus
-                        className="w-full h-11 rounded-xl px-3 text-sm"
-                        style={{ background: 'var(--cl-surface)', color: 'var(--cl-text)', border: '1px solid var(--cl-border)' }}
-                    >
-                        <option value="">Select your country…</option>
-                        {options.map((o) => (
-                            <option key={o.code} value={o.code}>{o.name}</option>
-                        ))}
-                    </select>
-                </label>
+        <CheckoutShell
+            wide={wide} inline={inline} title="Payment details"
+            summary={<CheckoutSummary wide={wide} priceLabel={FALLBACK_PRICE_LABEL} signal="idle" bubble="Spinning up a secure line…" />}
+        >
+            <div className="space-y-2.5" aria-busy="true" aria-label="Loading payment form">
+                {[0, 1, 2].map((i) => (
+                    <div key={i} className="h-11 rounded-xl" style={{ background: 'linear-gradient(90deg, var(--cl-surface) 25%, var(--cl-raise) 50%, var(--cl-surface) 75%)', backgroundSize: '200% 100%', animation: 'shimmer 1.4s linear infinite' }} />
+                ))}
+            </div>
+        </CheckoutShell>
+    );
+};
 
-                {postalNeeded && (
-                    <label className="block">
-                        <span className="block text-[12px] font-semibold mb-1.5 text-cl-muted">
-                            {country === 'CA' ? 'Postal code' : 'ZIP code'}
-                        </span>
-                        <input
-                            value={postal}
-                            onChange={(e) => setPostal(e.target.value)}
-                            maxLength={16}
-                            inputMode="text"
-                            autoComplete="postal-code"
-                            placeholder={country === 'CA' ? 'A1A 1A1' : '10001'}
-                            className="w-full h-11 rounded-xl px-3 text-sm"
-                            style={{ background: 'var(--cl-surface)', color: 'var(--cl-text)', border: '1px solid var(--cl-border)' }}
-                        />
-                        <span className="block text-[11px] mt-1.5 text-cl-faint">
-                            Sales tax varies by state and city, so the rate needs it.
-                        </span>
-                    </label>
-                )}
-
-                {error && (
-                    <p className="text-[13px] flex items-start gap-1.5" style={{ color: 'var(--cl-danger)' }}>
-                        <AlertTriangle size={14} style={{ marginTop: 2, flexShrink: 0 }} /> {error}
-                    </p>
-                )}
-
-                <ClButton type="submit" fullWidth disabled={!canSubmit} loading={busy}>
-                    Continue
-                </ClButton>
-                {onFallback && (
-                    <ClButton variant="ghost" fullWidth onClick={onFallback}>
-                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-                            <Globe size={16} /> Continue in browser instead
-                        </span>
+/**
+ * Checkout could not open (Stripe.js blocked/offline, billing not configured,
+ * the API down). Offers a retry and the WEBSITE account page, which runs the
+ * same native checkout. It does NOT offer a hosted Stripe Checkout session:
+ * that path was removed on purpose.
+ */
+const LoadError: React.FC<{ message: string; inline?: boolean; onRetry: () => void; onClose: () => void }> = ({ message, inline, onRetry, onClose }) => {
+    const wide = useCheckoutWide() && !inline;
+    return (
+        <CheckoutShell
+            wide={wide} inline={inline} title="Payment details"
+            summary={<CheckoutSummary wide={wide} priceLabel={FALLBACK_PRICE_LABEL} signal="alert" bubble="Hmm — couldn’t open the till." announceBubble={false} />}
+            footer={
+                <div className="space-y-2.5">
+                    <ClButton fullWidth onClick={onRetry}>
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}><RefreshCw size={16} /> Try again</span>
                     </ClButton>
-                )}
-            </form>
-        </div>
+                    <ClButton variant="ghost" fullWidth onClick={() => { openExternalLink(WEBSITE_ACCOUNT_URL); }}>
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}><Globe size={16} /> Open cipherline.chat/account</span>
+                    </ClButton>
+                    <ClButton variant="ghost" fullWidth onClick={onClose}>Not now</ClButton>
+                </div>
+            }
+        >
+            <div data-testid="checkout-load-error" role="alert">
+                <div className="text-sm text-cl-text mb-2">{message}</div>
+                <div className="text-xs text-cl-muted">
+                    Check your connection and try again, or subscribe from your account page on the website.
+                </div>
+            </div>
+        </CheckoutShell>
     );
 };
 
 /* ── The actual form (inside <Elements>) ── */
-type Phase = 'ready' | 'processing' | 'error' | 'activating' | 'pending' | 'success';
+type Phase = 'ready' | 'preparing' | 'confirm' | 'processing' | 'error' | 'activating' | 'pending' | 'success';
 
 /** How long to wait for webhook-driven activation before saying so plainly.
  *  This form used to jump straight from a confirmed PaymentIntent to the
@@ -364,22 +293,31 @@ const ACTIVATION_TIMEOUT_MS = 45_000;
 const ACTIVATION_POLL_MS = 2_000;
 const SUPPORT_EMAIL = 'hello@cipherline.chat';
 
-const READY_BUBBLES = [
-    `${PRICE_LABEL} — less than a mid-tier fountain drink.`,
-    'Your card never touches our servers. Promise.',
-    'Everything unlocks the moment this goes through.',
-];
-
 const CheckoutForm: React.FC<{
     context: 'onboarding' | 'upgrade';
     onSuccess: () => void;
     onClose: () => void;
-    onFallback?: () => void;
     token: string | null;
-}> = ({ onSuccess, onClose, token }) => {
+    amount: number;
+    currency: string;
+    inline?: boolean;
+    /** Tells the host a charge is in flight (so a stray Esc can't abandon it). */
+    onBusyChange?: (busy: boolean) => void;
+    /** Stripe's iframe swallows keydown, so it reports Escape through this. */
+    onEscape?: () => void;
+}> = ({ onSuccess, onClose, token, amount, currency, inline, onBusyChange, onEscape }) => {
     const stripe = useStripe();
     const elements = useElements();
     const reduced = useReducedMotion();
+    const wide = useCheckoutWide() && !inline;
+    /** "$2.50/mo + tax" — the base price plus an explicit tax qualifier. */
+    const priceLabel = useMemo(() => formatPlanPrice(amount, currency), [amount, currency]);
+    // "Everything unlocks the moment this goes through." is no longer one of the
+    // rotating lines: it is a fixed line in the summary (CheckoutSummary).
+    const readyBubbles = useMemo(() => [
+        'Less than a mid-tier fountain drink.',
+        'Your card never touches our servers. Promise.',
+    ], []);
     const [phase, setPhase] = useState<Phase>('ready');
     const [elementReady, setElementReady] = useState(false);
     const [complete, setComplete] = useState(false);
@@ -387,25 +325,26 @@ const CheckoutForm: React.FC<{
     const [bubbleIdx, setBubbleIdx] = useState(0);
     const [focused, setFocused] = useState(false);
     const [recheckBusy, setRecheckBusy] = useState(false);
+    /** The server's taxed quote, held while the customer decides to confirm. */
+    const [prepared, setPrepared] = useState<SubscribeResult | null>(null);
     // PaymentIntent 'processing' — accepted but not yet settled (bank debit).
     // Nothing is wrong and there is nothing to retry, so it earns its own copy.
     const [settling, setSettling] = useState(false);
     const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
     useEffect(() => () => { if (pollTimer.current) clearTimeout(pollTimer.current); }, []);
 
+    const authHeaders = useMemo(() => (token ? { Authorization: `Bearer ${token}` } : undefined), [token]);
+
     /** True once the server agrees the subscription is live. */
     const isActivated = useCallback(async (): Promise<boolean> => {
         try {
-            const res = await axios.get(`${API_BASE}/billing/status`, {
-                headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-            });
+            const res = await axios.get(`${API_BASE}/billing/status`, { headers: authHeaders });
             return res.data?.subscription_status === 'active';
         } catch {
             return false; // transient — the caller decides whether to keep waiting
         }
-    }, [token]);
+    }, [authHeaders]);
 
-    /** Poll until the webhook (or the server's Stripe reconcile) confirms. */
     /**
      * Ask the server to activate NOW, then fall back to polling.
      *
@@ -429,9 +368,7 @@ const CheckoutForm: React.FC<{
 
         void (async () => {
             try {
-                const res = await axios.post(`${API_BASE}/billing/activate`, {}, {
-                    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-                });
+                const res = await axios.post(`${API_BASE}/billing/activate`, {}, { headers: authHeaders });
                 if (res.data?.subscription_status === 'active') { setPhase('success'); return; }
             } catch {
                 // Never fatal — the money is already taken and Stripe confirmed
@@ -439,7 +376,7 @@ const CheckoutForm: React.FC<{
             }
             void poll();
         })();
-    }, [isActivated, token]);
+    }, [isActivated, authHeaders]);
 
     const recheck = useCallback(async () => {
         setRecheckBusy(true);
@@ -451,23 +388,31 @@ const CheckoutForm: React.FC<{
     // Rotate the encouraging line every few seconds while idle on the form.
     useEffect(() => {
         if (phase !== 'ready' || reduced) return;
-        const t = setInterval(() => setBubbleIdx((i) => (i + 1) % READY_BUBBLES.length), 4200);
+        const t = setInterval(() => setBubbleIdx((i) => (i + 1) % readyBubbles.length), 4200);
         return () => clearInterval(t);
-    }, [phase, reduced]);
+    }, [phase, reduced, readyBubbles.length]);
 
-    // On success, run the celebration then hand off.
+    // On success, hand off at once: the celebration is ProWelcome, a full-screen
+    // layer of its own that SubscriptionContext raises over this modal. (This
+    // used to play a second, smaller confetti celebration in here first and
+    // then race the context's status poll into ProWelcome as well.)
+    // Exactly once: hosts pass an inline onSuccess, so a re-render hands this
+    // effect a new function while the phase is still 'success'.
+    const handedOff = useRef(false);
     useEffect(() => {
-        if (phase !== 'success') return;
-        const t = setTimeout(onSuccess, reduced ? 600 : 2300);
-        return () => clearTimeout(t);
-    }, [phase, reduced, onSuccess]);
+        if (phase !== 'success' || handedOff.current) return;
+        handedOff.current = true;
+        onSuccess();
+    }, [phase, onSuccess]);
 
-    const submit = async () => {
-        if (!stripe || !elements || phase === 'processing') return;
+    /** Step 5: charge. Only ever reached with a total the customer has seen. */
+    const charge = useCallback(async (quote: SubscribeResult) => {
+        if (!stripe || !elements) return;
         setPhase('processing');
         setErrorMsg(null);
         const { error, paymentIntent } = await stripe.confirmPayment({
             elements,
+            clientSecret: quote.client_secret,
             // CRITICAL in Electron: never top-level-redirect. Card + 3DS resolve in
             // Stripe's iframe; if_required keeps us in-app.
             redirect: 'if_required',
@@ -487,77 +432,151 @@ const CheckoutForm: React.FC<{
             setErrorMsg('Payment did not complete. Please try again.');
             setPhase('error');
         }
-    };
+    }, [stripe, elements, awaitActivation]);
 
-    if (phase === 'success') return <SuccessCelebration />;
+    /** Steps 1–4: validate, tokenise, let the server tax it, then charge or ask. */
+    const submit = useCallback(async () => {
+        if (!stripe || !elements || phase === 'preparing' || phase === 'processing') return;
+        setPhase('preparing');
+        setErrorMsg(null);
+        const out = await prepareOneStepSubscription({
+            submit: () => elements.submit(),
+            createToken: () => stripe.createConfirmationToken({ elements }),
+            subscribe: async (id) => (await axios.post<SubscribeResult>(
+                `${API_BASE}/billing/subscribe`,
+                { confirmation_token_id: id, platform: 'desktop' },
+                { headers: authHeaders },
+            )).data,
+        }, { amount, currency });
 
-    if (phase === 'activating') {
-        return (
-            <div className="pt-3 text-center">
-                <KeysHeader signal="pulse" bubble="Payment received — unlocking your account…" />
-                <p className="text-sm text-cl-muted mb-2" style={{ maxWidth: 320, marginInline: 'auto' }}>
-                    Just a moment while we switch Pro on.
-                </p>
-            </div>
-        );
-    }
+        if (out.kind === 'error') {
+            // Inline, in the payment panel — a missing country is fixed where
+            // the country field is, not on a new screen.
+            // Raw message: it is either Stripe's own field validation or the
+            // API's wording (e.g. "Enter your country and ZIP..."), both already
+            // user-facing. friendlyError only knows card-decline strings.
+            setErrorMsg(out.message);
+            setPhase('error');
+            return;
+        }
+        setPrepared(out.result);
+        if (out.needsConfirm) {
+            // Tax applies: nothing is charged until the customer clicks Confirm.
+            setPhase('confirm');
+            return;
+        }
+        await charge(out.result);
+    }, [stripe, elements, phase, authHeaders, amount, currency, charge]);
 
-    if (phase === 'pending') {
-        return (
-            <div className="pt-3 text-center">
-                <KeysHeader signal="alert" bubble="Payment received — Pro hasn't switched on yet." />
-                <p className="text-sm text-cl-muted mb-6" style={{ maxWidth: 320, marginInline: 'auto' }}>
-                    {settling
-                        ? 'Your bank is still clearing this payment. Pro switches on by itself once it settles — don’t pay again.'
-                        : 'That’s on our side, not your card. It unlocks by itself, usually within a few minutes.'}
-                </p>
-                <div className="space-y-2.5">
-                    <ClButton fullWidth loading={recheckBusy} onClick={() => { void recheck(); }}>
-                        Check again
-                    </ClButton>
-                    <ClButton variant="ghost" fullWidth onClick={onClose}>Close</ClButton>
-                </div>
-                <p className="text-xs text-cl-faint" style={{ maxWidth: 320, marginInline: 'auto', marginTop: 14 }}>
-                    Still locked after an hour? Email {SUPPORT_EMAIL} — your payment is safe and we’ll finish it by hand.
-                </p>
-            </div>
-        );
-    }
+    /** Confirm click on the tax step. */
+    const confirmTotal = useCallback(async () => {
+        if (!prepared || !elements) return;
+        // The Payment Element was locked while the total was on screen; ask it
+        // to re-validate before confirming, as Stripe's deferred flow requires.
+        const { error } = await elements.submit();
+        if (error) {
+            setErrorMsg(friendlyError(error.message));
+            setPhase('error');
+            return;
+        }
+        await charge(prepared);
+    }, [prepared, elements, charge]);
 
-    const keysSignal: KeysSignal = phase === 'processing' ? 'pulse' : phase === 'error' ? 'alert' : focused ? 'pulse' : 'idle';
+    const busy = phase === 'preparing' || phase === 'processing';
+    // From the moment the card is submitted until Pro is confirmed, a stray Esc
+    // must not unmount the form under an in-flight charge.
+    const holding = busy || phase === 'activating';
+    useEffect(() => {
+        onBusyChange?.(holding);
+        return () => onBusyChange?.(false);
+    }, [holding, onBusyChange]);
+
+    /** Focus the card field once Stripe is ready, unless the customer has
+     *  already put focus somewhere real (the dialog's own first focusable is the
+     *  Close button, which is not "somewhere real"). */
+    const focusWhenIdle = useCallback((el?: { focus?: () => void }) => {
+        const a = document.activeElement;
+        if (!a || a === document.body || (a instanceof HTMLElement && a.classList.contains('ckt-close'))) el?.focus?.();
+    }, []);
+
+    const formPhase = phase === 'ready' || phase === 'preparing' || phase === 'confirm' || phase === 'processing' || phase === 'error';
+    const keysSignal: KeysSignal =
+        phase === 'activating' ? 'pulse'
+        : phase === 'pending' ? 'alert'
+        : busy ? 'pulse' : phase === 'error' ? 'alert' : focused ? 'pulse' : 'idle';
     const bubble =
-        phase === 'processing' ? 'Charging up the encryption core…'
+        phase === 'success' ? 'That’s it, you’re Pro!'
+        : phase === 'activating' ? 'Payment received — unlocking your account…'
+        : phase === 'pending' ? 'Payment received — Pro hasn’t switched on yet.'
+        : phase === 'preparing' ? 'Working out your total…'
+        : phase === 'processing' ? 'Charging up the encryption core…'
+        : phase === 'confirm' ? 'Here’s your exact total.'
         : phase === 'error' ? (errorMsg || 'That card got shy — try another?')
         : focused ? 'Looking good. Whenever you’re ready.'
-        : READY_BUBBLES[bubbleIdx];
+        : readyBubbles[bubbleIdx % readyBubbles.length];
+    const summary = (
+        <CheckoutSummary
+            wide={wide}
+            priceLabel={priceLabel}
+            total={phase === 'ready' ? null : prepared}
+            signal={keysSignal}
+            bubble={bubble}
+            // The inline alert in the footer already announces a failure.
+            announceBubble={phase !== 'error'}
+        />
+    );
 
-    return (
-        <div className="pt-3">
-            <KeysHeader signal={keysSignal} bubble={bubble} />
+    if (!formPhase) {
+        // success / activating / pending: the same shell, a status in the panel.
+        return (
+            <CheckoutShell
+                wide={wide} inline={inline} title="Payment received" summary={summary}
+                footer={phase === 'pending' ? (
+                    <div className="space-y-2.5">
+                        <ClButton fullWidth loading={recheckBusy} onClick={() => { void recheck(); }}>
+                            Check again
+                        </ClButton>
+                        <ClButton variant="ghost" fullWidth onClick={onClose}>Close</ClButton>
+                    </div>
+                ) : undefined}
+            >
+                {phase === 'pending' ? (
+                    <div>
+                        <div className="text-sm text-cl-text mb-3">
+                            {settling
+                                ? 'Your bank is still clearing this payment. Pro switches on by itself once it settles — don’t pay again.'
+                                : 'That’s on our side, not your card. It unlocks by itself, usually within a few minutes.'}
+                        </div>
+                        <div className="text-xs text-cl-muted">
+                            Still locked after an hour? Email {SUPPORT_EMAIL} — your payment is safe and we’ll finish it by hand.
+                        </div>
+                    </div>
+                ) : (
+                    <div className="text-sm text-cl-text flex items-center gap-2" role="status">
+                        {phase === 'activating' && <Loader2 size={16} className="animate-spin" aria-hidden />}
+                        {phase === 'activating' ? 'Just a moment while we switch Pro on.' : 'You’re all set.'}
+                    </div>
+                )}
+            </CheckoutShell>
+        );
+    }
 
-            <div className="mb-4" style={{ opacity: phase === 'processing' ? 0.55 : 1, pointerEvents: phase === 'processing' ? 'none' : 'auto', transition: 'opacity 0.2s' }}>
-                <PaymentElement
-                    options={{ layout: 'tabs' }}
-                    onReady={() => setElementReady(true)}
-                    onFocus={() => setFocused(true)}
-                    onBlur={() => setFocused(false)}
-                    onChange={(e) => setComplete(e.complete)}
-                />
-            </div>
-
+    const footer = (
+        <>
             {phase === 'error' && errorMsg && (
-                <motion.p
-                    className="text-[13px] mb-3 flex items-center gap-1.5"
+                <motion.div
+                    className="text-[13px] mb-3 flex items-start gap-1.5"
                     style={{ color: 'var(--cl-flash)' }}
+                    role="alert"
                     initial={{ opacity: 0, x: reduced ? 0 : -6 }} animate={{ opacity: 1, x: 0 }}
                 >
-                    <AlertTriangle size={14} /> {errorMsg}
-                </motion.p>
+                    <AlertTriangle size={14} style={{ marginTop: 2, flexShrink: 0 }} /> {errorMsg}
+                </motion.div>
             )}
 
             {/* Lume energy meter while charging */}
-            {phase === 'processing' && (
-                <div className="h-2 rounded-full overflow-hidden mb-4" style={{ background: 'var(--cl-surface)' }}>
+            {busy && (
+                <div className="h-2 rounded-full overflow-hidden mb-3" style={{ background: 'var(--cl-surface)' }}>
                     <motion.div
                         className="h-full rounded-full"
                         style={{ background: 'linear-gradient(90deg, var(--cl-lume-deep), var(--cl-lume))', boxShadow: '0 0 12px rgba(37,224,200,0.6)' }}
@@ -568,19 +587,42 @@ const CheckoutForm: React.FC<{
                 </div>
             )}
 
-            <ClButton
-                fullWidth
-                size="lg"
-                onClick={submit}
-                disabled={!stripe || !elementReady || (!complete && phase === 'ready')}
-                loading={phase === 'processing'}
-            >
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-                    <Lock size={16} /> {phase === 'error' ? 'Try again' : `Pay ${PRICE_LABEL}`}
-                </span>
-            </ClButton>
+            {phase === 'confirm' && prepared ? (
+                /* Only shown when the real total differs from the quote (tax). */
+                <div data-testid="tax-confirm">
+                    <div className="rounded-2xl px-4 py-2 mb-3 flex items-center justify-between gap-3" style={{ background: 'var(--cl-surface)' }}>
+                        <div>
+                            <div className="text-[11px] uppercase tracking-wide text-cl-muted">Your total</div>
+                            <div className="text-[12px] text-cl-muted" data-testid="tax-confirm-breakdown">{formatTotalBreakdown(prepared)}</div>
+                        </div>
+                        <div className="text-2xl font-extrabold text-cl-text" data-testid="tax-confirm-total">{formatConfirmedTotal(prepared)}</div>
+                    </div>
+                    <ClButton fullWidth size="lg" onClick={() => { void confirmTotal(); }}>
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                            <Lock size={16} /> Confirm {formatConfirmedTotal(prepared)}
+                        </span>
+                    </ClButton>
+                    <div className="mt-2">
+                        <ClButton variant="ghost" size="sm" fullWidth onClick={() => { setPhase('ready'); setPrepared(null); }}>
+                            Back
+                        </ClButton>
+                    </div>
+                </div>
+            ) : (
+                <ClButton
+                    fullWidth
+                    size="lg"
+                    onClick={() => { void submit(); }}
+                    disabled={!stripe || !elementReady || (!complete && phase === 'ready')}
+                    loading={busy}
+                >
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                        <Lock size={16} /> {phase === 'error' ? 'Try again' : `Pay ${priceLabel}`}
+                    </span>
+                </ClButton>
+            )}
 
-            <p className="mt-2 text-[11px] leading-snug text-center" style={{ color: 'var(--cl-faint)' }}>
+            <p className="ckt-fine">
                 Recurring subscription — your payment method is charged $2.50/month plus any
                 applicable tax, and renews automatically until you cancel. Cancel anytime in
                 Settings → Billing.
@@ -589,107 +631,36 @@ const CheckoutForm: React.FC<{
             {/* Express request for immediate performance. Terms §7.7 makes the EU/UK/EEA
                 withdrawal waiver rest on this acknowledgment being shown before payment,
                 so it must stay adjacent to the pay button and must not be collapsed. */}
-            <p className="mt-1 text-[11px] leading-snug text-center" style={{ color: 'var(--cl-faint)' }}>
+            <p className="ckt-fine" style={{ marginTop: 4 }}>
                 By subscribing you agree to the Terms of Service and ask for access to begin
                 immediately.
             </p>
 
-            <div className="flex items-center justify-center gap-1.5 mt-3 text-[11px]" style={{ color: 'var(--cl-faint)' }}>
-                <ShieldCheck size={12} /> Secured by Stripe · cancel anytime
+            <div className="ckt-secured">
+                <ShieldCheck size={12} aria-hidden /> Secured by Stripe · cancel anytime
             </div>
-        </div>
+        </>
     );
-};
-
-/* ── Success: the biggest celebration ── */
-const SuccessCelebration: React.FC = () => {
-    const reduced = useReducedMotion();
-    const confetti = useMemo(() => Array.from({ length: 42 }, (_, i) => ({
-        left: (i * 2.4 + (i % 4) * 5) % 100,
-        color: COLORS[i % COLORS.length],
-        delay: (i % 12) * 0.13,
-        dur: 2.4 + (i % 5) * 0.35,
-        rot: (i * 57) % 360,
-        size: 6 + (i % 3) * 3,
-    })), []);
-    const burst = useMemo(() => Array.from({ length: 8 }, (_, i) => {
-        const a = (i / 8) * Math.PI * 2;
-        return { x: Math.cos(a) * 58, y: Math.sin(a) * 58 };
-    }), []);
 
     return (
-        <div className="relative pt-4 text-center overflow-hidden" style={{ minHeight: 260 }}>
-            {!reduced && (
-                <div className="absolute inset-0 overflow-hidden pointer-events-none" style={{ margin: '-32px -28px' }}>
-                    {confetti.map((c, i) => (
-                        <motion.span
-                            key={i}
-                            className="absolute"
-                            style={{ left: `${c.left}%`, top: -20, width: c.size, height: c.size * 1.4, background: c.color, borderRadius: 2 }}
-                            initial={{ y: -20, opacity: 0, rotate: 0 }}
-                            animate={{ y: 360, opacity: [0, 1, 1, 0.7], rotate: c.rot + 360 }}
-                            transition={{ duration: c.dur, delay: c.delay, repeat: Infinity, repeatDelay: 0.7, ease: 'linear' }}
-                        />
-                    ))}
-                </div>
-            )}
-
-            <div className="relative mx-auto mb-4" style={{ width: 96, height: 96 }}>
-                {!reduced && burst.map((b, i) => (
-                    <motion.span
-                        key={i}
-                        className="absolute rounded-full"
-                        style={{ left: '50%', top: '50%', width: 5, height: 5, marginLeft: -2.5, marginTop: -2.5, background: 'var(--cl-glow)' }}
-                        initial={{ opacity: 0, x: 0, y: 0 }}
-                        animate={{ opacity: [0, 1, 0], x: b.x, y: b.y }}
-                        transition={{ duration: 0.7, delay: 0.16, ease: 'easeOut' }}
-                    />
-                ))}
-                {/* Keys does a happy spin */}
-                <motion.div
-                    className="w-full h-full flex items-center justify-center"
-                    initial={{ scale: 0, rotate: reduced ? 0 : -180 }}
-                    animate={{ scale: 1, rotate: 0, transition: { type: 'spring', stiffness: 240, damping: 12, delay: 0.05 } }}
-                >
-                    <Keys size={105} wave interactive={false} waveOnMount={false} />
-                </motion.div>
+        <CheckoutShell wide={wide} inline={inline} title="Payment details" summary={summary} footer={footer}>
+            {/* The form stays MOUNTED (and is not disabled by Stripe) through the
+                tax-confirm step; it is only locked against edits, so Back returns
+                to exactly what the customer typed and confirmPayment still has its
+                Elements. */}
+            <div style={{ opacity: busy || phase === 'confirm' ? 0.55 : 1, pointerEvents: busy || phase === 'confirm' ? 'none' : 'auto', transition: 'opacity 0.2s' }}>
+                <PaymentElement
+                    options={DESKTOP_PAYMENT_ELEMENT_OPTIONS}
+                    onReady={(el) => { setElementReady(true); focusWhenIdle(el); }}
+                    onFocus={() => setFocused(true)}
+                    onBlur={() => setFocused(false)}
+                    onChange={(e) => setComplete(e.complete)}
+                    onEscape={onEscape}
+                />
             </div>
-
-            <motion.h2
-                className="text-[24px] font-bold leading-tight mb-2"
-                style={{ fontFamily: 'var(--cl-font-display)', color: 'var(--cl-text)' }}
-                initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0, transition: { delay: 0.2 } }}
-            >
-                You’re Cipherline Pro!
-            </motion.h2>
-
-            {/* receipt unfurl */}
-            <motion.div
-                className="mx-auto rounded-xl px-4 py-2.5 mb-1 inline-flex items-center gap-2 text-[13px] font-semibold"
-                style={{ background: 'rgba(37,224,200,0.10)', border: '1px solid rgba(37,224,200,0.25)', color: 'var(--cl-lume)', transformOrigin: 'top' }}
-                initial={{ scaleY: 0, opacity: 0 }}
-                animate={{ scaleY: 1, opacity: 1, transition: { type: 'spring', stiffness: 260, damping: 20, delay: 0.34 } }}
-            >
-                <Crown size={15} /> Cipherline Pro · {PRICE_LABEL}
-            </motion.div>
-            <motion.p
-                className="text-cl-muted text-[13px] mt-2"
-                initial={{ opacity: 0 }} animate={{ opacity: 1, transition: { delay: 0.5 } }}
-            >
-                <Sparkles size={13} style={{ display: 'inline', verticalAlign: '-2px', marginRight: 4 }} />
-                Every feature unlocked. Taking you in…
-            </motion.p>
-        </div>
+        </CheckoutShell>
     );
 };
-
-function errMsg(err: unknown): string | null {
-    if (axios.isAxiosError(err)) {
-        return (err.response?.data as { message?: string } | undefined)?.message || err.message;
-    }
-    if (err instanceof Error) return err.message;
-    return null;
-}
 
 function friendlyError(msg?: string): string {
     if (!msg) return 'That card got shy — try another?';

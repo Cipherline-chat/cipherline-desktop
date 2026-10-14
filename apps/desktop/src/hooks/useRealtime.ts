@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { presenceBus, type WirePresence } from '../utils/presenceState';
 import { parseReferralRedeemed, referralRedeemedBus } from '../utils/referralEvents';
+import { dispatchDeviceApprovalFrame } from '../utils/deviceApprovalEvents';
 import { selfPresenceBus } from '../utils/ownStatusSync';
 import { beginActivity } from '../utils/freezeLog';
+import { callTransitions, parseForceDisconnect, parseFromCallId, type ForceDisconnectEvent } from '../utils/callTransition';
 import { WS_BASE, APP_VERSION } from '../constants';
 import {
     TYPING_EXPIRY_MS,
@@ -17,12 +19,13 @@ import {
 } from '../utils/typingStore';
 import { computeIsAttentive, heartbeatPayload, isWindowAttendable, IDLE_THRESHOLD_SECONDS, IDLE_POLL_INTERVAL_MS } from '../utils/attentionState';
 import { parseChannelReadEvent, type ChannelReadEvent } from '../utils/channelReadSync';
+import { parseSelfReadEvent, type SelfReadEvent } from '../utils/conversationReadSync';
 import { recipientBundles } from '../utils/recipientBundles';
 import {
     applyCallMediaEvent, clearCallMediaUser, clearCallMediaKey,
     huddleCallMediaKey, voiceChannelMediaKey,
 } from '../utils/callMediaPresence';
-import type { CallMediaReport } from '@cipherline/shared';
+import type { CallMediaReport, ChannelSystemMessageEvent } from '@cipherline/shared';
 
 /** Matches the application-defined close code in the gateway. */
 const WS_CLOSE_UPGRADE_REQUIRED = 4426;
@@ -238,7 +241,7 @@ export function formatDeviceLinkedToast(evt: {
     };
 }
 
-export const useRealtime = (token: string | null, onNewMessage?: () => void, onChannelMessage?: (evt: ChannelMessageEvent) => void, deviceId?: string | null, myUserId?: string | null) => {
+export const useRealtime = (token: string | null, onNewMessage?: () => void, onChannelMessage?: (evt: ChannelMessageEvent) => void, deviceId?: string | null, myUserId?: string | null, onChannelSystemMessage?: (evt: ChannelSystemMessageEvent) => void, onLegacySystemEvent?: (evt: Record<string, unknown>) => void) => {
     const wsRef = useRef<WebSocket | null>(null);
     // ── Continuity — the desktop attention state machine ────────────────────
     // See utils/attentionState.ts's module doc for the full rationale. These
@@ -290,15 +293,14 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
             ws.send(JSON.stringify({ event: 'presence:idle', data: { idle } }));
         }
     }, []);
-    /** Continuity — self-read sync (see isSelfReadEvent above). One-shot
-     *  event slot, same pattern as every other *Event state in this hook:
-     *  Dashboard's consumer clears the conversation's unread/mention badge
-     *  and does not need the value to persist past that. */
-    const [selfReadEvent, setSelfReadEvent] = useState<{
-        conversation_id: string;
-        last_read_message_id: string;
-        read_at: number;
-    } | null>(null);
+    /** Continuity — self-read sync (see isSelfReadEvent above). Append-only
+     *  queue (capped), drained by Dashboard — NOT a single slot: reading
+     *  several conversations in a row on another device lands several of these,
+     *  possibly in one React batch, and a single slot kept only the last, so
+     *  the earlier conversations stayed lit here. Same reason as
+     *  channelReadEvents below. Events carry the server-clock cursor
+     *  (`last_read_at_ms`) when the server stored one. */
+    const [selfReadEvents, setSelfReadEvents] = useState<SelfReadEvent[]>([]);
     // Timestamp-keyed store (typingStore.ts), not the Set-shaped view
     // components consume — see that module's header for why an expiry is
     // needed at all (a missed `typing:stop` otherwise sticks forever) and
@@ -355,6 +357,7 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
         wrapped_transfer_key_b64?: string;
         /** LEGACY plaintext key; present only from a pre-2026-08-30 approver. */
         transfer_key_b64?: string;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
         transfer_meta?: any;
     } | null>(null);
     const [friendRemovedEvent, setFriendRemovedEvent] = useState<{ removed_by: string, other_user_id: string } | null>(null);
@@ -400,20 +403,30 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
      *  consumed by Dashboard's useEffects, mirroring the voiceStateEvent
      *  pattern. Setters bump even when the same payload arrives twice (the
      *  consumer effect is idempotent against the underlying state). */
-    const [huddleSpawnEvent, setHuddleSpawnEvent] = useState<{ huddle_id: string; call: { call_id: string; name: string; spawner_user_id: string; spawned_at: string } } | null>(null);
+    const [huddleSpawnEvent, setHuddleSpawnEvent] = useState<{ huddle_id: string; call: { call_id: string; name: string; spawner_user_id: string; spawned_at: string; participants?: string[] } } | null>(null);
     const [huddleDestroyEvent, setHuddleDestroyEvent] = useState<{ huddle_id: string; call_id: string } | null>(null);
     const [huddleRenameEvent, setHuddleRenameEvent] = useState<{ huddle_id: string; call_id: string; name: string } | null>(null);
+    /** The creator of a call turned "end the call for everyone when I leave" on/off.
+     *  `nonce` re-fires an identical value (off -> on -> off ...). */
     const [huddleParticipantEvent, setHuddleParticipantEvent] = useState<{ huddle_id: string; call_id: string; user_id: string; action: 'join' | 'leave'; display_name?: string; avatar_url?: string } | null>(null);
-    /** A moderator with MOVE_MEMBERS moved US into another call. Addressed to
+    /** A moderator with MANAGE_CALL_MEMBERS moved US into another call. Addressed to
      *  this user's devices only and carries a destination-scoped LiveKit
-     *  token. The server has already applied the state change and evicted us
-     *  from the old room, so the consumer must connect straight through
-     *  WITHOUT re-issuing a leave. Nonce forces a re-fire if the same
-     *  moderator moves us to the same call twice. */
+     *  token. The server has already moved our presence; it sends this BEFORE
+     *  touching the old LiveKit room and only removes us from it if we are
+     *  still there after a short grace period. So the consumer must leave the
+     *  old room itself and connect to the new one WITHOUT re-issuing a REST
+     *  leave. `from_call_id` names the room being left. The in-progress marker
+     *  (utils/callTransition) is armed synchronously below, before this state
+     *  is set, so a PARTICIPANT_REMOVED for the old room can never beat it.
+     *  Nonce forces a re-fire if the same moderator moves us to the same call
+     *  twice. */
     const [huddleForceMoveEvent, setHuddleForceMoveEvent] = useState<{
         huddle_id: string; call_id: string; call_name: string;
-        livekit_url: string; livekit_token: string; moved_by: string; nonce: number;
+        livekit_url: string; livekit_token: string; moved_by: string; moved_by_name?: string;
+        from_call_id?: string | null; nonce: number;
     } | null>(null);
+    /** A moderator with MANAGE_CALL_MEMBERS DISCONNECTED us from a call. */
+    const [huddleForceDisconnectEvent, setHuddleForceDisconnectEvent] = useState<ForceDisconnectEvent | null>(null);
     const [serverRemovedEvent, setServerRemovedEvent] = useState<{ server_id: string; reason: 'kick' | 'ban' | 'deleted' } | null>(null);
     /** `server:member_joined` — append-only queue (capped), drained by
      *  Dashboard, which distributes this device's channel keys to each joiner.
@@ -525,19 +538,6 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
     // Cap all three queues so a runaway burst (e.g. a bug elsewhere firing
     // these rapidly) can't grow state unboundedly across a long session.
     const EVENT_QUEUE_CAP = 100;
-    /** Ephemeral system channel event — member joined / left / kicked / banned.
-     *  Not stored in DB; arrives as a WS push and is injected into channelMessages
-     *  by Dashboard. Consumers must treat it as a one-shot trigger (fire-and-forget). */
-    const [channelSystemEvent, setChannelSystemEvent] = useState<{
-        server_id: string;
-        channel_id: string;
-        event_type: 'member_join' | 'member_leave' | 'member_kick' | 'member_ban';
-        user_id: string;
-        username: string;
-        actor_id?: string;
-        actor_username?: string;
-        created_at: string;
-    } | null>(null);
     const heartbeatInterval = useRef<ReturnType<typeof setInterval> | null>(null);
     // Increments each time the WS successfully opens (initial connect + every
     // reconnect). Consumers can watch this to re-announce presence.
@@ -554,6 +554,13 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
     useEffect(() => { onNewMessageRef.current = onNewMessage; }, [onNewMessage]);
     const onChannelMessageRef = useRef(onChannelMessage);
     useEffect(() => { onChannelMessageRef.current = onChannelMessage; }, [onChannelMessage]);
+    // Same stale-closure guard, for the persisted system row's live twin.
+    const onChannelSystemMessageRef = useRef(onChannelSystemMessage);
+    useEffect(() => { onChannelSystemMessageRef.current = onChannelSystemMessage; }, [onChannelSystemMessage]);
+    // ...and for the legacy ephemeral `channel:system_event` (the only signal
+    // while the API's SYSTEM_MESSAGE_ROWS_ENABLED write flag is off).
+    const onLegacySystemEventRef = useRef(onLegacySystemEvent);
+    useEffect(() => { onLegacySystemEventRef.current = onLegacySystemEvent; }, [onLegacySystemEvent]);
     // Same stale-closure guard as the two above — the main connect effect's
     // deps are [token, deviceId], so its onmessage closure is only rebuilt on
     // a reconnect. myUserId can resolve (or change on an account switch)
@@ -774,7 +781,7 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
                     }
 
                     if (msg.event === 'message:read') {
-                        const { conversation_id, reader_user_id, last_read_message_id, read_at } = msg.data;
+                        const { conversation_id, reader_user_id, read_at } = msg.data;
                         if (conversation_id && reader_user_id) {
                             setReadReceipts(prev => ({
                                 ...prev,
@@ -793,11 +800,8 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
                             // guaranteed), and re-applying "clear this
                             // conversation's badge" a second time is a no-op.
                             if (isSelfReadEvent(reader_user_id, myUserIdRef.current)) {
-                                setSelfReadEvent({
-                                    conversation_id,
-                                    last_read_message_id,
-                                    read_at: read_at ?? Date.now(),
-                                });
+                                const selfRead = parseSelfReadEvent(msg.data, myUserIdRef.current);
+                                if (selfRead) setSelfReadEvents(prev => [...prev, selfRead].slice(-EVENT_QUEUE_CAP));
                             }
                         }
                     }
@@ -874,6 +878,13 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
                     if (msg.event === 'device:linked') {
                         const parsed = parseDeviceLinkedEvent(msg.data);
                         if (parsed) setDeviceLinkedEvent(parsed);
+                    }
+
+                    // Device approval (DEVICE_APPROVAL_REQUIRED): a new device is
+                    // waiting for approval / a request ended. Consumed by
+                    // DeviceApprovalHost and Settings → Devices through the bus.
+                    if (msg.event === 'device:approval_pending' || msg.event === 'device:reset_requested' || msg.event === 'device:approval_resolved') {
+                        dispatchDeviceApprovalFrame(msg.event, msg.data);
                     }
 
                     // Requester side: approver sent history (device:approved WITH
@@ -1082,6 +1093,12 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
                         applyCallMediaEvent(msg.data);
                     }
                     if (msg.event === 'huddle:force_move') {
+                        const fromCallId = parseFromCallId(msg.data.from_call_id);
+                        // Arm the marker NOW, synchronously, before any React
+                        // state: the old room's PARTICIPANT_REMOVED (if the
+                        // server has to fall back to removing us) must already
+                        // read as part of this move when CallPane sees it.
+                        callTransitions.begin({ kind: 'move', fromCallId, toCallId: msg.data.call_id });
                         setHuddleForceMoveEvent({
                             huddle_id: msg.data.huddle_id,
                             call_id: msg.data.call_id,
@@ -1089,8 +1106,17 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
                             livekit_url: msg.data.livekit_url,
                             livekit_token: msg.data.livekit_token,
                             moved_by: msg.data.moved_by,
+                            moved_by_name: readDisplayName(msg.data.moved_by_name),
+                            from_call_id: fromCallId,
                             nonce: Date.now(),
                         });
+                    }
+                    if (msg.event === 'huddle:force_disconnect') {
+                        const fd = parseForceDisconnect(msg.data);
+                        if (fd) {
+                            callTransitions.begin({ kind: 'disconnect', fromCallId: fd.call_id, toCallId: null });
+                            setHuddleForceDisconnectEvent({ ...fd, nonce: Date.now() });
+                        }
                     }
                     if (msg.event === 'server:removed') {
                         setServerRemovedEvent({
@@ -1185,17 +1211,19 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
                             ts: Date.now(),
                         }].slice(-EVENT_QUEUE_CAP));
                     }
+                    // Member joined / left / kicked / banned. The server has ALREADY
+                    // stored this as a real history row (kind = 'system'); this is the
+                    // live twin, handed to Dashboard to merge by id like a message.
+                    if (msg.event === 'channel:system_message') {
+                        onChannelSystemMessageRef.current?.(msg.data as ChannelSystemMessageEvent);
+                    }
+                    // The legacy ephemeral twin (usernames, nothing stored). The API
+                    // keeps emitting it, and while its row-write flag is off it is the
+                    // ONLY signal. Dashboard turns it into a non-persisted line (ids
+                    // only) and drops it if the persisted row for the same occurrence
+                    // arrives too. No single-slot state: a callback, like the above.
                     if (msg.event === 'channel:system_event') {
-                        setChannelSystemEvent({
-                            server_id: msg.data.server_id,
-                            channel_id: msg.data.channel_id,
-                            event_type: msg.data.event_type as 'member_join' | 'member_leave' | 'member_kick' | 'member_ban',
-                            user_id: msg.data.user_id,
-                            username: msg.data.username,
-                            actor_id: msg.data.actor_id,
-                            actor_username: msg.data.actor_username,
-                            created_at: msg.data.created_at,
-                        });
+                        onLegacySystemEventRef.current?.(msg.data as Record<string, unknown>);
                     }
                     // Content-free by design (no `data` payload) — see
                     // useAnnouncements.ts's docblock for why this re-dispatches
@@ -1210,6 +1238,17 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
                     // minimal window stub if imported transitively here.
                     if (msg.event === 'announcements:changed') {
                         window.dispatchEvent(new CustomEvent('cipherline:announcements-changed'));
+                    }
+                    // Server storage grace (packages/shared/storage-grace.ts):
+                    // `{ server_id }` only — a refetch trigger, never the status
+                    // itself. Re-emitted as a window event for the shared
+                    // status store (utils/serverStorageStatusStore.ts →
+                    // SERVER_STORAGE_STATUS_WINDOW_EVENT, inlined here for the
+                    // same no-axios reason as above; a test pins the literal).
+                    if (msg.event === 'server:storage_status_changed' && typeof msg.data?.server_id === 'string') {
+                        window.dispatchEvent(new CustomEvent('cipherline:server-storage-status-changed', {
+                            detail: { server_id: msg.data.server_id },
+                        }));
                     }
                 } catch (e) {
                     console.error('Failed to parse WS message', e);
@@ -1448,7 +1487,7 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
      * devices alone. An older gateway rejects the unknown field and drops the
      * event — what a receipts-off client sent before (nothing).
      */
-    const sendReadReceipt = useCallback((conversation_id: string, last_read_message_id: string, opts?: { selfOnly?: boolean }) => {
+    const sendReadReceipt = useCallback((conversation_id: string, last_read_message_id: string, opts?: { selfOnly?: boolean }): boolean => {
         if (wsRef.current?.readyState === WebSocket.OPEN) {
             wsRef.current.send(JSON.stringify({
                 event: 'message:read',
@@ -1456,7 +1495,12 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
                     ? { conversation_id, last_read_message_id, read_at: Date.now(), self_only: true }
                     : { conversation_id, last_read_message_id, read_at: Date.now() },
             }));
+            return true;
         }
+        // Reported so the bulk "Mark all as read" can roll its optimistic clear
+        // back. ChatPane's per-chat effect ignores the result (it re-sends on
+        // the next message/attention change, as before).
+        return false;
     }, []);
 
     /** `call:media_report` — MY camera / screen-share state in the call I'm
@@ -1500,7 +1544,8 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
         // consumer clears the conversation's unread/mention badge and does
         // not need to explicitly reset this back to null (one-shot value
         // slot, same convention as every other *Event field here).
-        selfReadEvent,
+        selfReadEvents,
+        setSelfReadEvents,
         pairingRequest, setPairingRequest,
         approvalRequest, setApprovalRequest, respondToPairing,
         historyRequest, setHistoryRequest,
@@ -1524,6 +1569,7 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
         huddleRenameEvent,
         huddleParticipantEvent,
         huddleForceMoveEvent,
+        huddleForceDisconnectEvent,
         serverRemovedEvent,
         serverMemberJoinedEvents,
         setServerMemberJoinedEvents,
@@ -1542,7 +1588,6 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
         setKeyRequestedEvents,
         channelKeyRotationEvents,
         setChannelKeyRotationEvents,
-        channelSystemEvent,
         wsConnectCount,
     };
 };

@@ -7,8 +7,8 @@ import { useEscape } from '../../../hooks/useEscape';
 import type { StepProps } from '../types';
 import {
     LANES, PRESET_IDS, PRESET_LABELS, RULER_LABELS, RULER_STOPS,
-    detectPreset, fractionOf, labelFor, menuOptions, positionOf, presetRetention, retentionFromPolicy,
-    retentionToChoice, stepWindow, windowAtFraction, windowsFor, withWindow,
+    detectPreset, introLeadMs, labelFor, menuOptions, positionOf, presetRetention, retentionFromPolicy,
+    retentionToChoice, stepWindow, tipFor, trackPercent, windowAtFraction, windowsFor, withWindow,
     type Kind, type Lane, type PresetId, type Retention,
 } from './storageModel';
 import './storage.css';
@@ -28,6 +28,15 @@ const LANE_META: Record<Lane, { name: string; Icon: React.FC<{ size?: number; st
     group: { name: 'Group chats', Icon: MessagesSquare },
     server: { name: 'Servers', Icon: Server },
 };
+
+/** Intro: bars grow from 0 on the first paint only. `pre` = first paint (widths
+ *  forced to 0), `run` = growing (per-element delays), `done` = normal, snappy. */
+type IntroPhase = 'pre' | 'run' | 'done';
+const INTRO_LANE_STAGGER_MS = 90;
+const INTRO_FILES_LAG_MS = 120;
+const INTRO_VALUES_LAG_MS = 220;
+/** Longest delay (3rd lane files, 300ms) + the .9s grow, plus slack. */
+const INTRO_TOTAL_MS = 1300;
 
 const KIND_PHRASE: Record<Kind, string> = { msg: 'keep messages for', file: 'keep files for' };
 
@@ -119,7 +128,7 @@ const ValueMenu: React.FC<{
 
 // ── the step ─────────────────────────────────────────────────────────────────
 
-export const StorageStep: React.FC<StepProps> = ({ deps, onNext, onBack }) => {
+export const StorageStep: React.FC<StepProps> = ({ deps, onNext, onBack, reducedMotion }) => {
     const { status } = deps.deviceStorage;
     const policy = deps.retention.policy;
 
@@ -133,6 +142,28 @@ export const StorageStep: React.FC<StepProps> = ({ deps, onNext, onBack }) => {
         if (status === 'done' && !touched.current) setRet(retentionFromPolicy(policy));
     }, [status, policy]);
 
+    // Intro animation (first mount only): see IntroPhase. Reduced motion skips it.
+    const [introPhase, setPhase] = useState<IntroPhase>('pre');
+    const phase: IntroPhase = reducedMotion ? 'done' : introPhase;
+    const chartRef = useRef<HTMLDivElement>(null);
+    useEffect(() => {
+        if (phase !== 'pre') return;
+        // Double rAF: the zero-width frame must actually be painted before the
+        // widths change, or the browser coalesces both and nothing animates.
+        let t = 0, r1 = 0, r2 = 0;
+        const go = () => { r1 = requestAnimationFrame(() => { r2 = requestAnimationFrame(() => setPhase('run')); }); };
+        const lead = introLeadMs(chartRef.current);
+        if (lead > 0) t = window.setTimeout(go, lead); else go();
+        return () => { window.clearTimeout(t); cancelAnimationFrame(r1); cancelAnimationFrame(r2); };
+    }, [phase]);
+    useEffect(() => {
+        if (phase !== 'run') return;
+        const t = window.setTimeout(() => setPhase('done'), INTRO_TOTAL_MS);
+        return () => window.clearTimeout(t);
+    }, [phase]);
+    // The first touch ends the intro early so a drag/preset never waits on a delay.
+    const endIntro = useCallback(() => setPhase('done'), []);
+
     const [error, setError] = useState('');
     const [menu, setMenu] = useState<MenuState | null>(null);
     const [drag, setDrag] = useState<{ lane: Lane; kind: Kind } | null>(null);
@@ -141,12 +172,14 @@ export const StorageStep: React.FC<StepProps> = ({ deps, onNext, onBack }) => {
 
     const edit = useCallback((lane: Lane, kind: Kind, w: Win) => {
         touched.current = true;
+        endIntro();
         setError('');
         setRet(r => (r[lane][kind] === w ? r : withWindow(r, lane, kind, w)));
-    }, []);
+    }, [endIntro]);
 
     const choosePreset = (p: PresetId) => {
         touched.current = true;
+        endIntro();
         setError('');
         setMenu(null);
         setRet(presetRetention(p));
@@ -277,7 +310,7 @@ export const StorageStep: React.FC<StepProps> = ({ deps, onNext, onBack }) => {
                     </div>
                 </div>
 
-                <div className="st-rc">
+                <div className="st-rc" data-intro={phase} ref={chartRef}>
                     <div className="st-row st-ruler" aria-hidden="true">
                         <span />
                         <div className="st-ticks">
@@ -288,12 +321,19 @@ export const StorageStep: React.FC<StepProps> = ({ deps, onNext, onBack }) => {
                         <span />
                     </div>
 
-                    {LANES.map(lane => {
+                    {LANES.map((lane, idx) => {
                         const { name, Icon } = LANE_META[lane];
                         const { msg, file } = ret[lane];
-                        const pm = fractionOf(msg);
-                        const pf = fractionOf(file);
                         const dragging = drag?.lane === lane;
+                        // Intro timing: lanes 90ms apart, messages first, files ~120ms later.
+                        // Delays exist ONLY while the intro runs, so later drags and preset
+                        // changes use the plain .55s transition with no delay.
+                        const running = phase === 'run';
+                        const delayMsg = running ? `${idx * INTRO_LANE_STAGGER_MS}ms` : undefined;
+                        const delayFile = running ? `${idx * INTRO_LANE_STAGGER_MS + INTRO_FILES_LAG_MS}ms` : undefined;
+                        const delayVals = running ? `${idx * INTRO_LANE_STAGGER_MS + INTRO_VALUES_LAG_MS}ms` : undefined;
+                        // The bar's width and its handle's `left` are the SAME number.
+                        const pct = (w: Win) => (phase === 'pre' ? 0 : trackPercent(w));
                         return (
                             <div className="st-row st-lane" key={lane} data-lane={lane}>
                                 <div className="st-lane-n"><i><Icon size={16} aria-hidden /></i><b>{name}</b></div>
@@ -304,30 +344,33 @@ export const StorageStep: React.FC<StepProps> = ({ deps, onNext, onBack }) => {
                                     onPointerUp={endDrag}
                                     onPointerCancel={endDrag}
                                 >
-                                    <div className={`st-bar st-bar--m${msg === 'never' ? ' inf' : ''}`} style={{ width: `${pm * 100}%` }} />
-                                    <div className={`st-bar st-bar--f${file === 'never' ? ' inf' : ''}`} style={{ width: `${pf * 100}%` }} />
+                                    <div className={`st-bar st-bar--m${msg === 'never' ? ' inf' : ''}`} style={{ width: `${pct(msg)}%`, transitionDelay: delayMsg }} />
+                                    <div className={`st-bar st-bar--f${file === 'never' ? ' inf' : ''}`} style={{ width: `${pct(file)}%`, transitionDelay: delayFile }} />
                                     {(['msg', 'file'] as const).map(kind => {
                                         const w = ret[lane][kind];
                                         const first = windowsFor(kind)[0];
+                                        const isDrag = dragging && drag?.kind === kind;
                                         return (
                                             <button
                                                 key={kind}
                                                 type="button"
                                                 role="slider"
-                                                className={`st-rh st-rh--${kind}${dragging && drag?.kind === kind ? ' drag' : ''}`}
+                                                className={`st-rh st-rh--${kind}${isDrag ? ' drag' : ''}`}
                                                 data-kind={kind}
                                                 aria-label={`${name}: ${KIND_PHRASE[kind]}`}
                                                 aria-valuemin={positionOf(first)}
                                                 aria-valuemax={RULER_STOPS}
                                                 aria-valuenow={positionOf(w)}
                                                 aria-valuetext={labelFor(kind, w)}
-                                                style={{ left: `${Math.min(fractionOf(w), 0.985) * 100}%` }}
+                                                style={{ left: `${pct(w)}%`, transitionDelay: kind === 'msg' ? delayMsg : delayFile }}
                                                 onKeyDown={e => onHandleKey(e, lane, kind)}
-                                            />
+                                            >
+                                                <span className="st-tip" aria-hidden="true" data-open={isDrag ? 'true' : 'false'}>{tipFor(kind, w)}</span>
+                                            </button>
                                         );
                                     })}
                                 </div>
-                                <div className="st-vals">
+                                <div className="st-vals" style={{ transitionDelay: delayVals }}>
                                     <button
                                         type="button"
                                         className="st-vm"

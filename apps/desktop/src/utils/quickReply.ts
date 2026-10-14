@@ -113,6 +113,7 @@ export function buildQuickReplyContent(text: string, clientMsgId: string) {
 
 /** ID generator that tolerates a missing `crypto.randomUUID` (older webviews). */
 export function newClientMsgId(): string {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
     const c: Crypto | undefined = typeof globalThis !== 'undefined' ? (globalThis as any).crypto : undefined;
     if (c && typeof c.randomUUID === 'function') return c.randomUUID();
     return `qr-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
@@ -127,6 +128,7 @@ export function newClientMsgId(): string {
  * why a failed reply was indistinguishable from a successful one.
  */
 export function describeQuickReplyError(err: unknown): string {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
     const anyErr = err as any;
     const status: number | undefined = anyErr?.response?.status;
     const serverMsg: string | undefined = anyErr?.response?.data?.message;

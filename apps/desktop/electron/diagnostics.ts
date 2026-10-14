@@ -7,8 +7,9 @@
  *     Sources: render-process-gone, child-process-gone (GPU / Utility / …),
  *     main-process uncaughtException / unhandledRejection, the root React
  *     error boundary (via IPC), and an UNCLEAN-EXIT marker — a tiny file
- *     written at startup and removed on a clean quit; finding it at the next
- *     launch means the last session died without quitting.
+ *     written at startup and removed as soon as a quit is asked for; finding
+ *     it at the next launch means the last session died without quitting.
+ *     WHEN each of those counts is decided in ./session-lifecycle.ts.
  *   • SYSTEM INFO for a report (versions, OS, CPU/RAM, GPU ids + driver,
  *     display sizes / refresh rates).
  *   • Validation for the "Save to file" IPC.
@@ -60,8 +61,21 @@ export interface PendingCrash {
     count: number;
     /** Set once the renderer has shown the boot prompt for it ("Not now"). */
     seen: boolean;
+    /**
+     * A GPU process restart the renderer HANDLED this session (see
+     * ./gpu-restart.ts): video recovered, the user was shown the specific
+     * "Restart Cipherline to fix" prompt, or there was no call to recover.
+     * Such a record is also `seen` — the app never closed, so the boot-time
+     * "closed unexpectedly" prompt must not ask about it — but it stays
+     * pending for a manual report / opted-in auto-send. Local bookkeeping
+     * like `count` and `seen`: never part of the report wire format.
+     */
+    handled?: CrashHandled;
     crash: CrashInfoLike;
 }
+
+export type CrashHandled = 'recovered' | 'restart_prompted' | 'not_in_call';
+const CRASH_HANDLED: ReadonlySet<string> = new Set<CrashHandled>(['recovered', 'restart_prompted', 'not_in_call']);
 
 /** At most this many pending records; the oldest falls off. */
 export const MAX_PENDING_CRASHES = 5;
@@ -253,6 +267,7 @@ export function parsePendingCrashes(raw: unknown): PendingCrash[] {
             signature: crashSignature(crash),
             count: typeof it.count === 'number' && it.count > 0 ? Math.min(Math.trunc(it.count), 1_000_000) : 1,
             seen: it.seen === true,
+            ...(typeof it.handled === 'string' && CRASH_HANDLED.has(it.handled) ? { handled: it.handled } : {}),
             crash,
         });
     }
@@ -291,10 +306,21 @@ export function parseMarker(text: unknown): SessionMarker | null {
  * `occurred_at` is when that session STARTED: when it actually died is not
  * knowable without writing to disk while running, which we deliberately do not.
  * Unreadable / garbage marker → still an unclean exit, version unknown.
+ *
+ * A marker from a DIFFERENT app version (`currentVersion` given and valid) is
+ * NOT reported: between that session and this one an installer replaced the
+ * app, and installers terminate the copy that is still running — the NSIS
+ * updater force-kills it ~1.3 s after "Restart & install", and a manually run
+ * installer kills a copy sitting in the tray. That is an update, not a crash.
+ * (A real crash followed by a manual install of another version before the
+ * next launch is the one case this gives up; an unclean exit carries no stack
+ * anyway.) See session-lifecycle.ts.
  */
-export function crashFromLeftoverMarker(text: string | null, now: number): CrashInfoLike | null {
+export function crashFromLeftoverMarker(text: string | null, now: number, currentVersion?: string): CrashInfoLike | null {
     if (text === null) return null;
     const m = parseMarker(text);
+    const current = pick(currentVersion, VERSION_RE);
+    if (m && m.version !== '0.0.0' && current && m.version !== current) return null;
     return {
         kind: 'unclean_exit',
         process_type: 'browser',
@@ -312,22 +338,46 @@ export interface MarkerFs {
     unlinkSync(p: string): void;
 }
 
+/** Write this session's marker (best effort). `startedAt` = session start. */
+export function writeSessionMarker(fs: MarkerFs, markerPath: string, version: string, startedAt: number): void {
+    try { fs.writeFileSync(markerPath, serializeMarker(version, startedAt), { encoding: 'utf8', mode: 0o600 }); } catch { /* best effort */ }
+}
+
 /**
  * Startup: read (and so consume) the previous session's marker, then write
  * this session's. Returns the record for a leftover marker. Callers skip this
- * entirely under the smoke test (no disk writes at startup — CLAUDE.md).
+ * entirely under the smoke test (no disk writes at startup — CLAUDE.md), and
+ * call it only once this instance is THE live one (session-lifecycle.ts).
  */
 export function rotateSessionMarker(fs: MarkerFs, markerPath: string, version: string, now: number): CrashInfoLike | null {
     let leftover: string | null = null;
     try { leftover = fs.readFileSync(markerPath, 'utf8'); } catch { leftover = null; }
-    const record = crashFromLeftoverMarker(leftover, now);
-    try { fs.writeFileSync(markerPath, serializeMarker(version, now), { encoding: 'utf8', mode: 0o600 }); } catch { /* best effort */ }
+    const record = crashFromLeftoverMarker(leftover, now, version);
+    writeSessionMarker(fs, markerPath, version, now);
     return record;
 }
 
-/** Clean quit / OS shutdown: remove the marker. Idempotent. */
+/** Quit asked for / OS shutdown: remove the marker. Idempotent, synchronous. */
 export function clearSessionMarker(fs: MarkerFs, markerPath: string): void {
     try { fs.unlinkSync(markerPath); } catch { /* already gone */ }
+}
+
+/**
+ * Persisted records to drop when the store is attached: UNSEEN unclean exits
+ * of another app version. Under rule 4 of session-lifecycle.ts no such record
+ * is created any more, but builds before it created them on the way through
+ * an update (and a second launch that slipped past the single-instance lock
+ * recorded the running instance's live marker). An unclean exit of a version
+ * that has since been replaced is not actionable, so it is not offered. Seen
+ * records, other kinds, and records with no version are kept.
+ */
+export function isStaleUncleanExit(p: PendingCrash, currentVersion: string): boolean {
+    const current = pick(currentVersion, VERSION_RE);
+    return !!current
+        && p.crash.kind === 'unclean_exit'
+        && !p.seen
+        && p.crash.app_version_at_crash !== undefined
+        && p.crash.app_version_at_crash !== current;
 }
 
 // ── Pending store (persisted through an injected storage adapter) ────────────
@@ -348,16 +398,21 @@ export class PendingCrashStore {
     private list: PendingCrash[] = [];
     private storage: PendingStorage | null = null;
 
-    attach(storage: PendingStorage): void {
+    /**
+     * `currentVersion` (optional) drops persisted stale unclean exits — see
+     * isStaleUncleanExit. Records captured this launch are never dropped.
+     */
+    attach(storage: PendingStorage, currentVersion?: string): void {
         this.storage = storage;
         let persisted: PendingCrash[] = [];
         try { persisted = parsePendingCrashes(storage.read()); } catch { persisted = []; }
+        if (currentVersion) persisted = persisted.filter(p => !isStaleUncleanExit(p, currentVersion));
         // Persisted (older) first, then anything captured this launch.
         let merged = persisted;
         for (const p of this.list) {
             merged = addPendingCrash(merged, p.crash);
             const m = merged.find(x => x.signature === p.signature);
-            if (m) { m.count = Math.max(m.count, p.count); m.seen = p.seen; }
+            if (m) { m.count = Math.max(m.count, p.count); m.seen = p.seen; if (p.handled) m.handled = p.handled; }
         }
         this.list = merged;
         this.persist();
@@ -375,6 +430,19 @@ export class PendingCrashStore {
 
     markSeen(signatures?: readonly string[]): void {
         for (const p of this.list) if (!signatures || signatures.includes(p.signature)) p.seen = true;
+        this.persist();
+    }
+
+    /**
+     * The renderer handled the GPU restart that produced `signature` (see
+     * ./gpu-restart.ts): mark it seen + how. A later occurrence of the same
+     * signature replaces the record (addPendingCrash) and so clears both.
+     */
+    markHandled(signature: string, how: CrashHandled): void {
+        const p = this.list.find(x => x.signature === signature);
+        if (!p || !CRASH_HANDLED.has(how)) return;
+        p.seen = true;
+        p.handled = how;
         this.persist();
     }
 

@@ -11,7 +11,7 @@
 
   /* Full-width modifier for stacked/stretched layouts. min-width:0 matters
      the moment this sits in a flex row beside a NON-fullWidth sibling
-     (DriveFolderPicker's fullWidth "Select" + intrinsic "Cancel"): a block
+     (a modal footer's fullWidth "Select" + intrinsic "Cancel"): a block
      flex item's min-content defaults to its full content width, so without
      this it refuses to shrink for its sibling and overflows the row
      instead of ellipsizing (.cap's overflow:hidden;text-overflow:ellipsis
@@ -92,6 +92,21 @@
      fallback older engines keep after dropping the declaration they can't
      parse. */
   .mcard--scroll{max-height:calc(100vh - 48px);max-height:calc(100dvh - 48px);overflow-y:auto;overscroll-behavior:contain}
+
+  /* Opt-in "panel" card: header + scroll body + footer that must never be clipped
+     (the channel / category settings dialogs).
+     The card is a height-capped flex column; the caller's body is
+     `flex:1 1 auto; min-height:0; overflow-y:auto` and header/footer are
+     `flex:none`. It must be the BODY that scrolls, never the card (that would
+     scroll the footer away) — and the body must get its height from flex, never
+     from `height:100%`: a percentage against a parent whose height is only
+     capped (max-height), not set, resolves to auto, so the body grows to its
+     content and the card's overflow:hidden clips it AND the footer. That was
+     the Calls-channel "Save is cut off on a small window" bug.
+     overflow:hidden is deliberate here (rounded corners clip the header/footer
+     backgrounds); popovers inside the body are portaled (ClSelect, icon picker).
+     Two max-heights as in .mcard--scroll: dvh is the real one, vh the fallback. */
+  .mcard--panel{display:flex;flex-direction:column;padding:0;overflow:hidden;max-height:calc(100vh - 48px);max-height:calc(100dvh - 48px)}
 
   /* Select menu: cap height + scroll for long lists; snappier open animation.
      The guide uses --dur (≈520ms) for the menu spring — right for the lab-pop

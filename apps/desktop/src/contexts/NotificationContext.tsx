@@ -71,6 +71,7 @@ export interface NotificationPrefs {
     badge_includes_muted: boolean;
 }
 
+// eslint-disable-next-line react-refresh/only-export-components -- co-located helper export; splitting the file would only affect dev Fast Refresh, not runtime behaviour
 export const DEFAULT_PREFS: NotificationPrefs = {
     desktop_notifications_enabled: true,
     sounds_enabled: true,
@@ -262,6 +263,7 @@ export const NotificationProvider: React.FC<{ children: ReactNode }> = ({ childr
     );
 };
 
+// eslint-disable-next-line react-refresh/only-export-components -- co-located helper export; splitting the file would only affect dev Fast Refresh, not runtime behaviour
 export const useNotificationPrefs = (): NotificationContextValue => {
     const ctx = useContext(NotificationContext);
     if (!ctx) throw new Error('useNotificationPrefs must be used within NotificationProvider');
@@ -275,5 +277,6 @@ export const useNotificationPrefs = (): NotificationContextValue => {
  * missing provider should cost that cue, not take down the surface that was
  * merely trying to be polite. Callers fall back to DEFAULT_PREFS.
  */
+// eslint-disable-next-line react-refresh/only-export-components -- co-located helper export; splitting the file would only affect dev Fast Refresh, not runtime behaviour
 export const useNotificationPrefsSafe = (): NotificationContextValue | undefined =>
     useContext(NotificationContext);

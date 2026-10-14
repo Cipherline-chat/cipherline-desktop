@@ -1,5 +1,6 @@
 import React from 'react';
-import { Mic, MicOff, Headphones, HeadphoneOff, PhoneCall, Loader2 } from 'lucide-react';
+import { PhoneCall, Loader2 } from 'lucide-react';
+import { MicIcon, HeadphonesIcon } from '../icons/SlashableIcon';
 import type { CallJoinPhase } from '../../utils/callJoinFlow';
 import { joinPhaseLabel } from '../../utils/callJoinFlow';
 
@@ -55,10 +56,7 @@ export const JoiningControlBar = ({ phase, muted, deafened, canSpeak, onToggleMu
                         onClick={onToggleMute}
                         style={!canSpeak ? disabledTone : micOff ? offTone : neutralTone}
                     >
-                        <span className="cl-ico cl-ico--tog" data-off={micOff}>
-                            <Mic className="w-4 h-4 ico-on" />
-                            <MicOff className="w-4 h-4 ico-off" />
-                        </span>
+                        <span className="cl-ico"><MicIcon off={micOff} className="w-4 h-4" /></span>
                     </button>
 
                     <button
@@ -71,10 +69,7 @@ export const JoiningControlBar = ({ phase, muted, deafened, canSpeak, onToggleMu
                         onClick={onToggleDeafen}
                         style={deafened ? offTone : neutralTone}
                     >
-                        <span className="cl-ico cl-ico--tog" data-off={deafened}>
-                            <Headphones className="w-4 h-4 ico-on" />
-                            <HeadphoneOff className="w-4 h-4 ico-off" />
-                        </span>
+                        <span className="cl-ico"><HeadphonesIcon off={deafened} className="w-4 h-4" /></span>
                     </button>
 
                     <span className="cl-console-sep" aria-hidden="true" />

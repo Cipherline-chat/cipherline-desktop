@@ -109,6 +109,8 @@
  */
 
 import { deriveBackupKey } from './crypto';
+import { BackupWrongPasswordError } from './backupErrors';
+export { BackupWrongPasswordError } from './backupErrors';
 
 /** The version every writer emits. */
 export const CONTAINER_VERSION = 4;
@@ -526,7 +528,7 @@ export async function openContainer(source: ByteSource, password: string): Promi
         const raw = await decryptFrame(key, indexAad(version), await source.read(indexOffset, indexLen));
         index = JSON.parse(dec.decode(raw));
     } catch {
-        throw new Error('Could not decrypt this backup with the given passphrase.');
+        throw new BackupWrongPasswordError();
     }
     if (index?.v !== version || !Array.isArray(index.records)) {
         throw new Error('Backup index is malformed');
@@ -577,9 +579,8 @@ async function readCommit(key: CryptoKey, header: Uint8Array, headerPrefix: Uint
         const blank = header
             .subarray(commitSlotOffset(0), commitSlotOffset(0) + COMMIT_SLOTS * COMMIT_SLOT_LEN)
             .every(b => b === 0);
-        throw new Error(blank
-            ? 'Backup file is incomplete or corrupted (bad index pointer)'
-            : 'Could not decrypt this backup with the given passphrase.');
+        if (blank) throw new Error('Backup file is incomplete or corrupted (bad index pointer)');
+        throw new BackupWrongPasswordError();
     }
     return live;
 }

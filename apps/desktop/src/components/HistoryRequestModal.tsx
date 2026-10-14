@@ -35,6 +35,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import axios from 'axios';
 import { API_BASE } from '../constants';
+import { apiUrl } from '../utils/apiPath';
 import { useAuth } from '../contexts/AuthContext';
 import { exportLocalHistory } from '../utils/crypto';
 import { useModalExit } from '../hooks/useModalExit';
@@ -149,7 +150,7 @@ export const HistoryRequestModal: React.FC<Props> = ({ request, onClose }) => {
     const postDecline = useCallback(async (reason: string) => {
         try {
             await axios.post(
-                `${API_BASE}/devices/${request.device_id}/decline-history`,
+                apiUrl`/devices/${request.device_id}/decline-history`,
                 { reason },
                 { headers: { Authorization: `Bearer ${token}` } },
             );
@@ -275,11 +276,12 @@ export const HistoryRequestModal: React.FC<Props> = ({ request, onClose }) => {
             );
             // Send as Blob so browsers/Electron handle the binary body reliably.
             await axios.post(
-                `${API_BASE}/history/upload/${backup_id}`,
+                apiUrl`/history/upload/${backup_id}`,
                 new Blob([combined], { type: 'application/octet-stream' }),
                 { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/octet-stream' } },
             );
 
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
             let meta: any = null;
             try {
                 const v = JSON.parse(await historyBlob.text());
@@ -307,7 +309,7 @@ export const HistoryRequestModal: React.FC<Props> = ({ request, onClose }) => {
             );
 
             await axios.post(
-                `${API_BASE}/devices/${request.device_id}/deliver-history`,
+                apiUrl`/devices/${request.device_id}/deliver-history`,
                 {
                     // Wrapped only. `transfer_key_b64` is never populated by a
                     // current client; the API still accepts it solely for
@@ -324,6 +326,7 @@ export const HistoryRequestModal: React.FC<Props> = ({ request, onClose }) => {
 
             setStatus('Done — history sent.');
             setTimeout(handleClose, 1200);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (err: any) {
             console.error('[HistoryRequestModal] send failed', err);
             setError(err?.response?.data?.message || err?.message || 'Transfer failed.');

@@ -13,7 +13,18 @@
  * build one from data — no message text, user/conversation/channel ids or
  * names. A label that fails the pattern is replaced with 'unlabelled' here and
  * dropped again by main, which re-validates everything it is sent.
+ *
+ * SCRIPT ATTRIBUTION: where Chromium has the Long Animation Frames API (LoAF —
+ * Electron 43 / Chrome 150 does), each row ALSO names the code that ran in the
+ * frozen frame: `js:<file>:<function>:c<offset>:<ms>ms` for the longest
+ * scripts, `via:<invoker>` (DIV.onkeydown, MessagePort.onmessage …) and the
+ * rendering / forced-layout share — see longFrameAttribution.ts for how those
+ * are reduced to code identifiers. The same frame is also logged as a
+ * `long_frame` event in the call-event ring (callEventLog.ts), which a
+ * "Report a problem → Performance" report carries as structured `call_events`.
  */
+import { attributeFrame, frameLabels, type LoafEntryLike } from './longFrameAttribution';
+import { logCallEvent } from './callEventLog';
 
 export const LONG_TASK_MS = 200;
 export const LABEL_RE = /^[a-z][a-z0-9_.:-]{0,63}$/i;
@@ -131,11 +142,80 @@ function queue(row: { at: number; ms: number; activity: string }): void {
     }, 1000);
 }
 
+const timeOrigin = (): number =>
+    (typeof performance !== 'undefined' && performance.timeOrigin ? performance.timeOrigin : Date.now() - nowMs());
+
 /** Record a long task (exported for the fallback sampler and for tests). */
 export function recordLongTask(startTime: number, duration: number): void {
     if (duration < LONG_TASK_MS) return;
-    const timeOrigin = typeof performance !== 'undefined' && performance.timeOrigin ? performance.timeOrigin : Date.now() - nowMs();
-    queue({ at: Math.round(timeOrigin + startTime), ms: Math.round(duration), activity: activityDuring(startTime, startTime + duration) });
+    queue({ at: Math.round(timeOrigin() + startTime), ms: Math.round(duration), activity: activityDuring(startTime, startTime + duration) });
+}
+
+/** Main drops a row whose activity is longer than this (freeze-monitor.ts). */
+const MAX_ACTIVITY_CHARS = 300;
+/** At most this many `long_frame` call events per minute, so a boot or a
+ *  freeze storm cannot push the call engine's own events out of the ring. */
+const MAX_FRAME_EVENTS_PER_MIN = 20;
+let frameEventWindow = { start: 0, count: 0 };
+
+function ownOrigin(): string | null {
+    try { return typeof location !== 'undefined' && location.origin && location.origin !== 'null' ? location.origin : null; } catch { return null; }
+}
+
+/**
+ * Record a long animation frame (LoAF) with script attribution. Exported for
+ * tests.
+ *
+ * Recorded only when the MAIN THREAD was blocked — `blockingDuration` (long
+ * tasks minus 50 ms each, plus rendering) of at least LONG_TASK_MS − 50, the
+ * same bar a 200 ms long task clears. A frame can be long while this thread is
+ * idle (waiting on the compositor / GPU for its next frame): measured in the
+ * idle-return harness, dozens of 200–565 ms frames with blockingDuration 0
+ * and no scripts after the window came back. Those are not freezes of this
+ * thread and must not read as one.
+ */
+export function recordLongFrame(entry: LoafEntryLike): void {
+    if (!entry || !(entry.duration >= LONG_TASK_MS)) return;
+    const blocking = typeof entry.blockingDuration === 'number' ? entry.blockingDuration : entry.duration - 50;
+    if (!(blocking >= LONG_TASK_MS - 50)) return;
+    const a = attributeFrame(entry, ownOrigin());
+    const context = activityDuring(entry.startTime, entry.startTime + entry.duration);
+    const labels = context === 'idle' ? [] : context.split(', ');
+    const extra = frameLabels(a);
+    // Context first (it is what the log always had); attribution after, and
+    // dropped from the end if the row would exceed what main accepts.
+    while (extra.length && [...labels, ...extra].join(', ').length > MAX_ACTIVITY_CHARS) extra.pop();
+    const activity = [...labels, ...extra].join(', ') || 'idle';
+    queue({ at: Math.round(timeOrigin() + entry.startTime), ms: a.ms, activity });
+
+    const t = nowMs();
+    if (t - frameEventWindow.start > 60_000) frameEventWindow = { start: t, count: 0 };
+    if (frameEventWindow.count >= MAX_FRAME_EVENTS_PER_MIN) return;
+    frameEventWindow.count++;
+    const top = a.scripts[0];
+    logCallEvent('long_frame', {
+        ms: a.ms,
+        blocking_ms: a.blockingMs,
+        render_ms: a.renderMs,
+        layout_ms: a.layoutMs,
+        script_ms: a.scriptMs,
+        scripts: a.scriptCount,
+        file: top ? top.file : 'none',
+        fn: top ? top.fn : 'none',
+        char: top ? top.char : -1,
+        invoker: top ? top.invoker : 'none',
+        invoker_type: top ? top.invokerType : 'none',
+    });
+}
+
+/** Does this Chromium deliver 'long-animation-frame' entries? */
+function supportsLoaf(): boolean {
+    try {
+        const types = (PerformanceObserver as unknown as { supportedEntryTypes?: readonly string[] }).supportedEntryTypes;
+        return Array.isArray(types) && types.includes('long-animation-frame');
+    } catch {
+        return false;
+    }
 }
 
 let started = false;
@@ -152,6 +232,20 @@ export function startFreezeLog(): () => void {
         window.addEventListener('pointerdown', onPointer, { capture: true, passive: true });
         window.addEventListener('keydown', onKey, { capture: true, passive: true });
     } catch { /* no DOM (tests) */ }
+    // LoAF when available: it reports every long task too (a task with no
+    // rendering is its own frame), so observing both would log each freeze
+    // twice. Long tasks remain the fallback, then the timer sampler.
+    try {
+        if (supportsLoaf()) {
+            const po = new PerformanceObserver(list => {
+                for (const e of list.getEntries()) {
+                    try { recordLongFrame(e as unknown as LoafEntryLike); } catch { /* diagnostics only */ }
+                }
+            });
+            po.observe({ type: 'long-animation-frame', buffered: true });
+            return endBoot;
+        }
+    } catch { /* fall through to long tasks */ }
     try {
         const po = new PerformanceObserver(list => {
             for (const e of list.getEntries()) recordLongTask(e.startTime, e.duration);
@@ -213,4 +307,5 @@ export function __resetFreezeLogForTests(): void {
     if (flushTimer) clearTimeout(flushTimer);
     flushTimer = null;
     started = false;
+    frameEventWindow = { start: 0, count: 0 };
 }

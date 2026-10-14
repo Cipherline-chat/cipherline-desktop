@@ -194,3 +194,52 @@ export function extractMentionsFromText(text: string): MentionEntry[] {
     }
     return entries;
 }
+
+/**
+ * Returns true if `text` mentions the given user ID or contains @everyone / @here.
+ *
+ * Lives here (pure, DOM-free) rather than in ChatPane.tsx so the channel
+ * mention path can be tested without importing a 7k-line component; ChatPane
+ * re-exports it under the same name.
+ */
+export function messageTextMentionsUser(text: string, userId: string): boolean {
+    if (text.includes('@everyone') || text.includes('@here')) return true;
+    return text.includes(`<@u:${userId}:`);
+}
+
+/**
+ * Returns true if `text` contains a role-mention token (`<@r:ROLE_ID:…>`)
+ * for any role ID in `myRoleIds`.
+ */
+export function messageTextMentionsRole(text: string, myRoleIds: ReadonlySet<string>): boolean {
+    if (myRoleIds.size === 0) return false;
+    const re = /<@r:([^:>]+):[^>]+>/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(text)) !== null) {
+        if (myRoleIds.has(m[1])) return true;
+    }
+    return false;
+}
+
+/**
+ * The ONE "does this server-channel message ping me directly" test, run on
+ * DECRYPTED text only — never on anything the server can read. Shared by the
+ * live `channel:message_new` path, the boot/reconnect mention reconcile and
+ * the late-key recovery, which used to carry their own copies of the same OR.
+ *
+ * A direct ping is a `<@u:ME:…>` token, `@everyone` / `@here` (in the text, or
+ * the row's `mentions_everyone` flag), or a `<@r:ROLE:…>` token for a role the
+ * viewer holds in that server. User KEYWORDS are not here on purpose:
+ * notificationDecision.resolveNotification folds them in for every surface.
+ */
+export function channelTextMentionsViewer(p: {
+    text: string;
+    userId: string | null | undefined;
+    mentionsEveryone?: boolean;
+    myRoleIds: ReadonlySet<string>;
+}): boolean {
+    if (!p.userId) return false;
+    return messageTextMentionsUser(p.text, p.userId)
+        || !!p.mentionsEveryone
+        || messageTextMentionsRole(p.text, p.myRoleIds);
+}

@@ -103,7 +103,6 @@ vi.mock('../utils/safetyNumber', async () => {
     };
 });
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 let SafetyVerificationModal: any;
 let computeContactCode: (uid: string, pubs: string[]) => Promise<string>;
 
@@ -137,7 +136,6 @@ afterEach(() => {
     host.remove();
 });
 
-/* eslint-disable @typescript-eslint/no-explicit-any */
 function render(props: any = {}) {
     act(() => {
         root!.render(React.createElement(SafetyVerificationModal, {
@@ -151,7 +149,6 @@ function render(props: any = {}) {
         }));
     });
 }
-/* eslint-enable @typescript-eslint/no-explicit-any */
 
 /**
  * `ClModal` portals to `document.body`, so the rendered dialog is NOT inside

@@ -19,7 +19,9 @@ export function useParticipantTrackState(p: Participant): { hasActiveCamera: boo
         p.on(ParticipantEvent.TrackUnpublished, bump);
         p.on(ParticipantEvent.TrackMuted,       bump);
         p.on(ParticipantEvent.TrackUnmuted,     bump);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
         p.on(ParticipantEvent.TrackSubscribed as any,   bump);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
         p.on(ParticipantEvent.TrackUnsubscribed as any, bump);
         // LOCAL publishes are a DIFFERENT event. LiveKit emits TrackPublished /
         // TrackUnpublished only on a RemoteParticipant; the local participant
@@ -33,16 +35,22 @@ export function useParticipantTrackState(p: Participant): { hasActiveCamera: boo
         // same omission, different badge. Unlike the mic case this needs no
         // connecting-state helper: a camera that is off is the ordinary
         // default, so there is no "no track yet" window to mistake for intent.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
         p.on(ParticipantEvent.LocalTrackPublished as any,   bump);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
         p.on(ParticipantEvent.LocalTrackUnpublished as any, bump);
         return () => {
             p.off(ParticipantEvent.TrackPublished,   bump);
             p.off(ParticipantEvent.TrackUnpublished, bump);
             p.off(ParticipantEvent.TrackMuted,       bump);
             p.off(ParticipantEvent.TrackUnmuted,     bump);
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
             p.off(ParticipantEvent.TrackSubscribed as any,   bump);
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
             p.off(ParticipantEvent.TrackUnsubscribed as any, bump);
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
             p.off(ParticipantEvent.LocalTrackPublished as any,   bump);
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
             p.off(ParticipantEvent.LocalTrackUnpublished as any, bump);
         };
     }, [p]);
@@ -53,7 +61,9 @@ export function useParticipantTrackState(p: Participant): { hasActiveCamera: boo
         // For local: track present + not muted. For remote: also need subscribed,
         // but we treat unsubscribed-but-published as "still has it" — the user's
         // hide-state badge should remain meaningful even pre-subscribe.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
         hasActiveCamera:      !!(camPub && !camPub.isMuted && (camPub as any).track),
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
         hasActiveScreenShare: !!(ssPub  && !ssPub.isMuted  && (ssPub  as any).track),
     };
 }

@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Camera, Image as ImageIcon, Trash2 } from 'lucide-react';
-import { USERNAME_REGEX, padDiscriminator } from '@cipherline/shared';
+import { USERNAME_REGEX, USERNAME_NOT_ALLOWED_MESSAGE, isNameAllowed, padDiscriminator } from '@cipherline/shared';
 import { ClImageCropper, ClInput, ClTextarea } from '../../cl';
 import { Keys } from '../../mascot/Keys';
 import { Banner } from '../../Banner';
@@ -94,7 +94,12 @@ export const ProfileStep: React.FC<StepProps> = ({ deps, flow, setFlow, reducedM
     /** The last save error, for the value it failed on (no auto-retry loop). */
     const [nameError, setNameError] = useState<{ value: string; message: string; retryable: boolean } | null>(null);
     const v = name.trim();
-    const nameValid = USERNAME_REGEX.test(v);
+    // Format AND the shared profanity filter (the server enforces both; a
+    // name it would refuse is never auto-saved, so no wasted PATCH and the
+    // reason shows at once).
+    const nameWellFormed = USERNAME_REGEX.test(v);
+    const nameAllowed = !nameWellFormed || isNameAllowed(v);
+    const nameValid = nameWellFormed && nameAllowed;
     const nameConfirmed = nameValid && saved?.username === v;
 
     // ── bio, photo, banner ──────────────────────────────────────────────────
@@ -278,7 +283,8 @@ export const ProfileStep: React.FC<StepProps> = ({ deps, flow, setFlow, reducedM
     const errFor = nameError && nameError.value === v ? nameError : null;
     const nameBad = (!!v && !nameValid) || !!errFor;
     let nameMsg: React.ReactNode;
-    if (v && !nameValid) nameMsg = '3–32 characters: letters, digits, and underscore only.';
+    if (v && !nameWellFormed) nameMsg = '3–32 characters: letters, digits, and underscore only.';
+    else if (v && !nameAllowed) nameMsg = USERNAME_NOT_ALLOWED_MESSAGE;
     else if (errFor) {
         nameMsg = (
             <>

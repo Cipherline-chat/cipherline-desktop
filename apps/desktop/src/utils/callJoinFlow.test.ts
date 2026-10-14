@@ -152,6 +152,23 @@ describe('describeCallJoinFailure', () => {
         expect(describeCallJoinFailure(http(403), 'voice').toast?.message).toMatch(/permission to join this voice channel/);
         expect(describeCallJoinFailure(http(403), 'huddle-join').toast?.message).toMatch(/permission to join this call/);
     });
+    it('403 START_CALLS (spawn refused) → says WHY and that joining still works', () => {
+        const err = { response: { status: 403, headers: {}, data: {
+            statusCode: 403, error: 'Forbidden', code: 'missing_permission', permission: 'START_CALLS',
+            message: "You don't have permission to start calls here",
+        } } };
+        const f = describeCallJoinFailure(err, 'huddle-spawn');
+        expect(f.toast?.kind).toBe('error');
+        expect(f.toast?.title).toBe("Can't start a call");
+        expect(f.toast?.message).toMatch(/^You don't have permission to start calls here\./);
+        expect(f.toast?.message).toMatch(/still join/);
+        expect(f.cooldownMs).toBeUndefined();
+    });
+    it('403 with any OTHER body keeps the generic permission wording (negative control)', () => {
+        const other = { response: { status: 403, headers: {}, data: { code: 'missing_permission', permission: 'CONNECT' } } };
+        expect(describeCallJoinFailure(other, 'huddle-spawn').toast?.message).toMatch(/permission to join this call/);
+        expect(describeCallJoinFailure(http(403), 'huddle-spawn').toast?.title).toBe('Call connection failed');
+    });
     it('404 → the call has ended', () => {
         expect(describeCallJoinFailure(http(404), 'dm-join').toast?.message).toBe('That call has ended.');
     });

@@ -47,7 +47,7 @@ describe('main.ts never lists sources in-process when DXGI is on', () => {
     });
     it('PICKER_ENUMERATION comes from the same pref/auto decision as the launch switches', () => {
         expect(c).toMatch(/const PICKER_ENUMERATION = pickerEnumeration\(\{\s*platform: process\.platform,\s*pref: SCREEN_CAPTURER_PREF,\s*autoBackend: AUTO_CAPTURER\.backend,/);
-        expect(c).toContain('buildChromiumMediaSwitches(process.platform, SCREEN_CAPTURER_PREF, AUTO_CAPTURER.backend)');
+        expect(c).toContain('buildChromiumMediaSwitches(process.platform, SCREEN_CAPTURER_PREF, AUTO_CAPTURER.backend, linuxHwEncode.features)');
         // The test knob is unpackaged-only.
         expect(c).toContain("forceHelper: !IS_PACKAGED && process.env.CIPHERLINE_SOURCES_HELPER === '1'");
     });

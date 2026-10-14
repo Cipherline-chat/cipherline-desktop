@@ -171,14 +171,22 @@ describe('unclean-exit marker', () => {
         expect(rotateSessionMarker(fs, P, '1.0.17', T0 + 1000)).toBeNull();
     });
 
-    it('a leftover marker → unclean_exit with the old session start + version', () => {
-        const fs = memFs({ [P]: serializeMarker('1.0.16', T0 - 3600_000) });
+    it('a leftover marker of the same version → unclean_exit with the old session start + version', () => {
+        const fs = memFs({ [P]: serializeMarker('1.0.17', T0 - 3600_000) });
         const c = rotateSessionMarker(fs, P, '1.0.17', T0)!;
         expect(c.kind).toBe('unclean_exit');
         expect(c.occurred_at).toBe('2026-10-07T17:00:00.000Z');
-        expect(c.app_version_at_crash).toBe('1.0.16');
+        expect(c.app_version_at_crash).toBe('1.0.17');
         // and the new session's marker replaced it
+        expect(JSON.parse(fs.files[P]).started_at).toBe('2026-10-07T18:00:00.000Z');
+    });
+
+    it('a leftover marker of ANOTHER version is an update (the installer killed it), not a crash', () => {
+        const fs = memFs({ [P]: serializeMarker('1.0.16', T0 - 3600_000) });
+        expect(rotateSessionMarker(fs, P, '1.0.17', T0)).toBeNull();
         expect(JSON.parse(fs.files[P]).version).toBe('1.0.17');
+        // no current version supplied → the old behaviour
+        expect(crashFromLeftoverMarker(serializeMarker('1.0.16', T0), T0)).toMatchObject({ kind: 'unclean_exit' });
     });
 
     it('a garbage marker is still an unclean exit, with no invented version', () => {

@@ -21,7 +21,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import axios from 'axios';
 import { X, Copy, Check, Link, UserPlus, Sparkles, Settings2, RotateCw } from 'lucide-react';
-import { API_BASE } from '../../constants';
+import { apiUrl } from '../../utils/apiPath';
 import type { ServerInfo } from '../../hooks/useServers';
 import { ClModal, ClButton, ClField, ClInput, ClSelect } from '../cl';
 import { useModalExit } from '../../hooks/useModalExit';
@@ -156,7 +156,7 @@ export const ServerInviteModal: React.FC<Props> = ({ server, token, onClose }) =
         if (resolvedMaxUses !== null) body.max_uses = resolvedMaxUses;
         if (resolvedExpirySeconds !== null) body.expires_in_seconds = resolvedExpirySeconds;
         const res = await axios.post(
-            `${API_BASE}/servers/${server.server_id}/invites`,
+            apiUrl`/servers/${server.server_id}/invites`,
             body,
             { headers: { Authorization: `Bearer ${token}` } },
         );
@@ -174,7 +174,7 @@ export const ServerInviteModal: React.FC<Props> = ({ server, token, onClose }) =
         (async () => {
             let existing: Invite | null = null;
             try {
-                const res = await axios.get(`${API_BASE}/servers/${server.server_id}/invites`, {
+                const res = await axios.get(apiUrl`/servers/${server.server_id}/invites`, {
                     headers: { Authorization: `Bearer ${token}` },
                 });
                 existing = newestUsableInvite<Invite>(res.data ?? []);
@@ -191,6 +191,7 @@ export const ServerInviteModal: React.FC<Props> = ({ server, token, onClose }) =
             try {
                 const made = await create();
                 if (!cancelled && made) setInvite(made);
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
             } catch (e: any) {
                 if (!cancelled) setError(e?.response?.data?.message ?? 'Could not create an invite link.');
             } finally {
@@ -211,6 +212,7 @@ export const ServerInviteModal: React.FC<Props> = ({ server, token, onClose }) =
         try {
             const made = await create();
             if (made) { setInvite(made); setCopied(false); }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (e: any) {
             setError(e?.response?.data?.message ?? 'Could not create an invite link.');
         } finally { setWorking(false); }

@@ -13,6 +13,8 @@ import { join } from 'node:path';
  * concurrently per server. Each assertion below fails against that code.
  */
 const src = readFileSync(join(__dirname, 'Dashboard.tsx'), 'utf8');
+// The serve pass body lives in utils/keyServePass.ts since 2026-10-11.
+const servePassSrc = readFileSync(join(__dirname, '..', 'utils', 'keyServePass.ts'), 'utf8');
 
 function body(startMarker: string, endMarker: string): string {
     const a = src.indexOf(startMarker);
@@ -24,6 +26,13 @@ function body(startMarker: string, endMarker: string): string {
 
 const distribute = () => body('const distributeChannelKeys = useCallback', 'const mayMintChannelKey = useCallback');
 const serve = () => body('const serveKeyRequests = useCallback', 'const channelKeyOpsRef = useRef(');
+const pass = () => {
+    const a = servePassSrc.indexOf('export function serveKeyRequestsPass(');
+    const b = servePassSrc.indexOf('export interface MemberJoinDeps', a);
+    expect(a).toBeGreaterThan(-1);
+    expect(b).toBeGreaterThan(a);
+    return servePassSrc.slice(a, b);
+};
 
 describe('every key-handshake POST goes through the flow-controlled loop', () => {
     it('distributeChannelKeys delegates to runKeyDistribution with the session-wide back-off, pacer, ledger and mutex', () => {
@@ -62,27 +71,30 @@ describe('every key-handshake POST goes through the flow-controlled loop', () =>
 });
 
 describe('serveKeyRequests: single-flight, budgeted, deduped, and it stops on a deferral', () => {
-    it('runs inside the per-server single-flight', () => {
-        expect(serve()).toContain('return keyServeFlight.run(serverId, async () => {');
+    it('runs inside the per-server single-flight (Dashboard hands it the session-wide one)', () => {
+        expect(pass()).toContain('return flight.run(serverId, async () => {');
+        expect(serve()).toContain('flight: keyServeFlight,');
+        expect(serve()).toContain('backoff: handshakeBackoff,');
+        expect(serve()).toContain("keyResumeTimers.schedule(`serve:${sid}`, delayMs,");
     });
 
     it('does nothing but schedule a resume while a back-off is active', () => {
-        const fn = serve();
-        const guard = fn.slice(fn.indexOf('if (handshakeBackoff.isBlocked())'));
-        expect(guard.slice(0, guard.indexOf('return;'))).toContain('scheduleResume(handshakeBackoff.remainingMs())');
+        const fn = pass();
+        const guard = fn.slice(fn.indexOf('if (backoff.isBlocked())'));
+        expect(guard.slice(0, guard.indexOf('return;'))).toContain('deps.scheduleResume(serverId, backoff.remainingMs())');
     });
 
     it('caps each pass and passes the request version so delivered epochs are not re-sent', () => {
-        const fn = serve();
+        const fn = pass();
         expect(fn).toContain('const budget = { remaining: SERVE_PASS_SUBMISSION_CAP };');
         expect(fn).toContain('{ requestVersion: version, requestSeenAt: askSeenAt, budget }');
-        expect(fn).toContain('deliveryLedger.allDelivered(req.channel_id, epochs, req.requester_device_id, version, askSeenAt)');
+        expect(fn).toContain('ledger.allDelivered(req.channel_id, epochs, req.requester_device_id, version, askSeenAt)');
     });
 
     it('a deferred distribution ends the pass (no further POSTs from it) and schedules one resume', () => {
-        const fn = serve();
+        const fn = pass();
         const branch = fn.slice(fn.indexOf("if (outcome.status === 'deferred') {"));
-        expect(branch.slice(0, 300)).toContain('scheduleResume(outcome.retryInMs);');
+        expect(branch.slice(0, 300)).toContain('deps.scheduleResume(serverId, outcome.retryInMs);');
         expect(branch.slice(0, 300)).toContain('stop = true;');
         expect(fn).toContain('if (stop) { stoppedAt = i; break; }');
     });

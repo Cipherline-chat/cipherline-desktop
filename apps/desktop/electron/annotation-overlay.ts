@@ -84,6 +84,7 @@ import * as os from 'os';
 // renderer never read the field even when there were two.
 import type { OverlayDelta, OverlayShowResult, OverlayRefusal } from '../src/utils/annotationOverlayTypes';
 export type { OverlayPoint, OverlayStroke, OverlayDelta, OverlayShowResult, OverlayRefusal } from '../src/utils/annotationOverlayTypes';
+import { lockPageZoom } from './page-zoom-lock';
 import { overlayCanvasLayout, type OverlayCanvasLayout, type Rect } from './annotation-overlay-projection';
 import {
     resolveCapturedDisplay, parseScreenSourceIndex, parseWindowSourceHandle, cleanRect,
@@ -463,6 +464,7 @@ function createOverlay(b: Rect, topmost: boolean): boolean {
     });
     overlay = win;
     win.setMenu(null);
+    lockPageZoom(win.webContents);
     win.setIgnoreMouseEvents(true);
     if (topmost) {
         try { win.setAlwaysOnTop(true, 'screen-saver'); } catch { /* level unsupported */ }

@@ -1,6 +1,7 @@
 import secureLocalStore from '../utils/secureLocalStore';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { deriveBackupKey } from '../utils/crypto';
+import { primeScreenLockEngaged, setScreenLockEngaged } from '../utils/screenLockEngaged';
 
 /**
  * Screen Lock — a local, PIN-gated UI overlay ("walked away from your desk")
@@ -120,9 +121,22 @@ async function checkVerifier(pin: string, verifier: PinVerifier): Promise<boolea
 export function useScreenLock() {
     const [settings, setSettings] = useState<ScreenLockSettings>(loadSettings);
     // Session-only: locks on mount (app launch / re-login) when a PIN is configured.
-    const [isLocked, setIsLocked] = useState(() => loadSettings().enabled);
+    const [isLocked, setIsLocked] = useState(() => {
+        const startsLocked = loadSettings().enabled;
+        // So the boot loading screen (HydrationGate, Dashboard's sibling) sees
+        // "locked" on ITS first render and never mounts under the lock.
+        primeScreenLockEngaged(startsLocked);
+        return startsLocked;
+    });
     const [attempts, setAttempts] = useState(0);
     const [lockedOutUntil, setLockedOutUntil] = useState<number | null>(null);
+
+    // Publish the lock state for the boot loading screen (utils/screenLockEngaged.ts).
+    // Layout effect: the screen reacts before the next paint, so no frame shows
+    // both. The unmount cleanup (sign-out, account switch, forgot-PIN) keeps a
+    // stale `true` from outliving the lock.
+    useLayoutEffect(() => { setScreenLockEngaged(isLocked); }, [isLocked]);
+    useLayoutEffect(() => () => setScreenLockEngaged(false), []);
 
     // Latest `settings` for callbacks (lockNow, the idle-poll interval) that
     // need the current value without resubscribing on every settings change.
@@ -131,7 +145,7 @@ export function useScreenLock() {
 
     // Persist config (never the PIN itself, only its encrypted verifier) on change.
     useEffect(() => {
-        try { secureLocalStore.setItem(STORAGE_KEY, JSON.stringify(settings)); } catch {}
+        try { secureLocalStore.setItem(STORAGE_KEY, JSON.stringify(settings)); } catch { /* persisting a UI preference is best-effort; a failed write must not break the UI */ }
     }, [settings]);
 
     const lockNow = useCallback(() => {
@@ -167,6 +181,7 @@ export function useScreenLock() {
     // ── Lock when the OS screen locks / sleeps (Windows + macOS; best-effort elsewhere) ──
     useEffect(() => {
         if (!settings.enabled || !settings.lockOnOsLock) return;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- window.electronAPI members are optional/version-dependent and not all declared on the typed bridge
         const api = (window as any).electronAPI;
         return api?.onOsLockScreen?.(() => lockNow());
     }, [settings.enabled, settings.lockOnOsLock, lockNow]);

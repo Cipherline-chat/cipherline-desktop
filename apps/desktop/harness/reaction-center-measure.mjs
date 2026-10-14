@@ -1,4 +1,3 @@
-/* eslint-disable -- harness helper, not shipped */
 import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
 export const { chromium } = require(process.env.PLAYWRIGHT_CORE ?? '/home/antigravity/Cipherline/node_modules/playwright-core');

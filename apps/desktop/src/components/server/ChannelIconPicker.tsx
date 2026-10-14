@@ -106,6 +106,7 @@ const GROUPED: { label: string; keys: IconKey[] }[] = [
 ];
 
 /** Resolve a stored icon-name → its render component (or undefined if not in the allowlist). */
+// eslint-disable-next-line react-refresh/only-export-components, @typescript-eslint/no-explicit-any -- co-located helper export; splitting the file would only affect dev Fast Refresh, not runtime behaviour; untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
 export function lookupChannelIcon(name: string | null | undefined): React.ComponentType<any> | undefined {
     if (!name) return undefined;
     const aliased = RESOLVE_NAME[name] ?? name;

@@ -9,6 +9,7 @@ import { playSound } from '../utils/notificationSounds';
 import { API_BASE } from '../constants';
 import { secureLocalStore } from '../utils/secureLocalStore';
 import { hasBackupSetUp } from '../hooks/useBackupAutoSchedule';
+import { useBackupStateVersion } from '../hooks/useBackupState';
 import { writeToClipboard } from '../utils/clipboard';
 import { nudges } from '../utils/firstWeekNudgeStore';
 import type { PaneId } from './settings/SettingsScreen';
@@ -86,9 +87,12 @@ export const OnboardingChecklist: React.FC<Props> = ({ onOpenSettings, refreshSi
         return onboarded && !already;
     }, [userId, dismissed]);
 
-    const [backupDone, setBackupDone] = useState<boolean>(() => {
-        try { return userId ? hasBackupSetUp(userId) : false; } catch { return false; }
-    });
+    // Backups: derived on every render and re-rendered on every backup-state
+    // event, so configuring them (or any backup completing, including an
+    // automatic one in the background) flips the row immediately instead of
+    // waiting for settings to close / the dashboard to remount.
+    useBackupStateVersion();
+    const backupDone = userId ? hasBackupSetUp(userId) : false;
     const [twoFaDone, setTwoFaDone] = useState(false);
     const [referral, setReferral] = useState<ReferralStatus | null>(null);
     const [copied, setCopied] = useState<'code' | 'link' | null>(null);
@@ -96,7 +100,6 @@ export const OnboardingChecklist: React.FC<Props> = ({ onOpenSettings, refreshSi
     // Re-check all state whenever settings closes (refreshSignal bumps) or on mount.
     useEffect(() => {
         if (!gateOpen || !userId || !token) return;
-        try { setBackupDone(hasBackupSetUp(userId)); } catch { /* unchanged */ }
         axios.get(`${API_BASE}/auth/2fa/totp/status`, { headers: { Authorization: `Bearer ${token}` } })
             .then(r => setTwoFaDone(!!r.data?.enabled))
             .catch(() => {});

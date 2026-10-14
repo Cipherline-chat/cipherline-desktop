@@ -17,8 +17,37 @@ export type MentionEntry =
     | { type: 'user'; id: string }
     | { type: 'role'; id: string };
 
+/**
+ * A `#channel` link inside a server-channel message (docs/channel-links.md).
+ *
+ * Unlike a mention, a channel link is NOT an inline token. The text carries the
+ * plain, readable `#name` the sender picked, and this array says which channel
+ * each `#name` names:
+ *
+ *   text:         "see #memes for that"
+ *   channel_refs: [{ id: "<channel uuid>", name: "memes" }]
+ *
+ * That is deliberate backward compatibility: a client that predates this field
+ * (desktop <= 1.0.21, mobile) ignores it and shows the text exactly as typed,
+ * `#memes`, rather than a raw `<#c:...>` token. A client that knows the field
+ * turns each `#name` occurrence (at the start of the text or after whitespace,
+ * longest name first) into a link resolved BY ID against the reader's own
+ * visible channel list, so a later rename shows the current name.
+ *
+ * Sender-controlled and therefore untrusted: a reader validates the array
+ * (shape, length cap) and resolves ids only against channels it can already
+ * see. Never parsed by the server: it lives inside the encrypted content.
+ * Optional and additive: omitted when the message names no channel.
+ */
+export interface ChannelRef {
+    /** The channel's id. */
+    id: string;
+    /** The channel name as the sender inserted it: the `#name` in `text`. */
+    name: string;
+}
+
 export type ClientContent =
-    | { client_msg_id?: string; type: 'text'; text: string; reply_to_id?: string; mentions?: MentionEntry[] }
+    | { client_msg_id?: string; type: 'text'; text: string; reply_to_id?: string; mentions?: MentionEntry[]; channel_refs?: ChannelRef[] }
     | {
         client_msg_id?: string;
         type: 'attachment';
@@ -47,7 +76,9 @@ export type ClientContent =
         event: 'started' | 'ended' | 'participant_joined' | 'participant_left';
         user_id?: string;
     }
-    | { client_msg_id?: string; type: 'edit'; target_id: string; text: string }
+    /** An edit carries the complete new text AND its complete `channel_refs`
+     *  (absent = the edited text names no channel). See ChannelRef. */
+    | { client_msg_id?: string; type: 'edit'; target_id: string; text: string; channel_refs?: ChannelRef[] }
     | { client_msg_id?: string; type: 'delete'; target_id: string }
     | { client_msg_id?: string; type: 'reaction'; target_id: string; emoji: string; action: 'add' | 'remove' }
     /**

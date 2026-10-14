@@ -175,12 +175,65 @@ function resolveTip(): string {
     return _unreadCount > 0 ? `Cipherline · ${_unreadCount} unread` : 'Cipherline';
 }
 
+// ── What reaches the OS, and how often ──────────────────────────────────────
+// Every tray.setImage / setToolTip is a synchronous Shell_NotifyIcon round
+// trip to Explorer on Windows (and a StatusNotifier D-Bus update on Linux), on
+// the MAIN thread. They used to run on EVERY state push: the renderer sends
+// `tray:call-speaking` each time the local speaking indicator flips — several
+// times a second while you talk — and every unread-count change re-sent the
+// same icon three times (notif:set-badge, tray:update-state, setBadgeCount).
+// When Explorer is slow to answer (a game in front, a busy shell), each of
+// those calls stalls main, and a stalled main freezes the whole window: input
+// is routed through it. The owner's 2026-10-11 freeze report has a 4.2 s main
+// stall overlapping `ipc:tray:call-speaking`.
+//
+// So: only a CHANGED image or tooltip is sent (the badge overlay already
+// works this way, see badge.ts), and the speaking dot — the one state that
+// flips continuously — is coalesced to at most one update per
+// SPEAKING_FLIP_MIN_MS, trailing edge, so the icon still ends up correct.
+// Mute / deafen / unread / call start-end changes apply immediately.
+export const SPEAKING_FLIP_MIN_MS = 1000;
+let _appliedVariant: TrayIconVariant | null = null;
+let _appliedTip: string | null = null;
+let _lastApplyAt = 0;
+let _pendingApply: ReturnType<typeof setTimeout> | null = null;
+let _appliedMenuKey: string | null = null;
+
+const isSpeakingPair = (v: TrayIconVariant | null): boolean => v === 'call-speaking' || v === 'call-silent';
+
+function cancelPendingApply(): void {
+    if (_pendingApply) { clearTimeout(_pendingApply); _pendingApply = null; }
+}
+
+function forgetApplied(): void {
+    cancelPendingApply();
+    _appliedVariant = null;
+    _appliedTip = null;
+    _appliedMenuKey = null;
+    _lastApplyAt = 0;
+}
+
 function applyTrayIcon(): void {
     if (!tray) return;
+    const variant = resolveVariant();
+    const tip = resolveTip();
+    if (variant === _appliedVariant && tip === _appliedTip) { cancelPendingApply(); return; }
+    if (isSpeakingPair(variant) && isSpeakingPair(_appliedVariant)) {
+        const wait = _lastApplyAt + SPEAKING_FLIP_MIN_MS - Date.now();
+        if (wait > 0) {
+            if (!_pendingApply) {
+                _pendingApply = setTimeout(() => { _pendingApply = null; applyTrayIcon(); }, wait);
+                (_pendingApply as { unref?: () => void }).unref?.();
+            }
+            return;
+        }
+    }
+    cancelPendingApply();
     try {
-        tray.setImage(buildTrayIcon(resolveVariant()));
-        tray.setToolTip(resolveTip());
-    } catch {}
+        if (variant !== _appliedVariant) { tray.setImage(buildTrayIcon(variant)); _appliedVariant = variant; }
+        if (tip !== _appliedTip) { tray.setToolTip(tip); _appliedTip = tip; }
+        _lastApplyAt = Date.now();
+    } catch { /* best-effort; failure is non-fatal and intentionally ignored */ }
 }
 
 /** Called by badge.ts whenever the unread count changes. */
@@ -306,9 +359,14 @@ export function setupTray(
     if (enabled && !tray) {
         try {
             _unreadCount = initialState.unreadCount;
-            tray = new Tray(buildTrayIcon(resolveVariant()));
-            tray.setToolTip(resolveTip());
+            forgetApplied();
+            _appliedVariant = resolveVariant();
+            tray = new Tray(buildTrayIcon(_appliedVariant));
+            _appliedTip = resolveTip();
+            tray.setToolTip(_appliedTip);
             tray.setContextMenu(buildMenu(initialState, isQuittingRef));
+            _appliedMenuKey = menuKey(initialState);
+            _lastApplyAt = Date.now();
             // A left-click with setContextMenu() active would otherwise just pop
             // the menu (Windows convention) — registering 'click' here makes a
             // single click show the window instead, matching Discord/Slack.
@@ -324,7 +382,13 @@ export function setupTray(
     } else if (!enabled && tray) {
         tray.destroy();
         tray = null;
+        forgetApplied();
     }
+}
+
+/** The fields buildMenu() reads — the menu is rebuilt only when one changes. */
+function menuKey(state: TrayMenuState): string {
+    return `${state.dndManual ? 1 : 0}|${state.status}|${state.screenLockAvailable ? 1 : 0}`;
 }
 
 /**
@@ -339,10 +403,14 @@ export function updateTrayMenu(
     _winRef = win; // keep the ref fresh so menu callbacks always reach the live window
     if (!tray) return;
     try {
-        tray.setContextMenu(buildMenu(state, isQuittingRef));
+        const key = menuKey(state);
+        if (key !== _appliedMenuKey) {
+            tray.setContextMenu(buildMenu(state, isQuittingRef));
+            _appliedMenuKey = key;
+        }
         _unreadCount = state.unreadCount;
         applyTrayIcon();
-    } catch {}
+    } catch { /* best-effort; failure is non-fatal and intentionally ignored */ }
 }
 
 export function getTray(): Tray | null {
@@ -351,4 +419,5 @@ export function getTray(): Tray | null {
 
 export function destroyTray(): void {
     if (tray) { tray.destroy(); tray = null; }
+    forgetApplied();
 }

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { KeyRound, Copy, Check, Eye, AlertTriangle } from 'lucide-react';
 import { ClButton } from './ClButton';
+import { useStepUp } from '../hooks/useStepUp';
 
 /**
  * Lets the user reveal and copy their device storage recovery key so they can
@@ -13,12 +14,18 @@ const RecoveryKeyCard: React.FC = () => {
     const [busy, setBusy] = useState(false);
     const [copied, setCopied] = useState(false);
     const [error, setError] = useState('');
+    // Revealing the key needs a fresh "Confirm it's you" first (2FA code, backup
+    // code, or the account password if 2FA is off), in addition to the OS-level
+    // confirmation the main process asks for. When the 5-minute window lapses
+    // the key is wiped from view again. In-memory only; hiding needs nothing.
+    const stepUp = useStepUp({ subject: 'your storage recovery key', onExpire: () => setRevealed('') });
 
     // The main process asks for confirmation before it parts with the key —
     // see electron/recovery-key-gate.ts. A `declined` result is the user
     // answering that dialog, not a failure: say nothing and leave the button
     // where they can try again.
     const reveal = async () => {
+        if (!(await stepUp.request())) return;
         setBusy(true); setError('');
         try {
             const res = await window.electronAPI?.revealRecoveryKey?.();
@@ -80,6 +87,9 @@ const RecoveryKeyCard: React.FC = () => {
                                 <ClButton size="sm" variant="ghost" onClick={copy}>
                                     {copied ? <Check size={14} /> : <Copy size={14} />} {copied ? 'Copied' : 'Copy'}
                                 </ClButton>
+                                <ClButton size="sm" variant="ghost" onClick={() => setRevealed('')}>
+                                    Hide
+                                </ClButton>
                             </div>
                             <div className="flex items-start gap-1.5 mt-2">
                                 <AlertTriangle size={13} style={{ color: 'var(--cl-glow)', marginTop: 1, flexShrink: 0 }} />
@@ -91,6 +101,7 @@ const RecoveryKeyCard: React.FC = () => {
                     )}
                 </div>
             </div>
+            {stepUp.modal}
         </div>
     );
 };

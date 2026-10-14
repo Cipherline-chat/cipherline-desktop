@@ -38,3 +38,16 @@ export function clearRejoinDescriptor(userId: string): void {
         secureLocalStore.removeItem(`cipherline_call_rejoin_${userId}`);
     } catch { /* ignore */ }
 }
+
+/**
+ * Before a deliberate relaunch ("Restart Cipherline to fix", GpuRestartPrompt):
+ * make sure the rejoin record is on disk, not just in memory, so the relaunched
+ * app OFFERS the call back ("Rejoin call?" banner). Never an automatic rejoin —
+ * see callRejoinWiring.test.ts.
+ */
+export async function flushRejoinDescriptor(userId: string): Promise<void> {
+    if (!userId) return;
+    try {
+        await secureLocalStore.flushDurable([`cipherline_call_rejoin_${userId}`]);
+    } catch { /* best effort */ }
+}

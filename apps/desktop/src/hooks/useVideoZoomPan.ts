@@ -366,6 +366,7 @@ export function useVideoZoomPan({
             layer.style.transform = '';
             root.style.cursor = '';
         };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- requireModifierForWheelZoom is read when the wheel handler runs; toggling it must not tear down and re-attach the gesture listeners and reset zoom state
     }, [enabled, rootRef, layerRef, videoRef]);
 
     // Focus moved to a different person's stream (the sibling auto-advance on

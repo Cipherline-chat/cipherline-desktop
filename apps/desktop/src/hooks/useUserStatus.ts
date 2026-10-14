@@ -232,6 +232,7 @@ export function useUserStatus({ token, userId, acceptedFriends, showGameActivity
     // chosen status. The picker keeps showing the choice. Against an older
     // server, the old behaviour: PATCH 'away', restore on return.
     useEffect(() => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- window.electronAPI members are optional/version-dependent and not all declared on the typed bridge
         const electronAPI = (window as any).electronAPI;
         if (!electronAPI?.getSystemIdleTime) return;
 
@@ -260,7 +261,6 @@ export function useUserStatus({ token, userId, acceptedFriends, showGameActivity
         }, IDLE_POLL_INTERVAL_MS);
 
         return () => clearInterval(poll);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [pushStatus]);
 
     // Other people's presence — every event, in order (see presenceState.ts
@@ -291,6 +291,7 @@ export function useUserStatus({ token, userId, acceptedFriends, showGameActivity
 
     // Game detection from Electron IPC — gated by showGameActivity toggle
     useEffect(() => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- window.electronAPI members are optional/version-dependent and not all declared on the typed bridge
         const electronAPI = (window as any).electronAPI;
         if (!electronAPI?.onGameDetected) return;
 

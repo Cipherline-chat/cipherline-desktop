@@ -28,6 +28,7 @@ export const ResetSlider: React.FC<ResetSliderProps> = ({
     <div
         onDoubleClick={e => {
             onChangeValue(resetValue);
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
             onDoubleClick?.(e as any);
         }}
         style={style}

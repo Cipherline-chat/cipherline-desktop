@@ -82,6 +82,7 @@ let workletRegistered: Promise<void> | null = null;
 let sharedRnnoiseMode: 'inline' | 'worker' | null = null;
 export const getSharedAudioContext = (): AudioContext | null => {
     if (!sharedAudioCtx) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- window.electronAPI members are optional/version-dependent and not all declared on the typed bridge
         const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
         // 48 kHz matches WebRTC/Opus decode rate — no resampling needed for RNNoise
         if (AudioCtx) {

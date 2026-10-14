@@ -58,17 +58,19 @@ export function useGameSettings(userId?: string | null) {
 
     useEffect(() => {
         if (!dirtyRef.current || !userId || !secureLocalStore.isAccountReady(userId)) return;
-        try { secureLocalStore.setItem(gameSettingsKey(userId), JSON.stringify(settings)); } catch {}
+        try { secureLocalStore.setItem(gameSettingsKey(userId), JSON.stringify(settings)); } catch { /* persisting a UI preference is best-effort; a failed write must not break the UI */ }
     }, [settings, userId]);
 
     // Sync custom games and ignored processes to Electron main process
     useEffect(() => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- window.electronAPI members are optional/version-dependent and not all declared on the typed bridge
         const electronAPI = (window as any).electronAPI;
         if (!electronAPI?.setCustomGames) return;
         electronAPI.setCustomGames(settings.customGames);
     }, [settings.customGames]);
 
     useEffect(() => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- window.electronAPI members are optional/version-dependent and not all declared on the typed bridge
         const electronAPI = (window as any).electronAPI;
         if (!electronAPI?.setIgnoredProcesses) return;
         electronAPI.setIgnoredProcesses(settings.ignoredProcesses);

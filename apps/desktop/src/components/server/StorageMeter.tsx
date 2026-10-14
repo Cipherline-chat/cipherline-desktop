@@ -10,7 +10,7 @@ import React, { useEffect, useState } from 'react';
 import axios from 'axios';
 import { Pin } from 'lucide-react';
 import { formatBytes } from '@cipherline/shared';
-import { API_BASE } from '../../constants';
+import { apiUrl } from '../../utils/apiPath';
 
 interface Props {
     serverId: string;
@@ -35,7 +35,7 @@ export const StorageMeter: React.FC<Props> = ({ serverId, token, refreshKey = 0 
         if (!token || !serverId) return;
         let cancelled = false;
         setLoading(true);
-        axios.get(`${API_BASE}/servers/${serverId}/storage`, {
+        axios.get(apiUrl`/servers/${serverId}/storage`, {
             headers: { Authorization: `Bearer ${token}` },
         }).then(res => {
             if (!cancelled) { setData(res.data); setError(null); }

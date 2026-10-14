@@ -15,6 +15,13 @@ export interface CallServerCtxValue {
     canChangeOwnNick: boolean;
     /** Viewer can change other members' server nicknames (MANAGE_NICKNAMES or ADMINISTRATOR). */
     canManageNick: boolean;
+    /** Viewer holds MANAGE_CALL_MEMBERS (or ADMINISTRATOR) in the call's server:
+     *  the participant popover offers "Disconnect". UX mirror only - the server
+     *  re-checks the permission and the role hierarchy. */
+    canManageCallMembers?: boolean;
+    /** Disconnect `userId` from the call this client is in. Handles its own
+     *  error toast; never rejects. Absent when the viewer cannot disconnect. */
+    disconnectMember?: (userId: string) => Promise<void>;
 }
 
 export const CallServerCtx = createContext<CallServerCtxValue | null>(null);

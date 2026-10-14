@@ -54,11 +54,15 @@ export function useChannelKeyWait({ enabled, channelId, messages }: {
     messages: readonly Row[];
 }): ChannelKeyWaitState {
     const reduced = usePrefersReducedMotion();
-    const wants = useMemo(() => enabled && needsKeyWaitState(messages), [enabled, messages]);
     const signals = useSyncExternalStore(
         subscribeKeyWaitSignals,
         () => getKeyWaitSignals(channelId),
         () => getKeyWaitSignals(channelId),
+    );
+    const newestKeyPending = !!signals.newestKeyPending;
+    const wants = useMemo(
+        () => enabled && needsKeyWaitState(messages, undefined, { newestKeyPending }),
+        [enabled, messages, newestKeyPending],
     );
     const decrypting = isDecrypting(signals);
 

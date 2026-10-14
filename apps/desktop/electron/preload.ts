@@ -5,7 +5,7 @@ import type { StagingLockStatus, StagingUnlockResult } from './staging-lock';
 // webUtils was added in Electron 32 but is absent from the bundled .d.ts in
 // this version of the electron package. Access it via require with a manual
 // type annotation so tsc doesn't reject the import.
-// eslint-disable-next-line @typescript-eslint/no-var-requires
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- sandboxed preload; 'electron' webUtils is missing from the bundled .d.ts so it is required with a manual type
 const { webUtils } = require('electron') as {
     webUtils: { getPathForFile: (file: File) => string };
 };
@@ -296,6 +296,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     traySetCallSpeaking: (inCall: boolean, isSpeaking: boolean, isMuted: boolean, isDeafened: boolean): Promise<void> =>
         ipcRenderer.invoke('tray:call-speaking', inCall, isSpeaking, isMuted, isDeafened),
     onTraySetStatus: (cb: (status: 'online' | 'away' | 'dnd' | 'offline') => void): (() => void) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
         const wrapped = (_e: Electron.IpcRendererEvent, s: string) => cb(s as any);
         ipcRenderer.on('tray:set-status', wrapped);
         return () => ipcRenderer.removeListener('tray:set-status', wrapped);
@@ -396,7 +397,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     },
 
     // Display refresh rates — the hard ceiling on screen-share frame rate.
-    getDisplayRefreshRates: (): Promise<Array<{ id: string; displayFrequency: number; isPrimary: boolean }>> =>
+    getDisplayRefreshRates: (): Promise<Array<{ id: string; displayFrequency: number; isPrimary: boolean; captureFpsCeiling?: number | null }>> =>
         ipcRenderer.invoke('display:get-refresh-rates'),
 
     // Stream-stats overlay: what the OS/Chromium side of a screen share looks
@@ -405,8 +406,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // capture timing. Both read-only. Shapes: src/env.d.ts.
     getScreenShareDiagnostics: (sourceId: string): Promise<unknown> =>
         ipcRenderer.invoke('screenshare:get-diagnostics', sourceId),
-    getScreenCaptureTiming: (): Promise<unknown> =>
-        ipcRenderer.invoke('screenshare:get-capture-timing'),
+    // `frames` (optional): summarise only the newest N polls (10–300).
+    getScreenCaptureTiming: (frames?: number): Promise<unknown> =>
+        ipcRenderer.invoke('screenshare:get-capture-timing', frames),
     // In-call performance helper: { renderer, gpu } CPU % of one core.
     getProcessCpu: (): Promise<unknown> =>
         ipcRenderer.invoke('perf:get-process-cpu'),
@@ -422,7 +424,55 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // Main rejects anything but a boolean.
     setCallMediaActive: (active: boolean): Promise<void> =>
         ipcRenderer.invoke('call:set-media-active', active),
+    // "Prioritize calls and screen share while gaming": tells main a screen share went
+    // live / ended so it can raise / restore process priority and hold /
+    // release a prevent-app-suspension power request (electron/share-boost.ts).
+    // Narrow on purpose: one boolean, nothing else; main rejects anything else.
+    setShareActive: (active: boolean): Promise<void> =>
+        ipcRenderer.invoke('share:set-active', active),
+    // What has the screen right now (Windows; null elsewhere): the Windows
+    // notification state, the foreground program's basename, whether its
+    // window covers its monitor / is ours / is on the shared screen. For the
+    // share_fps / share_background diagnostics and the "share the game window
+    // instead" hint. Takes only the share's capture source id (main validates
+    // it); returns no titles and no handles (electron/share-foreground.ts).
+    getShareForegroundInfo: (sourceId?: string): Promise<unknown> =>
+        ipcRenderer.invoke('share:get-foreground-info', sourceId),
+    // Which of these `window:` sources is the running program `exe`? Resolved
+    // natively in main; only the winning source id comes back.
+    findWindowSourceByExe: (exe: string, windowSourceIds: string[]): Promise<string | null> =>
+        ipcRenderer.invoke('share:find-window-source', exe, windowSourceIds),
+    // Main applied / re-applied / restored the OS power-throttling opt-out for
+    // the share (electron/share-boost.ts); the renderer logs it as the
+    // `share_power` call event. Payload is `unknown` on purpose: the
+    // renderer narrows it (src/utils/sharePowerEvent.ts).
+    onSharePower: (cb: (report: unknown) => void): (() => void) => {
+        const listener = (_e: Electron.IpcRendererEvent, report: unknown) => cb(report);
+        ipcRenderer.on('share:power', listener);
+        return () => ipcRenderer.removeListener('share:power', listener);
+    },
+    // Main raised / re-applied / restored the GPU scheduling class (D3DKMT) for
+    // the share (electron/share-boost.ts GpuSchedulingBoost); logged as the
+    // `share_gpu_sched` call event. `unknown` on purpose (src/utils/shareGpuSchedEvent.ts narrows it).
+    onShareGpuSched: (cb: (report: unknown) => void): (() => void) => {
+        const listener = (_e: Electron.IpcRendererEvent, report: unknown) => cb(report);
+        ipcRenderer.on('share:gpu-sched', listener);
+        return () => ipcRenderer.removeListener('share:gpu-sched', listener);
+    },
     relaunchApp: (): Promise<void> => ipcRenderer.invoke('app:relaunch'),
+
+    // GPU process restart (electron/gpu-restart.ts): main says the GPU process
+    // died and Chromium is starting a new one; the renderer recovers a call's
+    // video and answers what it did. The payload is `unknown` on purpose —
+    // src/utils/gpuRecovery.ts parseGpuRestartedPayload narrows it; main
+    // rejects a malformed answer (parseGpuRecoveryReport).
+    onGpuProcessRestarted: (callback: (payload: unknown) => void): (() => void) => {
+        const wrapped = (_e: unknown, payload: unknown) => callback(payload);
+        ipcRenderer.on('gpu:process-restarted', wrapped);
+        return () => ipcRenderer.removeListener('gpu:process-restarted', wrapped);
+    },
+    reportGpuRecovery: (report: { seq: number; outcome: 'recovered' | 'restart_prompted' | 'not_in_call' }): Promise<void> =>
+        ipcRenderer.invoke('gpu:recovery-outcome', { seq: report.seq, outcome: report.outcome }),
 
     // System idle detection (for presence auto-away, and Screen Lock's inactivity timeout)
     getSystemIdleTime: (): Promise<number> => ipcRenderer.invoke('system:get-idle-time'),
@@ -471,9 +521,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // Combined: shows OS save-dialog then writes the file entirely in the main
     // process.  Safer than showSaveDialog + writeFile separately because the
     // chosen path never needs to pass assertInsideUserData.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     saveFileAs: (opts: any, data: Uint8Array): Promise<{ canceled: boolean; filePath?: string; size?: number }> =>
         ipcRenderer.invoke('fs:save-file-as', opts, data),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
     showSaveDialog: (opts: any): Promise<any> => ipcRenderer.invoke('dialog:save', opts),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
     showOpenDialog: (opts: any): Promise<any> => ipcRenderer.invoke('dialog:open', opts),
     writeFile: (filePath: string, data: Uint8Array): Promise<{ ok: boolean; size: number }> =>
         ipcRenderer.invoke('fs:write-file', filePath, data),
@@ -516,8 +569,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
         ipcRenderer.invoke('backup:staging-dir'),
     // Drive transfers run in the main process (resumable, streamed from
     // disk, checksum-verified) — see electron/driveTransfer.ts.
-    gdriveUploadFile: (folderId: string, fileName: string, filePath: string): Promise<{ id: string; size: number; md5Checksum: string }> =>
-        ipcRenderer.invoke('gdrive:upload-file', folderId, fileName, filePath),
+    gdriveUploadFile: (folderId: string, fileName: string, filePath: string, existingFileId?: string): Promise<{ id: string; size: number; md5Checksum: string }> =>
+        ipcRenderer.invoke('gdrive:upload-file', folderId, fileName, filePath, existingFileId),
     gdriveDownloadFile: (fileId: string, fileName: string): Promise<{ path: string; size: number }> =>
         ipcRenderer.invoke('gdrive:download-file', fileId, fileName),
     onGdriveTransferProgress: (cb: (p: { kind: 'upload' | 'download'; done: number; total: number }) => void): (() => void) => {
@@ -686,12 +739,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
         rotatesAt: string;
     }> => ipcRenderer.invoke('channel:rotate-key', channelId, atEpoch),
 
-    // Auto-updater — full lifecycle (idle/available/downloading/ready/manual).
-    // See electron/updater-state.ts for what each phase means and why 'manual'
-    // exists (macOS/Linux can't always self-install). onUpdateState fires on
-    // every transition; getUpdateState covers a renderer that mounted after an
-    // earlier transition already happened (same cold-start problem deep links
-    // solve below).
+    // Auto-updater — full lifecycle (idle/available/downloading/retrying/
+    // failed/ready, plus Linux-only manual). See electron/updater-state.ts:
+    // updates complete in the app, with automatic retries and an in-app
+    // Retry; only a Linux AppImage that cannot replace itself is ever offered
+    // a download link. onUpdateState fires on every transition;
+    // getUpdateState covers a renderer that mounted after an earlier
+    // transition already happened (same cold-start problem deep links solve
+    // below).
     /** The OS woke from sleep (or the screen unlocked). The renderer uses this
      *  to rebuild its WebSocket and re-hydrate, rather than waiting for the
      *  heartbeat-ack timeout to work out that the socket died during suspend. */
@@ -736,9 +791,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
      *  arrives on the existing `update:state` stream above, not here —
      *  checkForUpdates() resolves either way and can't tell them apart. */
     checkForUpdatesNow: (): Promise<boolean> => ipcRenderer.invoke('updater:check-now'),
-    // For the 'manual' phase's download link, reuse the openExternal exposed
-    // above (net:fetch-binary section) rather than adding a second path to
-    // the same https-only shell:open-external gate (L2).
+    /** In-app Retry after a failed update attempt: clears the pending
+     *  download and starts a fresh one. False in a build with no updater. */
+    retryUpdate: (): Promise<boolean> => ipcRenderer.invoke('updater:retry'),
+    // For the Linux-only 'manual' phase's download link, reuse the
+    // openExternal exposed above (net:fetch-binary section) rather than adding
+    // a second path to the same https-only shell:open-external gate (L2).
     // Channel selection — read/persist which update stream this client
     // follows. 'latest' is what real users get; 'staging' is opt-in pre-
     // release builds. See Settings → Advanced for the UI.
@@ -895,6 +953,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // focus events). The main-process clipboard module has no such restriction.
     readClipboard: (): Promise<string> => ipcRenderer.invoke('clipboard:read'),
     writeClipboard: (text: string): Promise<void> => ipcRenderer.invoke('clipboard:write', text),
+    // Put a PNG on the OS clipboard ("Copy image"). Main validates it is a PNG
+    // of sane size/dimensions before decoding; anything else is rejected.
+    clipboardWriteImage: (png: Uint8Array): Promise<void> => ipcRenderer.invoke('clipboard:write-image', png),
     // Sign an official-build attestation token (null in dev/forks without a secret).
     attestSign: (): Promise<string | null> => ipcRenderer.invoke('attest:sign'),
     // Solve a registration proof-of-work challenge (null if disabled/no solution).
@@ -909,6 +970,27 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // then abandon the request, never send it unsigned.
     getHistoryRequestProof: (userId: string, requestingDeviceId: string, ts: number): Promise<{ identityPub: string; sig: string } | null> =>
         ipcRenderer.invoke('crypto:history-request-proof', userId, requestingDeviceId, ts),
+
+    // ── Device approval (DEVICE_APPROVAL_REQUIRED) — see electron/device-approval-keys.ts.
+    // Only public keys and signatures cross this bridge outward; the typed
+    // recovery key crosses inward once and is never stored.
+    getIdentityPub: (): Promise<string | null> => ipcRenderer.invoke('crypto:identity-pub'),
+    signDeviceApproval: (
+        userId: string, approverDeviceId: string, pendingDeviceId: string,
+        pendingIdentityKeyB64: string, decision: 'approve' | 'deny', ts: number,
+        display?: { deviceName: string; platform: string },
+    ): Promise<{ identityPub: string; sig: string } | null> =>
+        ipcRenderer.invoke('crypto:device-approval-sign', userId, approverDeviceId, pendingDeviceId, pendingIdentityKeyB64, decision, ts, display),
+    signLinkApproval: (
+        userId: string, approverDeviceId: string, linkId: string, newIdentityKeyB64: string | null, ts: number,
+    ): Promise<{ identityPub: string; sig: string } | null> =>
+        ipcRenderer.invoke('crypto:link-approval-sign', userId, approverDeviceId, linkId, newIdentityKeyB64, ts),
+    getRecoveryCommitment: (userId: string, deviceId: string, ts: number): Promise<{ recoveryPub: string; identityPub: string; sig: string } | null> =>
+        ipcRenderer.invoke('crypto:recovery-commitment', userId, deviceId, ts),
+    proveRecoveryKey: (
+        typedKeyB64: string, userId: string, pendingDeviceId: string, pendingIdentityKeyB64: string, ts: number,
+    ): Promise<{ recoveryPub: string; sig: string } | null> =>
+        ipcRenderer.invoke('crypto:recovery-proof', typedKeyB64, userId, pendingDeviceId, pendingIdentityKeyB64, ts),
 
     // ── QR sign-in (link) — see electron/link-grant.ts for the full design.
     // The ephemeral private key never crosses this bridge in either direction;

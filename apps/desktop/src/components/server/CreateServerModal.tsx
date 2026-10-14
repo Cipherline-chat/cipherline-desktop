@@ -24,6 +24,7 @@ export const CreateServerModal: React.FC<Props> = ({ onClose, onCreateServer }) 
         try {
             await onCreateServer(trimmed);
             handleClose();
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (err: any) {
             setError(err?.response?.data?.message ?? 'Failed to create server');
         } finally {

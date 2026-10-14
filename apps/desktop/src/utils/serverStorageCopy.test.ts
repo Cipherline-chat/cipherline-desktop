@@ -8,7 +8,11 @@ import {
 import {
     quotaExceededMessage, nearLimitMessage, isFlatStoragePlan, emojiQuotaExceededMessage, isStorageQuotaError,
     emojiCountLimitMessage, emojiCountNearMessage, isEmojiCountLimitError, EMOJI_COUNT_NOTE_AT,
+    overLimitMessage, transferStorageNote,
 } from './serverStorageCopy';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const MB = 1024 * 1024;
 
@@ -121,5 +125,34 @@ describe('the 1,000-emoji backstop copy', () => {
         expect(isEmojiCountLimitError({ code: 'EMOJI_COUNT_LIMIT', limit: 1000 })).toBe(true);
         expect(isEmojiCountLimitError({ code: 'STORAGE_QUOTA_EXCEEDED' })).toBe(false);
         expect(isEmojiCountLimitError(null)).toBe(false);
+    });
+});
+
+describe('over-limit copy follows the storage grace policy (2026-10-12)', () => {
+    it('free-owner server: paused, 60-day grace, then trimmed oldest emojis first', () => {
+        const msg = overLimitMessage('flat25');
+        expect(msg).toContain('Over the 25 MB free limit');
+        expect(msg).toContain('60-day grace period');
+        expect(msg).toContain('trimmed back to 25 MB');
+        expect(msg.indexOf('oldest custom emojis')).toBeLessThan(msg.indexOf('oldest saved messages'));
+        expect(msg).not.toMatch(/keeps everything|nothing already saved is removed/i);
+    });
+
+    it('Pro-owner server over its ladder tier: paused, nothing removed', () => {
+        const msg = overLimitMessage('ladder');
+        expect(msg).toContain('nothing already saved is removed');
+        expect(msg).not.toMatch(/trim/i);
+    });
+
+    it('the transfer note no longer claims everything is kept', () => {
+        const note = transferStorageNote();
+        expect(note).toContain('60 days');
+        expect(note).toContain('if they have Pro, nothing changes');
+        expect(note).not.toMatch(/already saved is kept/);
+    });
+
+    it('the module no longer says an over-limit server keeps everything', () => {
+        const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'serverStorageCopy.ts'), 'utf8');
+        expect(src).not.toMatch(/over its limit keeps everything/);
     });
 });

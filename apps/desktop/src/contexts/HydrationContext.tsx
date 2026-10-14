@@ -99,6 +99,7 @@ export const HydrationProvider: React.FC<{ children: React.ReactNode }> = ({ chi
  * components used outside the authenticated tree (and existing tests) don't
  * have to care.
  */
+// eslint-disable-next-line react-refresh/only-export-components -- co-located helper export; splitting the file would only affect dev Fast Refresh, not runtime behaviour
 export function useHydration(): HydrationValue {
     const ctx = useContext(HydrationContext);
     if (ctx) return ctx;
@@ -113,6 +114,7 @@ export function useHydration(): HydrationValue {
 }
 
 /** Just the retry signal — the common case for a component that fetches. */
+// eslint-disable-next-line react-refresh/only-export-components -- co-located helper export; splitting the file would only affect dev Fast Refresh, not runtime behaviour
 export function useHydrationGeneration(): number {
     return useHydration().generation;
 }

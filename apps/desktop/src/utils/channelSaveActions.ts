@@ -20,6 +20,7 @@
  * MESSAGE_PINNED, and the menus never offer it, see messageMenuGating).
  */
 import { asSaveRequestError, withId, withoutId } from './channelServerSaves';
+import { apiPath } from './apiPath';
 
 /** A request that hangs must not leave the optimistic state up forever. */
 export const SAVE_REQUEST_TIMEOUT_MS = 20_000;
@@ -63,7 +64,7 @@ const authed = (token: string) => ({ headers: { Authorization: `Bearer ${token}`
 export async function unsaveChannelMessage(deps: ChannelSaveActionDeps, channelId: string, msgId: string): Promise<RemoveOutcome> {
     deps.updateSaved(channelId, ids => withoutId(ids, msgId));
     try {
-        await deps.http.delete(`${deps.apiBase}/channels/${channelId}/saves/${msgId}`, authed(deps.token));
+        await deps.http.delete(deps.apiBase + apiPath`/channels/${channelId}/saves/${msgId}`, authed(deps.token));
         return 'ok';
     } catch (err: unknown) {
         const outcome = classifyRemoveFailure(err);
@@ -89,7 +90,7 @@ export async function unsaveChannelMessage(deps: ChannelSaveActionDeps, channelI
 export async function unpinChannelMessage(deps: ChannelSaveActionDeps, channelId: string, msgId: string): Promise<RemoveOutcome> {
     deps.updatePinned(channelId, ids => withoutId(ids, msgId));
     try {
-        await deps.http.delete(`${deps.apiBase}/channels/${channelId}/pins/${msgId}`, authed(deps.token));
+        await deps.http.delete(deps.apiBase + apiPath`/channels/${channelId}/pins/${msgId}`, authed(deps.token));
         return 'ok';
     } catch (err: unknown) {
         const outcome = classifyRemoveFailure(err);

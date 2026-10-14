@@ -42,8 +42,13 @@ describe('channel history paging — Dashboard', () => {
             'q.add(() => refreshChannelHistoryRef.current(sid, cid), P_VISIBLE);',   // reconnect: the open channel only
             'void refreshChannelHistoryRef.current(channel.server_id, channel.channel_id);', // entry key pull: open channel only
             'await refreshChannelHistory(channel.server_id, channel.channel_id);',   // handleSelectChannel
+            'void refreshChannelHistoryRef.current(sid, cid)',                       // key re-ask check installed the key: open channel only
             "await refreshChannelHistory(serverOf.get(channel_id) ?? '', channel_id);", // envelopes-ready: active channel only
         ]);
+        // the re-ask check's re-read is gated on the active channel too
+        const reask = dash.slice(dash.indexOf('void refreshChannelHistoryRef.current(sid, cid)') - 300,
+            dash.indexOf('void refreshChannelHistoryRef.current(sid, cid)'));
+        expect(reask).toContain('if (activeChannelRef.current?.channel_id === cid');
         // the envelopes-ready re-read stays gated on the active channel
         const ready = dash.slice(dash.indexOf("await refreshChannelHistory(serverOf.get(channel_id) ?? '', channel_id);") - 1500,
             dash.indexOf("await refreshChannelHistory(serverOf.get(channel_id) ?? '', channel_id);"));
@@ -55,10 +60,12 @@ describe('channel history paging — Dashboard', () => {
     });
 
     it('every channel-history GET is bounded to 100 rows', () => {
-        const gets = [...dash.matchAll(/axios\.get\(`\$\{API_BASE\}\/channels\/\$\{channelId\}\/messages`/g)];
+        const gets = [...dash.matchAll(/axios\.get\(apiUrl`\/channels\/\$\{channelId\}\/messages`/g)];
         // getChannelRows + the mention reconcile (min(unread, 100))
         expect(gets).toHaveLength(2);
-        expect(dash).toContain('params: { limit: Math.min(unreadCount, 100) }');
+        expect(dash).toContain('params: { limit: Math.min(unreadCount, 100), include_system: 1 }');
+        // ...and getChannelRows (every other history read) opts in to system rows too
+        expect(dash).toContain('params: { include_system: 1, ...params },');
     });
 
     it('gap fills use the keyset cursors (before_id / after_id), each sending the ISO fallback too', () => {
@@ -151,7 +158,8 @@ describe('honest placeholders, tombstones, stale-epoch sends (owner report 2026-
     });
 
     it('edits use editedContent on every path (a pill target becomes the edited text)', () => {
-        expect(dash.split('editedContent(thread[idx].content, content.text)').length - 1).toBe(2);
+        // Third argument: the edit's own #channel refs (utils/channelRefs.ts).
+        expect(dash.split('editedContent(thread[idx].content, content.text, content.channel_refs)').length - 1).toBe(2);
         expect(dash).not.toContain('content: { ...thread[idx].content, text: content.text }');
     });
 
@@ -163,6 +171,6 @@ describe('honest placeholders, tombstones, stale-epoch sends (owner report 2026-
     it('ChatPane: the pill text comes from the reason; a 409 STALE_EPOCH starts the key fetch on every channel send path', () => {
         expect(pane).toContain('<span>{placeholderLabel(placeholderReason(msg))}</span>');
         expect(pane).not.toContain("<span>Couldn't decrypt — waiting on this channel's key</span>");
-        expect(pane.split('isStaleEpochError(err)').length - 1).toBe(3); // delivery queue, composer send, dispatchAction
+        expect(pane.split('isStaleEpochError(err)').length - 1).toBe(4); // delivery queue, composer send, dispatchAction, reaction send
     });
 });

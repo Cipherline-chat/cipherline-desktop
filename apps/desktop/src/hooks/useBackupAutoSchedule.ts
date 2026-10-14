@@ -33,9 +33,12 @@ export interface BackupCfg {
     localEnabled: boolean;
     localDir: string | null;
     driveEnabled: boolean;
-    /** Display name of the chosen Drive folder (fallback target if no ID). */
+    /** Display name of the folder `driveFolderId` points at. Only informational
+     *  now (the app folder is always found by its fixed name); it matters to
+     *  accounts that picked their own folder before the browser was removed. */
     driveFolderName: string;
-    /** Folder ID chosen via the Google Picker; takes priority over the name. */
+    /** The Drive folder the app last wrote to, remembered by id so a moved or
+     *  renamed folder is still found. Null until the first Drive backup. */
     driveFolderId: string | null;
     /** Base name for the backup file, without extension. The destination
      *  holds exactly one file, `{backupFileBase}.enc`, rewritten in place.
@@ -115,6 +118,13 @@ function writeBackupBlocked(userId: string, reason: BackupBlockedReason | null):
 export function hasBackupSetUp(userId: string): boolean {
     try {
         if (getLastBackupMs(userId)) return true;
+        return isAutoBackupConfigured(userId);
+    } catch { return false; }
+}
+
+/** Automatic backups switched on AND pointed at a real destination. */
+export function isAutoBackupConfigured(userId: string): boolean {
+    try {
         const cfg = readBackupCfg(userId);
         const hasLocal = cfg.localEnabled && !!cfg.localDir;
         return cfg.enabled && (hasLocal || cfg.driveEnabled);
@@ -201,18 +211,19 @@ export function useBackupAutoSchedule() {
                     // folder, each pruning and deduping against only its own.
                     destinations: {
                         localDir: dueLocal ? cfg.localDir : null, drive: dueDrive,
-                        driveFolderName: cfg.driveFolderName, driveFolderId: cfg.driveFolderId,
+                        driveFolderId: cfg.driveFolderId,
                         fileName: cfg.backupFileBase,
                     },
                 });
-                // The stored Drive folder had gone stale (403/404) and this
-                // run fell back to the default folder — stop pointing every
-                // future scheduled run at the same dead folder.
-                if (res.driveFolderRecovered) {
+                // Remember the app's Drive folder by id (first backup: just
+                // created; or the stored one had gone stale and this run fell
+                // back to it) so later runs go straight to it — and stop
+                // pointing every future scheduled run at a dead folder.
+                if (res.driveFolder) {
                     writeBackupCfg(userId, {
                         ...readBackupCfg(userId),
-                        driveFolderId: res.driveFolderRecovered.folderId,
-                        driveFolderName: res.driveFolderRecovered.folderName,
+                        driveFolderId: res.driveFolder.folderId,
+                        driveFolderName: res.driveFolder.folderName,
                     });
                 }
                 // runBackup stamps the last-backup timestamps itself.

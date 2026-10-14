@@ -27,7 +27,12 @@ name: Release Stable Desktop
 #      outside an explicit allow-list is in the set. That job is non-blocking: the update feeds do not depend on it.
 #   4. Stable builds are always signed. A missing signing secret fails the job; it never ships unsigned.
 #
-#   5. CLIENT_ATTEST_SECRET is OPTIONAL: it is only needed once the API enforces client attestation
+#   5. Every update manifest is signed (Ed25519, detached `<manifest>.sig`, uploaded before the manifest) with
+#      UPDATE_MANIFEST_SIGNING_KEY_STABLE from the `production` environment. It is REQUIRED: on Linux that signature is
+#      the only thing between the update host and users' machines. Even a dry run signs (it proves the key).
+#      Format + keys: apps/desktop/electron/update-manifest-keys.ts, apps/desktop/scripts/sign-update-manifest.mjs.
+#
+#   6. CLIENT_ATTEST_SECRET is OPTIONAL: it is only needed once the API enforces client attestation
 #      (CLIENT_ATTEST_SECRETS on the server; it is empty today, and the private builds ship without it too).
 #      Add it to the production environment when that is switched on.
 #
@@ -108,8 +113,11 @@ jobs:
           cache: npm
       - name: Require the signing secrets
         shell: bash
+        env:
+          # step-scoped, like the sign step: never in the job env where npm install scripts could read it
+          UPDATE_MANIFEST_SIGNING_KEY_STABLE: ${{ secrets.UPDATE_MANIFEST_SIGNING_KEY_STABLE }}
         run: |
-          for v in AZURE_TENANT_ID AZURE_CLIENT_ID AZURE_CLIENT_SECRET GOOGLE_DRIVE_CLIENT_ID GOOGLE_DRIVE_CLIENT_SECRET VITE_GOOGLE_PICKER_API_KEY VITE_KLIPY_API_KEY; do
+          for v in UPDATE_MANIFEST_SIGNING_KEY_STABLE AZURE_TENANT_ID AZURE_CLIENT_ID AZURE_CLIENT_SECRET GOOGLE_DRIVE_CLIENT_ID GOOGLE_DRIVE_CLIENT_SECRET VITE_GOOGLE_PICKER_API_KEY VITE_KLIPY_API_KEY; do
             if [ -z "${!v}" ]; then echo "::error::secret $v is missing from the production environment; refusing to build an unsigned stable release"; exit 1; fi
           done
       - name: Install deps
@@ -141,19 +149,16 @@ jobs:
             --config.win.azureSignOptions.endpoint="https://eus.codesigning.azure.net" \
             --config.win.azureSignOptions.codeSigningAccountName="Cipherline" \
             --config.win.azureSignOptions.certificateProfileName="cipherline-public"
-      - name: Verify Windows code signature
+      # Every PE file we ship must be signed, not just the installers: electron-builder signs only *.exe unless
+      # build.win.signExts says otherwise, and an unsigned audio_capture.node is blocked by Smart App Control
+      # (screen-share audio dies). Fails on any file that is not Valid; stable builds are never unsigned, so there is
+      # no skip path here.
+      - name: Verify Windows code signature (every shipped PE file)
         shell: powershell
         run: |
-          $bad = @()
-          $files = Get-ChildItem apps/desktop/release -Filter *.exe
-          if (-not $files) { Write-Error 'No .exe found in apps/desktop/release'; exit 1 }
-          foreach ($f in $files) {
-            $sig = Get-AuthenticodeSignature $f.FullName
-            $subject = if ($sig.SignerCertificate) { $sig.SignerCertificate.Subject } else { '(none)' }
-            Write-Host "$($f.Name): $($sig.Status) $subject"
-            if ($sig.Status -ne 'Valid' -or $subject -notmatch 'CN=Cipherline LLC') { $bad += $f.Name }
-          }
-          if ($bad.Count -gt 0) { Write-Error ('Unsigned or wrongly signed: ' + ($bad -join ', ')); exit 1 }
+          # -ExecutionPolicy Bypass: do not depend on the runner's machine policy to run a checked-in script.
+          powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File apps/desktop/scripts/verify-windows-signatures.ps1 -ReleaseDir apps/desktop/release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Smoke test (Windows unpacked)
         shell: bash
         run: |
@@ -169,6 +174,12 @@ jobs:
           path: apps/desktop/release/smoke-*.png
           if-no-files-found: ignore
           retention-days: 7
+      - name: Sign the update manifest
+        shell: bash
+        env:
+          UPDATE_MANIFEST_SIGNING_KEY: ${{ secrets.UPDATE_MANIFEST_SIGNING_KEY_STABLE }}
+        run: |
+          node apps/desktop/scripts/sign-update-manifest.mjs sign --required --channel latest --manifest apps/desktop/release/latest.yml
       - name: Attest build provenance
         id: attest
         if: needs.prepare.outputs.publish == 'true'
@@ -193,8 +204,9 @@ jobs:
           shopt -s nullglob
           MC="$(pwd)/mc.exe"
           "$MC" alias set cipherline https://media.cipherline.chat "$MINIO_ACCESS_KEY" "$MINIO_SECRET_KEY"
-          # installers first, the manifest LAST: clients only move once the manifest points at a file that exists
-          for f in apps/desktop/release/*.exe apps/desktop/release/*.exe.blockmap apps/desktop/release/latest.yml; do
+          # installers first, then the manifest's signature, the manifest LAST: clients only move once the manifest points
+          # at a file that exists (and re-fetch a manifest/signature pair once if they catch the instant between the two)
+          for f in apps/desktop/release/*.exe apps/desktop/release/*.exe.blockmap apps/desktop/release/latest.yml.sig apps/desktop/release/latest.yml; do
             if [ -f "$f" ]; then echo "Uploading $(basename "$f")"; "$MC" cp --quiet "$f" cipherline/cipherline-updates/; fi
           done
       - name: Verify the update feed
@@ -206,6 +218,13 @@ jobs:
           BODY="$(curl -fsS https://updates.cipherline.chat/latest.yml)"
           echo "$BODY" | head -3
           echo "$BODY" | grep -q "^version: $V\$" || { echo "::error::latest.yml does not advertise $V"; exit 1; }
+          curl -fsS https://updates.cipherline.chat/latest.yml -o "$RUNNER_TEMP/latest.yml"
+          curl -fsS https://updates.cipherline.chat/latest.yml.sig -o "$RUNNER_TEMP/latest.yml.sig"
+          cmp "$RUNNER_TEMP/latest.yml.sig" apps/desktop/release/latest.yml.sig || { echo "::error::latest.yml.sig on the feed is not the one this run signed"; exit 1; }
+          # against the app's own embedded keys once there are any (the sign step already self-verified)
+          if [ -n "$(node apps/desktop/scripts/sign-update-manifest.mjs keys --channel latest)" ]; then
+            node apps/desktop/scripts/sign-update-manifest.mjs verify --channel latest --manifest "$RUNNER_TEMP/latest.yml"
+          fi
       # Hand the github-release job hashes + manifests (+ the provenance bundle on a tag run). NEVER an installer: the
       # staging directory is checked below and the step fails if one is in it. Runs on dry runs too (no bundle then).
       - name: Collect release metadata (hashes and manifests only, never installers)
@@ -272,8 +291,11 @@ jobs:
           cache: npm
       - name: Require the signing secrets
         shell: bash
+        env:
+          # step-scoped, like the sign step: never in the job env where npm install scripts could read it
+          UPDATE_MANIFEST_SIGNING_KEY_STABLE: ${{ secrets.UPDATE_MANIFEST_SIGNING_KEY_STABLE }}
         run: |
-          for v in MAC_CSC_LINK MAC_CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID GOOGLE_DRIVE_CLIENT_ID GOOGLE_DRIVE_CLIENT_SECRET VITE_GOOGLE_PICKER_API_KEY VITE_KLIPY_API_KEY; do
+          for v in UPDATE_MANIFEST_SIGNING_KEY_STABLE MAC_CSC_LINK MAC_CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID GOOGLE_DRIVE_CLIENT_ID GOOGLE_DRIVE_CLIENT_SECRET VITE_GOOGLE_PICKER_API_KEY VITE_KLIPY_API_KEY; do
             if [ -z "${!v}" ]; then echo "::error::secret $v is missing from the production environment; refusing to build an unsigned stable release"; exit 1; fi
           done
       - name: Install deps
@@ -324,6 +346,12 @@ jobs:
           path: apps/desktop/release/smoke-*.png
           if-no-files-found: ignore
           retention-days: 7
+      - name: Sign the update manifest
+        shell: bash
+        env:
+          UPDATE_MANIFEST_SIGNING_KEY: ${{ secrets.UPDATE_MANIFEST_SIGNING_KEY_STABLE }}
+        run: |
+          node apps/desktop/scripts/sign-update-manifest.mjs sign --required --channel latest --manifest apps/desktop/release/latest-mac.yml
       - name: Attest build provenance
         id: attest
         if: needs.prepare.outputs.publish == 'true'
@@ -356,7 +384,7 @@ jobs:
           mc alias set cipherline https://media.cipherline.chat "$MINIO_ACCESS_KEY" "$MINIO_SECRET_KEY"
           for f in apps/desktop/release/*.dmg apps/desktop/release/*.dmg.blockmap \
                    apps/desktop/release/*-mac.zip apps/desktop/release/*-mac.zip.blockmap \
-                   apps/desktop/release/latest-mac.yml; do
+                   apps/desktop/release/latest-mac.yml.sig apps/desktop/release/latest-mac.yml; do
             if [ -f "$f" ]; then echo "Uploading $(basename "$f")"; mc cp --quiet "$f" cipherline/cipherline-updates/; fi
           done
       - name: Verify the mac update feed
@@ -368,6 +396,13 @@ jobs:
           BODY="$(curl -fsS https://updates.cipherline.chat/latest-mac.yml)"
           echo "$BODY" | head -3
           echo "$BODY" | grep -q "^version: $V\$" || { echo "::error::latest-mac.yml does not advertise $V"; exit 1; }
+          curl -fsS https://updates.cipherline.chat/latest-mac.yml -o "$RUNNER_TEMP/latest-mac.yml"
+          curl -fsS https://updates.cipherline.chat/latest-mac.yml.sig -o "$RUNNER_TEMP/latest-mac.yml.sig"
+          cmp "$RUNNER_TEMP/latest-mac.yml.sig" apps/desktop/release/latest-mac.yml.sig || { echo "::error::latest-mac.yml.sig on the feed is not the one this run signed"; exit 1; }
+          # against the app's own embedded keys once there are any (the sign step already self-verified)
+          if [ -n "$(node apps/desktop/scripts/sign-update-manifest.mjs keys --channel latest)" ]; then
+            node apps/desktop/scripts/sign-update-manifest.mjs verify --channel latest --manifest "$RUNNER_TEMP/latest-mac.yml"
+          fi
       # See the Windows job: hashes + manifests only, never an installer.
       - name: Collect release metadata (hashes and manifests only, never installers)
         id: meta
@@ -427,8 +462,11 @@ jobs:
           cache: npm
       - name: Require the feature secrets
         shell: bash
+        env:
+          # step-scoped, like the sign step: never in the job env where npm install scripts could read it
+          UPDATE_MANIFEST_SIGNING_KEY_STABLE: ${{ secrets.UPDATE_MANIFEST_SIGNING_KEY_STABLE }}
         run: |
-          for v in GOOGLE_DRIVE_CLIENT_ID GOOGLE_DRIVE_CLIENT_SECRET VITE_GOOGLE_PICKER_API_KEY VITE_KLIPY_API_KEY; do
+          for v in UPDATE_MANIFEST_SIGNING_KEY_STABLE GOOGLE_DRIVE_CLIENT_ID GOOGLE_DRIVE_CLIENT_SECRET VITE_GOOGLE_PICKER_API_KEY VITE_KLIPY_API_KEY; do
             if [ -z "${!v}" ]; then echo "::error::secret $v is missing from the production environment; refusing to ship a build with that feature silently absent"; exit 1; fi
           done
       - name: Install deps
@@ -470,6 +508,12 @@ jobs:
           path: apps/desktop/release/smoke-*.png
           if-no-files-found: ignore
           retention-days: 7
+      - name: Sign the update manifest
+        shell: bash
+        env:
+          UPDATE_MANIFEST_SIGNING_KEY: ${{ secrets.UPDATE_MANIFEST_SIGNING_KEY_STABLE }}
+        run: |
+          node apps/desktop/scripts/sign-update-manifest.mjs sign --required --channel latest --manifest apps/desktop/release/latest-linux.yml
       - name: Attest build provenance
         id: attest
         if: needs.prepare.outputs.publish == 'true'
@@ -496,7 +540,7 @@ jobs:
           shopt -s nullglob
           mc alias set cipherline https://media.cipherline.chat "$MINIO_ACCESS_KEY" "$MINIO_SECRET_KEY"
           for f in apps/desktop/release/*.AppImage apps/desktop/release/*.AppImage.blockmap \
-                   apps/desktop/release/*.deb apps/desktop/release/latest-linux.yml; do
+                   apps/desktop/release/*.deb apps/desktop/release/latest-linux.yml.sig apps/desktop/release/latest-linux.yml; do
             if [ -f "$f" ]; then echo "Uploading $(basename "$f")"; mc cp --quiet "$f" cipherline/cipherline-updates/; fi
           done
       - name: Verify the Linux update feed
@@ -508,6 +552,13 @@ jobs:
           BODY="$(curl -fsS https://updates.cipherline.chat/latest-linux.yml)"
           echo "$BODY" | head -6
           echo "$BODY" | grep -q "^version: $V\$" || { echo "::error::latest-linux.yml does not advertise $V"; exit 1; }
+          curl -fsS https://updates.cipherline.chat/latest-linux.yml -o "$RUNNER_TEMP/latest-linux.yml"
+          curl -fsS https://updates.cipherline.chat/latest-linux.yml.sig -o "$RUNNER_TEMP/latest-linux.yml.sig"
+          cmp "$RUNNER_TEMP/latest-linux.yml.sig" apps/desktop/release/latest-linux.yml.sig || { echo "::error::latest-linux.yml.sig on the feed is not the one this run signed"; exit 1; }
+          # against the app's own embedded keys once there are any (the sign step already self-verified)
+          if [ -n "$(node apps/desktop/scripts/sign-update-manifest.mjs keys --channel latest)" ]; then
+            node apps/desktop/scripts/sign-update-manifest.mjs verify --channel latest --manifest "$RUNNER_TEMP/latest-linux.yml"
+          fi
       # See the Windows job: hashes + manifests only, never an installer.
       - name: Collect release metadata (hashes and manifests only, never installers)
         id: meta

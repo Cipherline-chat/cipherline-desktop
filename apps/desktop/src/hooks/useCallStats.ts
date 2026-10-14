@@ -28,6 +28,7 @@ export function useCallStats(): CallStats {
     useEffect(() => {
         const poll = async () => {
             try {
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
                 const pcManager = (room as any).engine?.pcManager;
                 if (!pcManager) return;
 
@@ -45,6 +46,7 @@ export function useCallStats(): CallStats {
                 let totalReceived = 0;
                 let hasInbound = false;
 
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
                 report.forEach((stat: any) => {
                     // ICE candidate-pair → RTT.  In Chromium the nominated pair
                     // has `nominated === true`; fall back to `state === 'succeeded'`

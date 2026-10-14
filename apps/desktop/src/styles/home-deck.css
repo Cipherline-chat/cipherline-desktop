@@ -195,6 +195,22 @@
   to   { opacity: 1; transform: none; }
 }
 
+/* Exit for a tile whose reason to exist just went away (the backup nudge, the
+   moment backups are set up or one completes). Fades and collapses its own
+   height so the tiles below slide up instead of jumping. The negative bottom
+   margin eats the row gap the collapsing tile would otherwise leave behind.
+   Duration must match BACKUP_TILE_EXIT_MS (hooks/useBackupState.ts); under
+   reduced motion the hook never renders this state at all. */
+.hd-tile.is-leaving {
+  overflow: hidden; pointer-events: none;
+  animation: hd-tile-out .24s ease-in both;
+  animation-delay: 0s;
+}
+@keyframes hd-tile-out {
+  from { opacity: 1; max-height: 320px; margin-bottom: 0; }
+  to   { opacity: 0; max-height: 0; padding-top: 0; padding-bottom: 0; margin-bottom: -14px; border-width: 0; transform: scale(.98); }
+}
+
 /* Rows cascade within their tile: each row lands 40ms after the previous,
    starting 100ms after its tile begins surfacing. Capped at the 5th row. */
 .hd-rows > .hd-row, .hd-cards > * {

@@ -111,9 +111,11 @@ export const KeybindSettings: React.FC<KeybindSettingsProps> = ({ keybinds }) =>
                         <h3>{cat.label}</h3>
                         <p className="sd-sub">{cat.hint}</p>
                         {items.map(action => {
-                            const combo = binds[action.id] ?? null;
+                            // '' is an explicit "cleared" (persisted so it
+                            // survives a restart) and reads as unbound here.
+                            const combo = binds[action.id] || null;
                             const isCapturing = capturing === action.id;
-                            const isDefault = combo === defaults[action.id];
+                            const isDefault = combo === (defaults[action.id] || null);
 
                             return (
                                 <div key={action.id} className="sd-row">

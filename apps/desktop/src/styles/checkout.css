@@ -1,0 +1,219 @@
+/* ============================================================================
+   In-app checkout layout (components/billing/CheckoutLayout.tsx + InAppCheckout).
+
+   The owner's report: the checkout was a ~440px column that overflowed a
+   1080x935 window with NO way to scroll, so the top (the "Everything unlocks"
+   pill) and the bottom (the recurring-subscription fine print) were clipped.
+
+   Cause: `.mod` centres the card in a fixed, non-scrolling flexbox and `.mcard`
+   has no max-height, so a card taller than the window overflows off BOTH edges
+   at once, and centred flex overflow can't be scrolled back. Stripe's iframe
+   makes it worse: it sizes itself, and grows when Link's "Save my info" opens.
+
+   Contract:
+   - the card is capped to the viewport (dvh, with a vh fallback) and clips
+     nothing it owns; EXACTLY ONE region scrolls at a time
+   - wide  : `.ckt-scroll` (the form) scrolls; `.ckt-footer` (Pay + fine print)
+             is a fixed row beneath it, and the summary column scrolls on its own
+             if the window is very short
+   - narrow: the whole `.ckt` scrolls as one; `.ckt-footer` is sticky at the bottom
+   - the form is capped at 440px inside its column so the inputs never stretch
+
+   Selectors are `.mcard.ckt-card` (two classes) so they beat the kit's
+   `@scope (.cl-kit) .mcard` padding / width / max-width without !important.
+   Same trap for text: the kit's `.mcard p { margin: 0 0 22px; font-size: 14px }`
+   outranks a single-class rule AND tailwind's mb-*, so `<p>` here is styled via
+   `.ckt .x` (two classes) and spacing-sensitive copy is a <div>, never a <p>.
+   ========================================================================== */
+
+.mcard.ckt-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  width: calc(100% - 32px);
+  max-width: 920px;
+  max-height: calc(100vh - 32px);
+  max-height: calc(100dvh - 32px);
+  overflow: hidden;
+  border-radius: 24px;
+  border-color: rgba(37, 224, 200, 0.18);
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.65);
+}
+
+.ckt-close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 5;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  border: 0;
+  background: transparent;
+  color: var(--cl-faint);
+  cursor: pointer;
+  transition: color 0.15s, background-color 0.15s;
+}
+.ckt-close:hover { color: var(--cl-text); background: rgba(255, 255, 255, 0.06); }
+.ckt-close:focus-visible { outline: 2px solid var(--cl-lume); outline-offset: 2px; }
+
+/* ── Root: narrow (default) — one column, one scroll ───────────────────── */
+.ckt {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+/* The payment panel dissolves so its three children are direct flex items of
+   `.ckt`; that is what lets the footer stick to the bottom of the one scroller. */
+.ckt-pay { display: contents; }
+
+.ckt-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px 56px 12px 20px;
+  background: var(--cl-abyss);
+  border-bottom: 1px solid var(--cl-border);
+}
+.ckt-brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.ckt-keys { flex: none; }
+.ckt-plan { min-width: 0; }
+.ckt-plan-title { margin: 0; font: 600 18px/1.2 var(--cl-font-display); color: var(--cl-text); }
+.ckt-price { font-weight: 800; font-size: 18px; line-height: 1.25; color: var(--cl-lume); }
+.ckt-price-sub { font-size: 12px; color: var(--cl-muted); }
+
+.ckt-bubble {
+  align-self: flex-start;
+  max-width: 100%;
+  padding: 6px 14px;
+  border-radius: 16px;
+  background: var(--cl-surface);
+  color: var(--cl-text);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.ckt-features, .ckt-reassure { list-style: none; margin: 0; padding: 0; }
+.ckt-features { display: flex; flex-direction: column; gap: 12px; }
+.ckt-features li { display: flex; align-items: flex-start; gap: 10px; }
+.ckt-feat-ico {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  color: var(--cl-lume);
+  background: rgba(37, 224, 200, 0.1);
+  border: 1px solid rgba(37, 224, 200, 0.2);
+}
+.ckt-feat-title { display: block; font-size: 14px; font-weight: 700; color: var(--cl-text); line-height: 1.25; }
+.ckt-feat-detail { display: block; font-size: 12px; color: var(--cl-muted); line-height: 1.3; }
+
+.ckt-reassure { display: flex; flex-direction: column; gap: 7px; font-size: 12.5px; color: var(--cl-muted); }
+.ckt-reassure li { display: flex; align-items: flex-start; gap: 7px; line-height: 1.35; }
+.ckt-reassure svg { flex: none; margin-top: 2px; color: var(--cl-lume); }
+
+.ckt .ckt-unlock {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin: 0;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.35;
+  color: var(--cl-lume);
+}
+.ckt .ckt-unlock svg { flex: none; margin-top: 2px; }
+
+.ckt-title {
+  margin: 0;
+  padding: 14px 56px 0 20px;
+  font: 600 15px/1.3 var(--cl-font-display);
+  color: var(--cl-text);
+}
+.ckt-scroll { padding: 12px 20px 8px; }
+.ckt-form { width: 100%; max-width: 440px; margin-inline: auto; }
+
+.ckt-footer {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  padding: 12px 20px 14px;
+  background: var(--cl-deep);
+  border-top: 1px solid var(--cl-border);
+}
+.ckt .ckt-fine { margin: 12px 0 0;  /* clears the kit button's 2-4px depth ledge */
+   font-size: 11px; line-height: 1.35; text-align: center; color: var(--cl-muted); }
+.ckt-secured {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--cl-muted);
+}
+
+/* ── Wide: summary | payment ───────────────────────────────────────────── */
+.ckt[data-layout='wide'] {
+  display: grid;
+  grid-template-columns: minmax(300px, 360px) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  overflow: hidden;
+}
+.ckt[data-layout='wide'] .ckt-summary {
+  gap: 16px;
+  padding: 36px 28px 28px;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border-bottom: 0;
+  border-right: 1px solid var(--cl-border);
+}
+.ckt[data-layout='wide'] .ckt-brand { flex-direction: column; align-items: flex-start; gap: 12px; }
+.ckt[data-layout='wide'] .ckt-plan-title { font-size: 24px; }
+.ckt[data-layout='wide'] .ckt-price { font-size: 26px; }
+.ckt[data-layout='wide'] .ckt-pay { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.ckt[data-layout='wide'] .ckt-title {
+  flex: none;
+  padding: 24px 64px 12px 32px;
+  font-size: 17px;
+  border-bottom: 1px solid var(--cl-border);  /* the form scrolls beneath it */
+}
+.ckt[data-layout='wide'] .ckt-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 14px 32px 16px;
+}
+.ckt[data-layout='wide'] .ckt-footer { position: static; flex: none; padding: 14px 32px 18px; }
+
+/* ── Wide but SHORT (900x560-class windows): trim the summary so the whole of it,
+   down to the "Everything unlocks" line, still fits without its own scroll ── */
+@media (max-height: 700px) {
+  .ckt[data-layout='wide'] .ckt-summary { gap: 12px; padding: 24px 28px 20px; }
+  .ckt[data-layout='wide'] .ckt-features { gap: 10px; }
+  .ckt[data-layout='wide'] .ckt-feat-detail,
+  .ckt[data-layout='wide'] .ckt-reassure { display: none; }
+}
+
+/* ── Inline (hosted by a wizard step, no card): never sticky, never clipped ─ */
+.ckt[data-inline='true'] { overflow: visible; }
+.ckt[data-inline='true'] .ckt-summary { padding-right: 20px; }
+.ckt[data-inline='true'] .ckt-title { padding-right: 20px; }
+.ckt[data-inline='true'] .ckt-footer { position: static; }
+
+@media (prefers-reduced-motion: reduce) {
+  .ckt-close { transition: none; }
+}

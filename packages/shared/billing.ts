@@ -34,11 +34,44 @@ export interface InvoiceView {
     amount_due: number;
     /** ISO 4217, lowercase, as Stripe returns it. */
     currency: string;
-    /** 'paid' | 'open' | 'void' | 'uncollectible' */
+    /** 'paid' | 'open' | 'uncollectible' (void/draft are never listed). */
     status: string;
     /** Stripe-hosted receipt page / PDF. We link rather than re-render. */
     hosted_invoice_url: string | null;
     invoice_pdf: string | null;
+}
+
+/** How one payment-history row should read. Shared so desktop and website agree. */
+export interface InvoiceRowView {
+    /** True only for an invoice Stripe actually collected. */
+    paid: boolean;
+    /** Minor units to show: what was PAID for a paid row, what is DUE otherwise. */
+    amountMinor: number;
+    /** Chip text for a row that is not a settled payment ('Unpaid'), else null. */
+    chip: string | null;
+    /** Link text. "Receipt" is reserved for money actually collected. */
+    linkLabel: 'Receipt' | 'View invoice';
+}
+
+/**
+ * Display rules for a payment-history row. An open invoice is something the
+ * user OWES (a failed renewal), not a payment, so it must never read as a
+ * "Receipt" or show a collected amount. Display only; the server decides which
+ * invoices are listed at all (`isUserVisibleInvoice` in the API).
+ */
+export function invoiceRowView(
+    inv: Pick<InvoiceView, 'status' | 'amount_paid' | 'amount_due'>,
+): InvoiceRowView {
+    if (inv.status === 'paid') {
+        return { paid: true, amountMinor: inv.amount_paid, chip: null, linkLabel: 'Receipt' };
+    }
+    const unpaid = inv.status === 'open' || inv.status === 'uncollectible';
+    return {
+        paid: false,
+        amountMinor: inv.amount_due,
+        chip: unpaid ? 'Unpaid' : inv.status,
+        linkLabel: 'View invoice',
+    };
 }
 
 /**
@@ -257,3 +290,171 @@ export function taxCountryOptions(locale?: string): { code: string; name: string
         .map((code) => ({ code, name: countryName(code, locale) }))
         .sort((a, b) => a.name.localeCompare(b.name, locale));
 }
+
+/* ── One-step checkout (deferred intent + ConfirmationToken) ───────────────
+ * The in-app checkout no longer asks for a tax location on a separate screen.
+ * The Payment Element mounts straight away (Elements `mode: 'subscription'`,
+ * so no PaymentIntent exists yet), collects the card AND its country/ZIP in
+ * one panel, and on Pay the client:
+ *
+ *   1. elements.submit()
+ *   2. stripe.createConfirmationToken({ elements })
+ *   3. POST /billing/subscribe { confirmation_token_id }   -> SubscribeResult
+ *   4. (only if the real total differs from the quoted amount) show the exact
+ *      total with a Confirm button
+ *   5. stripe.confirmPayment({ elements, clientSecret })
+ *
+ * The server reads the billing address off the ConfirmationToken, writes it to
+ * the Customer so Stripe Tax has a location, and creates the subscription with
+ * automatic_tax. These types are that contract.
+ *
+ * `POST /billing/subscription-intent` + `POST /billing/tax-location` (the old
+ * two-step flow) remain on the API, DEPRECATED, for clients that predate this.
+ */
+
+/** What GET /billing/checkout-config returns: everything the client needs to
+ *  mount a deferred-intent Elements BEFORE any subscription exists. */
+export interface CheckoutConfig {
+    publishable_key: string;
+    /** Minor units; null when the plan price could not be read from Stripe
+     *  (clients fall back to FALLBACK_PLAN_AMOUNT_MINOR). */
+    amount: number | null;
+    currency: string | null;
+    /** Is the server sending automatic_tax? Informational. */
+    automatic_tax: boolean;
+    /** Payment-method types to allow in Elements, or null = let the Dashboard decide.
+     *  Desktop gets ['card','link']: Apple/Google Pay need a browser payment
+     *  sheet Electron lacks, and every redirect-based method (Amazon Pay, bank
+     *  redirects) needs a top-level navigation the app's window policy denies. */
+    payment_method_types: string[] | null;
+}
+
+/** What POST /billing/subscribe returns. Amounts are minor units; the TOTAL is
+ *  what the PaymentIntent will actually charge. */
+export interface SubscribeResult {
+    client_secret: string;
+    subscription_id: string;
+    amount_subtotal: number;
+    amount_tax: number;
+    amount_total: number;
+    currency: string;
+}
+
+/** Fallbacks for when the live Price can't be read; keep in step with the Price. */
+export const FALLBACK_PLAN_AMOUNT_MINOR = 250;
+export const FALLBACK_PLAN_CURRENCY = 'usd';
+
+/** Payment methods the desktop (Electron) checkout may offer. */
+export const DESKTOP_PAYMENT_METHOD_TYPES = ['card', 'link'] as const;
+
+/**
+ * Must the customer see and approve a different total before we charge?
+ *
+ * True whenever the amount the server is about to charge is not the amount we
+ * quoted on the Pay button. In practice that is "tax applies here". The check is
+ * on the TOTAL rather than `amount_tax > 0` so any other reason the number moved
+ * (a discount, a price change mid-session) also stops for an explicit confirm
+ * instead of charging something the customer was never shown.
+ */
+export function totalDiffersFromQuote(
+    result: Pick<SubscribeResult, 'amount_total' | 'currency'>,
+    quotedAmountMinor: number,
+    quotedCurrency: string,
+): boolean {
+    return result.amount_total !== quotedAmountMinor
+        || result.currency.toLowerCase() !== quotedCurrency.toLowerCase();
+}
+
+/** "$2.68/mo": the tax-INCLUSIVE total the server computed, for the Confirm step. */
+export function formatConfirmedTotal(
+    result: Pick<SubscribeResult, 'amount_total' | 'currency'>,
+): string {
+    return `${formatMoney(result.amount_total, result.currency)}/mo`;
+}
+
+/** "$2.50 + $0.18 tax": the breakdown line under the total. */
+export function formatTotalBreakdown(
+    result: Pick<SubscribeResult, 'amount_subtotal' | 'amount_tax' | 'currency'>,
+): string {
+    const base = formatMoney(result.amount_subtotal, result.currency);
+    return result.amount_tax > 0
+        ? `${base} + ${formatMoney(result.amount_tax, result.currency)} tax`
+        : base;
+}
+
+/** Human message from an axios-style error: the API's own wording (a string, or
+ *  class-validator's string[]), else the error's message, else `fallback`. */
+export function apiErrorMessage(err: unknown, fallback: string): string {
+    const e = err as { response?: { data?: { message?: unknown } }; message?: unknown } | null | undefined;
+    const m = e?.response?.data?.message;
+    if (typeof m === 'string' && m) return m;
+    if (Array.isArray(m) && m.length) return m.filter((x) => typeof x === 'string').join(' ');
+    if (typeof e?.message === 'string' && e.message) return e.message;
+    return fallback;
+}
+
+/** The machine-readable `code` an API error carries (not its wording). */
+export function apiErrorCode(err: unknown): string | null {
+    const body = (err as { response?: { data?: unknown } } | null | undefined)?.response?.data;
+    if (!body || typeof body !== 'object') return null;
+    const b = body as { code?: unknown; message?: unknown };
+    if (typeof b.code === 'string') return b.code;
+    const inner = b.message;
+    if (inner && typeof inner === 'object' && typeof (inner as { code?: unknown }).code === 'string') {
+        return (inner as { code: string }).code;
+    }
+    return null;
+}
+
+/** What preparing a one-step subscription produced. */
+export type PrepareOutcome =
+    | { kind: 'error'; message: string; code: string | null }
+    | { kind: 'ready'; result: SubscribeResult; needsConfirm: boolean };
+
+export interface PrepareDeps {
+    /** `elements.submit()` */
+    submit: () => Promise<{ error?: { message?: string } | null }>;
+    /** `stripe.createConfirmationToken({ elements })` */
+    createToken: () => Promise<{ error?: { message?: string } | null; confirmationToken?: { id: string } | null }>;
+    /** `POST /billing/subscribe` */
+    subscribe: (confirmationTokenId: string) => Promise<SubscribeResult>;
+}
+
+/**
+ * Steps 1-4 of the one-step checkout, shared by the desktop and website so the
+ * two cannot drift: validate the form, mint the ConfirmationToken, have the
+ * server build the taxed subscription, and decide whether the customer must
+ * approve a different total before anything is charged.
+ *
+ * Deliberately stops BEFORE `confirmPayment`: the charge happens only after the
+ * caller has either seen `needsConfirm === false` or the customer has clicked
+ * "Confirm $X". Never throws; every failure is an `error` outcome carrying the
+ * message to show inline in the payment panel.
+ */
+export async function prepareOneStepSubscription(
+    deps: PrepareDeps,
+    quote: { amount: number; currency: string },
+): Promise<PrepareOutcome> {
+    const submitted = await deps.submit();
+    if (submitted.error) {
+        return { kind: 'error', message: submitted.error.message || 'Check your payment details.', code: null };
+    }
+    const made = await deps.createToken();
+    if (made.error || !made.confirmationToken?.id) {
+        return { kind: 'error', message: made.error?.message || 'Could not read your payment details. Please try again.', code: null };
+    }
+    let result: SubscribeResult;
+    try {
+        result = await deps.subscribe(made.confirmationToken.id);
+    } catch (err) {
+        return { kind: 'error', message: apiErrorMessage(err, 'Could not start checkout. Please try again.'), code: apiErrorCode(err) };
+    }
+    if (!result?.client_secret || typeof result.amount_total !== 'number') {
+        return { kind: 'error', message: 'Billing returned an unexpected response. Please try again.', code: null };
+    }
+    return { kind: 'ready', result, needsConfirm: totalDiffersFromQuote(result, quote.amount, quote.currency) };
+}
+
+/** Where a user goes when the in-app checkout can't load: the website account
+ *  page has the same native checkout. NOT a hosted Stripe Checkout session. */
+export const WEBSITE_ACCOUNT_URL = 'https://cipherline.chat/account';

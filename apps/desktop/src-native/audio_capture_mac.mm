@@ -534,6 +534,8 @@ static napi_value StopCapture(napi_env env, napi_callback_info) {
 // window_geometry_mac.mm — the annotation overlay's window geometry, linked
 // into this addon so there is one native module to build and ship.
 void RegisterWindowGeometry(napi_env env, napi_value exports);
+// share_power.cc — compiled on every platform; its macOS exports are no-ops.
+void RegisterSharePower(napi_env env, napi_value exports);
 
 static napi_value Init(napi_env env, napi_value exports) {
     napi_value fn;
@@ -551,6 +553,7 @@ static napi_value Init(napi_env env, napi_value exports) {
     napi_set_named_property(env, exports, "stopCapture", fn);
 
     RegisterWindowGeometry(env, exports);
+    RegisterSharePower(env, exports);
     return exports;
 }
 

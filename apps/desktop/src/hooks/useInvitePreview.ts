@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import axios from 'axios';
-import { API_BASE } from '../constants';
+import { apiUrl } from '../utils/apiPath';
 import type { ServerInfo } from './useServers';
 import { RETRY_DELAYS_MS, isPermanentInviteFailure, resolveRetryDelayMs } from '../utils/invitePreviewRetry';
 
@@ -80,7 +80,7 @@ export function useInvitePreview(code: string, token: string | null, servers: Se
     const load = useCallback(async () => {
         cancelledRef.current = false;
         try {
-            const res = await axios.get(`${API_BASE}/invites/${code}/preview`, {
+            const res = await axios.get(apiUrl`/invites/${code}/preview`, {
                 headers: token ? { Authorization: `Bearer ${token}` } : undefined,
             });
             if (cancelledRef.current) return;
@@ -88,6 +88,7 @@ export function useInvitePreview(code: string, token: string | null, servers: Se
             const data: InvitePreview = res.data;
             setPreview(data);
             setState('valid'); // membership reconciled by the effect below, not refetched
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (e: any) {
             if (cancelledRef.current) return;
             const status = e?.response?.status;

@@ -10,6 +10,7 @@
 
 import axios from 'axios';
 import { API_BASE } from '../constants';
+import { apiUrl } from '../utils/apiPath';
 import {
     generateAesGcmKey,
     exportKeyToBase64,
@@ -62,7 +63,7 @@ export function createOwnSlotEnv(auth: OwnSlotAuth, slot: string): OwnSlotEnv {
     return {
         async getSlotMeta() {
             try {
-                const res = await axios.get(`${API_BASE}/history/slot/${slot}/meta`, { headers });
+                const res = await axios.get(apiUrl`/history/slot/${slot}/meta`, { headers });
                 const d = res.data;
                 return d?.backup_id ? { backup_id: d.backup_id, updated_at: String(d.updated_at) } : null;
             } catch { return null; }
@@ -85,7 +86,7 @@ export function createOwnSlotEnv(auth: OwnSlotAuth, slot: string): OwnSlotEnv {
                 { headers },
             );
             if (!data?.backup_id) throw new Error('history/backup did not return a backup_id');
-            await axios.post(`${API_BASE}/history/upload/${data.backup_id}`, bytes, {
+            await axios.post(apiUrl`/history/upload/${data.backup_id}`, bytes, {
                 headers: { ...headers, 'Content-Type': 'application/octet-stream' },
                 maxBodyLength: Infinity,
                 maxContentLength: Infinity,

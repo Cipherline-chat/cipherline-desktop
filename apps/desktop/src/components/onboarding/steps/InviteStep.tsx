@@ -11,7 +11,7 @@ import type { MyReferral, ReferrerTag } from '../../../utils/signupAttribution';
 import cipherlineMark from '../../../assets/cipherline-mark.svg';
 import { StepActions } from '../OnboardingFlow';
 import type { FriendRequestResult, StepProps } from '../types';
-import { COL, DotTagLayer, PAIR_X, burst, codeText, pair, place } from '../dots';
+import { COL, DotTagLayer, PAIR_X, applyPointerReaction, burst, codeText, pair, place } from '../dots';
 import type { DotField, DotTag, OrbSpec } from '../dots';
 import { MAX_REFERRAL_REWARDS, joinEarnedBonus, joinTally, splitReferralLink } from './inviteText';
 import './invite.css';
@@ -286,7 +286,7 @@ export const InviteStep: React.FC<StepProps> = ({ deps, flow, setFlow, reducedMo
         let alive = true;
         (async () => {
             const N = F.N;
-            void F.param('follow', 0.6, 600); void F.param('repel', 0.5, 600); void F.param('bright', 1.25, 600);
+            applyPointerReaction(F, 600); void F.param('bright', 1.25, 600);
             void F.param('px', 15, 600); void F.param('drift', 1, 600); void F.param('pitch', 0, 600); void F.param('yaw', 0, 600);
             await new Promise<void>(r => requestAnimationFrame(() => r()));
             if (!alive) return;

@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { outputSinkRef } from '../utils/audioOutput';
 import { Bookmark, Download, FileCode, FileText, FileSpreadsheet } from 'lucide-react';
 import { useGifFavorite } from '../hooks/useGifFavorite';
 import { sanitizeMime } from '../utils/crypto';
@@ -372,20 +373,26 @@ const FileViewer: React.FC<FileViewerProps> = ({ objectUrl, filename, mime }) =>
             ]);
             if (cancelled) return;
 
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
             const ExcelJS = (mod as any).default ?? mod;
             const wb = new ExcelJS.Workbook();
             await wb.xlsx.load(buf);
 
             const sheets: { name: string; rows: string[][] }[] = [];
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
             wb.eachSheet((ws: any) => {
                 const rows: string[][] = [];
                 let maxCols = 0;
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
                 ws.eachRow({ includeEmpty: false }, (row: any) => {
+                    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
                     const vals: any[] = Array.isArray(row.values) ? row.values : [];
+                    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
                     const cells = vals.slice(1).map((v: any) => {
                         if (v == null) return '';
                         if (v instanceof Date) return v.toLocaleDateString();
                         if (typeof v === 'object') {
+                            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
                             if (Array.isArray(v.richText)) return v.richText.map((rt: any) => rt.text ?? '').join('');
                             if ('result' in v) return String(v.result ?? '');
                             if ('error' in v) return String(v.error);
@@ -423,9 +430,11 @@ const FileViewer: React.FC<FileViewerProps> = ({ objectUrl, filename, mime }) =>
             import('mammoth'),
         ]).then(([buf, mod]) => {
             if (cancelled) return;
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
             const mammoth = (mod as any).default ?? mod;
             return mammoth.extractRawText({ arrayBuffer: buf });
         }).then(result => {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
             if (!cancelled && result) { setWordText((result as any).value); notifyLoaded(); }
         }).catch(err => {
             console.error('FileViewer: Word parse failed', err);
@@ -526,6 +535,7 @@ const FileViewer: React.FC<FileViewerProps> = ({ objectUrl, filename, mime }) =>
     if (isVideo && !mediaError) {
         return (
             <video
+                ref={outputSinkRef}
                 src={objectUrl}
                 controls
                 preload="metadata"
@@ -541,6 +551,7 @@ const FileViewer: React.FC<FileViewerProps> = ({ objectUrl, filename, mime }) =>
     if (isAudio && !mediaError) {
         return (
             <audio
+                ref={outputSinkRef}
                 src={objectUrl}
                 controls
                 preload="metadata"

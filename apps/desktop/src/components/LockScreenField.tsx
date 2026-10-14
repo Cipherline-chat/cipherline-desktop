@@ -4,8 +4,13 @@
  *
  * The same worker, scene and look as AppLoadingScreen (workers/
  * loadingScreen.worker.ts: faint teal/ice dots in real 3D, a gentle current, the
- * camera orbiting toward the pointer), with Keys switched off — the PIN card
- * is the subject here, the dots are atmosphere.
+ * camera orbiting toward the pointer), in the worker's 'lock' mode: no Keys, no
+ * loading bar, no progress, no game — the PIN card is the subject here, the
+ * dots are atmosphere.
+ *
+ * It runs on a worker of its own (loadingWorkerHost's spawnWorker), never the
+ * boot loading screen's parked one: that one still holds the loading bar, and
+ * the lock must show no trace of loading.
  *
  * The lock screen can sit up for hours, so it is deliberately cheap and quiet:
  *   - the field runs in the worker, never the main thread (the loading screen's
@@ -17,7 +22,7 @@
  * It shows nothing about the app: no content, no state, only dots.
  */
 import React, { useEffect, useRef, useState } from 'react';
-import { acquireWorker, canUseWorker, markBroken, releaseWorker, type WorkerLike } from './loadingWorkerHost';
+import { canUseWorker, markBroken, releaseWorker, spawnWorker, type WorkerLike } from './loadingWorkerHost';
 import type { FromWorker } from '../workers/loadingScreenProtocol';
 
 export const LockScreenField: React.FC<{ onLive?: (live: boolean) => void }> = ({ onLive }) => {
@@ -31,9 +36,14 @@ export const LockScreenField: React.FC<{ onLive?: (live: boolean) => void }> = (
     useEffect(() => {
         const canvas = canvasRef.current;
         if (!canvas || !canUseWorker(canvas)) return;
-        const got = acquireWorker(canvas);
-        if (!got) return;
-        const w: WorkerLike = got.worker;
+        // Its OWN worker, never the one parked by the boot loading screen. A
+        // parked worker carries that screen's scene with it (above all the
+        // loading BAR, placed and part-filled, which the worker keeps drawing
+        // until told otherwise), and the lock's PIN card is translucent: the
+        // bar showed through, behind the lock. A fresh worker has no such
+        // history, and leaves the parked one for whoever it was parked for.
+        const w: WorkerLike | null = spawnWorker();
+        if (!w) return;
         let dead = false;
         const reduced = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true;
         const fail = () => {
@@ -51,13 +61,12 @@ export const LockScreenField: React.FC<{ onLive?: (live: boolean) => void }> = (
         w.onerror = (e: ErrorEvent) => { e.preventDefault?.(); fail(); };
         const size = () => ({ w: window.innerWidth || 1, h: window.innerHeight || 1, dpr: window.devicePixelRatio || 1 });
         try {
-            if (got.resumed) {
-                w.postMessage({ type: 'resume' });
-            } else {
-                const off = canvas.transferControlToOffscreen();
-                w.postMessage({ type: 'init', canvas: off, ...size(), best: 0, reduced }, [off]);
-            }
-            w.postMessage({ type: 'keys', visible: false });
+            const off = canvas.transferControlToOffscreen();
+            // mode 'lock': the worker draws the dot field and nothing else (no
+            // Keys, no bar) and ignores bar / progress / game messages. Besides
+            // this init the lock only ever sends sizes, pointer and
+            // pause/resume: never 'bar', 'progress' or 'keys'.
+            w.postMessage({ type: 'init', canvas: off, ...size(), best: 0, reduced, mode: 'lock' }, [off]);
         } catch {
             fail();
             return;
@@ -72,6 +81,7 @@ export const LockScreenField: React.FC<{ onLive?: (live: boolean) => void }> = (
             w.postMessage(document.hidden ? { type: 'pause' } : { type: 'resume' });
         };
         document.addEventListener('visibilitychange', onVisibility);
+        if (document.hidden) onVisibility(); // locked while minimised: don't start drawing
 
         // The pointer, for the parallax: latest position, at most once a frame.
         let raf = 0, x = 0, y = 0, on = true;

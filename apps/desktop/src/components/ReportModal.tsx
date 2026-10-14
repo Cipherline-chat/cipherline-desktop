@@ -55,6 +55,7 @@ export const ReportModal: React.FC<Props> = ({ targetUserId, targetUsername, tok
                 { headers: { Authorization: `Bearer ${token}` } },
             );
             setSubmitted(true);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (e: any) {
             setError(e?.response?.data?.message || 'Failed to submit report. Please try again.');
         } finally {

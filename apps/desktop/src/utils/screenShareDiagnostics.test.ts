@@ -10,7 +10,7 @@ describe('parseMainDiagnostics', () => {
         platform: 'win32', windowsBuild: 22631, sourceKind: 'screen', displayHz: 144, displayHzSource: 'matched',
         capturer: { backend: 'dxgi', why: 'auto: Windows build 22631 < 24H2' }, capturerPref: 'auto',
         gpus: [{ vendor: 'NVIDIA', vendorId: 0x10de, deviceId: 0x2684, name: 'NVIDIA GeForce RTX 4090', active: true }],
-        videoEncode: 'enabled', h264CbpHwEnabled: true, captureLog: false,
+        videoEncode: 'enabled', h264CbpHwEnabled: true, captureFpsCeiling: null, captureLog: false,
     };
 
     it('passes a well-formed payload through', () => {
@@ -19,6 +19,13 @@ describe('parseMainDiagnostics', () => {
 
     it('rejects non-objects', () => {
         for (const v of [null, undefined, 'x', 3, []]) expect(parseMainDiagnostics(v)).toBeNull();
+    });
+
+    it('captureFpsCeiling: the Wayland/PipeWire 60 passes; absent or junk is "no ceiling"', () => {
+        expect(parseMainDiagnostics({ ...good, platform: 'linux', captureFpsCeiling: 60 })!.captureFpsCeiling).toBe(60);
+        for (const v of [undefined, null, 0, -5, 'x', NaN, Infinity, 5000]) {
+            expect(parseMainDiagnostics({ ...good, captureFpsCeiling: v })!.captureFpsCeiling).toBeNull();
+        }
     });
 
     it('coerces unknown enums and junk fields to safe defaults instead of trusting them', () => {

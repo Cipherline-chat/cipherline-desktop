@@ -100,6 +100,7 @@ export const TotpSettingsCard: React.FC<TotpSettingsCardProps> = ({ bare = false
                     return n - 1;
                 });
             }, 1000);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (err: any) {
             setError(err?.response?.data?.message || 'Could not send verification code.');
         } finally {
@@ -124,6 +125,7 @@ export const TotpSettingsCard: React.FC<TotpSettingsCardProps> = ({ bare = false
             }, { headers: authHeader });
             await refresh();
             closeDisable();
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (err: any) {
             const rawMsg = err?.response?.data?.message;
             const msg: string = Array.isArray(rawMsg) ? (rawMsg[0] || '') : (typeof rawMsg === 'string' ? rawMsg : '');
@@ -164,6 +166,7 @@ export const TotpSettingsCard: React.FC<TotpSettingsCardProps> = ({ bare = false
                     return n - 1;
                 });
             }, 1000);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (err: any) {
             setRegenError(err?.response?.data?.message || 'Could not send verification code.');
         } finally {
@@ -188,6 +191,7 @@ export const TotpSettingsCard: React.FC<TotpSettingsCardProps> = ({ bare = false
             }, { headers: authHeader });
             setRegenCodes(res.data.backup_codes || []);
             setRegenStep('codes');
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (err: any) {
             const rawMsg = err?.response?.data?.message;
             const msg: string = Array.isArray(rawMsg) ? (rawMsg[0] || '') : (typeof rawMsg === 'string' ? rawMsg : '');

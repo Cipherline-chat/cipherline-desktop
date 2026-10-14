@@ -23,12 +23,8 @@ describe('computeBackupNudge', () => {
             expect(n?.critical).toBe(false);
         });
 
-        it('does NOT claim "no backup" when backups are configured and simply pending', () => {
-            const n = computeBackupNudge(null, { configured: true, now: NOW });
-            expect(n).not.toBeNull();
-            expect(n?.title).not.toBe('You have no backup yet');
-            expect(n?.chip).toBe('Pending');
-            expect(n?.critical).toBe(false);
+        it('shows nothing once backups are configured, even before the first run completes', () => {
+            expect(computeBackupNudge(null, { configured: true, now: NOW })).toBeNull();
         });
 
         it('flags a stalled schedule as actionable rather than as "no backup"', () => {

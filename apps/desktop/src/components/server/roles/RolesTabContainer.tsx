@@ -18,7 +18,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import axios from 'axios';
 import { Shield } from 'lucide-react';
-import { API_BASE } from '../../../constants';
+import { apiUrl } from '../../../utils/apiPath';
 import type { ServerInfo } from '../../../hooks/useServers';
 import type { Role } from './types';
 import { RoleListPane } from './RoleListPane';
@@ -74,7 +74,7 @@ export const RolesTabContainer: React.FC<Props> = ({ server, token, canManage, o
     const load = useCallback(async () => {
         if (!token) { setLoading(false); return; }
         try {
-            const res = await axios.get(`${API_BASE}/servers/${server.server_id}/roles`, {
+            const res = await axios.get(apiUrl`/servers/${server.server_id}/roles`, {
                 headers: { Authorization: `Bearer ${token}` },
             });
             const list: Role[] = sortRolesForDisplay((res.data ?? []) as Role[]);
@@ -84,9 +84,11 @@ export const RolesTabContainer: React.FC<Props> = ({ server, token, canManage, o
                 const first = list.find(r => !r.is_everyone) ?? list[0] ?? null;
                 return first?.role_id ?? null;
             });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (e: any) {
             toast.push({ kind: 'error', message: e?.response?.data?.message ?? 'Failed to load roles' });
         } finally { setLoading(false); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- toast is the provider value object, re-created each provider render (push/dismiss inside are stable); adding it would re-run this on every toast
     }, [server.server_id, token]);
 
     useEffect(() => { load(); }, [load]);
@@ -96,17 +98,19 @@ export const RolesTabContainer: React.FC<Props> = ({ server, token, canManage, o
         askDirtyGuard(async () => {
             try {
                 const res = await axios.post(
-                    `${API_BASE}/servers/${server.server_id}/roles`,
+                    apiUrl`/servers/${server.server_id}/roles`,
                     { name },
                     { headers: { Authorization: `Bearer ${token}` } },
                 );
                 const created = res.data as Role | undefined;
                 await load();
                 if (created?.role_id) setSelectedRoleId(created.role_id);
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
             } catch (e: any) {
                 toast.push({ kind: 'error', message: e?.response?.data?.message ?? 'Failed to create role' });
             }
         });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- toast is the provider value object, re-created each provider render (push/dismiss inside are stable); adding it would re-run this on every toast
     }, [server.server_id, token, load, askDirtyGuard]);
 
     const handleSaved = useCallback((next: Role) => {
@@ -121,15 +125,17 @@ export const RolesTabContainer: React.FC<Props> = ({ server, token, canManage, o
         }
         try {
             await axios.patch(
-                `${API_BASE}/servers/${server.server_id}/roles/${roleId}`,
+                apiUrl`/servers/${server.server_id}/roles/${roleId}`,
                 { position: newPosition },
                 { headers: { Authorization: `Bearer ${token}` } },
             );
             setRoles(prev => prev.map(r => r.role_id === roleId ? { ...r, position: newPosition } : r));
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (e: any) {
             toast.push({ kind: 'error', message: e?.response?.data?.message ?? 'Failed to reorder role' });
             throw e;
         }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- toast is the provider value object, re-created each provider render (push/dismiss inside are stable); adding it would re-run this on every toast
     }, [server.server_id, token, canManage]);
 
     const handleDelete = useCallback(() => {
@@ -146,18 +152,20 @@ export const RolesTabContainer: React.FC<Props> = ({ server, token, canManage, o
             confirmLabel: 'Delete Role',
             onConfirm: async () => {
                 try {
-                    await axios.delete(`${API_BASE}/servers/${server.server_id}/roles/${selectedRoleId}`, {
+                    await axios.delete(apiUrl`/servers/${server.server_id}/roles/${selectedRoleId}`, {
                         headers: { Authorization: `Bearer ${token}` },
                     });
                     setRoles(prev => prev.filter(r => r.role_id !== selectedRoleId));
                     const remaining = roles.filter(r => r.role_id !== selectedRoleId);
                     const next = remaining.find(r => !r.is_everyone) ?? remaining[0] ?? null;
                     setSelectedRoleId(next?.role_id ?? null);
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
                 } catch (e: any) {
                     toast.push({ kind: 'error', message: e?.response?.data?.message ?? 'Failed to delete role' });
                 }
             },
         });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- toast is the provider value object, re-created each provider render (push/dismiss inside are stable); adding it would re-run this on every toast
     }, [server.server_id, token, selectedRoleId, roles, canManage]);
 
     const everyonePerms = useMemo<bigint>(() => {

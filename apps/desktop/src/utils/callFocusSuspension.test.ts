@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { stepFocusSuspension } from './callFocusSuspension';
+import { isFocusSuspended, stepFocusSuspension, type FocusSuspensionResult } from './callFocusSuspension';
 
 type F = { identity: string; source: string };
 const BOB: F = { identity: 'bob', source: 'camera' };
@@ -101,5 +101,49 @@ describe('stepFocusSuspension', () => {
         const r = stepFocusSuspension<F>({ suppressed: false, callActive: true, current: BOB, saved: null });
         expect(r.apply).toBeUndefined();
         expect(r.saved).toBeNull();
+    });
+});
+
+describe('isFocusSuspended — the fullscreen overlay can always paint a focus', () => {
+    it('suspends on Home / Friends only while docked', () => {
+        expect(isFocusSuspended(true, false)).toBe(true);
+        expect(isFocusSuspended(true, true)).toBe(false);
+        expect(isFocusSuspended(false, false)).toBe(false);
+        expect(isFocusSuspended(false, true)).toBe(false);
+    });
+
+    type Rule = (home: boolean, fs: boolean) => boolean;
+    /** Drive the reducer with (tab lacks a focus pane, fullscreen) per step. */
+    const drive = (rule: Rule, steps: Array<{ home: boolean; fs: boolean; pick?: F | null }>, start: F | null) => {
+        let current: F | null = start;
+        let saved: F | null = null;
+        const seen: Array<F | null> = [];
+        for (const s of steps) {
+            if (s.pick !== undefined) current = s.pick;
+            const r: FocusSuspensionResult<F> = stepFocusSuspension<F>({ suppressed: rule(s.home, s.fs), callActive: true, current, saved });
+            saved = r.saved;
+            if (r.apply !== undefined) current = r.apply;
+            seen.push(current);
+        }
+        return seen;
+    };
+    const FROM_HOME = [
+        { home: true, fs: false },            // Bob focused in a DM, then Home: parked
+        { home: true, fs: true },             // fullscreen from Home: restored -> focused stage
+        { home: true, fs: true, pick: AMY },  // click Amy in fullscreen: NOT parked away
+        { home: true, fs: false },            // leave fullscreen on Home: Amy parked
+        { home: false, fs: false },           // back to a chat: Amy restored
+    ];
+
+    it('fullscreen opened from Home shows the parked focus, and a pick made in fullscreen survives', () => {
+        expect(drive(isFocusSuspended, FROM_HOME, BOB)).toEqual([null, BOB, AMY, null, AMY]);
+    });
+
+    // NEGATIVE CONTROL: the old wiring suspended on the tab alone. Fullscreen
+    // from Home then opened on the grid (null) and the in-fullscreen pick was
+    // parked away on the very next effect.
+    it('with the tab rule alone (old wiring) fullscreen-from-Home can never be focused', () => {
+        const old: Rule = home => home;
+        expect(drive(old, FROM_HOME, BOB)).toEqual([null, null, null, null, AMY]);
     });
 });

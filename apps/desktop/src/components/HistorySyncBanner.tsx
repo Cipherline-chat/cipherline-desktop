@@ -28,6 +28,7 @@ interface Props {
         wrapped_transfer_key_b64?: string;
         /** LEGACY plaintext key; only from a pre-2026-08-30 approver. */
         transfer_key_b64?: string;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
         transfer_meta?: any;
     } | null;
     clearHistoryDelivered: () => void;
@@ -233,6 +234,7 @@ export const HistorySyncBanner: React.FC<Props> = ({
                 },
                 { headers: { Authorization: `Bearer ${token}`, 'x-device-id': deviceId } },
             );
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (err: any) {
             console.warn('[HistorySyncModal] request failed:', err?.response?.data?.message ?? err?.message);
         }

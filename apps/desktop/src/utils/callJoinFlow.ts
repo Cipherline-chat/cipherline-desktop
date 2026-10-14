@@ -22,6 +22,8 @@
  * UI only renders local, content-free placeholders in that window.
  */
 
+import { isStartCallsDenied, START_CALLS_DENIED_MESSAGE } from './startCallsGate';
+
 /**
  * - idle        no call and no join in flight
  * - requesting  the join request (join_voice / calls/:id/join / huddle spawn…) is in flight
@@ -182,7 +184,7 @@ export interface CallJoinFailure {
 }
 
 interface HttpishError {
-    response?: { status?: number; headers?: Record<string, unknown> };
+    response?: { status?: number; headers?: Record<string, unknown>; data?: unknown };
     code?: string;
 }
 
@@ -212,6 +214,18 @@ export function describeCallJoinFailure(err: unknown, kind: CallJoinKind): CallJ
     }
     if (status === 409) {
         return { toast: { kind: 'info', title: 'Answered elsewhere', message: 'This call was already joined from your other device.' } };
+    }
+    // START_CALLS refused (server body `code: 'missing_permission'`). The
+    // start button is already disabled for this, so this is the fallback for
+    // a stale my_permissions (an admin just changed it) or a race.
+    if (isStartCallsDenied(err)) {
+        return {
+            toast: {
+                kind: 'error',
+                title: "Can't start a call",
+                message: `${START_CALLS_DENIED_MESSAGE}. You can still join a call someone else has started.`,
+            },
+        };
     }
     if (status === 403) {
         return {

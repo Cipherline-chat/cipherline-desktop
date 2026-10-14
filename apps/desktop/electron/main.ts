@@ -1,20 +1,27 @@
-import { app, BrowserWindow, ipcMain, desktopCapturer, session, dialog, powerMonitor, shell, globalShortcut, safeStorage, Menu, MenuItem, clipboard, systemPreferences, screen } from 'electron';
+import { app, BrowserWindow, ipcMain, desktopCapturer, session, dialog, net, powerMonitor, shell, globalShortcut, Menu, MenuItem, clipboard, nativeImage, systemPreferences, screen, powerSaveBlocker } from 'electron';
 import * as http from 'http';
 import * as https from 'https';
 import { assertPublicHttpUrl, pinnedLookup } from './net-guard';
+import { isPathInside } from './path-containment';
 import type { AppUpdater } from 'electron-updater';
 import * as path from 'path';
 import * as fs from 'fs';
+import { execFile } from 'child_process';
 import * as os from 'os';
 import * as nodeCrypto from 'crypto';
 import { getLocalIdentityPub, migrateSpkPubIfMissing, ensureSignalIdentity, signIdentityMessage, generateRotationBundle, lowestHeldOtpId, type StatusAwareRotationOptions } from './signal-identity';
 import { SpkCandidateOrder } from './spk-candidates';
-import { detectCurrentGame, getCurrentGameCached, getRunningProcessList, setCustomGames, setIgnoredProcesses, nextGamePollDelayMs, GAME_POLL_MS, GAME_POLL_SETTLE_MS } from './game-detector';
+import { detectCurrentGame, getCurrentGameCached, getRunningProcessList, setCustomGames, setIgnoredProcesses, resetHeuristicSessions, nextGamePollDelayMs, GAME_POLL_MS, GAME_POLL_SETTLE_MS } from './game-detector';
 import { secureStore } from './storage';
 import { shouldShowKeyProtectionNotice, keyProtectionNoticeToken } from './key-protection';
 import { KvCrypto } from './kv-crypto';
 import { isRendererSecureKey, filterRendererSecureKeys } from './secure-store-policy';
+import {
+  deriveRecoveryApprovalKeypair, approvalDecisionMessage, linkApproveMessage,
+  recoveryCommitMessage, recoveryProofMessage,
+} from './device-approval-keys';
 import { createRecoveryKeyGate } from './recovery-key-gate';
+import { createApprovalSignGate, approvalQuestion } from './device-approval-sign-gate';
 import { startOAuth, getAccessToken, revokeTokens, getLinkedAccount } from './googleDriveAuth';
 import { uploadFileResumable, downloadFileToPath } from './driveTransfer';
 import { showAnnotationOverlay, hideAnnotationOverlay, pushAnnotationOverlayDelta, setAnnotationOverlayNative, annotationOverlayPrecheck, type OverlayDelta, type OverlayShowResult } from './annotation-overlay';
@@ -28,6 +35,7 @@ import {
   markRendererReplyListenerLost,
 } from './notifications';
 import { setBadgeCount, flashTaskbar, applyWindowsCallOverlay } from './badge';
+import { lockPageZoom } from './page-zoom-lock';
 import { setupTray, updateTrayMenu, getTray, setTrayCallState } from './tray';
 import type { TrayMenuState } from './tray';
 import {
@@ -70,17 +78,34 @@ import {
   onUpdateAvailable,
   onDownloadProgress,
   onUpdateDownloaded,
+  onUpdateNotAvailable,
   onUpdateError,
+  onInstallError,
+  classifyUpdateError,
+  isUpdateInFlight,
+  updaterErrorDetail,
+  toDiagnosticDetail,
+  parseUpdaterCacheDirName,
+  pendingUpdateCacheDir,
   pickDownloadUrl,
   UPDATE_BASE_URL,
+  RETRY_DELAYS_MS,
   type UpdateState as UpdateStateT,
   type UpdateFileInfo as UpdateFileInfoT,
 } from './updater-state';
+import { UpdateCheckScheduler, type CheckReason } from './update-check-scheduler';
+import { UpdateInstallCoordinator, INSTALL_ATTEMPT_FILE } from './update-install';
+import { createAuthenticodeVerifier } from './authenticode-verify';
+import { UPDATE_MANIFEST_PUBLIC_KEYS, REQUIRE_MANIFEST_SIG, type ManifestChannel } from './update-manifest-keys';
+import { isManifestSignatureRequired, ManifestVerificationError } from './update-manifest-signature';
+import { withManifestSignatureCheck, describeManifestReport, type GenericProviderCtor } from './signed-update-provider';
 import { syncKdeGlobalShortcuts, teardownKdeGlobalShortcuts } from './kde-global-shortcuts';
+import { validateGlobalShortcutMap } from './global-shortcut-payload';
 import { isTrustedSenderUrl, channelRequiresSenderCheck } from './ipc-guard';
+import { validateClipboardPng } from './clipboard-image';
 import {
-  buildChromiumMediaSwitches, captureLogSwitches, expectedScreenCapturer,
-  windowsBuildFromRelease, parseCaptureTimingLog, summarizeGpuDevices,
+  buildChromiumMediaSwitches, captureLogSwitches, expectedScreenCapturer, captureFpsCeiling, isNativeWaylandClient,
+  windowsBuildFromRelease, parseCaptureTimingLog, validateCaptureTimingWindow, summarizeGpuDevices,
   decideAutoScreenCapturer, gpuTopologyFromInfo, parseGpuTopologyHint, serializeGpuTopologyHint,
   resolveCapturedDisplayHz, GPU_TOPOLOGY_FILENAME, GPU_TOPOLOGY_MAX_BYTES,
   pickerEnumeration, parseSourcesHelperFailure, serializeSourcesHelperFailure,
@@ -93,19 +118,30 @@ import {
   readStartupFlagsFile, writeStartupFlagsFile, resolveStartupFlags, validateStartupFlagsPatch,
   prepareCaptureLogFiles, enforceCaptureLogCap,
 } from './startup-flags';
-import { freezeMonitor } from './freeze-monitor';
+import { freezeMonitor, DETAIL_RE as FREEZE_DETAIL_RE } from './freeze-monitor';
+import { startMainLoopDiagnostics } from './main-loop-diagnostics';
 import {
-  gamingVideoStartupSwitches, validateCallMediaActive, CallPriorityBooster, PRIORITY_REAPPLY_MS,
+  validateCallMediaActive, CallPriorityBooster, PRIORITY_REAPPLY_MS,
 } from './gaming-video-mode';
+import { launchThrottleSwitches, validateShareActive, applyGamingSetting, ShareBoostController, PowerThrottleOptOut, GpuSchedulingBoost, type SharePowerReport, type GpuSchedReport } from './share-boost';
+import {
+  validateForegroundRequest, describeForeground, validateFindWindowRequest, pickWindowByExe, cleanExeName, foregroundAnswerWithoutAddon, type WindowCandidate,
+} from './share-foreground';
+import { decideLinuxHwEncode, parseLinuxHwEncodeMode, LINUX_HW_ENCODE_ENV } from './linux-video-encode';
+import { parseScreenSourceIndex, parseWindowSourceHandle, cleanRect } from './annotation-overlay-target';
 import { PowerCoordinator, type PowerSignal } from './power-events';
 import { wireWindowDiagnostics, summarizeAppMetrics, summarizeGpuFeatureStatus, describeChildProcessGone } from './lifecycle-diagnostics';
+import {
+  GpuRestartLedger, gpuRestartFromChildGone, gpuCrashSignature, parseGpuRecoveryReport,
+  GPU_RESTARTED_CHANNEL, GPU_RECOVERY_OUTCOME_CHANNEL,
+} from './gpu-restart';
 import { powChallengeToHash } from './pow-challenge';
 import {
-  PendingCrashStore, mainScrubber, crashFromMainError, crashFromRenderGone, crashFromChildGone,
-  crashFromRendererReport, rotateSessionMarker, clearSessionMarker, parseSignatures, buildSystemInfo,
+  PendingCrashStore, mainScrubber, parseSignatures, buildSystemInfo,
   reportChannel, validateReportFile, defaultReportFileName, UNCLEAN_EXIT_MARKER_FILE,
   type GpuInfoLike,
 } from './diagnostics';
+import { SessionLifecycle, crashRecordFor, type CrashEvent, type QuitTrigger } from './session-lifecycle';
 import { beginLinkSession, bindLinkSession, openActiveLinkSession, endLinkSession, sealLinkGrant, type LinkGrantPayload } from './link-grant';
 import {
   STAGING_VERIFIER, verifyPassword, isAcceptablePasswordInput, createAttemptLimiter,
@@ -192,6 +228,18 @@ let audioCaptureAddon: {
       | { failed: true; reason: string; message: string }) => void
   ): void;
   stopCapture(): void;
+  // Screen-share boost probes (src-native/share_power.cc). Optional: an addon
+  // built before they existed lacks them, and every non-Windows build returns
+  // no-op values. electron/share-boost.ts and share-foreground.ts validate
+  // whatever comes back.
+  setProcessPowerThrottling?(pid: number, enabled: boolean): unknown;
+  setTimerResolution?(ms: number, on: boolean): unknown;
+  setGpuSchedulingPriority?(pid: number, level: number): unknown;
+  getGpuSchedulingPriority?(pid: number): unknown;
+  getForegroundInfo?(): unknown;
+  getWindowExe?(hwnd: string): unknown;
+  getWindowInfo?(hwnd: string): unknown;
+  getScreenRectFromDeviceIndex?(index: number): unknown;
 } | null = null;
 
 /** True when the native addon is loaded AND this OS can actually run it. */
@@ -212,37 +260,71 @@ const safeOsUsername = (): string | undefined => {
 };
 let diagScrubberCache: ReturnType<typeof mainScrubber> | null = null;
 const diagScrubber = () => (diagScrubberCache ??= mainScrubber(os.homedir(), safeOsUsername()));
-const recordCrash = (build: () => Parameters<PendingCrashStore['add']>[0]): void => {
+// Unclean-exit detector + "is this a crash or a quit?" — electron/session-lifecycle.ts.
+// A marker in userData is written once this instance is definitely the live
+// one (it won the loopback port — see createWindow) and removed the moment a
+// quit is ASKED FOR (before-quit, OS session-end / shutdown, Restart & install,
+// relaunch), not at will-quit: the updater's installer force-kills a slow
+// quit. Found at the next launch → 'unclean_exit'. Once a quit is asked for,
+// teardown deaths and exceptions are not crashes. Packaged builds only (a dev
+// session killed with Ctrl+C would otherwise prompt every launch);
+// CIPHERLINE_DIAG_UNCLEAN_EXIT=1 opts a dev run in. Never under the smoke
+// test — no startup disk writes there (CLAUDE.md, smoke-test trap).
+const SESSION_MARKER_ENABLED = !IS_SMOKE_TEST && (IS_PACKAGED || process.env.CIPHERLINE_DIAG_UNCLEAN_EXIT === '1');
+const sessionLifecycle = new SessionLifecycle({
+  markerEnabled: SESSION_MARKER_ENABLED,
+  fs,
+  markerPath: () => path.join(app.getPath('userData'), UNCLEAN_EXIT_MARKER_FILE),
+  appVersion: () => app.getVersion(),
+  now: () => Date.now(),
+});
+/** Every crash signal goes through here; crashRecordFor decides. */
+const recordCrash = (event: CrashEvent): void => {
   // A crash handler must never throw — that would turn one crash into two.
-  try { pendingCrashes.add(build()); } catch (e) { console.error('[Main] could not record crash:', e); }
+  try {
+    pendingCrashes.add(crashRecordFor(event, sessionLifecycle.isQuitting, {
+      now: Date.now(), appVersion: app.getVersion(), scrubber: diagScrubber,
+    }));
+  } catch (e) { console.error('[Main] could not record crash:', e); }
+};
+/** This instance is THE live one: judge the previous session, arm ours. */
+const startSessionMarker = (): void => {
+  try { pendingCrashes.add(sessionLifecycle.start()); } catch (e) { console.error('[Main] session marker:', e); }
+};
+/** A quit was asked for — the marker goes now, synchronously. */
+const beginQuit = (trigger: QuitTrigger): void => {
+  setIsQuitting(true);
+  try { sessionLifecycle.beginQuit(trigger); } catch { /* never block a quit */ }
+};
+
+// A GPU process death (electron/gpu-restart.ts): Chromium starts a new one by
+// itself, but a call's hardware decoders / encoders and camera capture can be
+// left dead. Tell the renderer so it can recover the call's video. Not while
+// quitting (teardown kills the GPU process too). Never throws.
+const gpuRestarts = new GpuRestartLedger();
+const signalGpuRestart = (details: unknown): void => {
+  try {
+    const payload = gpuRestartFromChildGone(details, gpuRestarts.next(), isQuitting);
+    if (!payload) return;
+    // Which pending crash record this is, so the renderer's answer can mark
+    // it handled. Same builder the crash reporter used a moment ago.
+    gpuRestarts.issued(payload.seq, gpuCrashSignature(details, Date.now(), app.getVersion()));
+    console.warn(`[Main] GPU process gone (${payload.reason}, exit ${payload.exit_code}${payload.ctx_lost ? ' = context lost' : ''}) — restart #${payload.seq}, telling the renderer`);
+    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
+      mainWindow.webContents.send(GPU_RESTARTED_CHANNEL, payload);
+    }
+  } catch (e) { console.error('[Main] GPU restart signal failed:', e); }
 };
 
 // Catch any main-process crash before Electron's own error handling swallows it.
 process.on('uncaughtException', (err) => {
   console.error('[Main] uncaughtException:', err);
-  recordCrash(() => crashFromMainError(err, 'uncaughtException', Date.now(), app.getVersion(), diagScrubber()));
+  recordCrash({ source: 'main-exception', thrown: err, origin: 'uncaughtException' });
 });
 process.on('unhandledRejection', (reason) => {
   console.error('[Main] unhandledRejection:', reason);
-  recordCrash(() => crashFromMainError(reason, 'unhandledRejection', Date.now(), app.getVersion(), diagScrubber()));
+  recordCrash({ source: 'main-exception', thrown: reason, origin: 'unhandledRejection' });
 });
-
-// Unclean-exit detector: a marker in userData written once this instance is
-// definitely the live one (first createWindow) and removed on a clean quit or
-// an OS shutdown / log-off. Found at the next launch → 'unclean_exit'. Packaged
-// builds only (a dev session killed with Ctrl+C would otherwise prompt every
-// launch); CIPHERLINE_DIAG_UNCLEAN_EXIT=1 opts a dev run in. Never under the
-// smoke test — no startup disk writes there (CLAUDE.md, smoke-test trap).
-const SESSION_MARKER_ENABLED = !IS_SMOKE_TEST && (IS_PACKAGED || process.env.CIPHERLINE_DIAG_UNCLEAN_EXIT === '1');
-let sessionMarkerPath: string | null = null;
-const startSessionMarker = (): void => {
-  if (!SESSION_MARKER_ENABLED || sessionMarkerPath) return;
-  sessionMarkerPath = path.join(app.getPath('userData'), UNCLEAN_EXIT_MARKER_FILE);
-  recordCrash(() => rotateSessionMarker(fs, sessionMarkerPath!, app.getVersion(), Date.now()));
-};
-const endSessionMarker = (): void => {
-  if (sessionMarkerPath) clearSessionMarker(fs, sessionMarkerPath);
-};
 
 // Dev mode: treat the Vite dev server origin as a secure context so that
 // window.crypto.subtle (WebCrypto) is available over plain HTTP.
@@ -506,8 +588,8 @@ const PICKER_ENUMERATION = pickerEnumeration({
   autoBackend: AUTO_CAPTURER.backend,
   forceHelper: !IS_PACKAGED && process.env.CIPHERLINE_SOURCES_HELPER === '1',
 });
-// "Prioritize call video while gaming" (Settings → Voice & Video), launch-time
-// half: keep Chromium from backgrounding/occlusion-throttling the app when a
+// "Prioritize calls and screen share while gaming" (Settings → Voice & Video,
+// ON by default), launch-time half: keep Chromium from backgrounding/occlusion-throttling the app when a
 // fullscreen game covers it. See ./gaming-video-mode.ts. Its disable-features
 // entry is MERGED into the one media list below, never appended on its own.
 const GAMING_VIDEO_AT_LAUNCH = STARTUP_FLAGS.gamingVideo;
@@ -520,13 +602,65 @@ const GAMING_VIDEO_AT_LAUNCH = STARTUP_FLAGS.gamingVideo;
 const callPriority = new CallPriorityBooster({
   platform: process.platform,
   listPids: () => app.getAppMetrics().map(m => m.pid),
+  // With the process type, so the GPU process can go to HIGH while a share is live.
+  listProcesses: () => app.getAppMetrics().map(m => ({ pid: m.pid, type: m.type })),
   getPriority: (pid) => os.getPriority(pid),
   setPriority: (pid, priority) => os.setPriority(pid, priority),
 });
+// Screen-share boost: priority (GPU HIGH, the rest ABOVE_NORMAL) + a
+// prevent-app-suspension power request while (setting on) AND (a share is
+// live). Runtime half follows the SAVED setting at once; renderer reports the
+// share via `share:set-active`; a reload / crash / quit ends it (see below).
+const sharePriority = new ShareBoostController(callPriority, {
+  start: (type) => powerSaveBlocker.start(type),
+  stop: (id) => powerSaveBlocker.stop(id),
+  isStarted: (id) => powerSaveBlocker.isStarted(id),
+}, new PowerThrottleOptOut({
+  // Windows 11 power throttling (EcoQoS + timer-resolution coalescing) for a
+  // process whose windows are not in front: opted OUT for the main, GPU and
+  // renderer processes while a share is live, handed back after. The addon
+  // loads after app.whenReady(), so it is read on every use.
+  platform: process.platform,
+  native: () => audioCaptureAddon,
+  listProcesses: () => app.getAppMetrics().map(m => ({ pid: m.pid, type: m.type })),
+  selfPid: process.pid,
+  report: (r) => sendSharePower(r),
+}), new GpuSchedulingBoost({
+  // The WDDM GPU scheduling class (D3DKMT, via the addon): Windows boosts the
+  // FOREGROUND process's GPU work, so a game in front starves the capture copy
+  // (main process) and the encode (GPU process). REALTIME if allowed, else HIGH.
+  platform: process.platform,
+  native: () => audioCaptureAddon,
+  listProcesses: () => app.getAppMetrics().map(m => ({ pid: m.pid, type: m.type })),
+  selfPid: process.pid,
+  report: (r) => sendShareGpuSched(r),
+}));
+// Every apply / re-apply / restore, to the renderer, which logs it as the
+// `share_power` call event (the call event log lives there, in memory only).
+// Numbers and enums only.
+function sendSharePower(r: SharePowerReport): void {
+  try {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('share:power', r);
+  } catch { /* window closing - diagnostics only */ }
+}
+// Same, for the GPU scheduling class: the `share_gpu_sched` call event.
+function sendShareGpuSched(r: GpuSchedReport): void {
+  try {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('share:gpu-sched', r);
+  } catch { /* window closing - diagnostics only */ }
+}
+const SHARE_THROTTLE_REAPPLY_MS = 4_000;
+let shareThrottleTimer: ReturnType<typeof setInterval> | null = null;
 let callPriorityTimer: ReturnType<typeof setInterval> | null = null;
-const syncCallPriority = (change: { enabled?: boolean; inCall?: boolean }) => {
-  if (change.enabled !== undefined) callPriority.setEnabled(change.enabled);
-  if (change.inCall !== undefined) callPriority.setInCall(change.inCall);
+// Mirror of "the renderer says a call is live" for main-process decisions
+// (the updater never installs under an active call). Every place that ends a
+// call (reload, crash, navigation) already goes through syncCallPriority.
+let callMediaActive = false;
+const syncCallPriority = (change: { enabled?: boolean; inCall?: boolean; sharing?: boolean }) => {
+  // ONE setting drives the call-time boost AND the screen-share boost.
+  if (change.enabled !== undefined) applyGamingSetting(change.enabled, callPriority, sharePriority);
+  if (change.inCall !== undefined) { callPriority.setInCall(change.inCall); callMediaActive = change.inCall; }
+  if (change.sharing !== undefined) sharePriority.setSharing(change.sharing);
   if (callPriority.active && !callPriorityTimer) {
     callPriorityTimer = setInterval(() => callPriority.tick(), PRIORITY_REAPPLY_MS);
     callPriorityTimer.unref?.();
@@ -534,15 +668,32 @@ const syncCallPriority = (change: { enabled?: boolean; inCall?: boolean }) => {
     clearInterval(callPriorityTimer);
     callPriorityTimer = null;
   }
+  // The power-throttling opt-out follows processes that appear mid-share (a
+  // restarted GPU process, a reloaded renderer) on a shorter beat than the
+  // priority re-apply: a new process is throttled from its first second.
+  if (sharePriority.throttleActive && !shareThrottleTimer) {
+    shareThrottleTimer = setInterval(() => sharePriority.tickThrottle(), SHARE_THROTTLE_REAPPLY_MS);
+    shareThrottleTimer.unref?.();
+  } else if (!sharePriority.throttleActive && shareThrottleTimer) {
+    clearInterval(shareThrottleTimer);
+    shareThrottleTimer = null;
+  }
 };
 syncCallPriority({ enabled: GAMING_VIDEO_AT_LAUNCH });
 {
-  const gamingSwitches = gamingVideoStartupSwitches(GAMING_VIDEO_AT_LAUNCH, process.platform);
+  const gamingSwitches = launchThrottleSwitches(GAMING_VIDEO_AT_LAUNCH, process.platform);
   for (const name of gamingSwitches.switches) app.commandLine.appendSwitch(name);
-  const media = buildChromiumMediaSwitches(process.platform, SCREEN_CAPTURER_PREF, AUTO_CAPTURER.backend);
+  // Linux hardware H.264 encode (VA-API): opt-in, see ./linux-video-encode.ts for
+  // why it is off by default and what it needs. Merged into the one list.
+  const linuxHwEncode = decideLinuxHwEncode({
+    platform: process.platform,
+    mode: parseLinuxHwEncodeMode(process.env[LINUX_HW_ENCODE_ENV]),
+    hasSwitch: (name) => app.commandLine.hasSwitch(name),
+  });
+  const media = buildChromiumMediaSwitches(process.platform, SCREEN_CAPTURER_PREF, AUTO_CAPTURER.backend, linuxHwEncode.features);
   media.disableFeatures.push(...gamingSwitches.disableFeatures);
   if (GAMING_VIDEO_AT_LAUNCH) {
-    console.log(`[Main] Gaming video mode ON at launch: ${[...gamingSwitches.switches, ...gamingSwitches.disableFeatures.map(f => `disable-features=${f}`)].join(', ')}`);
+    console.log(`[Main] Prioritize-while-gaming switches ON at launch: ${[...gamingSwitches.switches, ...gamingSwitches.disableFeatures.map(f => `disable-features=${f}`)].join(', ')}`);
   }
   if (media.enableFeatures.length) {
     app.commandLine.appendSwitch('enable-features', media.enableFeatures.join(','));
@@ -566,7 +717,8 @@ syncCallPriority({ enabled: GAMING_VIDEO_AT_LAUNCH });
   // In the Performance log too, so a diagnostics report says which capturer
   // (and whether DXGI was in the process at all) without a console.
   freezeMonitor.event('capture:switches', 0,
-    `pref=${SCREEN_CAPTURER_PREF} auto=${AUTO_CAPTURER.backend} enable=${media.enableFeatures.join(',') || '-'} disable=${media.disableFeatures.join(',') || '-'} picker=${PICKER_ENUMERATION}${SOURCES_HELPER_FAILED_AT_START ? ' helper-failed-last-launch' : ''}`);
+    `pref=${SCREEN_CAPTURER_PREF} auto=${AUTO_CAPTURER.backend} enable=${media.enableFeatures.join(',') || '-'} disable=${media.disableFeatures.join(',') || '-'} picker=${PICKER_ENUMERATION}${SOURCES_HELPER_FAILED_AT_START ? ' helper-failed-last-launch' : ''}${process.platform === 'linux' ? ` linux_hw_encode=${linuxHwEncode.reason}` : ''}`);
+  if (linuxHwEncode.enable) console.log(`[Main] Linux hardware video encode requested at launch (${linuxHwEncode.reason}): enable-features=${linuxHwEncode.features.join(',')}`);
   if (SCREEN_CAPTURER_PREF !== 'auto') {
     console.log(`[Main] Screen capturer forced: ${SCREEN_CAPTURER_PREF} (${STARTUP_FLAGS.source.screenCapturer})`);
   } else if (process.platform === 'win32') {
@@ -610,9 +762,11 @@ syncCallPriority({ enabled: GAMING_VIDEO_AT_LAUNCH });
 // today's already-working behavior.
 if (process.platform === 'linux') {
   app.commandLine.appendSwitch('ozone-platform-hint', 'auto');
-  // WebRTCPipeWireCapturer is appended with the other media features above
-  // (buildChromiumMediaSwitches) — a second 'enable-features' append here
-  // would replace that list rather than add to it.
+  // The `WebRTCPipeWireCapturer` feature still goes in with the other media
+  // features above (buildChromiumMediaSwitches) — a second 'enable-features'
+  // append here would replace that list rather than add to it — but Chromium
+  // 150 has no such feature any more: the capturer is picked by the Ozone
+  // platform alone, i.e. by the hint above (see capture-flags.ts).
 }
 
 let mainWindow: BrowserWindow | null = null;
@@ -639,6 +793,10 @@ const CIPHERLINE_PROD_PORT = IS_SMOKE_TEST ? 42918 : 42917;
 // Wrapped in an object so tray.ts callbacks can read the latest value by reference.
 // Both `isQuitting` and `isQuittingRef.value` must be kept in sync.
 let isQuitting = false;
+// When close-to-tray last hid the window (0 = not hidden that way), and the
+// updater's reaction to it being shown again (set once the updater block runs).
+let trayHiddenAt = 0;
+let onWindowReopened: ((hiddenForMs: number) => void) | null = null;
 const isQuittingRef = { value: false };
 function setIsQuitting(v: boolean) { isQuitting = v; isQuittingRef.value = v; }
 
@@ -801,13 +959,18 @@ function saveWindowState(win: BrowserWindow): void {
   // remember the sensible size even when the user closes while maximised.
   const { x, y, width, height } = win.getNormalBounds();
   const state: WindowState = { x, y, width, height, isMaximized };
-  try { fs.writeFileSync(WINDOW_STATE_FILE(), JSON.stringify(state)); } catch {}
+  try { fs.writeFileSync(WINDOW_STATE_FILE(), JSON.stringify(state)); } catch { /* best-effort filesystem operation; failure is non-fatal */ }
 }
 
+/** This process serves dist/ on CIPHERLINE_PROD_PORT (set once, never cleared). */
+let prodServerListening = false;
+
 async function createWindow(csp: string, startHidden = false) {
-  // This instance is the live one now (the lock and the port hand-off are
-  // behind us), so it may take over the unclean-exit marker. Once per launch.
-  startSessionMarker();
+  // NOT here: the unclean-exit marker is taken over only once this instance
+  // has won the loopback port below (startSessionMarker). A second launch that
+  // slipped past the single-instance lock gets this far, then hands off and
+  // app.exit(0)s — it used to report the RUNNING instance's marker as an
+  // unclean exit and leave its own behind.
   const savedState = loadWindowState();
 
   mainWindow = new BrowserWindow({
@@ -955,6 +1118,13 @@ async function createWindow(csp: string, startHidden = false) {
     win.on('minimize', () => push('window:minimize'));
     // Guarded (push): 'hide' can also fire while a window is being torn down.
     win.on('hide', () => push('window:hide'));
+    // "Closed it, then reopened it" with close-to-tray: the process never
+    // quit, so the updater gets its chance here (update-install.ts, 'reopen').
+    win.on('show', () => {
+      const at = trayHiddenAt;
+      trayHiddenAt = 0;
+      if (at && onWindowReopened) onWindowReopened(Date.now() - at);
+    });
   }
   // Also flush immediately on close so a quick quit doesn't miss the last resize.
   // When minimize-to-tray is enabled and the user isn't explicitly quitting,
@@ -964,7 +1134,7 @@ async function createWindow(csp: string, startHidden = false) {
   // unclean-exit marker (powerMonitor 'shutdown' covers macOS/Linux).
   // Also lets the close through: with minimize-to-tray on (the default), a
   // close that hides instead of closing must never stall a log-off.
-  mainWindow.on('session-end', () => { setIsQuitting(true); endSessionMarker(); });
+  mainWindow.on('session-end', () => beginQuit('session-end'));
   mainWindow.on('close', (e) => {
     if (_saveStateTimer) { clearTimeout(_saveStateTimer); _saveStateTimer = null; }
     saveWindowState(mainWindow!);
@@ -982,6 +1152,7 @@ async function createWindow(csp: string, startHidden = false) {
     if (shouldHideToTrayOnClose({ isQuitting, minimizeToTray, trayExists: getTray() !== null })) {
       e.preventDefault();
       mainWindow?.hide();
+      trayHiddenAt = Date.now();
     }
   });
 
@@ -991,6 +1162,9 @@ async function createWindow(csp: string, startHidden = false) {
   // User-controllable via Settings → Privacy & Safety. Default OFF — the
   // renderer pushes the persisted preference up on startup via the
   // win:set-content-protection IPC once AuthContext mounts.
+
+  // Page zoom is unsupported (Ctrl -/+/0, Ctrl+wheel, pinch); see page-zoom-lock.ts.
+  lockPageZoom(mainWindow.webContents);
 
   // CRIT-8: Block all renderer navigations away from the app origin.
   // Prevents HTML injection → external page load → full node privilege escalation.
@@ -1048,6 +1222,8 @@ async function createWindow(csp: string, startHidden = false) {
   console.log('[Main] VITE_DEV_SERVER_URL:', url || '(not set)');
   
   if (url) {
+    // Dev: no port to win — the single-instance lock is the only gate.
+    startSessionMarker();
     console.log(`[Main] Attempting to load URL: ${url}`);
     mainWindow.loadURL(url);
     // Dev only (this branch never runs packaged). DevTools no longer opens by
@@ -1058,6 +1234,12 @@ async function createWindow(csp: string, startHidden = false) {
     // DOM mutation and retains every logged object. Ctrl+Shift+I still opens
     // it, and CIPHERLINE_DEVTOOLS=1 restores the old always-open behaviour.
     if (process.env.CIPHERLINE_DEVTOOLS === '1') mainWindow.webContents.openDevTools();
+  } else if (prodServerListening) {
+    // macOS re-creating the window (Dock click after the last window closed):
+    // this process already serves the port. Binding it again would hit
+    // EADDRINUSE, "hand off" to ITSELF and app.exit(0) — the app silently
+    // vanished, skipping the quit, so the next launch said it had crashed.
+    mainWindow.loadURL(`http://127.0.0.1:${CIPHERLINE_PROD_PORT}/`);
   } else {
     // Production — serve the bundled dist/ folder via a local HTTP server on a
     // random loopback port.  This gives the renderer an http://127.0.0.1:PORT
@@ -1073,7 +1255,7 @@ async function createWindow(csp: string, startHidden = false) {
       '.wav': 'audio/wav',  '.mp3': 'audio/mpeg',  '.webp': 'image/webp',
     };
     const prodServer = http.createServer((req, res) => {
-      let urlPath = (req.url || '/').split('?')[0];
+      const urlPath = (req.url || '/').split('?')[0];
 
       // ── Second-instance handoff ────────────────────────────────────────────
       // A second launch can't bind this port, so it POSTs here instead: we come
@@ -1116,13 +1298,22 @@ async function createWindow(csp: string, startHidden = false) {
         return;
       }
 
-      let abs = path.join(distDir, urlPath === '/' ? 'index.html' : urlPath);
-      // Path-traversal guard
-      if (!abs.startsWith(distDir)) { res.writeHead(403); res.end(); return; }
+      const requested = path.join(distDir, urlPath === '/' ? 'index.html' : urlPath);
+      // Path-traversal guard. NOT `requested.startsWith(distDir)`: with no
+      // trailing separator that lets a sibling like `<distDir>-evil/x` through.
+      // This is the same rule as isPathInside() in ./path-containment (relative
+      // path must neither climb out with '..' nor be absolute), written INLINE
+      // on purpose: static analysis only recognises the check when it sits
+      // directly in front of the file access it protects (wrapping it in a
+      // helper hides it), and this handler is the one place reachable by a
+      // request from outside the process. path-containment.test.ts pins both
+      // spellings to the same verdicts.
+      const relToDist = path.relative(distDir, requested);
+      if (relToDist.startsWith('..') || path.isAbsolute(relToDist)) { res.writeHead(403); res.end(); return; }
       // SPA fallback — any path that isn't a real file serves index.html
-      if (!fs.existsSync(abs) || fs.statSync(abs).isDirectory()) {
-        abs = path.join(distDir, 'index.html');
-      }
+      const abs = (!fs.existsSync(requested) || fs.statSync(requested).isDirectory())
+        ? path.join(distDir, 'index.html')
+        : requested;
       const ext  = path.extname(abs).toLowerCase();
       const mime = MIME[ext] || 'application/octet-stream';
       // Set CSP directly on every response from our local server. This is the
@@ -1147,6 +1338,7 @@ async function createWindow(csp: string, startHidden = false) {
           resolve();
         });
       });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
     } catch (err: any) {
       if (IS_SMOKE_TEST) {
         // In CI smoke test, dialogs would block forever — log and exit instead.
@@ -1191,6 +1383,10 @@ async function createWindow(csp: string, startHidden = false) {
       return;
     }
     console.log(`[Main] Serving dist/ on http://127.0.0.1:${CIPHERLINE_PROD_PORT}/`);
+    prodServerListening = true;
+    // This instance holds the port, so it IS the live one: take over the
+    // unclean-exit marker (once per launch).
+    startSessionMarker();
     mainWindow.loadURL(`http://127.0.0.1:${CIPHERLINE_PROD_PORT}/`);
   }
 
@@ -1288,15 +1484,20 @@ async function createWindow(csp: string, startHidden = false) {
   // A renderer that is gone or has navigated (reload) has no call any more:
   // put the gaming-video priority boost back now rather than waiting for a
   // `call:set-media-active false` that will never come.
-  mainWindow.webContents.on('did-navigate', () => syncCallPriority({ inCall: false }));
+  mainWindow.webContents.on('did-navigate', () => syncCallPriority({ inCall: false, sharing: false }));
   mainWindow.webContents.on('render-process-gone', (event, details) => {
     console.error(`[Main] Renderer process gone: ${details.reason} (${details.exitCode})`);
-    syncCallPriority({ inCall: false });
+    syncCallPriority({ inCall: false, sharing: false });
     // Crash reporter: a pending record the reloaded renderer offers to send.
     // Recording only — the recovery behaviour below is unchanged.
-    recordCrash(() => crashFromRenderGone(details, Date.now(), app.getVersion()));
+    recordCrash({ source: 'render-process-gone', details });
 
     if (IS_SMOKE_TEST) return; // a dialog/reload loop would hang CI
+    // Quitting: the renderer going away is the point — no reload, no dialog.
+    if (sessionLifecycle.isQuitting) {
+      console.log(`[Main] renderer gone during a quit (${sessionLifecycle.quitTrigger}) — not a crash, not recovered`);
+      return;
+    }
 
     const giveUp = shouldGiveUpOnCrashLoop(recentCrashTimestamps, Date.now(), CRASH_LOOP_WINDOW_MS, CRASH_LOOP_THRESHOLD);
     if (giveUp) {
@@ -1544,6 +1745,9 @@ function isTrustedSender(event: Electron.IpcMainInvokeEvent | Electron.IpcMainEv
 // Main-process event-loop stalls plus renderer long tasks, with the activity
 // that overlapped each one. In memory only; see electron/freeze-monitor.ts.
 freezeMonitor.startLoopMonitor();
+// GC pauses (named on the stall rows they overlap) and the loop-delay
+// distribution (summarised on the metrics rows). See main-loop-diagnostics.ts.
+const mainLoopDiagnostics = startMainLoopDiagnostics(freezeMonitor);
 
 function installIpcSenderGuard(): void {
     const rawHandle = ipcMain.handle.bind(ipcMain);
@@ -1584,15 +1788,22 @@ function installIpcSenderGuard(): void {
         channel.startsWith('perf:')
             ? listener
             : (event, ...args) => freezeMonitor.track(`ipc:${channel}`, () => listener(event, ...args));
+    // Fire-and-forget `send` channels too (win:*, game:*, annot-overlay:*):
+    // they run on the same loop, and an untracked one could only ever show up
+    // as "idle". Same rule — the channel name, never an argument.
+    const trackedSend = (channel: string, listener: SendListener): SendListener =>
+        channel.startsWith('perf:')
+            ? listener
+            : (event, ...args) => freezeMonitor.track(`ipc:${channel}`, () => listener(event, ...args));
 
     ipcMain.handle = ((channel: string, listener: InvokeListener) =>
         rawHandle(channel, tracked(channel, guardInvoke(channel, listener)))) as typeof ipcMain.handle;
     ipcMain.handleOnce = ((channel: string, listener: InvokeListener) =>
         rawHandleOnce(channel, tracked(channel, guardInvoke(channel, listener)))) as typeof ipcMain.handleOnce;
     ipcMain.on = ((channel: string, listener: SendListener) =>
-        rawOn(channel, guardSend(channel, listener))) as typeof ipcMain.on;
+        rawOn(channel, trackedSend(channel, guardSend(channel, listener)))) as typeof ipcMain.on;
     ipcMain.once = ((channel: string, listener: SendListener) =>
-        rawOnce(channel, guardSend(channel, listener))) as typeof ipcMain.once;
+        rawOnce(channel, trackedSend(channel, guardSend(channel, listener)))) as typeof ipcMain.once;
 }
 
 installIpcSenderGuard();
@@ -1643,10 +1854,21 @@ ipcMain.handle('diag:get-pending-crashes', () => pendingCrashes.all());
 // No argument = all; otherwise only the given signatures.
 ipcMain.handle('diag:clear-pending-crashes', (_e, signatures: unknown) => { pendingCrashes.remove(parseSignatures(signatures)); });
 ipcMain.handle('diag:mark-crashes-seen', (_e, signatures: unknown) => { pendingCrashes.markSeen(parseSignatures(signatures)); });
+// GPU process restart → renderer recovery (electron/gpu-restart.ts). The
+// renderer answers what it did; a HANDLED restart's crash record is marked
+// seen so the next launch does not say "closed unexpectedly" about an app
+// that never closed. Strictly validated: anything malformed is rejected.
+ipcMain.handle(GPU_RECOVERY_OUTCOME_CHANNEL, (_e, report: unknown) => {
+  const r = parseGpuRecoveryReport(report);
+  if (!r) throw new Error('invalid gpu recovery report');
+  const sig = gpuRestarts.resolve(r.seq);
+  console.log(`[Main] GPU restart #${r.seq}: renderer reports ${r.outcome}`);
+  if (sig) pendingCrashes.markHandled(sig, r.outcome);
+});
 // The root React error boundary's last words. Untrusted strings, scrubbed
 // again here with main's own scrubber before they are stored.
 ipcMain.handle('diag:record-renderer-crash', (_e, payload: unknown) => {
-  recordCrash(() => crashFromRendererReport(payload, Date.now(), app.getVersion(), diagScrubber()));
+  recordCrash({ source: 'renderer-report', payload });
 });
 // "Save to file": main owns the dialog and the path; the renderer supplies
 // only the already-scrubbed report text, which is validated (string, ≤ 512 KiB,
@@ -1675,7 +1897,16 @@ function sampleMetrics(why: string, minGapMs = 2000): void {
   const t = Date.now();
   if (t - lastMetricsAt < minGapMs) return;
   lastMetricsAt = t;
-  try { freezeMonitor.metrics(`${why}: ${summarizeAppMetrics(app.getAppMetrics(), process.memoryUsage())}`); } catch { /* before ready */ }
+  try {
+    const row = `${why}: ${summarizeAppMetrics(app.getAppMetrics(), process.memoryUsage())}`;
+    // Loop-delay + GC since the previous sample. Appended when the row stays
+    // within DETAIL_RE's length cap, else its own row (metrics() drops a row
+    // that fails the pattern, so never risk the resource summary on it).
+    const loop = mainLoopDiagnostics.summary();
+    const joined = loop ? `${row} | ${loop}` : row;
+    if (FREEZE_DETAIL_RE.test(joined)) freezeMonitor.metrics(joined);
+    else { freezeMonitor.metrics(row); if (loop) freezeMonitor.metrics(`${why}: ${loop}`); }
+  } catch { /* before ready */ }
 }
 // After a long main stall, record what every process was doing right then.
 let lastStallMetricsAt = 0;
@@ -1874,6 +2105,7 @@ function createInstallerSplash(isUpdate: boolean): BrowserWindow {
     },
   });
   splash.removeMenu();
+  lockPageZoom(splash.webContents);
   const html = installerSplashHtml(app.getVersion(), isUpdate);
   // Write to a temp file so the page loads with a file:// origin — loading as a
   // data: URL gives it a null opaque origin, which Chromium blocks @import
@@ -2026,16 +2258,20 @@ app.whenReady().then(async () => {
   process.stderr.write('[Main] app.ready fired\n');
   console.log('[Main] app ready — starting initialization');
   freezeMonitor.event('startup:app-ready', Math.round(process.uptime() * 1000), 'ms since process start');
+  // GPU process death → the renderer recovers a call's video
+  // (electron/gpu-restart.ts). Its own listener: recording the crash (below)
+  // is unchanged and independent of it.
+  app.on('child-process-gone', (_e, details) => signalGpuRestart(details));
   // A GPU / network / audio service process dying is invisible to the user
   // except as a freeze or a black window — record it (type + reason only).
   app.on('child-process-gone', (_e, details) => {
     freezeMonitor.event('process:gone', 0, describeChildProcessGone(details));
     sampleMetrics('process-gone', 0);
     // Crash reporter: GPU / Utility / … deaths with a crash reason only.
-    recordCrash(() => crashFromChildGone(details, Date.now(), app.getVersion()));
+    recordCrash({ source: 'child-process-gone', details });
   });
   // macOS / Linux OS shutdown: a clean end of the session, not a crash.
-  powerMonitor.on('shutdown', () => { setIsQuitting(true); endSessionMarker(); });
+  powerMonitor.on('shutdown', () => beginQuit('os-shutdown'));
   // Resource snapshot every 15 s while the window is on screen (nothing while
   // minimized / in the tray — the log is about what the user sees).
   setInterval(() => {
@@ -2089,12 +2325,14 @@ app.whenReady().then(async () => {
   // Loading it at module scope caused STATUS_BREAKPOINT crashes in dev mode because
   // mmdevapi.dll's DllMain ran before Chromium had set up its COM context.
   try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports -- native addon (.node) is loaded lazily at runtime and cannot be an ES import
     audioCaptureAddon = require(path.join(__dirname, '../build/Release/audio_capture.node'));
     console.log('[Main] Native audio capture addon loaded successfully.');
     // The same addon carries the annotation overlay's display/window geometry
     // (src-native/window_geometry.cc on Windows, window_geometry_mac.mm on
     // macOS); an older build simply lacks it.
     setAnnotationOverlayNative(audioCaptureAddon);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
   } catch (e: any) {
     const addonPath = path.join(__dirname, '../build/Release/audio_capture.node');
     console.warn(`[Main] Native audio capture addon NOT loaded — screenshare will fall back to Chromium loopback.`);
@@ -2133,13 +2371,15 @@ app.whenReady().then(async () => {
       console.log('[Main] secureStore initialized');
       // Pending crash records go to the encrypted store from here on (and the
       // ones captured during startup are merged in). Not under the smoke test
-      // (its store is pathless — CLAUDE.md), and not while locked.
+      // (its store is pathless — CLAUDE.md), and not while locked. The
+      // version drops unseen unclean exits of an older build — what pre-fix
+      // builds recorded on the way through an update (isStaleUncleanExit).
       if (!IS_SMOKE_TEST && secureStore.status() === 'ok') {
         pendingCrashes.attach({
           read: () => secureStore.get('diag_pending_crashes'),
           write: (v) => secureStore.set('diag_pending_crashes', v),
           clear: () => secureStore.delete('diag_pending_crashes'),
-        });
+        }, app.getVersion());
       }
       if (showInstaller) { splashSendProgress(58); installerGate?.storeDone(); }
     })
@@ -2195,15 +2435,16 @@ app.whenReady().then(async () => {
     // gates that behind script-src. Unlike 'unsafe-eval' this token only
     // enables WASM — it does NOT re-enable eval(), new Function(), or other
     // dynamic code-string execution. Safe and the documented minimum for WASM.
-    // No Google origin here: the Drive backup folder browser is our own UI
-    // (src/components/DriveFolderPicker.tsx) calling the Drive REST API over
-    // fetch, so nothing loads Google-hosted script. If the Google Picker widget
-    // is ever brought back it needs https://apis.google.com here AND
-    // docs/drive.google.com in frame-src below.
+    // No Google origin here: Drive backups talk to the Drive REST API over
+    // fetch (and from the main process), so nothing loads Google-hosted
+    // script. If the Google Picker widget is ever brought back it needs
+    // https://apis.google.com here AND docs/drive.google.com in frame-src below.
     // https://js.stripe.com — Stripe.js for the in-app Payment Element (card data
     // stays inside Stripe's iframe; we never see a PAN).
+    // https://*.js.stripe.com — Stripe.js starts its element frames on sibling
+    // origins (Stripe's CSP guide lists both); Link's UI is among them.
     // https://challenges.cloudflare.com — Turnstile widget script.
-    `script-src 'self' blob: 'wasm-unsafe-eval' https://js.stripe.com https://challenges.cloudflare.com${scriptExtra}`,
+    `script-src 'self' blob: 'wasm-unsafe-eval' https://js.stripe.com https://*.js.stripe.com https://challenges.cloudflare.com${scriptExtra}`,
     // Tailwind + emoji-mart inject inline styles at runtime.
     // Google Fonts CSS (loaded via @import in index.css) counts as a stylesheet load — must be in style-src.
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
@@ -2225,10 +2466,14 @@ app.whenReady().then(async () => {
     // accounts.google.com — Google auth handshake.
     // api.stripe.com / m.stripe.network — Stripe.js client API + metrics for the
     // in-app Payment Element.
-    `connect-src 'self' blob: https://api.cipherline.chat wss://api.cipherline.chat https://api-staging.cipherline.chat wss://api-staging.cipherline.chat https://media.cipherline.chat https://rtc.cipherline.chat wss://rtc.cipherline.chat https://tenor.googleapis.com https://www.googleapis.com https://*.googleapis.com https://accounts.google.com https://api.stripe.com https://m.stripe.network https://challenges.cloudflare.com ${KLIPY_CSP_CONNECT}${connectExtra}`,
+    // link.com / *.link.com — Link (card + Link is the desktop checkout's method
+    // set): its authentication UI and API are served from Stripe-owned link.com
+    // subdomains (Stripe's CSP guide, "Link").
+    `connect-src 'self' blob: https://api.cipherline.chat wss://api.cipherline.chat https://api-staging.cipherline.chat wss://api-staging.cipherline.chat https://media.cipherline.chat https://rtc.cipherline.chat wss://rtc.cipherline.chat https://tenor.googleapis.com https://www.googleapis.com https://*.googleapis.com https://accounts.google.com https://api.stripe.com https://m.stripe.network https://link.com https://*.link.com https://challenges.cloudflare.com ${KLIPY_CSP_CONNECT}${connectExtra}`,
     // Images: own attachments via media subdomain + Google Picker
     // thumbnails/icons + Stripe brand glyphs.
     // https://*.stripe.com — card-brand / Link glyphs in the Payment Element.
+    // https://*.link.com — Link's own static assets.
     //
     // CORRECTION (this file, image-inline-display work): earlier revisions of
     // this policy carried `https://*.giphy.com https://*.tenor.com
@@ -2247,7 +2492,7 @@ app.whenReady().then(async () => {
     // automatically (vs. requiring a click) is host-based and lives in
     // src/utils/imageHosts.ts + usePrivacySettings' `imageAutoLoad` — a CSP
     // change is neither necessary nor sufficient for it.
-    `img-src 'self' data: blob: https://media.cipherline.chat https://*.googleusercontent.com https://*.gstatic.com https://ssl.gstatic.com https://*.stripe.com ${KLIPY_CSP_IMG}`,
+    `img-src 'self' data: blob: https://media.cipherline.chat https://*.googleusercontent.com https://*.gstatic.com https://ssl.gstatic.com https://*.stripe.com https://*.link.com ${KLIPY_CSP_IMG}`,
     "media-src 'self' blob:",
     "font-src 'self' https://fonts.googleapis.com https://fonts.gstatic.com data:",
     // Inline PDF preview uses <embed type="application/pdf" src="blob:…"> in
@@ -2266,11 +2511,14 @@ app.whenReady().then(async () => {
     // that the backup folder browser is our own UI rather than the Google
     // Picker widget. accounts.google.com stays for the OAuth handshake.
     // js.stripe.com — Payment Element iframe; hooks.stripe.com — 3DS challenge frame.
+    // *.js.stripe.com / link.com / *.link.com — sibling element frames and Link's
+    // authentication UI (Link works inside the iframe: it needs no browser wallet
+    // API and no popup, which setWindowOpenHandler would deny).
     // https://cipherline.chat — the website-hosted Turnstile page (turnstile-embed.html)
     // the sign-up form embeds; Cloudflare rejects 127.0.0.1 as a widget hostname, so the
     // widget runs there (components/TurnstileFrame.tsx). challenges.cloudflare.com — the
     // widget's own iframe.
-    "frame-src https://www.youtube-nocookie.com blob: https://accounts.google.com https://js.stripe.com https://hooks.stripe.com https://challenges.cloudflare.com https://cipherline.chat",
+    "frame-src https://www.youtube-nocookie.com blob: https://accounts.google.com https://js.stripe.com https://*.js.stripe.com https://hooks.stripe.com https://link.com https://*.link.com https://challenges.cloudflare.com https://cipherline.chat",
     "frame-ancestors 'none'",
     "base-uri 'self'",
     "form-action 'self'",
@@ -2406,6 +2654,15 @@ app.whenReady().then(async () => {
   // Reading via the main-process clipboard module has no such restriction.
   ipcMain.handle('clipboard:read', () => { return clipboard.readText(); });
   ipcMain.handle('clipboard:write', (_event, text: string) => { clipboard.writeText(text); });
+  // "Copy image": the renderer sends a PNG it already holds (a decrypted
+  // attachment it is displaying). Validated as a plausibly sized PNG before it
+  // reaches the native decoder; the bytes are never logged or sent anywhere.
+  ipcMain.handle('clipboard:write-image', (_event, data: unknown) => {
+    const png = validateClipboardPng(data);
+    const image = nativeImage.createFromBuffer(png);
+    if (image.isEmpty()) throw new Error('clipboard:write-image: image could not be decoded');
+    clipboard.writeImage(image);
+  });
 
   // ── Official-client attestation signer ──────────────────────────────────
   // The HMAC secret is injected into the official release build (CI →
@@ -2417,6 +2674,7 @@ app.whenReady().then(async () => {
   const ATTEST_SECRET: string = (() => {
     if (process.env.CLIENT_ATTEST_SECRET) return process.env.CLIENT_ATTEST_SECRET; // dev override
     try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports -- runtime read of the packaged package.json via CJS require (main process is compiled to CommonJS)
       const pkg = require(path.join(app.getAppPath(), 'package.json'));
       if (pkg && typeof pkg.clientAttestSecret === 'string') return pkg.clientAttestSecret;
     } catch { /* not packaged / no injected secret */ }
@@ -2484,6 +2742,141 @@ app.whenReady().then(async () => {
       return { identityPub, sig };
     } catch (e) {
       console.error('[history-request-proof] failed', e);
+      return null;
+    }
+  });
+
+  // ── Device approval (DEVICE_APPROVAL_REQUIRED) ──────────────────────────
+  // Every decision in the flow is an Ed25519 signature by THIS device's
+  // identity key (or, for the recovery proof, by a key derived from a typed
+  // recovery key). The `x-device-id` header proves nothing — a token thief can
+  // read every device id on the account — so the server verifies these
+  // against the identity key pinned on the device row. Message spellings live
+  // in electron/device-approval-keys.ts (pinned to the API by its spec).
+  //
+  // Nothing secret crosses the bridge: only public keys and signatures go
+  // out, and the typed recovery key comes IN once, is used for one signature
+  // and is never stored (the renderer never saw it in decoded form either).
+
+  /** This device's identity public key — for a QR-link session to advertise
+   *  the key it will register with, before any account exists. */
+  ipcMain.handle('crypto:identity-pub', async () => {
+    try {
+      await ensureSignalIdentity();
+      return getLocalIdentityPub();
+    } catch (e) {
+      console.error('[identity-pub] failed', e);
+      return null;
+    }
+  });
+
+  // Approving another device (a decision signature, or a QR-link approval) is
+  // gated on a main-process confirmation, exactly like the recovery-key reveal
+  // (see device-approval-sign-gate.ts for the threat model and why the dialog
+  // is shown by MAIN, before anything is signed). `deny` — also what "Cancel
+  // reset" signs — is the safe direction and is never made to wait.
+  const approvalSignGate = createApprovalSignGate({
+    confirm: async (info) => {
+      const opts: Electron.MessageBoxOptions = {
+        type: 'warning',
+        // Cancel is index 0 AND the default, so a stray Enter or a synthetic
+        // key event dismisses rather than approves.
+        buttons: ['Cancel', 'Approve'],
+        defaultId: 0,
+        cancelId: 0,
+        noLink: true,
+        title: 'Approve new device',
+        message: approvalQuestion(info),
+        detail:
+          'An approved device receives every new message and call key for your account, and can ask your other devices for your history.\n\n' +
+          "Only approve a device you are setting up right now. If you didn't start this sign-in, choose Cancel.",
+      };
+      const { response } = mainWindow
+        ? await dialog.showMessageBox(mainWindow, opts)
+        : await dialog.showMessageBox(opts);
+      return response === 1;
+    },
+    signDecision: async (a) => {
+      await ensureSignalIdentity();
+      const identityPub = getLocalIdentityPub();
+      if (!identityPub) return null;
+      const sig = signIdentityMessage(approvalDecisionMessage(a.userId, a.approverDeviceId, a.pendingDeviceId, a.pendingIdentityKeyB64, a.decision, a.ts));
+      return sig ? { identityPub, sig } : null;
+    },
+    signLink: async (a) => {
+      await ensureSignalIdentity();
+      const identityPub = getLocalIdentityPub();
+      if (!identityPub) return null;
+      const sig = signIdentityMessage(linkApproveMessage(a.userId, a.approverDeviceId, a.linkId, a.newIdentityKeyB64, a.ts));
+      return sig ? { identityPub, sig } : null;
+    },
+  });
+
+  /** Approve/deny a pending device: sign the canonical decision message. An
+   *  `approve` first shows the native confirmation (cancel → no signature);
+   *  `display` is the pending request's name/platform, display-only. */
+  ipcMain.handle('crypto:device-approval-sign', async (
+    event, userId: string, approverDeviceId: string, pendingDeviceId: string,
+    pendingIdentityKeyB64: string, decision: 'approve' | 'deny', ts: number,
+    display?: { deviceName: string; platform: string },
+  ) => {
+    try {
+      const res = await approvalSignGate.signDecision({ userId, approverDeviceId, pendingDeviceId, pendingIdentityKeyB64, decision, ts, display });
+      return res.ok ? { identityPub: res.identityPub, sig: res.sig } : null;
+    } catch (e) {
+      console.error('[device-approval-sign] failed', e);
+      return null;
+    }
+  });
+
+  /** QR link (invite flow, this desktop approving a phone): sign the link
+   *  approval so the session the phone claims registers an APPROVED device.
+   *  Confirmed natively first, like an approve. */
+  ipcMain.handle('crypto:link-approval-sign', async (
+    event, userId: string, approverDeviceId: string, linkId: string, newIdentityKeyB64: string | null, ts: number,
+  ) => {
+    try {
+      const res = await approvalSignGate.signLink({ userId, approverDeviceId, linkId, newIdentityKeyB64, ts });
+      return res.ok ? { identityPub: res.identityPub, sig: res.sig } : null;
+    } catch (e) {
+      console.error('[link-approval-sign] failed', e);
+      return null;
+    }
+  });
+
+  /** Publish this device's recovery commitment: the PUBLIC key derived from
+   *  the local master key, signed by the identity key. Reads the master key
+   *  in main only — nothing but the derived public key leaves. */
+  ipcMain.handle('crypto:recovery-commitment', async (event, userId: string, deviceId: string, ts: number) => {
+    try {
+      await secureStore.initialize();
+      if (secureStore.isLocked()) return null;
+      const kp = secureStore.deriveRecoveryApprovalKeypair();
+      if (!kp) return null;
+      await ensureSignalIdentity();
+      const identityPub = getLocalIdentityPub();
+      if (!identityPub) return null;
+      const sig = signIdentityMessage(recoveryCommitMessage(userId, deviceId, kp.pubB64, ts));
+      return sig ? { recoveryPub: kp.pubB64, identityPub, sig } : null;
+    } catch (e) {
+      console.error('[recovery-commitment] failed', e);
+      return null;
+    }
+  });
+
+  /** The NEW device: derive from a TYPED recovery key and sign the proof.
+   *  The typed key is used for exactly this and discarded. */
+  ipcMain.handle('crypto:recovery-proof', async (
+    event, typedKeyB64: string, userId: string, pendingDeviceId: string, pendingIdentityKeyB64: string, ts: number,
+  ) => {
+    try {
+      if (typeof typedKeyB64 !== 'string') return null;
+      const kp = deriveRecoveryApprovalKeypair(typedKeyB64);
+      if (!kp) return null;
+      const sig = kp.sign(recoveryProofMessage(userId, pendingDeviceId, pendingIdentityKeyB64, kp.pubB64, ts));
+      return { recoveryPub: kp.pubB64, sig };
+    } catch (e) {
+      console.error('[recovery-proof] failed', e);
       return null;
     }
   });
@@ -2612,7 +3005,7 @@ app.whenReady().then(async () => {
     if (mainWindow) showNotification(mainWindow, payload);
   });
   ipcMain.handle('notif:set-badge', (_e, count: number) => {
-    if (mainWindow) setBadgeCount(mainWindow, count, getTray());
+    if (mainWindow) setBadgeCount(mainWindow, count);
   });
   ipcMain.handle('notif:flash-taskbar', () => {
     if (mainWindow) flashTaskbar(mainWindow);
@@ -2625,7 +3018,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('tray:update-state', (_e, state: TrayMenuState) => {
     trayState = { ...trayState, ...state };
     if (mainWindow) updateTrayMenu(trayState, mainWindow, isQuittingRef);
-    if (mainWindow) setBadgeCount(mainWindow, trayState.unreadCount, getTray());
+    if (mainWindow) setBadgeCount(mainWindow, trayState.unreadCount);
   });
 
   // Call + voice state — renderer pushes on every speaking/mute/deafen change.
@@ -2954,7 +3347,7 @@ app.whenReady().then(async () => {
   const safeGifPath = (id: string): string => {
     const safe = path.basename(String(id)).replace(/[^a-zA-Z0-9._-]/g, '_');
     const resolved = path.resolve(gifDir(), `${safe}.enc`);
-    if (!resolved.startsWith(path.resolve(gifDir()) + path.sep)) throw new Error('Invalid gif id');
+    if (!isPathInside(gifDir(), resolved)) throw new Error('Invalid gif id');
     return resolved;
   };
   ipcMain.handle('fs:list-gif-files', async () => {
@@ -2978,7 +3371,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('fs:upload-custom-sound', async (event, filename: string, data: Uint8Array) => {
     await fs.promises.mkdir(customSoundsDir(), { recursive: true });
     // Sanitise the filename: strip path separators, enforce an audio extension.
-    let safe = path.basename(filename).replace(/[^a-zA-Z0-9._-]/g, '_');
+    const safe = path.basename(filename).replace(/[^a-zA-Z0-9._-]/g, '_');
     if (!/\.(wav|mp3|ogg)$/i.test(safe)) throw new Error('Only .wav/.mp3/.ogg sounds are allowed');
     const dest = path.join(customSoundsDir(), safe);
     await fs.promises.writeFile(dest, Buffer.from(data));
@@ -2999,7 +3392,7 @@ app.whenReady().then(async () => {
     if (typeof fileUrl !== 'string' || !fileUrl) throw new Error('Invalid sound path');
     const p = fileUrl.startsWith('file://') ? fileUrl.slice(7) : fileUrl;
     const resolved = path.resolve(p);
-    if (!resolved.startsWith(path.resolve(customSoundsDir()) + path.sep)) throw new Error('Invalid sound path');
+    if (!isPathInside(customSoundsDir(), resolved)) throw new Error('Invalid sound path');
     return await fs.promises.readFile(resolved);
   });
   ipcMain.handle('fs:delete-custom-sound', async (event, fileUrl: string) => {
@@ -3007,7 +3400,7 @@ app.whenReady().then(async () => {
       const p = fileUrl.startsWith('file://') ? fileUrl.slice(7) : fileUrl;
       // Only allow deletes within the custom-sounds dir.
       const resolved = path.resolve(p);
-      if (!resolved.startsWith(path.resolve(customSoundsDir()))) return { ok: false };
+      if (!isPathInside(customSoundsDir(), resolved)) return { ok: false };
       await fs.promises.unlink(resolved);
       return { ok: true };
     } catch { return { ok: false }; }
@@ -3405,8 +3798,8 @@ app.whenReady().then(async () => {
   function resolveReal(p: string): string {
     // Resolve symlinks so a symlink into /etc (etc.) can't bypass the prefix check.
     // Falls back to the parent if the leaf doesn't exist yet (new file being written).
-    try { return fs.realpathSync(p); } catch {}
-    try { return path.join(fs.realpathSync(path.dirname(p)), path.basename(p)); } catch {}
+    try { return fs.realpathSync(p); } catch { /* best-effort filesystem operation; failure is non-fatal */ }
+    try { return path.join(fs.realpathSync(path.dirname(p)), path.basename(p)); } catch { /* best-effort filesystem operation; failure is non-fatal */ }
     return p;
   }
 
@@ -3418,11 +3811,11 @@ app.whenReady().then(async () => {
     const isWin = process.platform === 'win32';
     const norm = (p: string) => isWin ? p.toLowerCase() : p;
     const resolvedN = norm(resolved);
-    if (resolvedN.startsWith(norm(userData) + path.sep) || resolvedN === norm(userData)) return;
+    if (isPathInside(norm(userData), resolvedN, { allowEqual: true })) return;
     // Also allow any directory the user explicitly selected via the OS file picker.
     for (const dir of userPickedDirs) {
       const dirN = norm(path.resolve(dir));
-      if (resolvedN.startsWith(dirN + path.sep) || resolvedN === dirN) return;
+      if (isPathInside(dirN, resolvedN, { allowEqual: true })) return;
     }
     throw new Error(`Path outside allowed root: ${filePath}`);
   }
@@ -3709,7 +4102,7 @@ app.whenReady().then(async () => {
     catch { throw new Error('Upload source not found'); }
     const tempReal = fs.realpathSync(path.resolve(app.getPath('temp')));
     const base = path.basename(resolved);
-    if (resolved.startsWith(tempReal + path.sep) && base.startsWith('cl-enc-')) return;
+    if (isPathInside(tempReal, resolved) && base.startsWith('cl-enc-')) return;
     throw new Error('Refusing to upload a file outside the encryption temp area');
   }
 
@@ -3741,8 +4134,16 @@ app.whenReady().then(async () => {
     //      certificate". Only the Chromium renderer (net.fetch) uses the Windows store.
     // In production the presigned URL resolves to a real public IP (SSRF passes) and
     // Caddy uses a Let's Encrypt cert that OpenSSL trusts — no special handling needed.
-    const isDev = !!DEV_SERVER_URL;
-    let uploadOpts: Parameters<typeof https.request>[1] & Parameters<typeof http.request>[1] = {
+    // ACCEPTED RISK (CodeQL js/disabling-certificate-validation): TLS
+    // verification is switched off ONLY here, ONLY for the dev stack's
+    // self-signed Caddy cert, and ONLY when this is an unpackaged build AND the
+    // dev server URL is set. `app.isPackaged` is derived from the executable, so
+    // no environment variable can turn this on in a shipped install (and
+    // DEV_SERVER_URL is already forced to undefined when packaged, MED-3: this
+    // second guard keeps the property true locally even if that ever changes).
+    // Production always takes the SSRF-guarded, certificate-verified branch.
+    const isDev = !app.isPackaged && !!DEV_SERVER_URL;
+    const uploadOpts: Parameters<typeof https.request>[1] & Parameters<typeof http.request>[1] = {
       method: 'PUT',
       headers: { 'Content-Type': contentType, 'Content-Length': size },
     };
@@ -3970,12 +4371,29 @@ app.whenReady().then(async () => {
   // The renderer sends a map of { accelerator: actionId }.  We unregister all
   // previous shortcuts and register the new ones.  When a shortcut fires we send
   // a 'global-shortcut-fired' event to the renderer which dispatches the action.
+  //
+  // Some shortcuts are registered only while they mean something (the
+  // drawing-request approve/decline keys, armed only while a request is
+  // waiting), so this now runs on every arm/disarm as well as on rebinds.
   let registeredGlobalShortcuts: string[] = [];
+  // The KDE half awaits D-Bus; serialize it so two quick syncs (arm, then
+  // disarm a moment later) cannot interleave their unRegister/doRegister
+  // calls and leave the earlier map registered.
+  let kdeSyncChain: Promise<void> = Promise.resolve();
 
-  ipcMain.handle('keybinds:sync-global-shortcuts', async (_event, map: Record<string, string>) => {
+  ipcMain.handle('keybinds:sync-global-shortcuts', async (_event, rawMap: unknown) => {
+    // Validate BEFORE unregistering anything: a malformed payload is rejected
+    // and leaves the current registrations exactly as they were.
+    const validated = validateGlobalShortcutMap(rawMap);
+    if (!validated.ok) {
+      console.warn(`[GlobalShortcut] rejected sync payload: ${validated.reason}`);
+      throw new Error('invalid global shortcut map');
+    }
+    const map = validated.map;
+
     // Unregister all previously registered shortcuts
     for (const accel of registeredGlobalShortcuts) {
-      try { globalShortcut.unregister(accel); } catch {}
+      try { globalShortcut.unregister(accel); } catch { /* best-effort; failure is non-fatal and intentionally ignored */ }
     }
     registeredGlobalShortcuts = [];
 
@@ -3983,7 +4401,9 @@ app.whenReady().then(async () => {
     // compositors (no stable global-shortcut portal support in Electron yet)
     // — report failed action ids back so the renderer can fall back to a
     // focused-window-only local listener for those instead of going silent.
-    const failedActionIds: string[] = [];
+    // Entries the validator refused were never registered: report them as
+    // failed so the renderer's focused-window tier covers them.
+    const failedActionIds: string[] = [...validated.rejected];
     for (const [accelerator, actionId] of Object.entries(map)) {
       try {
         const ok = globalShortcut.register(accelerator, () => {
@@ -3995,6 +4415,7 @@ app.whenReady().then(async () => {
           console.warn(`[GlobalShortcut] Failed to register: ${accelerator} → ${actionId}`);
           failedActionIds.push(actionId);
         }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
       } catch (err: any) {
         console.warn(`[GlobalShortcut] Error registering ${accelerator}:`, err.message);
         failedActionIds.push(actionId);
@@ -4009,13 +4430,14 @@ app.whenReady().then(async () => {
     // kde-global-shortcuts.ts for the (unverified-live) caveats. Never lets
     // a KDE-side failure affect what's reported as `failed` above — the
     // renderer's focused-window listener is the real safety net either way.
-    try {
-      await syncKdeGlobalShortcuts(map, (actionId) => {
-        mainWindow?.webContents.send('global-shortcut-fired', actionId);
-      });
-    } catch (err: any) {
+    const kdeSync = kdeSyncChain.then(() => syncKdeGlobalShortcuts(map, (actionId) => {
+      mainWindow?.webContents.send('global-shortcut-fired', actionId);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
+    })).catch((err: any) => {
       console.warn('[KGlobalAccel] sync failed:', err?.message ?? err);
-    }
+    });
+    kdeSyncChain = kdeSync;
+    await kdeSync;
 
     return { failed: failedActionIds };
   });
@@ -4387,6 +4809,7 @@ app.whenReady().then(async () => {
   });
 
   // Callback stored when Electron intercepts getDisplayMedia from the renderer
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
   let currentScreenshareCallback: ((response: any) => void) | null = null;
 
   session.defaultSession.setDisplayMediaRequestHandler((request, callback) => {
@@ -4531,11 +4954,23 @@ app.whenReady().then(async () => {
   // Returned per display so a multi-monitor setup with a 144 Hz primary and a
   // 60 Hz secondary reports each honestly. `displayFrequency` can be 0 on some
   // Linux/virtual setups — callers treat 0 as "unknown", not as a limit.
+  //
+  // `captureFpsCeiling`: a limit of the OS capturer ITSELF, independent of any
+  // display (null = none). Linux Wayland/PipeWire: 60 - see captureFpsCeiling().
   ipcMain.handle('display:get-refresh-rates', () => {
+    const ceiling = captureFpsCeiling(
+      process.platform === 'linux'
+        ? expectedScreenCapturer({
+            platform: 'linux', windowsBuild: null, pref: 'auto', sourceKind: 'screen',
+            waylandSession: isNativeWaylandClient(process.env, app.commandLine.getSwitchValue('ozone-platform')),
+          }).backend
+        : null,
+    );
     return screen.getAllDisplays().map(d => ({
       id: String(d.id),
       displayFrequency: d.displayFrequency ?? 0,
       isPrimary: d.id === screen.getPrimaryDisplay().id,
+      captureFpsCeiling: ceiling,
     }));
   });
 
@@ -4582,7 +5017,7 @@ app.whenReady().then(async () => {
       windowsBuild,
       pref: SCREEN_CAPTURER_PREF,
       sourceKind,
-      waylandSession: process.env.XDG_SESSION_TYPE === 'wayland',
+      waylandSession: isNativeWaylandClient(process.env, app.commandLine.getSwitchValue('ozone-platform')),
       prefSource: STARTUP_FLAGS.source.screenCapturer === 'file' ? 'settings' : 'env',
       auto: AUTO_CAPTURER,
     });
@@ -4603,6 +5038,7 @@ app.whenReady().then(async () => {
       gpus,
       videoEncode,
       h264CbpHwEnabled: process.platform === 'win32' || process.platform === 'linux',
+      captureFpsCeiling: captureFpsCeiling(capturer.backend),
       captureLog: CAPTURE_LOG_ENABLED,
     };
   });
@@ -4652,13 +5088,80 @@ app.whenReady().then(async () => {
   ipcMain.handle('call:set-media-active', (_event, active: unknown) => {
     syncCallPriority({ inCall: validateCallMediaActive(active) });
   });
+  // The renderer says a SCREEN SHARE went live / ended (SidebarConference).
+  // Drives the screen-share boost (./share-boost.ts): process priority and a
+  // prevent-app-suspension power request, both released the moment this goes
+  // false, the setting goes off, the renderer reloads or crashes, or we quit.
+  ipcMain.handle('share:set-active', (_event, active: unknown) => {
+    syncCallPriority({ sharing: validateShareActive(active) });
+  });
+  // What has the screen right now (Windows)? Feeds the `fg_*` fields of the
+  // share_fps / share_background call events and the "share the game window
+  // instead" hint (src/utils/shareFullscreenHint.ts). `sourceId` is the share's
+  // capture source id, used only to say whether the foreground window is on
+  // the SHARED monitor. Returns null off Windows / without the addon. Program
+  // basename + booleans only - no titles, no handles (./share-foreground.ts).
+  ipcMain.handle('share:get-foreground-info', (_event, sourceId: unknown) => {
+    const id = validateForegroundRequest(sourceId);
+    const addon = audioCaptureAddon;
+    // Linux / macOS: there is nothing to ask (share-platform.ts) - say so
+    // explicitly so the call events read fg_state "unavailable".
+    if (process.platform !== 'win32') return foregroundAnswerWithoutAddon(process.platform);
+    if (!addon || typeof addon.getForegroundInfo !== 'function') return null;
+    let raw: unknown;
+    try { raw = addon.getForegroundInfo(); } catch { return null; }
+    let sharedScreenRect: ReturnType<typeof cleanRect> = null;
+    const index = id !== null ? parseScreenSourceIndex(id) : null;
+    if (index !== null && typeof addon.getScreenRectFromDeviceIndex === 'function') {
+      try { sharedScreenRect = cleanRect(addon.getScreenRectFromDeviceIndex(index)); } catch { sharedScreenRect = null; }
+    }
+    return describeForeground({ raw, sourceId: id, sharedScreenRect, displayCount: screen.getAllDisplays().length });
+  });
+  // Which of these window sources is the running program `exe`? (The picker
+  // pre-selects the game's window.) Reads each window's process basename and
+  // size natively; the renderer never learns anything but the winning id.
+  ipcMain.handle('share:find-window-source', (_event, exe: unknown, ids: unknown) => {
+    const req = validateFindWindowRequest(exe, ids);
+    const addon = audioCaptureAddon;
+    if (process.platform !== 'win32' || !addon || typeof addon.getWindowExe !== 'function') return null;
+    const candidates: WindowCandidate[] = [];
+    for (const id of req.ids) {
+      const hwnd = parseWindowSourceHandle(id);
+      if (!hwnd) continue;
+      let name = '';
+      try { name = cleanExeName(addon.getWindowExe(hwnd)); } catch { name = ''; }
+      if (name.toLowerCase() !== req.exe.toLowerCase()) continue;
+      let usable = true;
+      let area = 0;
+      try {
+        const w = addon.getWindowInfo?.(hwnd) as { exists?: boolean; visible?: boolean; minimized?: boolean; cloaked?: boolean; frame?: unknown } | null | undefined;
+        if (w) {
+          usable = w.exists === true && w.visible === true && w.minimized !== true && w.cloaked !== true;
+          const f = cleanRect(w.frame);
+          if (f) area = f.width * f.height;
+        }
+      } catch { /* keep the defaults: matched by name alone */ }
+      candidates.push({ id, exe: name, area, usable });
+    }
+    return pickWindowByExe(candidates, req.exe);
+  });
   // "Restart Cipherline to apply". A normal quit (before-quit handlers run:
   // replay-cache flush, presence goodbye), not app.exit — then Electron's
   // relauncher starts the app again once this process has exited, so the new
   // instance does not collide with this one's single-instance lock.
   ipcMain.handle('app:relaunch', () => {
     if (IS_SMOKE_TEST) return;
-    setIsQuitting(true);
+    // A downloaded update + a relaunch: hand both to the installer in one step.
+    // Otherwise electron-updater's quit hook starts the installer while
+    // app.relaunch() starts the OLD build again, and the two race.
+    if (UPDATER_ENABLED && updateState.phase === 'ready') {
+      console.log('[Main/Updater] relaunch requested with an update downloaded — installing it');
+      beginQuit('relaunch');
+      installRequested = true;
+      setImmediate(() => autoUpdater.quitAndInstall(true, true));
+      return;
+    }
+    beginQuit('relaunch');
     app.relaunch();
     // Let this reply reach the renderer before windows start closing (same
     // reason as updater:quit-and-install).
@@ -4687,7 +5190,10 @@ app.whenReady().then(async () => {
     }
   });
 
-  ipcMain.handle('screenshare:get-capture-timing', async () => {
+  ipcMain.handle('screenshare:get-capture-timing', async (_event, frames: unknown) => {
+    // Optional: how many newest polls to summarise (validated, never coerced).
+    const polls = validateCaptureTimingWindow(frames);
+    if (polls === null) return null;
     if (!CAPTURE_LOG_ENABLED || !CAPTURE_LOG_FILE) return null;
     try {
       const fh = await fs.promises.open(CAPTURE_LOG_FILE, 'r');
@@ -4696,7 +5202,7 @@ app.whenReady().then(async () => {
         const len = Math.min(size, 512 * 1024);
         const buf = Buffer.alloc(len);
         await fh.read(buf, 0, len, size - len);
-        return parseCaptureTimingLog(buf.toString('utf8'));
+        return parseCaptureTimingLog(buf.toString('utf8'), polls);
       } finally {
         await fh.close();
       }
@@ -4782,19 +5288,22 @@ app.whenReady().then(async () => {
   // ── Auto-updates (production only) ────────────────────────────────────
   // Feed URL is baked into the build by electron-builder via the `publish`
   // block in package.json (https://updates.cipherline.chat). The updater
-  // fetches <channel>.yml, verifies SHA512, downloads the new installer in
-  // the background, and installs on next quit.
+  // fetches <channel>.yml AND its detached Ed25519 signature <channel>.yml.sig
+  // (verified before the manifest is used, every platform — see
+  // signed-update-provider.ts), checks the installer's SHA512 against that
+  // manifest (and on Windows the Authenticode publisher; on macOS Squirrel's
+  // code-signature check), downloads in the background, and installs on next
+  // quit or on "Restart & install".
   //
-  // Auto-install does NOT work on every platform this app ships on — see
-  // electron/updater-state.ts's module doc for the full reasoning (macOS
-  // needs a code signature electron-updater's Squirrel.Mac delegate refuses
-  // to work without, and Linux needs to genuinely be running as the AppImage
-  // Electron launched from). Rather than hard-code that per-platform, the
-  // full lifecycle (available → downloading → ready, OR available/downloading
-  // → error → manual-download-link) is pushed to the renderer over
-  // `update:state` and updater-state.ts's pure transition functions decide
-  // what each event means. See docs/desktop-code-signing.md to close the
-  // macOS gap for real.
+  // POLICY: the update always completes IN THE APP. A failure while an update
+  // is in flight is retried automatically with backoff (pending/ cache cleared
+  // first, so every retry is a full download), the UI stays in-app
+  // (`retrying` → `failed` with a Retry button), and a real signature
+  // rejection stops retrying and says "couldn't be verified" — still with no
+  // browser link. Only Linux (an AppImage cannot always replace itself) falls
+  // back to a download link once retries are spent. The full lifecycle is
+  // pushed to the renderer over `update:state`; updater-state.ts's pure
+  // functions decide what each event means (read its module doc first).
   //
   // Channel selection: autoUpdater.channel picks which manifest to fetch.
   //   'latest'  → latest.yml / latest-mac.yml (the default; what real users see).
@@ -4830,12 +5339,25 @@ app.whenReady().then(async () => {
     mainWindow?.webContents.send('update:state', next);
   };
   // Captured from the public `update-available` event so the error handler
-  // below can build a manual-download link WITHOUT reaching into
+  // below can build the LINUX-only manual-download link WITHOUT reaching into
   // electron-updater's internals (its `updateInfoAndProvider` field exists
   // but is `protected`, not part of the public API, and not something to
   // depend on surviving a version bump). Cleared once we know we don't need
   // it, so a later unrelated error can't accidentally reuse a stale list.
   let lastKnownUpdateFiles: UpdateFileInfoT[] | null = null;
+
+  // ── In-app retry bookkeeping (policy: electron/updater-state.ts) ──
+  // Failures for `failureVersion` in this session; reset on a new version, a
+  // finished download, or a user-initiated Retry.
+  let updateFailures = 0;
+  let failureVersion: string | null = null;
+  let retryTimer: ReturnType<typeof setTimeout> | null = null;
+  // Set by "Restart & install". An `error` while it is set is an INSTALL
+  // failure: the window was hidden for the installer and must come back.
+  let installRequested = false;
+  const cancelScheduledRetry = () => {
+    if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+  };
 
   // ── Barrier: everything below this point reads SecureStore synchronously ──
   //
@@ -4865,6 +5387,182 @@ app.whenReady().then(async () => {
   // Configured once, a few seconds after the window exists (see below) or on
   // the first updater IPC, whichever comes first — not before the window.
   let updaterConfigured = false;
+  // True once configureUpdater() has put the manifest-signature provider in
+  // place (signed-update-provider.ts). If that ever fails, a channel whose
+  // signature is REQUIRED on this platform refuses to check at all rather
+  // than fall back to electron-updater's unverified provider.
+  let manifestCheckInstalled = false;
+  const manifestChannel = (): ManifestChannel => (autoUpdater.channel === 'staging' ? 'staging' : 'latest');
+
+  /**
+   * checkForUpdates() with the auto-download it starts HANDLED. With
+   * autoDownload on, electron-updater returns the download as
+   * `result.downloadPromise` and nothing ever attaches a handler to it, so a
+   * failed download — already delivered to the 'error' listener below — ALSO
+   * surfaced as a main-process unhandledRejection, which the crash reporter
+   * records as a crash ("Cipherline closed unexpectedly" on the next boot).
+   * Every check goes through here; updater.wiring.test.ts pins that.
+   */
+  const checkForUpdatesHandled = async () => {
+    if (!manifestCheckInstalled && isManifestSignatureRequired(REQUIRE_MANIFEST_SIG[manifestChannel()], process.platform)) {
+      const err = new ManifestVerificationError('verifier-unavailable', `${manifestChannel()}.yml`);
+      autoUpdater.emit('error', err); // same path as a rejected manifest: failed(verify) in the UI
+      throw err;
+    }
+    const result = await autoUpdater.checkForUpdates();
+    result?.downloadPromise?.catch(() => { /* reported via the 'error' listener */ });
+    return result;
+  };
+
+  /**
+   * Delete electron-updater's `pending/` download directory, so the next
+   * attempt is a fresh, full download — never a resume of, or a differential
+   * patch against, whatever a failed attempt left behind. electron-updater
+   * already does this itself after most failures; doing it again before a
+   * retry covers the ones it doesn't (a crash, a kill mid-download). The
+   * directory name comes from the app-update.yml baked into this build and is
+   * validated as a single path segment (parseUpdaterCacheDirName).
+   */
+  const pendingCacheDir = async (): Promise<string | null> => {
+    const yml = await fs.promises.readFile(path.join(process.resourcesPath, 'app-update.yml'), 'utf8').catch(() => null);
+    const dirName = parseUpdaterCacheDirName(yml);
+    return dirName ? pendingUpdateCacheDir(process.platform, process.env, os.homedir(), dirName, path.join) : null;
+  };
+  const clearPendingUpdateCache = async (): Promise<void> => {
+    try {
+      const dir = await pendingCacheDir();
+      if (!dir) {
+        console.warn('[Main/Updater] updater cache dir name unknown — not clearing pending/ before retry');
+        return;
+      }
+      await fs.promises.rm(dir, { recursive: true, force: true });
+      console.log('[Main/Updater] cleared the pending update cache before retrying');
+    } catch (e) {
+      console.warn('[Main/Updater] could not clear the pending update cache:', (e as Error)?.message || e);
+    }
+  };
+  /** A previous session left a finished download in electron-updater's cache (a hint only: the check re-verifies it). */
+  const hasPendingDownload = async (): Promise<boolean> => {
+    try {
+      const dir = await pendingCacheDir();
+      if (!dir) return false;
+      await fs.promises.access(path.join(dir, 'update-info.json'));
+      return true;
+    } catch { return false; }
+  };
+
+  /**
+   * Start another update attempt: an automatic retry (from the backoff timer)
+   * or the user's Retry. Re-checking — rather than calling downloadUpdate()
+   * directly — re-reads the manifest too, so a retry also recovers from a
+   * release that was re-published in the meantime.
+   */
+  const runUpdateRetry = async (trigger: 'auto' | 'user' | 'periodic'): Promise<void> => {
+    cancelScheduledRetry();
+    if (!UPDATER_ENABLED) return;
+    configureUpdater();
+    const s = updateState;
+    // A check started elsewhere (the 4-hour timer, a channel switch) is
+    // already downloading: nothing to retry, and clearing pending/ under a
+    // live download would break it.
+    if (s.phase === 'available' || s.phase === 'downloading' || s.phase === 'ready') return;
+    if (trigger === 'auto' && s.phase !== 'retrying') return;
+    if (trigger === 'user' || trigger === 'periodic') updateFailures = 0;
+    freezeMonitor.event('updater:retry', 0, `trigger=${trigger} after=${updateFailures} failures`);
+    console.log(`[Main/Updater] retrying (${trigger}) after ${updateFailures} failure(s)`);
+    await clearPendingUpdateCache();
+    // Back to an in-flight phase BEFORE asking, so that if the re-check itself
+    // fails it counts as this attempt failing (-> next backoff step) rather
+    // than an idle-time blip that would be dropped.
+    if (s.phase !== 'idle') pushUpdateState({ phase: 'available', version: s.version });
+    try {
+      await checkForUpdatesHandled();
+    } catch {
+      /* the 'error' listener has recorded it and decided the next step */
+    }
+  };
+
+  // ── When we check, and how a finished download gets installed ──
+  // Policy and the reasons for it: update-check-scheduler.ts and
+  // update-install.ts (read their module docs first). This is only wiring.
+  let sawDownloadProgress = false; // reset per `update-available`; false at `update-downloaded` = served from the cache
+  const updaterErrorCode = (e: unknown): string => {
+    const c = (e as { code?: unknown } | null)?.code;
+    return typeof c === 'string' && /^[A-Z][A-Z0-9_]{2,63}$/.test(c) ? c : 'none';
+  };
+  const updateScheduler = new UpdateCheckScheduler({
+    now: () => Date.now(),
+    isOnline: () => net.isOnline(),
+    canCheck: () => {
+      const p = updateState.phase;
+      // Already fetching, or already holding a download: a check would only
+      // re-announce it. (A failed attempt is retried by run() below.)
+      if (p === 'available' || p === 'downloading' || p === 'retrying') return 'update-in-progress';
+      if (p === 'ready') return 'update-ready';
+      if (p === 'manual') return 'update-manual';
+      return null;
+    },
+    run: async (reason: CheckReason) => {
+      configureUpdater();
+      const s = updateState;
+      if ((reason === 'interval' || reason === 'online' || reason === 'resume') && s.phase === 'failed' && s.stage !== 'verify') {
+        // A failed download/install is retried from scratch on its own, instead of waiting for a click.
+        await runUpdateRetry('periodic');
+        return 'retried-after-failure';
+      }
+      const r = await checkForUpdatesHandled();
+      if (!r) return 'inactive';
+      return r.isUpdateAvailable ? `available version=${toDiagnosticDetail(String(r.updateInfo.version), 40)}` : 'not-available';
+    },
+    describeError: (e) => `error code=${updaterErrorCode(e)}`,
+    log: (line) => console.log(`[Main/Updater] ${line}`),
+    record: (reason, result) => freezeMonitor.event('updater:check', 0, toDiagnosticDetail(`reason=${reason} result=${result} phase=${updateState.phase}`)),
+  });
+  const installCoordinator = new UpdateInstallCoordinator({
+    appVersion: () => app.getVersion(),
+    now: () => Date.now(),
+    uptimeMs: () => process.uptime() * 1000,
+    inCall: () => callMediaActive,
+    isQuitting: () => sessionLifecycle.isQuitting,
+    fs,
+    attemptPath: () => path.join(app.getPath('userData'), INSTALL_ATTEMPT_FILE),
+    beginQuit: (trigger) => beginQuit(trigger),
+    markInstallRequested: () => { installRequested = true; },
+    showInstallingUi: () => {
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.hide();
+      try {
+        if (!installerSplash || installerSplash.isDestroyed()) installerSplash = createInstallerSplash(true);
+        splashSendProgress(40);
+      } catch (e) { console.warn('[Main/Updater] installing splash unavailable:', (e as Error)?.message || e); }
+    },
+    quitAndInstall: () => autoUpdater.quitAndInstall(true, true),
+    defer: (fn) => { setImmediate(fn); },
+    onInstallStalled: () => autoUpdater.emit('error', new Error('the update installer did not take over in time')),
+    log: (line) => console.log(line),
+    record: (name, detail) => freezeMonitor.event(name, 0, toDiagnosticDetail(detail)),
+  });
+  /** The install could not start (or never quit us): drop the splash; the error listener restores the window. */
+  const dismissInstallingUi = () => {
+    if (installerSplash && !installerSplash.isDestroyed()) installerSplash.close();
+    installerSplash = null;
+    splashReady = false;
+    splashLatestPct = 0;
+  };
+  onWindowReopened = (hiddenForMs) => {
+    if (!UPDATER_ENABLED || updateState.phase !== 'ready') return;
+    installCoordinator.onWindowReopened(updateState.version, hiddenForMs);
+  };
+  /** Begin the schedule once the window exists (called after createWindow). */
+  const startUpdateSchedule = async () => {
+    if (!UPDATER_ENABLED) return;
+    installCoordinator.settleAtBoot();
+    // A finished download from last session is installed ASAP, so look at once.
+    const cached = await hasPendingDownload();
+    console.log(`[Main/Updater] schedule: startup check ${cached ? 'now (a download is cached)' : 'in 5s'}, then every 60 min, on wake and when the network returns`);
+    updateScheduler.start({ startupDelayMs: cached ? 0 : undefined });
+    power.onPhase((phase) => { if (phase === 'resume') updateScheduler.noteResume(); });
+  };
+
   const configureUpdater = () => {
     if (!UPDATER_ENABLED || updaterConfigured) return;
     updaterConfigured = true;
@@ -4880,7 +5578,9 @@ app.whenReady().then(async () => {
     //
     // The unmitigated part: `provider: "generic"` fetches `latest.yml` and the
     // installer from the same host, so the sha512 in the manifest proves the
-    // bytes arrived intact and nothing about who built them. electron-updater's
+    // bytes arrived intact and nothing about who built them — UNLESS the
+    // manifest itself is signed: see the update-manifest signature provider
+    // installed below, which is what closes this on Linux. electron-updater's
     // Windows integrity check IS Authenticode publisher verification and needs
     // BOTH a signed binary and `build.win.publisherName` (now configured in
     // package.json — the signing half is procurement, see
@@ -4903,67 +5603,197 @@ app.whenReady().then(async () => {
     // select an install flow that fetches further payloads of its choosing.
     autoUpdater.disableWebInstaller = true;
 
+    // electron-updater's own log lines ("Cannot rename temp file…", "Found
+    // version…", the download URL) are the most useful evidence when an update
+    // fails, and its default logger is a bare console that a packaged Windows
+    // app sends nowhere. Route them through the diagnostics scrubber (the
+    // installer path is under the user's profile) to the console, and record
+    // warnings/errors in the Performance log (freeze-monitor events, included
+    // in "Report a problem").
+    const scrubUpdaterText = (m: unknown): string =>
+      diagScrubber().text(m instanceof Error ? (m.stack || m.message) : String(m ?? ''), 2000);
+    const updaterLog = {
+      info: (m: unknown) => console.log(`[Main/Updater] ${scrubUpdaterText(m)}`),
+      warn: (m: unknown) => {
+        const t = scrubUpdaterText(m);
+        console.warn(`[Main/Updater] ${t}`);
+        freezeMonitor.event('updater:warn', 0, toDiagnosticDetail(t));
+      },
+      error: (m: unknown) => {
+        const t = scrubUpdaterText(m);
+        console.error(`[Main/Updater] ${t}`);
+        freezeMonitor.event('updater:log-error', 0, toDiagnosticDetail(t));
+      },
+      debug: (m: unknown) => console.log(`[Main/Updater] (debug) ${scrubUpdaterText(m)}`),
+    };
+    autoUpdater.logger = updaterLog;
+
+    // Windows: replace electron-updater's Authenticode check with the same
+    // check under a realistic timeout — see authenticode-verify.ts for why the
+    // default's hard 20 s, run while a scanner is busy with the brand-new
+    // ~130 MB installer, is the leading suspect for staging.157's fallback.
+    // parseDn is resolved from electron-updater's own location so the DN
+    // matching is upstream's. If anything here fails, the default verifier
+    // stays in place (never "no verifier").
+    if (process.platform === 'win32') {
+      try {
+        const updaterDir = path.dirname(require.resolve('electron-updater'));
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const { parseDn } = require(require.resolve('builder-util-runtime', { paths: [updaterDir] })) as {
+          parseDn: (dn: string) => Map<string, string>;
+        };
+        if (typeof parseDn !== 'function') throw new Error('builder-util-runtime has no parseDn');
+        (autoUpdater as unknown as { verifyUpdateCodeSignature: (names: string[], file: string) => Promise<string | null> })
+          .verifyUpdateCodeSignature = createAuthenticodeVerifier({
+            execFile: (file, args, options, cb) => {
+              execFile(file, args, options, (err, stdout, stderr) => cb(err, String(stdout), String(stderr)));
+            },
+            parseDn,
+            normalizePath: path.win32.normalize,
+            log: updaterLog,
+            onSkipped: (why) => freezeMonitor.event('updater:verify-skipped', 0, toDiagnosticDetail(scrubUpdaterText(why))),
+          });
+      } catch (e) {
+        console.error('[Main/Updater] could not install the Authenticode verifier; keeping electron-updater\'s default:', (e as Error)?.message || e);
+        freezeMonitor.event('updater:verifier-default', 0);
+      }
+    }
+
+    // ── Update-manifest signature, ALL platforms (the only signature on Linux) ──
+    // electron-updater trusts <channel>.yml for the version and the sha512 of
+    // every installer; on Linux (AppImage, and .deb via DebUpdater + pkexec)
+    // nothing else is signed. The provider below verifies <manifest>.sig over
+    // the exact bytes before electron-updater parses them, and throws
+    // ERR_UPDATER_MANIFEST_SIGNATURE out of the check on a rejection — no
+    // update-available, no download. Keys + per-channel enforcement and the
+    // rollout order: update-manifest-keys.ts. Seam: signed-update-provider.ts.
+    try {
+      // GenericProvider is not re-exported from electron-updater's index; this
+      // is the same module its own providerFactory instantiates for `generic`.
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { GenericProvider } = require('electron-updater/out/providers/GenericProvider') as { GenericProvider: GenericProviderCtor };
+      if (typeof GenericProvider !== 'function') throw new Error('electron-updater has no GenericProvider');
+      const SignedProvider = withManifestSignatureCheck(GenericProvider, {
+        keysFor: (ch) => UPDATE_MANIFEST_PUBLIC_KEYS[ch],
+        requiredFor: (ch) => isManifestSignatureRequired(REQUIRE_MANIFEST_SIG[ch], process.platform),
+        report: (r) => {
+          const { event, detail } = describeManifestReport(r);
+          freezeMonitor.event(event, 0, toDiagnosticDetail(detail));
+          (r.decision.accept ? console.log : console.error)(`[Main/Updater] ${event} ${detail}`);
+        },
+      });
+      // Same feed URL electron-builder bakes into app-update.yml (pinned equal
+      // by updaterState.test.ts); app-update.yml is still read for the cache
+      // dir and the Windows publisherName.
+      autoUpdater.setFeedURL({ provider: 'custom', updateProvider: SignedProvider, url: UPDATE_BASE_URL } as unknown as Parameters<AppUpdater['setFeedURL']>[0]);
+      manifestCheckInstalled = true;
+    } catch (e) {
+      console.error('[Main/Updater] could not install the update-manifest signature check:', (e as Error)?.message || e);
+      freezeMonitor.event('updater:manifest-check-unavailable', 0);
+    }
+
     autoUpdater.on('update-available', (info) => {
       lastKnownUpdateFiles = info.files ?? null;
+      if (failureVersion !== info.version) { failureVersion = info.version; updateFailures = 0; }
+      cancelScheduledRetry(); // a fresh attempt is already under way
+      sawDownloadProgress = false;
       pushUpdateState(onUpdateAvailable(info));
     });
     autoUpdater.on('download-progress', (progress) => {
+      sawDownloadProgress = true;
       pushUpdateState(onDownloadProgress(updateState, progress));
     });
     autoUpdater.on('update-downloaded', (info) => {
-      lastKnownUpdateFiles = null; // fully installed — nothing left to fall back to
+      lastKnownUpdateFiles = null; // fully downloaded — nothing left to fall back to
+      cancelScheduledRetry();
+      freezeMonitor.event('updater:downloaded', 0, toDiagnosticDetail(`version=${info.version} after=${updateFailures} failures`));
+      updateFailures = 0;
       pushUpdateState(onUpdateDownloaded(info));
+      // No progress events = it was already on disk from an earlier session
+      // (and has just been re-verified). Install it now if this is the start
+      // of the session; otherwise the tile stays and the quit installs it.
+      installCoordinator.onUpdateDownloaded(info, !sawDownloadProgress);
+    });
+    autoUpdater.on('update-not-available', () => {
+      const next = onUpdateNotAvailable(updateState);
+      if (next !== updateState) {
+        cancelScheduledRetry();
+        pushUpdateState(next);
+      }
     });
     autoUpdater.on('error', (e) => {
-      // Log the CODE, not just the message. `manual` is a deliberately quiet,
-      // usable outcome — the user gets a working download button — so the
-      // underlying failure leaves no other trace, and "it sent me to my
-      // browser" is all anyone can report. That cost a full investigation on
-      // 2026-09-15; the code is what makes the next one a grep.
+      // Log the CODE, the phase and the message (and the stack), so the next
+      // failure is a grep, not an investigation — 2026-09-15 and 2026-10-09
+      // both started from nothing more than "it sent me to my browser".
       const code = (e as NodeJS.ErrnoException | undefined)?.code;
-      console.error(`[Main/Updater] error${code ? ` [${code}]` : ''}:`, e?.message || e);
-      if (code === 'ERR_UPDATER_INVALID_SIGNATURE') {
-        // Almost never a hostile origin — it is nearly always us shipping an
-        // unsigned installer while app-update.yml still names a publisher.
-        // See apps/desktop/src/utils/electronBuilderConfig.test.ts for the
-        // full mechanism and the rule about reintroducing publisherName.
-        console.error(
-          '[Main/Updater] Authenticode verification REJECTED the downloaded installer. ' +
-          'Auto-install is impossible on this machine and every update will fall back to a manual ' +
-          'browser download until it is resolved. Most likely cause: build.win.signtoolOptions.publisherName ' +
-          'is configured while the build is unsigned (no CSC_LINK) — the two must be introduced together.',
-        );
-      }
-      pushUpdateState(onUpdateError(updateState, () => {
-        if (!lastKnownUpdateFiles) return null;
-        return pickDownloadUrl(lastKnownUpdateFiles, process.platform, process.arch);
-      }));
-    });
+      console.error(
+        `[Main/Updater] error${code ? ` [${code}]` : ''} during ${updateState.phase}: ${scrubUpdaterText(e?.message || e)}`,
+      );
+      if (e?.stack) console.error(`[Main/Updater] ${scrubUpdaterText(e.stack)}`);
+      const scrubForDiag = (t: string) => diagScrubber().text(t, 600);
 
-    // Not in the startup critical path, and never in the first minute after a
-    // wake: a check that finds an update starts a ~100 MB download, and
-    // after a long sleep the 4-hour interval below has always elapsed, so it
-    // used to fire in the same instant as the reconnect, the catch-up and
-    // the OS's own resume work.
-    const UPDATE_CHECK_DELAY_MS = 30_000;
-    const UPDATE_RESUME_QUIET_MS = 90_000;
-    let lastWakeAt = 0;
-    power.onPhase((phase) => { if (phase === 'resume') lastWakeAt = Date.now(); });
-    const checkForUpdatesQuietly = () => {
-      const sinceWake = Date.now() - lastWakeAt;
-      if (sinceWake < UPDATE_RESUME_QUIET_MS) {
-        setTimeout(checkForUpdatesQuietly, UPDATE_RESUME_QUIET_MS - sinceWake).unref();
+      if (installRequested) {
+        installCoordinator.onInstallFailed();
+        dismissInstallingUi();
+        // "Restart & install" could not launch the installer. The window was
+        // hidden for it — bring it back and offer Retry (which re-downloads,
+        // covering a missing or damaged installer file).
+        installRequested = false;
+        setIsQuitting(false);
+        // The quit is off: re-arm the unclean-exit marker and crash capture.
+        sessionLifecycle.cancelQuit();
+        showAndFocusWindow(mainWindow);
+        const next = onInstallError(updateState);
+        freezeMonitor.event('updater:error', 0, updaterErrorDetail(e, { state: next, retryInMs: null }, scrubForDiag));
+        pushUpdateState(next);
         return;
       }
-      autoUpdater.checkForUpdates().catch(() => { /* logged by the 'error' listener */ });
-    };
-    console.log(`[Main/Updater] channel=${initialChannel} — first check in ${UPDATE_CHECK_DELAY_MS / 1000}s`);
-    setTimeout(() => {
-      autoUpdater.checkForUpdates().catch((e) => {
-        console.warn('[Main/Updater] initial check failed:', e?.message || e);
+
+      const current = updateState;
+      const inFlight = isUpdateInFlight(current);
+      if (isUpdateInFlight(current)) {
+        if (failureVersion !== current.version) { failureVersion = current.version; updateFailures = 0; }
+        updateFailures++;
+      }
+      const kind = classifyUpdateError(e, process.platform);
+      if (kind === 'manifest') {
+        console.error(
+          '[Main/Updater] the update MANIFEST was rejected by its signature check; nothing was downloaded. ' +
+          'If every client sees this, check that the release published <manifest>.sig with a key listed in ' +
+          'electron/update-manifest-keys.ts.',
+        );
+      }
+      if (kind === 'signature') {
+        // The installer was examined and is NOT signed by Cipherline LLC (or
+        // Squirrel.Mac rejected its signature). Do not retry on our own.
+        // Historically this was us (a publisherName baked into an unsigned
+        // build — see src/utils/electronBuilderConfig.test.ts), but it is also
+        // exactly what a tampered installer looks like.
+        console.error(
+          '[Main/Updater] the downloaded update FAILED signature verification. Not retrying automatically; ' +
+          'the user is told it could not be verified and can retry. If every client sees this, check the ' +
+          'release\'s signing (the "Verify Windows code signature" step) and app-update.yml\'s publisherName.',
+        );
+      }
+      const decision = onUpdateError(current, {
+        kind,
+        failures: updateFailures,
+        platform: process.platform,
+        now: Date.now(),
+        buildDownloadUrl: () => (lastKnownUpdateFiles ? pickDownloadUrl(lastKnownUpdateFiles, process.platform, process.arch) : null),
       });
-    }, UPDATE_CHECK_DELAY_MS).unref();
-    setInterval(checkForUpdatesQuietly, 4 * 60 * 60 * 1000);
+      freezeMonitor.event(inFlight ? 'updater:error' : 'updater:check-error', 0, updaterErrorDetail(e, decision, scrubForDiag));
+      cancelScheduledRetry();
+      if (decision.state !== current) pushUpdateState(decision.state);
+      if (decision.retryInMs != null) {
+        console.log(`[Main/Updater] retry ${updateFailures}/${RETRY_DELAYS_MS.length} in ${Math.round(decision.retryInMs / 1000)}s`);
+        retryTimer = setTimeout(() => {
+          retryTimer = null;
+          void runUpdateRetry('auto');
+        }, decision.retryInMs);
+        retryTimer.unref?.();
+      }
+    });
   };
 
   // (dev-only) drive the whole state machine without a real release, so the
@@ -4973,12 +5803,21 @@ app.whenReady().then(async () => {
   // in a packaged build the channel does not exist at all, so there is nothing
   // to invoke even before the sender check runs.
   if (DEV_SERVER_URL) {
-    ipcMain.handle('updater:__simulate', (_e, phase: 'available' | 'downloading' | 'ready' | 'manual') => {
+    ipcMain.handle('updater:__simulate', (
+      _e,
+      phase: 'idle' | 'available' | 'downloading' | 'retrying' | 'failed' | 'failed-verify' | 'failed-install' | 'ready' | 'manual',
+    ) => {
       const v = '9.9.9-simulated';
-      if (phase === 'available') pushUpdateState({ phase: 'available', version: v });
+      if (phase === 'idle') pushUpdateState({ phase: 'idle' });
+      else if (phase === 'available') pushUpdateState({ phase: 'available', version: v });
       else if (phase === 'downloading') pushUpdateState({ phase: 'downloading', version: v, percent: 42 });
+      else if (phase === 'retrying') pushUpdateState({ phase: 'retrying', version: v, attempt: 1, maxAttempts: RETRY_DELAYS_MS.length, retryAt: Date.now() + RETRY_DELAYS_MS[0] });
+      else if (phase === 'failed') pushUpdateState({ phase: 'failed', version: v, stage: 'download' });
+      else if (phase === 'failed-verify') pushUpdateState({ phase: 'failed', version: v, stage: 'verify' });
+      else if (phase === 'failed-install') pushUpdateState({ phase: 'failed', version: v, stage: 'install' });
       else if (phase === 'ready') pushUpdateState({ phase: 'ready', version: v });
-      else pushUpdateState({ phase: 'manual', version: v, downloadUrl: `${UPDATE_BASE_URL}/Cipherline-${v}.dmg` });
+      // Linux-only in a real build; simulated anywhere so its UI can be seen.
+      else pushUpdateState({ phase: 'manual', version: v, downloadUrl: `${UPDATE_BASE_URL}/Cipherline-${v}.AppImage` });
     });
   }
 
@@ -4987,7 +5826,7 @@ app.whenReady().then(async () => {
   /**
    * Force an update check right now, on demand from Settings → Advanced.
    *
-   * The schedule above (one check at startup, then every 4h) is the normal
+   * The schedule (update-check-scheduler.ts: startup, hourly, on wake, on network) is the normal
    * path; this exists because there was previously no way to answer "has the
    * fix I'm waiting for shipped yet?" — the only lever that forced a check was
    * toggling the update channel back and forth, which works purely by side
@@ -5009,8 +5848,32 @@ app.whenReady().then(async () => {
   ipcMain.handle('updater:check-now', async (): Promise<boolean> => {
     if (!UPDATER_ENABLED) return false;
     configureUpdater();
+    // After a failed attempt, "Check now" IS a retry: same fresh-download path
+    // as the Retry button, with the retry budget reset.
+    if (updateState.phase === 'retrying' || updateState.phase === 'failed' || updateState.phase === 'manual') {
+      console.log('[Main/Updater] manual check requested after a failed attempt — retrying');
+      await runUpdateRetry('user');
+      return true;
+    }
     console.log('[Main/Updater] manual check requested');
-    await autoUpdater.checkForUpdates();
+    // Through the scheduler, so a click can never stack on a running check.
+    const { error } = await updateScheduler.check('manual');
+    if (error) throw error;
+    return true;
+  });
+
+  /**
+   * The in-app Retry (update rail tile). Resets the retry budget, clears the
+   * pending download and checks again. Resolves false in a build with no
+   * updater; in a dev build (where the simulator lives) it moves the
+   * simulated state back to `available` so the UI round trip can be seen.
+   */
+  ipcMain.handle('updater:retry', async (): Promise<boolean> => {
+    if (!UPDATER_ENABLED) {
+      if (DEV_SERVER_URL && updateState.phase !== 'idle') pushUpdateState({ phase: 'available', version: updateState.version });
+      return false;
+    }
+    await runUpdateRetry('user');
     return true;
   });
 
@@ -5022,7 +5885,15 @@ app.whenReady().then(async () => {
     // (the default darwin behaviour keeps the process alive after all windows
     // close, which causes quitAndInstall to appear frozen — windows disappear
     // but the process never exits and the new version never launches).
-    setIsQuitting(true);
+    // beginQuit also drops the unclean-exit marker NOW: the NSIS installer
+    // (--updated) force-kills this process ~1.3 s after it launches, often
+    // before a quit reaches will-quit — which every update then reported as
+    // "Cipherline closed unexpectedly" on the new version's first launch.
+    beginQuit('quit-and-install');
+    // If the installer cannot be launched, electron-updater emits `error`;
+    // the listener above sees this flag, brings the window back and offers
+    // Retry instead of leaving a hidden, half-quit app.
+    installRequested = true;
     // Hide the main window immediately so the old app doesn't bleed through
     // behind the NSIS installer dialog while it waits for windows to close.
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.hide();
@@ -5104,11 +5975,16 @@ app.whenReady().then(async () => {
     if (UPDATER_ENABLED) {
       configureUpdater();
       autoUpdater.channel = ch;
+      // electron-updater's `channel` SETTER flips allowDowngrade to true (see
+      // its AppUpdater.ts doc). configureUpdater pins it false, but every
+      // switch after that silently undid the pin — so a replayed OLDER (even
+      // validly signed) manifest would have installed as an "update". Re-pin.
+      autoUpdater.allowDowngrade = false;
       autoUpdater.allowPrerelease = ch === 'staging';
       // Re-check immediately so a switch from latest → staging surfaces a
       // staging build right away (or vice versa). Errors are logged by the
       // 'error' listener registered above; don't crash the IPC.
-      autoUpdater.checkForUpdates().catch(() => { /* ignore */ });
+      void updateScheduler.check('channel');
     }
   }
 
@@ -5168,7 +6044,7 @@ app.whenReady().then(async () => {
 
   console.log('[Main] all IPC handlers registered — creating window');
   await createWindow(csp, showInstaller);
-  if (UPDATER_ENABLED) setTimeout(configureUpdater, 5000);
+  void startUpdateSchedule();
 
   // When the installer splash is up, the main window starts hidden. Treat its
   // first paint ('ready-to-show') as the final startup milestone, then let the
@@ -5369,7 +6245,7 @@ app.whenReady().then(async () => {
     if (on === gameDetectionEnabled) return;
     gameDetectionEnabled = on;
     if (on) scheduleGamePoll(0);
-    else if (gamePollTimer) { clearTimeout(gamePollTimer); gamePollTimer = null; lastDetectedGame = null; }
+    else { if (gamePollTimer) { clearTimeout(gamePollTimer); gamePollTimer = null; } lastDetectedGame = null; resetHeuristicSessions(); }
   });
 
   // Game settings — custom games and ignored processes from renderer
@@ -5432,15 +6308,18 @@ app.whenReady().then(async () => {
     await fs.promises.mkdir(backupStagingDir(), { recursive: true, mode: 0o700 });
     return backupStagingDir();
   });
-  ipcMain.handle('gdrive:upload-file', async (event, folderId: string, fileName: string, filePath: string) => {
+  ipcMain.handle('gdrive:upload-file', async (event, folderId: string, fileName: string, filePath: string, existingFileId?: string) => {
     if (typeof folderId !== 'string' || !/^[A-Za-z0-9_-]+$/.test(folderId)) throw new Error('Invalid Drive folder id');
+    if (existingFileId !== undefined && (typeof existingFileId !== 'string' || !/^[A-Za-z0-9_-]+$/.test(existingFileId))) {
+      throw new Error('Invalid Drive file id');
+    }
     if (typeof fileName !== 'string' || /[/\\]/.test(fileName) || fileName.includes('..') || !fileName.endsWith('.enc')) {
       throw new Error('Invalid backup filename');
     }
     if (typeof filePath !== 'string' || !filePath) throw new Error('Invalid path');
     assertInsideUserData(filePath);
     return uploadFileResumable({
-      getToken: getAccessToken, folderId, fileName, filePath,
+      getToken: getAccessToken, folderId, fileName, filePath, existingFileId,
       onProgress: (p) => event.sender.send('gdrive:transfer-progress', { kind: 'upload', ...p }),
     });
   });
@@ -5473,6 +6352,14 @@ app.whenReady().then(async () => {
   }
 });
 
+// A quit was asked for (tray Quit, Cmd/Ctrl+Q, the last window closing,
+// relaunch, Restart & install): drop the unclean-exit marker NOW and stop
+// counting process deaths / exceptions as crashes (session-lifecycle.ts).
+// Registered before every other before-quit handler, so a handler that throws
+// can never skip it, and it is a single synchronous unlink — the NSIS updater
+// force-kills a quit that is still running ~1.3 s after it starts.
+app.on('before-quit', () => beginQuit('before-quit'));
+
 // Continuity (cross-device attention routing): tell the renderer the app is
 // going down so it can send one last off-cycle `presence:heartbeat
 // {active:false}` before the socket dies — without this, a quit looks
@@ -5487,7 +6374,7 @@ app.whenReady().then(async () => {
 // so the renderer gets the earliest possible signal.
 app.on('before-quit', () => {
   // Gaming-video priority boost: restore before the processes start exiting.
-  syncCallPriority({ inCall: false });
+  syncCallPriority({ inCall: false, sharing: false });
   mainWindow?.webContents.send('app:before-quit');
 });
 
@@ -5511,8 +6398,9 @@ app.on('before-quit', () => {
 // window lands after the flush above.
 app.on('will-quit', () => {
   try { secureStore.flush(); } catch { /* logged by the store */ }
-  // A clean quit: the next launch must not report an unclean exit.
-  endSessionMarker();
+  // Already done in before-quit; idempotent. Kept for any path that reaches
+  // will-quit without it.
+  beginQuit('before-quit');
 });
 
 app.on('window-all-closed', () => {

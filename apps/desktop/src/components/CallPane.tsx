@@ -24,12 +24,13 @@ import { useCallContextSafe } from '../contexts/CallContext';
 import { useNotificationPrefs } from '../contexts/NotificationContext';
 import { useToast } from '../contexts/ToastContext';
 import { playSound, playLoopingSound } from '../utils/notificationSounds';
-import { MIC_CAPTURE_CONSTRAINTS, resolveMicDeviceId } from '../utils/audioInput';
+import { micCaptureConstraints, resolveEchoCancellation, resolveMicDeviceId } from '../utils/audioInput';
 import type { VoiceSettingsHook } from '../hooks/useVoiceSettings';
 import * as voiceProcessorManager from '../utils/voiceProcessorManager';
 import * as audioHealth from '../utils/audioHealth';
 import { setCurrentPipelineDbfs, resetPipelineDbfs } from '../utils/micLevelRegistry';
-import { mapDisconnectReasonToUserMessage } from '../utils/callDisconnectReasons';
+import { decideDisconnectHandling } from '../utils/callTransition';
+import { shouldPublishMicAtConnect } from '../utils/selfCallIntent';
 import { beginActivity, trackActivity } from '../utils/freezeLog';
 import { CallDiagnosticsRecorder } from './diagnostics/CallDiagnosticsRecorder';
 import { stableE2EEOptions } from '../utils/e2eeRoomOptions';
@@ -41,8 +42,10 @@ import { TrackCueController, type CuePublication, type CueParticipant } from '..
 import { ROSTER_ONLY } from '../utils/callRosterEvents';
 import { noteRemoteVideoSubscribed } from '../utils/remoteVideoDemand';
 import { GamingVideoGuard } from './call/GamingVideoGuard';
+import { ShareBoostGuard } from './call/ShareBoostGuard';
 import { CallPerformanceGuard } from './call/CallPerformanceGuard';
 import { CallEventMonitor } from './call/CallEventMonitor';
+import { GpuRecoveryController } from './call/GpuRecoveryController';
 import { publishGrants } from '../utils/livekitPublishGrants';
 import { markCallJoinTrace, finishCallJoinTrace } from '../utils/callJoinTrace';
 import { releaseMicPrewarm } from '../utils/micPrewarm';
@@ -63,7 +66,9 @@ import { ringbackWanted, createRingbackDriver } from '../utils/ringback';
  *
  * Attach is idempotent: getProcessor() short-circuits repeat events (mute
  * cycles restart the same track and keep its processor; a genuinely new track
- * publication arrives processor-less and gets one here).
+ * publication arrives processor-less and is bound here). Whether a processor
+ * goes on at all is voiceProcessorManager's call: none while every voice stage
+ * is off (utils/voiceChain.ts), attached/detached live as stages change.
  */
 /**
  * Tells LiveKit's E2EE worker the codec of each of our published video
@@ -147,23 +152,17 @@ const MicProcessorBridge = ({ token, voice }: { token: string; voice?: VoiceSett
             if (cancelled || track.getProcessor()) return;
             const v = voiceRef.current;
             if (!v) return;
-            // audioContext is `protected` upstream; the public setter is the
-            // supported way in, we only need to read whether it's been set.
-            if (!(track as unknown as { audioContext?: AudioContext }).audioContext) {
-                track.setAudioContext(voiceProcessorManager.getGuardAudioContext());
-            }
-            const proc = voiceProcessorManager.getOrCreate(token, v.settings);
-            try {
-                // Cast: CipherlineVoiceProcessor's opts typing is looser than
-                // TrackProcessor's (same cast as the camera call site).
-                // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                await trackActivity('call:mic-processor', () => track.setProcessor(proc as any));
-                console.log('[CallPane] Voice processor attached to mic track');
-            } catch (err) {
-                // Degrade to raw mic rather than failing the call — the same
-                // philosophy as voiceProcessor.init()'s internal hardening.
-                console.error('[CallPane] Voice processor attach failed — continuing with raw mic:', err);
-            }
+            // The manager attaches the processor now — or, with every voice
+            // stage off, leaves the raw capture published and attaches later
+            // if one is turned on. A failed attach is logged there and the
+            // call continues on the raw mic (the same philosophy as
+            // voiceProcessor.init()'s internal hardening).
+            await voiceProcessorManager.bindMicTrack(
+                token,
+                track,
+                v.settings,
+                (fn) => trackActivity('call:mic-processor', fn),
+            );
         };
 
         const onPublished = (pub: LocalTrackPublication) => {
@@ -222,7 +221,7 @@ interface CallPaneProps {
     token: string;
     apiToken: string;
     e2eeKeyB64: string;
-    onDisconnect: () => void;
+    onDisconnect: (wasLastPerson?: boolean, deliberate?: boolean) => void;
     /** Forwarded to SidebarConference's onInactivityWarning — see its doc
      *  comment for why Dashboard needs this to avoid a duplicate SoloKickDialog. */
     onInactivityWarning?: (active: boolean) => void;
@@ -279,6 +278,10 @@ interface CallPaneProps {
      *  while this call was still connecting. Until the room connects they are
      *  live (a muted join never asks LiveKit to publish the mic); at Connected
      *  they are latched and handed to SidebarConference to seed its state. */
+    /** Heading for the toast shown when this call's connection fails. Dashboard
+     *  sets it for a call we were MOVED into ("Couldn't move you to X") so a
+     *  failed move says so, rather than a generic connection error. */
+    failureTitle?: string;
     joinMuted?: boolean;
     joinDeafened?: boolean;
     /** Fired when the room first reports Connected — Dashboard swaps its
@@ -339,7 +342,6 @@ const CallAudioEffects = ({ isInitiator, noRinging, roomConnected }: { isInitiat
     useEffect(() => {
         const t = setTimeout(() => { soundReadyRef.current = true; }, 2000);
         return () => clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
     useEffect(() => {
@@ -576,6 +578,7 @@ export const CallPane = ({
     channelPermissions,
     encryptionIndicatorMode,
     onRemoteEncryptionChange,
+    failureTitle,
     joinMuted = false,
     joinDeafened = false,
     onRoomConnected,
@@ -626,8 +629,11 @@ export const CallPane = ({
     useLayoutEffect(() => {
         latestCallbacksRef.current = { onDisconnect, onInactivityWarning, onServerMuteTrack };
     });
-    const stableOnLeave = useCallback((wasLastPerson?: boolean) => {
-        (latestCallbacksRef.current.onDisconnect as (wasLastPerson?: boolean) => void)(wasLastPerson);
+    // `deliberate` only ever comes from SidebarConference's Leave button / hotkey;
+    // every call made from this file (a LiveKit disconnect, a failed connect)
+    // passes none, so those can never read as the user choosing to leave.
+    const stableOnLeave = useCallback((wasLastPerson?: boolean, deliberate?: boolean) => {
+        latestCallbacksRef.current.onDisconnect(wasLastPerson, deliberate);
     }, []);
     const stableOnInactivityWarning = useCallback((active: boolean) => {
         latestCallbacksRef.current.onInactivityWarning?.(active);
@@ -678,6 +684,10 @@ export const CallPane = ({
     // Lazy useState rather than a ref: same capture-once semantics, but reading
     // a ref during render is (correctly) flagged by react-hooks/refs.
     const [initialMicDeviceId] = useState(() => resolveMicDeviceId(voice?.settings.micDeviceId));
+    // Echo cancellation is frozen the same way, for the same reason (a changed
+    // roomOptions recreates the Room). Toggling it mid-call is applied to the
+    // live capture by SidebarConference (micDeviceSync.applyCapture).
+    const [initialEchoCancellation] = useState(() => resolveEchoCancellation(voice?.settings.echoCancellation));
     const [initialCameraDeviceId] = useState(() => voice?.settings.cameraDeviceId || undefined);
 
     // ── Connection-failure / timeout guard ────────────────────────────────
@@ -695,11 +705,17 @@ export const CallPane = ({
     // a new attempt is always a fresh mount or a fresh timer.
     const hasConnectedRef = useRef(false);
     const hasFailedRef = useRef(false);
+    // Latest title, read at failure time: failConnection is also called from a
+    // mount-time timer whose closure would otherwise see the first render's prop.
+    const failureTitleRef = useRef(failureTitle);
+    useLayoutEffect(() => { failureTitleRef.current = failureTitle; });
     const failConnection = (message: string) => {
         if (hasFailedRef.current || hasConnectedRef.current) return;
         hasFailedRef.current = true;
-        toast.push({ kind: 'error', title: 'Call connection failed', message });
-        onDisconnect();
+        toast.push({ kind: 'error', title: failureTitleRef.current ?? 'Call connection failed', message });
+        // stableOnLeave, not onDisconnect: this runs from a mount-time timer,
+        // and the render-time closure it would capture is the FIRST render's.
+        stableOnLeave();
     };
     // Fail CLOSED on any E2EE activation failure — before OR after connect
     // (unlike failConnection, this is not gated on hasConnectedRef: a worker
@@ -714,7 +730,7 @@ export const CallPane = ({
         hasFailedRef.current = true;
         console.error('[CallPane] E2EE activation failed — leaving the call rather than continuing unencrypted:', failure);
         toast.push({ kind: 'error', title: 'Call not encrypted', message: describeE2EEActivationFailure(failure) });
-        onDisconnect();
+        stableOnLeave();
     };
     useEffect(() => {
         const CONNECT_TIMEOUT_MS = 15000;
@@ -904,21 +920,21 @@ export const CallPane = ({
         audioCaptureDefaults: {
             // AGC disabled — voiceProcessor handles volume via MicVolumeGain + DynamicsCompressor.
             // NS disabled — RNNoise AudioWorklet inside voiceProcessor handles it.
-            // AEC disabled — Chromium's AEC3 runs a heavy adaptive filter that
-            // falls behind under the extra CPU load of screenshare video
-            // encoding, and under-suppressed echo is often what listeners
-            // perceive as "playing audio twice" when the sharer is on speakers.
-            // Most users here are on headphones; for those using speakers,
-            // the tradeoff (cleaner voice vs possible self-echo) still favors
-            // off, and they can mute or wear headphones to resolve anything.
+            // AEC is the user's "Echo cancellation" setting, default ON (it used
+            // to be hard-wired off: people on speakers were heard echoing
+            // themselves). Chromium's AEC3 cancels everything this app plays
+            // — remote voices, screen-share audio, sounds — see
+            // micCaptureConstraints for the measurement behind `true`. It is
+            // frozen at join (initialEchoCancellation); a mid-call toggle is
+            // applied to the live capture, not through here.
             // sampleRate: ideal 48 kHz — Chromium resamples any mic internally so the track
             // delivered to voiceProcessor is always 48 kHz (matching AudioContext rate → no pitch shift).
             //
             // These now live in audioInput.ts so the settings-page level meter
             // opens the mic exactly the same way the call does (it used to run
-            // with AEC ON, so the level you set your gate against wasn't the
-            // level you transmitted).
-            ...MIC_CAPTURE_CONSTRAINTS,
+            // with AEC ON while calls had it off, so the level you set your
+            // gate against wasn't the level you transmitted).
+            ...micCaptureConstraints(initialEchoCancellation),
             // Resolved to the literal 'default' device rather than left
             // undefined — see DEFAULT_AUDIO_INPUT_ID for why those differ.
             deviceId: initialMicDeviceId,
@@ -963,7 +979,8 @@ export const CallPane = ({
                 makeE2EEWorker(),
             ),
         } : {}),
-    // Device ids intentionally absent from these deps — see initialMicDeviceId.
+    // Device ids and echo cancellation intentionally absent from these deps —
+    // see initialMicDeviceId / initialEchoCancellation.
     // `voice` no longer feeds this memo at all — the processor moved to
     // MicProcessorBridge (see audioCaptureDefaults comment above).
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -973,7 +990,10 @@ export const CallPane = ({
     const grants = publishGrants(token);
     // Mic on join = the token allows it AND the user didn't mute/deafen on the
     // joining controls. LiveKit reads this on SignalConnected.
-    const joinWithMic = grants.microphone && !joinIntent.muted && !joinIntent.deafened;
+    // (selfCallIntent: the intent is also what a mute / deafen CARRIED from the previous
+    // call - including across a moderator's move - arrives as, so a muted user is
+    // never connected with a live mic.)
+    const joinWithMic = shouldPublishMicAtConnect(joinIntent, grants.microphone);
     // Nothing to keep warm for a join that won't publish the mic.
     useEffect(() => { if (!joinWithMic) releaseMicPrewarm(); }, [joinWithMic]);
 
@@ -1070,11 +1090,20 @@ export const CallPane = ({
                     // answered instead (DUPLICATE_IDENTITY — the fallback path
                     // for the multi-device answer race; the primary path is a
                     // dedicated call:answered_elsewhere event, see useRealtime.ts).
-                    if (reason !== undefined && reason !== DisconnectReason.CLIENT_INITIATED) {
-                        const { title, message, kind } = mapDisconnectReasonToUserMessage(reason);
+                    //
+                    // A disconnect of THIS room while a moderator's move or
+                    // disconnect is in progress (utils/callTransition) is part
+                    // of that transition: the server removes a member from the
+                    // old room if they are still in it after its grace period,
+                    // and that removal is not "you were kicked". Say nothing and
+                    // do not tear down - the Dashboard flow owns what happens
+                    // next (the new call, or the "disconnected by X" notice).
+                    const handling = decideDisconnectHandling(reason, sessionId);
+                    if (handling.toast) {
+                        const { title, message, kind } = handling.toast;
                         toast.push({ kind, title, message });
                     }
-                    onDisconnect();
+                    if (handling.teardown) onDisconnect();
                 }}
                 onError={(err) => {
                     console.error('[CallPane] LiveKit connection error:', err);
@@ -1160,6 +1189,7 @@ export const CallPane = ({
                         signal to main, the camera's degradation preference,
                         and the one-time freeze offer. See the component. */}
                     <GamingVideoGuard />
+                    <ShareBoostGuard />
 
                     {/* "Your PC is struggling to keep up" — sustained encoder CPU
                         starvation → a once-per-call offer to lower the camera. */}
@@ -1167,6 +1197,10 @@ export const CallPane = ({
 
                     {/* Privacy-safe call event log feed (utils/callEventLog.ts). */}
                     <CallEventMonitor />
+
+                    {/* GPU process restart ("graphics driver reset") → recover
+                        this call's video (utils/gpuRecovery.ts). */}
+                    <GpuRecoveryController />
             </LiveKitRoom>
         </div>
     );
@@ -1183,7 +1217,7 @@ export const HANDOVER_MIC_WAIT_MS = 1000;
  *  it through its own hooks (useParticipants, contexts), unaffected. */
 const MemoSidebarConference = React.memo(SidebarConference);
 
-const CallSidebarPortal = ({ apiToken, onLeave, onInactivityWarning, localAvatarUrl, activeChatAvatarUrl, activeChatUserId, activeChatTitle, sessionId, isGroup, noRinging, isHuddle, onFocusedStreamChange, voice, memberRoleColors, memberAvatarMap, canServerMute, onServerMuteTrack, isActive, channelPermissions, encryptionIndicatorMode, unencryptedIdentities, initialMuted, initialDeafened, instantEnter, onSeedConsumed }: { initialMuted?: boolean, initialDeafened?: boolean, instantEnter?: boolean, onSeedConsumed?: () => void, apiToken: string, onLeave: () => void, onInactivityWarning?: (active: boolean) => void, localAvatarUrl?: string, activeChatAvatarUrl?: string, activeChatUserId?: string, activeChatTitle?: string, sessionId?: string, isGroup?: boolean, noRinging?: boolean, isHuddle?: boolean, onFocusedStreamChange?: (active: boolean) => void, voice?: VoiceSettingsHook, memberRoleColors?: Record<string, string | null>, memberAvatarMap?: Record<string, string | null>, canServerMute?: boolean, onServerMuteTrack?: (targetUserId: string, trackType: 'audio' | 'video' | 'screenshare' | 'deafen', muted: boolean) => void, isActive?: boolean, channelPermissions?: bigint, encryptionIndicatorMode: Extract<CallEncryptionIndicatorMode, 'connected' | 'degraded'>, unencryptedIdentities?: string[] }) => {
+const CallSidebarPortal = ({ apiToken, onLeave, onInactivityWarning, localAvatarUrl, activeChatAvatarUrl, activeChatUserId, activeChatTitle, sessionId, isGroup, noRinging, isHuddle, onFocusedStreamChange, voice, memberRoleColors, memberAvatarMap, canServerMute, onServerMuteTrack, isActive, channelPermissions, encryptionIndicatorMode, unencryptedIdentities, initialMuted, initialDeafened, instantEnter, onSeedConsumed }: { initialMuted?: boolean, initialDeafened?: boolean, instantEnter?: boolean, onSeedConsumed?: () => void, apiToken: string, onLeave: (wasLastPerson?: boolean, deliberate?: boolean) => void, onInactivityWarning?: (active: boolean) => void, localAvatarUrl?: string, activeChatAvatarUrl?: string, activeChatUserId?: string, activeChatTitle?: string, sessionId?: string, isGroup?: boolean, noRinging?: boolean, isHuddle?: boolean, onFocusedStreamChange?: (active: boolean) => void, voice?: VoiceSettingsHook, memberRoleColors?: Record<string, string | null>, memberAvatarMap?: Record<string, string | null>, canServerMute?: boolean, onServerMuteTrack?: (targetUserId: string, trackType: 'audio' | 'video' | 'screenshare' | 'deafen', muted: boolean) => void, isActive?: boolean, channelPermissions?: bigint, encryptionIndicatorMode: Extract<CallEncryptionIndicatorMode, 'connected' | 'degraded'>, unencryptedIdentities?: string[] }) => {
     // Track the portal target via state so we re-render when it appears in
     // the DOM. We poll briefly with rAF until the target appears, then watch
     // for its removal via a MutationObserver on document.body.

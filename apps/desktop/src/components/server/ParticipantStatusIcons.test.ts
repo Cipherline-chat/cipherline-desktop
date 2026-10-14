@@ -68,6 +68,116 @@ describe('ParticipantStatusIcons — NOT in the call (server presence)', () => {
     });
 });
 
+describe('ParticipantStatusIcons — NOT in the call: self mute / deafen from presence', () => {
+    const props = { userId: A, inThisCall: false, mediaKey: KEY, iconClass: 'w-3 h-3' };
+
+    it('shows the self-mute icon (red-400 MicOff, same as in-call) for a muted participant', () => {
+        setCallMedia(KEY, A, { muted: true });
+        const m = mount(h(ParticipantStatusIcons, props));
+        expect(svgClasses(m.host).some(c => c.includes('lucide-mic-off') && c.includes('text-red-400'))).toBe(true);
+        expect(has(m.host, 'headphones')).toBe(false);
+        m.unmount();
+    });
+
+    it('shows the self-deafen icon (same Headphones glyph as in-call) and suppresses the mute icon, as in-call', () => {
+        setCallMedia(KEY, A, { muted: true, deafened: true });
+        const m = mount(h(ParticipantStatusIcons, props));
+        expect(svgClasses(m.host).some(c => c.includes('lucide-headphones') && c.includes('text-red-400'))).toBe(true);
+        expect(has(m.host, 'mic-off')).toBe(false);
+        m.unmount();
+    });
+
+    it('shows mute next to camera / screen share', () => {
+        setCallMedia(KEY, A, { camera: true, screen_share: true, muted: true });
+        const m = mount(h(ParticipantStatusIcons, props));
+        expect(has(m.host, 'mic-off')).toBe(true);
+        expect(has(m.host, 'video')).toBe(true);
+        expect(has(m.host, 'monitor')).toBe(true);
+        m.unmount();
+    });
+
+    it('updates live on call:media_state and clears on unmute / leave', () => {
+        const m = mount(h(ParticipantStatusIcons, props));
+        expect(m.host.querySelector('[data-testid="participant-status-icons"]')).toBeNull();
+        act(() => applyCallMediaEvent({ channel_id: 'h', call_id: CALL, user_id: A, camera: false, screen_share: false, muted: true, deafened: false }));
+        expect(has(m.host, 'mic-off')).toBe(true);
+        act(() => applyCallMediaEvent({ channel_id: 'h', call_id: CALL, user_id: A, camera: false, screen_share: false, muted: false, deafened: false }));
+        expect(m.host.querySelector('[data-testid="participant-status-icons"]')).toBeNull();
+        act(() => setCallMedia(KEY, A, { deafened: true }));
+        expect(has(m.host, 'headphones')).toBe(true);
+        act(() => clearCallMediaUser(KEY, A));
+        expect(m.host.querySelector('[data-testid="participant-status-icons"]')).toBeNull();
+        m.unmount();
+    });
+
+    it("another participant's presence never leaks onto this row (negative control)", () => {
+        setCallMedia(KEY, 'someone-else', { muted: true, deafened: true });
+        const m = mount(h(ParticipantStatusIcons, props));
+        expect(m.host.querySelector('[data-testid="participant-status-icons"]')).toBeNull();
+        m.unmount();
+    });
+
+    it('never draws server-moderation badges out of a call (presence does not carry them)', () => {
+        setCallMedia(KEY, A, { muted: true });
+        const m = mount(h(ParticipantStatusIcons, {
+            ...props, meta: parseParticipantMetadata(JSON.stringify({ server_muted_audio: true, server_deafened: true })),
+        }));
+        expect(svgClasses(m.host).some(c => c.includes('text-red-500'))).toBe(false);
+        m.unmount();
+    });
+
+    it('the Home call summary ignores a muted-only call (deck badges unchanged)', () => {
+        setCallMedia(KEY, A, { muted: true, deafened: true });
+        const m = mount(h(CallMediaSummary, { mediaKey: KEY, participantIds: [A] }));
+        expect(m.host.innerHTML).toBe('');
+        m.unmount();
+    });
+});
+
+describe('ParticipantStatusIcons — IN the call: self mute / deafen stay on live state', () => {
+    const base = { userId: A, inThisCall: true, mediaKey: KEY, iconClass: 'w-3.5 h-3.5' };
+
+    it('presence that says muted + deafened is ignored when live state says neither', () => {
+        setCallMedia(KEY, A, { muted: true, deafened: true });
+        const m = mount(h(ParticipantStatusIcons, {
+            ...base,
+            track: { hasCamera: false, hasScreenShare: false, isMuted: false },
+            meta: parseParticipantMetadata(JSON.stringify({ deafened: false })),
+        }));
+        expect(svgClasses(m.host)).toEqual([]);
+        m.unmount();
+    });
+
+    it('a live-muted mic draws MicOff even with no presence at all', () => {
+        const m = mount(h(ParticipantStatusIcons, { ...base, track: { hasCamera: false, hasScreenShare: false, isMuted: true } }));
+        expect(has(m.host, 'mic-off')).toBe(true);
+        m.unmount();
+    });
+
+    it('live deafen draws the deafen icon and suppresses MicOff, as before', () => {
+        const m = mount(h(ParticipantStatusIcons, {
+            ...base,
+            track: { hasCamera: false, hasScreenShare: false, isMuted: true },
+            meta: parseParticipantMetadata(JSON.stringify({ deafened: true })),
+        }));
+        expect(has(m.host, 'headphones')).toBe(true);
+        expect(has(m.host, 'mic-off')).toBe(false);
+        m.unmount();
+    });
+
+    it('server-moderation badges still win over self-mute in the room', () => {
+        const m = mount(h(ParticipantStatusIcons, {
+            ...base,
+            track: { hasCamera: false, hasScreenShare: false, isMuted: true },
+            meta: parseParticipantMetadata(JSON.stringify({ server_muted_audio: true })),
+        }));
+        const cls = svgClasses(m.host);
+        expect(cls.some(c => c.includes('lucide-mic-off') && c.includes('text-red-500'))).toBe(true);
+        expect(cls.some(c => c.includes('lucide-mic-off') && c.includes('text-red-400'))).toBe(false);
+        m.unmount();
+    });
+});
+
 describe('ParticipantStatusIcons — IN the call (live LiveKit state, unchanged behaviour)', () => {
     it('uses the live track state and ignores presence', () => {
         setCallMedia(KEY, A, { camera: true, screen_share: false });

@@ -5,11 +5,17 @@
  * full editor, so it is undoable and fully editable afterwards), and a live
  * line underneath says what the choice resolves to for this server's actual
  * roles. Private / Staff only / Read-only show role chips (hierarchy order)
- * and member chips to adjust who gets access.
+ * to adjust who gets access: every role as a one-click chip while the server
+ * has only a few, otherwise just the granted ones plus a "+ Role" search.
+ *
+ * Individual members are NOT searched here — that is per-member override
+ * territory and lives in the Permissions tab. Member overrides that already
+ * exist on the channel stay visible (and removable) as chips so opening this
+ * screen never hides access.
  */
 
-import React, { useMemo, useState } from 'react';
-import { AlertTriangle, Globe, Link2, Lock, Megaphone, Mic, ShieldCheck, SlidersHorizontal, UserPlus, X } from 'lucide-react';
+import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { AlertTriangle, Globe, Link2, Lock, Megaphone, Mic, Plus, ShieldCheck, SlidersHorizontal, X } from 'lucide-react';
 import { Permissions, isAdministrator } from '@cipherline/shared';
 import { readableRoleColorHex, roleColorHexFromInt } from '../../../utils/roleColor';
 import type { Role } from '../roles/types';
@@ -23,6 +29,10 @@ import type { EditorMember } from './usePermissionData';
 import { useEscape } from '../../../hooks/useEscape';
 
 type Choice = PresetId | 'sync';
+
+/** Up to this many assignable roles, every role is a one-click chip. Past it
+ *  only granted roles are chips and the rest are reached through "+ Role". */
+export const ROLE_CHIP_THRESHOLD = 6;
 
 interface Props {
     kind: ChannelKind;
@@ -50,8 +60,32 @@ export const AccessPresetPicker: React.FC<Props> = ({
     const staff = useMemo(() => staffRoleIds(permRoles), [permRoles]);
     const [adding, setAdding] = useState(false);
     const [addQuery, setAddQuery] = useState('');
-    // Esc backs out of the member finder only (shared escape stack), not the dialog.
-    useEscape(() => { setAdding(false); setAddQuery(''); }, adding);
+    const [activeId, setActiveId] = useState<string | null>(null);
+    const listId = useId();
+    const triggerRef = useRef<HTMLButtonElement>(null);
+    const refocusTrigger = useRef(false);
+    const blurTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const closeFinder = (refocus = false) => {
+        if (blurTimer.current) { clearTimeout(blurTimer.current); blurTimer.current = null; }
+        refocusTrigger.current = refocus;
+        setAdding(false);
+        setAddQuery('');
+        setActiveId(null);
+    };
+    // The finder's list is absolutely positioned inside the dialog's scroll body, so on a
+    // short window it can open below the visible part of that body. Scroll it into view
+    // (a no-op when it already is) instead of leaving it half hidden under the footer.
+    useEffect(() => {
+        if (!adding) return;
+        document.getElementById(listId)?.scrollIntoView?.({ block: 'nearest' });
+    }, [adding, listId]);
+    // Esc backs out of the role finder only (shared escape stack), not the dialog.
+    useEscape(() => closeFinder(true), adding);
+    // Put keyboard focus back on "+ Role" after Esc / a pick (not after a blur).
+    useEffect(() => {
+        if (!adding && refocusTrigger.current) { refocusTrigger.current = false; triggerRef.current?.focus(); }
+    }, [adding]);
+    useEffect(() => () => { if (blurTimer.current) clearTimeout(blurTimer.current); }, []);
 
     const tierKind = scope;
     const tierLabel = scope === 'channel' ? 'this channel' : 'this category';
@@ -154,12 +188,11 @@ export const AccessPresetPicker: React.FC<Props> = ({
         if (current !== 'readonly') setIntent('private');
         apply(current === 'readonly' ? 'readonly' : 'private', next, detected.memberIds, 'Change who has access');
     };
-    const toggleMember = (uid: string) => {
-        const has = detected.memberIds.includes(uid);
-        const next = has ? detected.memberIds.filter(m => m !== uid) : [...detected.memberIds, uid];
-        apply(current === 'readonly' ? 'readonly' : 'private', detected.roleIds, next, has ? 'Remove member' : 'Add member');
-        setAdding(false);
-        setAddQuery('');
+    // Member overrides are only ever removed from here; adding one is done in
+    // the Permissions tab.
+    const removeMember = (uid: string) => {
+        const next = detected.memberIds.filter(m => m !== uid);
+        apply(current === 'readonly' ? 'readonly' : 'private', detected.roleIds, next, 'Remove member');
     };
 
     const choices: Choice[] = [
@@ -173,10 +206,31 @@ export const AccessPresetPicker: React.FC<Props> = ({
     const showRolePicker = current === 'private' || current === 'staff' || current === 'readonly';
     const pickable = roles.filter(r => !r.is_everyone && !isAdministrator(permRoles.find(p => p.role_id === r.role_id)?.permissions ?? 0n));
     const memberName = (uid: string) => members.find(m => m.user_id === uid)?.name ?? 'Unknown member';
-    const addCandidates = members
-        .filter(m => !detected.memberIds.includes(m.user_id) && m.user_id !== ownerUserId)
-        .filter(m => !addQuery.trim() || m.name.toLowerCase().includes(addQuery.trim().toLowerCase()))
-        .slice(0, 6);
+
+    // Few roles: every role is a toggle chip. Many: only the granted ones, the
+    // rest come from the "+ Role" search so the row doesn't sprawl.
+    const showAllRoleChips = pickable.length <= ROLE_CHIP_THRESHOLD;
+    const chipRoles = showAllRoleChips ? pickable : pickable.filter(r => grantedRoles.has(r.role_id));
+    const addable = pickable.filter(r => !grantedRoles.has(r.role_id));
+    const q = addQuery.trim().toLowerCase();
+    const roleMatches = addable.filter(r => !q || r.name.toLowerCase().includes(q));
+    const isPickable = (r: Role) => !guard.lockReasons.get(roleKey(r.role_id));
+    const enabledMatches = roleMatches.filter(isPickable);
+    // The highlighted option: the user's arrowed-to one if it is still listed,
+    // else the first role that can actually be added.
+    const activeRole = enabledMatches.find(r => r.role_id === activeId) ?? enabledMatches[0] ?? null;
+    const optionId = (rid: string) => `${listId}-opt-${rid}`;
+
+    const pickRole = (r: Role) => {
+        if (!isPickable(r)) return;
+        toggleRole(r.role_id);
+        closeFinder(true);
+    };
+    const moveActive = (dir: 1 | -1) => {
+        if (enabledMatches.length === 0) return;
+        const i = activeRole ? enabledMatches.indexOf(activeRole) : -1;
+        setActiveId(enabledMatches[(i + dir + enabledMatches.length) % enabledMatches.length].role_id);
+    };
 
     return (
         <div>
@@ -228,7 +282,7 @@ export const AccessPresetPicker: React.FC<Props> = ({
                         {current === 'readonly' ? (kind === 'huddle' ? 'Who can talk' : 'Who can post') : 'Who gets in'}
                     </div>
                     <div className="flex flex-wrap gap-1.5">
-                        {pickable.map(r => {
+                        {chipRoles.map(r => {
                             const on = grantedRoles.has(r.role_id);
                             const lock = guard.lockReasons.get(roleKey(r.role_id));
                             const hex = readableRoleColorHex(roleColorHexFromInt(r.color));
@@ -258,53 +312,104 @@ export const AccessPresetPicker: React.FC<Props> = ({
                         {detected.memberIds.map(uid => (
                             <span key={uid} className="inline-flex items-center gap-1 h-[26px] pl-2.5 pr-1 rounded-full border border-solid border-cl-lume/40 bg-cl-lume/[0.08] text-[12px] text-cl-text">
                                 {memberName(uid)}
-                                <button type="button" onClick={() => toggleMember(uid)} aria-label={`Remove ${memberName(uid)}`} className="w-5 h-5 flex items-center justify-center rounded-full text-cl-faint hover:text-cl-flash">
+                                <button type="button" onClick={() => removeMember(uid)} aria-label={`Remove ${memberName(uid)}`} className="w-5 h-5 flex items-center justify-center rounded-full text-cl-faint hover:text-cl-flash outline-none focus-visible:ring-2 focus-visible:ring-cl-lume/60">
                                     <X size={11} />
                                 </button>
                             </span>
                         ))}
-                        {members.length > 0 && current !== 'staff' && (
+                        {addable.length > 0 && (
                             adding ? (
                                 <span className="relative">
                                     <input
                                         autoFocus
+                                        role="combobox"
+                                        aria-expanded
+                                        aria-haspopup="listbox"
+                                        aria-controls={listId}
+                                        aria-autocomplete="list"
+                                        aria-activedescendant={activeRole ? optionId(activeRole.role_id) : undefined}
+                                        aria-label="Add a role"
                                         value={addQuery}
-                                        onChange={e => setAddQuery(e.target.value)}
+                                        onChange={e => { setAddQuery(e.target.value); setActiveId(null); }}
                                         onKeyDown={e => {
-                                            if (e.key === 'Enter' && addCandidates[0]) { e.preventDefault(); toggleMember(addCandidates[0].user_id); }
+                                            if (e.key === 'Enter') {
+                                                e.preventDefault();
+                                                if (activeRole) pickRole(activeRole);
+                                            } else if (e.key === 'ArrowDown') {
+                                                e.preventDefault();
+                                                moveActive(1);
+                                            } else if (e.key === 'ArrowUp') {
+                                                e.preventDefault();
+                                                moveActive(-1);
+                                            }
                                         }}
-                                        onBlur={() => setTimeout(() => setAdding(false), 150)}
-                                        placeholder="Add a member…"
-                                        aria-label="Add a member"
-                                        className="h-[26px] w-[150px] px-2.5 py-0 focus:ring-0 rounded-full bg-cl-sink/70 border border-solid border-cl-lume/40 text-[12px] text-cl-text outline-none"
+                                        onBlur={() => {
+                                            if (blurTimer.current) clearTimeout(blurTimer.current);
+                                            blurTimer.current = setTimeout(() => closeFinder(), 150);
+                                        }}
+                                        placeholder="Add a role…"
+                                        className="h-[26px] w-[150px] px-2.5 py-0 focus:ring-0 rounded-full bg-cl-sink/70 border border-solid border-cl-lume/40 text-[12px] text-cl-text outline-none focus-visible:ring-2 focus-visible:ring-cl-lume/60"
                                     />
-                                    {addCandidates.length > 0 && (
-                                        <span className="absolute left-0 top-[30px] z-10 w-[190px] rounded-lg border border-solid border-cl-border bg-cl-deep shadow-cl-menu p-1 flex flex-col">
-                                            {addCandidates.map(m => (
-                                                <button
-                                                    key={m.user_id}
-                                                    type="button"
+                                    <span
+                                        id={listId}
+                                        role="listbox"
+                                        aria-label="Roles"
+                                        className="absolute left-0 top-[30px] z-10 w-[220px] max-h-[188px] overflow-y-auto rounded-lg border border-solid border-cl-border bg-cl-deep shadow-cl-menu p-1 flex flex-col"
+                                    >
+                                        {roleMatches.map(r => {
+                                            const lock = guard.lockReasons.get(roleKey(r.role_id));
+                                            const hex = readableRoleColorHex(roleColorHexFromInt(r.color));
+                                            const active = activeRole?.role_id === r.role_id;
+                                            return (
+                                                <span
+                                                    key={r.role_id}
+                                                    id={optionId(r.role_id)}
+                                                    role="option"
+                                                    aria-selected={active}
+                                                    aria-disabled={lock ? true : undefined}
+                                                    title={lock ? `Locked: ${lock}` : undefined}
                                                     onMouseDown={e => e.preventDefault()}
-                                                    onClick={() => toggleMember(m.user_id)}
-                                                    className="text-left h-[26px] px-2 rounded-md text-[12px] text-cl-muted hover:bg-white/[0.05] hover:text-cl-text truncate"
+                                                    onMouseEnter={() => { if (!lock) setActiveId(r.role_id); }}
+                                                    onClick={() => pickRole(r)}
+                                                    className={[
+                                                        'flex items-center gap-1.5 text-left h-[26px] px-2 rounded-md text-[12px]',
+                                                        lock ? 'opacity-40 cursor-not-allowed text-cl-faint'
+                                                            : active ? 'bg-white/[0.07] text-cl-text cursor-pointer'
+                                                                : 'text-cl-muted hover:bg-white/[0.05] hover:text-cl-text cursor-pointer',
+                                                    ].join(' ')}
                                                 >
-                                                    {m.name}
-                                                </button>
-                                            ))}
-                                        </span>
-                                    )}
+                                                    <span className="w-2 h-2 shrink-0 rounded-full" style={hex ? { backgroundColor: hex } : { border: '1.5px solid rgba(255,255,255,0.25)' }} />
+                                                    <span className="truncate">{r.name}</span>
+                                                    {lock && <Lock size={10} className="shrink-0 ml-auto" />}
+                                                </span>
+                                            );
+                                        })}
+                                        {roleMatches.length === 0 && (
+                                            <span className="h-[26px] px-2 flex items-center text-[12px] text-cl-faint">No matching roles</span>
+                                        )}
+                                    </span>
                                 </span>
                             ) : (
                                 <button
+                                    ref={triggerRef}
                                     type="button"
                                     onClick={() => setAdding(true)}
-                                    className="inline-flex items-center gap-1 h-[26px] px-2.5 rounded-full border border-dashed border-cl-border/70 text-[12px] text-cl-faint hover:text-cl-lume hover:border-cl-lume/40"
+                                    className="inline-flex items-center gap-1 h-[26px] px-2.5 rounded-full border border-dashed border-cl-border/70 text-[12px] text-cl-faint hover:text-cl-lume hover:border-cl-lume/40 outline-none focus-visible:ring-2 focus-visible:ring-cl-lume/60"
                                 >
-                                    <UserPlus size={11} /> Member
+                                    <Plus size={11} /> Role
                                 </button>
                             )
                         )}
                     </div>
+                    {members.length > 0 && current !== 'staff' && (
+                        <button
+                            type="button"
+                            onClick={onOpenAdvanced}
+                            className="mt-1.5 text-[11px] text-cl-faint hover:text-cl-lume hover:underline underline-offset-2 rounded outline-none focus-visible:ring-2 focus-visible:ring-cl-lume/60"
+                        >
+                            Members: set in Permissions
+                        </button>
+                    )}
                 </div>
             )}
 

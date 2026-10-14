@@ -34,8 +34,8 @@ describe('parseStartupFlagsState', () => {
             captureLogMaxBytes: -1,
         })!;
         expect(s.platform).toBe('unknown');
-        expect(s.saved).toEqual({ screenCapturer: 'auto', captureLog: false, gamingVideo: false });
-        expect(s.active).toEqual({ screenCapturer: 'auto', captureLog: false, gamingVideo: false });
+        expect(s.saved).toEqual({ screenCapturer: 'auto', captureLog: false, gamingVideo: true });
+        expect(s.active).toEqual({ screenCapturer: 'auto', captureLog: false, gamingVideo: true });
         expect(s.envOverride).toEqual({ screenCapturer: false, captureLog: false });
         expect(s.captureLogPath).toBeNull();
         expect(s.captureLogMaxBytes).toBeNull();
@@ -66,16 +66,22 @@ describe('restartPending', () => {
 });
 
 describe('gamingVideo', () => {
-    it('narrows to a strict boolean (an older main without the field reads as off)', () => {
+    it('reads as ON unless main says exactly false (default ON; a garbled value is the default)', () => {
         const s = parseStartupFlagsState({
             platform: 'win32',
-            saved: { screenCapturer: 'auto', captureLog: false, gamingVideo: 'true' },
+            saved: { screenCapturer: 'auto', captureLog: false, gamingVideo: 'false' },
             active: { screenCapturer: 'auto', captureLog: false },
             envOverride: {},
         })!;
-        expect(s.saved.gamingVideo).toBe(false);
-        expect(s.active.gamingVideo).toBe(false);
+        expect(s.saved.gamingVideo).toBe(true);
+        expect(s.active.gamingVideo).toBe(true);
+        expect(parseStartupFlagsState({ platform: 'win32', saved: { gamingVideo: false }, active: { gamingVideo: true } })!.saved.gamingVideo).toBe(false);
         expect(parseStartupFlagsState({ platform: 'win32', saved: { gamingVideo: true }, active: {} })!.saved.gamingVideo).toBe(true);
+    });
+
+    it('has no separate screen-share flag any more', () => {
+        const s = parseStartupFlagsState({ platform: 'win32', saved: { shareBoost: false }, active: {} })!;
+        expect(Object.keys(s.saved).sort()).toEqual(['captureLog', 'gamingVideo', 'screenCapturer']);
     });
 
     it('needs a restart in BOTH directions, on every platform', () => {
@@ -88,3 +94,4 @@ describe('gamingVideo', () => {
         expect(gamingVideoRestartPending(base())).toBe(false);
     });
 });
+

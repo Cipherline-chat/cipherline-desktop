@@ -24,7 +24,7 @@ import axios from 'axios';
 import {
     Hash, Volume2, X, Save, Plus, Trash2, Users, Layers, SlidersHorizontal, CornerDownLeft,
 } from 'lucide-react';
-import { API_BASE } from '../../constants';
+import { apiUrl } from '../../utils/apiPath';
 import type { ChannelInfo, CategoryInfo } from '../../hooks/useServers';
 import { ChannelIconDropdown } from './ChannelIconPicker';
 import {
@@ -42,6 +42,8 @@ import { roleFromWire, type PermTier } from './channelPerms/effectivePermissions
 import { countTargets, draftFromRows, draftsEqual, type DraftMap } from './channelPerms/overrideDraft';
 import { describeFailures, saveOverrideDiff } from './channelPerms/saveOverrides';
 import { CallNamingSection } from './CallNamingSection';
+import { CallBehaviorSection } from './CallBehaviorSection';
+import { endsWhenStarterLeaves } from '../../utils/endCallOnLeave';
 import {
     callNamingOf, callNamingEqual, callNamingFormError, callNamingPayload, isDefaultCallNaming,
     type CallNamingSettings,
@@ -180,6 +182,7 @@ export const ChannelSettingsDialog: React.FC<Props> = ({
     const [memberLimit, setMemberLimit] = useState(channel?.member_limit ?? 0);
     const [maxCalls, setMaxCalls] = useState(channel?.max_calls ?? 0);
     const [callNaming, setCallNaming] = useState<CallNamingSettings>(() => callNamingOf(channel));
+    const [endCallWhenStarterLeaves, setEndCallWhenStarterLeaves] = useState(() => endsWhenStarterLeaves(channel));
     const [saving, setSaving] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [createAnother, setCreateAnother] = useState(false);
@@ -258,13 +261,20 @@ export const ChannelSettingsDialog: React.FC<Props> = ({
         ? !callNamingEqual(callNaming, callNamingOf(editing))
         : !isDefaultCallNaming(callNamingPayload(callNaming)));
     const callNamingError = kind === 'huddle' ? callNamingFormError(callNaming) : null;
+    // Same rule for "End call when the starter leaves": only a CHANGE is ever sent
+    // (an API from before the setting rejects the unknown field), and a create
+    // sends it only when switched on (off is the server default).
+    const endCallDirty = kind === 'huddle' && (isEdit
+        ? endCallWhenStarterLeaves !== endsWhenStarterLeaves(editing)
+        : endCallWhenStarterLeaves);
     const overviewDirty = isEdit
         ? (name.trim() !== (editing!.name ?? '')
             || (iconName ?? null) !== (editing!.icon_name ?? null)
             || (kind !== 'huddle' && topic !== (editing!.topic ?? ''))
             || parentId !== (editing!.parent_category_id ?? '')
             || (kind === 'huddle' && (memberLimit !== (editing!.member_limit ?? 0) || maxCalls !== (editing!.max_calls ?? 0)))
-            || callNamingDirty)
+            || callNamingDirty
+            || endCallDirty)
         : name.trim().length > 0;
     const permsDirty = !draftsEqual(baseline, editor.draft);
     const dirty = overviewDirty || permsDirty;
@@ -314,14 +324,14 @@ export const ChannelSettingsDialog: React.FC<Props> = ({
         const fromCats = [...categories].sort((a, b) => a.position - b.position).map(c => ({
             value: `cat:${c.category_id}`,
             label: `Category · ${c.name}`,
-            load: async () => draftFromRows((await axios.get(`${API_BASE}/servers/${serverId}/categories/${c.category_id}/overrides`, auth)).data ?? []),
+            load: async () => draftFromRows((await axios.get(apiUrl`/servers/${serverId}/categories/${c.category_id}/overrides`, auth)).data ?? []),
         }));
         const fromChannels = (channels ?? [])
             .filter(c => c.channel_id !== editing?.channel_id && (c.kind === 'text' || c.kind === 'huddle'))
             .map(c => ({
                 value: `ch:${c.channel_id}`,
                 label: c.kind === 'huddle' ? `Calls · ${c.name}` : `#${c.name}`,
-                load: async () => draftFromRows((await axios.get(`${API_BASE}/servers/${serverId}/channels/${c.channel_id}/overrides`, auth)).data ?? []),
+                load: async () => draftFromRows((await axios.get(apiUrl`/servers/${serverId}/channels/${c.channel_id}/overrides`, auth)).data ?? []),
             }));
         return [...fromChannels, ...fromCats];
     }, [token, categories, channels, serverId, editing?.channel_id]);
@@ -330,7 +340,7 @@ export const ChannelSettingsDialog: React.FC<Props> = ({
     const canSubmit = name.trim().length >= 1 && !saving && (isEdit ? dirty : true) && (permsReady || !permsDirty)
         && callNamingError === null;
     const auth = { headers: { Authorization: `Bearer ${token}` } };
-    const overridesBase = (channelId: string) => `${API_BASE}/servers/${serverId}/channels/${channelId}/overrides`;
+    const overridesBase = (channelId: string) => apiUrl`/servers/${serverId}/channels/${channelId}/overrides`;
 
     const handleCreate = async () => {
         const body: Record<string, unknown> = { name: name.trim(), kind };
@@ -341,10 +351,11 @@ export const ChannelSettingsDialog: React.FC<Props> = ({
             if (maxCalls > 0) body.max_calls = maxCalls;
             // Omitted when left at the defaults (the server's default anyway).
             if (callNamingDirty) body.call_naming = callNamingPayload(callNaming);
+            if (endCallDirty) body.end_call_when_starter_leaves = true;
         } else if (topic.trim()) {
             body.topic = topic;
         }
-        const res = await axios.post(`${API_BASE}/servers/${serverId}/channels`, body, auth);
+        const res = await axios.post(apiUrl`/servers/${serverId}/channels`, body, auth);
         const saved: ChannelInfo = res.data;
 
         const result = await saveOverrideDiff({
@@ -393,8 +404,9 @@ export const ChannelSettingsDialog: React.FC<Props> = ({
                     ? { member_limit: memberLimit === 0 ? null : memberLimit, max_calls: maxCalls === 0 ? null : maxCalls }
                     : { topic }),
                 ...(callNamingDirty ? { call_naming: callNamingPayload(callNaming) } : {}),
+                ...(endCallDirty ? { end_call_when_starter_leaves: endCallWhenStarterLeaves } : {}),
             };
-            await axios.patch(`${API_BASE}/servers/${serverId}/channels/${ch.channel_id}`, body, auth);
+            await axios.patch(apiUrl`/servers/${serverId}/channels/${ch.channel_id}`, body, auth);
             saved = {
                 ...ch,
                 name: name.trim(),
@@ -404,6 +416,7 @@ export const ChannelSettingsDialog: React.FC<Props> = ({
                 member_limit: kind === 'huddle' ? (memberLimit === 0 ? null : memberLimit) : null,
                 max_calls: kind === 'huddle' ? (maxCalls === 0 ? null : maxCalls) : null,
                 ...(callNamingDirty ? { call_naming: callNamingPayload(callNaming) } : {}),
+                ...(endCallDirty ? { end_call_when_starter_leaves: endCallWhenStarterLeaves } : {}),
             };
             setEditing(saved);
         }
@@ -500,7 +513,7 @@ export const ChannelSettingsDialog: React.FC<Props> = ({
                 onClose={requestClose}
                 width={showPermissions ? 860 : 540}
                 label={isEdit ? `Edit ${kindWord} ${editing!.name}` : `Create ${kindWord}`}
-                cardStyle={{ padding: 0, maxHeight: '90vh', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}
+                cardClassName="mcard--panel"
             >
                 <div className="flex flex-col min-h-0 flex-1" onKeyDown={onDialogKeyDown}>
                     {/* ── Header: identity + tabs + close, one row ─────────── */}
@@ -542,14 +555,17 @@ export const ChannelSettingsDialog: React.FC<Props> = ({
                     </div>
 
                     {/* ── Body ──────────────────────────────────────────── */}
-                    <div className="flex-1 min-h-0 relative" style={{ background: 'var(--cl-deep)' }}>
+                    {/* The body is a flex column and the scroller inside it is `flex-1 min-h-0`:
+                        a `h-full` here resolves to auto (the card is only height-CAPPED), the
+                        content then overflows and the card clips the footer. */}
+                    <div className="flex-1 min-h-0 relative flex flex-col overflow-hidden" style={{ background: 'var(--cl-deep)' }} data-modal-body>
                         <div className="dock-caustics" aria-hidden="true">
                             <i className="dock-caustic dock-caustic--m1" />
                             <i className="dock-caustic dock-caustic--m2" />
                         </div>
 
                         {tab === 'overview' && (
-                            <div className="relative z-[1] h-full overflow-y-auto custom-scrollbar px-5 py-4 space-y-4">
+                            <div className="relative z-[1] flex-1 min-h-0 overflow-y-auto overscroll-contain custom-scrollbar px-5 py-4 space-y-4" data-modal-scroll>
                                 {!isEdit && (
                                     <div>
                                         <div className={sectionLabel} id="cd-type-label">Type</div>
@@ -665,6 +681,12 @@ export const ChannelSettingsDialog: React.FC<Props> = ({
                                             <LimitField icon={<Users size={13} />} label="People per call" sublabel="Max in a single call" value={memberLimit} max={99} presets={[2, 5, 10, 25, 50]} onChange={setMemberLimit} />
                                             <LimitField icon={<Layers size={13} />} label="Calls at once" sublabel="Concurrent calls here" value={maxCalls} max={50} presets={[1, 2, 3, 5, 10]} onChange={setMaxCalls} />
                                         </div>
+                                        <div className={`${sectionLabel} mt-4`}>Call behavior</div>
+                                        <CallBehaviorSection
+                                            value={endCallWhenStarterLeaves}
+                                            onChange={setEndCallWhenStarterLeaves}
+                                            disabled={saving}
+                                        />
                                         <div className={`${sectionLabel} mt-4`}>Call names</div>
                                         <CallNamingSection
                                             value={callNaming}
@@ -693,7 +715,7 @@ export const ChannelSettingsDialog: React.FC<Props> = ({
                         )}
 
                         {tab === 'permissions' && (
-                            <div className="relative z-[1] h-[min(520px,calc(90vh-140px))] flex flex-col">
+                            <div className="relative z-[1] h-[min(520px,calc(100dvh-190px))] min-h-[160px] shrink-0 flex flex-col">
                                 {permsBody()}
                             </div>
                         )}

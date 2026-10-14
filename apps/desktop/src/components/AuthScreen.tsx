@@ -5,6 +5,7 @@ import { useAuth } from '../contexts/AuthContext';
 import axios from 'axios';
 import { loadZxcvbn, useZxcvbn } from '../utils/passwordStrength';
 import { API_BASE } from '../constants';
+import { apiUrl } from '../utils/apiPath';
 import type { OpenedBackupFile } from '../services/driveBackup';
 import { Lock, Mail, Eye, EyeOff, Upload, KeyRound, Smartphone, Calendar, ShieldCheck, Monitor, Sparkles, CheckCircle2, ChevronRight, HardDrive, Gift, Check, X, Loader2 } from 'lucide-react';
 import { markLocalHistory, probeLocalHistory } from '../utils/localHistoryFlag';
@@ -15,7 +16,8 @@ import { DatePicker } from './DatePicker';
 import { ClInput, ClCheckbox, ClSegment } from './cl';
 import SlottedCodeInput from './SlottedCodeInput';
 import { bubbleCount, makeBubbles } from '../utils/deepField';
-import { registerOrReuseDevice } from '../utils/deviceRegistration';
+import { registerOrReuseDevice, type PendingDeviceApproval } from '../utils/deviceRegistration';
+import { DeviceApprovalPending } from './DeviceApprovalPending';
 import { openExternalLink } from '../utils/openExternalLink';
 import QrSignInPanel from './link/QrSignInPanel';
 import { ReferralAppliedCard } from './auth/ReferralAppliedCard';
@@ -271,6 +273,7 @@ const AuthBackground: React.FC = () => {
                     <span
                         key={i}
                         className="auth-bubble"
+                        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
                         style={{ left: b.left, width: b.size, height: b.size, ['--dur' as any]: b.dur, ['--delay' as any]: b.delay, ['--sway' as any]: b.sway }}
                     />
                 ))}
@@ -560,6 +563,9 @@ const AuthScreen: React.FC = () => {
     const [pendingRegPayload, setPendingRegPayload] = useState<{
         token: string; userId: string; deviceId: string;
         requiresPairing: boolean; refresh_token?: string;
+        /** Present when the server holds this device as a PENDING request
+         *  (DEVICE_APPROVAL_REQUIRED=enforce); absent → legacy screen. */
+        approval?: PendingDeviceApproval;
     } | null>(null);
 
     // Restore backup
@@ -576,7 +582,9 @@ const AuthScreen: React.FC = () => {
     const TURNSTILE_KEY = (import.meta.env.VITE_TURNSTILE_SITE_KEY as string | undefined) || '';
     const [regTurnstileToken,    setRegTurnstileToken]    = useState('');
     const [forgotTurnstileToken, setForgotTurnstileToken] = useState('');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
     const regTurnstileRef    = useRef<any>(null);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
     const forgotTurnstileRef = useRef<any>(null);
     // Set when the Turnstile widget itself errors/expires (CDN blocked, ad-blocker,
     // flaky net). Without surfacing this, the widget just clears its token and the
@@ -620,7 +628,9 @@ const AuthScreen: React.FC = () => {
             // If on login view, switch to register so the field is visible.
             setView(v => v === 'login' ? 'register' : v);
         };
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- window.electronAPI members are optional/version-dependent and not all declared on the typed bridge
         const cleanup = (window as any).electronAPI?.onDeepLinkRef?.((code: string) => applyRef(code));
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- window.electronAPI members are optional/version-dependent and not all declared on the typed bridge
         (window as any).electronAPI?.getPendingDeepLinkRef?.().then((code: string | null) => {
             if (code) applyRef(code);
         });
@@ -759,9 +769,9 @@ const AuthScreen: React.FC = () => {
             // V1 migration path: server skipped 2FA and issued tokens directly.
             if (data.status === 'ok' && data.access_token) {
                 const { user_id, access_token, refresh_token } = data;
-                const { deviceId, requiresPairing } = await registerOrReuseDevice(user_id, access_token, email || 'user');
+                const { deviceId, requiresPairing, approval } = await registerOrReuseDevice(user_id, access_token, email || 'user');
                 if (requiresPairing) {
-                    setPendingRegPayload({ token: access_token, userId: user_id, deviceId, requiresPairing: true, refresh_token });
+                    setPendingRegPayload({ token: access_token, userId: user_id, deviceId, requiresPairing: true, refresh_token, approval });
                     switchView('device-not-approved');
                     return;
                 }
@@ -769,6 +779,7 @@ const AuthScreen: React.FC = () => {
                 return;
             }
             setError('Unexpected response from server.');
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (err: any) {
             setError(
                 axios.isAxiosError(err) && !err.response
@@ -797,13 +808,14 @@ const AuthScreen: React.FC = () => {
                 device_name: deviceName,
             });
             const { user_id, access_token, refresh_token } = res.data;
-            const { deviceId, requiresPairing } = await registerOrReuseDevice(user_id, access_token, 'user');
+            const { deviceId, requiresPairing, approval } = await registerOrReuseDevice(user_id, access_token, 'user');
             if (requiresPairing) {
-                setPendingRegPayload({ token: access_token, userId: user_id, deviceId, requiresPairing: true, refresh_token });
+                setPendingRegPayload({ token: access_token, userId: user_id, deviceId, requiresPairing: true, refresh_token, approval });
                 switchView('device-not-approved');
                 return;
             }
             await finishExistingAccountLogin(access_token, user_id, deviceId, refresh_token);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (err: any) {
             flashWrongCode(err?.response?.data?.message || 'Code is invalid or expired.');
         } finally {
@@ -824,6 +836,7 @@ const AuthScreen: React.FC = () => {
             await axios.post(`${API_BASE}/auth/2fa/send-email-code`, { pending_2fa_token: pending2faToken });
             setInfo('Code re-sent. Check your inbox.');
             setResendCountdown(60);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (err: any) {
             setError(err?.response?.data?.message || 'Could not resend code.');
         }
@@ -883,6 +896,7 @@ const AuthScreen: React.FC = () => {
             setInfo('Check your email for a 6-digit code.');
             switchView('verify-email');
             setResendCountdown(60);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (err: any) {
             regTurnstileRef.current?.reset();
             setRegTurnstileToken('');
@@ -946,6 +960,7 @@ const AuthScreen: React.FC = () => {
             await new Promise<void>(r => setTimeout(r, window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 420));
             await login(access_token, user_id, deviceId, requiresPairing, refresh_token);
             return;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (err: any) {
             setVerifyExiting(false);
             flashWrongCode(err?.response?.data?.message || 'Verification failed.');
@@ -966,6 +981,7 @@ const AuthScreen: React.FC = () => {
             await axios.post(`${API_BASE}/auth/resend-verification-email`, { email: verifyEmail });
             setInfo('Code re-sent. Check your inbox.');
             setResendCountdown(60);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (err: any) {
             setError(err?.response?.data?.message || 'Could not resend code.');
         }
@@ -987,6 +1003,7 @@ const AuthScreen: React.FC = () => {
             setInfo('If that email is on file, a reset code has been sent.');
             switchView('reset-password');
             setResendCountdown(60);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (err: any) {
             forgotTurnstileRef.current?.reset();
             setForgotTurnstileToken('');
@@ -1014,6 +1031,7 @@ const AuthScreen: React.FC = () => {
             setResetRequires2fa(res.data.requires_2fa === true);
             setCode(''); setCodeError(false);
             setResetStep(res.data.requires_2fa ? '2fa' : 'password');
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (err: any) {
             flashWrongCode(err?.response?.data?.message || 'Invalid or expired code.');
         } finally {
@@ -1043,6 +1061,7 @@ const AuthScreen: React.FC = () => {
             const res = await axios.post(`${API_BASE}/auth/verify-reset-2fa`, body);
             setResetToken(res.data.reset_token);
             setResetStep('password');
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (err: any) {
             setError(err?.response?.data?.message || 'Invalid code. Please try again.');
         } finally {
@@ -1075,6 +1094,7 @@ const AuthScreen: React.FC = () => {
             setInfo('Password reset. Please sign in with your new password.');
             setPassword(''); setNewPassword('');
             switchView('login');
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (err: any) {
             const msg = err?.response?.data?.message || 'Reset failed.';
             // If the 2FA code was wrong, go back and re-enter it
@@ -1127,7 +1147,7 @@ const AuthScreen: React.FC = () => {
                 setError('This backup belongs to a different account — sign in to that account to restore it.');
                 return;
             }
-            await axios.post(`${API_BASE}/devices/${pendingRegPayload.deviceId}/bypass-approval`, {},
+            await axios.post(apiUrl`/devices/${pendingRegPayload.deviceId}/bypass-approval`, {},
                 { headers: { Authorization: `Bearer ${pendingRegPayload.token}` } });
             // Bind the account first: per-account keys written before the store
             // knows the active user are filed master-tier (readable by every
@@ -1158,6 +1178,26 @@ const AuthScreen: React.FC = () => {
     /* ─────────────────────────────────────────
        Render: Device-not-approved + Restore-backup
     ───────────────────────────────────────── */
+    // The server holds this device as a pending request (enforce mode): show the
+    // verification code and the three ways out. Without `approval` the server
+    // is not speaking the pending flow and the legacy screen below applies.
+    if (view === 'device-not-approved' && pendingRegPayload?.approval) {
+        const p = pendingRegPayload;
+        return (
+            <Shell>
+                <DeviceApprovalPending
+                    userId={p.userId}
+                    deviceId={p.deviceId}
+                    token={p.token}
+                    approval={p.approval!}
+                    onApproved={() => { void finishExistingAccountLogin(p.token, p.userId, p.deviceId, p.refresh_token); }}
+                    onUseQr={() => { setPendingRegPayload(null); setLoginMode('qr'); switchView('login'); }}
+                    onBack={() => { setPendingRegPayload(null); setLoginMode('password'); switchView('login'); }}
+                />
+            </Shell>
+        );
+    }
+
     if (view === 'device-not-approved' && pendingRegPayload) {
         return (
             <Shell>
@@ -1178,10 +1218,11 @@ const AuthScreen: React.FC = () => {
                         variant="ghost"
                         onClick={async () => {
                             try {
-                                await axios.post(`${API_BASE}/devices/${pendingRegPayload.deviceId}/bypass-approval`, {},
+                                await axios.post(apiUrl`/devices/${pendingRegPayload.deviceId}/bypass-approval`, {},
                                     { headers: { Authorization: `Bearer ${pendingRegPayload.token}` } });
                                 markLocalHistory(pendingRegPayload.userId);
                                 login(pendingRegPayload.token, pendingRegPayload.userId, pendingRegPayload.deviceId, false, pendingRegPayload.refresh_token);
+                            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
                             } catch (err: any) {
                                 setError(err?.response?.data?.message || 'Failed to bypass approval');
                             }
@@ -1675,7 +1716,7 @@ const AuthScreen: React.FC = () => {
                 )}
                 <form onSubmit={handleRegisterSubmit} className="flex flex-col gap-3">
                     <Field icon={<Mail size={15} />} placeholder="Email" value={email} onChange={setEmail} disabled={loading} />
-                    <DatePicker icon={<Calendar size={15} />} placeholder="Date of birth (YYYY-MM-DD)" ariaLabel="Date of birth" value={dob} onChange={setDob} disabled={loading} />
+                    <DatePicker icon={<Calendar size={15} />} placeholder="Date of birth (MM/DD/YYYY)" ariaLabel="Date of birth" value={dob} onChange={setDob} disabled={loading} />
                     <div>
                         <Field
                             icon={<Lock size={15} />}

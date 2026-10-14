@@ -82,6 +82,7 @@ export const TotpSetupModal: React.FC<Props> = ({ onClose, onDone }) => {
                     return n - 1;
                 });
             }, 1000);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (err: any) {
             if (err?.code === 'ERR_CANCELED' || axios.isCancel(err)) return;
             setError(err?.response?.data?.message || 'Could not send verification code.');
@@ -122,6 +123,7 @@ export const TotpSetupModal: React.FC<Props> = ({ onClose, onDone }) => {
             setQrDataUrl(res.data.qr_data_url);
             setSetupToken(res.data.setup_token);
             setStep('setup');
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (err: any) {
             const rawMsg = err?.response?.data?.message;
             const msg: string = Array.isArray(rawMsg) ? (rawMsg[0] || '') : (typeof rawMsg === 'string' ? rawMsg : '');
@@ -152,6 +154,7 @@ export const TotpSetupModal: React.FC<Props> = ({ onClose, onDone }) => {
             }, { headers: authHeader });
             setBackupCodes(res.data.backup_codes || []);
             setStep('warning');
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (err: any) {
             const rawMsg = err?.response?.data?.message;
             const msg: string = Array.isArray(rawMsg) ? (rawMsg[0] || '') : (typeof rawMsg === 'string' ? rawMsg : '');

@@ -70,7 +70,6 @@ vi.mock('../utils/safetyNumber', async () => {
     return { ...actual, computeSafetyNumber: async () => '00000 '.repeat(12).trim() };
 });
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 let SafetyVerificationModal: any;
 let ledger: typeof import('../utils/ownDeviceLedger');
 let root: Root | null = null;

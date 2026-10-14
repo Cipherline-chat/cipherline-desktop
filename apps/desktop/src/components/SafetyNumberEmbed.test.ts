@@ -46,9 +46,7 @@ vi.mock('../utils/keyVerification', () => ({
     getKnownDevices: () => pinStore,
 }));
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 let SafetyNumberEmbed: any;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 let computeContactCode: any;
 
 let root: Root | null = null;
@@ -80,7 +78,6 @@ afterEach(() => {
     host.remove();
 });
 
-/* eslint-disable @typescript-eslint/no-explicit-any */
 function render(props: any) {
     act(() => {
         root!.render(React.createElement(SafetyNumberEmbed, {

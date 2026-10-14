@@ -43,7 +43,7 @@ describe('gaming-video mode wiring in main.ts', () => {
 
     it('the launch-time switches come from the resolved startup flags and share ONE disable-features list', () => {
         expect(MAIN).toContain('const GAMING_VIDEO_AT_LAUNCH = STARTUP_FLAGS.gamingVideo;');
-        expect(MAIN).toContain('gamingVideoStartupSwitches(GAMING_VIDEO_AT_LAUNCH, process.platform)');
+        expect(MAIN).toContain('launchThrottleSwitches(GAMING_VIDEO_AT_LAUNCH, process.platform)');
         expect(MAIN).toContain('media.disableFeatures.push(...gamingSwitches.disableFeatures)');
         // The push must happen before the single append of the list.
         expect(MAIN.indexOf('media.disableFeatures.push(...gamingSwitches.disableFeatures)'))
@@ -53,10 +53,10 @@ describe('gaming-video mode wiring in main.ts', () => {
     });
 
     it('the boost is restored on renderer navigation, renderer crash and quit', () => {
-        expect(MAIN).toMatch(/webContents\.on\('did-navigate', \(\) => syncCallPriority\(\{ inCall: false \}\)\)/);
+        expect(MAIN).toMatch(/webContents\.on\('did-navigate', \(\) => syncCallPriority\(\{ inCall: false, sharing: false \}\)\)/);
         const gone = MAIN.indexOf("mainWindow.webContents.on('render-process-gone', (event, details) => {");
         expect(gone).toBeGreaterThan(-1);
-        expect(MAIN.slice(gone, gone + 400)).toContain('syncCallPriority({ inCall: false })');
+        expect(MAIN.slice(gone, gone + 400)).toContain('syncCallPriority({ inCall: false, sharing: false })');
         const quit = MAIN.indexOf("app.on('before-quit', () => {\n  // Gaming-video priority boost");
         expect(quit).toBeGreaterThan(-1);
     });

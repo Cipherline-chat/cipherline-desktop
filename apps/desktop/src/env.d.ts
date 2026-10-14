@@ -4,11 +4,15 @@ export {};
 
 declare global {
     // Mirrors electron/updater-state.ts's UpdateState — see that file's
-    // module doc for what each phase means and why 'manual' exists.
+    // module doc for what each phase means (updates complete in-app; 'manual'
+    // is Linux-only). src/utils/updaterState.test.ts pins the two together
+    // at type level (checked by `tsc -p tsconfig.app.json`).
     type UpdateStateShape =
         | { phase: 'idle' }
         | { phase: 'available'; version: string }
         | { phase: 'downloading'; version: string; percent: number }
+        | { phase: 'retrying'; version: string; attempt: number; maxAttempts: number; retryAt: number }
+        | { phase: 'failed'; version: string; stage: 'download' | 'verify' | 'install' }
         | { phase: 'ready'; version: string }
         | { phase: 'manual'; version: string; downloadUrl: string };
 
@@ -63,15 +67,17 @@ declare global {
         onOsResume: (callback: () => void) => () => void;
         /** Per-display refresh rate. Screen capture cannot exceed it — a
          *  `displayFrequency` of 0 means the platform didn't report one. */
-        getDisplayRefreshRates?: () => Promise<Array<{ id: string; displayFrequency: number; isPrimary: boolean }>>;
+        getDisplayRefreshRates?: () => Promise<Array<{ id: string; displayFrequency: number; isPrimary: boolean; captureFpsCeiling?: number | null }>>;
         /** Stream-stats overlay diagnostics for a screen-share source. Typed
          *  `unknown` on purpose: src/utils/screenShareDiagnostics.ts narrows
          *  it field by field (parseMainDiagnostics), so an older/newer main
          *  process can never feed the overlay a shape it trusts blindly. */
         getScreenShareDiagnostics?: (sourceId: string) => Promise<unknown>;
         /** Chromium's per-frame capture timing (only while the capture timing
-         *  log is on; otherwise resolves null). Narrowed by parseCaptureTiming. */
-        getScreenCaptureTiming?: () => Promise<unknown>;
+         *  log is on; otherwise resolves null). Narrowed by parseCaptureTiming.
+         *  `frames`: summarise only the newest N polls (integer 10–300; main
+         *  refuses anything else with null). Omitted = 300. */
+        getScreenCaptureTiming?: (frames?: number) => Promise<unknown>;
         /** Settings → Advanced startup flags (screen capture method, capture
          *  timing log), kept by main in <userData>/startup-flags.json and
          *  applied on the next launch. `unknown` on purpose: narrowed by
@@ -82,10 +88,36 @@ declare global {
         setStartupFlags?: (patch: { screenCapturer?: 'auto' | 'dxgi' | 'wgc'; captureLog?: boolean; gamingVideo?: boolean }) => Promise<unknown>;
         /** Quit normally and start again (Electron relauncher). */
         relaunchApp?: () => Promise<void>;
+        /** main → renderer: the GPU process died and is being restarted
+         *  (electron/gpu-restart.ts). `unknown`: narrowed by
+         *  src/utils/gpuRecovery.ts parseGpuRestartedPayload. Optional:
+         *  older main processes. Returns the unsubscribe function. */
+        onGpuProcessRestarted?: (callback: (payload: unknown) => void) => () => void;
+        /** renderer → main: what the renderer did about GPU restart `seq`. */
+        reportGpuRecovery?: (report: { seq: number; outcome: 'recovered' | 'restart_prompted' | 'not_in_call' }) => Promise<void>;
         /** A call started (true) / ended (false) — main raises / restores
          *  process priority while "Prioritize call video while gaming" is on
          *  (electron/gaming-video-mode.ts). Optional: older main processes. */
         setCallMediaActive?: (active: boolean) => Promise<void>;
+        /** A screen share went live (true) / ended (false) — main raises /
+         *  restores process priority and holds / releases a power request
+         *  while "Prioritize calls and screen share while gaming" is on
+         *  (electron/share-boost.ts). Optional: older main processes. */
+        setShareActive?: (active: boolean) => Promise<void>;
+        /** What has the screen right now (Windows; null elsewhere or without the
+         *  addon). `unknown` on purpose: src/utils/foregroundInfo.ts narrows it.
+         *  `sourceId` = the share's capture source id (lets main say whether the
+         *  foreground window is on the shared screen). Optional: older mains. */
+        getShareForegroundInfo?: (sourceId?: string) => Promise<unknown>;
+        /** Which of these `window:` source ids is the running program `exe`
+         *  (null = none). Optional: older mains. */
+        findWindowSourceByExe?: (exe: string, windowSourceIds: string[]) => Promise<string | null>;
+        /** Main applied / re-applied / restored the share's OS power-throttling
+         *  opt-out. `unknown` on purpose (src/utils/sharePowerEvent.ts narrows it). */
+        onSharePower?: (cb: (report: unknown) => void) => () => void;
+        /** Main raised / re-applied / restored the share's GPU scheduling class.
+         *  `unknown` on purpose (src/utils/shareGpuSchedEvent.ts narrows it). */
+        onShareGpuSched?: (cb: (report: unknown) => void) => () => void;
 
         // On-disk GIF library — each favorite lives as an AES-GCM-encrypted
         // `.enc` file under userData/cipherline-gifs/. Backup reads every
@@ -182,7 +214,7 @@ declare global {
         backupStat: (filePath: string) => Promise<{ size: number; mtimeMs: number } | null>;
         backupReadRange: (filePath: string, offset: number, length: number) => Promise<ArrayBuffer>;
         backupStagingDir: () => Promise<string>;
-        gdriveUploadFile: (folderId: string, fileName: string, filePath: string) => Promise<{ id: string; size: number; md5Checksum: string }>;
+        gdriveUploadFile: (folderId: string, fileName: string, filePath: string, existingFileId?: string) => Promise<{ id: string; size: number; md5Checksum: string }>;
         gdriveDownloadFile: (fileId: string, fileName: string) => Promise<{ path: string; size: number }>;
         onGdriveTransferProgress: (cb: (p: { kind: 'upload' | 'download'; done: number; total: number }) => void) => (() => void);
 
@@ -191,10 +223,10 @@ declare global {
         // imported since this is an ambient .d.ts for the renderer and that
         // module is main-process-only. Keep the two in sync by hand.
         //
-        // 'manual' exists because auto-install isn't reliable on every
-        // platform (see that file's module doc) — the renderer must be able
-        // to render "here's a direct download link" as a first-class state,
-        // not treat it as an error.
+        // Failures stay in the app: 'retrying' (automatic, with backoff) and
+        // 'failed' (Retry button). 'manual' — a direct download link — exists
+        // only for a Linux AppImage that cannot replace itself (see that
+        // file's module doc).
         /** Fires when the OS resumes from sleep / unlocks. Returns an unsubscribe. */
         onAppResumed: (callback: () => void) => () => void;
         /** ONE coalesced event per wake episode (electron/power-events.ts),
@@ -216,6 +248,9 @@ declare global {
          *  (dev server / smoke test). Rejects if the check fails. The outcome
          *  itself lands on onUpdateState, not in this return value. */
         checkForUpdatesNow: () => Promise<boolean>;
+        /** In-app Retry after a failed update attempt (fresh, full download).
+         *  False in a build with no updater. Absent on an older preload. */
+        retryUpdate?: () => Promise<boolean>;
         // Update channel — 'latest' is the default real-user stream,
         // 'staging' is the opt-in pre-release stream backed by
         // staging.yml/staging-mac.yml in the same updates bucket.
@@ -359,6 +394,8 @@ declare global {
         setMinimizeToTray: (enabled: boolean) => Promise<void>;
         readClipboard: () => Promise<string>;
         writeClipboard: (text: string) => Promise<void>;
+        /** Put a PNG on the OS clipboard ("Copy image"). Main rejects non-PNG / oversize input. Optional: older mains lack it. */
+        clipboardWriteImage?: (png: Uint8Array) => Promise<void>;
         attestSign: () => Promise<string | null>;
         solvePow: (challenge: string, difficulty: number) => Promise<string | null>;
         getDeviceRegisterProof: (userId: string, proofTs: number) => Promise<{ identityPub: string; sig: string } | null>;
@@ -366,6 +403,29 @@ declare global {
          *  device's identity key. null when the identity is unavailable; the
          *  caller must abandon the request rather than send it unsigned. */
         getHistoryRequestProof: (userId: string, requestingDeviceId: string, ts: number) => Promise<{ identityPub: string; sig: string } | null>;
+
+        // ── Device approval (DEVICE_APPROVAL_REQUIRED) — electron/device-approval-keys.ts.
+        /** This device's identity public key (base64), generated on first need. */
+        getIdentityPub?: () => Promise<string | null>;
+        /** Sign an approve/deny decision for a pending device with this device's identity key.
+         *  An `approve` makes the MAIN process show a native "Approve <name> (<platform>)?"
+         *  dialog first (`display` is what it says; Cancel → null, nothing signed). `deny` never prompts. */
+        signDeviceApproval?: (
+            userId: string, approverDeviceId: string, pendingDeviceId: string,
+            pendingIdentityKeyB64: string, decision: 'approve' | 'deny', ts: number,
+            display?: { deviceName: string; platform: string },
+        ) => Promise<{ identityPub: string; sig: string } | null>;
+        /** Sign a QR-link approval so the linked session registers an approved device.
+         *  Confirmed with a native dialog in main first; Cancel → null. */
+        signLinkApproval?: (
+            userId: string, approverDeviceId: string, linkId: string, newIdentityKeyB64: string | null, ts: number,
+        ) => Promise<{ identityPub: string; sig: string } | null>;
+        /** The public half of this device's recovery-derived keypair, signed by its identity key. */
+        getRecoveryCommitment?: (userId: string, deviceId: string, ts: number) => Promise<{ recoveryPub: string; identityPub: string; sig: string } | null>;
+        /** Derive from a TYPED recovery key and sign the approval proof; the key is never stored. */
+        proveRecoveryKey?: (
+            typedKeyB64: string, userId: string, pendingDeviceId: string, pendingIdentityKeyB64: string, ts: number,
+        ) => Promise<{ recoveryPub: string; sig: string } | null>;
 
         // ── QR sign-in (link) — electron/link-grant.ts holds the ephemeral
         // X25519 private key; it never crosses this bridge. docs/QR-LINKING.md §2.

@@ -8,9 +8,20 @@
  * API sends `storage_plan` on both the storage endpoint and the
  * STORAGE_QUOTA_EXCEEDED error; an older API omits it, which reads as the
  * ladder (the old behaviour). The client only explains the limit — the server
- * enforces it, and a server already over its limit keeps everything it has.
+ * enforces it.
+ *
+ * What happens to a server that is ALREADY over its limit depends on the
+ * owner's plan (2026-10-12, packages/shared/storage-grace.ts):
+ *   - Pro/trial owner (ladder): new saves and emojis are refused until space is
+ *     freed; nothing already saved is removed.
+ *   - free owner (flat 25 MB): new saves and emojis are refused AND a 60-day
+ *     grace starts; unless the owner resubscribes, ownership moves to a Pro
+ *     member, or usage drops to 25 MB, the server is trimmed back to 25 MB at
+ *     the deadline — oldest custom emojis first, then the oldest saved
+ *     messages. (This used to say an over-limit server "keeps everything it
+ *     has"; that stopped being true with the grace policy.)
  */
-import { formatBytes } from '@cipherline/shared';
+import { formatBytes, SERVER_STORAGE_GRACE_DAYS, FREE_OWNER_STORAGE_BYTES } from '@cipherline/shared';
 
 export type ServerStoragePlan = 'flat25' | 'ladder';
 
@@ -82,4 +93,22 @@ export function nearLimitMessage(plan: string | undefined | null): string {
     return isFlatStoragePlan(plan)
         ? 'Near the storage limit. Remove server saves or custom emojis, or the server owner can upgrade to Pro for a limit that grows with the server.'
         : 'Near the storage limit. Remove server saves or custom emojis, or grow your member count to unlock the next tier.';
+}
+
+/**
+ * The note under the meter when usage is ABOVE the limit. Accurate per plan:
+ * a free owner's server is on the 60-day grace path to a trim; a Pro owner's
+ * server just can't grow until space is freed.
+ */
+export function overLimitMessage(plan: string | undefined | null): string {
+    const free = formatBytes(FREE_OWNER_STORAGE_BYTES);
+    return isFlatStoragePlan(plan)
+        ? `Over the ${free} free limit. New saves and emojis are paused. Unless the owner gets Pro again, moves the server to a member with Pro, or frees space before its ${SERVER_STORAGE_GRACE_DAYS}-day grace period ends, it's trimmed back to ${free}: oldest custom emojis first, then the oldest saved messages.`
+        : 'Over the storage limit. New saves and emojis are paused until space is freed; nothing already saved is removed.';
+}
+
+/** The storage line in the transfer-ownership confirmation. */
+export function transferStorageNote(): string {
+    const free = formatBytes(FREE_OWNER_STORAGE_BYTES);
+    return `From then on their plan decides this server's saved-storage limit. If they're on the free plan and the server uses more than ${free}, it has ${SERVER_STORAGE_GRACE_DAYS} days to get back under ${free} before it's trimmed; if they have Pro, nothing changes.`;
 }

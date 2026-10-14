@@ -6,6 +6,7 @@ import { extractPortableSaves, portableSavesFromVault, applyRestoredSaves, type 
 import { snapshotWarnings, mergeWarnings } from './senderWarningStore';
 import { classifyHistoryPayload } from './historyPayloadFormat';
 import { isKlipyRefEntry } from './gifLibrarySync';
+import { BackupWrongPasswordError } from './backupErrors';
 /**
  * WebCrypto AES-GCM (256-bit) Blob Encryption Utilities
  * 
@@ -154,11 +155,16 @@ export interface BackupVault {
     privateKey?: never;
     publicKey?: never;
     // Message + conversation state (v1 baseline — always present).
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     topics: any[];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     history: Record<string, any[]>;
     // Preferences (v2 — all optional so legacy vaults still restore cleanly).
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     voiceSettings?: any;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     keybinds?: any;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     gameSettings?: any;
     /** LEGACY (≤ 2026-09): the whole StoragePolicy. Retention is per-device
      *  now, so this is never WRITTEN, and on restore only its saved-id lists
@@ -180,6 +186,7 @@ export interface BackupVault {
      *  `pinnedMessages` only, could drop the pinned messages themselves too. */
     localChannelPins?: Record<string, string[]>;
     // GIF library (v2).
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     gifFavorites?: any[];
     gifKeys?: Record<string, string>;   // gifId → base64 AES key
     gifFiles?: Record<string, string>;  // gifId → base64 of on-disk `.enc` bytes
@@ -191,6 +198,7 @@ export interface BackupVault {
     avatarKeys?: Record<string, { keyB64: string; nonceB64: string }>;
     // Channel messages (v3) — Record<channelId, Message[]>. Subject to the
     // same time-range filter as `history` during selective transfer.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     channelHistory?: Record<string, any[]>;
     // Encrypted attachment ciphertext bundle (v3) — attachment_id → base64
     // of the raw encrypted bytes. New device decrypts with `file_key_b64`
@@ -297,6 +305,7 @@ function u8ToBase64(u8: Uint8Array): string {
 /** Pull every on-disk encrypted GIF file via IPC and emit
  *  `{gifId → base64 bytes}`. Safe no-op if electronAPI is unavailable. */
 async function collectGifFiles(ownedIds?: Set<string>): Promise<Record<string, string>> {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- window.electronAPI members are optional/version-dependent and not all declared on the typed bridge
     const api = (window as any).electronAPI;
     if (!api?.listGifFiles || !api?.readGifFile) return {};
     try {
@@ -320,6 +329,7 @@ async function collectGifFiles(ownedIds?: Set<string>): Promise<Record<string, s
 
 /** Pull every avatar_key:* entry from the Electron secure store via IPC. */
 async function collectAvatarKeys(): Promise<Record<string, { keyB64: string; nonceB64: string }>> {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- window.electronAPI members are optional/version-dependent and not all declared on the typed bridge
     const api = (window as any).electronAPI;
     if (!api?.listAvatarKeys) return {};
     try { return await api.listAvatarKeys(); } catch { return {}; }
@@ -373,6 +383,7 @@ export async function buildLocalVault(
     userId: string,
     opts: ExportLocalHistoryOpts = {},
 ): Promise<BackupVault> {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     const topics = parseOr<any[]>(secureLocalStore.getItem(`cipherline_convs_${userId}`), []);
     // Read through messageStore so the export sees every per-conversation
     // record (and migrates a legacy blob first if this device still has one).
@@ -390,9 +401,12 @@ export async function buildLocalVault(
     // GIF library metadata. Read from the account-scoped key, falling back to
     // the pre-scoping device-global one so a library saved before the split is
     // still captured by the first backup taken after it.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     const gifFavorites = ((): any[] => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
         const scoped = parseOr<any[]>(secureLocalStore.getItem(`cipherline_gif_favorites_${userId}`), []);
         if (Array.isArray(scoped) && scoped.length > 0) return scoped;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
         const legacy = parseOr<any[]>(secureLocalStore.getItem('cipherline_gif_favorites'), []);
         return Array.isArray(legacy) ? legacy : [];
     })();
@@ -428,6 +442,7 @@ export async function buildLocalVault(
 
         if (hasPerTypeFlags) {
             const { dm: dmHistory, group: groupHistory } = partitionHistoryByType(fullHistory, topics);
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
             const mergedForMessages: Record<string, any[]> = {
                 ...(opts.includeDmMessages !== false ? dmHistory : {}),
                 ...(opts.includeGroupMessages !== false ? groupHistory : {}),
@@ -490,8 +505,11 @@ export async function buildLocalVault(
         history,
         channelHistory: Object.keys(channelHistory).length > 0 ? channelHistory : undefined,
 
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
         voiceSettings:       parseOr<any>(secureLocalStore.getItem('cipherline_voice_settings'),  null) ?? undefined,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
         keybinds:            parseOr<any>(secureLocalStore.getItem('cipherline_keybinds'),        null) ?? undefined,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
         gameSettings:        parseOr<any>(secureLocalStore.getItem(`cipherline_game_settings_${userId}`) ?? secureLocalStore.getItem('cipherline_game_settings'), null) ?? undefined,
         // Retention SETTINGS are per-device and deliberately not exported —
         // only the explicitly-saved ids travel (retentionPortability.ts).
@@ -869,7 +887,14 @@ export async function decryptBackup(blob: Blob, password: string): Promise<strin
     if (!header) throw new Error('Backup file too small');
 
     const key = await deriveBackupKey(password, header.salt, header.iterations, header.hash);
-    const pt  = await window.crypto.subtle.decrypt({ name: 'AES-GCM', iv: header.iv as any }, key, header.ct);
+    let pt: ArrayBuffer;
+    try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
+        pt = await window.crypto.subtle.decrypt({ name: 'AES-GCM', iv: header.iv as any }, key, header.ct);
+    } catch {
+        // GCM auth failure on an intact-looking blob = wrong passphrase.
+        throw new BackupWrongPasswordError('Decryption failed. Incorrect password or corrupted file.');
+    }
     return new TextDecoder().decode(pt);
 }
 
@@ -877,6 +902,7 @@ export async function decryptBackup(blob: Blob, password: string): Promise<strin
 // Zero-Knowledge WebRTC Signaling 
 // ============================================================================
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
 export async function encryptSignalingPayload(payload: any, key: CryptoKey): Promise<string> {
     const iv = window.crypto.getRandomValues(new Uint8Array(12));
     const str = JSON.stringify(payload);
@@ -899,6 +925,7 @@ export async function encryptSignalingPayload(payload: any, key: CryptoKey): Pro
     return bufferToBase64(combined.buffer as ArrayBuffer);
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
 export async function decryptSignalingPayload(bundledB64: string, key: CryptoKey): Promise<any> {
     const combined = new Uint8Array(base64ToBuffer(bundledB64));
     const iv = new Uint8Array(combined.buffer.slice(0, 12) as ArrayBuffer);

@@ -41,7 +41,7 @@ beforeAll(() => {
 
 const {
     ContainerWriter, openContainer, MemoryContainer, memorySource, teeSink,
-    isContainerFile, HEADER_LEN, sha256Hex, IMMUTABLE_HASH, CONTAINER_VERSION,
+    isContainerFile, HEADER_LEN, sha256Hex, IMMUTABLE_HASH, CONTAINER_VERSION, BackupWrongPasswordError,
 } = await import('./backupContainer');
 
 // The v3 writer exactly as shipped — see the fixture's header for why a
@@ -132,6 +132,21 @@ describe('backupContainer — fresh write + read', () => {
     it('rejects the wrong passphrase with a clear message', async () => {
         const { mem } = await writeSample('right');
         await expect(openContainer(mem, 'wrong')).rejects.toThrow(/passphrase/i);
+    });
+
+    it('signals a wrong passphrase with the typed BackupWrongPasswordError (the restore prompt keys off it)', async () => {
+        const { mem } = await writeSample('right');
+        await expect(openContainer(mem, 'wrong')).rejects.toBeInstanceOf(BackupWrongPasswordError);
+        // Negative control: other failures are NOT the typed error.
+        const tiny = new MemoryContainer();
+        await expect(openContainer(tiny, 'right')).rejects.not.toBeInstanceOf(BackupWrongPasswordError);
+    });
+
+    it('legacy whole-blob backups also raise the typed wrong-passphrase error', async () => {
+        const { encryptBackup, decryptBackup } = await import('./crypto');
+        const blob = await encryptBackup('{"hello":1}', 'right');
+        expect(await decryptBackup(blob, 'right')).toBe('{"hello":1}');
+        await expect(decryptBackup(blob, 'wrong')).rejects.toBeInstanceOf(BackupWrongPasswordError);
     });
 
     it('rejects a never-finished file (pointer unset) and a truncated one', async () => {
@@ -546,7 +561,7 @@ describe('C3 — v3 files stay readable (no vault is lost to the format bump)', 
         await w.finish({ userId: 'u1', fingerprint: 'fp' });
         const c = await openContainer(memorySource(mem.bytes()), 'right');
         expect(await c.readJson('meta')).toEqual({ userId: 'u1', n: 7 });
-        await expect(openContainer(memorySource(mem.bytes()), 'wrong')).rejects.toThrow(/passphrase/i);
+        await expect(openContainer(memorySource(mem.bytes()), 'wrong')).rejects.toBeInstanceOf(BackupWrongPasswordError);
     });
 
     it('refuses to update a v3 file in place — it must be rewritten fresh', async () => {

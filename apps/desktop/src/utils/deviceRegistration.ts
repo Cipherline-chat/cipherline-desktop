@@ -27,11 +27,35 @@ async function uploadKeyBundle(deviceId: string, token: string) {
  * opened QR link grant), register the device with the server. Returns the
  * resolved deviceId and whether pairing approval is still needed.
  */
+/**
+ * Device approval (server flag DEVICE_APPROVAL_REQUIRED=enforce). Present on
+ * the register result ONLY when the server created — or re-found — a PENDING
+ * request for this device. Absent for an approved device and for a server that
+ * does not speak the pending flow (the legacy "Device Not Approved" screen
+ * remains the fallback for `requiresPairing` without it).
+ */
+export interface PendingDeviceApproval {
+    /** Server-issued nonce the six-digit code is derived from. */
+    nonceB64: string;
+    /** When the request lapses (ISO). */
+    expiresAt: string | null;
+    /** A scheduled cooling-off reset, if the user already asked for one. */
+    resetDueAt: string | null;
+    /** THIS device's identity public key — the other half of the code input. */
+    identityPub: string;
+}
+
+export interface RegisterDeviceResult {
+    deviceId: string;
+    requiresPairing: boolean;
+    approval?: PendingDeviceApproval;
+}
+
 export async function registerOrReuseDevice(
     userId: string,
     accessToken: string,
     label: string,
-): Promise<{ deviceId: string; requiresPairing: boolean }> {
+): Promise<RegisterDeviceResult> {
     // Label the device by its real hostname + OS so the approver can tell
     // multiple devices apart (e.g. "DAWSON-PC · windows", "MacBook · mac").
     const platform = window.electronAPI?.platform ?? 'windows';
@@ -60,8 +84,22 @@ export async function registerOrReuseDevice(
     const devRes = await axios.post(`${API_BASE}/devices/register`, body,
         { headers: { Authorization: `Bearer ${accessToken}` } },
     );
-    const { device_id: deviceId, requires_pairing } = devRes.data;
+    const { device_id: deviceId, requires_pairing, approval } = devRes.data;
     if (proof) secureLocalStore.setItem('cipherline_identity_pub_b64', proof.identityPub);
     await uploadKeyBundle(deviceId, accessToken);
-    return { deviceId, requiresPairing: requires_pairing === true };
+    const pending = requires_pairing === true
+        && proof
+        && approval && approval.status === 'pending' && typeof approval.nonce_b64 === 'string' && approval.nonce_b64.length > 0;
+    return {
+        deviceId,
+        requiresPairing: requires_pairing === true,
+        ...(pending ? {
+            approval: {
+                nonceB64: approval.nonce_b64 as string,
+                expiresAt: typeof approval.expires_at === 'string' ? approval.expires_at : null,
+                resetDueAt: typeof approval.reset_due_at === 'string' ? approval.reset_due_at : null,
+                identityPub: proof.identityPub,
+            },
+        } : {}),
+    };
 }

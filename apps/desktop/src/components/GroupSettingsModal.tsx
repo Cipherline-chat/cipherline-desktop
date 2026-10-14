@@ -1,8 +1,8 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import axios from 'axios';
-import { API_BASE } from '../constants';
+import { apiUrl } from '../utils/apiPath';
 import { useAuth } from '../contexts/AuthContext';
-import { Camera, Save, Loader2, Search, UserPlus, Users, X } from 'lucide-react';
+import { Camera, Save, X } from 'lucide-react';
 import { useAttachments } from '../hooks/useAttachments';
 import { useAvatarBroadcast } from '../hooks/useAvatarBroadcast';
 import { EncryptedAvatar } from './EncryptedAvatar';
@@ -11,7 +11,8 @@ import { useModalExit } from '../hooks/useModalExit';
 import { AVATAR_OUTPUT } from '../utils/imageCrop';
 import { IMAGE_ACCEPT_ATTR, validateImageUpload } from '../utils/imageUploadValidation';
 import { useToast } from '../contexts/ToastContext';
-import { ClButton, ClCheckbox, ClInput, ClModal, ClSearch, ClImageCropper } from './cl';
+import { ClButton, ClInput, ClModal, ClImageCropper } from './cl';
+import { AddGroupMembersPicker } from './AddGroupMembersPicker';
 
 interface GroupSettingsModalProps {
     conversationId: string;
@@ -25,16 +26,9 @@ interface GroupSettingsModalProps {
 export const GroupSettingsModal: React.FC<GroupSettingsModalProps> = ({ conversationId, conversationTitle, avatarUrl: initialAvatarUrl, onClose, onGroupUpdated }) => {
     const { closing, handleClose } = useModalExit(onClose, 260);
     const { token, user, deviceId } = useAuth();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     const [members, setMembers] = useState<any[]>([]);
-    const [friends, setFriends] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
-    const [friendSearch, setFriendSearch] = useState('');
-    // Staged multi-select + confirm, matching CreateGroupModal's member
-    // picker — was previously a search dropdown that invited a friend the
-    // instant you clicked their row (one at a time, no way to review the
-    // set before it happened).
-    const [selectedToAdd, setSelectedToAdd] = useState<Set<string>>(new Set());
-    const [isAddingMembers, setIsAddingMembers] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [success, setSuccess] = useState<string | null>(null);
 
@@ -62,7 +56,7 @@ export const GroupSettingsModal: React.FC<GroupSettingsModalProps> = ({ conversa
     const fetchMembers = async () => {
         setLoading(true);
         try {
-            const devicesRes = await axios.get(`${API_BASE}/conversations/${conversationId}/devices`, {
+            const devicesRes = await axios.get(apiUrl`/conversations/${conversationId}/devices`, {
                 headers: {
                     Authorization: `Bearer ${token}`,
                     'x-device-id': deviceId || '00000000-0000-0000-0000-000000000000'
@@ -70,6 +64,7 @@ export const GroupSettingsModal: React.FC<GroupSettingsModalProps> = ({ conversa
             });
 
             const uniqueUsers = new Map();
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
             devicesRes.data.forEach((d: any) => {
                 if (d.user_id && !uniqueUsers.has(d.user_id)) {
                     uniqueUsers.set(d.user_id, { user_id: d.user_id, username: d.username, avatar_url: d.avatar_url });
@@ -89,55 +84,16 @@ export const GroupSettingsModal: React.FC<GroupSettingsModalProps> = ({ conversa
             console.error('Failed to fetch members:', err);
         }
 
-        try {
-            const friendsRes = await axios.get(`${API_BASE}/friends`, {
-                headers: { Authorization: `Bearer ${token}` }
-            });
-            setFriends(friendsRes.data.accepted || []);
-        } catch (err) {
-            console.error('Failed to fetch friends:', err);
-        }
-
         setLoading(false);
     };
 
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- fetch once per conversation; fetchMembers is a per-render closure and including it would refetch on every render
     useEffect(() => { fetchMembers(); }, [conversationId]);
 
-    const memberIds = new Set(members.map((m: any) => m.user_id));
-    const filteredFriends = friends.filter(f =>
-        !memberIds.has(f.user_id) &&
-        (friendSearch === '' || f.username.toLowerCase().includes(friendSearch.toLowerCase()))
-    );
-
-    const toggleSelectedToAdd = (friendUserId: string) => {
-        setSelectedToAdd(prev => {
-            const next = new Set(prev);
-            if (next.has(friendUserId)) next.delete(friendUserId);
-            else next.add(friendUserId);
-            return next;
-        });
-        setError(null);
-    };
-
-    const handleAddSelectedMembers = async () => {
-        if (selectedToAdd.size === 0) return;
-        setError(null);
-        setSuccess(null);
-        setIsAddingMembers(true);
-        const ids = Array.from(selectedToAdd);
-        const results = await Promise.allSettled(
-            ids.map(id => axios.post(`${API_BASE}/conversations/${conversationId}/invite`, {
-                user_id: id,
-            }, { headers: { Authorization: `Bearer ${token}` } })),
-        );
-        const failed = results.filter(r => r.status === 'rejected').length;
-        const added = ids.length - failed;
-        if (added > 0) setSuccess(`${added} ${added === 1 ? 'member' : 'members'} added to the group`);
-        if (failed > 0) setError(`Failed to add ${failed} ${failed === 1 ? 'member' : 'members'}.`);
-        setSelectedToAdd(new Set());
-        setIsAddingMembers(false);
-        fetchMembers();
-    };
+    // Friend list, search, staged multi-select and the invite calls live in
+    // AddGroupMembersPicker (shared with the right-hand panel's "+").
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
+    const memberIds = useMemo(() => new Set(members.map((m: any) => m.user_id)), [members]);
 
     const handleAvatarChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         const result = validateImageUpload(e.target.files?.[0]);
@@ -181,7 +137,7 @@ export const GroupSettingsModal: React.FC<GroupSettingsModalProps> = ({ conversa
                 await broadcastGroupAvatarKey(conversationId, attachmentId, keyB64, nonceB64);
             }
 
-            await axios.patch(`${API_BASE}/conversations/${conversationId}`, {
+            await axios.patch(apiUrl`/conversations/${conversationId}`, {
                 title: title,
                 avatar_attachment: finalAttachmentId
             }, {
@@ -191,6 +147,7 @@ export const GroupSettingsModal: React.FC<GroupSettingsModalProps> = ({ conversa
             setAvatarFile(null);
             setSuccess('Group updated successfully');
             if (onGroupUpdated) onGroupUpdated(title, finalAttachmentId);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (err: any) {
             console.error('Failed to save group settings', err);
             setError(err?.response?.data?.message || 'Failed to update group.');
@@ -298,6 +255,7 @@ export const GroupSettingsModal: React.FC<GroupSettingsModalProps> = ({ conversa
                     <div className="max-h-[180px] overflow-y-auto bg-cl-sink rounded-xl border border-white/5 p-2 flex flex-col gap-1 custom-scrollbar">
                         {loading ? (
                             <div className="text-cl-faint text-center py-4 text-sm font-medium">Loading members…</div>
+                        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
                         ) : members.map((m: any) => (
                             <div key={m.user_id} className="flex items-center p-2 rounded-lg hover:bg-white/5 transition-colors">
                                 <div className="w-8 h-8 rounded-full flex items-center justify-center mr-3 shrink-0 overflow-hidden">
@@ -320,96 +278,15 @@ export const GroupSettingsModal: React.FC<GroupSettingsModalProps> = ({ conversa
                     </div>
                 </div>
 
-                {/* Add members — restyled to match CreateGroupModal's member picker:
-                    ClSearch, a persistent checkbox list instead of a dropdown that
-                    invited on click, and a staged multi-select + confirm instead of
-                    inviting one friend at a time as soon as you clicked their row. */}
-                <div className="flex flex-col gap-2">
-                    <label className="flex items-center justify-between text-[13px] font-semibold text-cl-faint m-0 uppercase tracking-wide">
-                        <span>Add Members</span>
-                        {selectedToAdd.size > 0 && (
-                            <span className="text-cl-lume normal-case font-normal tracking-normal">
-                                {selectedToAdd.size} selected
-                            </span>
-                        )}
-                    </label>
-
-                    <ClSearch
-                        icon={<Search size={15} />}
-                        type="text"
-                        value={friendSearch}
-                        onChange={e => setFriendSearch(e.target.value)}
-                        placeholder="Search friends"
-                    />
-
-                    <div
-                        className="overflow-y-auto bg-cl-deep border border-white/5 rounded-xl p-2 custom-scrollbar"
-                        style={{ minHeight: '120px', maxHeight: '200px' }}
-                    >
-                        {loading ? (
-                            <div className="flex items-center justify-center h-full py-6 text-cl-faint">
-                                <Loader2 className="w-5 h-5 animate-spin" />
-                            </div>
-                        ) : friends.length === 0 ? (
-                            <div className="flex flex-col items-center justify-center py-6 text-center">
-                                <Users className="w-7 h-7 mb-2 text-cl-faint opacity-50" />
-                                <span className="text-sm text-cl-faint">Your circle is empty — add friends first.</span>
-                            </div>
-                        ) : filteredFriends.length === 0 ? (
-                            <div className="text-center text-cl-faint py-6 text-sm">
-                                {friendSearch ? `No friends match "${friendSearch}"` : 'All your friends are already in this group'}
-                            </div>
-                        ) : (
-                            filteredFriends.map(f => {
-                                const isSelected = selectedToAdd.has(f.user_id);
-                                return (
-                                    <ClButton
-                                        type="button"
-                                        key={f.user_id}
-                                        variant="ghost"
-                                        row
-                                        fullWidth
-                                        onClick={() => toggleSelectedToAdd(f.user_id)}
-                                        style={{
-                                            marginBottom: 2,
-                                            background: isSelected ? 'rgba(37,224,200,0.08)' : 'transparent',
-                                        }}
-                                    >
-                                        <div
-                                            className="w-9 h-9 rounded-full overflow-hidden shrink-0"
-                                            style={{
-                                                boxShadow: isSelected ? '0 0 0 2px var(--cl-lume)' : '0 0 0 1px var(--cl-border)',
-                                                transition: 'box-shadow .15s ease',
-                                            }}
-                                        >
-                                            <EncryptedAvatar
-                                                attachmentId={f.avatar_url ?? null}
-                                                userId={f.user_id}
-                                                token={token}
-                                                className="w-full h-full"
-                                                fallbackSize={17}
-                                                disableClickProfile
-                                            />
-                                        </div>
-                                        <span className="text-[14px] font-semibold text-cl-text truncate flex-1 text-left">
-                                            {f.username}
-                                        </span>
-                                        <span className="pointer-events-none shrink-0">
-                                            <ClCheckbox checked={isSelected} onChange={() => {}} />
-                                        </span>
-                                    </ClButton>
-                                );
-                            })
-                        )}
-                    </div>
-
-                    {selectedToAdd.size > 0 && (
-                        <ClButton fullWidth onClick={handleAddSelectedMembers} loading={isAddingMembers} disabled={isAddingMembers}>
-                            <UserPlus size={16} />
-                            Add {selectedToAdd.size} {selectedToAdd.size === 1 ? 'Member' : 'Members'}
-                        </ClButton>
-                    )}
-                </div>
+                {/* Add members — the shared picker (friend search, staged
+                    multi-select + confirm, 200-member cap, added/failed messaging).
+                    Re-load the member list above once an add settles. */}
+                <AddGroupMembersPicker
+                    conversationId={conversationId}
+                    memberIds={memberIds}
+                    membersLoading={loading}
+                    onResult={() => { fetchMembers(); }}
+                />
 
                 <ClButton variant="ghost" fullWidth onClick={handleClose}>Done</ClButton>
         </ClModal>

@@ -22,6 +22,7 @@ import { tileMetrics } from './participantTileMetrics';
 
 export interface ParticipantCardProps {
     p: Participant;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     localParticipant: any;
     token: string;
     localAvatarUrl?: string;

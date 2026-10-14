@@ -156,6 +156,8 @@ const ALLOWED_KEYS = new Set([
     'codec', 'profile', 'hardware', 'reason', 'verdict', 'from', 'to',
     'layers', 'top', 'top_kbps', 'low', 'mode',
     'res', 'lighter_copy', 'on', 'viewers',
+    // share_codec: which OS capturer is in use and its fixed frame-rate ceiling (0 = none).
+    'backend', 'ceiling',
     'track', 'prev_seconds', 'ms', 'quality', 'role', 'size',
     'cap', 'decoded', 'avatars',
     'encode', 'decode', 'network', 'sources', 'decoding', 'drop_pct', 'decode_ms',
@@ -175,6 +177,41 @@ const ALLOWED_KEYS = new Set([
     // useAnnotationTransport.ts, e2eeWorkerStats.ts): outcome + reason enums,
     // share KIND (screen|window), a display COUNT, booleans.
     'result', 'how', 'share', 'captured', 'displays', 'addon',
+    // Mic re-acquire (micDeviceSync.ts): followed the system default? (boolean).
+    'to_default',
+    // Mic capture-flag enforcement (micDeviceSync.applyCapture -> mic_echo_cancellation):
+    // `on` (wanted echo cancellation) and `changed` (it was among the differing flags), booleans.
+    'changed',
+    // Output-device routing (audioOutput.ts -> audio_output_sink): which kind of
+    // target, did the read-back match, and a closed DOMException-name enum.
+    'target', 'landed', 'error',
+    // GPU process restart + video recovery (gpuRecovery.ts): Chromium's exit
+    // code, booleans, a step enum and counts; our own advertised H.265 decode
+    // (h265_caps, SidebarConference).
+    'step', 'ok', 'frozen', 'camera', 'exit_code', 'ctx_lost', 'in_call', 'self_decode',
+    // Share in the background (shareBackgroundProbe.ts): a cause enum, a
+    // boolean, frame rates and capture-log timings only.
+    'cause', 'doc_hidden', 'target_fps', 'capture_before', 'sent_before', 'capture_after', 'sent_after',
+    'grab_ms', 'interval_ms', 'unchanged_pct',
+    // Share frame-rate instrumentation + encoder-size clamp (shareHealth.ts,
+    // shareEncoderLimits.ts): rates, an encoder-implementation name, sizes as
+    // "WxH", a scale factor, a layout enum, booleans.
+    'cap_fps', 'src_fps', 'enc_fps', 'sent_fps', 'limit', 'enc', 'hw', 'focus', 'vis',
+    'cap_res', 'scale', 'layout', 'over',
+    // What had the screen during a share (foregroundInfo.ts -> share_fps, share_background):
+    // a Windows notification-state enum, the foreground PROGRAM's basename (never a
+    // window title or path), a boolean. Share power-throttling opt-out
+    // (sharePowerEvent.ts -> share_power): a phase enum, counts, Win32 error codes,
+    // a mask, a boolean. share_hint reuses `result`.
+    'fg_state', 'fg_exe', 'fg_cover',
+    'phase', 'procs', 'ok_n', 'fail_n', 'main_err', 'gpu_err', 'ren_err', 'mask', 'timer',
+    // GPU scheduling class (shareGpuSchedEvent.ts -> share_gpu_sched): class names
+    // read back per process and NTSTATUS strings ("0", "0xc0000061", "err5", "na").
+    'gpu_sched_main', 'gpu_sched_gpu', 'gpu_sched_main_rt', 'gpu_sched_gpu_rt', 'gpu_sched_main_st', 'gpu_sched_gpu_st',
+    // Long renderer frames (freezeLog.ts → long_frame): durations, a script
+    // count, and the top script's file basename / function name / char offset /
+    // invoker kind — code identifiers reduced by longFrameAttribution.ts.
+    'blocking_ms', 'render_ms', 'layout_ms', 'script_ms', 'scripts', 'file', 'fn', 'char', 'invoker', 'invoker_type',
 ]);
 const FORBIDDEN = /[iI]dentity|^sid$|Sid|[nN]ame|[lL]abel|[dD]evice|[rR]oom|[uU]ser|[eE]mail|^ip$|^ip[A-Z]|IP|[aA]ddr|[tT]ext|[tT]itle|[mM]essage|[mM]etadata/;
 

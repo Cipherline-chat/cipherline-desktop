@@ -22,6 +22,7 @@ import type { VoiceSettings } from '../hooks/useVoiceSettings';
 
 const settings: VoiceSettings = {
     noiseSuppression: true,
+    echoCancellation: true,
     volumeNormalization: true,
     voiceGate: true,
     voiceGateThreshold: -45,

@@ -107,6 +107,41 @@ const HELPER_PROCESSES = new Set([
 ]);
 
 /**
+ * Built-in default exclusions: software that is resident for as long as the
+ * machine is up, so it would read as "Playing <it>" forever. Deliberately
+ * separate from the user's own ignored-processes list (setIgnoredProcesses) —
+ * clearing that list must not bring these back.
+ *
+ * Wallpaper Engine (Steam appid 431960) is the case that prompted this: its
+ * wallpaper renderer runs the whole session and lives in a Steam install
+ * folder, so the Steam layer credited it as a game. Opt back in by adding it
+ * as a custom game — Layer 1 outranks this list.
+ *
+ * Only names DISTINCTIVE to the product belong in the process list. Its
+ * generic siblings (ui32.exe, launcher.exe) are excluded by install-folder /
+ * appid context instead — see isDefaultExcludedSteamApp().
+ */
+const DEFAULT_EXCLUDED_PROCESSES = new Set([
+    // Wallpaper Engine: main renderer, web-wallpaper host (one per monitor),
+    // application-wallpaper host, and the elevated service.
+    'wallpaper32', 'wallpaper64',
+    'webwallpaper32', 'webwallpaper64',
+    'applicationwallpaper32', 'applicationwallpaper64',
+    'wallpaperservice32', 'wallpaperservice64',
+]);
+
+/** Steam appids / install folders whose executables never identify a game. */
+const DEFAULT_EXCLUDED_STEAM_APPIDS = new Set(['431960']); // Wallpaper Engine
+const DEFAULT_EXCLUDED_STEAM_INSTALLDIRS = new Set(['wallpaper_engine']);
+
+/** Pure; exported for tests. */
+export function isDefaultExcludedSteamApp(appid: string | undefined, installDir: string | undefined): boolean {
+    if (appid && DEFAULT_EXCLUDED_STEAM_APPIDS.has(String(appid).trim())) return true;
+    if (installDir && DEFAULT_EXCLUDED_STEAM_INSTALLDIRS.has(String(installDir).trim().toLowerCase())) return true;
+    return false;
+}
+
+/**
  * Turn "exe name → every Steam game whose folder contains it" into the
  * detection cache. An executable that shows up under two or more different
  * games is a shared runtime or helper that HELPER_PROCESSES didn't know
@@ -160,7 +195,7 @@ async function findSteamLibraryFolders(): Promise<string[]> {
                     folders.push(entry.path);
                 }
             }
-        } catch {}
+        } catch { /* best-effort filesystem operation; failure is non-fatal */ }
     }
     // Deduplicate
     return [...new Set(folders)];
@@ -224,10 +259,10 @@ async function scanDirForExecutables(dir: string, gameName: string, owners: Map<
                         if (HELPER_PROCESSES.has(subExeName)) continue;
                         claim(subExeName);
                     }
-                } catch {}
+                } catch { /* best-effort; failure is non-fatal and intentionally ignored */ }
             }
         }
-    } catch {}
+    } catch { /* best-effort; failure is non-fatal and intentionally ignored */ }
 }
 
 let steamDirStamp = '';
@@ -254,6 +289,11 @@ async function steamLibraryStamp(): Promise<string> {
 
 async function buildSteamCache(): Promise<Map<string, string>> {
     const owners = new Map<string, Set<string>>();
+    // Display names of default-excluded apps (Wallpaper Engine). Their folders
+    // are still walked so a name they share with a real game stays ambiguous
+    // (dropped) exactly as before; the entries they solely own are removed
+    // after resolution.
+    const excludedNames = new Set<string>();
     try {
         const libraryFolders = await findSteamLibraryFolders();
         for (const folder of libraryFolders) {
@@ -276,15 +316,22 @@ async function buildSteamCache(): Promise<Map<string, string>> {
                     if (gameName.startsWith('Steamworks') || gameName.startsWith('Proton') ||
                         gameName.startsWith('Steam Linux Runtime')) continue;
 
+                    const manifestAppId = String(appState?.appid ?? '') || (manifest.match(/^appmanifest_(\d+)\.acf$/)?.[1] ?? '');
+                    if (isDefaultExcludedSteamApp(manifestAppId, String(installDir))) excludedNames.add(gameName);
+
                     const gameDir = join(steamappsDir, 'common', installDir);
                     if (await fileExists(gameDir)) {
                         await scanDirForExecutables(gameDir, gameName, owners);
                     }
-                } catch {}
+                } catch { /* best-effort filesystem operation; failure is non-fatal */ }
             }
         }
-    } catch {}
-    return resolveSteamOwners(owners);
+    } catch { /* best-effort filesystem operation; failure is non-fatal */ }
+    const cache = resolveSteamOwners(owners);
+    for (const [exe, game] of Array.from(cache)) {
+        if (excludedNames.has(game)) cache.delete(exe);
+    }
+    return cache;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1067,6 +1114,67 @@ async function isProcessSuspendedWin32(procName: string): Promise<boolean> {
 const SUSPENDED_CHECK_TTL_MS = 60_000;
 const suspendedVerdicts = new Map<string, { at: number; suspended: boolean }>();
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Resident-software backstop for the Steam-folder heuristic
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Layer 2 credits ANY executable found two levels into a game's install
+// folder to that game. Some of those are not the game but software that stays
+// resident for as long as the machine is up: a publisher launcher left in the
+// tray, an anti-cheat service, an updater. Every such process is a permanent
+// "Playing <game>" for as long as it lives — the Forza/msedgewebview2 bug
+// (see HELPER_PROCESSES) and, on stable v1.0.20/1.0.21, a friend shown as
+// playing Marvel Rivals for a week. The name lists above can only ever chase
+// the ones somebody already reported.
+//
+// So, independent of names: a heuristic match is allowed to read as "playing"
+// for a bounded amount of ACTIVE time (time between consecutive scans — the
+// hours a laptop spends asleep do not count) without the process ever
+// leaving the process list. A real session is a few hours; a resident helper
+// blows through the budget on its first day and is then treated as software
+// that is merely running, until the process goes away (which resets it).
+// Only the heuristic layer is bounded: custom games and the curated database
+// are exact, deliberate matches.
+
+/** Longest continuous play a heuristic (Steam-folder) match may report. */
+export const HEURISTIC_MAX_ACTIVE_MS = 16 * 60 * 60_000;
+/** Scans further apart than this (sleep, polling switched off) add no time. */
+export const HEURISTIC_MAX_GAP_MS = 3 * 60_000;
+/** After this long without a scan we cannot claim it is the same instance. */
+export const HEURISTIC_FORGET_MS = 24 * 60 * 60_000;
+
+const heuristicSessions = new Map<string, { activeMs: number; lastSeen: number }>();
+
+/**
+ * Record that `proc` is being credited to a game by the heuristic layer right
+ * now. Returns false once it has been reported for longer than the budget.
+ */
+function heuristicWithinBudget(proc: string, now: number): boolean {
+    const e = heuristicSessions.get(proc);
+    if (!e) { heuristicSessions.set(proc, { activeMs: 0, lastSeen: now }); return true; }
+    const gap = now - e.lastSeen;
+    const before = e.activeMs;
+    if (gap > HEURISTIC_FORGET_MS) e.activeMs = 0;
+    else if (gap > 0 && gap <= HEURISTIC_MAX_GAP_MS) e.activeMs += gap;
+    e.lastSeen = now;
+    if (e.activeMs >= HEURISTIC_MAX_ACTIVE_MS && before < HEURISTIC_MAX_ACTIVE_MS) {
+        console.log(`[GameDetector] ${proc} has matched for over ${HEURISTIC_MAX_ACTIVE_MS / 3_600_000} h without exiting — treating it as resident software, not play`);
+    }
+    return e.activeMs < HEURISTIC_MAX_ACTIVE_MS;
+}
+
+/** A process that left the list ends its session. */
+function pruneHeuristicSessions(running: ReadonlySet<string>): void {
+    for (const proc of Array.from(heuristicSessions.keys())) {
+        if (!running.has(proc)) heuristicSessions.delete(proc);
+    }
+}
+
+/** Forget every heuristic session (game activity switched off). */
+export function resetHeuristicSessions(): void {
+    heuristicSessions.clear();
+}
+
 let inFlight: Promise<DetectedGame | null> | null = null;
 let lastResult: { at: number; game: DetectedGame | null } | null = null;
 
@@ -1100,10 +1208,13 @@ export function __resetGameDetectorForTests(): void {
     steamCacheTime = 0;
     steamDirStamp = '';
     suspendedVerdicts.clear();
+    heuristicSessions.clear();
 }
 
 async function detectCurrentGameOnce(): Promise<DetectedGame | null> {
     const procs = await getRunningProcessNames();
+    const now = Date.now();
+    pruneHeuristicSessions(new Set(procs));
 
     // Refresh Steam cache if stale — but only re-walk the libraries when they
     // actually changed (a game installed or removed rewrites the steamapps
@@ -1140,6 +1251,10 @@ async function detectCurrentGameOnce(): Promise<DetectedGame | null> {
             continue;
         }
 
+        // Built-in default exclusions (after Layer 1 so a custom game can opt
+        // back in; independent of the user's ignored list).
+        if (DEFAULT_EXCLUDED_PROCESSES.has(proc)) continue;
+
         // Curated exclusions outrank the Steam-folder heuristic: a shared
         // runtime sitting in a game's install dir must never be that game.
         if (Object.prototype.hasOwnProperty.call(GAME_DB, proc) && GAME_DB[proc] === null) continue;
@@ -1147,7 +1262,9 @@ async function detectCurrentGameOnce(): Promise<DetectedGame | null> {
         // Layer 2: Steam library
         if (steamCache.has(proc)) {
             const m = await liveMatch(steamCache.get(proc)!, proc);
-            if (m) return m;
+            // A match that has been "playing" far longer than any session is
+            // resident software (see HEURISTIC_MAX_ACTIVE_MS), not a game.
+            if (m && heuristicWithinBudget(proc, now)) return m;
             continue;
         }
 

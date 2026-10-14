@@ -15,7 +15,8 @@ describe('listen-only join', () => {
     it('the room only auto-starts what the token lets it publish', () => {
         // The token grant still gates the mic; instant join only adds "and the
         // user didn't mute/deafen while joining" (see instantCallJoin.wiring.test.ts).
-        expect(src).toContain('const joinWithMic = grants.microphone && !joinIntent.muted && !joinIntent.deafened;');
+        // Same rule (token grant AND not muted/deafened), now in utils/selfCallIntent so a carried mute shares it.
+        expect(src).toContain('const joinWithMic = shouldPublishMicAtConnect(joinIntent, grants.microphone);');
         expect(src).toContain('audio={joinWithMic}');
         expect(src).toContain('video={videoByDefault && grants.camera}');
         expect(src).not.toMatch(/\baudio=\{true\}/);

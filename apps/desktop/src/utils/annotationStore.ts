@@ -485,6 +485,26 @@ export const annotationStore = {
         const requestedAt = { ...state.requestedAt }; delete requestedAt[key + '\n' + identity];
         set({ ...state, requests, requestedAt, deniedUntil: { ...state.deniedUntil, [key + '\n' + identity]: now() + DENY_COOLDOWN_MS } });
     },
+    /**
+     * Streamer side: `identity` left the call, so any request of theirs still
+     * waiting on one of our surfaces is moot - it must not stay in the dock
+     * (or be approvable from the keyboard) for the rest of its 60s. Removes
+     * only pending requests; a decline cooldown against them is kept, so
+     * leaving and rejoining is not a way around a "no".
+     */
+    dropRequestsFrom(identity: string) {
+        if (!identity) return;
+        let requests = state.requests;
+        let requestedAt = state.requestedAt;
+        for (const [k, ids] of Object.entries(state.requests)) {
+            if (!ids.includes(identity)) continue;
+            if (requests === state.requests) requests = { ...state.requests };
+            if (requestedAt === state.requestedAt) requestedAt = { ...state.requestedAt };
+            requests[k] = ids.filter(i => i !== identity);
+            delete requestedAt[k + '\n' + identity];
+        }
+        if (requests !== state.requests) set({ ...state, requests, requestedAt });
+    },
     /** Streamer grants (also clears the request, and any decline cooldown
      *  still standing against them — a yes outranks an earlier no). */
     grant(key: string, identity: string) {

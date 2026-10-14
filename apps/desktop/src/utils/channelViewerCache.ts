@@ -39,7 +39,7 @@
  * data they hold.
  */
 import axios from 'axios';
-import { API_BASE } from '../constants';
+import { apiUrl } from './apiPath';
 
 export type ChannelViewers =
     | { readonly all: true }
@@ -160,7 +160,7 @@ async function fetchOnce(serverId: string, channelId: string, token: string): Pr
     const invAtStart = invalidationCount.get(channelId) ?? 0;
     try {
         const res = await axios.get(
-            `${API_BASE}/servers/${serverId}/channels/${channelId}/viewers`,
+            apiUrl`/servers/${serverId}/channels/${channelId}/viewers`,
             { headers: { Authorization: `Bearer ${token}` } },
         );
         if (gen !== generation) return null;   // account changed mid-flight

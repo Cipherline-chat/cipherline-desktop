@@ -231,6 +231,7 @@ export async function buildBackupPlan(
         const owned = new Set(
             (Array.isArray(vault.gifFavorites) ? vault.gifFavorites : [])
                 .filter((g: unknown) => !isKlipyRefEntry(g))
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
                 .map((g: any) => g?.id).filter(Boolean),
         );
         try {

@@ -116,11 +116,12 @@ describe('bandwidth round: 1:1 layering, H.265 negotiation, lighter share copy, 
         expect(sidebar).toMatch(/hevc\.observe\(roomHevcState\(remotes\), allowed, now\)/);
         expect(sidebar).toMatch(/republishCamera\(asCameraParticipant\(lp\)/);
         expect(sidebar).toMatch(/swapShareCodec\(lp as unknown as ShareParticipantLike/);
-        expect(sidebar).toMatch(/lp\.setAttributes\(\{ \[HEVC_ATTR\]: formatDecodeCaps\(\{ h265 \}\) \}\)/);
+        // Never H.265 decode advertised after a GPU process restart (gpuRecovery.ts).
+        expect(sidebar).toMatch(/lp\.setAttributes\(\{ \[HEVC_ATTR\]: formatDecodeCaps\(\{ h265: h265 && !hasHevcGpuLost\(\) \}\) \}\)/);
         expect(sidebar).toMatch(/single: initialLayering\(remoteParticipants\.length\) === 'single'/);
     });
     it('the share uses H.265 only through the negotiation, and the lighter copy only when asked + hardware', () => {
-        expect(sidebar).toMatch(/const hevcShare = hevcModeRef\.current === 'h265' && hevcEncodeRef\.current && !hasHevcFailed\(\);/);
+        expect(sidebar).toMatch(/const hevcShare = hevcModeRef\.current === 'h265' && hevcEncodeRef\.current && !hasHevcFailed\(\) && !hasHevcGpuLost\(\);/);
         expect(sidebar).toMatch(/const lowerLayer = getShareLowLayerEnabled\(\) && shareHw;/);
         expect(sidebar).toMatch(/installShareLowLayerControl\(track, \{/);
     });

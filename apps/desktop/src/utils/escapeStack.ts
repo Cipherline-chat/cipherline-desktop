@@ -23,6 +23,8 @@
  * right now"); the press then falls through to the layer beneath it.
  */
 
+import { isScreenLockEngaged } from './screenLockEngaged';
+
 export type EscapeHandler = (event: KeyboardEvent) => void | boolean;
 
 interface Layer {
@@ -36,6 +38,8 @@ let installed = false;
 
 function onKeyDown(event: KeyboardEvent): void {
     if (event.key !== 'Escape') return;
+    // Screen Lock up: Escape must not close layers of the app behind it.
+    if (isScreenLockEngaged()) return;
     // An IME composition uses Escape to dismiss its candidate window; that press
     // belongs to the text input, not to us.
     if (event.isComposing) return;

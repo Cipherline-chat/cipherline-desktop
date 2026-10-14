@@ -14,6 +14,7 @@ import { tileCornerInsets, tileChromeSlots } from './videoRectChrome';
 
 export interface ScreenShareGateProps {
     p: RemoteParticipant;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     localParticipant: any;
     token: string;
     avatarAttachmentId?: string;
@@ -87,10 +88,12 @@ export const ScreenShareGate = ({
     React.useEffect(() => {
         const onMeta = () => forceRender(n => n + 1);
         p.on(ParticipantEvent.ParticipantMetadataChanged, onMeta);
-        try { p.on(ParticipantEvent.AttributesChanged as any, onMeta); } catch {}
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
+        try { p.on(ParticipantEvent.AttributesChanged as any, onMeta); } catch { /* listener registration is best-effort */ }
         return () => {
             p.off(ParticipantEvent.ParticipantMetadataChanged, onMeta);
-            try { p.off(ParticipantEvent.AttributesChanged as any, onMeta); } catch {}
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
+            try { p.off(ParticipantEvent.AttributesChanged as any, onMeta); } catch { /* teardown is best-effort; the node/handle may already be closed */ }
         };
     }, [p]);
 
@@ -293,7 +296,7 @@ export const ScreenShareGate = ({
             {/* Status badges */}
             {(() => {
                 let ssIsDeafened = false;
-                try { if (p.metadata) ssIsDeafened = JSON.parse(p.metadata).deafened === true; } catch {}
+                try { if (p.metadata) ssIsDeafened = JSON.parse(p.metadata).deafened === true; } catch { /* malformed or missing JSON is treated as absent */ }
                 const ssIsMuted = isMuted;
                 return ssIsDeafened ? (
                     <div className="absolute bottom-2 right-2 bg-red-500 rounded-full p-1 border-[2px] border-[#0B0F1E] shadow-md z-30 pointer-events-none">

@@ -15,7 +15,6 @@ window.matchMedia = ((q: string) => ({
     dispatchEvent: () => false,
 })) as unknown as typeof window.matchMedia;
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 let ReactionPill: any;
 
 /**

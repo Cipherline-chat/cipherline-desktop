@@ -25,7 +25,6 @@ window.matchMedia = ((q: string) => ({
  * subscription is dropped again.
  */
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 let useParticipantTrackState: any;
 let Track: { Source: { Camera: string; ScreenShare: string } };
 

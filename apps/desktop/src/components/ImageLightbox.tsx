@@ -1,8 +1,11 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { X } from 'lucide-react';
+import { X, Image as ImageIcon } from 'lucide-react';
 import { ClButton } from './cl';
 import { useEscape } from '../hooks/useEscape';
+import { useContextMenu } from '../hooks/useContextMenu';
+import { useToast } from '../contexts/ToastContext';
+import { copyImageWithToast } from '../utils/copyImage';
 
 interface ImageLightboxProps {
     src: string;
@@ -23,6 +26,18 @@ export const ImageLightbox: React.FC<ImageLightboxProps> = ({ src, alt, filename
     const [dragging, setDragging]   = useState(false);
     const [translate, setTranslate] = useState({ x: 0, y: 0 });
     const [pinchScale, setPinchScale] = useState(ZOOM_SCALE); // zoom level while zoomed
+
+    // Right-click → "Copy image". Only for a local blob: image (an attachment or
+    // a loaded link image): a remote source (KLIPY) is never fetched just to copy.
+    const toast = useToast();
+    const ctxMenu = useContextMenu();
+    const onImageContextMenu = (e: React.MouseEvent) => {
+        if (!src.startsWith('blob:')) return;
+        ctxMenu.open(e, [{
+            icon: <ImageIcon />, label: 'Copy image',
+            onSelect: () => { void copyImageWithToast(src, toast); },
+        }]);
+    };
 
     const dragData = useRef<{
         startX: number; startY: number;
@@ -199,6 +214,7 @@ export const ImageLightbox: React.FC<ImageLightboxProps> = ({ src, alt, filename
                 // chat row's onClick and toggle save.
                 onMouseDown={(e) => e.stopPropagation()}
                 onClick={(e) => { e.stopPropagation(); dismiss(); }}
+                onContextMenu={onImageContextMenu}
             >
                 <img
                     src={src}
@@ -221,6 +237,18 @@ export const ImageLightbox: React.FC<ImageLightboxProps> = ({ src, alt, filename
                         pointerEvents: 'auto',
                     }}
                 />
+            </div>
+
+            {/* The menu portals itself to <body>, but React events still bubble
+                up the component tree (through this portal) to the chat row —
+                so clicks inside it are fenced off here. */}
+            <div
+                style={{ display: 'contents' }}
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={(e) => e.stopPropagation()}
+                onContextMenu={(e) => e.stopPropagation()}
+            >
+                {ctxMenu.menu}
             </div>
         </>,
         document.body,

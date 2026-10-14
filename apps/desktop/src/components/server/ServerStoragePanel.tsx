@@ -16,9 +16,9 @@ import React, { useEffect, useState, useCallback, useRef } from 'react';
 import axios from 'axios';
 import { Archive, Hash, ChevronDown, ChevronRight, AlertTriangle, Check, Info } from 'lucide-react';
 import { formatBytes, STORAGE_TIERS } from '@cipherline/shared';
-import { API_BASE } from '../../constants';
+import { apiUrl } from '../../utils/apiPath';
 import { ClButton } from '../cl';
-import { isFlatStoragePlan, nearLimitMessage } from '../../utils/serverStorageCopy';
+import { isFlatStoragePlan, nearLimitMessage, overLimitMessage } from '../../utils/serverStorageCopy';
 
 interface Props {
     serverId: string;
@@ -91,15 +91,16 @@ export const ServerStoragePanel: React.FC<Props> = ({
         setError(null);
         try {
             const [quotaRes, channelsRes] = await Promise.all([
-                axios.get(`${API_BASE}/servers/${serverId}/storage`, {
+                axios.get(apiUrl`/servers/${serverId}/storage`, {
                     headers: { Authorization: `Bearer ${token}` },
                 }),
-                axios.get(`${API_BASE}/servers/${serverId}/storage/channels`, {
+                axios.get(apiUrl`/servers/${serverId}/storage/channels`, {
                     headers: { Authorization: `Bearer ${token}` },
                 }),
             ]);
             setQuota(quotaRes.data);
             setChannels(channelsRes.data?.channels ?? []);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (e: any) {
             setError(e?.response?.data?.message ?? 'Failed to load storage');
         } finally {
@@ -112,7 +113,7 @@ export const ServerStoragePanel: React.FC<Props> = ({
     const toggleChannel = (id: string) => {
         setExpandedChannels(prev => {
             const next = new Set(prev);
-            next.has(id) ? next.delete(id) : next.add(id);
+            if (next.has(id)) next.delete(id); else next.add(id);
             return next;
         });
     };
@@ -135,6 +136,9 @@ export const ServerStoragePanel: React.FC<Props> = ({
         : 0;
     const isFlat = isFlatStoragePlan(quota.storage_plan);
     const isNearLimit = pct >= 90;
+    // Over (not just near) the limit: what happens next depends on the owner's
+    // plan — a free owner's server is on the 60-day path to a trim.
+    const isOverLimit = quota.limit_bytes > 0 && quota.used_bytes > quota.limit_bytes;
     const isOverHalf  = pct >= 50;
 
     const fillColor = isNearLimit
@@ -289,7 +293,7 @@ export const ServerStoragePanel: React.FC<Props> = ({
                 {isNearLimit && (
                     <div className="flex items-start gap-1.5 text-[11px] text-amber-400/80 leading-snug">
                         <AlertTriangle size={12} className="shrink-0 mt-0.5" />
-                        <span>{nearLimitMessage(quota.storage_plan)}</span>
+                        <span>{isOverLimit ? overLimitMessage(quota.storage_plan) : nearLimitMessage(quota.storage_plan)}</span>
                     </div>
                 )}
             </div>

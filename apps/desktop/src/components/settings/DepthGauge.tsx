@@ -25,6 +25,7 @@ export interface ZoneDef {
     items: { id: PaneId; label: string; icon: React.ReactNode }[];
 }
 
+// eslint-disable-next-line react-refresh/only-export-components -- co-located helper export; splitting the file would only affect dev Fast Refresh, not runtime behaviour
 export const ZONES: ZoneDef[] = [
     {
         name: 'Surface', depth: 0, label: '0 m',
@@ -60,6 +61,7 @@ export const ZONES: ZoneDef[] = [
     },
 ];
 
+// eslint-disable-next-line react-refresh/only-export-components -- co-located helper export; splitting the file would only affect dev Fast Refresh, not runtime behaviour
 export function zoneOf(pane: PaneId): number {
     return ZONES.findIndex(z => z.items.some(i => i.id === pane));
 }
@@ -155,7 +157,7 @@ export const DepthGauge: React.FC<DepthGaugeProps> = ({ active, onSelect, appVer
                                 key={item.id}
                                 ref={el => { itemRefs.current[item.id] = el; }}
                                 className={`sd-nitem${active === item.id ? ' sd-on' : ''}`}
-                                style={{ transitionDelay: `${0.2 + (zi * 3 + ii) * 0.035}s` }}
+                                style={{ '--sd-enter-delay': `${0.2 + (zi * 3 + ii) * 0.035}s` } as React.CSSProperties}
                                 onClick={() => onSelect(item.id)}
                             >
                                 {item.icon}

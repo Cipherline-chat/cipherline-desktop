@@ -1,6 +1,6 @@
 import { useEffect, useCallback, useSyncExternalStore } from 'react';
 import axios from 'axios';
-import { API_BASE } from '../constants';
+import { apiUrl } from '../utils/apiPath';
 import { prefetchServerEmojis } from '../utils/serverEmojiLoader';
 import { emojiListCache } from '../utils/emojiListCache';
 
@@ -58,7 +58,7 @@ export function useServerEmojis(serverId: string | null, token: string | null) {
         if (!token) { emojiListCache.clear(); return; }
         if (!serverId) return;
         try {
-            const res = await axios.get<ServerEmoji[]>(`${API_BASE}/servers/${serverId}/emojis`, {
+            const res = await axios.get<ServerEmoji[]>(apiUrl`/servers/${serverId}/emojis`, {
                 headers: { Authorization: `Bearer ${token}` },
             });
             const list = res.data ?? [];
@@ -83,7 +83,7 @@ export function useServerEmojis(serverId: string | null, token: string | null) {
         name: string; attachment_id: string; key_b64: string; nonce_b64: string;
     }): Promise<ServerEmoji> => {
         if (!serverId || !token) throw new Error('Not ready');
-        const res = await axios.post<ServerEmoji>(`${API_BASE}/servers/${serverId}/emojis`, body, {
+        const res = await axios.post<ServerEmoji>(apiUrl`/servers/${serverId}/emojis`, body, {
             headers: { Authorization: `Bearer ${token}` },
         });
         emojiListCache.set(serverId, [...(emojiListCache.get(serverId) ?? []), res.data]);
@@ -93,7 +93,7 @@ export function useServerEmojis(serverId: string | null, token: string | null) {
     const rename = useCallback(async (emojiId: string, name: string): Promise<ServerEmoji> => {
         if (!serverId || !token) throw new Error('Not ready');
         const res = await axios.patch<ServerEmoji>(
-            `${API_BASE}/servers/${serverId}/emojis/${emojiId}`,
+            apiUrl`/servers/${serverId}/emojis/${emojiId}`,
             { name },
             { headers: { Authorization: `Bearer ${token}` } },
         );
@@ -103,7 +103,7 @@ export function useServerEmojis(serverId: string | null, token: string | null) {
 
     const remove = useCallback(async (emojiId: string): Promise<void> => {
         if (!serverId || !token) throw new Error('Not ready');
-        await axios.delete(`${API_BASE}/servers/${serverId}/emojis/${emojiId}`, {
+        await axios.delete(apiUrl`/servers/${serverId}/emojis/${emojiId}`, {
             headers: { Authorization: `Bearer ${token}` },
         });
         emojiListCache.set(serverId, (emojiListCache.get(serverId) ?? []).filter(e => e.emoji_id !== emojiId));

@@ -227,3 +227,73 @@ describe('PhoneLinkController', () => {
         });
     });
 });
+
+describe('PhoneLinkController — device approval (signed approval)', () => {
+    const PHONE_IDENTITY = 'I'.repeat(43) + '=';
+    const JOINED_WITH_KEY = { ...JOINED, identity_key_pub_b64: PHONE_IDENTITY };
+
+    async function joinedController(deps: PhoneLinkDeps) {
+        const c = new PhoneLinkController(deps);
+        await c.begin();
+        await vi.advanceTimersByTimeAsync(POLL_MS);
+        expect(c.getSnapshot().phase).toBe('joined');
+        return c;
+    }
+
+    it('signs for the identity key the phone advertised and sends signature + timestamp with the approve', async () => {
+        await withTimers(async () => {
+            const signApproval = vi.fn().mockResolvedValue({ sig: 'SIG', ts: 1_800_000_000 });
+            const deps = makeDeps({ pollInvite: vi.fn().mockResolvedValue(JOINED_WITH_KEY), signApproval });
+            const c = await joinedController(deps);
+            await c.approve('654321');
+            expect(signApproval).toHaveBeenCalledWith(INVITE_ID, PHONE_IDENTITY);
+            expect(deps.approve).toHaveBeenCalledWith(INVITE_ID, { code: '654321', approver_sig_b64: 'SIG', approver_ts: 1_800_000_000 });
+        });
+    });
+
+    it('a phone that advertised no key is signed for as null (the "-" form), not skipped', async () => {
+        await withTimers(async () => {
+            const signApproval = vi.fn().mockResolvedValue({ sig: 'SIG', ts: 1 });
+            const deps = makeDeps({ pollInvite: vi.fn().mockResolvedValue(JOINED), signApproval });
+            const c = await joinedController(deps);
+            await c.approve('654321');
+            expect(signApproval).toHaveBeenCalledWith(INVITE_ID, null);
+        });
+    });
+
+    it('an unavailable signer (null) or a throwing one never blocks the link — the approve goes out unsigned', async () => {
+        for (const signApproval of [vi.fn().mockResolvedValue(null), vi.fn().mockRejectedValue(new Error('no signer'))]) {
+            await withTimers(async () => {
+                const deps = makeDeps({ pollInvite: vi.fn().mockResolvedValue(JOINED_WITH_KEY), signApproval });
+                const c = await joinedController(deps);
+                await c.approve('654321');
+                expect(deps.approve).toHaveBeenCalledWith(INVITE_ID, { code: '654321' });
+                expect(c.getSnapshot().phase).toBe('granted');
+            });
+        }
+    });
+
+    it('with no signApproval dep at all the body is exactly what it was before this feature', async () => {
+        await withTimers(async () => {
+            const deps = makeDeps({ pollInvite: vi.fn().mockResolvedValue(JOINED_WITH_KEY) });
+            const c = await joinedController(deps);
+            await c.approve('654321');
+            expect(deps.approve).toHaveBeenCalledWith(INVITE_ID, { code: '654321' });
+        });
+    });
+
+    it('does not carry one phone\'s key into the next invite', async () => {
+        await withTimers(async () => {
+            const signApproval = vi.fn().mockResolvedValue({ sig: 'SIG', ts: 1 });
+            const pollInvite = vi.fn().mockResolvedValue(JOINED_WITH_KEY);
+            const deps = makeDeps({ pollInvite, signApproval });
+            const c = await joinedController(deps);
+            c.dispose();
+            const c2 = new PhoneLinkController(makeDeps({ pollInvite: vi.fn().mockResolvedValue(JOINED), signApproval }));
+            await c2.begin();
+            await vi.advanceTimersByTimeAsync(POLL_MS);
+            await c2.approve('654321');
+            expect(signApproval).toHaveBeenLastCalledWith(INVITE_ID, null);
+        });
+    });
+});

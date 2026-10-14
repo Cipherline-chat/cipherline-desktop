@@ -1,6 +1,7 @@
 import { CipherlineVoiceProcessor, type VoiceProcessorCallbacks, RNNOISE_SAMPLE_RATE } from './voiceProcessor';
 import type { VoiceSettings } from '../hooks/useVoiceSettings';
 import { registerCtxForUnlock } from './audioUnlock';
+import { voiceChainNeedsProcessor } from './voiceChain';
 
 /**
  * Call-lifetime singleton owning the CipherlineVoiceProcessor.
@@ -19,7 +20,10 @@ import { registerCtxForUnlock } from './audioUnlock';
  *
  * This manager is created ONCE per call (keyed by the LiveKit token, which
  * is unique per call and stable for the whole CallPane mount) and attached
- * by CallPane's MicProcessorBridge the moment the mic publication exists.
+ * by CallPane's MicProcessorBridge the moment the mic publication exists
+ * (bindMicTrack) — unless every per-user voice stage is off, in which case the
+ * raw capture is published with no processor until a stage is turned on (see
+ * "Attach / detach" below).
  *
  * NOT via `audioCaptureDefaults.processor`, though that looks like the
  * obvious pre-publish hook: livekit-client's module-level createLocalTracks()
@@ -117,12 +121,117 @@ export function updateCallbacks(callbacks: VoiceProcessorCallbacks): void {
  * CallSidebarPortal for no other purpose.
  */
 export function updateSettings(settings: VoiceSettings): void {
+    latestSettings = { ...settings };
     current?.processor.updateSettings(settings);
+    if (bound) scheduleReconcile();
+}
+
+// ── Attach / detach: a processor only while some stage needs one ────────────
+//
+// With every per-user stage off (no NS, gate, EQ, AGC; mic volume 100 %) the
+// call publishes the RAW capture with no processor and no WebAudio graph.
+// Turning any stage on mid-call attaches the processor; turning the last one
+// off detaches it. Both go through LiveKit's setProcessor / stopProcessor,
+// which swap the track on the SAME RTCRtpSender with replaceTrack(): no
+// unpublish, no renegotiation, the E2EE frame transform bound to that sender
+// stays, and mute (the raw capture's `enabled`) is untouched. Push-to-talk
+// works on that same mute, so it is unaffected too.
+
+/** The slice of livekit-client's LocalAudioTrack this manager drives. */
+export interface ProcessorHostTrack {
+    getProcessor(): unknown;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    setProcessor(processor: any): Promise<void>;
+    stopProcessor(): Promise<void>;
+    setAudioContext(ctx: AudioContext | undefined): void;
+}
+
+interface BoundTrack {
+    callId: string;
+    track: ProcessorHostTrack;
+    /** Wraps each attach/detach (CallPane passes trackActivity for the call log). */
+    run: <T>(fn: () => Promise<T>) => Promise<T>;
+}
+
+let bound: BoundTrack | null = null;
+let latestSettings: VoiceSettings | null = null;
+let reconcileChain: Promise<void> = Promise.resolve();
+let reconcileQueued = false;
+
+/**
+ * The call's published mic track. Called by CallPane's MicProcessorBridge on
+ * every microphone publication (a reconnect republish or a fresh publish is a
+ * new call to this); from then on the processor is attached or detached to
+ * match the settings. Returns once the first reconcile has settled.
+ */
+export function bindMicTrack(
+    callId: string,
+    track: ProcessorHostTrack,
+    settings: VoiceSettings,
+    run: BoundTrack['run'] = (fn) => fn(),
+): Promise<void> {
+    latestSettings = { ...settings };
+    bound = { callId, track, run };
+    return scheduleReconcile();
+}
+
+/** Serialised and coalesced: settings can change faster than LiveKit's
+ *  trackChangeLock lets an attach finish, and only the latest state matters. */
+function scheduleReconcile(): Promise<void> {
+    if (reconcileQueued) return reconcileChain;
+    reconcileQueued = true;
+    reconcileChain = reconcileChain.then(async () => {
+        reconcileQueued = false;
+        await reconcile();
+    }).catch((err) => {
+        console.error('[voiceProcessorManager] attach/detach failed:', err);
+    });
+    return reconcileChain;
+}
+
+async function reconcile(): Promise<void> {
+    const b = bound;
+    const settings = latestSettings;
+    if (!b || !settings) return;
+    const attached = b.track.getProcessor();
+    const need = voiceChainNeedsProcessor(settings);
+    if (need) {
+        if (attached) return; // ours (or one we must not replace) is already on
+        // LocalAudioTrack.setProcessor() throws without an audioContext on the
+        // track; the room's own may not exist yet — see getGuardAudioContext.
+        if (!(b.track as unknown as { audioContext?: AudioContext }).audioContext) {
+            b.track.setAudioContext(getGuardAudioContext());
+        }
+        const proc = getOrCreate(b.callId, settings);
+        proc.updateSettings(settings);
+        await b.run(() => b.track.setProcessor(proc));
+        console.log('[voiceProcessorManager] voice processor attached to mic track');
+        return;
+    }
+    if (!attached || attached !== current?.processor) return;
+    try {
+        // Destroys the processor (its graph, worklets, level timer) and puts
+        // the raw capture back on the sender.
+        await b.run(() => b.track.stopProcessor());
+        console.log('[voiceProcessorManager] every voice stage is off — publishing the raw mic');
+    } catch (err) {
+        // stopProcessor destroys first and swaps the sender after; a failure in
+        // between would leave the sender on a dead processed track (silence).
+        // Put a processor back rather than risk that.
+        console.error('[voiceProcessorManager] detach failed — re-attaching the processor:', err);
+        const proc = getOrCreate(b.callId, settings);
+        await b.run(() => b.track.setProcessor(proc));
+        return;
+    }
+    // No processor → no level meter: don't leave the last reading standing in
+    // for the silence watchdog (micLevelRegistry).
+    latestCallbacks.onInputLevel?.(-Infinity);
 }
 
 /** Tear down the processor for this call. Safe to call even if it's already
  *  gone, or if `callId` doesn't match the currently-held one (no-op). */
 export async function destroyForCall(callId: string): Promise<void> {
+    if (bound?.callId === callId) bound = null;
     if (!current || current.callId !== callId) return;
     const toDestroy = current.processor;
     current = null;

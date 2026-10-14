@@ -8,6 +8,9 @@
     "build": "tsc",
     "dev": "tsc -w"
   },
+  "dependencies": {
+    "obscenity": "^0.4.6"
+  },
   "devDependencies": {
     "typescript": "^5.0.0"
   }

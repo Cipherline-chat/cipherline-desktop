@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
 import { MessageSquare, Pencil, MoreVertical, PhoneCall, Server, UserPlus, UserMinus, Ban, AtSign, Check, X, Flag } from 'lucide-react';
-import { API_BASE } from '../constants';
+import { apiUrl } from '../utils/apiPath';
 import { EncryptedAvatar } from './EncryptedAvatar';
 import { ImageLightbox } from './ImageLightbox';
 import { GameControllerIcon } from './GameControllerIcon';
@@ -203,11 +203,12 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
         const fetchServerCtx = async () => {
             try {
                 const [rolesRes, membersRes] = await Promise.all([
-                    axios.get(`${API_BASE}/servers/${serverId}/roles`, { headers: { Authorization: `Bearer ${token}` } }),
-                    axios.get(`${API_BASE}/servers/${serverId}/members`, { headers: { Authorization: `Bearer ${token}` } }),
+                    axios.get(apiUrl`/servers/${serverId}/roles`, { headers: { Authorization: `Bearer ${token}` } }),
+                    axios.get(apiUrl`/servers/${serverId}/members`, { headers: { Authorization: `Bearer ${token}` } }),
                 ]);
                 if (cancelled) return;
                 const roles: Array<{ role_id: string; name: string; color: number; is_everyone?: boolean }> = rolesRes.data;
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
                 const member = (membersRes.data as any[]).find(m => m.user_id === userId);
                 setFetchedRoles(roles.filter(r => !r.is_everyone));
                 setFetchedMemberRoleIds(member?.role_ids ?? []);
@@ -257,6 +258,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
             // (for call-opened profiles where currentNickname prop updates async).
             setFetchedNickname(trimmed || null);
             setNicknameEditOpen(false);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (e: any) {
             setNicknameError(e?.response?.data?.message || 'Failed to update nickname');
         } finally {

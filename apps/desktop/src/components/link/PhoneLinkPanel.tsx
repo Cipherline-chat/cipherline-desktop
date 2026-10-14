@@ -3,6 +3,7 @@ import axios from 'axios';
 import QRCode from 'qrcode';
 import { Smartphone, Loader2, AlertTriangle, ShieldCheck, CheckCircle2, X as XIcon } from 'lucide-react';
 import { API_BASE } from '../../constants';
+import { apiUrl } from '../../utils/apiPath';
 import { useAuth } from '../../contexts/AuthContext';
 import { buildInviteQr } from '../../utils/linkQr';
 import { formatCountdown } from '../../utils/formatCountdown';
@@ -35,7 +36,7 @@ import { useLinkController } from './useLinkController';
 const POLL_INTERVAL_MS = 2000;
 const COUNTDOWN_TICK_MS = 250;
 
-function realDeps(getAuth: () => { token: string | null; deviceId: string | null }): PhoneLinkDeps {
+function realDeps(getAuth: () => { token: string | null; deviceId: string | null; userId: string | null }): PhoneLinkDeps {
     const headers = () => {
         const { token, deviceId } = getAuth();
         return { Authorization: `Bearer ${token}`, 'x-device-id': deviceId ?? '' };
@@ -44,18 +45,27 @@ function realDeps(getAuth: () => { token: string | null; deviceId: string | null
         createInvite: async (): Promise<CreateLinkInviteResponse> =>
             (await axios.post<CreateLinkInviteResponse>(`${API_BASE}/link/invites`, {}, { headers: headers() })).data,
         pollInvite: async (inviteId: string): Promise<LinkInvitePollResponse> =>
-            (await axios.get<LinkInvitePollResponse>(`${API_BASE}/link/invites/${inviteId}`, { headers: headers() })).data,
+            (await axios.get<LinkInvitePollResponse>(apiUrl`/link/invites/${inviteId}`, { headers: headers() })).data,
         approve: async (inviteId: string, body: ApproveLinkSessionBody): Promise<ApproveLinkSessionResponse> =>
-            (await axios.post<ApproveLinkSessionResponse>(`${API_BASE}/link/sessions/${inviteId}/approve`, body, { headers: headers() })).data,
+            (await axios.post<ApproveLinkSessionResponse>(apiUrl`/link/sessions/${inviteId}/approve`, body, { headers: headers() })).data,
+        // Device approval: sign for the phone that joined, with THIS device's
+        // identity key, so the session it claims registers an approved device.
+        signApproval: async (inviteId: string, newIdentityKeyB64: string | null) => {
+            const { userId, deviceId } = getAuth();
+            if (!userId || !deviceId || !window.electronAPI?.signLinkApproval) return null;
+            const ts = Math.floor(Date.now() / 1000);
+            const signed = await window.electronAPI.signLinkApproval(userId, deviceId, inviteId, newIdentityKeyB64, ts);
+            return signed ? { sig: signed.sig, ts } : null;
+        },
         deny: async (inviteId: string) => {
-            await axios.post(`${API_BASE}/link/sessions/${inviteId}/deny`, {}, { headers: headers() });
+            await axios.post(apiUrl`/link/sessions/${inviteId}/deny`, {}, { headers: headers() });
         },
         seal: async (payload: LinkGrantPayloadV2, ekPubB64: string, linkId: string) => {
             if (!window.electronAPI?.linkSeal) throw new Error('This feature requires the desktop app.');
             return window.electronAPI.linkSeal(payload, ekPubB64, linkId);
         },
         postGrant: async (inviteId: string, envelopeB64: string) => {
-            await axios.post(`${API_BASE}/link/sessions/${inviteId}/grant`, { envelope_b64: envelopeB64 }, { headers: headers() });
+            await axios.post(apiUrl`/link/sessions/${inviteId}/grant`, { envelope_b64: envelopeB64 }, { headers: headers() });
         },
         renderQr: (text: string) => QRCode.toDataURL(text, { errorCorrectionLevel: 'M', margin: 2, width: 256 }),
         buildQrText: buildInviteQr,
@@ -156,9 +166,9 @@ const ApproveForm: React.FC<{
 };
 
 export const PhoneLinkPanel: React.FC = () => {
-    const { token, deviceId } = useAuth();
-    const authRef = useRef({ token, deviceId });
-    useEffect(() => { authRef.current = { token, deviceId }; });
+    const { token, deviceId, userId } = useAuth();
+    const authRef = useRef({ token, deviceId, userId });
+    useEffect(() => { authRef.current = { token, deviceId, userId }; });
     const { snapshot: snap, controllerRef } = useLinkController<PhoneLinkSnapshot, PhoneLinkController>(
         () => new PhoneLinkController(realDeps(() => authRef.current)),
         emptySnapshot,

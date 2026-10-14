@@ -109,6 +109,7 @@ export function pinnedLookup(target: ResolvedTarget) {
     return (
         _hostname: string,
         options: { all?: boolean } | number | undefined,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
         callback: (err: NodeJS.ErrnoException | null, address: any, family?: number) => void,
     ): void => {
         if (options && typeof options === 'object' && options.all) {

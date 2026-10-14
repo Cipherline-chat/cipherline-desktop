@@ -1,10 +1,17 @@
 import secureLocalStore from '../utils/secureLocalStore';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { voiceChainNeedsProcessor } from '../utils/voiceChain';
+import { deviceHintOf } from '../utils/deviceResolve';
+import { DEFAULT_ECHO_CANCELLATION, resolveEchoCancellation } from '../utils/audioInput';
+import { onOutputDeviceChange, refreshOutputDevices } from '../utils/audioOutput';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export interface VoiceSettings {
     noiseSuppression: boolean;
+    // Chromium's acoustic echo cancellation on the mic capture (audioInput.ts
+    // micCaptureConstraints). Default ON; applied live mid-call.
+    echoCancellation: boolean;
     volumeNormalization: boolean;
     voiceGate: boolean;
     voiceGateThreshold: number; // dBFS, range -60 to -20
@@ -13,6 +20,13 @@ export interface VoiceSettings {
     micDeviceId: string;
     speakerDeviceId: string;
     cameraDeviceId: string;
+    // Label + groupId of the picked mic / speakers, recorded at selection so a
+    // pick whose id changed (Windows re-enumeration) is still found — see
+    // utils/deviceResolve.ts. '' / absent = unknown (older saved settings).
+    micDeviceLabel?: string;
+    micDeviceGroupId?: string;
+    speakerDeviceLabel?: string;
+    speakerDeviceGroupId?: string;
     micVolume: number;    // 0-200, default 100 (100 = unity gain)
     speakerVolume: number; // 0-200, default 100
     // 5-band parametric EQ: [80Hz, 250Hz, 1kHz, 4kHz, 12kHz], gain in dB (-12 to +12)
@@ -24,10 +38,21 @@ export interface VoiceSettings {
     cameraSaturation: number;  // 0-200, default 100
 }
 
-const STORAGE_KEY = 'cipherline_voice_settings';
+/**
+ * Keys that used to live in the saved blob and no longer mean anything.
+ * `endCallOnCreatorLeaveDefault` was the per-user "end the call for everyone
+ * when I leave" default for calls I start; that is now a Calls CHANNEL setting
+ * (Calls channel settings -> Call behavior), so a saved value is ignored and
+ * dropped on load instead of being carried (and re-saved) forever.
+ */
+export const RETIRED_VOICE_SETTING_KEYS = ['endCallOnCreatorLeaveDefault'] as const;
 
-const DEFAULTS: VoiceSettings = {
+export const VOICE_SETTINGS_STORAGE_KEY = 'cipherline_voice_settings';
+const STORAGE_KEY = VOICE_SETTINGS_STORAGE_KEY;
+
+export const DEFAULT_VOICE_SETTINGS: VoiceSettings = {
     noiseSuppression: true,
+    echoCancellation: DEFAULT_ECHO_CANCELLATION,
     volumeNormalization: true,
     voiceGate: true,
     voiceGateThreshold: -45,
@@ -46,20 +71,32 @@ const DEFAULTS: VoiceSettings = {
 };
 
 
+/** Re-resolve the speaker pick against the devices plugged in right now. */
+function resyncOutputDevices(): void {
+    const md = typeof navigator !== 'undefined' ? navigator.mediaDevices : undefined;
+    md?.enumerateDevices?.()
+        .then(devices => refreshOutputDevices(devices.filter(d => d.kind === 'audiooutput')))
+        .catch(() => { /* enumeration can throw pre-permission */ });
+}
+
 // ── Hook ──────────────────────────────────────────────────────────────────────
 
-function loadSettings(): VoiceSettings {
+export function loadVoiceSettings(): VoiceSettings {
     try {
         const raw = secureLocalStore.getItem(STORAGE_KEY);
-        if (!raw) return { ...DEFAULTS };
-        return { ...DEFAULTS, ...JSON.parse(raw) };
+        if (!raw) return { ...DEFAULT_VOICE_SETTINGS };
+        const merged = { ...DEFAULT_VOICE_SETTINGS, ...JSON.parse(raw) };
+        // Saved before this setting existed → default (ON); a non-boolean → default.
+        merged.echoCancellation = resolveEchoCancellation(merged.echoCancellation);
+        for (const k of RETIRED_VOICE_SETTING_KEYS) delete (merged as Record<string, unknown>)[k];
+        return merged;
     } catch {
-        return { ...DEFAULTS };
+        return { ...DEFAULT_VOICE_SETTINGS };
     }
 }
 
 export function useVoiceSettings() {
-    const [settings, setSettings] = useState<VoiceSettings>(loadSettings);
+    const [settings, setSettings] = useState<VoiceSettings>(loadVoiceSettings);
 
     // Real-time audio level indicators (P2-REND-1: kept as refs so callbacks don't
     // enter the memo deps and cause 50 Hz re-renders of the entire Dashboard during calls).
@@ -69,7 +106,7 @@ export function useVoiceSettings() {
 
     // Persist
     useEffect(() => {
-        try { secureLocalStore.setItem(STORAGE_KEY, JSON.stringify(settings)); } catch {}
+        try { secureLocalStore.setItem(STORAGE_KEY, JSON.stringify(settings)); } catch { /* persisting a UI preference is best-effort; a failed write must not break the UI */ }
     }, [settings]);
 
     const update = useCallback((partial: Partial<VoiceSettings>) => {
@@ -77,13 +114,22 @@ export function useVoiceSettings() {
     }, []);
 
     const setNoiseSuppression    = useCallback((v: boolean) => update({ noiseSuppression: v }), [update]);
+    const setEchoCancellation      = useCallback((v: boolean) => update({ echoCancellation: v }), [update]);
     const setVolumeNormalization = useCallback((v: boolean) => update({ volumeNormalization: v }), [update]);
     const setVoiceGate           = useCallback((v: boolean) => update({ voiceGate: v }), [update]);
     const setVoiceGateThreshold  = useCallback((v: number) => update({ voiceGateThreshold: Math.max(-60, Math.min(-20, v)) }), [update]);
     const setPushToTalk          = useCallback((v: boolean) => update({ pushToTalk: v }), [update]);
     const setPushToTalkKey       = useCallback((v: string | null) => update({ pushToTalkKey: v }), [update]);
-    const setMicDeviceId         = useCallback((v: string) => update({ micDeviceId: v }), [update]);
-    const setSpeakerDeviceId     = useCallback((v: string) => update({ speakerDeviceId: v }), [update]);
+    /** `device`: the picked MediaDeviceInfo (or its label/groupId), so the pick
+     *  can be found again if its id changes. Omit only for "follow the default". */
+    const setMicDeviceId         = useCallback((v: string, device?: Pick<MediaDeviceInfo, 'label' | 'groupId'> | null) => {
+        const h = deviceHintOf(v ? device : null);
+        update({ micDeviceId: v, micDeviceLabel: h.label, micDeviceGroupId: h.groupId });
+    }, [update]);
+    const setSpeakerDeviceId     = useCallback((v: string, device?: Pick<MediaDeviceInfo, 'label' | 'groupId'> | null) => {
+        const h = deviceHintOf(v ? device : null);
+        update({ speakerDeviceId: v, speakerDeviceLabel: h.label, speakerDeviceGroupId: h.groupId });
+    }, [update]);
     const setCameraDeviceId      = useCallback((v: string) => update({ cameraDeviceId: v }), [update]);
     // Debounced rather than the plain update()-on-every-call every other
     // setter uses. ClSlider fires on a RAF during a drag (up to ~60Hz), and
@@ -117,15 +163,35 @@ export function useVoiceSettings() {
     const setCameraSaturation    = useCallback((v: number) => update({ cameraSaturation: Math.max(0, Math.min(200, v)) }), [update]);
     const resetCameraPicture     = useCallback(() => update({ cameraBrightness: 100, cameraContrast: 100, cameraSaturation: 100 }), [update]);
 
-    /** True if any processing feature is enabled (used to decide whether to attach the voice
-     *  processor to LiveKit). NS is included — it is handled by the AudioWorklet+RNNoise
-     *  pipeline inside CipherlineVoiceProcessor, not by the browser constraint. */
-    const anyProcessingEnabled =
-        settings.noiseSuppression ||
-        settings.volumeNormalization ||
-        settings.voiceGate ||
-        settings.eqEnabled ||
-        settings.micVolume !== 100;
+    /** True if any processing feature is enabled — the same rule
+     *  voiceProcessorManager uses to attach the voice processor at all (see
+     *  utils/voiceChain.ts). NS is included — it is handled by the
+     *  AudioWorklet+RNNoise pipeline inside CipherlineVoiceProcessor, not by the
+     *  browser constraint. */
+    const anyProcessingEnabled = voiceChainNeedsProcessor(settings);
+
+    // ── Output device routing, for the whole session ──────────────────────
+    // This hook lives as long as the signed-in app, so this is the one place
+    // the speaker setting is applied — in a call or not. It used to be applied
+    // only from inside a call (SidebarConference), so a pick made in Settings
+    // outside a call left "Listen to mic", sound previews and notification
+    // sounds on the previous device. Runs once at startup with the persisted
+    // pick, then on every change from any picker.
+    const { speakerDeviceId, speakerDeviceLabel, speakerDeviceGroupId } = settings;
+    useEffect(() => {
+        onOutputDeviceChange(speakerDeviceId, { label: speakerDeviceLabel, groupId: speakerDeviceGroupId });
+        // Resolve it against what is plugged in right now (a pick that is gone
+        // plays through the default; one with a new id is followed).
+        resyncOutputDevices();
+    }, [speakerDeviceId, speakerDeviceLabel, speakerDeviceGroupId]);
+    // ...and again on every device change: the pick unplugged → the system
+    // default (one notice, in a call); plugged back in → routed to it again.
+    useEffect(() => {
+        const md = typeof navigator !== 'undefined' ? navigator.mediaDevices : undefined;
+        if (!md?.addEventListener) return;
+        md.addEventListener('devicechange', resyncOutputDevices);
+        return () => md.removeEventListener('devicechange', resyncOutputDevices);
+    }, []);
 
     // Stable setter callbacks that write into refs — safe to include in voiceProcessor
     // options without entering the memo deps (P2-REND-1).
@@ -136,6 +202,7 @@ export function useVoiceSettings() {
         settings,
         anyProcessingEnabled,
         setNoiseSuppression,
+        setEchoCancellation,
         setVolumeNormalization,
         setVoiceGate,
         setVoiceGateThreshold,
@@ -158,6 +225,7 @@ export function useVoiceSettings() {
     }), [
         settings, anyProcessingEnabled,
         setNoiseSuppression,
+        setEchoCancellation,
         setVolumeNormalization,
         setVoiceGate, setVoiceGateThreshold,
         setPushToTalk, setPushToTalkKey,

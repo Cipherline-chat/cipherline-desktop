@@ -1,7 +1,8 @@
 import React from 'react';
-import { Download, ExternalLink } from 'lucide-react';
+import { AlertTriangle, Download, ExternalLink, RotateCw } from 'lucide-react';
 import { useUpdate } from '../contexts/UpdateContext';
 import { ClConfirm } from './cl';
+import { describeUpdateTile } from '../utils/updateTile';
 
 /** 44×44 — matches Dashboard.tsx's RailTile geometry exactly so this sits in
  *  the deck as if it were one, without pulling in RailTile itself (which
@@ -11,65 +12,87 @@ const SIZE = 44;
 const RING_R = 18;
 const RING_CIRCUMFERENCE = 2 * Math.PI * RING_R;
 
+const TONE_COLOR = {
+    busy: 'var(--cl-muted)',
+    ready: 'var(--cl-lume)',
+    warn: 'var(--cl-glow)',
+    error: 'var(--cl-danger)',
+    external: 'var(--cl-lume)',
+} as const;
+
 /**
  * Update rail tile — mounted directly above the Friends tile in Dashboard's
  * bottom rail (the spot the user pointed at). Renders NOTHING while
  * state.phase === 'idle', so the rail is visually unchanged until there is
- * something worth telling the user.
+ * something worth telling the user. Wording and the action per phase live in
+ * src/utils/updateTile.ts (tested); this file only draws them.
  *
+ *   available /
  *   downloading — muted download glyph ringed by a live progress sweep.
  *                 Not clickable; nothing to do yet.
+ *   retrying    — an attempt failed and another is scheduled (main retries
+ *                 on its own, with backoff). Amber retry glyph; click retries
+ *                 NOW. Still entirely in-app.
+ *   failed      — retries exhausted, the update couldn't be verified, or the
+ *                 installer couldn't start. Red alert glyph; click = Retry
+ *                 (a fresh in-app download). Never a browser link.
  *   ready       — green, gently pulsing. Click restarts into the new build.
- *   manual      — green, same glyph as ready but with a small arrow badge
- *                 hinting "opens your browser" instead of "restarts the app".
- *                 See the module doc on why this NEVER shows the in-call
- *                 confirm: it only opens a download page, the running app
- *                 (and any call in it) is untouched.
+ *   manual      — LINUX ONLY (main never produces it elsewhere): green glyph
+ *                 with a small arrow badge — "opens your browser" — for an
+ *                 AppImage that cannot replace itself.
  *
+ * Only `ready` can end a call, so only `ready` asks first when `inCall`.
  * `inCall` is passed in from Dashboard, which is the only place that
  * actually knows whether activeCall / activeVoiceChannelId /
- * activeHuddleChannelId is set — this component has no opinion on what
- * counts as "in a call", it just asks before firing the one action that
- * would end one.
+ * activeHuddleChannelId is set.
  */
 export default function UpdateRailTile({ inCall }: { inCall: boolean }) {
-    const { state, installNow, openDownload } = useUpdate();
+    const { state, installNow, retry, openDownload } = useUpdate();
     const [confirmOpen, setConfirmOpen] = React.useState(false);
 
-    if (state.phase === 'idle') return null;
+    // The retry countdown in the tooltip is derived from `retryAt`; tick once a
+    // second while it is showing so it doesn't freeze at its first value.
+    const [now, setNow] = React.useState(() => Date.now());
+    React.useEffect(() => {
+        if (state.phase !== 'retrying') return;
+        const tick = () => setNow(Date.now());
+        const first = window.setTimeout(tick, 0); // refresh at once, not a second late
+        const id = window.setInterval(tick, 1000);
+        return () => { window.clearTimeout(first); window.clearInterval(id); };
+    }, [state.phase]);
+
+    const tile = describeUpdateTile(state, now);
+    if (!tile.visible) return null;
 
     const handleClick = () => {
-        if (state.phase === 'ready') {
+        if (tile.action === 'install') {
             if (inCall) { setConfirmOpen(true); return; }
             installNow();
-        } else if (state.phase === 'manual') {
-            // Opens a browser tab — never touches the running app or an
-            // in-progress call, so no confirmation needed regardless of inCall.
+        } else if (tile.action === 'retry') {
+            // Restarts nothing — a download in the background — so no confirm.
+            retry();
+        } else if (tile.action === 'open-download') {
+            // Linux only. Opens a browser tab; never touches the running app.
             openDownload();
         }
-        // 'downloading' has no click handler at all (see below) — unreachable here.
     };
 
-    const clickable = state.phase === 'ready' || state.phase === 'manual';
-    const label =
-        state.phase === 'downloading' ? `Downloading update… ${Math.round(state.percent)}%`
-        : state.phase === 'ready'     ? 'Update ready — click to restart and install'
-        : `Update available — click to download v${state.version}`;
-
-    const iconColor = clickable ? 'var(--cl-lume)' : 'var(--cl-muted)';
+    const clickable = tile.action !== null;
+    const iconColor = TONE_COLOR[tile.tone];
+    const Icon = tile.tone === 'warn' ? RotateCw : tile.tone === 'error' ? AlertTriangle : Download;
 
     return (
         <>
             <button
                 type="button"
                 onClick={clickable ? handleClick : undefined}
-                title={label}
-                aria-label={label}
-                // 'downloading' is genuinely inert — nothing to retry or
-                // cancel — so it's a real disabled button: not focusable,
-                // not clickable, correctly announced by screen readers.
+                title={tile.label}
+                aria-label={tile.label}
+                // 'available'/'downloading' are genuinely inert — nothing to
+                // retry or cancel — so it's a real disabled button: not
+                // focusable, not clickable, correctly announced by screen readers.
                 disabled={!clickable}
-                className={state.phase === 'ready' ? 'update-ready-pulse' : undefined}
+                className={tile.tone === 'ready' ? 'update-ready-pulse' : undefined}
                 style={{
                     position: 'relative', width: SIZE, height: SIZE, border: 'none',
                     background: 'none', cursor: clickable ? 'pointer' : 'default',
@@ -80,20 +103,20 @@ export default function UpdateRailTile({ inCall }: { inCall: boolean }) {
                 onMouseEnter={(e) => { if (clickable) e.currentTarget.style.background = 'rgba(255,255,255,.06)'; }}
                 onMouseLeave={(e) => { e.currentTarget.style.background = 'none'; }}
             >
-                {state.phase === 'downloading' && (
+                {tile.percent !== null && (
                     <svg width={SIZE} height={SIZE} viewBox={`0 0 ${SIZE} ${SIZE}`} style={{ position: 'absolute', inset: 0, transform: 'rotate(-90deg)' }}>
                         <circle cx={SIZE / 2} cy={SIZE / 2} r={RING_R} fill="none" stroke="rgba(255,255,255,.08)" strokeWidth={2} />
                         <circle
                             cx={SIZE / 2} cy={SIZE / 2} r={RING_R} fill="none"
                             stroke="var(--cl-muted)" strokeWidth={2} strokeLinecap="round"
                             strokeDasharray={RING_CIRCUMFERENCE}
-                            strokeDashoffset={RING_CIRCUMFERENCE * (1 - state.percent / 100)}
+                            strokeDashoffset={RING_CIRCUMFERENCE * (1 - tile.percent / 100)}
                             style={{ transition: 'stroke-dashoffset .3s ease' }}
                         />
                     </svg>
                 )}
-                <Download size={19} />
-                {state.phase === 'manual' && (
+                <Icon size={19} />
+                {tile.tone === 'external' && (
                     // Small corner glyph distinguishing "opens a download page
                     // in your browser" from ready's "restarts the app" — same
                     // green, different promise, shouldn't look identical.

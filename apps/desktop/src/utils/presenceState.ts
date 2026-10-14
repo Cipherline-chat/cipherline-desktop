@@ -54,12 +54,19 @@ export function normalizeStatus(s: unknown): UserStatus {
 export function toEntry(w: WirePresence): FriendStatusEntry {
     const status = normalizeStatus(w.status);
     const visible = status !== 'offline';
+    const onMobile = visible && w.on_mobile === true;
     return {
         status,
         custom_status_text: visible ? (w.custom_status_text ?? null) : null,
         custom_status_emoji: visible ? (w.custom_status_emoji ?? null) : null,
-        current_game: visible ? (w.game_name ?? null) : null,
-        on_mobile: visible && w.on_mobile === true,
+        // The game is live-only. It is whatever THIS frame says — never a
+        // carry-over from the entry it replaces — and it is not shown for
+        // someone who is offline or only on a phone (games are detected on
+        // desktops, so "Playing X" next to a phone icon is a leftover from
+        // the machine that went away; the server nulls it too, this keeps an
+        // older server from resurrecting it).
+        current_game: visible && !onMobile ? (w.game_name ?? null) : null,
+        on_mobile: onMobile,
     };
 }
 

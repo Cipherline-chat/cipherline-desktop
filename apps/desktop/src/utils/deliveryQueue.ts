@@ -89,7 +89,7 @@ const statusOf = (err: unknown): number | undefined =>
 /** Seconds the server asked us to wait, if the header is readable. The throttler
  *  names it per bucket (`Retry-After-message`); a cross-origin response may hide
  *  it entirely, so absence is normal. */
-function retryAfterMs(err: unknown): number | undefined {
+export function retryAfterMs(err: unknown): number | undefined {
     const h = (err as { response?: { headers?: Record<string, unknown> } } | null)?.response?.headers ?? {};
     for (const name of ['retry-after-message', 'retry-after']) {
         const n = Number(h[name]);

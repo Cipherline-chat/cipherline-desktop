@@ -127,19 +127,13 @@ describe('the mode store (main is the source of truth)', () => {
 });
 
 describe('Settings copy', () => {
-    it('is honest about the FPS cost on every platform', () => {
-        for (const p of ['win32', 'linux', 'darwin']) {
-            expect(gamingVideoDescription(p)).toMatch(/can cost your game a few FPS/);
-        }
+    it('is short and honest about the FPS cost', () => {
+        expect(gamingVideoDescription()).toBe('Keeps calls and screen shares smooth while you play. May lower your game’s FPS.');
     });
-    it('mentions the Windows CPU priority only on Windows', () => {
-        expect(gamingVideoDescription('win32')).toContain('asks Windows for more CPU time');
-        expect(gamingVideoDescription('linux')).not.toContain('Windows');
-        expect(gamingVideoDescription('linux')).toMatch(/^For when .*Cipherline keeps drawing video/);
-    });
-    it('restart notice only when a restart is pending, worded for each direction', () => {
+    it('restart notice only when a restart is pending, same short line either direction', () => {
         expect(gamingVideoRestartCopy(true, false)).toBeNull();
-        expect(gamingVideoRestartCopy(true, true)).toBe('On for calls now. The rest takes effect after restarting Cipherline.');
-        expect(gamingVideoRestartCopy(false, true)).toBe('Off for calls now. Restart Cipherline to switch it off completely.');
+        expect(gamingVideoRestartCopy(false, false)).toBeNull();
+        expect(gamingVideoRestartCopy(true, true)).toBe('Restart Cipherline to fully apply.');
+        expect(gamingVideoRestartCopy(false, true)).toBe('Restart Cipherline to fully apply.');
     });
 });

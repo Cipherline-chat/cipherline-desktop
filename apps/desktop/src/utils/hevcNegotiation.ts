@@ -162,4 +162,35 @@ export async function probeHevcEncode(deps: HevcProbeDeps = {}): Promise<boolean
 let hevcFailed = false;
 export function markHevcFailed(): void { hevcFailed = true; }
 export function hasHevcFailed(): boolean { return hevcFailed; }
-export function __resetHevcForTests(): void { hevcFailed = false; }
+
+// ── After a GPU process restart (utils/gpuRecovery.ts) ─────────────────────
+//
+// Chromium's WebRTC has NO software H.265 — not to decode, not to encode —
+// while H.264 / VP8 / VP9 fall back to software when the hardware path dies.
+// A GPU process restart (driver reset, lost D3D device) is exactly when the
+// hardware path is in doubt, and the probes cannot be trusted to say so: in
+// the prod incident of 2026-10-11 the capability lists came straight back
+// after the restart (h265_caps self_encode:true on the rejoin) while the
+// call's video never loaded again. So a GPU restart takes H.265 out of this
+// app session in BOTH directions — we stop advertising decode (every peer's
+// HevcPolicy then drops to H.264/VP8 at once, "someone cannot decode H.265")
+// and stop encoding it ourselves — through the same all-capable negotiation
+// as any other incapable participant. An app restart (a fresh GPU process
+// from scratch) is the only thing that brings it back.
+let hevcGpuLost = false;
+export function markHevcGpuLost(): void { hevcGpuLost = true; }
+export function hasHevcGpuLost(): boolean { return hevcGpuLost; }
+
+/**
+ * The H.265 capabilities this client may actually USE / advertise, given what
+ * the probes say now. Pure, so the post-GPU-restart rule is testable.
+ */
+export function effectiveHevcCaps(
+    probed: { decode: boolean; encode: boolean },
+    state: { gpuLost: boolean; failed: boolean } = { gpuLost: hevcGpuLost, failed: hevcFailed },
+): { decode: boolean; encode: boolean } {
+    if (state.gpuLost) return { decode: false, encode: false };
+    return { decode: probed.decode, encode: probed.encode && !state.failed };
+}
+
+export function __resetHevcForTests(): void { hevcFailed = false; hevcGpuLost = false; }

@@ -1,4 +1,3 @@
-/* eslint-disable -- harness driver, not shipped */
 // Sub-pixel PHASE sweep of the bare reaction chip (scene=phase of
 // reaction-center-main.tsx): 32 chips at successive 1/16-px fractional offsets,
 // measured on painted pixels at several display scales.

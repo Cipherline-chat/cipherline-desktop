@@ -384,6 +384,9 @@ export function useAnnotationTransport(room: Room | null | undefined): void {
             silently(() => {
                 annotationStore.dropTrack(trackKey(p.identity, Track.Source.Camera));
                 annotationStore.dropTrack(trackKey(p.identity, Track.Source.ScreenShare));
+                // Their pending asks on OUR surfaces go with them: the dock
+                // (and the approve keybind) only answer people still here.
+                annotationStore.dropRequestsFrom(p.identity);
             });
             // Their grants on OUR surfaces are ours to withdraw, and they are
             // stale the moment they leave: narrate it (not `silently`) so

@@ -61,11 +61,20 @@ describe('Calls-channel key bootstrap is driven from every join path', () => {
     });
 
     it('has a setActiveCall site carrying callsChannelId for each known join path', () => {
-        // Spawn, join-existing, legacy voice channel, force-move. If this count
-        // changes, a join path was added or removed — confirm the ensure effect
-        // still covers it (it should, being keyed on activeCall) and update.
-        const sites = dashboard.match(/callsChannelId:/g) ?? [];
-        expect(sites.length).toBe(4);
+        // Spawn, join-existing and force-move all build their activeCall in ONE
+        // place now - utils/callTransition.buildHuddleSelection - so a moved
+        // user's call is constructed exactly like a switched-to one. That
+        // builder carries callsChannelId; the legacy voice channel keeps its own
+        // site in Dashboard. If these counts change, a join path was added or
+        // removed - confirm the ensure effect still covers it (it should, being
+        // keyed on activeCall) and update.
+        const builder = readFileSync(join(__dirname, '..', 'utils', 'callTransition.ts'), 'utf8');
+        expect((builder.match(/callsChannelId: c\.huddleId/g) ?? []).length).toBe(1);
+        expect((dashboard.match(/callsChannelId:/g) ?? []).length).toBe(1); // legacy voice
+        // ...and each Calls-channel path actually goes through that builder.
+        expect((dashboard.match(/buildHuddleSelection\(/g) ?? []).length).toBe(2); // spawn, join-existing
+        expect(dashboard).toContain('runForceMove(ev, {'); // force-move (its `enter` is applyHuddleSelection)
+        expect(dashboard).toContain('enter: sel => applyHuddleSelection(sel),');
     });
 });
 

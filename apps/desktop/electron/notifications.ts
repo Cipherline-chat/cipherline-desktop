@@ -159,6 +159,7 @@ function scheduleFallbackDelivery(): void {
         }
     }, REPLY_HANDSHAKE_GRACE_MS);
     // Don't hold the event loop open on this alone.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
     (fallbackTimer as any)?.unref?.();
 }
 
@@ -233,7 +234,7 @@ export function showNotification(
     // Close any existing toast with the same ID (dedup / replace)
     const prev = active.get(payload.id);
     if (prev) {
-        try { prev.close(); } catch {}
+        try { prev.close(); } catch { /* teardown is best-effort; the node/handle may already be closed */ }
         active.delete(payload.id);
     }
 
@@ -336,8 +337,8 @@ export function showNotification(
 
 /** Close all active notifications (e.g. on sign-out or DND enabled). */
 export function closeAllNotifications(): void {
-    for (const [id, notif] of active) {
-        try { notif.close(); } catch {}
+    for (const [, notif] of active) {
+        try { notif.close(); } catch { /* teardown is best-effort; the node/handle may already be closed */ }
     }
     active.clear();
 }

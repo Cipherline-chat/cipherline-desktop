@@ -1,4 +1,3 @@
-/* eslint-disable -- harness driver, not shipped */
 // The reaction chip in each message shape the owner compares, measured on
 // PAINTED pixels (see reaction-center-measure.mjs): emoji centre minus chip
 // centre, in CSS px (+ = emoji LOW, - = emoji HIGH). Every shape must agree.

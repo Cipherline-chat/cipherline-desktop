@@ -25,6 +25,7 @@ import * as fs from 'fs';
 import * as https from 'https';
 import * as crypto from 'crypto';
 import { URL } from 'url';
+import { escapeDriveQueryLiteral } from './drive-query';
 
 const API_HOST = 'www.googleapis.com';
 const CHUNK_BYTES = 8 * 1024 * 1024; // must be a multiple of 256 KiB
@@ -68,7 +69,7 @@ const backoff = (attempt: number) => Math.min(30_000, 1000 * 2 ** attempt) + Mat
 export async function findDriveFile(
     getToken: GetToken, folderId: string, name: string,
 ): Promise<{ id: string; size: number; md5Checksum?: string; modifiedTime?: string } | null> {
-    const q = encodeURIComponent(`name='${name.replace(/'/g, "\\'")}' and '${folderId}' in parents and trashed=false`);
+    const q = encodeURIComponent(`name='${escapeDriveQueryLiteral(name)}' and '${escapeDriveQueryLiteral(folderId)}' in parents and trashed=false`);
     const res = await request(
         `https://${API_HOST}/drive/v3/files?q=${q}&fields=files(id,size,md5Checksum,modifiedTime)&spaces=drive`,
         { method: 'GET', headers: { Authorization: `Bearer ${await getToken()}` } },
@@ -82,15 +83,22 @@ export async function findDriveFile(
  * Upload `filePath` as `fileName` into `folderId`, replacing the content of
  * an existing file with that name if there is one. Resolves with Drive's
  * record of the stored file once its checksum has been verified.
+ *
+ * `existingFileId` updates THAT file in place and never looks in `folderId`:
+ * it is for a backup the app created inside a folder it can no longer see (a
+ * folder the user picked back when the app could browse Drive), where a
+ * folder-scoped lookup would find nothing. A 403/404 from Drive surfaces as
+ * "Drive upload could not start: HTTP 403|404" so the caller can fall back.
  */
 export async function uploadFileResumable(opts: {
     getToken: GetToken;
     folderId: string;
     fileName: string;
     filePath: string;
+    existingFileId?: string;
     onProgress?: (p: TransferProgress) => void;
 }): Promise<{ id: string; size: number; md5Checksum: string }> {
-    const { getToken, folderId, fileName, filePath, onProgress } = opts;
+    const { getToken, folderId, fileName, filePath, existingFileId, onProgress } = opts;
     const stat = await fs.promises.stat(filePath);
     const total = stat.size;
     if (total === 0) throw new Error('Refusing to upload an empty backup file');
@@ -98,7 +106,7 @@ export async function uploadFileResumable(opts: {
     // Local checksum, computed as the file is read for upload.
     const md5 = crypto.createHash('md5');
 
-    const existing = await findDriveFile(getToken, folderId, fileName);
+    const existing = existingFileId ? { id: existingFileId } : await findDriveFile(getToken, folderId, fileName);
     const initUrl = existing
         ? `https://${API_HOST}/upload/drive/v3/files/${existing.id}?uploadType=resumable&fields=id,size,md5Checksum`
         : `https://${API_HOST}/upload/drive/v3/files?uploadType=resumable&fields=id,size,md5Checksum`;

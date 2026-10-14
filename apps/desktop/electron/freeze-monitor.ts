@@ -20,6 +20,15 @@
  * in, and a renderer-supplied label is validated against a strict pattern
  * before it is stored.
  *
+ * CAUSE vs BYSTANDER: an activity that merely overlapped a stall is often an
+ * innocent IPC that ran right after it. So two kinds of label are marked as
+ * evidence rather than context:
+ *   - `<label>:<N>ms` — a tracked handler whose SYNCHRONOUS part ran for N ms
+ *     (≥ SLOW_SYNC_MS). That handler blocked the loop itself. Listed first.
+ *   - `gc:<kind>:<N>ms` — V8 garbage collection that overlapped the stall
+ *     (fed by main.ts's perf_hooks 'gc' observer via noteGc()). A stall that
+ *     reads `gc:major:1400ms` was the collector, not our code.
+ *
  * Kept in the MAIN process so the log survives a renderer reload (Ctrl+R, a
  * crash-recovery reload) — the freeze you want to capture is often the one
  * that made you reload. Not written to disk.
@@ -71,13 +80,26 @@ const MAX_ACTIVITY_HISTORY = 400;
 /** What a label may look like. Static, code-chosen identifiers only. */
 export const LABEL_RE = /^[a-z][a-z0-9_.:-]{0,63}$/i;
 
-interface ActivitySpan { label: string; start: number; end: number | null }
+/** A tracked handler whose synchronous part ran this long is named as a cause. */
+export const SLOW_SYNC_MS = 20;
+/** GC pauses shorter than this are not remembered individually. */
+export const GC_NOTE_MS = 10;
+const MAX_GC_NOTES = 200;
+/** How long after a stall its GC labels are filled in (the observer is async). */
+const GC_RELABEL_DELAY_MS = 50;
+
+export type GcKind = 'major' | 'minor' | 'incremental' | 'weakcb';
+
+interface ActivitySpan { label: string; start: number; end: number | null; syncMs?: number }
+interface GcNote { start: number; ms: number; kind: GcKind }
 
 export class FreezeMonitor {
     private entries: FreezeEntry[] = [];
     private events: FreezeEntry[] = [];
     private metricRows: FreezeEntry[] = [];
     private spans: ActivitySpan[] = [];
+    private gcNotes: GcNote[] = [];
+    private gcTotals = { ms: 0, count: 0, majorMs: 0, majorCount: 0, maxMs: 0 };
     private timer: ReturnType<typeof setInterval> | null = null;
     private paused = false;
     private resetLoopClock = false;
@@ -97,28 +119,42 @@ export class FreezeMonitor {
 
     /** Begin a named activity; call the returned function when it ends. */
     begin(label: string): () => void {
+        return this.open(label).end;
+    }
+
+    private open(label: string): { span: ActivitySpan; end: () => void } {
         if (!LABEL_RE.test(label)) label = 'unlabelled';
         const span: ActivitySpan = { label, start: this.now(), end: null };
         this.spans.push(span);
         this.pruneSpans();
         let done = false;
-        return () => {
-            if (done) return;
-            done = true;
-            span.end = this.now();
+        return {
+            span,
+            end: () => {
+                if (done) return;
+                done = true;
+                span.end = this.now();
+            },
         };
     }
 
-    /** Run `fn` as a named activity; works for sync and async functions. */
+    /**
+     * Run `fn` as a named activity; works for sync and async functions. The
+     * time `fn` spends before it returns (its synchronous part — all of it
+     * for a sync handler) is measured, and a slow one is named as a cause.
+     */
     track<T>(label: string, fn: () => T): T {
-        const end = this.begin(label);
+        const { span, end } = this.open(label);
+        const t0 = this.now();
         let result: T;
         try {
             result = fn();
         } catch (e) {
+            this.noteSync(span, this.now() - t0);
             end();
             throw e;
         }
+        this.noteSync(span, this.now() - t0);
         if (result && typeof (result as unknown as Promise<unknown>).then === 'function') {
             (result as unknown as Promise<unknown>).then(end, end);
         } else {
@@ -127,16 +163,71 @@ export class FreezeMonitor {
         return result;
     }
 
-    /** Labels of activities that overlapped [from, to], most recent first. */
+    private noteSync(span: ActivitySpan, ms: number): void {
+        if (Number.isFinite(ms) && ms >= SLOW_SYNC_MS) span.syncMs = Math.round(ms);
+    }
+
+    /**
+     * Labels of activities that overlapped [from, to]: handlers that blocked
+     * the loop themselves first (`label:Nms`, longest first), then the rest
+     * most recent first, then any garbage collection in the window.
+     */
     activityDuring(from: number, to: number): string {
+        const slow: ActivitySpan[] = [];
         const seen = new Set<string>();
         for (let i = this.spans.length - 1; i >= 0; i--) {
             const s = this.spans[i];
             const end = s.end ?? Number.POSITIVE_INFINITY;
-            if (s.start <= to && end >= from) seen.add(s.label);
-            if (seen.size >= 4) break;
+            if (!(s.start <= to && end >= from)) continue;
+            if (s.syncMs !== undefined) slow.push(s);
+            else if (seen.size < 4) seen.add(s.label);
         }
-        return seen.size ? [...seen].join(', ') : 'idle';
+        const out = new Set<string>();
+        for (const s of slow.sort((a, b) => (b.syncMs ?? 0) - (a.syncMs ?? 0)).slice(0, 3)) {
+            const suffix = `:${s.syncMs}ms`;
+            out.add(`${s.label.slice(0, 64 - suffix.length)}${suffix}`);
+        }
+        for (const l of seen) { if (out.size >= 4) break; out.add(l); }
+        for (const g of this.gcLabels(from, to)) out.add(g);
+        return out.size ? [...out].join(', ') : 'idle';
+    }
+
+    /**
+     * A V8 garbage collection on this process's heap (main.ts feeds this from
+     * a perf_hooks 'gc' PerformanceObserver). `start` is wall-clock ms.
+     * Totals feed the periodic metrics row; pauses ≥ GC_NOTE_MS are kept so a
+     * stall they overlap can name them.
+     */
+    noteGc(start: number, ms: number, kind: GcKind): void {
+        if (!Number.isFinite(start) || !Number.isFinite(ms) || ms < 0) return;
+        const t = this.gcTotals;
+        t.ms += ms; t.count++;
+        if (ms > t.maxMs) t.maxMs = ms;
+        if (kind === 'major') { t.majorMs += ms; t.majorCount++; }
+        if (ms < GC_NOTE_MS) return;
+        this.gcNotes.push({ start, ms, kind });
+        if (this.gcNotes.length > MAX_GC_NOTES) this.gcNotes.splice(0, this.gcNotes.length - MAX_GC_NOTES);
+    }
+
+    /** GC time since the last call, for the metrics row; resets the counters. */
+    takeGcStats(): { ms: number; count: number; majorMs: number; majorCount: number; maxMs: number } {
+        const r = { ...this.gcTotals, ms: Math.round(this.gcTotals.ms), majorMs: Math.round(this.gcTotals.majorMs), maxMs: Math.round(this.gcTotals.maxMs) };
+        this.gcTotals = { ms: 0, count: 0, majorMs: 0, majorCount: 0, maxMs: 0 };
+        return r;
+    }
+
+    /** `gc:<kind>:<N>ms` for collections overlapping [from, to], summed per kind (≥ SLOW_SYNC_MS). */
+    private gcLabels(from: number, to: number): string[] {
+        const sum = new Map<GcKind, number>();
+        for (let i = this.gcNotes.length - 1; i >= 0; i--) {
+            const g = this.gcNotes[i];
+            if (g.start + g.ms < from - 1) break;
+            if (g.start <= to) sum.set(g.kind, (sum.get(g.kind) ?? 0) + g.ms);
+        }
+        return [...sum.entries()]
+            .filter(([, ms]) => ms >= SLOW_SYNC_MS)
+            .sort((a, b) => b[1] - a[1])
+            .map(([kind, ms]) => `gc:${kind}:${Math.round(ms)}ms`);
     }
 
     record(entry: FreezeEntry): void {
@@ -229,7 +320,12 @@ export class FreezeMonitor {
                 try { this.onClockJump?.(lag); } catch { /* diagnostics only */ }
             } else if (lag >= threshold) {
                 const from = last + intervalMs;
-                this.record({ at: from, source: 'main', ms: Math.round(lag), activity: this.activityDuring(from, t) });
+                const entry: FreezeEntry = { at: from, source: 'main', ms: Math.round(lag), activity: this.activityDuring(from, t) };
+                this.record(entry);
+                // The 'gc' observer delivers asynchronously, so a collection
+                // inside this stall may not be noted yet: label again shortly.
+                const relabel = setTimeout(() => { entry.activity = this.activityDuring(from, t); }, GC_RELABEL_DELAY_MS);
+                (relabel as { unref?: () => void }).unref?.();
                 try { this.onStall?.(lag); } catch { /* diagnostics only */ }
             }
             last = t;

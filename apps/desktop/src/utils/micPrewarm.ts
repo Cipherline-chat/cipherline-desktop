@@ -18,10 +18,10 @@
  *     unconditionally after PREWARM_MAX_MS no matter what;
  *   - a muted or deafened join never opens it (Dashboard checks before calling).
  *
- * Same constraints as the call itself (MIC_CAPTURE_CONSTRAINTS + the resolved
+ * Same constraints as the call itself (micCaptureConstraints + the resolved
  * device), so the warm device is the one the call will ask for.
  */
-import { MIC_CAPTURE_CONSTRAINTS } from './audioInput';
+import { DEFAULT_ECHO_CANCELLATION, micCaptureConstraints, micDeviceConstraint } from './audioInput';
 
 /** Hard cap on how long a warm-up capture may stay open. */
 export const PREWARM_MAX_MS = 12_000;
@@ -35,13 +35,18 @@ function stopAll(s: MediaStream | null): void {
     s?.getTracks().forEach(t => { try { t.stop(); } catch { /* already stopped */ } });
 }
 
-export function prewarmMic(deviceId: string): void {
+export function prewarmMic(deviceId: string, echoCancellation: boolean = DEFAULT_ECHO_CANCELLATION): void {
     if (stream || pending) return;
     const md = typeof navigator !== 'undefined' ? navigator.mediaDevices : undefined;
     if (!md?.getUserMedia) return;
     releaseRequested = false;
     const t0 = typeof performance !== 'undefined' ? performance.now() : Date.now();
-    pending = md.getUserMedia({ audio: { ...MIC_CAPTURE_CONSTRAINTS, deviceId } })
+    // {exact} for a picked device — Chromium opens the DEFAULT for a bare id,
+    // which would warm the wrong device (see micDeviceConstraint).
+    // The same flags as the call, echo cancellation included: a warm device
+    // opened with a different processing mode would not be the one the call's
+    // own capture re-opens.
+    pending = md.getUserMedia({ audio: { ...micCaptureConstraints(echoCancellation), deviceId: micDeviceConstraint(deviceId) } })
         .then(s => {
             if (releaseRequested) { stopAll(s); return; }
             stream = s;

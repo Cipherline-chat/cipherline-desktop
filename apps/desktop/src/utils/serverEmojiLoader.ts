@@ -30,6 +30,7 @@
  */
 import axios from 'axios';
 import { API_BASE } from '../constants';
+import { apiUrl } from './apiPath';
 import { importKeyFromBase64, decryptBlob } from './crypto';
 import { getAvatarBlob, putAvatarBlob, deleteAvatarBlob } from './attachmentCache';
 
@@ -314,7 +315,7 @@ async function processBatch(batch: Pending[], token: string): Promise<void> {
         await runPool(perIdFallback, EMOJI_FALLBACK_API_CONCURRENCY, async (p) => {
             try {
                 apiRequests++;
-                const res = await axios.get(`${API_BASE}/attachments/${p.ref.attachmentId}/download`, {
+                const res = await axios.get(apiUrl`/attachments/${p.ref.attachmentId}/download`, {
                     headers: { Authorization: `Bearer ${token}` },
                 });
                 enqueueDownload(p, res.data.download_url, res.data.mime_type);

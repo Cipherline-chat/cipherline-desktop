@@ -54,7 +54,6 @@ describe('extractRnnoiseVendorGlue — against the real vendored package (canary
         // at collection time.
         let raw: string;
         try {
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
             const mod: any = await import('@shiguredo/rnnoise-wasm?raw');
             raw = mod.default;
         } catch (err) {
@@ -80,7 +79,6 @@ describe('extractRnnoiseVendorGlue — against the real vendored package (canary
     // version bump starts genuinely using any of these globals, this fails
     // loudly instead of the shim silently corrupting real behavior.
     it('glue only references window/WorkerGlobalScope in the env check (shim safety canary)', async () => {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const mod: any = await import('@shiguredo/rnnoise-wasm?raw');
         const raw: string = mod.default;
         expect(raw.match(/WorkerGlobalScope/g)?.length).toBe(1);

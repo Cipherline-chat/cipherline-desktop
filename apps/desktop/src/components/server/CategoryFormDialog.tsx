@@ -11,7 +11,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import axios from 'axios';
 import { Folder, Radio, X, Plus, Trash2, Save, SlidersHorizontal, CornerDownLeft } from 'lucide-react';
-import { API_BASE } from '../../constants';
+import { apiUrl } from '../../utils/apiPath';
 import type { CategoryInfo, ChannelInfo } from '../../hooks/useServers';
 import { ChannelIconDropdown, ChannelIconRenderer } from './ChannelIconPicker';
 import { ClButton, ClModal, ClInput, ClSegment, ClConfirm } from '../cl';
@@ -125,25 +125,25 @@ export const CategoryFormDialog: React.FC<Props> = ({
                 .map(c => ({
                     value: `cat:${c.category_id}`,
                     label: `Category · ${c.name}`,
-                    load: async () => draftFromRows((await axios.get(`${API_BASE}/servers/${serverId}/categories/${c.category_id}/overrides`, auth)).data ?? []),
+                    load: async () => draftFromRows((await axios.get(apiUrl`/servers/${serverId}/categories/${c.category_id}/overrides`, auth)).data ?? []),
                 })),
             ...(channels ?? [])
                 .filter(c => c.kind === 'text' || c.kind === 'huddle')
                 .map(c => ({
                     value: `ch:${c.channel_id}`,
                     label: c.kind === 'huddle' ? `Calls · ${c.name}` : `#${c.name}`,
-                    load: async () => draftFromRows((await axios.get(`${API_BASE}/servers/${serverId}/channels/${c.channel_id}/overrides`, auth)).data ?? []),
+                    load: async () => draftFromRows((await axios.get(apiUrl`/servers/${serverId}/channels/${c.channel_id}/overrides`, auth)).data ?? []),
                 })),
         ];
     }, [token, categories, channels, serverId, editing?.category_id]);
 
     const auth = { headers: { Authorization: `Bearer ${token}` } };
     const http = { patch: (u: string, b: unknown) => axios.patch(u, b, auth), delete: (u: string) => axios.delete(u, auth) };
-    const overridesBase = (id: string) => `${API_BASE}/servers/${serverId}/categories/${id}/overrides`;
+    const overridesBase = (id: string) => apiUrl`/servers/${serverId}/categories/${id}/overrides`;
 
     const handleCreate = async () => {
         const res = await axios.post(
-            `${API_BASE}/servers/${serverId}/categories`,
+            apiUrl`/servers/${serverId}/categories`,
             { name: name.trim(), kind: effectiveKind, icon_name: isHuddle ? (iconName || null) : null },
             auth,
         );
@@ -167,7 +167,7 @@ export const CategoryFormDialog: React.FC<Props> = ({
         let saved = cat;
         if (overviewDirty) {
             const iconPayload = isHuddle ? (iconName || null) : null;
-            await axios.patch(`${API_BASE}/servers/${serverId}/categories/${cat.category_id}`, { name: name.trim(), icon_name: iconPayload }, auth);
+            await axios.patch(apiUrl`/servers/${serverId}/categories/${cat.category_id}`, { name: name.trim(), icon_name: iconPayload }, auth);
             saved = { ...cat, name: name.trim(), icon_name: iconPayload };
             setEditing(saved);
         }
@@ -240,7 +240,7 @@ export const CategoryFormDialog: React.FC<Props> = ({
                 onClose={requestClose}
                 width={860}
                 label={isEdit ? `Edit category ${editing!.name}` : 'Create category'}
-                cardStyle={{ padding: 0, maxHeight: '90vh', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}
+                cardClassName="mcard--panel"
             >
                 <div
                     className="flex flex-col min-h-0 flex-1"
@@ -281,9 +281,9 @@ export const CategoryFormDialog: React.FC<Props> = ({
                         </ClButton>
                     </div>
 
-                    <div className="flex-1 min-h-0 relative" style={{ background: 'var(--cl-deep)' }}>
+                    <div className="flex-1 min-h-0 relative flex flex-col overflow-hidden" style={{ background: 'var(--cl-deep)' }} data-modal-body>
                         {tab === 'overview' && (
-                            <div className="h-full overflow-y-auto custom-scrollbar px-5 py-4 space-y-4">
+                            <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain custom-scrollbar px-5 py-4 space-y-4" data-modal-scroll>
                                 <div>
                                     <div className={sectionLabel}>Name</div>
                                     <div className="flex items-center gap-2">
@@ -341,7 +341,7 @@ export const CategoryFormDialog: React.FC<Props> = ({
                             </div>
                         )}
                         {tab === 'permissions' && (
-                            <div className="h-[min(520px,calc(90vh-140px))] flex flex-col">
+                            <div className="h-[min(520px,calc(100dvh-190px))] min-h-[160px] shrink-0 flex flex-col">
                                 {permsBody()}
                             </div>
                         )}

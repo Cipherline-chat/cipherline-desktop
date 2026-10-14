@@ -16,7 +16,7 @@ import { MessageSquare, FolderOpen, Clock, RotateCcw, X } from 'lucide-react';
 import type { MessageRetention, AttachmentRetention } from '../hooks/useRetentionPolicy';
 import { MESSAGE_RETENTION_LABELS, ATTACHMENT_RETENTION_LABELS } from '../hooks/useRetentionPolicy';
 import { calcConversationStorage } from '../utils/storageCalc';
-import { formatBytes } from './StorageSettings';
+import { formatBytes } from '../utils/formatBytes';
 import { ClButton, ClSelect } from './cl';
 import type { ClSelectOption } from './cl';
 
@@ -27,6 +27,7 @@ const ATT_ORDER: AttachmentRetention[] = ['never', '1y', '6mo', '3mo', '1mo', '1
 const MSG_OPTIONS: ClSelectOption<MessageRetention>[] = MSG_ORDER.map(v => ({ value: v, label: MESSAGE_RETENTION_LABELS[v] }));
 const ATT_OPTIONS: ClSelectOption<AttachmentRetention>[] = ATT_ORDER.map(v => ({ value: v, label: ATTACHMENT_RETENTION_LABELS[v] }));
 
+// eslint-disable-next-line react-refresh/only-export-components -- co-located helper export; splitting the file would only affect dev Fast Refresh, not runtime behaviour
 export function convRetentionKey(userId: string, convId: string) {
     return `cipherline_conv_retention_${userId}_${convId}`;
 }
@@ -48,6 +49,7 @@ function loadOverride(userId: string, convId: string): ConvRetentionOverride | n
 interface Props {
     convId: string;
     userId: string;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     msgs: any[];
     globalMsgRetention: MessageRetention;
     globalAttRetention: AttachmentRetention;

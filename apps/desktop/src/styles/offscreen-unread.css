@@ -1,0 +1,64 @@
+/* OffscreenUnreadPill (components/server/OffscreenUnreadPill.tsx).
+   A small glass capsule pinned to the top/bottom edge of the channel list when
+   an unread channel is scrolled out of view that way. Three tones, matching the
+   row badges: lume (counted unread), flash/red (@mention), grey (quiet unread
+   on an "@mentions only" server). The tone colours the capsule; the blur keeps
+   the rows behind it from fighting the label. */
+.cl-unread-pill {
+  display: inline-flex; align-items: center; gap: 4px;
+  height: 28px; padding: 0 11px 0 8px; border-radius: 999px;
+  font: 800 11px/1 var(--cl-font-body, 'Nunito', sans-serif); letter-spacing: .01em;
+  white-space: nowrap; cursor: pointer; user-select: none;
+  -webkit-backdrop-filter: blur(10px) saturate(1.3); backdrop-filter: blur(10px) saturate(1.3);
+  border: 1px solid var(--cl-unread-pill-edge);
+  background: var(--cl-unread-pill-bg);
+  color: var(--cl-unread-pill-fg);
+  box-shadow: 0 4px 14px rgba(5, 8, 20, .45);
+  animation: cl-unread-pill-in .22s cubic-bezier(.2, .7, .3, 1) both;
+  transition: transform .12s ease, background-color .12s ease;
+}
+.cl-unread-pill:hover { background: var(--cl-unread-pill-bg-hover); }
+.cl-unread-pill:active { transform: scale(.96); }
+.cl-unread-pill:focus-visible { outline: 2px solid var(--cl-lume); outline-offset: 2px; }
+
+.cl-unread-pill--unread {
+  --cl-unread-pill-bg: color-mix(in srgb, var(--cl-deep) 72%, var(--cl-lume) 28%);
+  --cl-unread-pill-bg-hover: color-mix(in srgb, var(--cl-deep) 62%, var(--cl-lume) 38%);
+  --cl-unread-pill-edge: rgba(37, 224, 200, .55);
+  --cl-unread-pill-fg: var(--cl-lume-hi, #3BEAD6);
+}
+.cl-unread-pill--mention {
+  --cl-unread-pill-bg: var(--cl-flash);
+  --cl-unread-pill-bg-hover: var(--cl-flash-press);
+  --cl-unread-pill-edge: rgba(255, 255, 255, .22);
+  --cl-unread-pill-fg: var(--cl-on-flash);
+}
+.cl-unread-pill--quiet {
+  --cl-unread-pill-bg: color-mix(in srgb, var(--cl-surface) 78%, transparent);
+  --cl-unread-pill-bg-hover: color-mix(in srgb, var(--cl-raise) 88%, transparent);
+  --cl-unread-pill-edge: var(--cl-border);
+  --cl-unread-pill-fg: var(--cl-muted);
+}
+
+/* Entrance: fade in from the edge it is pinned to. Not portaled/reparented —
+   this node only mounts when the pill becomes needed. */
+.cl-unread-pill--below { --cl-unread-pill-from: 6px; }
+.cl-unread-pill--above { --cl-unread-pill-from: -6px; }
+@keyframes cl-unread-pill-in {
+  from { opacity: 0; transform: translateY(var(--cl-unread-pill-from, 6px)); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* "You jumped here": a lume wash that fades out, on the row the pill landed on. */
+@keyframes cl-unread-pulse {
+  0%   { background-color: rgba(37, 224, 200, .30); box-shadow: inset 0 0 0 1px rgba(37, 224, 200, .6); }
+  55%  { background-color: rgba(37, 224, 200, .18); box-shadow: inset 0 0 0 1px rgba(37, 224, 200, .35); }
+  100% { background-color: transparent;             box-shadow: inset 0 0 0 1px transparent; }
+}
+.cl-unread-pulse { animation: cl-unread-pulse 1.5s ease-out; }
+
+@media (prefers-reduced-motion: reduce) {
+  .cl-unread-pill { animation: none; transition: none; }
+  .cl-unread-pill:active { transform: none; }
+  .cl-unread-pulse { animation: none; }
+}

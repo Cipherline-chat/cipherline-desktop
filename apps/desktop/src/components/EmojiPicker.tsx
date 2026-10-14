@@ -42,6 +42,7 @@ function scopeCustomEmojis(currentIds: Set<string>): void {
     let prunedAny = false;
     for (const id of registeredCustomEmojiIds) {
         if (!currentIds.has(id)) {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
             delete (Data as any).emojis[id];
             prunedAny = true;
         }
@@ -53,6 +54,7 @@ function scopeCustomEmojis(currentIds: Set<string>): void {
 // The `:query` autocomplete's search lives in emojiSearch.ts so it can load the
 // dataset on demand without pulling this whole module (and emoji-mart) into
 // the boot bundle. Re-exported here so existing importers keep working.
+// eslint-disable-next-line react-refresh/only-export-components -- co-located helper export; splitting the file would only affect dev Fast Refresh, not runtime behaviour
 export { searchEmoji } from './emojiSearch';
 export type { EmojiSuggestion } from './emojiSearch';
 
@@ -266,6 +268,7 @@ const EmojiPickerPopover: React.FC<PickerProps> = ({ onEmojiSelect, onClose, anc
 
         const inject = () => {
             const picker = ref.current?.querySelector('em-emoji-picker');
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
             const root = (picker as any)?.shadowRoot as ShadowRoot | null | undefined;
             if (!root) return false;
             // Avoid double-injection on HMR re-runs

@@ -9,6 +9,10 @@
  * what the native `<input type="date">` this component replaces already
  * produced, so nothing downstream (the `!dob` required-field check, the
  * `Date.parse(dto.dob)` age gate) needed to change.
+ *
+ * What the user SEES and TYPES in the field is month/day/year (`MM/DD/YYYY`).
+ * The typed-text helpers below take "today" as a parameter instead of reading
+ * the clock, so they stay deterministic under test.
  */
 
 export const MONTH_LABELS = [
@@ -56,41 +60,116 @@ export function formatIsoDate(y: number, m: number, d: number): string {
     return `${String(y).padStart(4, '0')}-${pad2(m + 1)}-${pad2(d)}`;
 }
 
-/** `{y,m,d}` -> `"September 14, 2026"` — locale-independent by design (a
- *  fixed English label table), so display text is deterministic across
- *  environments/tests rather than riding `toLocaleDateString`'s ICU data. */
-export function formatDisplayDate(y: number, m: number, d: number): string {
-    return `${MONTH_LABELS[m]} ${d}, ${y}`;
+/** `{y,m,d}` -> `"09/02/2003"` (the field's display format). `m` is 0-indexed in. */
+export function formatMdyDate(y: number, m: number, d: number): string {
+    return `${pad2(m + 1)}/${pad2(d)}/${String(y).padStart(4, '0')}`;
+}
+
+/** Longest digit string the field holds: MMDDYYYY. */
+export const DOB_MAX_DIGITS = 8;
+
+/**
+ * Turns whatever is in the input (typed, pasted, autofilled) into the masked
+ * `MM/DD/YYYY` text, keeping at most 8 digits. Slashes are placed
+ * automatically: one after the 2nd digit and one after the 4th, so `09` shows
+ * as `09/` and `0902` as `09/02/`.
+ *
+ * Accepted shapes: bare digits (`09022003`), any separator (`/ - . space`),
+ * single-digit month/day before a separator (`9/2/2003` -> `09/02/2003`,
+ * and a typed `9/` -> `09/`), and ISO `2003-09-02` — unambiguous because it
+ * starts with a 4-digit year followed by a separator.
+ */
+export function normalizeDobInput(raw: string): string {
+    raw = raw.replace(/^\D+/, '');
+    const iso = /^\s*(\d{4})\D+(\d{1,2})\D+(\d{1,2})\s*$/.exec(raw);
+    let digits: string;
+    if (iso) {
+        digits = iso[2].padStart(2, '0') + iso[3].padStart(2, '0') + iso[1];
+    } else {
+        const runs = raw.split(/\D+/);
+        digits = runs
+            .map((run, i) => (i < runs.length - 1 && i < 2 && run.length === 1 ? `0${run}` : run))
+            .join('');
+    }
+    digits = digits.slice(0, DOB_MAX_DIGITS);
+    let out = digits.slice(0, 2);
+    if (digits.length >= 2) out += '/';
+    if (digits.length > 2) out += digits.slice(2, 4);
+    if (digits.length >= 4) out += '/';
+    if (digits.length > 4) out += digits.slice(4);
+    return out;
+}
+
+const digitCount = (s: string): number => s.replace(/\D/g, '').length;
+
+/**
+ * Applies one edit event from the input to the masked draft, returning the new
+ * masked text and where the caret should sit.
+ *
+ * `prev` is the text before the edit, `raw` what the input holds now, `caret`
+ * the caret in `raw`. The only special case beyond re-masking is Backspace over
+ * an auto-inserted slash: the browser removes just the `/`, which re-masking
+ * would put straight back (the caret would be stuck). That is detected as "raw
+ * is prev minus exactly one slash" and treated as deleting the digit before the
+ * slash instead.
+ */
+export function applyDobEdit(prev: string, raw: string, caret: number = raw.length): { text: string; caret: number } {
+    let work = raw;
+    let at = Math.max(0, Math.min(caret, raw.length));
+    if (raw.length === prev.length - 1) {
+        let i = 0;
+        while (i < raw.length && raw[i] === prev[i]) i++;
+        if (i > 0 && prev[i] === '/' && raw === prev.slice(0, i) + prev.slice(i + 1)) {
+            work = raw.slice(0, i - 1) + raw.slice(i);
+            at = i - 1;
+        }
+    }
+    const text = normalizeDobInput(work);
+    if (at >= work.length) return { text, caret: text.length };
+    const k = digitCount(normalizeDobInput(work.slice(0, at)));
+    const pos = k <= 2 ? k : k <= 4 ? k + 1 : k + 2;
+    return { text, caret: Math.min(pos, text.length) };
+}
+
+export type DobCheck =
+    | { status: 'empty' }
+    | { status: 'incomplete' }
+    | { status: 'invalid' }
+    | { status: 'future' }
+    | { status: 'ok'; iso: string };
+
+/**
+ * Judges the masked text. `ok` needs 8 digits forming a real calendar date
+ * (02/30 and 13/01 are `invalid`; leap years are honoured), a year >= `minYear`,
+ * and a date that is not after `today` (`future`). Pure: "today" is injected.
+ */
+export function checkTypedDob(text: string, today: IsoDateParts, minYear = 1900): DobCheck {
+    const norm = normalizeDobInput(text);
+    if (norm === '') return { status: 'empty' };
+    const match = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(norm);
+    if (!match) return { status: 'incomplete' };
+    const m = Number(match[1]) - 1;
+    const d = Number(match[2]);
+    const y = Number(match[3]);
+    if (y < minYear || m < 0 || m > 11 || d < 1 || d > daysInMonth(y, m)) return { status: 'invalid' };
+    if (y > today.y || (y === today.y && (m > today.m || (m === today.m && d > today.d)))) return { status: 'future' };
+    return { status: 'ok', iso: formatIsoDate(y, m, d) };
 }
 
 /**
- * Decides what a typed date-of-birth string should commit to, for
- * `DatePicker`'s "type OR pick" mode. Kept pure and exported so this exact
- * decision is unit-testable — `DatePicker.tsx` itself can't be, since this
- * app's vitest config runs in a `node` environment with no DOM/testing-
- * library, so anything that needs to actually render is out of reach for a
- * unit test here.
+ * What a typed `MM/DD/YYYY` string should commit to, for `DatePicker`'s "type
+ * OR pick" mode. A typed date goes through the same real-calendar-date check
+ * (`daysInMonth`) a picked one is built from, and the committed value is the
+ * same ISO string the calendar commits.
  *
- * This is also what makes "a typed date goes through exactly the same check
- * a picked one does" (CLAUDE.md's COPPA note) true by construction rather
- * than by two hand-kept-in-sync implementations: it calls the SAME
- * `parseIsoDate` the calendar popup's own day cells are built from.
- *
- * Returns:
- *  - `''` if `raw` is empty — an explicit "the date was cleared" commit, not
- *    a partial/invalid state.
- *  - `raw` itself, unchanged, if it parses to a real calendar date (`parseIsoDate`
- *    only accepts the exact `YYYY-MM-DD` shape, so there is nothing to
- *    normalize — what's returned is exactly what was typed).
- *  - `null` if `raw` is non-empty but does not — yet, or ever — parse. The
- *    caller must leave the previously committed value alone in this case: no
- *    throw, no rounding to the nearest valid date, just "not committed yet".
- *    This is the same `null` a still-in-progress keystroke (`"1990-0"`) and a
- *    date that will never be valid (`"2024-02-30"`) both produce — the caller
- *    can't tell those apart and doesn't need to; it only needs to know not to
- *    commit.
+ *  - `''` if the text is empty — an explicit "cleared" commit.
+ *  - the ISO `YYYY-MM-DD` string if the text is a complete, valid, non-future
+ *    date at or after `minYear`.
+ *  - `null` otherwise (still being typed, impossible, or in the future). No
+ *    throw, no rounding to a nearby date.
  */
-export function resolveTypedDate(raw: string): string | null {
-    if (raw === '') return '';
-    return parseIsoDate(raw) ? raw : null;
+export function resolveTypedDate(text: string, today: IsoDateParts, minYear = 1900): string | null {
+    const r = checkTypedDob(text, today, minYear);
+    if (r.status === 'empty') return '';
+    return r.status === 'ok' ? r.iso : null;
 }

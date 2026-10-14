@@ -13,13 +13,16 @@ import { useToast } from '../../contexts/ToastContext';
 import { RefreshCw, CheckCircle2, AlertTriangle, Clock, Sparkles, Gift, Copy, Check, Link2 } from 'lucide-react';
 import { ClButton, ClSkeleton } from '../cl';
 import { UpdateCardModal } from './UpdateCardModal';
+import { InvoiceRow } from './InvoiceRow';
 import { openExternalLink } from '../../utils/openExternalLink';
-import { formatMoney, type PaymentMethodView, type InvoiceView } from '@cipherline/shared';
+import { type PaymentMethodView, type InvoiceView } from '@cipherline/shared';
 import { API_BASE } from '../../constants';
 import { writeToClipboard } from '../../utils/clipboard';
 import { motion } from 'framer-motion';
 import { formatBillingDateOr, cancellationKeepProSentence, formatPlanPrice } from '@cipherline/shared';
 import { nudges } from '../../utils/firstWeekNudgeStore';
+import { useOwnedServersOverFreeStorage } from '../../hooks/useServerStorageStatus';
+import { CancelServerStorageNotice } from './CancelServerStorageNotice';
 
 /**
  * Standalone-field date. Returns the em-dash placeholder ONLY where that reads
@@ -85,7 +88,7 @@ export const BillingTab: React.FC = () => {
         status, statusError, refresh, openInAppCheckout, extendTrial,
         setCancellation, fetchPaymentMethod, fetchInvoices,
     } = useSubscription();
-    const { token } = useAuth();
+    const { token, userId } = useAuth();
     const { push: pushToast } = useToast();
 
     const [referral, setReferral] = useState<ReferralStatus | null>(null);
@@ -108,10 +111,17 @@ export const BillingTab: React.FC = () => {
     const [extendBusy, setExtendBusy] = useState(false);
     const [refreshBusy, setRefreshBusy] = useState(false);
 
-    /** Arm the two-step cancel. (It used to also load the user's owned servers to
-     *  warn about a 60-day deletion; that policy is gone — since 2026-10-04 every
-     *  plan may own servers, and nothing is deleted when Pro ends.) */
+    /** Arm the two-step cancel. */
     const armCancel = useCallback(() => setConfirmCancel(true), []);
+
+    /**
+     * Servers this user owns that use more than the free 25 MB: those enter the
+     * 60-day storage grace once Pro ends (packages/shared/storage-grace.ts).
+     * Checked ONLY while the confirmation is open, and only for servers the user
+     * owns (the status endpoint is limited to 10 per 10 s; the shared store
+     * paces and caches). The cancel button never waits on it.
+     */
+    const { overCount: serversOverFree } = useOwnedServersOverFreeStorage(confirmCancel, token, userId);
 
     /**
      * Cancel or resume. The server writes through from Stripe's own response
@@ -124,7 +134,13 @@ export const BillingTab: React.FC = () => {
         setCancelBusy(true);
         try {
             const res = await setCancellation(cancel);
-            if (res.ok) {
+            if (res.ok && res.settled === false) {
+                // Stripe accepted it but our own row hasn't caught up (e.g. a
+                // past-due account, or a write-through that was skipped). Don't
+                // claim a state the pane below isn't showing.
+                pushToast({ kind: 'info', title: 'Subscription', message: 'Your request was received. Your plan will update shortly.' });
+                setConfirmCancel(false);
+            } else if (res.ok) {
                 pushToast({
                     kind: 'success',
                     message: cancel
@@ -458,9 +474,10 @@ export const BillingTab: React.FC = () => {
                         </p>
 
                         <p className="text-[12.5px] leading-relaxed" style={{ color: 'var(--cl-faint)', margin: '0 0 12px' }}>
-                            Servers you own stay yours on the free tier; they just keep 25 MB of saved
-                            storage (anything already saved is kept).
+                            Servers you own stay yours on the free tier, with 25 MB of saved storage each.
                         </p>
+
+                        <CancelServerStorageNotice overCount={serversOverFree} />
 
                         <div className="flex flex-wrap items-center gap-2">
                             <ClButton
@@ -526,26 +543,7 @@ export const BillingTab: React.FC = () => {
                         </p>
                     )}
                     {invoices.map(inv => (
-                        <div className="sd-row" key={inv.id}>
-                            <div className="sd-rl">
-                                <b>{formatMoney(inv.amount_paid || inv.amount_due, inv.currency)}</b>
-                                <span>
-                                    {formatDate(inv.created)}
-                                    {inv.status !== 'paid' && ` · ${inv.status}`}
-                                    {inv.number && ` · ${inv.number}`}
-                                </span>
-                            </div>
-                            <div className="sd-rc">
-                                {inv.hosted_invoice_url && (
-                                    <ClButton
-                                        type="button" variant="ghost" size="sm"
-                                        onClick={() => openReceipt(inv.hosted_invoice_url!)}
-                                    >
-                                        Receipt
-                                    </ClButton>
-                                )}
-                            </div>
-                        </div>
+                        <InvoiceRow key={inv.id} inv={inv} dateLabel={formatDate(inv.created)} onOpen={openReceipt} />
                     ))}
                 </div>
             )}

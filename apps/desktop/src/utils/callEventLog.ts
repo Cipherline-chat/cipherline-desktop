@@ -43,6 +43,27 @@ export const CALL_EVENT_KINDS = [
     // A share start: stage timings (codec probe, acquire + publish), or the
     // DOMException type when it failed (SidebarConference.startScreenShareFrom).
     'share_start',
+    // Our share's capture / send rates before vs. after Cipherline went to the
+    // background, and which stage lost the frames (shareBackgroundProbe.ts).
+    'share_background',
+    // The size a share is held to for its codec (shareEncoderLimits.ts): the
+    // capture's size, what is encoded, the scale between them, the layout
+    // (whole display / one screen of an ultra-wide) and the fallback step.
+    'share_clamp',
+    // Every ~10 s while sharing, and 2 s after a focus change (shareHealth.ts):
+    // capture / source / encode / send frame rates, the encoder's limit reason,
+    // which encoder and whether it is hardware, window focus + visibility.
+    'share_fps',
+    // The main process's Windows power-throttling opt-out for a live share
+    // (apply / re-apply / restore): per-process error codes, a mask, counts
+    // (sharePowerEvent.ts, logged by ShareBoostGuard).
+    'share_power',
+    // The WDDM GPU scheduling class raised for a live share (apply / re-apply /
+    // restore): the class read back per process + NTSTATUS strings
+    // (shareGpuSchedEvent.ts, logged by ShareBoostGuard).
+    'share_gpu_sched',
+    // The "share the game window instead" hint: shown / accepted (shareFullscreenHint.ts).
+    'share_hint',
     'dynacast_layers', 'quality_limitation', 'freeze_start', 'freeze_end',
     'focus_upgrade', 'focus_switched',
     'incoming_mode', 'decode_cap',
@@ -62,6 +83,33 @@ export const CALL_EVENT_KINDS = [
     // A/V sync (avSyncMonitor.ts, SidebarConference's share-audio ring). Was a
     // separate stand-in log (avSyncLog.ts) with dotted kinds; folded in here.
     'av_sync_offset', 'av_sync_estimate', 'av_sync_playback_path', 'av_sync_webaudio_latency', 'av_sync_ss_audio_trim',
+    // The published mic was re-acquired (micDeviceSync.ts): a reason enum,
+    // whether the target was the system default, ok|failed. Never a device
+    // id or label — labels can carry a person's name.
+    'mic_device_switch',
+    // The live mic capture was re-opened because its processing flags (echo
+    // cancellation / NS / AGC) did not match the wanted ones — the Settings
+    // toggle mid-call, or livekit-client reopening with Chromium's defaults
+    // (micDeviceSync.applyCapture): the wanted echo-cancellation value,
+    // whether it was among the flags that differed, ok|failed. Booleans only.
+    'mic_echo_cancellation',
+    // One per output-device (setSinkId) attempt, element or AudioContext, in a
+    // call or not (audioOutput.ts): target, ok, landed (read-back matches),
+    // to_default, a reason enum and a DOMException-name enum. Never a device
+    // id or label.
+    'audio_output_sink',
+    // Is the stored speaker pick a real, current device? result enum + the
+    // number of outputs listed (audioOutput.ts notePick).
+    'audio_output_pick',
+    // GPU process restart ("graphics driver reset") and what the call did
+    // about it (utils/gpuRecovery.ts): restart count, Electron's reason enum,
+    // Chromium's exit code, step enums, booleans and counts only.
+    'gpu_process_restarted', 'video_recovery',
+    // A renderer frame that blocked the UI for 200 ms or more (freezeLog.ts,
+    // from the Long Animation Frames API): durations, plus the longest
+    // script's file BASENAME on our own origin, function name, character
+    // offset and invoker kind — code identifiers only (longFrameAttribution.ts).
+    'long_frame',
 ] as const;
 export type CallEventKind = (typeof CALL_EVENT_KINDS)[number];
 

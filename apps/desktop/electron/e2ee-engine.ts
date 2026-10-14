@@ -600,6 +600,7 @@ export function decryptEnvelope(
     /** Told which candidate opened the envelope (main.ts orders by it). */
     onCandidateUsed?: (id: number) => void,
 ): DecryptResult {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     let envelope: any;
     try {
         envelope = JSON.parse(Buffer.from(ciphertextB64, 'base64').toString('utf8'));
@@ -722,6 +723,7 @@ export async function decryptWithRetainedSpks(
 }
 
 function _decryptV3(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     envelope: any,
     myDeviceId: string,
     spkPrivHex: string,

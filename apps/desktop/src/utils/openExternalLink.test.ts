@@ -70,12 +70,40 @@ describe('openExternalLink', () => {
         window.electronAPI = undefined as unknown as typeof window.electronAPI;
 
         expect(openExternalLink('https://example.com')).toEqual({ ok: true });
-        expect(window.open).toHaveBeenCalledWith('https://example.com', '_blank', 'noopener,noreferrer');
+        expect(window.open).toHaveBeenCalledWith('https://example.com/', '_blank', 'noopener,noreferrer');
 
         vi.mocked(window.open).mockClear();
 
         // The gap this whole fix closes: the old fallback had zero validation.
         expect(openExternalLink('javascript:alert(1)')).toEqual({ ok: false, reason: 'disallowed-scheme' });
         expect(window.open).not.toHaveBeenCalled();
+    });
+
+    describe('validated value is what reaches the sink', () => {
+        it('passes the parsed (canonical) href to electronAPI.openExternal, not the raw input', () => {
+            const openExternal = vi.fn().mockResolvedValue(undefined);
+            window.electronAPI = { ...(window.electronAPI ?? {}), openExternal } as typeof window.electronAPI;
+
+            // Leading/trailing whitespace is stripped by the URL parser; the raw string would not be.
+            expect(openExternalLink('  https://example.com  ')).toEqual({ ok: true });
+            expect(openExternal).toHaveBeenCalledTimes(1);
+            expect(openExternal).toHaveBeenCalledWith('https://example.com/');
+        });
+
+        it('also hands the canonical href to the window.open fallback', () => {
+            window.electronAPI = undefined as unknown as typeof window.electronAPI;
+            expect(openExternalLink('HTTPS://Example.COM/Path?q=1')).toEqual({ ok: true });
+            expect(window.open).toHaveBeenCalledWith('https://example.com/Path?q=1', '_blank', 'noopener,noreferrer');
+        });
+
+        it('a javascript: scheme hidden behind tabs/newlines (stripped by the URL parser) never reaches a sink', () => {
+            const openExternal = vi.fn().mockResolvedValue(undefined);
+            window.electronAPI = { ...(window.electronAPI ?? {}), openExternal } as typeof window.electronAPI;
+            for (const u of ['\tjavascript:alert(1)', 'java\nscript:alert(1)', 'java\tscript:alert(1)', ' \u0001javascript:alert(1)']) {
+                expect(openExternalLink(u).ok).toBe(false);
+            }
+            expect(openExternal).not.toHaveBeenCalled();
+            expect(window.open).not.toHaveBeenCalled();
+        });
     });
 });

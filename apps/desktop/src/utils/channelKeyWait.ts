@@ -76,10 +76,24 @@ export function summarizeNewestPage(rows: readonly RowLike[], pageSize = HISTORY
 }
 
 /** True when the open channel's newest page would render as (almost) nothing
- *  but "waiting on this channel's key" pills. */
-export function needsKeyWaitState(rows: readonly RowLike[], pageSize = HISTORY_PAGE_SIZE): boolean {
+ *  but "waiting on this channel's key" pills.
+ *
+ *  `newestKeyPending` (2026-10-11): this device asked for the channel's keys
+ *  while holding NONE, and still lacks the newest epoch the API named
+ *  (utils/keyReask.ts targets). Then a few readable rows do not cancel the
+ *  wait — the joiner whose newest-epoch envelope was refused while the older
+ *  history landed, or whose own pending send sits in the page — as long as
+ *  the missing rows outnumber the readable ones. Without it the rule stays
+ *  strict: one readable row means some keys are held and the per-message
+ *  labels are the honest picture. */
+export function needsKeyWaitState(
+    rows: readonly RowLike[],
+    pageSize = HISTORY_PAGE_SIZE,
+    opts: { newestKeyPending?: boolean } = {},
+): boolean {
     const s = summarizeNewestPage(rows, pageSize);
-    return s.readable === 0
+    const readableOk = opts.newestKeyPending ? s.keyMissing > s.readable : s.readable === 0;
+    return readableOk
         && s.keyMismatch === 0
         && s.keyMissing > 0
         // "Mostly": missing keys must outnumber the rows no key can fix, so a
@@ -111,6 +125,9 @@ export interface KeyWaitSignals {
     activeDecrypts: readonly number[];
     /** Highest start seq among decrypts that have FINISHED. */
     lastDoneDecryptSeq: number;
+    /** Asked while holding no key; the newest epoch has not been installed
+     *  yet (see needsKeyWaitState). */
+    newestKeyPending?: boolean;
 }
 
 export const EMPTY_SIGNALS: KeyWaitSignals = Object.freeze({
@@ -178,7 +195,9 @@ export const KEY_WAIT_COPY: Record<KeyWaitStage, KeyWaitCopy> = {
     },
     stalled: {
         title: 'No one who can share keys has answered yet',
-        detail: 'They may all be offline right now. This finishes on its own as soon as one of them is — you can leave and come back.',
+        // Re-asks keep going behind this (utils/keyReask.ts) — the copy says so
+        // rather than implying the request was sent once and forgotten.
+        detail: 'They may all be offline right now. Your device keeps asking, and this finishes on its own as soon as one of them answers — you can leave and come back.',
     },
     received: {
         title: 'Keys received — decrypting messages…',
@@ -236,6 +255,13 @@ export function beginChannelPageDecrypt(channelId: string): () => void {
             lastDoneDecryptSeq: Math.max(s.lastDoneDecryptSeq, mine),
         }));
     };
+}
+
+/** This device asked for the channel's keys while holding none (true), or the
+ *  newest epoch has since been installed / the fast re-ask gave up (false). */
+export function noteNewestKeyPending(channelId: string, pending: boolean) {
+    if (!!getKeyWaitSignals(channelId).newestKeyPending === pending) return;
+    update(channelId, s => ({ ...s, newestKeyPending: pending }));
 }
 
 /** Sign-out / tests. */

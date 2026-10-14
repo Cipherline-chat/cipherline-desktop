@@ -656,6 +656,9 @@ static napi_value StopCapture(napi_env env, napi_callback_info /*info*/)
 // window_geometry.cc — display/window geometry for the annotation
 // overlay (see that file). Linked into this addon so there is one .node file.
 void RegisterWindowGeometry(napi_env env, napi_value exports);
+// share_power.cc — process power-throttling opt-out, foreground probe and
+// timer resolution for the screen-share boost (electron/share-boost.ts).
+void RegisterSharePower(napi_env env, napi_value exports);
 
 static napi_value Init(napi_env env, napi_value exports)
 {
@@ -671,6 +674,7 @@ static napi_value Init(napi_env env, napi_value exports)
     napi_set_named_property(env, exports, "stopCapture", fn);
 
     RegisterWindowGeometry(env, exports);
+    RegisterSharePower(env, exports);
 
     return exports;
 }

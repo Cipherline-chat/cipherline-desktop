@@ -75,6 +75,7 @@ export const ChangePasswordModal: React.FC<Props> = ({ open, onClose }) => {
                     return n - 1;
                 });
             }, 1000);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (err: any) {
             setError(err?.response?.data?.message || 'Could not send verification code.');
         } finally {
@@ -142,6 +143,7 @@ export const ChangePasswordModal: React.FC<Props> = ({ open, onClose }) => {
                                     { email_code: code };
             const res = await axios.post(`${API_BASE}/auth/verify-change-code`, credential, { headers: authHeader });
             setChangeToken(res.data.change_token);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (err: any) {
             const rawMsg = err?.response?.data?.message;
             const msg: string = Array.isArray(rawMsg) ? (rawMsg[0] || '') : (typeof rawMsg === 'string' ? rawMsg : '');
@@ -176,6 +178,7 @@ export const ChangePasswordModal: React.FC<Props> = ({ open, onClose }) => {
             updateTokens(res.data.access_token, res.data.refresh_token);
             toast.push({ kind: 'success', title: 'Password changed', message: 'Signed out of all other sessions.' });
             onClose();
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (err: any) {
             const rawMsg = err?.response?.data?.message;
             const msg: string = Array.isArray(rawMsg) ? (rawMsg[0] || '') : (typeof rawMsg === 'string' ? rawMsg : '');

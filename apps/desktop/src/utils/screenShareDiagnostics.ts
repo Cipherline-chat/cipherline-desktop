@@ -31,6 +31,8 @@ export interface MainShareDiagnostics {
     /** Chromium GPU feature status for video encode ('enabled', 'disabled_software', …). */
     videoEncode: string | null;
     h264CbpHwEnabled: boolean;
+    /** A frame-rate limit of the OS capturer itself (Linux Wayland/PipeWire: 60); null = none. */
+    captureFpsCeiling?: number | null;
     /** Chromium capture-timing log is being written (Settings → Advanced → Capture timing log). */
     captureLog: boolean;
 }
@@ -83,6 +85,7 @@ export function parseMainDiagnostics(v: unknown): MainShareDiagnostics | null {
         gpus,
         videoEncode: typeof v.videoEncode === 'string' ? v.videoEncode : null,
         h264CbpHwEnabled: v.h264CbpHwEnabled === true,
+        captureFpsCeiling: (() => { const n = numOrNull(v.captureFpsCeiling); return n !== null && n >= 1 && n <= 1000 ? Math.round(n) : null; })(),
         captureLog: v.captureLog === true,
     };
 }

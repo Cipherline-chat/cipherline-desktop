@@ -401,6 +401,73 @@ export function computeMissingEpochsForChannel(
     };
 }
 
+// ── History-gap re-asks (repair sweep) ──────────────────────────────────────
+//
+// The repair sweep asks for every server-registered epoch this device does not
+// hold. Some of those epochs can NEVER be supplied: minted (and registered) by
+// a device that is gone, or never distributed, so no online holder has them
+// (14 of 23 channels in the 2026-10-14 new-member report, one orphan epoch
+// each, 0 messages encrypted under them). Asking again can never help, but
+// every ask makes EVERY online holder re-send EVERY epoch it holds — so a
+// joiner re-asked about those channels every 75 s and received ~200 envelopes a
+// minute, for as long as the app stayed open (~2,000 in ten minutes from six
+// holders), the same shape as the 2026-10-07 stale-channel storm.
+//
+// So the question "is it worth asking again?" depends on whether the gap
+// CHANGED: the same (or a smaller) gap that an earlier ask already put in
+// front of every online holder is re-asked only on an exponential back-off —
+// long enough that a holder who was offline can come back and be asked, short
+// enough that nothing is stuck for good. A gap that GREW (a new epoch we do not
+// hold) is asked about at once. The newest-epoch path (computeMissingKeyChannels)
+// is NOT subject to this: a channel the device cannot send in is always asked.
+
+/** First re-ask of an unchanged history gap. */
+export const GAP_REASK_BASE_MS = 5 * 60 * 1000;
+/** …doubling, never beyond this. */
+export const GAP_REASK_MAX_MS = 2 * 60 * 60 * 1000;
+
+export interface GapAsk {
+    /** The epochs that were missing at the last ask (sorted). */
+    epochs: number[];
+    /** When this gap was last put to the holders. */
+    askedAt: number;
+    /** Asks made about this gap so far (>= 1). */
+    count: number;
+}
+
+export function gapReaskDelayMs(count: number): number {
+    const n = Math.max(1, Math.floor(count));
+    return Math.min(GAP_REASK_MAX_MS, GAP_REASK_BASE_MS * 2 ** (n - 1));
+}
+
+/**
+ * Decide whether the repair sweep should file a key request for a channel's
+ * history gap, and what to remember. `prev` is what was remembered for the
+ * channel (undefined = never asked). Pure: the caller always stores `next`
+ * (`undefined` = the gap healed, forget the channel). When `ask` is false,
+ * `next` keeps the old clock, so a smaller gap is not asked about sooner.
+ */
+export function decideGapReask(
+    missingEpochs: readonly number[],
+    prev: GapAsk | undefined,
+    nowMs: number,
+): { ask: boolean; next: GapAsk | undefined } {
+    if (missingEpochs.length === 0) return { ask: false, next: undefined };   // healed: forget
+    const epochs = [...new Set(missingEpochs)].sort((a, b) => a - b);
+    const fresh: GapAsk = { epochs, askedAt: nowMs, count: 1 };
+    if (!prev) return { ask: true, next: fresh };
+    const known = new Set(prev.epochs);
+    if (epochs.some(e => !known.has(e))) return { ask: true, next: fresh };    // grew: a new gap
+    // Same gap, or part of it was filled in since: the earlier ask already
+    // reached every online holder. A shrunken gap restarts the back-off (it is
+    // evidently being served) but keeps the clock, so it is not asked sooner.
+    const count = epochs.length < prev.epochs.length ? 1 : prev.count;
+    if (nowMs - prev.askedAt < gapReaskDelayMs(count)) {
+        return { ask: false, next: { epochs, askedAt: prev.askedAt, count } };
+    }
+    return { ask: true, next: { epochs, askedAt: nowMs, count: count + 1 } };
+}
+
 // ── Phase 4c: idempotent-envelope retry bound (RC-8) ────────────────────────
 //
 // Server-side, submitHandshake now upserts (see channel-key-handshakes.

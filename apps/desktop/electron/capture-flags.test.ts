@@ -2,7 +2,9 @@ import { describe, it, expect } from 'vitest';
 import {
     parseScreenCapturerPref, windowsBuildFromRelease, buildChromiumMediaSwitches, expectedScreenCapturer,
     captureLogSwitches, parseCaptureTimingLog, summarizeGpuDevices, WIN11_24H2_BUILD,
+    validateCaptureTimingWindow, CAPTURE_TIMING_DEFAULT_WINDOW, CAPTURE_TIMING_MIN_WINDOW,
     decideAutoScreenCapturer, WINDOWS_NO_DXGI_FEATURE, dxgiEnabledInMainProcess, pickerEnumeration,
+    captureFpsCeiling, isNativeWaylandClient,
     parseSourcesHelperFailure, serializeSourcesHelperFailure, SOURCES_HELPER_FAILURE_MAX_BYTES, gpuTopologyFromInfo, parseGpuTopologyHint, serializeGpuTopologyHint, resolveCapturedDisplayHz,
 } from './capture-flags';
 
@@ -432,5 +434,63 @@ describe('sources-helper failure record (persisted for the next launch)', () => 
     it('bounds what it writes', () => {
         const text = serializeSourcesHelperFailure({ version: '1'.repeat(500), reason: 'r'.repeat(5000), at: 2 });
         expect(text.length).toBeLessThan(SOURCES_HELPER_FAILURE_MAX_BYTES);
+    });
+});
+
+describe('validateCaptureTimingWindow (screenshare:get-capture-timing argument)', () => {
+    it('absent = the HUD default; integers in range pass through', () => {
+        expect(validateCaptureTimingWindow(undefined)).toBe(CAPTURE_TIMING_DEFAULT_WINDOW);
+        expect(validateCaptureTimingWindow(CAPTURE_TIMING_MIN_WINDOW)).toBe(10);
+        expect(validateCaptureTimingWindow(12)).toBe(12);
+        expect(validateCaptureTimingWindow(CAPTURE_TIMING_DEFAULT_WINDOW)).toBe(300);
+    });
+    it('refuses (null) — never coerces — anything else', () => {
+        for (const bad of [9, 301, 0, -5, 12.5, NaN, Infinity, '12', null, {}, [12], true]) {
+            expect(validateCaptureTimingWindow(bad)).toBeNull();
+        }
+    });
+    it('a short window summarises only the newest polls (a background collapse is not averaged away)', () => {
+        const fg = Array.from({ length: 200 }, () => frame(4, 11)).join('\n');
+        const bg = Array.from({ length: 12 }, () => frame(300, 600)).join('\n');
+        const log = start(90) + '\n' + fg + '\n' + bg;
+        expect(parseCaptureTimingLog(log)!.captureMs).toBeLessThan(25);
+        const t = parseCaptureTimingLog(log, validateCaptureTimingWindow(12)!)!;
+        expect(t.samples).toBe(12);
+        expect(t.captureMs).toBe(300);
+        expect(t.periodMs).toBe(600);
+    });
+});
+
+describe('captureFpsCeiling - the OS capturer\'s own limit', () => {
+    it('PipeWire (Wayland) is held to 60: Chromium 150 negotiates maxFramerate 60/1 whatever is asked', () => {
+        // Measured with pw-dump while sharing at a requested 90 (2026-10-14, Electron 43.7.9):
+        // consumer EnumFormat framerate/maxFramerate 0..60/1, negotiated maxFramerate 60/1.
+        expect(captureFpsCeiling('pipewire')).toBe(60);
+    });
+
+    it.each(['x11', 'macos', 'wgc', 'dxgi', 'unknown', '', null, undefined])('%j has no fixed ceiling of its own', (b) => {
+        expect(captureFpsCeiling(b)).toBeNull();
+    });
+});
+
+describe('isNativeWaylandClient - which Linux capturer Chromium will use', () => {
+    const base = {};
+    it('a Wayland session is a native Wayland client (ozone-platform-hint=auto)', () => {
+        expect(isNativeWaylandClient({ XDG_SESSION_TYPE: 'wayland' }, '')).toBe(true);
+        expect(isNativeWaylandClient({ WAYLAND_DISPLAY: 'wayland-0' }, '')).toBe(true);
+        expect(isNativeWaylandClient({ XDG_SESSION_TYPE: 'Wayland' }, '')).toBe(true);
+    });
+    it('an X11 session is not', () => {
+        expect(isNativeWaylandClient({ XDG_SESSION_TYPE: 'x11', DISPLAY: ':0' }, '')).toBe(false);
+        expect(isNativeWaylandClient(base, '')).toBe(false);
+    });
+    it('an explicit --ozone-platform wins either way (XWayland is X11)', () => {
+        expect(isNativeWaylandClient({ XDG_SESSION_TYPE: 'wayland' }, 'x11')).toBe(false);
+        expect(isNativeWaylandClient({ XDG_SESSION_TYPE: 'x11' }, ' Wayland ')).toBe(true);
+    });
+    it('feeds expectedScreenCapturer: Wayland -> pipewire (ceiling 60), X11 -> x11 (none)', () => {
+        const be = (wayland: boolean) => expectedScreenCapturer({ platform: 'linux', windowsBuild: null, pref: 'auto', sourceKind: 'screen', waylandSession: wayland }).backend;
+        expect(captureFpsCeiling(be(isNativeWaylandClient({ XDG_SESSION_TYPE: 'wayland' }, '')))).toBe(60);
+        expect(captureFpsCeiling(be(isNativeWaylandClient({ XDG_SESSION_TYPE: 'x11' }, '')))).toBeNull();
     });
 });

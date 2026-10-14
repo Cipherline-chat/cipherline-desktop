@@ -44,3 +44,40 @@ describe('FriendsPane — Pending tab badge', () => {
         expect(src).toContain('badge: incomingCount ? undefined : (pendingCount || undefined)');
     });
 });
+
+/**
+ * Regression: "accepted a friend, ~10 min later the Friends list says I have no
+ * friends, but the Active Now panel shows them online". The pane kept its own
+ * copy of GET /friends (empty on every mount, one swallowed GET), separate from
+ * the Dashboard copy that feeds the panel. Pinned at source level (no render
+ * harness); the behavioural half is utils/friendsSync.test.ts.
+ */
+describe('FriendsPane — single source of truth for the friends list', () => {
+    const dashboard = readFileSync(join(__dirname, 'Dashboard.tsx'), 'utf8');
+
+    it('keeps no private copy of the list and does no GET /friends of its own', () => {
+        expect(src).not.toMatch(/useState<\{\s*pending_incoming/);
+        expect(src).not.toMatch(/\bsetFriends\b/);
+        expect(src).not.toMatch(/axios\.get\([^)]*\/friends/);
+    });
+
+    it('reads the shared payload and tells "never loaded" apart from "loaded and empty"', () => {
+        expect(src).toContain('const loaded = friendsProp !== null;');
+        // the "no friends yet" / blocked / pending bodies only render once loaded
+        expect(src).toContain("{loaded && subTab === 'all' && (");
+        expect(src).toContain("{loaded && subTab === 'pending' && (");
+        expect(src).toContain("{loaded && subTab === 'blocked' && (");
+        expect(src).toContain('{!loaded && (');
+    });
+
+    it('Dashboard hands the pane the SAME state the Active Now panel reads', () => {
+        const paneUse = dashboard.slice(dashboard.indexOf('<FriendsPane'));
+        expect(paneUse.slice(0, 900)).toContain('friends={globalFriends}');
+        expect(dashboard).toContain('selectActiveFriends(globalFriends?.accepted || []');
+    });
+
+    it('every refetch goes through the validated, order-safe sync (no raw setGlobalFriends(res.data))', () => {
+        expect(dashboard).toContain('createFriendsSync({');
+        expect(dashboard).not.toMatch(/setGlobalFriends\(\s*res\.data\s*\)/);
+    });
+});

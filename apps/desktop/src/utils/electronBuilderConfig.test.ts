@@ -96,9 +96,13 @@ describe('electron-builder configuration matches the installed schema', () => {
         //     rva=0 size=0 in every published `Cipherline Setup *.exe`.
         //     Status is NotSigned, no publisher matches, and NsisUpdater throws
         //     ERR_UPDATER_INVALID_SIGNATURE.
-        //  4. electron/main.ts's `autoUpdater.on('error')` correctly degrades to
-        //     the `manual` phase, and the user gets a browser download link
+        //  4. electron/main.ts's `autoUpdater.on('error')` degraded to the
+        //     `manual` phase, and the user got a browser download link
         //     instead of an auto-install. Which is exactly what was reported.
+        //     (Since 2026-10-09 a signature rejection instead ends in-app as
+        //     "couldn't be verified" with Retry — see electron/updater-state.ts
+        //     — so this misconfiguration would now strand users on the old
+        //     build with no way forward at all. Keep this test.)
         //
         // Proven against the shipped artifacts: staging.117's app-update.yml has
         // no publisherName (auto-update worked); staging.119's — the first build
@@ -126,6 +130,93 @@ describe('electron-builder configuration matches the installed schema', () => {
         for (const k of keys) expect(props).toHaveProperty(k);
         // Must equal the certificate subject exactly, or the updater's signature check fails.
         expect(wf).toContain('--config.win.azureSignOptions.publisherName="Cipherline LLC"');
+    });
+
+    // ── Sign EVERY PE file we ship, not just *.exe (2026-10-12) ─────────────────────────────────────
+    //
+    // electron-builder 26 signs only `.exe` files unless `win.signExts` says otherwise
+    // (WinPackager.shouldSignFile: with no signExts it returns `file.endsWith(".exe")`). The
+    // 1.0.21-staging.157 installer, built with Azure signing ON, therefore shipped Cipherline.exe and
+    // elevate.exe signed but audio_capture.node, ffmpeg.dll, libEGL.dll, libGLESv2.dll, vk_swiftshader.dll,
+    // vulkan-1.dll and dxcompiler.dll UNSIGNED. Smart App Control / code integrity on Windows 11 blocks an
+    // unsigned native module at load ("Part of this app has been blocked ... we can't confirm who published
+    // audio_capture.node"), so screen-share audio capture failed for those users.
+    //
+    // There is NO `signDlls` option in electron-builder 26 (the unknown-properties test above would reject it);
+    // the supported knob is `win.signExts`, a list of file-name suffixes. `.dll` + `.node` are added to the
+    // built-in `.exe`. signApp() walks resources/app.asar.unpacked (where audio_capture.node lives) and every
+    // top-level file of the app dir with this predicate, so no asarUnpack change is needed.
+    //
+    // `signExts` is INERT without signing credentials (the signtool manager returns false when there is no
+    // CSC cert, and no azureSignOptions means the Azure manager is never chosen), so unlike azureSignOptions /
+    // publisherName it is safe, and desirable, to keep in package.json: unsigned local/fork builds are
+    // unchanged, and a CSC_LINK build signs the same files.
+    describe('build.win.signExts signs native modules and DLLs', () => {
+        // The shipped files named in the screenshot / the staging.157 inspection, as electron-builder
+        // sees them (absolute paths under the unpacked app dir).
+        const SHIPPED_UNSIGNED = [
+            'C:\\b\\win-unpacked\\resources\\app.asar.unpacked\\build\\Release\\audio_capture.node',
+            'C:\\b\\win-unpacked\\ffmpeg.dll',
+            'C:\\b\\win-unpacked\\libEGL.dll',
+            'C:\\b\\win-unpacked\\libGLESv2.dll',
+            'C:\\b\\win-unpacked\\vk_swiftshader.dll',
+            'C:\\b\\win-unpacked\\vulkan-1.dll',
+            'C:\\b\\win-unpacked\\dxcompiler.dll',
+        ];
+        const ALREADY_SIGNED = [
+            'C:\\b\\win-unpacked\\Cipherline.exe',
+            'C:\\b\\win-unpacked\\resources\\elevate.exe',
+        ];
+        const NEVER_SIGNED = [
+            'C:\\b\\win-unpacked\\resources\\app.asar',
+            'C:\\b\\win-unpacked\\resources.pak',
+            'C:\\b\\win-unpacked\\icudtl.dat',
+            'C:\\b\\win-unpacked\\resources\\icon.png',
+        ];
+
+        /** The REAL electron-builder predicate, bound to a given win config. */
+        function shouldSign(win: Record<string, unknown>, file: string): boolean {
+            // Load through the package index: requiring out/winPackager directly trips a circular import.
+            const { WinPackager } = require_('app-builder-lib');
+            return WinPackager.prototype.shouldSignFile.call({ platformSpecificBuildOptions: win }, file);
+        }
+
+        it('declares .dll and .node in win.signExts', () => {
+            const signExts = loadBuildConfig().win.signExts;
+            expect(Array.isArray(signExts)).toBe(true);
+            expect(signExts).toEqual(expect.arrayContaining(['.dll', '.node']));
+        });
+
+        it('does not use the non-existent signDlls option', () => {
+            expect(loadBuildConfig().win.signDlls).toBeUndefined();
+            expect(loadSchema().definitions.WindowsConfiguration.properties).not.toHaveProperty('signDlls');
+            expect(loadSchema().definitions.WindowsConfiguration.properties).toHaveProperty('signExts');
+        });
+
+        it('makes the real electron-builder predicate sign every shipped native module and DLL', () => {
+            const win = loadBuildConfig().win;
+            for (const f of [...SHIPPED_UNSIGNED, ...ALREADY_SIGNED]) expect(shouldSign(win, f), f).toBe(true);
+        });
+
+        it('still signs nothing that is not a PE file', () => {
+            const win = loadBuildConfig().win;
+            for (const f of NEVER_SIGNED) expect(shouldSign(win, f), f).toBe(false);
+        });
+
+        it('NEGATIVE CONTROL: without signExts the same predicate leaves exactly the unsigned set unsigned', () => {
+            // Reproduces the staging.157 defect: this is what the pre-fix config did.
+            const before = { ...loadBuildConfig().win };
+            delete before.signExts;
+            for (const f of SHIPPED_UNSIGNED) expect(shouldSign(before, f), f).toBe(false);
+            for (const f of ALREADY_SIGNED) expect(shouldSign(before, f), f).toBe(true);
+        });
+
+        it('adds no signing credentials to package.json: signExts is inert on unsigned builds', () => {
+            const win = loadBuildConfig().win;
+            expect(win.azureSignOptions).toBeUndefined();
+            expect(win.signtoolOptions).toBeUndefined();
+            expect(win.publisherName).toBeUndefined();
+        });
     });
 
     it('build.win.signtoolOptions, if ever reintroduced, uses only real schema keys', () => {

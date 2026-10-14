@@ -155,8 +155,14 @@
 .sd-nitem{display:flex;align-items:center;gap:11px;width:calc(100% - 12px);border:none;background:none;cursor:pointer;
   padding:8px 10px 8px 22px;border-radius:11px;color:var(--cl-muted);font-family:var(--cl-font-body);
   font-weight:700;font-size:13.5px;text-align:left;position:relative;
-  transition:color .2s,background .2s,transform .5s var(--cl-spring),opacity .4s ease}
-.sd-nitem svg{flex:none;opacity:.75;transition:opacity .2s}
+  /* The entrance stagger (--sd-enter-delay, set per item by DepthGauge) delays ONLY
+     transform + opacity. It used to be an inline `transition-delay`, which applies to
+     every property in the list, so the hover colour/background waited 200-585 ms
+     (item 1 -> item 10) before starting: the hover lag. Hover is an instant-feeling
+     80 ms ease with no delay. */
+  transition:color 80ms ease,background-color 80ms ease,
+    transform .5s var(--cl-spring) var(--sd-enter-delay,0s),opacity .4s ease var(--sd-enter-delay,0s)}
+.sd-nitem svg{flex:none;opacity:.75;transition:opacity 80ms ease}
 .sd-nitem:hover{color:var(--cl-text);background:rgba(37,224,200,.06)}
 .sd-nitem.sd-on{color:var(--cl-lume);background:rgba(37,224,200,.10)}
 .sd-nitem.sd-on svg{opacity:1}

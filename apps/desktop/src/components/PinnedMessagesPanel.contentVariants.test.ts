@@ -24,7 +24,6 @@ vi.mock('../contexts/AuthContext', () => ({
     useAuth: () => ({ user: { user_id: 'me-1', username: 'Me', avatar_url: null } }),
 }));
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 let PinnedMessagesPanel: any;
 
 let root: Root | null = null;
@@ -49,7 +48,6 @@ afterEach(() => {
     vi.restoreAllMocks();
 });
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 const BASE_PROPS: any = {
     pinnedMsgIds: [],
     objectUrls: {},
@@ -67,7 +65,6 @@ const BASE_PROPS: any = {
  *  message row's content box — everything BELOW the sender-name/timestamp
  *  header line, which renders unconditionally regardless of content type
  *  and therefore can't be used to prove the content itself rendered. */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function renderOne(msgId: string, content: any): Element[] {
     const msg = {
         id: msgId,

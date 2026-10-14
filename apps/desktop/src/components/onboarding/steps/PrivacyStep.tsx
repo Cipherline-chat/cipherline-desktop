@@ -4,7 +4,7 @@ import { Check, CheckCheck, EyeOff, Gamepad2, Info, KeyRound, Lock, Smartphone, 
 import { ClToggle } from '../../cl';
 import { useEscape } from '../../../hooks/useEscape';
 import { StepActions } from '../OnboardingFlow';
-import { DotTagLayer, burst, place, privacy as privacyScene, privacyAnchors } from '../dots';
+import { DotTagLayer, applyPointerReaction, burst, place, privacy as privacyScene, privacyAnchors } from '../dots';
 import type { DotTag, PrivacyState, SatKey } from '../dots';
 import type { StepProps } from '../types';
 import {
@@ -29,7 +29,7 @@ import './privacy.css';
  * The dot sculpture (a gold key sealed in a teal lattice sphere, the three
  * "friends can see" icons in orbit) changes ONLY when one of those three
  * toggles is pressed: off folds the icon into the sphere as a dim bead and
- * leaves a faint ring; on flies it back out. Never on hover. With no WebGL
+ * leaves a faint ring; on flies it back out. Never on hover (the pointer only tilts the camera, like the invite step). With no WebGL
  * (`dots === null`) the step works the same, without the sculpture.
  */
 
@@ -141,9 +141,11 @@ export const PrivacyStep: React.FC<StepProps> = ({ deps, reducedMotion, dots, sh
         const el = vizRef.current;
         if (!dots || !el) return undefined;
         let live = true;
-        // follow/repel 0: the spec says the globe reacts ONLY to a toggle
-        // press, never to the pointer (the prototype kept a gentle follow).
-        for (const [name, v] of [['follow', 0], ['repel', 0], ['bright', 1.25], ['px', 15], ['drift', 1], ['pitch', 0], ['yaw', 0]] as const) {
+        // The same pointer-driven 3D tilt as the invite step (dots/pointerReaction).
+        // It is a camera parallax only: it never morphs or re-runs this scene.
+        // The SCULPTURE (which icons are lit) still changes ONLY on a toggle press.
+        applyPointerReaction(dots, 600);
+        for (const [name, v] of [['bright', 1.25], ['px', 15], ['drift', 1], ['pitch', 0], ['yaw', 0]] as const) {
             void dots.param(name, v, 600);
         }
         void place(dots, el, VIZ_R, reducedMotion ? 0 : 900, VIZ_DY);

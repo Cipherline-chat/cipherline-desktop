@@ -58,12 +58,18 @@ export function openExternalLink(url: string): OpenExternalResult {
         return { ok: false, reason: 'disallowed-scheme' };
     }
 
+    // The scheme check above ran on `parsed`, so `parsed.href` — the
+    // normalised, validated form — is what reaches BOTH sinks below, never the
+    // raw input string. (For an https/mailto URL it is the same link, with the
+    // parser's canonical spelling: a bare origin gains its trailing slash.)
+    const target = parsed.href;
+
     if (typeof window !== 'undefined' && window.electronAPI?.openExternal) {
-        void window.electronAPI.openExternal(url).catch(() => { /* main process already logs failures */ });
+        void window.electronAPI.openExternal(target).catch(() => { /* main process already logs failures */ });
     } else {
         // Realistically dead in this app (see file doc comment) — kept as a
         // safety net rather than assuming the invariant holds forever.
-        window.open(url, '_blank', 'noopener,noreferrer');
+        window.open(target, '_blank', 'noopener,noreferrer');
     }
     return { ok: true };
 }

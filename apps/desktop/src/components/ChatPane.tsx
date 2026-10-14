@@ -23,6 +23,7 @@ import { ChannelKeyWait } from './ChannelKeyWait';
 import { useChannelKeyWait } from '../hooks/useChannelKeyWait';
 import type { HistoryGap } from '../utils/channelHistoryCoverage';
 import { placeholderLabel, placeholderReason } from '../utils/channelDecryptFailure';
+import { isMemberEventContent, isEphemeralMemberEventId, memberEventText, memberEventUserIds } from '../utils/systemMessages';
 import { isStaleEpochError } from '../utils/pendingSend';
 import { acquireDecryptedMedia, peekDecryptedMedia, putDecryptedMediaBlob, releaseDecryptedMedia } from '../utils/decryptedMediaCache';
 import { backgroundCacheEncryptedAttachment } from '../utils/attachmentBackgroundCache';
@@ -45,7 +46,7 @@ import { PrioritySemaphore } from '../utils/avatarWarmQueue';
 import { trackActivity } from '../utils/freezeLog';
 import type { ClientContent, KlipyGifRef } from '@cipherline/shared';
 import { Permissions, parseKlipyGifRef, isKlipyMediaUrl } from '@cipherline/shared';
-import { MENTION_TOKEN_RE, extractMentionsFromText, parseMentionToken, mentionsToDisplayText } from '../utils/mentionTokens';
+import { MENTION_TOKEN_RE, extractMentionsFromText, parseMentionToken, mentionsToDisplayText, messageTextMentionsUser, messageTextMentionsRole } from '../utils/mentionTokens';
 import { displayTextOf, messageTextMatches } from '../utils/messagePreviewText';
 import { UNDECRYPTABLE_KIND, placeholderText } from '../utils/dmInbound';
 import { parseSafetyNumberContent } from '../utils/contentValidation';
@@ -55,6 +56,12 @@ import { useWindowFocus } from '../hooks/useWindowFocus';
 import { EMOJI_RE, EMOJI_TOKEN_RE, isEmojiOnly, countEmojis } from '../utils/emojiText';
 import { buildWireText, buildEmojiWireText, tokenMapsFromWireText } from '../utils/composerWireText';
 import { rankMentionCandidates, describeMentionUserRow } from '../utils/mentionSuggestions';
+import {
+    buildChannelCandidates, rankChannelCandidates, detectChannelTrigger, collectChannelRefs,
+    channelRefNameMap, sanitizeChannelRefs, findChannelRefSpans, linkableChannels, segmentByChannelSpans,
+    type ChannelCandidate, type ChannelRef, type ChannelRefSpan, type LinkableChannel, type LinkableCategory,
+} from '../utils/channelRefs';
+import { ChannelRefPill } from './ChannelRefPill';
 import { SafetyVerificationModal } from './SafetyVerificationModal';
 import { deriveContactTrust } from '../utils/contactTrust';
 import { contactTrustDevices } from '../utils/contactBadgeDevices';
@@ -83,6 +90,9 @@ import { EmojiImage, EmojiPlaceholder, MissingEmojiPlaceholder } from './server/
 import { resolveEmojiGlyphState } from './server/emojiGlyphState';
 import { decideReactionAnim, type ReactionAnimKind, type ReactionSnapshot } from './reactionAnim';
 import { useDismissOnOutsideClick } from '../hooks/useDismissOnOutsideClick';
+import { ReactionFailurePopover } from './ReactionFailurePopover';
+import { reactionStore, applyPendingReactions, reactionFailureTitle, type ReactionIntent, type ReactionSend } from '../utils/pendingReactions';
+import { usePendingReactions } from '../hooks/usePendingReactions';
 import { useContextMenu } from '../hooks/useContextMenu';
 import { ChannelTopicDialog } from './server/ChannelTopicDialog';
 import { ChannelIconRenderer } from './server/ChannelIconPicker';
@@ -105,6 +115,8 @@ import { acquireAutoLoadSlot } from '../utils/autoLoadLimiter';
 import { usePrivacySettings } from '../hooks/usePrivacySettings';
 
 import { API_BASE, MAX_TEXT_MESSAGE_LENGTH } from '../constants';
+import { apiUrl } from '../utils/apiPath';
+import { safeBlobUrl } from '../utils/safeMediaUrl';
 
 import {
     PhoneCall, Video, MoreVertical, Paperclip, Smile, Send,
@@ -113,12 +125,14 @@ import {
     Link as LinkIcon, Bookmark, Pin, Archive,
     Settings, Bell, BellDot, BellOff, LogOut, Hash,
     AlertTriangle, RotateCcw, Image as ImageIcon,
-    Play, FileText, Flag, HelpCircle, Copy, Download,
+    Play, FileText, Flag, HelpCircle, Copy, Download, Volume2,
 } from "lucide-react";
 import type { FriendStatusEntry } from '../hooks/useUserStatus';
 import { EncryptedAvatar } from './EncryptedAvatar';
 import { preloadAvatars } from '../hooks/useEncryptedAvatar';
 import { peekRoster, refreshRoster, type Roster } from '../utils/serverRosterCache';
+import { useMentionRoster } from '../hooks/useMentionRoster';
+import { useServerRoster } from '../hooks/useServerRoster';
 import {
     rememberIdentities,
     rememberUserAvatarId,
@@ -129,6 +143,8 @@ import {
     snapshotUserNames,
 } from '../utils/peerIdentityCache';
 import { MsgBarBtn } from './primitives/MsgBarBtn';
+import { ChromeText } from './primitives/ChromeText';
+import { MsgActionBar } from './primitives/MsgActionBar';
 // Aliased: this module already declares its own local `ConfirmDialog` for the
 // block/remove-friend flows. The shared primitive is what the message-delete
 // confirmation uses, and renaming the local one is somebody else's refactor.
@@ -142,6 +158,7 @@ import {
 import { findLastEditableOwnMessage, shouldOpenEditorOnArrowUp } from '../utils/editLastMessage';
 import { buildAttachmentInitiateBody } from '../utils/attachmentInitiate';
 import { writeToClipboard } from '../utils/clipboard';
+import { copyImageWithToast, copyImageSourceFor, embedImageUrlOf } from '../utils/copyImage';
 import {
     canPinMessage,
     serverSaveAction,
@@ -503,12 +520,10 @@ function renderReactionGlyph(
  * arrives (send failed, user navigated away) cannot animate something later.
  */
 const recentLocalReactionToggles = new Map<string, number>();
-// Generous on purpose: handleReact does NO optimistic update — it dispatches
-// to the server and the pill only appears when the echo comes back. That
-// round-trip is a poll-then-ACK on a DM and a WS fan-out on a channel, so it
-// can easily exceed a snappy UI timeout. Too short and the mark expires before
-// the pill it was meant for ever mounts. The mark is consumed on read, so a
-// wide window costs nothing but lets a slow network still animate.
+// Generous on purpose, though the pill now appears at once (reactions are
+// optimistic - utils/pendingReactions.ts): the mark is consumed on read, so a
+// wide window costs nothing, and it still covers a pill that mounts late (an
+// unloaded row scrolled into view, a channel switched back to).
 const LOCAL_REACTION_ANIM_WINDOW_MS = 15000;
 
 function markLocalReactionToggle(key: string): void {
@@ -700,6 +715,9 @@ interface ReactionPillProps {
     onHoverStart: (rect: DOMRect) => void;
     onHoverEnd: () => void;
     onContextMenuShow: (rect: DOMRect) => void;
+    /** Set while this reaction did not go through (utils/pendingReactions.ts):
+     *  the chip is drawn red and a hover / focus card offers Retry and Remove. */
+    failure?: { kind: ReactionIntent; reason?: string; onRetry: () => void; onDiscard: () => void } | null;
 }
 
 /**
@@ -719,10 +737,38 @@ interface ReactionPillProps {
  */
 export function ReactionPill({
     emoji, animKey, msgId, count, hasMine, canReact, resolveEmoji, token, emojisLoading, noServerContext,
-    onClick, onHoverStart, onHoverEnd, onContextMenuShow,
+    onClick, onHoverStart, onHoverEnd, onContextMenuShow, failure,
 }: ReactionPillProps): React.ReactElement {
     const btnRef = useRef<HTMLButtonElement | null>(null);
     const prevRef = useRef<ReactionSnapshot | null>(null);
+
+    // ── Failed state: red chip + hover / focus card ─────────────────────────
+    // 'hover' / 'focus' just show the card; 'click' (click or Enter on the chip)
+    // pins it and moves focus to Retry, so the whole thing is keyboard-reachable.
+    const failed = !!failure;
+    const [cardState, setCard] = useState<null | 'hover' | 'focus' | 'click'>(null);
+    // A chip that stopped being red has no card, whatever was last requested.
+    const card = failed ? cardState : null;
+    const cardCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const cardRef = useRef<HTMLDivElement | null>(null);
+    const cancelCardClose = () => { if (cardCloseTimer.current) { clearTimeout(cardCloseTimer.current); cardCloseTimer.current = null; } };
+    const scheduleCardClose = () => {
+        cancelCardClose();
+        cardCloseTimer.current = setTimeout(() => setCard(c => (c === 'click' ? c : null)), 200);
+    };
+    useEffect(() => cancelCardClose, []);
+    const closeCard = useCallback(() => {
+        setCard(c => {
+            // Hand focus back to the chip when the card was keyboard/click-driven.
+            if (c === 'click') setTimeout(() => btnRef.current?.focus(), 0);
+            return null;
+        });
+    }, []);
+    useDismissOnOutsideClick(
+        useCallback((t: Node) => !!(btnRef.current?.contains(t) || cardRef.current?.contains(t)), []),
+        card === 'click',
+        closeCard,
+    );
 
     useEffect(() => {
         const prev = prevRef.current;
@@ -752,13 +798,24 @@ export function ReactionPill({
             if (kind && (kind === 'bump' || !alreadyPlayed)) popReactionPill(btnRef.current, kind);
         }
         prevRef.current = { count, hasMine };
-    }, [count, hasMine, animKey]);
+    }, [count, hasMine, animKey, msgId]);
 
     return (
         <span
             style={{ display: 'inline-flex' }}
-            onMouseEnter={(e) => onHoverStart(e.currentTarget.getBoundingClientRect())}
-            onMouseLeave={onHoverEnd}
+            data-reaction-failed={failed ? 'true' : undefined}
+            onMouseEnter={(e) => {
+                if (failed) { cancelCardClose(); setCard(c => c ?? 'hover'); return; }
+                onHoverStart(e.currentTarget.getBoundingClientRect());
+            }}
+            onMouseLeave={() => { if (failed) scheduleCardClose(); else onHoverEnd(); }}
+            onFocus={() => { if (failed) { cancelCardClose(); setCard(c => c ?? 'focus'); } }}
+            onBlur={(e) => {
+                if (!failed) return;
+                const next = e.relatedTarget as Node | null;
+                if (next && (e.currentTarget.contains(next) || cardRef.current?.contains(next))) return;
+                setCard(c => (c === 'click' ? c : null));
+            }}
             onContextMenu={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
@@ -773,18 +830,18 @@ export function ReactionPill({
             <button
                 ref={btnRef}
                 type="button"
+                aria-label={failure ? `${reactionFailureTitle(failure.kind)}: ${emoji} ${count}. Press Enter for options.` : undefined}
+                aria-haspopup={failure ? 'dialog' : undefined}
+                aria-expanded={failure ? card !== null : undefined}
                 onClick={(e) => {
                     e.stopPropagation();
-                    // Animate NOW, not when the server echo lands.
-                    //
-                    // handleReact performs no optimistic state update — it just
-                    // dispatches and waits — so nothing about this pill changes
-                    // for a full network round-trip. Driving the animation only
-                    // off that echo made it hostage to latency and, for a
-                    // removal that empties the reaction, impossible: the pill
-                    // unmounts, so there is no element left to animate. Playing
-                    // it here gives instant feedback and is the ONLY point at
-                    // which a disappearing pill still exists to animate.
+                    // A red chip does not toggle: it opens Retry / Remove.
+                    if (failure) { cancelCardClose(); setCard('click'); return; }
+                    // Animate NOW. The chip itself already changed (reactions are
+                    // optimistic), but a removal that empties the reaction unmounts
+                    // the pill in the same render, so this click is the ONLY point at
+                    // which a disappearing pill still exists to animate - and it
+                    // keeps the animation from waiting on a re-render.
                     //
                     // `hasMine` is this click's direction: if it is mine, this
                     // click removes it.
@@ -805,7 +862,9 @@ export function ReactionPill({
                    time — the glyph is 20px in a 32px pill, and `items-center`
                    alone still left the text emoji riding its own baseline. */
                 className={`grid grid-cols-2 place-items-center rounded-full border px-0.5 h-7 min-w-[48px] text-[12.5px] font-semibold leading-none transition-colors ${canReact ? 'cursor-pointer' : 'cursor-default'} ${
-                    hasMine
+                    failure
+                        ? 'bg-cl-flash/15 border-cl-flash/60 text-cl-flash'
+                        : hasMine
                         ? 'bg-cl-lume/15 border-cl-lume/30 text-cl-lume'
                         : 'bg-white/[0.04] border-cl-border/40 text-cl-muted hover:border-cl-lume/30 hover:bg-white/[0.07]'
                 }`}
@@ -819,6 +878,20 @@ export function ReactionPill({
                 </span>
                 <span className="flex items-center justify-center tabular-nums leading-none">{count}</span>
             </button>
+            {failure && card && (
+                <ReactionFailurePopover
+                    popRef={cardRef}
+                    anchorRef={btnRef}
+                    kind={failure.kind}
+                    reason={failure.reason}
+                    focusRetry={card === 'click'}
+                    onRetry={failure.onRetry}
+                    onDiscard={failure.onDiscard}
+                    onClose={closeCard}
+                    onPointerEnter={cancelCardClose}
+                    onPointerLeave={scheduleCardClose}
+                />
+            )}
         </span>
     );
 }
@@ -880,6 +953,10 @@ function renderTextWithMentions(
      *  (and for `e.stopPropagation()` if it needs that — this function
      *  already stops propagation on the pill itself before calling this). */
     onMentionClick?: (userId: string, e: React.MouseEvent | React.KeyboardEvent) => void,
+    /** `#channel` links (utils/channelRefs.ts): where each ref's `#name` sits
+     *  in `text`, and how to draw one. Server channels only; omitted = the
+     *  `#name` text renders as plain text, exactly as an old client shows it. */
+    channelLinks?: { spans: ChannelRefSpan[]; renderRef: (ref: ChannelRef, key: string) => React.ReactNode },
 ): React.ReactNode[] {
     // Split on mention tokens first, then process each segment further for URLs
     const parts: React.ReactNode[] = [];
@@ -887,11 +964,19 @@ function renderTextWithMentions(
     const tokenRe = new RegExp(MENTION_TOKEN_RE.source, 'g');
     let m: RegExpExecArray | null;
     let segIdx = 0;
+    // Plain text between tokens: channel links first (only a span lying wholly
+    // inside the segment), then URLs / emoji in what remains.
+    const pushPlain = (from: number, to: number) => {
+        for (const seg of segmentByChannelSpans(from, to, channelLinks?.spans ?? [])) {
+            if (seg.kind === 'ref') parts.push(channelLinks!.renderRef(seg.span.ref, `chref-${seg.span.start}`));
+            else parts.push(...renderTextWithLinks(text.slice(seg.from, seg.to), onInviteClick));
+        }
+    };
 
     while ((m = tokenRe.exec(text)) !== null) {
         // Text before this mention — process for URLs/emojis
         if (m.index > lastIndex) {
-            parts.push(...renderTextWithLinks(text.slice(lastIndex, m.index), onInviteClick));
+            pushPlain(lastIndex, m.index);
         }
         const parsed = parseMentionToken(m[0]);
         if (parsed && parsed.kind === 'emoji') {
@@ -993,7 +1078,7 @@ function renderTextWithMentions(
 
     // Remaining text after last mention
     if (lastIndex < text.length) {
-        parts.push(...renderTextWithLinks(text.slice(lastIndex), onInviteClick));
+        pushPlain(lastIndex, text.length);
     }
 
     return parts;
@@ -1075,30 +1160,11 @@ function renderJumboContent(
     return parts;
 }
 
-/**
- * Returns true if `text` mentions the given user ID or contains @everyone / @here.
- * Used by Dashboard to detect mention-worthy incoming messages.
- */
-export function messageTextMentionsUser(text: string, userId: string): boolean {
-    if (text.includes('@everyone') || text.includes('@here')) return true;
-    return text.includes(`<@u:${userId}:`);
-}
-
-/**
- * Returns true if `text` contains a role-mention token (`<@r:ROLE_ID:…>`)
- * for any role ID in `myRoleIds`.  Used alongside `messageTextMentionsUser`
- * to highlight messages where the viewer was pinged via one of their roles.
- * Exported so Dashboard can reuse it for channel-message notification routing.
- */
-export function messageTextMentionsRole(text: string, myRoleIds: Set<string>): boolean {
-    if (myRoleIds.size === 0) return false;
-    const re = /<@r:([^:>]+):[^>]+>/g;
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(text)) !== null) {
-        if (myRoleIds.has(m[1])) return true;
-    }
-    return false;
-}
+// messageTextMentionsUser / messageTextMentionsRole now live in
+// ../utils/mentionTokens (pure, so the channel mention path is testable).
+// Re-exported for existing importers.
+// eslint-disable-next-line react-refresh/only-export-components -- co-located helper export; splitting the file would only affect dev Fast Refresh, not runtime behaviour
+export { messageTextMentionsUser, messageTextMentionsRole };
 
 // extractMentionsFromText now lives in ../utils/mentionTokens, next to the parser it walks.
 
@@ -1216,7 +1282,7 @@ const ImageLinkEmbed: React.FC<{ url: string }> = ({ url }) => {
     if (errored) return null;
 
     return (
-        <div className="mt-2 img-link-wrap" style={{ position: 'relative', display: 'inline-block', maxWidth: 320 }}>
+        <div className="mt-2 img-link-wrap" data-cl-copy-image={blobUrl ?? undefined} style={{ position: 'relative', display: 'inline-block', maxWidth: 320 }}>
             {/* Privacy: click-to-load placeholder — no network request until the
                 user opts in, so a linked image can't beacon their IP on render. */}
             {!shouldLoad && !blobUrl && (
@@ -1407,6 +1473,7 @@ interface ChatPaneProps {
     senderWarnings?: Record<string, SenderVerdict>;
     /** C2: called when the user resolves a key change (verify/acknowledge) for a contact. */
     onKeyChangeResolved?: (userId: string) => void;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     messages: any[];
     /** Server channels only: true while `messages`' catch-up fetch for the
      *  currently active channel hasn't resolved even once yet. Without this,
@@ -1416,6 +1483,7 @@ interface ChatPaneProps {
      *  don't cover this (membersFetching only gates the FIRST channel opened
      *  per server; every later switch within that server skips it). */
     messagesFetching?: boolean;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     onMessageSent: (msg: any) => void;
     onAddToGroup?: () => void;
     typingUsers: Set<string>;
@@ -1490,7 +1558,18 @@ interface ChatPaneProps {
      *  see docs/custom-emoji-design.md's "Open follow-up" section, which this
      *  closes. */
     emojisChangedEvent?: { server_id: string; ts: number } | null;
+    /** Server channels only: the active server's channel list as the sidebar
+     *  has it (already VIEW_CHANNEL-filtered by the API), or undefined while it
+     *  has not loaded. Feeds the `#channel` picker and resolves `#channel`
+     *  links by id (utils/channelRefs.ts). */
+    serverChannels?: LinkableChannel[];
+    /** Server channels only: the active server's categories (picker labels). */
+    serverCategories?: LinkableCategory[];
+    /** Server channels only: a `#channel` link was activated. Opens a text
+     *  channel / reveals a Calls channel (never joins a call). */
+    onNavigateToChannel?: (channelId: string) => void;
     /** Called after a channel message is successfully sent (optimistic append). */
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     onChannelMessageSent?: (msg: any) => void;
     /** Instant send: update the marker on a message already shown (sending →
      *  delivered / failed). See utils/pendingSend.ts. */
@@ -1628,7 +1707,7 @@ const QUICK_REACTION_EMOJIS = ['👍', '❤️', '😂', '🎉'];
 
 const NOOP_TYPING: (event: 'typing:start' | 'typing:stop', cid: string) => void = () => {};
 
-const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, keyChangedSenders, senderWarnings = {}, onKeyChangeResolved, messages, messagesFetching = false, onMessageSent, onAddToGroup, typingUsers, sendTypingEvent: sendTypingEventProp, activeCall, onCallChange, onStartingCallChange, chatSearch = '', friendRemovedEvent, onCloseChatRequest, notifPref = 'all', onSetNotifMode, retention, friendStatuses, pinnedMsgIds, onPinMessage, onUnpinMessage, serverSavedIds = [], onServerSaveMessage, onServerUnsaveMessage, pinnedSidebarExpanded, onTogglePinnedSidebar, onOpenPinnedCallOverlay, pinnedSearchQuery, jumpToMessageRef, onOpenProfile, avatarUpdatedEvent, activeChannel = null, emojisChangedEvent, onChannelMessageSent, onPatchSentMessage, memberRoleColors, serverMemberNicknames, channelMessageRetention, channelAttachmentRetention, convType, servers = [], onInviteJoin, onInviteCodeClick, channelPermissions, channelKeyMissing = false, channelKeyCoolingOff = false, onChannelKeyMissing, historyGaps = NO_HISTORY_GAPS, historyStart = false, onFillHistoryGap, onLoadMessageContext, readReceipts = {}, sendReadReceipt, showReadReceipts = true, myUserId = '', onReport }) => {
+const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, keyChangedSenders, senderWarnings = {}, onKeyChangeResolved, messages, messagesFetching = false, onMessageSent, onAddToGroup, typingUsers, sendTypingEvent: sendTypingEventProp, activeCall, onCallChange, onStartingCallChange, chatSearch = '', friendRemovedEvent, onCloseChatRequest, notifPref = 'all', onSetNotifMode, retention, friendStatuses, pinnedMsgIds, onPinMessage, onUnpinMessage, serverSavedIds = [], onServerSaveMessage, onServerUnsaveMessage, pinnedSidebarExpanded, onTogglePinnedSidebar, onOpenPinnedCallOverlay, pinnedSearchQuery, jumpToMessageRef, onOpenProfile, avatarUpdatedEvent, activeChannel = null, emojisChangedEvent, serverChannels, serverCategories, onNavigateToChannel, onChannelMessageSent, onPatchSentMessage, memberRoleColors, serverMemberNicknames, channelMessageRetention, channelAttachmentRetention, convType, servers = [], onInviteJoin, onInviteCodeClick, channelPermissions, channelKeyMissing = false, channelKeyCoolingOff = false, onChannelKeyMissing, historyGaps = NO_HISTORY_GAPS, historyStart = false, onFillHistoryGap, onLoadMessageContext, readReceipts = {}, sendReadReceipt, showReadReceipts = true, myUserId = '', onReport }) => {
     const { token, deviceId, user } = useAuth();
     const openProfileCtx = useOpenProfile();
     const toast = useToast();
@@ -2468,16 +2547,30 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
     const [mentionSuggestions, setMentionSuggestions] = useState<MentionSuggestion[]>([]);
     const [mentionQueryRange, setMentionQueryRange] = useState<{ start: number; end: number } | null>(null);
     const [selectedMentionIdx, setSelectedMentionIdx] = useState(0);
-    // Members/roles fetched for autocomplete (channel mode only)
-    const [mentionMembers, setMentionMembers] = useState<Array<{ user_id: string; username: string; discriminator: number | null }>>([]);
-    const [mentionRoles, setMentionRoles] = useState<Array<{ role_id: string; name: string; color: number; mentionable: boolean }>>([]);
+    // Members/roles for autocomplete (channel mode only), DERIVED from the live
+    // shared roster — the same store the member list renders from — rather than
+    // copied into state once per channel switch. The copy went stale the moment
+    // someone joined / left / was banned or a role changed while the server was
+    // open, so the picker (and the @name -> wire-token map) missed them until
+    // the server was closed and reopened.
+    const mentionView = useMentionRoster(activeChannel?.server_id, user?.user_id);
+    const mentionMembers = mentionView.members;
+    const mentionRoles = mentionView.roles;
     /** Role IDs the current viewer holds in the active server channel — used to
      *  detect role-mention highlights without an extra API call (piggy-backs on
-     *  the member list fetch that already happens for autocomplete). */
-    const [myServerRoleIds, setMyServerRoleIds] = useState<Set<string>>(new Set());
+     *  the roster the member list already keeps live). */
+    const myRoleIdsKey = mentionView.myRoleIds.join(',');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    const myServerRoleIds = useMemo(() => new Set<string>(mentionView.myRoleIds), [myRoleIdsKey]);
     // Map: display-label → full wire token. Updated whenever mentionMembers/mentionRoles load.
     // Used by buildWireText to substitute @label → <@type:id:label> just before sending.
     const mentionTokenMapRef = useRef<Record<string, string>>({});
+    // Keep the send-time lookup in step with the live roster (server channels
+    // only — DM/group chats seed this ref themselves from their participants).
+    useEffect(() => {
+        if (activeChannel) mentionTokenMapRef.current = mentionView.tokenMap;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [activeChannel?.server_id, mentionView.tokenMap]);
     // Map: display form (":name:", colons included) → full wire token
     // (<:name:id>). Same purpose/shape as mentionTokenMapRef, one level
     // simpler: no need to rebuild it on data load — an entry is registered
@@ -2486,6 +2579,28 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
     // A hand-typed ":name:" that was never selected stays plain text, same
     // "gracefully degrades, no data loss" rule buildWireText documents.
     const emojiTokenMapRef = useRef<Record<string, string>>({});
+    // ── #channel links (utils/channelRefs.ts) ──────────────────────────────
+    // The `#` picker: same popover + keys as `@`, server channels only. The
+    // textarea keeps the readable `#name`; channelRefMapRef (name -> id) is
+    // what becomes `channel_refs` at send time — registered on pick, seeded
+    // from the message on edit, pruned to the names still in the text.
+    const [channelSuggestions, setChannelSuggestions] = useState<ChannelCandidate[]>([]);
+    const [channelQueryRange, setChannelQueryRange] = useState<{ start: number; end: number } | null>(null);
+    const [selectedChannelIdx, setSelectedChannelIdx] = useState(0);
+    const channelRefMapRef = useRef<Record<string, string>>({});
+    /** Channels this reader can view in the active server, or null while the
+     *  list has not loaded (or in a DM, where `#` links do not exist). */
+    const linkServerId = activeChannel?.server_id ?? null;    const linkChannelsRaw = useMemo<LinkableChannel[] | null>(
+        () => (linkServerId && serverChannels && serverChannels.length > 0
+            ? linkableChannels(serverChannels, linkServerId)
+            : null),
+        [linkServerId, serverChannels],
+    );
+    const linkChannels = useShallowStable(linkChannelsRaw);
+    const channelCandidates = useMemo(
+        () => (linkServerId ? buildChannelCandidates(serverChannels, serverCategories, linkServerId) : []),
+        [linkServerId, serverChannels, serverCategories],
+    );
     // The message right-click menu — canonical ContextMenu primitive (portals
     // to body, viewport-clamped, own outside-click/Escape/keyboard-nav
     // handling). msgCtxOpenIdRef remembers which row opened it purely so
@@ -2538,7 +2653,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
             setFriendStatus('accepted');
             return;
         }
-        axios.get(`${API_BASE}/friends/status/${activeChat.other_user_id}`, {
+        axios.get(apiUrl`/friends/status/${activeChat.other_user_id}`, {
             headers: { Authorization: `Bearer ${token}` }
         }).then(res => {
             setIsFriend(res.data.status === 'accepted');
@@ -2558,12 +2673,68 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         if (isRelevant) setIsFriend(false);
     }, [friendRemovedEvent, activeChat?.other_user_id, activeChat?.type]);
 
+    // userId -> username / avatar maps, identity cache and avatar warm-up from
+    // a roster. Runs on every roster CHANGE (effect below), not just on channel
+    // switch: a member who joins while the server is open must resolve to a
+    // name and avatar in the message list the moment they speak.
+    const syncRosterIdentities = useCallback((roster: Roster) => {
+        const mRes = { data: roster.members as unknown as unknown[] };
+        const members: Array<{ user_id: string; username: string; discriminator: number | null }> =
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
+            (mRes.data as any[]).map((m: any) => ({ user_id: m.user_id, username: m.username, discriminator: m.discriminator ?? null }));
+
+        // Populate the userId → username AND userId → avatar maps so message
+        // rendering can resolve both sender names and avatars. Without these,
+        // server channel messages fall back to truncated user-IDs and the
+        // generic fallback avatar — these maps are only otherwise populated
+        // by the DM device-list path which doesn't fire for server channels.
+        // PERF: unchanged maps keep their identity — these feed every
+        // message row's dependency token (MemoRow), and on a channel switch
+        // within a server they are usually already populated (identity
+        // cache / previous fetch), so a fresh copy re-rendered every row.
+        setUserIdToUsername(prev => {
+            let next: Record<string, string> | null = null;
+            for (const m of members) {
+                if (m.user_id && m.username && prev[m.user_id] !== m.username) (next ??= { ...prev })[m.user_id] = m.username;
+            }
+            return next ?? prev;
+        });
+        rememberIdentities(mRes.data as Array<{ user_id?: string | null; avatar_url?: string | null; username?: string | null }>);
+        setUserIdToAvatar(prev => {
+            let next: Record<string, string> | null = null;
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
+            for (const m of mRes.data as any[]) {
+                // Avatar can be null/empty for users who haven't set one — only
+                // overwrite when we have an actual attachment id. EncryptedAvatar
+                // handles the null case with its fallback initial.
+                if (m.user_id && m.avatar_url && prev[m.user_id] !== m.avatar_url) (next ??= { ...prev })[m.user_id] = m.avatar_url;
+            }
+            return next ?? prev;
+        });
+
+        // Pre-warm the avatar memory cache for every member. NOT awaited:
+        // this used to sit inside the loading gate, so the first channel
+        // opened in a server each session held its messages behind a
+        // spinner until every member avatar had finished two REST calls and
+        // a decrypt, or until the 5 s timeout — seconds of stall to buy a
+        // fallback-icon flash. useAvatarWarming warms these in the
+        // background ahead of time, and the flash it was avoiding is a
+        // 180 ms cross-fade inside an identically-sized box (see
+        // EncryptedAvatar), so the trade was the wrong way round. This
+        // still runs, it just no longer blocks the paint.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
+        const avatarIds = (mRes.data as any[]).map((m: any) => m.avatar_url).filter(Boolean);
+        if (token) void preloadAvatars(avatarIds, token);
+    }, [token]);
+    const liveMentionRoster = useServerRoster(activeChannel?.server_id);
+    useEffect(() => {
+        if (activeChannel && liveMentionRoster) syncRosterIdentities(liveMentionRoster);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [liveMentionRoster, syncRosterIdentities]);
+
     // Fetch server members + roles for @mention autocomplete when in channel mode.
     useEffect(() => {
         if (!token || !activeChannel) {
-            setMentionMembers([]);
-            setMentionRoles([]);
-            setMyServerRoleIds(new Set());
             mentionTokenMapRef.current = {};
             return;
         }
@@ -2581,76 +2752,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         // panel (or the previous channel) fetched them seconds ago, and a cold
         // open shares ONE request pair with the panel instead of making its own.
         const applyRoster = (roster: Roster) => {
-            const mRes = { data: roster.members as unknown as unknown[] };
-            const members: Array<{ user_id: string; username: string; discriminator: number | null }> =
-                (mRes.data as any[]).map((m: any) => ({ user_id: m.user_id, username: m.username, discriminator: m.discriminator ?? null }));
-            const roles: Array<{ role_id: string; name: string; color: number; mentionable: boolean }> =
-                (roster.roles as unknown as Array<{ role_id: string; name: string; color: number; mentionable: boolean; is_everyone: boolean }>).filter(r => !r.is_everyone);
-            setMentionMembers(members);
-            setMentionRoles(roles);
-
-            // Populate the userId → username AND userId → avatar maps so message
-            // rendering can resolve both sender names and avatars. Without these,
-            // server channel messages fall back to truncated user-IDs and the
-            // generic fallback avatar — these maps are only otherwise populated
-            // by the DM device-list path which doesn't fire for server channels.
-            // PERF: unchanged maps keep their identity — these feed every
-            // message row's dependency token (MemoRow), and on a channel switch
-            // within a server they are usually already populated (identity
-            // cache / previous fetch), so a fresh copy re-rendered every row.
-            setUserIdToUsername(prev => {
-                let next: Record<string, string> | null = null;
-                for (const m of members) {
-                    if (m.user_id && m.username && prev[m.user_id] !== m.username) (next ??= { ...prev })[m.user_id] = m.username;
-                }
-                return next ?? prev;
-            });
-            rememberIdentities(mRes.data as Array<{ user_id?: string | null; avatar_url?: string | null; username?: string | null }>);
-            setUserIdToAvatar(prev => {
-                let next: Record<string, string> | null = null;
-                for (const m of mRes.data as any[]) {
-                    // Avatar can be null/empty for users who haven't set one — only
-                    // overwrite when we have an actual attachment id. EncryptedAvatar
-                    // handles the null case with its fallback initial.
-                    if (m.user_id && m.avatar_url && prev[m.user_id] !== m.avatar_url) (next ??= { ...prev })[m.user_id] = m.avatar_url;
-                }
-                return next ?? prev;
-            });
-
-            // Capture the viewer's own role IDs for the mention-highlight check.
-            // TypeORM raw query via `pg` driver returns PostgreSQL uuid[] as a JS
-            // array, but guard against the "{uuid,...}" string form just in case.
-            const myMember = (mRes.data as any[]).find((m: any) => m.user_id === user?.user_id);
-            const rawRoleIds = myMember?.role_ids;
-            const parsedRoleIds: string[] = Array.isArray(rawRoleIds)
-                ? rawRoleIds.filter(Boolean)
-                : typeof rawRoleIds === 'string' && rawRoleIds.startsWith('{')
-                    ? rawRoleIds.slice(1, -1).split(',').filter(Boolean)
-                    : [];
-            setMyServerRoleIds(prev => (prev.size === parsedRoleIds.length && parsedRoleIds.every(id => prev.has(id)) ? prev : new Set<string>(parsedRoleIds)));
-
-            // Rebuild the label → wire-token lookup used by buildWireText
-            const map: Record<string, string> = {
-                everyone: '@everyone',
-                here: '@here',
-            };
-            for (const m of members) map[m.username] = `<@u:${m.user_id}:${m.username}>`;
-            for (const r of roles)   map[r.name]     = `<@r:${r.role_id}:${r.name}>`;
-            mentionTokenMapRef.current = map;
-
-            // Pre-warm the avatar memory cache for every member. NOT awaited:
-            // this used to sit inside the loading gate, so the first channel
-            // opened in a server each session held its messages behind a
-            // spinner until every member avatar had finished two REST calls and
-            // a decrypt, or until the 5 s timeout — seconds of stall to buy a
-            // fallback-icon flash. useAvatarWarming warms these in the
-            // background ahead of time, and the flash it was avoiding is a
-            // 180 ms cross-fade inside an identically-sized box (see
-            // EncryptedAvatar), so the trade was the wrong way round. This
-            // still runs, it just no longer blocks the paint.
-            const avatarIds = (mRes.data as any[]).map((m: any) => m.avatar_url).filter(Boolean);
-            void preloadAvatars(avatarIds, token);
-
+            syncRosterIdentities(roster);
             fetchedServerIds.current.add(sid);
             if (isFirstFetch) setMembersFetching(false);
         };
@@ -2662,6 +2764,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         }).catch(() => {
             if (isFirstFetch) setMembersFetching(false);
         });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the channel id only; activeChannel and syncRosterIdentities change identity per render, so re-running would refetch the roster on every render
     }, [token, activeChannel?.channel_id]);
 
     // Bulk fetch Call Durations for UI History rendering
@@ -2688,6 +2791,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                 setCallDurations(prev => {
                     const next = { ...prev };
                     let changed = false;
+                    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
                     for (const [id, status] of Object.entries(res.data as Record<string, any>)) {
                         if (status.created_at) {
                             const start = new Date(status.created_at).getTime();
@@ -2705,7 +2809,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                     }
                     return changed ? next : prev;
                 });
-            } catch (err) {
+            } catch {
                 // Silently fails polling
             }
         };
@@ -2743,6 +2847,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                 setCallDurations(prev => {
                     const next = { ...prev };
                     let changed = false;
+                    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
                     for (const [id, status] of Object.entries(res.data as Record<string, any>)) {
                         if (status.created_at) {
                             const start = new Date(status.created_at).getTime();
@@ -2774,11 +2879,11 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                     const nextEpoch = epoch + 1;
 
                     // claim_otp=1: consume a one-time prekey per recipient device (per-message forward secrecy)
-                    const devicesRes = await axios.get(`${API_BASE}/conversations/${activeChat.id}/devices?claim_otp=1`, {
+                    const devicesRes = await axios.get(apiUrl`/conversations/${activeChat.id}/devices?claim_otp=1`, {
                         headers: { Authorization: `Bearer ${token}`, 'x-device-id': deviceId }
                     });
 
-                    const safeUUID = typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : `local-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+                    const safeUUID = crypto.randomUUID();
                     const content: ClientContent = {
                         client_msg_id: safeUUID,
                         type: 'call_key',
@@ -2828,6 +2933,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
             }, 10 * 60000); // 10 minutes
         }
         return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the 10-minute epoch-rotation timer must not restart whenever activeCall.* (LiveKit token/url) changes; they only seed the onCallChange payload
     }, [isCallInitiator, currentCallId, epoch, activeChat.id, token, deviceId, onMessageSent, onCallChange]);
 
     useEffect(() => {
@@ -2837,6 +2943,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                 headers: { Authorization: `Bearer ${token}` }
             }).then(res => {
                 if (Array.isArray(res.data)) {
+                    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
                     const ids = res.data.map((d: any) => d.device_id);
                     setMyDeviceIds(prev => setIfChanged(prev, [...ids, deviceId as string]));
                 }
@@ -2852,7 +2959,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         // Gate message rendering on first visit to this DM/group so the user
         // never sees "Unknown User" or a missing avatar on initial load.
         if (isFirstFetch) setChatLoading(true);
-        axios.get(`${API_BASE}/conversations/${cid}/devices`, {
+        axios.get(apiUrl`/conversations/${cid}/devices`, {
             headers: { Authorization: `Bearer ${token}`, 'x-device-id': deviceId }
         }).then(async (res) => {
             if (Array.isArray(res.data)) {
@@ -2860,6 +2967,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                 const avatarMap: Record<string, string> = {};
                 const userMap: Record<string, string> = {};
                 const userAvatarMap: Record<string, string> = {};
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
                 res.data.forEach((d: any) => {
                     deviceMap[d.device_id] = d.username;
                     avatarMap[d.device_id] = d.avatar_url;
@@ -2904,6 +3012,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                 // cross-fades in rather than blocking the message list.
                 if (isFirstFetch) {
                     const avatarIds = res.data
+                        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
                         .map((d: any) => d.avatar_url)
                         .filter(Boolean);
                     void preloadAvatars(avatarIds, token);
@@ -2930,19 +3039,26 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         if (!token || !messages.length) return;
         const missing = new Set<string>();
         for (const msg of messages) {
-            const uid = msg.sender_user_id;
-            if (!uid) continue;
-            if (userIdToUsername[uid]) continue;
-            if (inFlightUserFetches.current.has(uid)) continue;
-            if (failedUserFetches.current.has(uid)) continue;
-            missing.add(uid);
+            // A member-event row ("X left the server.") names a user who may
+            // never have spoken - and has often just LEFT, so they are no
+            // longer in the roster. Resolve them like a sender; an account that
+            // is gone ends up in failedUserFetches and reads "A former member".
+            const uids = isMemberEventContent(msg.content)
+                ? memberEventUserIds(msg.content)
+                : (msg.sender_user_id ? [msg.sender_user_id] : []);
+            for (const uid of uids) {
+                if (userIdToUsername[uid]) continue;
+                if (inFlightUserFetches.current.has(uid)) continue;
+                if (failedUserFetches.current.has(uid)) continue;
+                missing.add(uid);
+            }
         }
         if (missing.size === 0) return;
         for (const uid of missing) inFlightUserFetches.current.add(uid);
         // Fire one request per missing user. Could batch later if it becomes
         // a hot path — typical conversations have <50 unique senders.
         for (const uid of missing) {
-            axios.get(`${API_BASE}/auth/users/${uid}`, {
+            axios.get(apiUrl`/auth/users/${uid}`, {
                 headers: { Authorization: `Bearer ${token}` },
             }).then(res => {
                 const data = res.data;
@@ -2992,12 +3108,13 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         // Refetch the device → avatar map so message bubbles keyed by
         // sender_device_id pick up the new avatar too. The endpoint returns
         // a small JSON list (one row per device); cost is negligible.
-        axios.get(`${API_BASE}/conversations/${activeChat.id}/devices`, {
+        axios.get(apiUrl`/conversations/${activeChat.id}/devices`, {
             headers: { Authorization: `Bearer ${token}`, 'x-device-id': deviceId },
         }).then(res => {
             if (!Array.isArray(res.data)) return;
             const avatarMap: Record<string, string> = {};
             const userAvatarMap: Record<string, string> = {};
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
             res.data.forEach((d: any) => {
                 avatarMap[d.device_id] = d.avatar_url;
                 if (d.user_id) userAvatarMap[d.user_id] = d.avatar_url;
@@ -3151,7 +3268,6 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         followBottomRef.current       = true;
         isAtBottomRef.current         = true;
         setShowScrollBtn(false);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [activeChat?.id]);
 
     // ── Snap to bottom after loading gate lifts ───────────────────────────────
@@ -3347,6 +3463,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
             setRemovedAttachmentMsgIds(prev => {
                 let next: Set<string> | null = null;
                 for (const msg of messages) {
+                    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
                     const c = msg?.content as any;
                     if (c?.type === 'attachment' && c.attachment_id && removedAttSet.has(c.attachment_id) && !prev.has(msg.id)) {
                         if (!next) next = new Set(prev);
@@ -3360,6 +3477,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         // Newest first: the bottom of the feed is what is on screen, so it takes
         // the decrypt slots first (see attachmentDecryptSlots).
         [...decryptScope.inScope].reverse().forEach(async (msg) => {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
             const content = msg.content as any;
             const msgId: string = msg.id;
             // Skip attachments we already know the server doesn't have. Saves a
@@ -3472,7 +3590,9 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         });
     }, [messages, decryptScope, token, objectUrls, manualDecryptIds, decryptErrors, removedAttachmentMsgIds, user?.user_id, queueObjectUrl]);
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     const decryptManual = async (msg: any) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
         const content = msg.content as any;
         const msgId = msg.id;
 
@@ -3524,6 +3644,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
             adoptAttachmentUrl(msgId, content.attachment_id, putDecryptedMediaBlob(content.attachment_id, decryptedBlob));
             setManualDecryptIds(prev => { const n = new Set(prev); n.delete(msgId); return n; });
             setDecryptingIds(prev => { const n = { ...prev }; delete n[msgId]; return n; });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (err: any) {
             console.error('Manual decrypt failed', err);
             setDecryptingIds(prev => { const n = { ...prev }; delete n[msgId]; return n; });
@@ -3574,11 +3695,13 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
     /** Retry after an error card was shown. Clears the error and re-runs the
      *  appropriate path: small files re-enter the auto-decrypt useEffect via
      *  the message list; large files go back to manual decrypt. */
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     const retryDecrypt = (msg: any) => {
         const msgId = msg.id;
         setDecryptErrors(prev => {
             const n = { ...prev }; delete n[msgId]; return n;
         });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
         const content = msg.content as any;
         const isLarge = content?.byte_size >= LARGE_FILE_BYTES;
         if (isLarge) {
@@ -3595,7 +3718,9 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
      * point). Idempotent — no-op if already cached. Safe to run in parallel with
      * decrypt flows; they all read the cache as source of truth.
      */
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     const ensureAttachmentCached = async (msg: any) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
         const content = msg?.content as any;
         const attId = content?.attachment_id;
         if (!attId || content?.type !== 'attachment') return;
@@ -3646,7 +3771,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         const cursor = (e.target as HTMLTextAreaElement).selectionStart ?? val.length;
         const before = val.slice(0, cursor);
         // Match a lone colon followed by 2+ word chars with no space since it
-        const triggerMatch = before.match(/:([a-z0-9_+\-]{2,})$/);
+        const triggerMatch = before.match(/:([a-z0-9_+-]{2,})$/);
         if (triggerMatch) {
             const query = triggerMatch[1];
             const results = searchEmojiWithCustom(query, serverEmojis);
@@ -3740,6 +3865,24 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
             setMentionQueryRange(null);
         }
 
+        // ── #channel autocomplete detection (server channels only) ─────────
+        // Trigger rules live in utils/channelRefs.detectChannelTrigger (mirror
+        // the `@` rule above, plus: not inside code, not `# heading`). DMs and
+        // groups have no channel list, so `#` stays plain text there.
+        const channelTrigger = activeChannel ? detectChannelTrigger(before) : null;
+        const channelMatches = channelTrigger ? rankChannelCandidates(channelCandidates, channelTrigger.query, 10) : [];
+        if (channelTrigger && channelMatches.length > 0) {
+            setChannelSuggestions(channelMatches);
+            setChannelQueryRange({ start: channelTrigger.start, end: cursor });
+            setSelectedChannelIdx(0);
+            // `@bob #me` would otherwise leave an @ query open behind it.
+            setMentionSuggestions([]);
+            setMentionQueryRange(null);
+        } else {
+            setChannelSuggestions([]);
+            setChannelQueryRange(null);
+        }
+
         sendTypingEvent('typing:start', activeChat.id);
         // DM/group: claim this message's recipients now, while it is being
         // typed, so Enter goes straight to encrypt + POST.
@@ -3801,6 +3944,29 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
             const ta = inputRef.current;
             if (ta) {
                 const pos = mentionQueryRange.start + displayToken.length + 1;
+                ta.focus();
+                ta.setSelectionRange(pos, pos);
+            }
+        });
+    };
+
+    const insertChannelSuggestion = (candidate: ChannelCandidate) => {
+        if (!channelQueryRange) return;
+        // The textarea shows the readable `#name` (which is also exactly what
+        // goes on the wire); the id rides in channel_refs at send time.
+        const name = candidate.channel.name;
+        const displayToken = `#${name}`;
+        channelRefMapRef.current[name] = candidate.channel.channel_id;
+        const before = inputText.slice(0, channelQueryRange.start);
+        const after  = inputText.slice(channelQueryRange.end);
+        const next = before + displayToken + (after.startsWith(' ') ? '' : ' ') + after.trimStart();
+        setInputText(next);
+        setChannelSuggestions([]);
+        setChannelQueryRange(null);
+        requestAnimationFrame(() => {
+            const ta = inputRef.current;
+            if (ta) {
+                const pos = channelQueryRange.start + displayToken.length + 1;
                 ta.focus();
                 ta.setSelectionRange(pos, pos);
             }
@@ -4074,7 +4240,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                 try { await window.electronAPI!.deleteFile(tempPath); } catch { /* best-effort */ }
             }
         }
-        const safeUUID = typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : `local-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+        const safeUUID = crypto.randomUUID();
         const content: ClientContent = {
             client_msg_id: safeUUID,
             type: 'attachment',
@@ -4247,7 +4413,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         }
 
         // ── Steps 4–7: Build and post the channel message ────────────────────
-        const safeUUID = typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : `local-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+        const safeUUID = crypto.randomUUID();
         const contentJson = JSON.stringify({
             client_msg_id: safeUUID,
             type: 'attachment',
@@ -4264,7 +4430,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         const { epoch, nonce_b64, ciphertext_b64: channelCt, signature_b64 } =
             await window.electronAPI!.encryptChannelMessage(contentJson, channelId, { user_id: user?.user_id, device_id: deviceId });
 
-        const resp = await axios.post(`${API_BASE}/channels/${channelId}/messages`, {
+        const resp = await axios.post(apiUrl`/channels/${channelId}/messages`, {
             sender_device_id: deviceId,
             epoch,
             nonce_b64,
@@ -4313,11 +4479,16 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
      * same path every message takes (per-device envelopes for a DM/group, the
      * Sender Key for a channel). Throws on failure so a caller can surface it;
      * `dispatchAction` above is the fire-and-forget wrapper.
+     *
+     * `opts` is for callers that own their failure UI (reactions): `bounded`
+     * puts the same 20 s ceiling on the POST as a message send and waits out a
+     * 429 the same way (deliveryQueue.withRateLimitRetry); `signal` lets the
+     * caller abandon a stuck attempt on Retry.
      */
-    const sendClientContent = async (content: ClientContent) => {
+    const sendClientContent = async (content: ClientContent, opts?: { bounded?: boolean; signal?: AbortSignal }) => {
         if (!bundleReady) throw new Error('Your encryption keys are still syncing. Try again in a moment.');
         if (!content.client_msg_id) {
-            content.client_msg_id = typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : `local-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+            content.client_msg_id = crypto.randomUUID();
         }
 
         // Never overtake a message still queued for this conversation: an
@@ -4346,11 +4517,17 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
             };
             if (content.type === 'edit' || content.type === 'delete' || content.type === 'reaction') {
                 body.action_type = content.type;
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
                 body.action_target_id = (content as any).target_id;
             }
 
-            const resp = await axios.post(`${API_BASE}/channels/${channelId}/messages`,
-                body, { headers: { Authorization: `Bearer ${token}`, 'x-device-id': deviceId } });
+            const postChannel = () => axios.post(apiUrl`/channels/${channelId}/messages`,
+                body, {
+                    headers: { Authorization: `Bearer ${token}`, 'x-device-id': deviceId },
+                    ...(opts?.bounded ? { timeout: SEND_POST_TIMEOUT_MS } : {}),
+                    ...(opts?.signal ? { signal: opts.signal } : {}),
+                });
+            const resp = await (opts?.bounded ? withRateLimitRetry(postChannel) : postChannel());
 
             onChannelMessageSent?.({
                 id: resp.data.id ?? content.client_msg_id!,
@@ -4370,13 +4547,18 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         const devices = await takeRecipients(activeChat.id);
         // RC-2: address exactly the devices that got wrapped.
         const { ciphertext_b64, recipient_device_ids } = await encryptAndAddress(JSON.stringify(content), user!.user_id, devices, deviceId ?? undefined);
-        const sendRes = await axios.post(`${API_BASE}/messages/send`, {
+        const postDm = () => axios.post(`${API_BASE}/messages/send`, {
             conversation_id: activeChat.id,
             recipient_device_ids,
             envelope_type: 'signal_chat',
             ciphertext_b64,
             sent_at_client: new Date().toISOString()
-        }, { headers: { Authorization: `Bearer ${token}`, 'x-device-id': deviceId } });
+        }, {
+            headers: { Authorization: `Bearer ${token}`, 'x-device-id': deviceId },
+            ...(opts?.bounded ? { timeout: SEND_POST_TIMEOUT_MS } : {}),
+            ...(opts?.signal ? { signal: opts.signal } : {}),
+        });
+        const sendRes = await (opts?.bounded ? withRateLimitRetry(postDm) : postDm());
         const serverTs = typeof sendRes.data?.received_at_server === 'string' ? sendRes.data.received_at_server as string : undefined;
 
         onMessageSent({
@@ -4424,9 +4606,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         if (!activeChat?.id || !user?.user_id || !deviceId || !token) {
             throw new Error('Not ready to send');
         }
-        const safeUUID = typeof crypto.randomUUID === 'function'
-            ? crypto.randomUUID()
-            : `local-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+        const safeUUID = crypto.randomUUID();
         const content: ClientContent = {
             client_msg_id: safeUUID,
             type: 'safety_number',
@@ -4435,7 +4615,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
             device_count: deviceCount,
         };
         // claim_otp=1 for per-message forward secrecy, exactly as the composer does.
-        const devicesRes = await axios.get(`${API_BASE}/conversations/${activeChat.id}/devices?claim_otp=1`, {
+        const devicesRes = await axios.get(apiUrl`/conversations/${activeChat.id}/devices?claim_otp=1`, {
             headers: { Authorization: `Bearer ${token}`, 'x-device-id': deviceId },
         });
         if (!Array.isArray(devicesRes.data)) {
@@ -4480,7 +4660,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         // group owner/admin) and its 14-day sweep is the backstop.
         const attachmentId = attachmentToDeleteWithMessage(target);
         if (attachmentId && token) {
-            axios.delete(`${API_BASE}/attachments/${attachmentId}`, { headers: { Authorization: `Bearer ${token}` } })
+            axios.delete(apiUrl`/attachments/${attachmentId}`, { headers: { Authorization: `Bearer ${token}` } })
                 .catch(() => { /* not ours to delete, already gone, or offline: the server sweep covers it */ });
         }
     };
@@ -4506,8 +4686,10 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         // Resolve ID: also try matching content.client_msg_id for group-chat cross-device
         // compatibility (recipients may store the same message under a different envelope_id).
         const resolvedId = (() => {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
             const byId = messages.find((m: any) => m.id === targetId);
             if (byId) return byId.id as string;
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
             const byClient = messages.find((m: any) => m.content?.client_msg_id === targetId);
             return (byClient?.id as string | undefined) ?? targetId;
         })();
@@ -4604,14 +4786,67 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         setTimeout(() => setHighlightedMsgId(prev => (prev === id ? null : prev)), 1800);
     }, [pagination.displayed]);
 
+    // ── Instant reactions (utils/pendingReactions.ts) ──────────────────────────
+    // A click changes the chip at once; the E2EE `reaction` message is sent
+    // behind it (same POST ceiling and 429 handling as a message send), and a
+    // failure turns the chip red with Retry / Remove. The overlay lives in a
+    // module-level store, never in the stored messages.
+    const reactionsVersion = usePendingReactions();
+    /** Ids this device's reaction can be stored under: server channels key it by
+     *  user_id (plus device_id as a fallback), DMs/groups by device_id. */
+    const reactionMineKeys: string[] = activeChannel
+        ? [user?.user_id, deviceId].filter((x): x is string => !!x)
+        : (deviceId ? [deviceId] : []);
+    /** The id an optimistic add is shown under. */
+    const reactionSelfId: string = (activeChannel ? user?.user_id : deviceId) ?? '';
+    const reactionConvKey = activeChannel
+        ? `${deviceId ?? ''}:channel:${activeChannel.channel_id}`
+        : `${deviceId ?? ''}:dm:${activeChat.id}`;
+
+    /** One delivery attempt of a reaction, bound to THIS conversation. */
+    const sendReactionFor = (msgId: string, emoji: string): ReactionSend => async (intent, signal) => {
+        const channel = activeChannel;
+        try {
+            await sendClientContent({ type: 'reaction', target_id: msgId, emoji, action: intent }, { bounded: true, signal });
+        } catch (err) {
+            if (!signal.aborted) console.error('Failed to send reaction:', err instanceof Error ? `${err.name}: ${err.message}` : String(err));
+            // This device's channel key is behind: start fetching it so Retry can work.
+            const m = err instanceof Error ? err.message : String(err);
+            if (channel && (isStaleEpochError(err) || /No channel key|Channel key for epoch/.test(m))) {
+                onChannelKeyMissing?.(channel.server_id, channel.channel_id);
+            }
+            throw err;
+        }
+    };
+
     const handleReact = (msgId: string, emoji: string, currentHasIt: boolean) => {
-        dispatchAction({ type: 'reaction', target_id: msgId, emoji, action: currentHasIt ? 'remove' : 'add' });
+        reactionStore.toggle({ convKey: reactionConvKey, msgId, emoji, baseHas: currentHasIt, send: sendReactionFor(msgId, emoji) });
         setShowEmojiPicker(null);
     };
+
+    /** Retry a red chip: same reaction, a fresh attempt. */
+    const retryReaction = (key: string, msgId: string, emoji: string) => {
+        reactionStore.retry(key, sendReactionFor(msgId, emoji));
+    };
+
+    // Fold the confirmed state (HTTP response, WS echo, history) into the overlay.
+    useEffect(() => {
+        if (!reactionStore.hasEntries(reactionConvKey)) return;
+        const byId = new Map<string, { reactions?: Record<string, unknown> }>();
+        for (const m of messages as Array<{ id?: string; reactions?: Record<string, unknown> }>) if (m?.id) byId.set(m.id, m);
+        reactionStore.reconcile(reactionConvKey, (msgId, emoji) => {
+            const m = byId.get(msgId);
+            if (!m) return undefined;
+            const ids = Array.isArray(m.reactions?.[emoji]) ? m.reactions![emoji] as string[] : [];
+            return ids.some(id => reactionMineKeys.includes(id));
+        });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- reactionMineKeys is derived from user/deviceId/activeChannel
+    }, [messages, reactionsVersion, reactionConvKey]);
 
     /** Whatever was in the composer when an edit was opened, restored on cancel. */
     const preEditDraftRef = useRef<string>('');
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     const startEdit = (msg: any) => {
         // Opening an edit replaces the composer contents; hold the draft so
         // Escape / Cancel can hand it back instead of silently eating it.
@@ -4628,6 +4863,9 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         const seeds = tokenMapsFromWireText(rawText);
         mentionTokenMapRef.current = { ...mentionTokenMapRef.current, ...seeds.mentions };
         emojiTokenMapRef.current   = { ...emojiTokenMapRef.current, ...seeds.emojis };
+        // Same round-trip for #channel links: an untouched `#name` keeps its
+        // link on save instead of silently becoming plain text.
+        channelRefMapRef.current   = { ...channelRefMapRef.current, ...channelRefNameMap(msg.content.channel_refs) };
         setInputText(mentionsToDisplayText(rawText));
         setTimeout(() => {
             if (inputRef.current) {
@@ -4663,6 +4901,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
     // after the edit starts, so an open popup is on top and closes first.
     useEscape(() => cancelEdit(), !!editingId);
     useEscape(() => { setMentionSuggestions([]); setMentionQueryRange(null); }, mentionSuggestions.length > 0);
+    useEscape(() => { setChannelSuggestions([]); setChannelQueryRange(null); }, channelSuggestions.length > 0);
     useEscape(() => { setEmojiSuggestions([]); setEmojiQueryRange(null); }, emojiSuggestions.length > 0);
     // TASK 2: reply mode had no Escape-to-cancel before (Discord does this).
     // Doesn't touch the typed draft — only clears which message is quoted.
@@ -4673,7 +4912,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
      *  claim_otp=1 consumes a one-time prekey per recipient device
      *  (per-message forward secrecy), so every result is single-use. */
     const fetchConversationDevices = async (conversationId: string): Promise<RecipientDevice[]> => {
-        const raw = await trackActivity('send:devices', () => axios.get(`${API_BASE}/conversations/${conversationId}/devices?claim_otp=1`, {
+        const raw = await trackActivity('send:devices', () => axios.get(apiUrl`/conversations/${conversationId}/devices?claim_otp=1`, {
             headers: { Authorization: `Bearer ${token}`, 'x-device-id': deviceId }
         }).then(r => r.data));
         if (!Array.isArray(raw)) {
@@ -4727,7 +4966,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                     if (wasDelivered(clientMsgId) || wasCancelled(clientMsgId)) return;
                     // A 429 waits out the server's window and tries again (the
                     // limit is respected, never exceeded) instead of failing.
-                    const resp = await trackActivity('send:post', () => withRateLimitRetry(() => axios.post(`${API_BASE}/channels/${job.conversationId}/messages`, {
+                    const resp = await trackActivity('send:post', () => withRateLimitRetry(() => axios.post(apiUrl`/channels/${job.conversationId}/messages`, {
                         sender_device_id: deviceId,
                         epoch,
                         nonce_b64,
@@ -4931,18 +5170,22 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                 // For channel mode we have a full label→token map; for DM/group mode the map is
                 // populated with @everyone/@here only (no member list needed there).
                 const wireText = buildEmojiWireText(buildWireText(inputText, mentionTokenMapRef.current), emojiTokenMapRef.current);
+                // #channel links: server channels only, and only the picked /
+                // seeded names still present in the final text.
+                const channelRefs = activeChannel ? collectChannelRefs(wireText, channelRefMapRef.current) : [];
                 if (editingId) {
                     // Edit path is the same regardless of conversation type —
                     // dispatchAction internally branches on `activeChannel`
                     // and routes through the channel Sender Key + the channel
-                    // edit endpoint when applicable.
-                    await dispatchAction({ type: 'edit', target_id: editingId, text: wireText });
+                    // edit endpoint when applicable. An edit carries its
+                    // complete channel_refs (none = the field is omitted).
+                    await dispatchAction({ type: 'edit', target_id: editingId, text: wireText, ...(channelRefs.length > 0 ? { channel_refs: channelRefs } : {}) });
                     setEditingId(null);
                 } else if (activeChannel) {
                     // ── Sender Keys channel message path ──────────────────────────────
                     // One ciphertext, encrypted with the shared channel key. No per-
                     // recipient envelopes needed — the key was distributed separately.
-                    const safeUUID = typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : `local-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+                    const safeUUID = crypto.randomUUID();
                     // If the entire message is a bare Cipherline invite URL, send it as a
                     // typed `server_invite` so recipients see the rich embed immediately.
                     const bareInviteCode = extractInviteCode(wireText.trim());
@@ -4981,7 +5224,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                     }
                     const msgContent: ClientContent = bareInviteCode
                         ? { client_msg_id: safeUUID, type: 'server_invite', code: bareInviteCode }
-                        : { client_msg_id: safeUUID, type: 'text', text: wireText, ...(replyingId ? { reply_to_id: replyingId } : {}), ...(mentions.length > 0 ? { mentions } : {}) };
+                        : { client_msg_id: safeUUID, type: 'text', text: wireText, ...(replyingId ? { reply_to_id: replyingId } : {}), ...(mentions.length > 0 ? { mentions } : {}), ...(channelRefs.length > 0 ? { channel_refs: channelRefs } : {}) };
                     if (textOnly) {
                         // Shown NOW under its client id; delivery swaps in the
                         // server id (or marks it failed) — see enqueueDelivery.
@@ -5000,7 +5243,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                     const contentJson = JSON.stringify(msgContent);
                     const { epoch, nonce_b64, ciphertext_b64: channelCt, signature_b64 } =
                         await trackActivity('send:encrypt', () => window.electronAPI!.encryptChannelMessage(contentJson, activeChannel.channel_id, { user_id: user?.user_id, device_id: deviceId }));
-                    const resp = await trackActivity('send:post', () => axios.post(`${API_BASE}/channels/${activeChannel.channel_id}/messages`, {
+                    const resp = await trackActivity('send:post', () => axios.post(apiUrl`/channels/${activeChannel.channel_id}/messages`, {
                         sender_device_id: deviceId,
                         epoch,
                         nonce_b64,
@@ -5024,7 +5267,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                     });
                     }
                 } else {
-                    const safeUUID = typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : `local-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+                    const safeUUID = crypto.randomUUID();
                     // If the entire message is a bare Cipherline invite URL, send it as a
                     // typed `server_invite` so the recipient sees the rich embed.
                     const bareInviteCode = extractInviteCode(wireText.trim());
@@ -5090,11 +5333,13 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         } catch (err) {
             // Only the awaited flows (edits, files) land here: an instant text
             // send reports its own failure on the message (enqueueDelivery).
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
             const status = (err as any)?.response?.status as number | undefined;
             if (status === 429) {
                 // Server-side rate limit hit — sync the client cooldown so the
                 // UI disables the input until the window expires.
                 const retryAfterSecs = parseInt(
+                    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
                     (err as any).response.headers?.['retry-after'] ?? '3', 10
                 );
                 startCooldown(retryAfterSecs * 1000);
@@ -5106,6 +5351,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
             // freeze further sends behind a modal click. 403s get a friendlier
             // permission-specific message; everything else falls back to a
             // generic "couldn't send" toast.
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
             const serverMsg = (err as any)?.response?.data?.message as string | undefined;
             if (/No channel key|Channel key for epoch/.test(errMsg) || isStaleEpochError(err)) {
                 // e2ee-engine threw before any network call — this device
@@ -5184,7 +5430,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                 // 1. Generate local E2EE session key for zero-knowledge LiveKit routing
                 generateCallKey(),
                 // 2. claim_otp=1: consume a one-time prekey per recipient device (per-message forward secrecy)
-                axios.get(`${API_BASE}/conversations/${activeChat.id}/devices?claim_otp=1`, {
+                axios.get(apiUrl`/conversations/${activeChat.id}/devices?claim_otp=1`, {
                     headers: {
                         Authorization: `Bearer ${token}`,
                         'x-device-id': deviceId
@@ -5201,7 +5447,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                 // never sent. Now it may already have created a session that is
                 // ringing the other side with no key coming — end it.
                 if (initR.status === 'fulfilled' && !initR.value.data?.joined && initR.value.data?.session_id) {
-                    axios.post(`${API_BASE}/calls/${initR.value.data.session_id}/end`, {}, { headers: { Authorization: `Bearer ${token}` } })
+                    axios.post(apiUrl`/calls/${initR.value.data.session_id}/end`, {}, { headers: { Authorization: `Bearer ${token}` } })
                         .catch(() => { /* best-effort */ });
                 }
                 throw keyR.status === 'rejected' ? keyR.reason
@@ -5219,6 +5465,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
             const joined = !!initRes.data.joined;
             const joinedKey = joined
                 ? (messages.find(
+                    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
                     (m: any) => m.content?.type === 'call_key' && m.content?.call_id === initRes.data.session_id
                   )?.content?.e2ee_key_b64 || '')
                 : '';
@@ -5260,9 +5507,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                 // real message. The four sibling onMessageSent call sites all
                 // use content.client_msg_id (a safeUUID); this call_key path
                 // has no client_msg_id, so mint one the same way.
-                const localMsgId = typeof crypto.randomUUID === 'function'
-                    ? crypto.randomUUID()
-                    : `local-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+                const localMsgId = crypto.randomUUID();
                 onMessageSent({
                     id: localMsgId,
                     content: content,
@@ -5298,6 +5543,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                 isInitiator: !joined
             });
 
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (err: any) {
             console.error('Failed to start LiveKit session', err);
             const msg = err.response?.data?.message || err.message || 'Unknown error';
@@ -5312,8 +5558,10 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
     // Removed duplicate activeBanner polling; now handled globally in Dashboard.tsx
 
     const displayMessages = (chatSearch.trim()
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
         ? messages.filter((m: any) => typeof m.content?.text === 'string' && messageTextMatches(m.content.text, chatSearch))
         : pagination.displayed
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     ).filter((m: any) =>
         // Expired/removed attachments vanish entirely rather than leaving a
         // placeholder row. An 'attachment' message carries no text (see the
@@ -5432,6 +5680,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
      * so the two menus cannot silently disagree about what's allowed. Pin
      * goes through the shared `canPinInThisChat` computed once above.
      */
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     const handleContextMenu = (e: React.MouseEvent, msg: any) => {
         e.preventDefault();
         // Right-click does not reliably move focus on every platform; focus
@@ -5627,6 +5876,19 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
             onSelect: () => writeToClipboard(msg.id).catch(() =>
                 toast.push({ kind: 'error', message: 'Could not copy — try selecting and copying manually.' })),
         });
+        // Copy image: only an on-screen, decrypted/loaded local image (utils/copyImage.ts).
+        const copyImageUrl = copyImageSourceFor({
+            isAttachment: isAttachment && !!attId,
+            attachmentUrl: objectUrls[msg.id] ?? null,
+            attachmentMime: msg.content?.mime,
+            embedUrl: embedImageUrlOf(e.target),
+        });
+        if (copyImageUrl) {
+            utilGroup.push({
+                icon: <ImageIcon />, label: 'Copy image',
+                onSelect: () => { void copyImageWithToast(copyImageUrl, toast); },
+            });
+        }
         if (isAttachment && attId && objectUrls[msg.id]) {
             utilGroup.push({
                 icon: <Download />, label: 'Download',
@@ -5743,6 +6005,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
 
     /** Right-click on a message that did not go through: Retry send / Discard
      *  under a "Message not delivered" header (utils/undeliveredSend.ts). */
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     const openUndeliveredMenu = (e: React.MouseEvent, msg: any) => {
         e.preventDefault();
         (e.currentTarget as HTMLElement).focus?.();
@@ -5760,6 +6023,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         msgContextMenu.open(e, items, title);
     };
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     const downloadAttachment = (msg: any) => {
         const url = objectUrls[msg.id];
         if (!url) return;
@@ -5791,7 +6055,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
     const rowLive = useLiveCallbacks({
         decryptManual, cancelDecrypt, retryDecrypt, ensureAttachmentCached,
         requestDelete, startEdit, handleAddReaction, handleContextMenu, jumpToMessage, handleMentionClick,
-        openUndeliveredMenu, retrySend, discardUnsent,
+        openUndeliveredMenu, retrySend, discardUnsent, onNavigateToChannel, retryReaction,
         onKeyChangeResolved, onPinMessage, onUnpinMessage, onServerSaveMessage, onServerUnsaveMessage,
         onOpenProfile, onInviteJoin, onInviteCodeClick,
         saveMessage: retention.saveMessage, unsaveMessage: retention.unsaveMessage,
@@ -5801,6 +6065,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
     // render time (the row shadows the plain names with stand-ins).
     const onOpenProfileProp = onOpenProfile;
     const onInviteCodeClickProp = onInviteCodeClick;
+    const hasNavigateToChannel = !!onNavigateToChannel;
     // Props Dashboard rebuilds on every render (`x || []`, `?? {}`) are kept
     // at one identity while their contents are equal.
     const stUser = useShallowStable(user);
@@ -5832,7 +6097,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         noServerEmojiContext, canReactServer, canManageMessages, canPinInThisChat, canSaveMessages,
         hasServerSave, hasServerUnsave, hasOpenProfile, hasInviteCodeClick, hasKeyChangeResolved,
         stRetentionPolicy, channelMessageRetention, channelAttachmentRetention, resolveEmoji,
-        mentionedUserIsKnown, nowTick,
+        mentionedUserIsKnown, nowTick, linkChannels, hasNavigateToChannel,
     ];
     // Reply quotes: one id/client-id index per `messages` change instead of
     // two linear scans of the whole conversation per reply row per render.
@@ -6170,9 +6435,10 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                                 onConfirm: async () => {
                                                     setConfirmDialog(null);
                                                     try {
-                                                        await axios.delete(`${API_BASE}/friends/${otherId}`, { headers: { Authorization: `Bearer ${token}` } });
+                                                        await axios.delete(apiUrl`/friends/${otherId}`, { headers: { Authorization: `Bearer ${token}` } });
                                                         setIsFriend(false);
                                                         setFriendStatus('none');
+                                                    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
                                                     } catch (err: any) { toast.push({ kind: 'error', title: 'Remove Failed', message: err?.response?.data?.message || 'Failed to remove friend.' }); }
                                                 },
                                             });
@@ -6238,6 +6504,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                                         await axios.post(`${API_BASE}/friends/block`, { target_id: otherId }, { headers: { Authorization: `Bearer ${token}` } });
                                                         setIsFriend(false);
                                                         setFriendStatus('blocked');
+                                                    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
                                                     } catch (err: any) { toast.push({ kind: 'error', title: 'Block Failed', message: err?.response?.data?.message || 'Failed to block user.' }); }
                                                 },
                                             });
@@ -6356,7 +6623,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                         }
                     }
                 }}
-                className="flex-1 overflow-y-auto overflow-x-hidden pl-6 pr-2 py-4 flex flex-col min-w-0"
+                className="flex-1 overflow-y-auto overflow-x-hidden pl-6 pr-2 py-5 flex flex-col min-w-0"
                 // Disable Chromium scroll anchoring: it auto-adjusts scrollTop the
                 // instant a row is inserted, which steals the distance our slide-up
                 // animation needs (start would already equal the new bottom).
@@ -6510,8 +6777,11 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                         const callId: string | undefined = msg.content?.type === 'call_key' ? msg.content.call_id : undefined;
                         const rowCall = callId ? callDurations[callId] : undefined;
                         const undelivered = isUndelivered(msg);
+                        // This message's pending / failed reactions: the array's
+                        // identity changes only when one of THEM does.
+                        const pendingRx = reactionStore.forMessage(reactionConvKey, msg.id);
                         const rowDeps = [
-                            ...rowGlobals, msg, index > 0 ? displayMessages[index - 1] : null, groupPrev[index], undelivered,
+                            ...rowGlobals, msg, index > 0 ? displayMessages[index - 1] : null, groupPrev[index], undelivered, pendingRx,
                             index === lastSeenMsgIndex, entering,
                             hoveredMsgId === msg.id, highlightedMsgId === msg.id,
                             showEmojiPicker === msg.id ? (reactionPickerAnchor ?? 'open') : null,
@@ -6525,7 +6795,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                         const {
                             decryptManual, cancelDecrypt, retryDecrypt, ensureAttachmentCached,
                             requestDelete, startEdit, handleAddReaction, handleContextMenu, jumpToMessage, handleMentionClick,
-                            openUndeliveredMenu, retrySend, discardUnsent,
+                            openUndeliveredMenu, retrySend, discardUnsent, retryReaction,
                             onPinMessage, onUnpinMessage, onKeyChangeResolved, onServerSaveMessage, onServerUnsaveMessage,
                             onInviteJoin,
                         } = rowLive;
@@ -6535,9 +6805,13 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                         };
                         const onOpenProfile = onOpenProfileProp ? rowLive.onOpenProfile : undefined;
                         const onInviteCodeClick = onInviteCodeClickProp ? rowLive.onInviteCodeClick : undefined;
+                        const navigateToChannel = hasNavigateToChannel ? rowLive.onNavigateToChannel : undefined;
                         const isMe = msg.sender_user_id
                             ? msg.sender_user_id === user?.user_id
                             : myDeviceIds.has(msg.sender_device_id);
+                        // Confirmed reactions with this device's pending / failed
+                        // ones laid over them (utils/pendingReactions.ts).
+                        const rxView = applyPendingReactions(msg.reactions, pendingRx, reactionMineKeys, reactionSelfId);
 
                         // ── Shared timestamp for this message ─────────────────
                         const msgMs = typeof msg.timestamp === 'number' ? msg.timestamp : Date.parse(msg.timestamp || '');
@@ -6575,6 +6849,79 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                             </div>
                         ) : null;
 
+                        // The confirmed + pending reaction chips under a row, as ONE
+                        // definition: ordinary messages and member-event system rows
+                        // ("X joined the server.") render the identical row, so waving
+                        // at a new member goes through the same pending/retry path.
+                        const reactionChips = () => (
+                            rxView.reactions && Object.keys(rxView.reactions).length > 0 && (
+                                        <div className="flex flex-wrap gap-1.5 mt-1.5">
+                                            {Object.entries(rxView.reactions).map(([emoji, deviceIds]) => {
+                                                const ids = Array.isArray(deviceIds) ? deviceIds as string[] : [];
+                                                const count = ids.length;
+                                                // In server channels reactions are keyed by user_id;
+                                                // in DMs/groups they may be device_id.  Check both.
+                                                const hasMine = isMyReaction(ids, user?.user_id, myDeviceIds);
+                                                const rxFailure = rxView.failures[emoji];
+                                                // For server channels: gate by ADD_REACTIONS perm.
+                                                // For DMs/groups: gate by friendship/group membership.
+                                                const canReact = isServerChannel
+                                                    ? canReactServer
+                                                    : (isFriend || activeChat?.type === 'group');
+                                                const reactorNames: string[] = ids.map(id => {
+                                                    if (id === user?.user_id || myDeviceIds.has(id)) return user?.username ?? 'You';
+                                                    // Prefer user-id map (server channels), fall back to device-id map (DMs).
+                                                    // Final fallback is "Unknown" — never the raw id.
+                                                    return userIdToUsername[id] ?? deviceToUsername[id] ?? 'Unknown';
+                                                });
+                                                return count > 0 && (
+                                                    <ReactionPill
+                                                        key={emoji}
+                                                        emoji={emoji}
+                                                        animKey={`${msg.id}:${emoji}`}
+                                                        msgId={msg.id}
+                                                        count={count}
+                                                        hasMine={hasMine}
+                                                        canReact={canReact}
+                                                        resolveEmoji={resolveEmoji}
+                                                        token={token}
+                                                        emojisLoading={serverEmojisLoading}
+                                                        noServerContext={noServerEmojiContext}
+                                                        failure={rxFailure ? {
+                                                            kind: rxFailure.kind,
+                                                            reason: rxFailure.reason,
+                                                            onRetry: () => retryReaction(rxFailure.key, msg.id, emoji),
+                                                            onDiscard: () => reactionStore.discard(rxFailure.key),
+                                                        } : null}
+                                                        onClick={() => {
+                                                            // Always dismiss tooltip on click — if this was the last
+                                                            // reaction the button disappears and onMouseLeave never fires.
+                                                            if (reactionHoverTimer.current) clearTimeout(reactionHoverTimer.current);
+                                                            setReactionTooltip(null);
+                                                            // handleAddReaction marks the key itself, so every
+                                                            // entry point (pill, picker, context menu) behaves the
+                                                            // same — nothing to do here beyond dispatching.
+                                                            if (canReact) handleAddReaction(msg.id, emoji);
+                                                        }}
+                                                        onHoverStart={(rect) => {
+                                                            reactionHoverTimer.current = setTimeout(() => {
+                                                                setReactionTooltip({ emoji, names: reactorNames, rect });
+                                                            }, 400);
+                                                        }}
+                                                        onHoverEnd={() => {
+                                                            if (reactionHoverTimer.current) clearTimeout(reactionHoverTimer.current);
+                                                            setReactionTooltip(null);
+                                                        }}
+                                                        onContextMenuShow={(rect) => {
+                                                            setReactionTooltip({ emoji, names: reactorNames, rect });
+                                                        }}
+                                                    />
+                                                );
+                                            })}
+                                        </div>
+                                    )
+                        );
+
                         // ── System messages: event bar ────────────────────────
                         // Two variants of `type: 'system'`:
                         //   1. Plain text events (joined/left/kicked) — rendered as
@@ -6587,6 +6934,83 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                         //      no text, producing the "lines with nothing in them"
                         //      bug: just the divider rules and an empty pill.
                         if (msg.content?.type === 'system') {
+                            // Member joined / left / kicked / banned: a persisted history
+                            // row (utils/systemMessages.ts). The server stores ids only;
+                            // the text is built HERE from the current username, and an
+                            // unknown or deleted user reads "A former member". Reactions
+                            // are allowed (a wave at the new member); replies and edits
+                            // are not (the server refuses them too); a moderator with
+                            // MANAGE_MESSAGES can delete the line.
+                            if (isMemberEventContent(msg.content)) {
+                                const ev = msg.content;
+                                const text = memberEventText(ev, id => userIdToUsername[id]);
+                                const isJoin = ev.event === 'member_join';
+                                const SysIcon = isJoin ? UserPlus : UserMinus;
+                                // A line drawn from the legacy `channel:system_event` has no
+                                // server row (the row-write flag is off): nothing to react to
+                                // or delete.
+                                const isEphemeral = isEphemeralMemberEventId(msg.id);
+                                const canReactHere = isServerChannel && canReactServer && !isEphemeral;
+                                return (
+                                    <React.Fragment key={rowKey}>
+                                        {DateDivider}
+                                        <div
+                                            id={`msg-${msg.id}`}
+                                            data-system-row="member-event"
+                                            className="group my-2 px-4"
+                                        >
+                                            <div className="flex items-center gap-3 select-none">
+                                                <div className="flex-1 h-px bg-white/[0.05]" />
+                                                <div className={`flex items-center gap-1.5 px-3 py-1 rounded-full border text-[11px] font-medium ${
+                                                    isJoin ? 'bg-blue-500/[0.07] border-blue-500/20 text-blue-400/80'
+                                                           : 'bg-white/[0.03] border-white/[0.06] text-cl-faint'
+                                                }`}>
+                                                    <SysIcon className="w-3 h-3 flex-shrink-0" />
+                                                    <span>{text}</span>
+                                                </div>
+                                                {canReactHere && (
+                                                    <button
+                                                        type="button"
+                                                        aria-label="React"
+                                                        title="React"
+                                                        className="w-5 h-5 flex items-center justify-center rounded text-cl-faint opacity-0 group-hover:opacity-100 focus-visible:opacity-100 hover:text-cl-lume transition-opacity"
+                                                        onClick={(e) => { setShowEmojiPicker(msg.id); setReactionPickerAnchor(e.currentTarget); }}
+                                                    >
+                                                        <SmilePlus className="w-3.5 h-3.5" />
+                                                    </button>
+                                                )}
+                                                {canManageMessages && !isEphemeral && (
+                                                    <button
+                                                        type="button"
+                                                        aria-label="Delete (moderator)"
+                                                        title="Delete (moderator)"
+                                                        className="w-5 h-5 flex items-center justify-center rounded text-cl-faint opacity-0 group-hover:opacity-100 focus-visible:opacity-100 hover:text-red-400 transition-opacity"
+                                                        onClick={(e) => requestDelete(msg, { entryPoint: e.detail === 0 ? 'msgbar-keyboard' : 'msgbar-mouse', shiftKey: e.shiftKey }, false)}
+                                                    >
+                                                        <Trash2 className="w-3.5 h-3.5" />
+                                                    </button>
+                                                )}
+                                                <div className="flex-1 h-px bg-white/[0.05]" />
+                                            </div>
+                                            {!isEphemeral && <div className="flex justify-center">{reactionChips()}</div>}
+                                            {showEmojiPicker === msg.id && reactionPickerAnchor && (
+                                                <EmojiPickerPopover
+                                                    anchorEl={reactionPickerAnchor}
+                                                    customEmojis={serverEmojis}
+                                                    token={token}
+                                                    onEmojiSelect={(emoji) => {
+                                                        const key = emojiSelectionToToken(emoji);
+                                                        if (key) handleAddReaction(msg.id, key);
+                                                        setShowEmojiPicker(null);
+                                                        setReactionPickerAnchor(null);
+                                                    }}
+                                                    onClose={() => { pickerJustClosedRef.current = true; setShowEmojiPicker(null); setReactionPickerAnchor(null); }}
+                                                />
+                                            )}
+                                        </div>
+                                    </React.Fragment>
+                                );
+                            }
                             // DM placeholder (Message integrity §2, utils/dmInbound.ts):
                             // an envelope arrived that this device could not decrypt
                             // or show. It is permanent — the server's copy is gone
@@ -6613,6 +7037,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                             // but couldn't be decrypted. Will resolve into real
                             // content once the channel key is delivered + a re-pull
                             // happens (Ctrl+R or channel switch + back).
+                            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
                             if ((msg.content as any).kind === 'encrypted') {
                                 return (
                                     <React.Fragment key={rowKey}>
@@ -6930,18 +7355,18 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                     }
                                 }}
                                 onMouseEnter={() => {
-                                    // Cancel any in-flight leave timer so moving from row → menu → row
-                                    // doesn't flicker the action menu.
+                                    // Cancel any in-flight leave timer so re-entering the row
+                                    // after a graze doesn't flicker the action bar.
                                     if (hoverLeaveTimerRef.current) clearTimeout(hoverLeaveTimerRef.current);
                                     if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
                                     hoverTimeoutRef.current = setTimeout(() => setHoveredMsgId(msg.id), 160);
                                 }}
                                 onMouseLeave={() => {
                                     if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
-                                    // Short grace period — the action menu is absolutely positioned
-                                    // above the row's layout box, so the mouse briefly leaves the div
-                                    // bounds while travelling up to reach the buttons. Without this
-                                    // delay the menu collapses before the user can click it.
+                                    // Short grace period so a pointer that grazes out of the row
+                                    // (a 1px seam between rows, a scrollbar drag) and straight back
+                                    // doesn't collapse the bar. The bar is a DOM child of the row
+                                    // (MsgActionBar), so reaching it never leaves the row.
                                     if (hoverLeaveTimerRef.current) clearTimeout(hoverLeaveTimerRef.current);
                                     hoverLeaveTimerRef.current = setTimeout(() => setHoveredMsgId(null), 200);
                                 }}
@@ -7025,7 +7450,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                                     {saved ? (
                                                         <Save className="w-3 h-3 text-cl-muted" strokeWidth={2} />
                                                     ) : (
-                                                        <span className="text-[10px] text-cl-glow/70 whitespace-nowrap">{compactExpiry}</span>
+                                                        <ChromeText className="text-[10px] text-cl-glow/70 whitespace-nowrap" text={compactExpiry!} label={deletionText ?? undefined} />
                                                     )}
                                                 </span>
                                             )}
@@ -7058,7 +7483,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                                 {smartTimestamp}
                                             </span>
                                             {msg.edited && (
-                                                <span className="text-[10px] text-cl-faint italic">(edited)</span>
+                                                <ChromeText className="text-[10px] text-cl-faint italic" text="(edited)" label="edited" />
                                             )}
                                             {/* Saved to server (amber) — channel only. Pinned or not. */}
                                             {isServerSaved && (
@@ -7079,10 +7504,10 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                                 exclusive pair, hover-only. */}
                                             {!pinnedMsgIds.includes(msg.id) && (inlineBadge && deletionText ? (
                                                 <span className="relative group/cd inline-flex items-center cursor-default opacity-0 group-hover:opacity-100 transition-opacity duration-150">
-                                                    <span className="text-[10px] text-cl-glow/70 tabular-nums font-medium">· {inlineBadge}</span>
-                                                    <span className="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 px-2 py-1 text-[11px] bg-cl-deep border border-white/10 rounded-md text-cl-text whitespace-nowrap opacity-0 group-hover/cd:opacity-100 transition-opacity duration-150 z-50 shadow-lg">
-                                                        {deletionText}
-                                                    </span>
+                                                    {/* ChromeText: painted from a data attribute so the badge and its
+                                                        tooltip are never part of a drag-selection / copy. */}
+                                                    <ChromeText className="text-[10px] text-cl-glow/70 tabular-nums font-medium" text={`· ${inlineBadge}`} label={deletionText} />
+                                                    <ChromeText className="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 px-2 py-1 text-[11px] bg-cl-deep border border-white/10 rounded-md text-cl-text whitespace-nowrap opacity-0 group-hover/cd:opacity-100 transition-opacity duration-150 z-50 shadow-lg" text={deletionText} />
                                                 </span>
                                             ) : saved ? (
                                                 <Save className="w-3 h-3 text-cl-muted shrink-0 self-center translate-y-px opacity-0 group-hover:opacity-100 transition-opacity duration-150" strokeWidth={2} />
@@ -7135,9 +7560,20 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                                     >
                                                         {emojiOnly
                                                             ? (hasCustomToken ? renderJumboContent(trimmed, resolveEmoji, token, serverEmojisLoading, noServerEmojiContext) : trimmed)
-                                                            : renderTextWithMentions(rawText, user?.user_id ?? null, memberRoleColors, onInviteCodeClick, resolveEmoji, token, serverEmojisLoading, noServerEmojiContext, mentionedUserIsKnown, handleMentionClick)}
+                                                            : renderTextWithMentions(rawText, user?.user_id ?? null, memberRoleColors, onInviteCodeClick, resolveEmoji, token, serverEmojisLoading, noServerEmojiContext, mentionedUserIsKnown, handleMentionClick,
+                                                                // #channel links: server channels only, refs validated
+                                                                // (sender-controlled), resolved by id against what this
+                                                                // reader can see (utils/channelRefs.ts).
+                                                                isServerChannel && msg.content.channel_refs
+                                                                    ? {
+                                                                        spans: findChannelRefSpans(rawText, sanitizeChannelRefs(msg.content.channel_refs)),
+                                                                        renderRef: (ref, key) => (
+                                                                            <ChannelRefPill key={key} channelRef={ref} visibleChannels={linkChannels} onNavigate={navigateToChannel} />
+                                                                        ),
+                                                                    }
+                                                                    : undefined)}
                                                         {msg.edited && !showHeader && (
-                                                            <span className="text-[10px] opacity-40 ml-2 italic">(edited)</span>
+                                                            <ChromeText className="text-[10px] opacity-40 ml-2 italic" text="(edited)" label="edited" />
                                                         )}
                                                         {undelivered && (
                                                             <UndeliveredIndicator
@@ -7331,65 +7767,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                     )}
 
                                     {/* Reactions row — bigger, thinner border, tooltip of reactors. */}
-                                    {msg.reactions && Object.keys(msg.reactions).length > 0 && (
-                                        <div className="flex flex-wrap gap-1.5 mt-1.5">
-                                            {Object.entries(msg.reactions).map(([emoji, deviceIds]) => {
-                                                const ids = Array.isArray(deviceIds) ? deviceIds as string[] : [];
-                                                const count = ids.length;
-                                                // In server channels reactions are keyed by user_id;
-                                                // in DMs/groups they may be device_id.  Check both.
-                                                const hasMine = isMyReaction(ids, user?.user_id, myDeviceIds);
-                                                // For server channels: gate by ADD_REACTIONS perm.
-                                                // For DMs/groups: gate by friendship/group membership.
-                                                const canReact = isServerChannel
-                                                    ? canReactServer
-                                                    : (isFriend || activeChat?.type === 'group');
-                                                const reactorNames: string[] = ids.map(id => {
-                                                    if (id === user?.user_id || myDeviceIds.has(id)) return user?.username ?? 'You';
-                                                    // Prefer user-id map (server channels), fall back to device-id map (DMs).
-                                                    // Final fallback is "Unknown" — never the raw id.
-                                                    return userIdToUsername[id] ?? deviceToUsername[id] ?? 'Unknown';
-                                                });
-                                                return count > 0 && (
-                                                    <ReactionPill
-                                                        key={emoji}
-                                                        emoji={emoji}
-                                                        animKey={`${msg.id}:${emoji}`}
-                                                        msgId={msg.id}
-                                                        count={count}
-                                                        hasMine={hasMine}
-                                                        canReact={canReact}
-                                                        resolveEmoji={resolveEmoji}
-                                                        token={token}
-                                                        emojisLoading={serverEmojisLoading}
-                                                        noServerContext={noServerEmojiContext}
-                                                        onClick={() => {
-                                                            // Always dismiss tooltip on click — if this was the last
-                                                            // reaction the button disappears and onMouseLeave never fires.
-                                                            if (reactionHoverTimer.current) clearTimeout(reactionHoverTimer.current);
-                                                            setReactionTooltip(null);
-                                                            // handleAddReaction marks the key itself, so every
-                                                            // entry point (pill, picker, context menu) behaves the
-                                                            // same — nothing to do here beyond dispatching.
-                                                            if (canReact) handleAddReaction(msg.id, emoji);
-                                                        }}
-                                                        onHoverStart={(rect) => {
-                                                            reactionHoverTimer.current = setTimeout(() => {
-                                                                setReactionTooltip({ emoji, names: reactorNames, rect });
-                                                            }, 400);
-                                                        }}
-                                                        onHoverEnd={() => {
-                                                            if (reactionHoverTimer.current) clearTimeout(reactionHoverTimer.current);
-                                                            setReactionTooltip(null);
-                                                        }}
-                                                        onContextMenuShow={(rect) => {
-                                                            setReactionTooltip({ emoji, names: reactorNames, rect });
-                                                        }}
-                                                    />
-                                                );
-                                            })}
-                                        </div>
-                                    )}
+                                    {reactionChips()}
 
                                     {/* Instant send: a message that did not go through keeps its
                                         place in the feed and carries a red "!" (UndeliveredIndicator
@@ -7414,21 +7792,21 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
 
                                 {/* Discord-style: no right-side avatar — every row is left-aligned. */}
 
-                                {/* Floating action menu — always above the row, anchored to the right edge.
+                                {/* Floating action menu — a descendant of the row, pinned top-right and centred on
+                                    the row's top edge (MsgActionBar / `.msgbar-inline`): half inside, half
+                                    poking out above, so the pointer reaches it without leaving the row.
                                     For server channels the menu always shows (Reply/Edit/Delete work regardless
                                     of reaction permission). For DMs/groups it requires friendship/membership. */}
                                 {hoveredMsgId === msg.id && !isUnconfirmedSend(msg) && (isServerChannel || isFriend || activeChat?.type === 'group') && (
-                                    <div
-                                        className={`msgbar absolute ${showHeader ? '-top-11' : '-top-9'} right-14 z-30`}
-                                        onClick={(e) => e.stopPropagation()}
-                                        onMouseEnter={() => {
-                                            // Mouse reached the menu — cancel the leave timer so the menu stays open.
+                                    <MsgActionBar
+                                        onPointerEnterBar={() => {
+                                            // Pointer reached the bar — cancel any pending hide. The bar
+                                            // is a DOM child of the row (even its half that lies over the
+                                            // previous message), so the row's own onMouseLeave (200 ms
+                                            // grace) is the only thing that closes it; there is no
+                                            // bar-level leave timer (it hid the bar when the pointer
+                                            // slid back onto the same message).
                                             if (hoverLeaveTimerRef.current) clearTimeout(hoverLeaveTimerRef.current);
-                                        }}
-                                        onMouseLeave={() => {
-                                            // Mouse left the menu without clicking — start leave timer.
-                                            if (hoverLeaveTimerRef.current) clearTimeout(hoverLeaveTimerRef.current);
-                                            hoverLeaveTimerRef.current = setTimeout(() => setHoveredMsgId(null), 200);
                                         }}
                                     >
                                         {/* React button — hidden when ADD_REACTIONS is denied on this channel */}
@@ -7552,7 +7930,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                                 active={saved}
                                                 onClick={() => {
                                                     if (isTextLike) {
-                                                        saved ? retention.unsaveMessage(msg.id) : retention.saveMessage(msg.id);
+                                                        if (saved) retention.unsaveMessage(msg.id); else retention.saveMessage(msg.id);
                                                     } else if (attId) {
                                                         if (saved) {
                                                             retention.unsaveAttachment(attId);
@@ -7587,7 +7965,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                                 }}
                                             />
                                         )}
-                                    </div>
+                                    </MsgActionBar>
                                 )}
 
                                 {/* Full emoji picker — reaction mode (portal, above anchor button) */}
@@ -7747,6 +8125,8 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                         // getOrCreateStagedUrl returns the SAME blob URL on every re-render
                                         // for the same File object — progress updates no longer reload the video.
                                         const objUrl = getOrCreateStagedUrl(f);
+                                        // Local object URL of a File the user picked; validated explicitly so only a blob: URL reaches the element.
+                                        const stagedSrc = safeBlobUrl(objUrl);
                                         const pct = uploadProgress[f.name];
                                         const uploading = pct !== undefined;
 
@@ -7781,9 +8161,9 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                             return (
                                                 <div key={i} className="group relative overflow-hidden rounded-2xl border border-white/10 bg-black/30 shadow-[0_2px_8px_rgba(0,0,0,.25)]" style={{ width: 100, height: 100 }}>
                                                     {isVideo ? (
-                                                        <video src={`${objUrl!}#t=0.001`} className="w-full h-full object-cover" preload="metadata" />
+                                                        <video src={stagedSrc ? `${stagedSrc}#t=0.001` : undefined} className="w-full h-full object-cover" preload="metadata" />
                                                     ) : (
-                                                        <img src={objUrl!} alt={f.name} className="w-full h-full object-cover" />
+                                                        <img src={stagedSrc} alt={f.name} className="w-full h-full object-cover" />
                                                     )}
                                                     {isVideo && !uploading && (
                                                         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
@@ -7910,8 +8290,14 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                     maxLength={MAX_TEXT_MESSAGE_LENGTH}
                                     className={`flex-1 min-w-0 bg-transparent border-none outline-none ring-0 text-[14.5px] font-medium resize-none [&::-webkit-scrollbar]:hidden [scrollbar-width:none] ${cooldownSecs > 0 ? 'text-white/30' : 'text-white/90'} ${!canSend ? 'cursor-not-allowed placeholder-white/30 italic' : 'placeholder-white/25'}`}
                                     rows={1}
+                                    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
                                     style={{ display: 'block', padding: '2px 4px', lineHeight: '22px', minHeight: 22, maxHeight: 260, overflowY: 'auto', outline: 'none', outlineWidth: 0, boxShadow: 'none', border: 0, background: 'transparent', WebkitAppearance: 'none', appearance: 'none', WebkitBoxShadow: 'none' as any }}
                                     onKeyDown={(e) => {
+                                        if (channelSuggestions.length > 0) {
+                                            if (e.key === 'ArrowUp') { e.preventDefault(); setSelectedChannelIdx(i => nextSuggestionIndex(i, channelSuggestions.length, 'up')); return; }
+                                            if (e.key === 'ArrowDown') { e.preventDefault(); setSelectedChannelIdx(i => nextSuggestionIndex(i, channelSuggestions.length, 'down')); return; }
+                                            if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) { e.preventDefault(); insertChannelSuggestion(channelSuggestions[selectedChannelIdx]); return; }
+                                        }
                                         if (mentionSuggestions.length > 0) {
                                             if (e.key === 'ArrowUp') { e.preventDefault(); setSelectedMentionIdx(i => nextSuggestionIndex(i, mentionSuggestions.length, 'up')); return; }
                                             if (e.key === 'ArrowDown') { e.preventDefault(); setSelectedMentionIdx(i => nextSuggestionIndex(i, mentionSuggestions.length, 'down')); return; }
@@ -7982,6 +8368,32 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                             label: `:${s.name.toLowerCase()}:`,
                                             hint: s.custom ? resolveCustomEmojiHint(emojiServerId, servers) : undefined,
                                             onSelect: () => insertEmojiSuggestion(s),
+                                        }))}
+                                    />
+                                )}
+
+                                {channelSuggestions.length > 0 && inputRef.current && (
+                                    // Same menu shell and keys as @mentions. Only channels this
+                                    // reader can VIEW are ever candidates (buildChannelCandidates).
+                                    <SuggestionMenu
+                                        anchorEl={inputRef.current}
+                                        sectionLabel="Channels"
+                                        selectedIndex={selectedChannelIdx}
+                                        items={channelSuggestions.map((c): SuggestionMenuItem => ({
+                                            key: `ch-${c.channel.channel_id}`,
+                                            icon: c.group === 'call' ? (
+                                                <Volume2 className="w-4 h-4 text-cl-faint" aria-hidden="true" />
+                                            ) : c.channel.icon_name ? (
+                                                <ChannelIconRenderer name={c.channel.icon_name} size={16} className="text-cl-faint" />
+                                            ) : c.channel.icon_emoji ? (
+                                                <span className="text-[14px] leading-none">{c.channel.icon_emoji}</span>
+                                            ) : (
+                                                <Hash className="w-4 h-4 text-cl-faint" aria-hidden="true" />
+                                            ),
+                                            label: c.channel.name,
+                                            title: c.channel.topic ? `#${c.channel.name} - ${c.channel.topic}` : `#${c.channel.name}`,
+                                            hint: c.categoryName ?? (c.group === 'call' ? 'Calls' : undefined),
+                                            onSelect: () => insertChannelSuggestion(c),
                                         }))}
                                     />
                                 )}
@@ -8111,6 +8523,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                     )}
                                     {canAttach && canSend && (
                                         <button
+                                            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
                                             ref={gifButtonRef as any}
                                             type="button"
                                             className="cmp-ico"
@@ -8135,10 +8548,11 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                                         await uploadFileToChannel(file, activeChannel.channel_id);
                                                     } else {
                                                         // claim_otp=1: consume a one-time prekey per recipient device (per-message forward secrecy)
-                                                        const devicesRes = await axios.get(`${API_BASE}/conversations/${activeChat.id}/devices?claim_otp=1`, { headers: { Authorization: `Bearer ${token}`, 'x-device-id': deviceId } });
+                                                        const devicesRes = await axios.get(apiUrl`/conversations/${activeChat.id}/devices?claim_otp=1`, { headers: { Authorization: `Bearer ${token}`, 'x-device-id': deviceId } });
                                                         const devices = devicesRes.data as { device_id: string; spk_pub_b64: string }[];
                                                         await uploadFile(file, devices);
                                                     }
+                                                // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
                                                 } catch (err: any) {
                                                     // This used to be a bare console.error, so every failure mode
                                                     // (upload rejected, size cap, no channel key, offline) looked
@@ -8158,6 +8572,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                                 followBottomRef.current = true;
                                                 try {
                                                     await handleSendKlipyGif(ref);
+                                                // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
                                                 } catch (err: any) {
                                                     console.error('[GifPicker] Failed to send KLIPY GIF:', err?.message);
                                                     toast.push({
@@ -8171,6 +8586,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                         />
                                     )}
                                     {canSend && (
+                                        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
                                         <button ref={emojiButtonRef as any} type="button" className="cmp-ico" onClick={() => { setShowInputEmojiPicker(v => !v); setShowGifPicker(false); }} disabled={sending || cooldownSecs > 0} title="Emoji">
                                             <Smile className="w-[18px] h-[18px]" />
                                         </button>

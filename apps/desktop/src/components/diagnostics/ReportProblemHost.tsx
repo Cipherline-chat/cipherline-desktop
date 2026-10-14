@@ -74,11 +74,13 @@ export const ReportProblemHost: React.FC = () => {
         if (!plan.send.length) return;
         const prepared = await prepareReportInputs(liveRef.current);
         let sent = 0;
+        let sentClosed = 0;
         for (const entry of plan.send) {
             const { body } = buildFromPrepared(prepared, { category: 'crash', trigger: 'auto_crash', crash: entry.crash });
             const r = await sendDiagnosticReport(body, tok);
             if (!r.ok) break; // offline / rate-limited: keep them pending for next time
             sent++;
+            if (!entry.handled) sentClosed++;
             writeAutoSendLog(uid, appendAutoSendLog(readAutoSendLog(uid), entry.signature, Date.now()));
             await api?.diagClearPendingCrashes?.([entry.signature]).catch(() => {});
         }
@@ -86,7 +88,11 @@ export const ReportProblemHost: React.FC = () => {
             toast.push({
                 kind: 'info',
                 title: sent > 1 ? 'Crash reports sent' : 'Crash report sent',
-                message: 'Cipherline closed unexpectedly last time, so a crash report was sent automatically. You can turn this off in Settings → Advanced.',
+                // A handled GPU restart (graphics driver reset) is a crash
+                // record, but the app never closed — say what happened.
+                message: sentClosed > 0
+                    ? 'Cipherline closed unexpectedly last time, so a crash report was sent automatically. You can turn this off in Settings → Advanced.'
+                    : 'A graphics driver reset during your last session was reported automatically. You can turn this off in Settings → Advanced.',
                 durationMs: 7000,
             });
         }

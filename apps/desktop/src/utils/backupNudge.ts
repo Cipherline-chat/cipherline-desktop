@@ -16,8 +16,6 @@ export type BackupBlockedReason = 'no-passphrase' | 'last-run-failed';
 
 const BACKUP_BODY =
     "Your history only exists on this device. If you lose it it's gone — by design, nobody can recover it for you.";
-const BACKUP_PENDING_BODY =
-    'Backups are set up but none has completed yet. The first one runs shortly after startup.';
 const BACKUP_STALLED_BODY =
     "Automatic backups are on but can't run without your passphrase — open Storage to re-enter it.";
 
@@ -45,9 +43,12 @@ export function computeBackupNudge(
         if (blocked === 'no-passphrase') {
             return { critical: true, chip: 'Action needed', title: "Automatic backups aren't running", body: BACKUP_STALLED_BODY };
         }
-        if (configured) {
-            return { critical: false, chip: 'Pending', title: 'First backup hasn’t run yet', body: BACKUP_PENDING_BODY };
-        }
+        // Automatic backups are configured and simply haven't had their first
+        // run yet: the user has done what this tile asks, so it goes away the
+        // moment they set it up instead of lingering as a "pending" copy of
+        // the same banner. If the schedule is actually stalled that is the
+        // `blocked` case above, which stays.
+        if (configured) return null;
         return { critical: false, chip: 'Needs attention', title: 'You have no backup yet', body: BACKUP_BODY };
     }
 

@@ -30,7 +30,8 @@ describe('renderHuddle — "Start a new call" respects the call cooldown', () =>
     });
 
     it('derives one canStartNewCall that folds in the cooldown, same as the "+" button\'s canConnect prop', () => {
-        expect(block).toMatch(/const canStartNewCall = callCooldownSecs === 0 && hCanJoin && !hAtCallLimit;/);
+        // (+ hCanStart since START_CALLS — ServerContextPanel.startCalls.test.ts.)
+        expect(block).toMatch(/const canStartNewCall = callCooldownSecs === 0 && hCanJoin && hCanStart && !hAtCallLimit;/);
     });
 
     it('the "+" button (onSpawn) and the context-menu item both gate on canStartNewCall', () => {

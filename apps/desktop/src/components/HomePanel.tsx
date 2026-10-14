@@ -21,13 +21,10 @@ import {
     isLocalCallRow, resolvePinnedChannelAction,
     type HomeCallRow, type LocalCallSession,
 } from '../utils/homeActiveCalls';
-import { computeBackupNudge } from '../utils/backupNudge';
 import { summarizeCallRoster, labelVoiceUsers } from '../utils/serverCallPresence';
 import { CallMediaSummary } from './CallMediaSummary';
 import { huddleCallMediaKey, voiceChannelMediaKey } from '../utils/callMediaPresence';
-import { getLastBackupMs, BACKUP_STATE_EVENT } from '../services/driveBackup';
-import { BACKUP_RESTORED_EVENT } from '../services/backupRegistry';
-import { readBackupBlocked } from '../hooks/useBackupAutoSchedule';
+import { useBackupState, useBackupNudge } from '../hooks/useBackupState';
 import { ClInput } from './cl';
 import { useEscape } from '../hooks/useEscape';
 import { shouldSpeak, pokeReaction, SLEEPY_AT } from '../utils/keysBrain';
@@ -48,12 +45,14 @@ interface HomePanelProps {
     userId: string;
     displayName: string;
     token: string | null;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     conversations: any[];
     unreadCounts: Record<string, number>;
     mentionCounts: Record<string, number>;
     /** Persisted per-conversation last-activity clock (ms epoch) — survives restarts. */
     lastActivityAt?: Record<string, number>;
     presence: Record<string, boolean>;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     friends?: { accepted: any[] } | null;
     servers: ServerInfo[];
     serverChannels: Record<string, ChannelInfo[]>;
@@ -95,6 +94,7 @@ interface HomePanelProps {
      *  you're sitting in apart from the ones you could join — see
      *  utils/homeActiveCalls. */
     localCallSession?: LocalCallSession | null;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     onSelectConversation: (conv: any) => void;
     onJoinVoiceChannel: (channel: ChannelInfo) => void;
     onJoinHuddleCall: (callId: string, displayName: string) => void;
@@ -128,24 +128,6 @@ function relativeTime(dateStr: string | undefined | null): string {
     return `${days}d ago`;
 }
 
-/**
- * Whether this account's backups are configured at all. Read alongside the
- * timestamp so a configured-but-not-yet-run setup never gets told it has "no
- * backup yet", which is the wrong thing to say and the wrong thing to do
- * about it. Mirrors useBackupAutoSchedule's own config shape; kept
- * deliberately tolerant since this only drives copy.
- */
-function backupIsConfigured(userId: string): boolean {
-    try {
-        const raw = secureLocalStore.getItem(`cipherline_backup_cfg_${userId}`);
-        if (!raw) return false;
-        const c = JSON.parse(raw);
-        const hasLocal = c?.localEnabled === true && typeof c?.localDir === 'string' && c.localDir;
-        const hasDrive = c?.driveEnabled === true;
-        return !!(hasLocal || hasDrive);
-    } catch { return false; }
-}
-
 /** Deterministic hue from a user/entity id string for placeholder avatars. */
 function idToHue(id: string): number {
     let h = 0;
@@ -166,6 +148,7 @@ const STATUS_LABEL: Record<string, string> = {
 // ── Pin card ───────────────────────────────────────────────────────────────────
 
 type ResolvedPin =
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     | { kind: 'conversation'; item: PinnedHomeItem; conv: any }
     | { kind: 'channel'; item: PinnedHomeItem; channel: ChannelInfo; server: ServerInfo }
     | { kind: 'server'; item: PinnedHomeItem; server: ServerInfo };
@@ -181,6 +164,7 @@ type RecentItem = {
     unread: number;
     mention: number;
 } & (
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     | { kind: 'conversation'; conv: any }
     | { kind: 'server'; server: ServerInfo }
 );
@@ -270,6 +254,7 @@ const PinCard: React.FC<{
 // ── Add-pin card + search popover ──────────────────────────────────────────────
 
 const AddPinCard: React.FC<{
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     conversations: any[];
     serverChannels: Record<string, ChannelInfo[]>;
     servers: ServerInfo[];
@@ -297,8 +282,11 @@ const AddPinCard: React.FC<{
         return () => document.removeEventListener('mousedown', onDown);
     }, [open]);
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
     const pinnedConvIds = new Set(pinnedItems.filter(p => p.type === 'conversation').map(p => (p as any).id));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
     const pinnedChannelIds = new Set(pinnedItems.filter(p => p.type === 'channel').map(p => (p as any).channelId));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
     const pinnedServerIds = new Set(pinnedItems.filter(p => p.type === 'server').map(p => (p as any).serverId));
 
     const q = search.toLowerCase();
@@ -581,6 +569,7 @@ export const HomePanel: React.FC<HomePanelProps> = ({
     }, [friends]);
 
     /** Attachment id to paint for a conversation row — freshest source first. */
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     const convAvatarId = useCallback((conv: any): string | null => {
         if (conv?.avatar_url) return conv.avatar_url;
         if (conv?.other_user_id) return friendAvatarById[conv.other_user_id] ?? null;
@@ -737,14 +726,16 @@ export const HomePanel: React.FC<HomePanelProps> = ({
     }, [activeCalls]);
 
     // Seabed footer: how fresh the newest backup is, in words.
+    const backupState = useBackupState(userId);
+    const lastBackupMs = backupState.lastBackupMs;
     const lastBackupLabel = useMemo(() => {
-        const ms = getLastBackupMs(userId);
+        const ms = lastBackupMs;
         if (!ms) return 'no backup yet';
         const mins = Math.floor((Date.now() - ms) / 60_000);
         if (mins < 60) return `backed up ${Math.max(1, mins)}m ago`;
         if (mins < 60 * 24) return `backed up ${Math.floor(mins / 60)}h ago`;
         return `backed up ${Math.floor(mins / 1440)}d ago`;
-    }, [userId]);
+    }, [lastBackupMs]);
 
     const friendActivity = useMemo(() => {
         const all = friends?.accepted ?? [];
@@ -771,7 +762,7 @@ export const HomePanel: React.FC<HomePanelProps> = ({
         friendsOnline: friendActivity.online.length,
         friendsTotal: friendActivity.total,
         callParticipants: activeCalls.reduce((a, c) => a + c.participantIds.length, 0),
-        backupConfigured: backupIsConfigured(userId),
+        backupConfigured: backupState.configured,
     };
 
     // Warm the avatar cache for everything the deck is about to paint. Home is
@@ -814,28 +805,14 @@ export const HomePanel: React.FC<HomePanelProps> = ({
         try { secureLocalStore.setItem(muteKey, '1'); } catch { /* non-fatal */ }
     }, [muteKey]);
 
-    // The nudge is read from secureLocalStore on render, and nothing about a
-    // backup finishing (or being set up in Settings) re-renders Home — so the
-    // "You have no backup yet" tile used to stay up after the user did exactly
-    // what it asked. Re-render whenever backup state changes.
-    const [, setBackupStateTick] = useState(0);
-    useEffect(() => {
-        const bump = () => setBackupStateTick(t => t + 1);
-        window.addEventListener(BACKUP_STATE_EVENT, bump);
-        window.addEventListener(BACKUP_RESTORED_EVENT, bump);
-        return () => {
-            window.removeEventListener(BACKUP_STATE_EVENT, bump);
-            window.removeEventListener(BACKUP_RESTORED_EVENT, bump);
-        };
-    }, []);
+    // Live: re-reads backup state on every backup-state event (config saved,
+    // run started/finished/failed, restore), so the tile leaves the instant
+    // the user does what it asks — no remount needed. See hooks/useBackupState.
+    const backupNudgeView = useBackupNudge(userId, backupMuted);
+    const backupNudge = backupNudgeView.tile;
 
-    const backupNudge = backupMuted
-        ? null
-        : computeBackupNudge(getLastBackupMs(userId), {
-            configured: backupIsConfigured(userId),
-            blocked: readBackupBlocked(userId),
-        });
-
+    // Counts the tile while it is still animating out: the deck's column spans
+    // key off this, so dropping it early would resize the leaving tile mid-fade.
     const alertCount = (backupNudge ? 1 : 0) + (activeCalls.length > 0 ? 1 : 0);
 
     return (
@@ -910,7 +887,7 @@ export const HomePanel: React.FC<HomePanelProps> = ({
 
                     {/* Backup — mounts only when there's something to act on. */}
                     {backupNudge && (
-                        <section className={`hd-tile hd-a--glow hd-t--attn hd-t--wide${backupNudge.critical ? ' is-critical' : ''}`} data-ob-anchor="home-tile">
+                        <section className={`hd-tile hd-a--glow hd-t--attn hd-t--wide${backupNudge.critical ? ' is-critical' : ''}${backupNudgeView.leaving ? ' is-leaving' : ''}`} data-ob-anchor="home-tile" aria-hidden={backupNudgeView.leaving || undefined}>
                             <span className="hd-attnchip">{backupNudge.chip}</span>
                             <h2 className="hd-attntitle">{backupNudge.title}</h2>
                             <p className="hd-attnbody">{backupNudge.body}</p>

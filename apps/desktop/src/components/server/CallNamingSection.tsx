@@ -33,7 +33,9 @@ interface Props {
 const EXAMPLE_GAME = 'Elden Ring';
 const TOKENS = ['{host}', '{channel}', '{n}'] as const;
 
-const Row: React.FC<{ icon: React.ReactNode; label: string; sublabel: React.ReactNode; control: React.ReactNode; dim?: boolean; children?: React.ReactNode }> = ({
+/** One switch / select row of a Calls channel settings card. Shared with
+ *  CallBehaviorSection so the two cards cannot drift apart visually. */
+export const Row: React.FC<{ icon: React.ReactNode; label: string; sublabel: React.ReactNode; control: React.ReactNode; dim?: boolean; children?: React.ReactNode }> = ({
     icon, label, sublabel, control, dim, children,
 }) => (
     <div className={`px-3 py-2.5 ${dim ? 'opacity-55' : ''}`}>

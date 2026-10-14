@@ -15,6 +15,7 @@
  */
 
 import { adoptServerCopy } from './pendingSend';
+import { sanitizeChannelRefs } from './channelRefs';
 
 /** A cached or freshly-decrypted channel row, as far as the merge cares.
  *  Structurally a superset-tolerant view of Dashboard's `StoredChannelMsg`. */
@@ -35,7 +36,7 @@ export interface ChannelRow {
     send_error?: string;
 }
 
-interface EditContent { type: 'edit'; target_id: string; text: string }
+interface EditContent { type: 'edit'; target_id: string; text: string; channel_refs?: unknown }
 interface DeleteContent { type: 'delete'; target_id: string }
 interface ReactionContent { type: 'reaction'; target_id: string; emoji: string; action: 'add' | 'remove' }
 
@@ -65,9 +66,20 @@ const tsOf = (m: ChannelRow): number => new Date(m.timestamp).getTime();
  * latest text it held. A later real decrypt of the original never downgrades
  * it back: the upgrade path only replaces PLACEHOLDERS.
  */
-export function editedContent(targetContent: unknown, text: string): Record<string, unknown> {
-    if (isUndecryptablePlaceholder({ content: targetContent })) return { type: 'text', text };
-    return { ...(targetContent as object), text };
+export function editedContent(targetContent: unknown, text: string, channelRefs?: unknown): Record<string, unknown> {
+    // `#channel` links (utils/channelRefs.ts) travel with the text they mark,
+    // so the edit's own `channel_refs` REPLACES the original's — absent means
+    // the new text names no channel. Keeping the old array would let a link
+    // re-attach to a `#name` the edit typed by hand. Validated on the way in
+    // (sender-controlled), and never written as an empty array.
+    const refs = sanitizeChannelRefs(channelRefs);
+    const withRefs = (c: Record<string, unknown>): Record<string, unknown> => {
+        const rest = { ...c };
+        delete rest.channel_refs;
+        return refs.length > 0 ? { ...rest, channel_refs: refs } : rest;
+    };
+    if (isUndecryptablePlaceholder({ content: targetContent })) return withRefs({ type: 'text', text });
+    return withRefs({ ...(targetContent as object), text });
 }
 
 /**
@@ -242,12 +254,12 @@ export function foldChannelHistory(
         }
 
         if (c?.type === 'edit') {
-            const { target_id, text } = c as EditContent;
+            const { target_id, text, channel_refs } = c as EditContent;
             const idx = indexOfTarget(target_id);
             if (idx !== -1) {
                 folded[idx] = {
                     ...folded[idx],
-                    content: editedContent(folded[idx].content, text),
+                    content: editedContent(folded[idx].content, text, channel_refs),
                     edited: true,
                 };
             }

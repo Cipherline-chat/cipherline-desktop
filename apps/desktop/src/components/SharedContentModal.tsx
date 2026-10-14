@@ -9,6 +9,7 @@
  * AES-GCM decrypt to an object URL that is revoked on unmount.
  */
 
+import { outputSinkRef } from '../utils/audioOutput';
 import React, { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
@@ -31,6 +32,7 @@ interface SharedContentModalProps {
     initialTab: SharedTab;
     onClose: () => void;
     /** The conversation's message list (Dashboard messagesState[convId]). */
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     messages: any[];
     token: string | null;
     /** Conversation title for the header. */
@@ -76,6 +78,7 @@ function fileKind(mime: string, filename: string): { label: string; icon: React.
     return { label: ext || 'File', icon: <FileText size={16} /> };
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
 function msgTime(m: any): number {
     return new Date(m.sent_at_client || m.timestamp || m.received_at_server || 0).getTime();
 }
@@ -238,6 +241,7 @@ const VideoLightbox: React.FC<{ src: string; onClose: () => void }> = ({ src, on
             onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
         >
             <video
+                ref={outputSinkRef}
                 src={src}
                 controls
                 autoPlay
@@ -306,7 +310,7 @@ const MediaCell: React.FC<{
                 type="button"
                 className="absolute inset-0 w-full h-full rounded-xl overflow-hidden bg-cl-sink border border-cl-border/40 p-0 transition-transform duration-150 group-hover:scale-[1.02] focus-visible:scale-[1.02]"
                 style={{ cursor: url ? (isVideo ? 'pointer' : 'zoom-in') : 'default' }}
-                onClick={() => { if (!url) return; isVideo ? onOpenVideo(url) : onOpenImage(url); }}
+                onClick={() => { if (!url) return; if (isVideo) onOpenVideo(url); else onOpenImage(url); }}
                 title={item.filename}
                 aria-label={item.filename}
                 disabled={!url && !failed}
@@ -478,6 +482,7 @@ export const SharedContentModal: React.FC<SharedContentModalProps> = ({
         const files: AttachmentItem[] = [];
         const links: LinkItem[] = [];
         for (const m of messages) {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
             const c: any = m?.content;
             if (!c) continue;
             if (c.type === 'attachment' && c.attachment_id && c.file_key_b64) {

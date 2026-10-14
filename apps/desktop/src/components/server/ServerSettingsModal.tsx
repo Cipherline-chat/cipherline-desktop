@@ -1,8 +1,10 @@
 /**
- * ServerSettingsModal — 7-tab modal for managing a server's settings.
+ * ServerSettingsModal — 8-tab modal for managing a server's settings.
  *
  * Tabs:
  *   1. Overview   — name editing (MANAGE_SERVER)
+ *   1b. Storage   — usage meter + the storage-grace countdown and its actions
+ *                  (MANAGE_SERVER; packages/shared/storage-grace.ts)
  *   2. Roles      — list/create/edit/delete (MANAGE_ROLES)
  *   3. Members    — search/kick/ban/mute/nickname (KICK/BAN/MUTE/MANAGE_NICKNAMES)
  *   4. Invites    — full invite history (active + expired), revoke (MANAGE_SERVER).
@@ -34,7 +36,7 @@ import {
     Trash2, Check, AlertCircle, Copy,
     Camera, Image as ImageIcon, Crown,
     ChevronDown, ChevronUp, Clock,
-    Smile, Upload, Pencil,
+    Smile, Upload, Pencil, HardDrive, Sparkles,
 } from 'lucide-react';
 import type { ServerInfo } from '../../hooks/useServers';
 import { useAttachments } from '../../hooks/useAttachments';
@@ -53,7 +55,10 @@ import {
 } from '../../utils/serverStorageCopy';
 import { DockBackdrop } from './DockBackdrop';
 import { ServerStoragePanel } from './ServerStoragePanel';
-import { API_BASE } from '../../constants';
+import { ServerStorageGracePanel } from './ServerStorageGracePanel';
+import { useServerStorageStatus } from '../../hooks/useServerStorageStatus';
+import { transferStorageNote } from '../../utils/serverStorageCopy';
+import { apiUrl } from '../../utils/apiPath';
 import { RolesTabContainer } from './roles/RolesTabContainer';
 import { EncryptedAvatar } from '../EncryptedAvatar';
 import { useToast } from '../../contexts/ToastContext';
@@ -109,6 +114,7 @@ interface AuditEntry {
     target_username: string | null;
     target_role_id: string | null;
     target_channel_id: string | null;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     data_jsonb: any;
     created_at: string;
 }
@@ -138,8 +144,12 @@ interface Props {
      *
      * A request for a tab this user can't see is ignored, not honoured — see
      * `activeTab` below, which clamps to `tabVisibility` either way.
+     *
+     * `proOnly` (Members only): open the member list filtered to members who
+     * have Pro — the storage-grace "Transfer ownership" action, since moving
+     * the server to a Pro member is what ends the grace with nothing removed.
      */
-    tabRequest?: { tab: ServerSettingsTab; nonce: number };
+    tabRequest?: { tab: ServerSettingsTab; nonce: number; proOnly?: boolean };
 }
 
 // ── Shared UI primitives ─────────────────────────────────────────────────────
@@ -154,13 +164,14 @@ type Tab = ServerSettingsTab;
  *  they do on the vessel: steering it, managing who crews it, and the ship's
  *  papers. Grouping only; tab ids/labels/permission gating are unchanged. */
 const TAB_SECTIONS: { name: string; ids: Tab[] }[] = [
-    { name: 'Command', ids: ['overview'] },
+    { name: 'Command', ids: ['overview', 'storage'] },
     { name: 'Crew',    ids: ['roles', 'members', 'invites', 'emojis'] },
     { name: 'Records', ids: ['bans', 'audit'] },
 ];
 
 const TABS: { id: Tab; label: string; icon: React.ReactNode; description?: string }[] = [
     { id: 'overview',  label: 'Overview',   icon: <Server size={18} />,        description: 'Server identity, icon & banner' },
+    { id: 'storage',   label: 'Storage',    icon: <HardDrive size={18} />,     description: 'Saved storage, emojis & limits' },
     { id: 'roles',     label: 'Roles',      icon: <Shield size={18} />,        description: 'Hierarchy, permissions & members' },
     { id: 'members',   label: 'Members',    icon: <Users size={18} />,         description: 'Browse, kick, ban, assign roles' },
     { id: 'invites',   label: 'Invites',    icon: <Link size={18} />,          description: 'Every invite, active and past' },
@@ -171,11 +182,10 @@ const TABS: { id: Tab; label: string; icon: React.ReactNode; description?: strin
 
 // ── Overview Tab ─────────────────────────────────────────────────────────────
 
-function OverviewTab({ server, token, onServerUpdated, storageRefreshKey, canManageServer, isOwner, onDeleted, onDirtyChange }: {
+function OverviewTab({ server, token, onServerUpdated, canManageServer, isOwner, onDeleted, onDirtyChange }: {
     server: ServerInfo;
     token: string | null;
     onServerUpdated: (u: Partial<ServerInfo>) => void;
-    storageRefreshKey?: number;
     canManageServer?: boolean;
     /** True only for the server owner — shows the Danger Zone. */
     isOwner?: boolean;
@@ -225,11 +235,12 @@ function OverviewTab({ server, token, onServerUpdated, storageRefreshKey, canMan
         setDeleting(true);
         setDeleteError(null);
         try {
-            await axios.delete(`${API_BASE}/servers/${server.server_id}`, {
+            await axios.delete(apiUrl`/servers/${server.server_id}`, {
                 data: { password: deletePassword },
                 headers: { Authorization: `Bearer ${token}` },
             });
             onDeleted?.();
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (e: any) {
             setDeleteError(e?.response?.data?.message ?? 'Failed to delete server');
         } finally {
@@ -242,7 +253,7 @@ function OverviewTab({ server, token, onServerUpdated, storageRefreshKey, canMan
     // Load the server's text channels so the system-channel picker is populated.
     useEffect(() => {
         if (!token) return;
-        axios.get(`${API_BASE}/servers/${server.server_id}/channels`, {
+        axios.get(apiUrl`/servers/${server.server_id}/channels`, {
             headers: { Authorization: `Bearer ${token}` },
         }).then(res => {
             const channels: Array<{ channel_id: string; name: string; kind: string }> = res.data ?? [];
@@ -289,6 +300,7 @@ function OverviewTab({ server, token, onServerUpdated, storageRefreshKey, canMan
             );
             if (kind === 'icon')   { setIconAttachment(attachmentId);   setIconKeyB64(keyB64);   setIconNonceB64(nonceB64); }
             else                   { setBannerAttachment(attachmentId); setBannerKeyB64(keyB64); setBannerNonceB64(nonceB64); }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (e: any) {
             toast.push({ kind: 'error', message: e?.message ?? 'Upload failed' });
         } finally {
@@ -339,7 +351,7 @@ function OverviewTab({ server, token, onServerUpdated, storageRefreshKey, canMan
                 patch.system_channel_id = systemChannelId ?? '';
             }
             await axios.patch(
-                `${API_BASE}/servers/${server.server_id}`,
+                apiUrl`/servers/${server.server_id}`,
                 patch,
                 { headers: { Authorization: `Bearer ${token}` } },
             );
@@ -357,6 +369,7 @@ function OverviewTab({ server, token, onServerUpdated, storageRefreshKey, canMan
             });
             setSaved(true);
             setTimeout(() => setSaved(false), 2000);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (e: any) {
             toast.push({ kind: 'error', message: e?.response?.data?.message ?? 'Failed to save' });
         } finally {
@@ -573,18 +586,10 @@ function OverviewTab({ server, token, onServerUpdated, storageRefreshKey, canMan
                 </ClButton>
             </div>
 
-            {/* Server info card — storage quota + IDs */}
+            {/* Server info card — IDs. (The storage meter moved to its own
+                Storage tab with the storage-grace countdown, 2026-10-12.) */}
             <div className="dock-card rounded-[14px] border border-cl-border/40 bg-cl-surface/40 p-5 space-y-4">
-                {/* Server Save storage — quota bar + per-channel breakdown.
-                    Refreshes after every server-save/unsave via storageRefreshKey. */}
-                <ServerStoragePanel
-                    serverId={server.server_id}
-                    token={token}
-                    refreshKey={storageRefreshKey}
-                    canManage={canManageServer}
-                />
-
-                <div className="pt-3 space-y-3 border-t border-cl-border/30">
+                <div className="space-y-3">
                     <div>
                         <p className={sectionLabel}>Server ID</p>
                         <p className="text-xs text-cl-faint font-mono">{server.server_id}</p>
@@ -680,11 +685,20 @@ function OverviewTab({ server, token, onServerUpdated, storageRefreshKey, canMan
 
 // ── Members Tab ──────────────────────────────────────────────────────────────
 
-function MembersTab({ server, token, userId, onServerUpdated }: {
+function MembersTab({ server, token, userId, onServerUpdated, proMemberIds, proOnly, onProOnlyChange }: {
     server: ServerInfo;
     token: string | null;
     userId: string | null;
     onServerUpdated: (u: Partial<ServerInfo>) => void;
+    /**
+     * Owner only, while the server is in storage grace (or its heads-up):
+     * members who have Pro, from GET storage-status's `transfer`. Moving
+     * ownership to one of them ends the grace with nothing removed, so they
+     * are marked and can be filtered to. null = not applicable (no chip, no filter).
+     */
+    proMemberIds?: string[] | null;
+    proOnly?: boolean;
+    onProOnlyChange?: (v: boolean) => void;
 }) {
     const [members, setMembers] = useState<Member[]>([]);
     const [loading, setLoading] = useState(true);
@@ -701,11 +715,11 @@ function MembersTab({ server, token, userId, onServerUpdated }: {
     const load = useCallback(async () => {
         if (!token) return;
         try {
-            const res = await axios.get(`${API_BASE}/servers/${server.server_id}/members`, {
+            const res = await axios.get(apiUrl`/servers/${server.server_id}/members`, {
                 headers: { Authorization: `Bearer ${token}` },
             });
             setMembers(res.data ?? []);
-        } catch { }
+        } catch { /* best-effort; failure is non-fatal and intentionally ignored */ }
         finally { setLoading(false); }
     }, [server.server_id, token]);
 
@@ -715,11 +729,12 @@ function MembersTab({ server, token, userId, onServerUpdated }: {
         if (!token) return;
         try {
             await axios.post(
-                `${API_BASE}/servers/${server.server_id}/members/${targetUserId}/kick`,
+                apiUrl`/servers/${server.server_id}/members/${targetUserId}/kick`,
                 {},
                 { headers: { Authorization: `Bearer ${token}` } },
             );
             setMembers(m => m.filter(x => x.user_id !== targetUserId));
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (e: any) { toast.push({ kind: 'error', message: e?.response?.data?.message ?? 'Failed to kick' }); }
     };
 
@@ -727,11 +742,12 @@ function MembersTab({ server, token, userId, onServerUpdated }: {
         if (!token) return;
         try {
             await axios.post(
-                `${API_BASE}/servers/${server.server_id}/members/${targetUserId}/ban`,
+                apiUrl`/servers/${server.server_id}/members/${targetUserId}/ban`,
                 {},
                 { headers: { Authorization: `Bearer ${token}` } },
             );
             setMembers(m => m.filter(x => x.user_id !== targetUserId));
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (e: any) { toast.push({ kind: 'error', message: e?.response?.data?.message ?? 'Failed to ban' }); }
     };
 
@@ -741,12 +757,13 @@ function MembersTab({ server, token, userId, onServerUpdated }: {
         if (!mins || mins <= 0) return;
         try {
             await axios.post(
-                `${API_BASE}/servers/${server.server_id}/members/${targetUserId}/mute`,
+                apiUrl`/servers/${server.server_id}/members/${targetUserId}/mute`,
                 { duration_seconds: mins * 60 },
                 { headers: { Authorization: `Bearer ${token}` } },
             );
             setMuteTarget(null);
             await load();
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (e: any) { toast.push({ kind: 'error', message: e?.response?.data?.message ?? 'Failed to mute' }); }
     };
 
@@ -761,13 +778,14 @@ function MembersTab({ server, token, userId, onServerUpdated }: {
             // (same gate as delete). Sending it was missing before, so transfer
             // always 403'd.
             await axios.post(
-                `${API_BASE}/servers/${server.server_id}/transfer`,
+                apiUrl`/servers/${server.server_id}/transfer`,
                 { new_owner_user_id: targetUserId, password: transferPassword },
                 { headers: { Authorization: `Bearer ${token}` } },
             );
             // Notify parent so the server object updates everywhere (rail, header, etc.)
             onServerUpdated({ owner_user_id: targetUserId });
             closeTransferDialog();
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (e: any) {
             setTransferError(e?.response?.data?.message ?? 'Failed to transfer ownership');
         } finally {
@@ -775,8 +793,12 @@ function MembersTab({ server, token, userId, onServerUpdated }: {
         }
     };
 
+    const proSet = proMemberIds ? new Set(proMemberIds) : null;
+    const showProFilter = !!proSet && userId === server.owner_user_id;
+    const filterPro = showProFilter && !!proOnly;
     const filtered = members.filter(m =>
-        !search || (m.username ?? m.user_id).toLowerCase().includes(search.toLowerCase())
+        (!search || (m.username ?? m.user_id).toLowerCase().includes(search.toLowerCase()))
+        && (!filterPro || proSet!.has(m.user_id))
     );
 
     if (loading) return <div className="flex justify-center py-8"><div className="w-5 h-5 border-2 border-cl-border border-t-cl-lume rounded-full animate-spin" /></div>;
@@ -789,6 +811,21 @@ function MembersTab({ server, token, userId, onServerUpdated }: {
                 onChange={e => setSearch(e.target.value)}
                 placeholder="Search members…"
             />
+            {showProFilter && (
+                <div data-pro-filter className="flex flex-wrap items-center justify-between gap-2 rounded-xl px-3 py-2" style={{ background: 'rgba(37,224,200,0.06)', border: '1px solid rgba(37,224,200,0.2)' }}>
+                    <p className="m-0 text-[12px] text-cl-muted leading-snug flex-1 min-w-[220px]">
+                        {proSet!.size === 0
+                            ? 'No members have Pro yet. Transferring to a member on the free plan keeps the storage countdown running.'
+                            : 'Transferring ownership to a member with Pro ends the storage countdown with nothing removed.'}
+                    </p>
+                    {proSet!.size > 0 && (
+                        <ClButton size="sm" variant="ghost" active={filterPro} onClick={() => onProOnlyChange?.(!filterPro)}>
+                            <Sparkles size={11} />
+                            {filterPro ? 'Showing Pro members' : 'Show Pro members only'}
+                        </ClButton>
+                    )}
+                </div>
+            )}
             <div className="dock-card rounded-[14px] border border-cl-border/40 bg-cl-surface/40 p-2">
             <div className="space-y-1 max-h-[420px] overflow-y-auto custom-scrollbar pr-1">
                 {filtered.map(m => (
@@ -812,6 +849,11 @@ function MembersTab({ server, token, userId, onServerUpdated }: {
                         {m.user_id === server.owner_user_id && (
                             <span className="flex items-center gap-1 text-[10px] text-amber-400/80 bg-amber-400/10 px-2 py-0.5 rounded-full shrink-0">
                                 <Crown size={9} />Owner
+                            </span>
+                        )}
+                        {showProFilter && proSet!.has(m.user_id) && (
+                            <span data-pro-member={m.user_id} className="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full shrink-0" style={{ color: 'var(--cl-lume)', background: 'rgba(37,224,200,0.12)' }}>
+                                <Sparkles size={9} />Pro
                             </span>
                         )}
                         {m.user_id !== userId && m.user_id !== server.owner_user_id && (
@@ -858,7 +900,7 @@ function MembersTab({ server, token, userId, onServerUpdated }: {
                         )}
                     </div>
                 ))}
-                {filtered.length === 0 && <p className="text-sm text-cl-faint text-center py-6">No members found.</p>}
+                {filtered.length === 0 && <p className="text-sm text-cl-faint text-center py-6">{filterPro ? 'No members have Pro yet.' : 'No members found.'}</p>}
             </div>
             </div>
 
@@ -878,7 +920,7 @@ function MembersTab({ server, token, userId, onServerUpdated }: {
                                 <span className="text-amber-400 font-semibold">{transferDialog.username ?? 'this member'}</span>.
                             </p>
                             <p className="text-[13px] text-cl-faint leading-relaxed mt-2">
-                                You will become a regular member. Only {transferDialog.username ?? 'they'} can transfer it back. From then on their plan decides this server's saved-storage limit (anything already saved is kept).
+                                You will become a regular member. Only {transferDialog.username ?? 'they'} can transfer it back. {transferStorageNote()}
                             </p>
                         </div>
                         <div className="px-6 py-5 space-y-4">
@@ -975,7 +1017,7 @@ function InviteRow({
             setUsesLoading(true);
             try {
                 const res = await axios.get(
-                    `${API_BASE}/servers/${serverId}/invites/${inv.code}/uses`,
+                    apiUrl`/servers/${serverId}/invites/${inv.code}/uses`,
                     { headers: { Authorization: `Bearer ${token}` } },
                 );
                 setUses(res.data ?? []);
@@ -990,7 +1032,7 @@ function InviteRow({
         setRevoking(true);
         try {
             await axios.delete(
-                `${API_BASE}/servers/${serverId}/invites/${inv.code}`,
+                apiUrl`/servers/${serverId}/invites/${inv.code}`,
                 { headers: { Authorization: `Bearer ${token}` } },
             );
             onRevoke(inv.code);
@@ -1144,11 +1186,11 @@ function InvitesTab({
     const load = useCallback(async () => {
         if (!token) return;
         try {
-            const res = await axios.get(`${API_BASE}/servers/${server.server_id}/invites`, {
+            const res = await axios.get(apiUrl`/servers/${server.server_id}/invites`, {
                 headers: { Authorization: `Bearer ${token}` },
             });
             setInvites(res.data ?? []);
-        } catch { }
+        } catch { /* best-effort; failure is non-fatal and intentionally ignored */ }
         finally { setLoading(false); }
     }, [server.server_id, token]);
 
@@ -1158,17 +1200,19 @@ function InvitesTab({
         if (!token) return;
         setCreating(true);
         try {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
             const body: any = {};
             if (maxUses) body.max_uses = parseInt(maxUses, 10);
             if (expiresHours) body.expires_in_seconds = parseInt(expiresHours, 10) * 3600;
             await axios.post(
-                `${API_BASE}/servers/${server.server_id}/invites`,
+                apiUrl`/servers/${server.server_id}/invites`,
                 body,
                 { headers: { Authorization: `Bearer ${token}` } },
             );
             setMaxUses('');
             setExpiresHours('');
             await load();
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (e: any) {
             toast.push({ kind: 'error', message: e?.response?.data?.message ?? 'Failed to create invite' });
         } finally { setCreating(false); }
@@ -1352,6 +1396,7 @@ function EmojisTab({ server, token, canManageEmojis }: {
             // useServerEmojis.create's own comment.
             await create({ name, attachment_id: attachmentId, key_b64: keyB64, nonce_b64: nonceB64 });
             setPending(null);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (e: any) {
             const data = e?.response?.data;
             if (isStorageQuotaError(data)) {
@@ -1381,6 +1426,7 @@ function EmojisTab({ server, token, canManageEmojis }: {
         try {
             await rename(emojiId, name);
             setRenamingId(null);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (e: any) {
             toast.push({ kind: 'error', message: e?.response?.data?.message ?? 'Rename failed' });
         }
@@ -1391,6 +1437,7 @@ function EmojisTab({ server, token, canManageEmojis }: {
         try {
             await remove(emojiId);
             void refreshQuota(); // deleting an emoji frees its storage
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (e: any) {
             toast.push({ kind: 'error', message: e?.response?.data?.message ?? 'Delete failed' });
         } finally {
@@ -1535,11 +1582,11 @@ function BansTab({ server, token }: { server: ServerInfo; token: string | null }
     const load = useCallback(async () => {
         if (!token) return;
         try {
-            const res = await axios.get(`${API_BASE}/servers/${server.server_id}/bans`, {
+            const res = await axios.get(apiUrl`/servers/${server.server_id}/bans`, {
                 headers: { Authorization: `Bearer ${token}` },
             });
             setBans(res.data ?? []);
-        } catch { }
+        } catch { /* best-effort; failure is non-fatal and intentionally ignored */ }
         finally { setLoading(false); }
     }, [server.server_id, token]);
 
@@ -1549,11 +1596,12 @@ function BansTab({ server, token }: { server: ServerInfo; token: string | null }
         if (!token) return;
         try {
             await axios.post(
-                `${API_BASE}/servers/${server.server_id}/members/${targetUserId}/unban`,
+                apiUrl`/servers/${server.server_id}/members/${targetUserId}/unban`,
                 {},
                 { headers: { Authorization: `Bearer ${token}` } },
             );
             setBans(b => b.filter(x => x.user_id !== targetUserId));
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (e: any) { toast.push({ kind: 'error', message: e?.response?.data?.message ?? 'Failed to unban' }); }
     };
 
@@ -1598,17 +1646,20 @@ function AuditTab({ server, token }: { server: ServerInfo; token: string | null 
         if (!token) return;
         setLoading(true);
         try {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
             const params: any = { limit: 50 };
             if (before) params.before = before;
-            const res = await axios.get(`${API_BASE}/servers/${server.server_id}/audit_log`, {
+            const res = await axios.get(apiUrl`/servers/${server.server_id}/audit_log`, {
                 headers: { Authorization: `Bearer ${token}` },
                 params,
             });
             const data: AuditEntry[] = res.data ?? [];
             setEntries(prev => before ? [...prev, ...data] : data);
             setHasMore(data.length === 50);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (e: any) { toast.push({ kind: 'error', message: e?.response?.data?.message ?? 'Failed to load audit log' }); }
         finally { setLoading(false); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- toast is the provider value object, re-created each provider render (push/dismiss inside are stable); adding it would re-run this on every toast
     }, [server.server_id, token]);
 
     useEffect(() => { load(); }, [load]);
@@ -1716,6 +1767,28 @@ export const ServerSettingsModal: React.FC<Props> = ({
     // guard below, which returns before this is ever used.
     const activeTab: Tab = tabVisibility[requestedTab] ? requestedTab : (visibleTabs[0]?.id ?? requestedTab);
     const setActiveTab = setRequestedTab;
+
+    // ── Storage grace ──
+    // Same shared, paced cache the server banner reads, so opening settings
+    // from the banner costs no extra request. `transfer` is owner-only.
+    const storageStatus = useServerStorageStatus(server.server_id, token, userId);
+    const proMemberIds = isOwner && storageStatus?.server_id === server.server_id
+        ? (storageStatus.transfer?.pro_member_ids ?? null)
+        : null;
+    /**
+     * Members tab filtered to Pro members. Defaults to what the current
+     * `tabRequest` asked for (the banner's "Transfer ownership"); a toggle by
+     * hand, or the Storage tab's own Transfer button, overrides it until the
+     * next request (keyed by its nonce) — derived, so no effect has to sync it.
+     */
+    const [proOnlyOverride, setProOnlyOverride] = useState<{ nonce: number | undefined; value: boolean } | null>(null);
+    const membersProOnly = proOnlyOverride && proOnlyOverride.nonce === tabRequest?.nonce
+        ? proOnlyOverride.value
+        : (tabRequest?.tab === 'members' && !!tabRequest.proOnly);
+    const setMembersProOnly = useCallback(
+        (value: boolean) => setProOnlyOverride({ nonce: tabRequest?.nonce, value }),
+        [tabRequest?.nonce],
+    );
 
     const activeMeta = TABS.find(t => t.id === activeTab);
 
@@ -1996,8 +2069,32 @@ export const ServerSettingsModal: React.FC<Props> = ({
                                         className="flex-1 min-h-0 overflow-y-auto custom-scrollbar"
                                     >
                                         <div className="px-10 py-8 max-w-5xl mx-auto">
-                                            {activeTab === 'overview'  && <OverviewTab  server={server} token={token} onServerUpdated={onServerUpdated} storageRefreshKey={storageRefreshKey} canManageServer={canManageServer} isOwner={server.owner_user_id === userId} onDeleted={onClose} onDirtyChange={unsaved.setDirty} />}
-                                            {activeTab === 'members'   && <MembersTab   server={server} token={token} userId={userId} onServerUpdated={onServerUpdated} />}
+                                            {activeTab === 'overview'  && <OverviewTab  server={server} token={token} onServerUpdated={onServerUpdated} canManageServer={canManageServer} isOwner={server.owner_user_id === userId} onDeleted={onClose} onDirtyChange={unsaved.setDirty} />}
+                                            {activeTab === 'storage'   && (
+                                                <div className="space-y-4">
+                                                    <ServerStorageGracePanel
+                                                        serverId={server.server_id}
+                                                        serverName={server.name}
+                                                        token={token}
+                                                        userId={userId}
+                                                        onNavigate={(t) => {
+                                                            if (t.tab === 'members') setMembersProOnly(t.proOnly);
+                                                            if (t.tab !== 'storage') selectTab(t.tab);
+                                                        }}
+                                                    />
+                                                    <div className="dock-card rounded-[14px] border border-cl-border/40 bg-cl-surface/40 p-5">
+                                                        {/* Quota bar + per-channel breakdown. Refreshes after every
+                                                            server-save/unsave via storageRefreshKey. */}
+                                                        <ServerStoragePanel
+                                                            serverId={server.server_id}
+                                                            token={token}
+                                                            refreshKey={storageRefreshKey}
+                                                            canManage={canManageServer}
+                                                        />
+                                                    </div>
+                                                </div>
+                                            )}
+                                            {activeTab === 'members'   && <MembersTab   server={server} token={token} userId={userId} onServerUpdated={onServerUpdated} proMemberIds={proMemberIds} proOnly={membersProOnly} onProOnlyChange={setMembersProOnly} />}
                                             {activeTab === 'invites'   && <InvitesTab   server={server} token={token} canManageServer={canManageServer} />}
                                             {activeTab === 'emojis'    && <EmojisTab    server={server} token={token} canManageEmojis={canManageEmojis} />}
                                             {activeTab === 'bans'      && <BansTab      server={server} token={token} />}

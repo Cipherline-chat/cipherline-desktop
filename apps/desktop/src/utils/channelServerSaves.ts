@@ -16,6 +16,7 @@
  * both saved and pinned — the old semantics exactly.
  */
 import axios from 'axios';
+import { apiPath } from './apiPath';
 
 export interface ChannelSaveState {
     /** Every server-saved message id (pinned or not). */
@@ -67,11 +68,11 @@ export async function fetchChannelSaveState(
 ): Promise<ChannelSaveState> {
     const headers = { Authorization: `Bearer ${token}` };
     try {
-        const res = await axios.get(`${apiBase}/channels/${channelId}/saves`, { headers });
+        const res = await axios.get(apiBase + apiPath`/channels/${channelId}/saves`, { headers });
         return saveStateFromRows(res.data);
     } catch (err: unknown) {
         if (asSaveRequestError(err).response?.status !== 404) throw err;
-        const res = await axios.get(`${apiBase}/channels/${channelId}/pins`, { headers });
+        const res = await axios.get(apiBase + apiPath`/channels/${channelId}/pins`, { headers });
         return saveStateFromLegacyPins(res.data);
     }
 }

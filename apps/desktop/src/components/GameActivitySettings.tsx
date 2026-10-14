@@ -32,13 +32,14 @@ const GameActivitySettings: React.FC<GameActivitySettingsProps> = ({ gameSetting
     const [displayName, setDisplayName] = useState('');
 
     const fetchProcesses = useCallback(async () => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- window.electronAPI members are optional/version-dependent and not all declared on the typed bridge
         const electronAPI = (window as any).electronAPI;
         if (!electronAPI?.getRunningProcesses) return;
         setLoadingProcesses(true);
         try {
             const procs: string[] = await electronAPI.getRunningProcesses();
             setProcesses(procs);
-        } catch {}
+        } catch { /* best-effort; failure is non-fatal and intentionally ignored */ }
         setLoadingProcesses(false);
     }, []);
 

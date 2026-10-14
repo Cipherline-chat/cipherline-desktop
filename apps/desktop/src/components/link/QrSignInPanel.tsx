@@ -3,6 +3,7 @@ import axios from 'axios';
 import QRCode from 'qrcode';
 import { QrCode as QrCodeIcon, Loader2, ShieldCheck, AlertTriangle, X as XIcon, Smartphone } from 'lucide-react';
 import { API_BASE } from '../../constants';
+import { apiUrl } from '../../utils/apiPath';
 import { useAuth } from '../../contexts/AuthContext';
 import { registerOrReuseDevice } from '../../utils/deviceRegistration';
 import { buildLinkQr } from '../../utils/linkQr';
@@ -76,26 +77,32 @@ function realDeps(login: (t: string, u: string, d: string, p: boolean, r?: strin
         getPlatform: () => window.electronAPI?.platform ?? 'windows',
         generateCode: generateVerificationCode,
         createSession: async (ekPubB64: string, deviceLabel: string, code: string, platform: string): Promise<CreateSessionResult> => {
+            // Device approval: advertise the identity key this device will
+            // register with, so the approver's SIGNED approval commits to
+            // exactly this device and the session auto-approves only it. A
+            // public key; absent (older shell) just means an unbound approval.
+            const identityPub = await window.electronAPI?.getIdentityPub?.().catch(() => null);
             const res = await axios.post<CreateSessionResult>(`${API_BASE}/link/sessions`, {
                 ek_pub_b64: ekPubB64,
                 device_label: deviceLabel,
                 platform,
                 code,
+                ...(identityPub ? { identity_key_pub_b64: identityPub } : {}),
             });
             return res.data;
         },
         pollSession: async (linkId: string): Promise<PollResult> => {
-            const res = await axios.get<PollResult>(`${API_BASE}/link/sessions/${linkId}`);
+            const res = await axios.get<PollResult>(apiUrl`/link/sessions/${linkId}`);
             return res.data;
         },
         claimSession: async (linkId: string, claimSecret: string): Promise<ClaimLinkSessionResponse> => {
-            const res = await axios.post<ClaimLinkSessionResponse>(`${API_BASE}/link/sessions/${linkId}/claim`, {
+            const res = await axios.post<ClaimLinkSessionResponse>(apiUrl`/link/sessions/${linkId}/claim`, {
                 claim_secret: claimSecret,
             });
             return res.data;
         },
         destroySession: async (linkId: string, accessToken: string) => {
-            await axios.delete(`${API_BASE}/link/sessions/${linkId}`, {
+            await axios.delete(apiUrl`/link/sessions/${linkId}`, {
                 headers: { Authorization: `Bearer ${accessToken}` },
             });
         },

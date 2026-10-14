@@ -88,6 +88,69 @@ describe('applyPresenceEvent', () => {
     });
 });
 
+// A friend's game is LIVE-ONLY: it shows exactly while the latest frame from
+// the server says they are playing, and every kind of frame replaces it. A
+// friend shown as playing Marvel Rivals for a week was traced to the sender's
+// detector (electron/game-detector.ts), not to this reducer — these pin that
+// nothing here can keep a game the server no longer reports.
+describe('a friend\'s game is live-only', () => {
+    const playing = { [A]: entry('online', { current_game: 'Marvel Rivals' }) };
+
+    it('is set by an event, and by a friend who started before we came online (batch + snapshot)', () => {
+        expect(applyPresenceEvent({}, { kind: 'changed', entry: { user_id: A, status: 'online', game_name: 'Marvel Rivals' } })[A].current_game).toBe('Marvel Rivals');
+        expect(applyPresenceEvent({}, { kind: 'friends_batch', entries: [{ user_id: A, status: 'online', game_name: 'Marvel Rivals' }] })[A].current_game).toBe('Marvel Rivals');
+        expect(applyPresenceEvent({}, { kind: 'snapshot', complete: true, entries: [{ user_id: A, status: 'dnd', game_name: 'Marvel Rivals' }] })[A].current_game).toBe('Marvel Rivals');
+    });
+
+    it('is cleared by an explicit null', () => {
+        const s = applyPresenceEvent(playing, { kind: 'changed', entry: { user_id: A, status: 'online', game_name: null } });
+        expect(s[A].current_game).toBeNull();
+    });
+
+    it('is cleared when the frame omits the field (it is never carried over from the previous entry)', () => {
+        const s = applyPresenceEvent(playing, { kind: 'changed', entry: { user_id: A, status: 'online' } });
+        expect(s[A].current_game).toBeNull();
+        // an unrelated change (custom status) must not bring it back either
+        const t = applyPresenceEvent(s, { kind: 'changed', entry: { user_id: A, status: 'online', custom_status_text: 'brb' } });
+        expect(t[A].current_game).toBeNull();
+    });
+
+    it('is cleared when they go offline, and does not come back by merely reappearing', () => {
+        let s = applyPresenceEvent(playing, { kind: 'changed', entry: { user_id: A, status: 'offline', game_name: 'Marvel Rivals' } });
+        expect(s[A]).toEqual(entry('offline'));
+        s = applyPresenceEvent(s, { kind: 'changed', entry: { user_id: A, status: 'online' } });
+        expect(s[A].current_game).toBeNull();
+    });
+
+    it('is cleared when they are only on a phone, even if an older server still sends the game', () => {
+        const s = applyPresenceEvent(playing, { kind: 'changed', entry: { user_id: A, status: 'online', on_mobile: true, game_name: 'Marvel Rivals' } });
+        expect(s[A].current_game).toBeNull();
+        expect(s[A].on_mobile).toBe(true);
+    });
+
+    it('is cleared by a fresh snapshot or friends batch that lists them without it', () => {
+        expect(applyPresenceEvent(playing, { kind: 'snapshot', complete: true, entries: [{ user_id: A, status: 'online' }] })[A].current_game).toBeNull();
+        expect(applyPresenceEvent(playing, { kind: 'snapshot', complete: false, entries: [{ user_id: A, status: 'online', game_name: null }] })[A].current_game).toBeNull();
+        expect(applyPresenceEvent(playing, { kind: 'friends_batch', entries: [{ user_id: A, status: 'online' }] })[A].current_game).toBeNull();
+    });
+
+    it('is cleared by a complete snapshot that does not list them at all', () => {
+        const s = applyPresenceEvent(playing, { kind: 'snapshot', complete: true, entries: [{ user_id: B, status: 'online' }] });
+        expect(s[A]).toEqual(entry('offline'));
+    });
+
+    it('a different game replaces the old one', () => {
+        const s = applyPresenceEvent(playing, { kind: 'changed', entry: { user_id: A, status: 'online', game_name: 'Overwatch 2' } });
+        expect(s[A].current_game).toBe('Overwatch 2');
+    });
+
+    it('leaves other friends\' games alone', () => {
+        const prev = { ...playing, [B]: entry('online', { current_game: 'Dota 2' }) };
+        const s = applyPresenceEvent(prev, { kind: 'changed', entry: { user_id: A, status: 'online', game_name: null } });
+        expect(s[B].current_game).toBe('Dota 2');
+    });
+});
+
 describe('presenceBus', () => {
     it('delivers every event of a synchronous burst, in order', () => {
         const seen: string[] = [];

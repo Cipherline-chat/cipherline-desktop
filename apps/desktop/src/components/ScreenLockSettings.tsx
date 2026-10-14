@@ -6,6 +6,10 @@ import type { ScreenLockHook } from '../hooks/useScreenLock';
 import { TIMEOUT_OPTIONS } from '../hooks/useScreenLock';
 import type { KeybindHook } from '../hooks/useKeybinds';
 import { formatCombo } from '../hooks/useKeybinds';
+import { useNotificationPrefsSafe } from '../contexts/NotificationContext';
+import { LockPreviewSuggestion } from './LockPreviewSuggestion';
+import { HIDDEN_PREVIEW, previewShowsMessageText } from '../utils/lockPreviewSuggestion';
+import { ClNote } from './cl/ClNote';
 
 type Flow =
     | { kind: 'none' }
@@ -25,6 +29,13 @@ const ScreenLockSettings: React.FC<{ screenLock: ScreenLockHook; keybinds: Keybi
     const [pin, setPin] = useState('');
     const [error, setError] = useState<string | null>(null);
     const [busy, setBusy] = useState(false);
+    // One-shot "hide message previews?" card, raised only by a successful
+    // first-time setup (never change-PIN / disable). 'done' is the brief
+    // confirmation after Hide. Not persisted: it is per enable action.
+    const [previewSuggest, setPreviewSuggest] = useState<null | 'offer' | 'done'>(null);
+    // Outside a NotificationProvider (isolated renders) there are no prefs to
+    // read or write, so the suggestion simply never appears.
+    const notif = useNotificationPrefsSafe();
 
     const closeFlow = () => { setFlow({ kind: 'none' }); setPin(''); setError(null); setBusy(false); };
 
@@ -50,6 +61,10 @@ const ScreenLockSettings: React.FC<{ screenLock: ScreenLockHook; keybinds: Keybi
         }
         setBusy(true);
         await screenLock.setPin(code, flow.pinLength);
+        // Only suggest when the toast would currently carry message text.
+        // OS previews otherwise keep following the user's notification
+        // settings - this is a nudge, never a forced change.
+        setPreviewSuggest(notif && previewShowsMessageText(notif.prefs.show_preview) ? 'offer' : null);
         closeFlow();
     };
 
@@ -92,6 +107,7 @@ const ScreenLockSettings: React.FC<{ screenLock: ScreenLockHook; keybinds: Keybi
             setPin('');
             return;
         }
+        setPreviewSuggest(null);
         closeFlow();
     };
 
@@ -148,6 +164,18 @@ const ScreenLockSettings: React.FC<{ screenLock: ScreenLockHook; keybinds: Keybi
                         )}
                     </div>
                 </div>
+
+                {settings.enabled && previewSuggest === 'offer' && (
+                    <LockPreviewSuggestion
+                        onHide={() => { notif?.updatePrefs({ show_preview: HIDDEN_PREVIEW }); setPreviewSuggest('done'); }}
+                        onKeep={() => setPreviewSuggest(null)}
+                    />
+                )}
+                {settings.enabled && previewSuggest === 'done' && (
+                    <div className="px-0 pt-3 pb-3" data-testid="lock-preview-done">
+                        <ClNote>Message previews hidden. Notifications will say “New message”. Change this any time in Notifications settings.</ClNote>
+                    </div>
+                )}
 
                 {settings.enabled && (
                     <>

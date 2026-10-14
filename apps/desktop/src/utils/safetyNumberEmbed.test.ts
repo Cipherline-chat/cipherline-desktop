@@ -96,7 +96,6 @@ describe('evaluateSafetyNumberEmbed — the honest paths', () => {
 
 describe('evaluateSafetyNumberEmbed — forged embeds cannot produce a match', () => {
     it('a payload asserting `verified: true` is still evaluated on the keys alone', async () => {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const forged: any = {
             type: 'safety_number',
             user_id: ALICE,
@@ -176,7 +175,6 @@ describe('evaluateSafetyNumberEmbed — forged embeds cannot produce a match', (
     });
 
     it('a non-string code is rejected rather than coerced into something comparable', async () => {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         for (const code of [null, undefined, 42, {}, []] as any[]) {
             const verdict = await evaluateSafetyNumberEmbed({
                 senderUserId: ALICE, claimedUserId: ALICE,

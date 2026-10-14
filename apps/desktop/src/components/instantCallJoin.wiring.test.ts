@@ -30,7 +30,11 @@ function expectOptimisticThenSettled(block: string, name: string) {
     const begin = block.indexOf('beginCallJoin(');
     const firstAwait = block.search(/await (axios|spawnHuddleCall|joinHuddleCall|Promise\.all)/);
     const settle = block.indexOf('settleCallJoin(attempt)');
-    const set = block.indexOf('setActiveCall({');
+    // The call is committed either by a bare setActiveCall({ ... }) or - for the
+    // Calls-channel paths, which now all end in the one shared selection builder -
+    // by applyHuddleSelection(...) (utils/callTransition.buildHuddleSelection).
+    const setCandidates = [block.indexOf('setActiveCall({'), block.indexOf('applyHuddleSelection(')].filter(i => i >= 0);
+    const set = setCandidates.length ? Math.min(...setCandidates) : -1;
     expect(begin, `${name}: beginCallJoin`).toBeGreaterThan(-1);
     expect(firstAwait, `${name}: a network await`).toBeGreaterThan(-1);
     expect(begin, `${name}: UI must go up BEFORE the first round trip`).toBeLessThan(firstAwait);
@@ -67,7 +71,7 @@ describe('every join path is optimistic and settle-gated', () => {
         const b = between(dash, 'const startGlobalCall = async', 'const [, setGroupMemberContextId]');
         expectOptimisticThenSettled(b, 'dm-start');
         // abandoned start ends the session it created rather than leaving it ringing
-        expect(b).toMatch(/if \(!settleCallJoin\(attempt\)\) \{[\s\S]*?if \(!joined && joinTracker\.mayUndo\(attempt\)\) axios\.post\(`\$\{API_BASE\}\/calls\/\$\{initRes\.data\.session_id\}\/end`/);
+        expect(b).toMatch(/if \(!settleCallJoin\(attempt\)\) \{[\s\S]*?if \(!joined && joinTracker\.mayUndo\(attempt\)\) axios\.post\(apiUrl`\/calls\/\$\{initRes\.data\.session_id\}\/end`/);
         // key generation overlaps the start request
         expect(b).toMatch(/Promise\.all\(\[\s*generateCallKey\(\),\s*axios\.post\(`\$\{API_BASE\}\/calls\/start`/);
     });
@@ -105,7 +109,7 @@ describe('real latency cuts', () => {
         ] as const) {
             const b = between(dash, from, to);
             expect(b, from).toContain('leavePreviousServerCall();');
-            expect(b, from).not.toMatch(/await axios\.post\(\s*`\$\{API_BASE\}\/channels\/\$\{activeVoiceChannelId\}\/leave_voice`/);
+            expect(b, from).not.toMatch(/await axios\.post\(\s*apiUrl`\/channels\/\$\{activeVoiceChannelId\}\/leave_voice`/);
             expect(b, from).not.toContain('await leaveHuddleCall(');
         }
     });
@@ -172,13 +176,14 @@ describe('handover to the real controls', () => {
     });
 
     it('a muted/deafened join never asks LiveKit to publish the mic; the token grant still applies', () => {
-        expect(pane).toContain('const joinWithMic = grants.microphone && !joinIntent.muted && !joinIntent.deafened;');
+        // (same rule, now spelled in utils/selfCallIntent.shouldPublishMicAtConnect so a CARRIED mute uses it too)
+        expect(pane).toContain('const joinWithMic = shouldPublishMicAtConnect(joinIntent, grants.microphone);');
         expect(pane).toContain('audio={joinWithMic}');
         expect(pane).not.toContain('audio={grants.microphone}');
     });
 
     it('Dashboard swaps the joining controls out in the same commit the room connects', () => {
-        expect(dash).toContain('onRoomConnected={() => setRoomConnectedCallId(call.id)}');
+        expect(dash).toContain('onRoomConnected={() => { callTransitions.markConnected(call.id); setRoomConnectedCallId(call.id); }}');
         expect(dash).toContain('{callPaneActive && joinPending && (');
         expect(dash).toMatch(/const joinPhase = deriveCallJoinPhase\(\{\s*isStartingCall,\s*activeCallId: activeCall\?\.id \?\? null,\s*keyGateKind: callsChannelGate\.kind,\s*roomConnectedCallId,/);
         // a stale "connected" never applies to a different call

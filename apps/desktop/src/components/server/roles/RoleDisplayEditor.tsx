@@ -10,7 +10,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import axios from 'axios';
 import { Lock, Trash2 } from 'lucide-react';
-import { API_BASE } from '../../../constants';
+import { apiUrl } from '../../../utils/apiPath';
 import { roleColorHexFromInt } from '../../../utils/roleColor';
 import { ClButton, ClInput, ClToggle } from '../../cl';
 import type { Role } from './types';
@@ -47,6 +47,7 @@ export const RoleDisplayEditor: React.FC<Props> = ({ role, serverId, token, read
     const nameRef = useRef(name);
     nameRef.current = name;
 
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- reset the local hex input only when switching roles; re-syncing on role.color would overwrite what the user is typing
     useEffect(() => { setLocalColorHex(roleColorHexFromInt(role.color)); }, [role.role_id]);
     useEffect(() => { setName(role.name); }, [role.role_id, role.name]);
 
@@ -62,7 +63,7 @@ export const RoleDisplayEditor: React.FC<Props> = ({ role, serverId, token, read
             clearTimeout(colorTimer.current);
             colorTimer.current = null;
         }
-    }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    }, []);
 
     const nameDirty = name.trim() !== role.name && name.trim().length > 0;
     useEffect(() => { onDirtyChange?.(nameDirty); }, [nameDirty]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -82,10 +83,11 @@ export const RoleDisplayEditor: React.FC<Props> = ({ role, serverId, token, read
         onSaved({ ...role, ...props });
         try {
             await axios.patch(
-                `${API_BASE}/servers/${serverId}/roles/${role.role_id}`,
+                apiUrl`/servers/${serverId}/roles/${role.role_id}`,
                 props,
                 { headers: { Authorization: `Bearer ${token}` } },
             );
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (e: any) {
             onSaved({ ...role, ...prev }); // roll back the optimistic apply
             onError?.(e?.response?.data?.message ?? 'Failed to update role');

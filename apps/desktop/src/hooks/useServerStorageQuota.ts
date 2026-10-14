@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import axios from 'axios';
-import { API_BASE } from '../constants';
+import { apiUrl } from '../utils/apiPath';
 
 /** GET /servers/:id/storage. Everything counted against the quota is in
  *  `used_bytes` (saves + custom emojis); the split fields are absent on an
@@ -25,7 +25,7 @@ export function useServerStorageQuota(serverId: string | null, token: string | n
 
     const fetchQuota = useCallback(() => {
         if (!serverId || !token) return Promise.resolve(null);
-        return axios.get<ServerStorageQuota>(`${API_BASE}/servers/${serverId}/storage`, {
+        return axios.get<ServerStorageQuota>(apiUrl`/servers/${serverId}/storage`, {
             headers: { Authorization: `Bearer ${token}` },
         }).then(res => ({ serverId, quota: res.data }), () => null); // display-only: a failure omits the meter
     }, [serverId, token]);

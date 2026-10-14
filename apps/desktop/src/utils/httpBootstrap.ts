@@ -20,6 +20,7 @@ axios.defaults.headers.common['X-Cipherline-Version'] = APP_VERSION;
 // server only enforces attestation when CLIENT_ATTEST_SECRETS is configured.
 axios.interceptors.request.use(async (config) => {
     try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- window.electronAPI members are optional/version-dependent and not all declared on the typed bridge
         const token = await (window as any).electronAPI?.attestSign?.();
         if (token) config.headers['X-Cipherline-Attest'] = token;
     } catch { /* no signer available — proceed unattested */ }

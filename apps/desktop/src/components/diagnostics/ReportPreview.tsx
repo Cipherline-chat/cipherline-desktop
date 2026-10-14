@@ -182,7 +182,7 @@ const SETTING_LABELS: Record<string, string> = {
     screen_capturer: 'Capturer setting', capture_timing_log: 'Capture timing log', gpu_video_encode: 'GPU video encode',
     h264_cbp_hw_enabled: 'H.264 hardware path', hw_encoder_h264: 'HW encoder: H.264', hw_encoder_h264_high: 'HW encoder: H.264 High',
     hw_encoder_vp9: 'HW encoder: VP9', hw_encoder_vp8: 'HW encoder: VP8', stream_stats_hud: 'Stream stats overlay',
-    noise_suppression: 'Noise suppression', volume_normalization: 'Volume normalization', voice_gate: 'Voice gate',
+    noise_suppression: 'Noise suppression', echo_cancellation: 'Echo cancellation', volume_normalization: 'Volume normalization', voice_gate: 'Voice gate',
     voice_gate_threshold_db: 'Gate threshold (dB)', push_to_talk: 'Push to talk', mic_volume: 'Mic volume', speaker_volume: 'Speaker volume',
     eq_enabled: 'Equalizer', mic_device: 'Microphone', speaker_device: 'Speaker', audio_input_devices: 'Microphones found',
     audio_output_devices: 'Speakers found', camera_device: 'Camera', video_input_devices: 'Cameras found',

@@ -160,7 +160,7 @@ describe('pan clamping never reveals gutter', () => {
         // At 3x the 1200px-wide content is 3600px, so it is pannable; the
         // visible strip must stay inside [200, 1400] in local px and never
         // wander into the 200px side bars.
-        let s = zoomAt(IDENTITY, { x: 800, y: 450 }, 3, VIEWPORT, PILLARBOXED);
+        const s = zoomAt(IDENTITY, { x: 800, y: 450 }, 3, VIEWPORT, PILLARBOXED);
         for (const [dx, dy] of [[9999, 0], [-9999, 0], [0, 9999], [0, -9999]]) {
             const panned = panBy(s, dx, dy, VIEWPORT, PILLARBOXED);
             const box = visibleLocalBox(panned, VIEWPORT);

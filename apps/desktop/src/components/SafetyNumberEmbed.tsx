@@ -48,7 +48,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import axios from 'axios';
 import { ShieldCheck, ShieldAlert, ShieldQuestion, Fingerprint } from 'lucide-react';
-import { API_BASE } from '../constants';
+import { apiUrl } from '../utils/apiPath';
 import { ClButton } from './ClButton';
 import { TrustBadge } from './TrustBadge';
 import { formatCode } from '../utils/verificationCode';
@@ -193,7 +193,7 @@ export const SafetyNumberEmbed: React.FC<Props> = ({
         let pubs: { device_id: string; pub: string }[] = [];
         try {
             const res = await axios.get(
-                `${API_BASE}/keys/identity_keys?user_id=${senderUserId}`,
+                apiUrl`/keys/identity_keys?user_id=${senderUserId}`,
                 { headers: { Authorization: `Bearer ${token}` } },
             );
             const bundles: { device_id: string; identity_key_pub_b64: string }[] = res.data ?? [];

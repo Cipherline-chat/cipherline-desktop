@@ -53,7 +53,9 @@ describe('CallPane activates LiveKit E2EE through the activator', () => {
         const idx = callPane.indexOf('const failEncryption');
         expect(idx).toBeGreaterThan(-1);
         const body = callPane.slice(idx, idx + 900);
-        expect(body).toContain('onDisconnect()');
+        // stableOnLeave() = the always-latest onDisconnect (this can run from a
+        // timer, whose render-time closure would be stale).
+        expect(body).toContain('stableOnLeave()');
         expect(body).toContain('describeE2EEActivationFailure(');
     });
 

@@ -1,10 +1,11 @@
 import React from 'react';
-import { MicOff, Monitor, Eye, EyeOff, Users, AudioLines, VideoOff, MonitorOff, HeadphoneOff, Check, PencilOff, PenLine, Flag } from 'lucide-react';
+import { MicOff, Monitor, Eye, EyeOff, Users, AudioLines, VideoOff, MonitorOff, HeadphoneOff, Check, PencilOff, PenLine, Flag, PhoneOff, X } from 'lucide-react';
 import { ResetSlider } from '../ResetSlider';
 import { useOpenProfile } from '../../contexts/ProfileOpenContext';
 import { useCallServerCtx } from '../../contexts/CallServerCtx';
 import { useReportOpen } from '../../contexts/ReportOpenContext';
 import { useEscape } from '../../hooks/useEscape';
+import { disconnectConfirmCopy } from '../../utils/callMemberDisconnect';
 import {
     annotationStore, useAnnotationStore, selectCanRevoke, selectCanGrantAnnotation,
     selectGrantTarget, isScreenShareTrack,
@@ -81,7 +82,7 @@ export interface PopoverMenuProps {
     isMicActive?: boolean;
     isCamActive?: boolean;
     isSsActive?: boolean;
-    /** Server-mute controls — only rendered for moderators (DEAFEN_MEMBERS) on non-self popovers. */
+    /** Server-mute controls — only rendered for moderators (MODERATE_CALL_MEDIA) on non-self popovers. */
     canServerMute?: boolean;
     /** Server-moderation state, read from participant metadata. Each item is the
      *  current "moderated" state — checkbox checked when true. Toggling fires
@@ -144,6 +145,26 @@ const CheckRow: React.FC<{
     </button>
 );
 
+/** "Disconnect" with an inline confirm: the first click swaps the row for the
+ *  question; nothing is sent until the second. Escape / Cancel backs out. */
+const DisconnectRow: React.FC<{
+    displayName: string;
+    onConfirm: () => void;
+}> = ({ displayName, onConfirm }) => {
+    const [asking, setAsking] = React.useState(false);
+    const copy = disconnectConfirmCopy(displayName);
+    if (!asking) {
+        return <ActionRow danger icon={<PhoneOff size={15} />} label="Disconnect" onClick={() => setAsking(true)} />;
+    }
+    return (
+        <div role="group" aria-label={copy.message}>
+            <div role="alert" className="px-3 py-1.5 text-[12px] leading-snug text-white/70">{copy.message}</div>
+            <ActionRow danger icon={<PhoneOff size={15} />} label={copy.confirmLabel} onClick={onConfirm} />
+            <ActionRow icon={<X size={15} />} label="Cancel" onClick={() => setAsking(false)} />
+        </div>
+    );
+};
+
 export const PopoverMenu = ({
     displayName, volume, screenShareVolume,
     isLocalMuted, isScreenShare, hasVideo, isVideoHidden, hasScreenShare, isScreenShareHidden,
@@ -167,6 +188,7 @@ export const PopoverMenu = ({
     // ServerContextPanel's HuddleParticipantPopover) already gates it to
     // remote participants only before ever rendering it.
     const canReport = !!userId && !!openReport;
+    const canDisconnect = !!userId && !!callServerCtx?.canManageCallMembers && !!callServerCtx.disconnectMember;
     // Live: if the streamer revokes from somewhere else (or the peer leaves,
     // dropping their tracks) while this menu is open, the row disappears.
     const canRevokeAnnotation = useAnnotationStore(selectCanRevoke(localIdentity ?? '', userId ?? ''));
@@ -323,6 +345,21 @@ export const PopoverMenu = ({
                     </>
                 )}
 
+                {/* ── Disconnect (MANAGE_CALL_MEMBERS) ─────────────────────────────
+                    Sits with the other moderator actions, above Report. Shown only
+                    when the viewer may (the call-server context says so) - never
+                    on yourself, since every caller of this menu is a remote
+                    participant. Asks inline first. */}
+                {canDisconnect && (
+                    <>
+                        <div className="ctxm-sep" />
+                        <DisconnectRow
+                            displayName={displayName}
+                            onConfirm={() => { void callServerCtx!.disconnectMember!(userId!); onClose?.(); }}
+                        />
+                    </>
+                )}
+
                 {/* Report — last and danger-styled, matching every other
                     report entry point in the app (buildMemberMenu, the
                     friends-list rows, ProfileModal's 3-dot menu). This is
@@ -355,6 +392,7 @@ export const PopoverMenu = ({
     );
 };
 
+// eslint-disable-next-line react-refresh/only-export-components -- co-located helper export; splitting the file would only affect dev Fast Refresh, not runtime behaviour
 export function calcPopoverPos(rect: DOMRect): { top: number; left: number } {
     const popoverWidth = 200;
     // Conservative max-height matching the modal's content (volume slider +

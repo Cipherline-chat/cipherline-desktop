@@ -14,7 +14,7 @@
 import React, { useState } from 'react';
 import axios from 'axios';
 import { Users, ServerCrash, CheckCircle2, Clock, Ticket, RotateCw } from 'lucide-react';
-import { API_BASE } from '../../constants';
+import { apiUrl } from '../../utils/apiPath';
 import { ServerIcon } from './ServerIcon';
 import { useContextMenu } from '../../hooks/useContextMenu';
 import { useInvitePreview } from '../../hooks/useInvitePreview';
@@ -46,6 +46,7 @@ export const ServerInviteEmbed: React.FC<Props> = ({ code, token, servers, onJoi
                 label: 'Copy Invite Link',
                 onSelect: () => {
                     navigator.clipboard.writeText(inviteUrl).catch(() => {
+                        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- window.electronAPI members are optional/version-dependent and not all declared on the typed bridge
                         (window as any).electronAPI?.writeClipboard?.(inviteUrl);
                     });
                 },
@@ -61,7 +62,7 @@ export const ServerInviteEmbed: React.FC<Props> = ({ code, token, servers, onJoi
         setJoinError(null);
         try {
             await axios.post(
-                `${API_BASE}/invites/${code}/accept`,
+                apiUrl`/invites/${code}/accept`,
                 {},
                 { headers: { Authorization: `Bearer ${token}` } },
             );

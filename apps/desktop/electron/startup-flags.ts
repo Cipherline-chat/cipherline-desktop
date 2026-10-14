@@ -11,10 +11,17 @@
  * Both are set from Settings → Advanced and take effect on the next launch.
  *
  * And one user-facing setting whose launch-time half lives here:
- *   - `gamingVideo`:    Settings → Voice & Video → "Prioritize call video
- *     while gaming" (./gaming-video-mode.ts). Its Chromium switches apply on
- *     the next launch; its runtime half (process priority during a call, the
- *     camera's degradation preference) follows the SAVED value immediately.
+ *   - `gamingVideo`:    Settings → Voice & Video → "Prioritize calls and
+ *     screen share while gaming" (./gaming-video-mode.ts, ./share-boost.ts).
+ *     ON by default. Its Chromium switches apply on the next launch; its
+ *     runtime half (process priority during a call or a share, the power
+ *     request while sharing, the camera's degradation preference) follows the
+ *     SAVED value immediately. One setting for both: it used to be call-only
+ *     and OFF by default, with a second toggle proposed for screen share.
+ *     MIGRATION: a stored `true` stays ON; a stored `false` stays OFF (the old
+ *     default was off, and a file only holds `false` once something was saved,
+ *     so it is the closest thing to an explicit choice there is); no file, no
+ *     key, or a garbled value gets the new default, ON.
  *
  * ── Why a plain JSON file and not SecureStore / secureLocalStore ─────────
  * They are read at the top of main.ts, before `app.ready`. SecureStore needs
@@ -60,14 +67,14 @@ export const CAPTURE_LOG_MAX_BYTES = 5 * 1024 * 1024;
 export interface StartupFlags {
     screenCapturer: ScreenCapturerPref;
     captureLog: boolean;
-    /** "Prioritize call video while gaming" — see ./gaming-video-mode.ts. */
+    /** "Prioritize calls and screen share while gaming" — ./gaming-video-mode.ts, ./share-boost.ts. ON by default. */
     gamingVideo: boolean;
 }
 
 export const DEFAULT_STARTUP_FLAGS: Readonly<StartupFlags> = Object.freeze({
     screenCapturer: 'auto',
     captureLog: false,
-    gamingVideo: false,
+    gamingVideo: true,
 });
 
 const CAPTURERS: ReadonlySet<string> = new Set<ScreenCapturerPref>(['auto', 'dxgi', 'wgc']);
@@ -95,7 +102,9 @@ export function parseStartupFlags(text: string | null | undefined): StartupFlags
         out.screenCapturer = raw.screenCapturer as ScreenCapturerPref;
     }
     if (own(raw, 'captureLog') && raw.captureLog === true) out.captureLog = true;
-    if (own(raw, 'gamingVideo') && raw.gamingVideo === true) out.gamingVideo = true;
+    // Default ON. Exactly `true`/`false` are kept (the migration: an old ON stays
+    // ON, an old OFF stays OFF); anything else - missing, garbled - is the default.
+    if (own(raw, 'gamingVideo') && typeof raw.gamingVideo === 'boolean') out.gamingVideo = raw.gamingVideo;
     return out;
 }
 
@@ -132,7 +141,7 @@ export function serializeStartupFlags(f: StartupFlags): string {
     return JSON.stringify({
         screenCapturer: f.screenCapturer,
         captureLog: f.captureLog === true,
-        gamingVideo: f.gamingVideo === true,
+        gamingVideo: f.gamingVideo !== false,
     }, null, 2) + '\n';
 }
 
@@ -201,7 +210,7 @@ export function resolveStartupFlags(opts: {
     }
 
     // No environment override: a user setting, not a test knob.
-    const gamingVideo = file.gamingVideo === true;
+    const gamingVideo = file.gamingVideo !== false;
     const gvSrc: StartupFlagSource = gamingVideo !== DEFAULT_STARTUP_FLAGS.gamingVideo ? 'file' : 'default';
 
     return {

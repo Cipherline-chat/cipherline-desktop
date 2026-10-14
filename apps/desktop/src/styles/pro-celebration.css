@@ -1,0 +1,426 @@
+/* ── "You're Pro" celebration (components/ProWelcome.tsx) ─────────────────
+ *
+ * Choreography (ms from mount; the CTA is live at ~2.9 s, Esc/Skip any time):
+ *     0  veil fades in over the app (and over the in-app checkout it replaces)
+ *   100  a slit of light draws across the middle of the screen
+ *   320  the member card swings up out of the slit (rotateX 88deg -> 0)
+ *   750  the deep lights up: bloom + under-glow behind the card, motes rise
+ *  1150  a specular sheen sweeps across the card
+ *  1450  the crown medallion ignites: pop + a gold ring pulse
+ *  1550  "Welcome to Pro" + subtitle rise, then the four unlocks, then the CTA
+ *  rest  the card floats; the pointer tilts it; motes keep drifting
+ *
+ * Performance: every animated property is transform or opacity, so the whole
+ * sequence runs on the compositor and keeps its 60 fps even while the
+ * Dashboard re-renders underneath (it does: the status refresh after a
+ * purchase updates half the app). Glows are pre-blurred radial gradients whose
+ * opacity/scale animate; nothing animates filter, box-shadow, or layout.
+ *
+ * Reduced motion: every RESTING rule below is the final visible state, and the
+ * keyframes only play the way in (fill: both). With animations off the overlay
+ * therefore renders complete and still: no slit, no sheen, no motes, no float
+ * (see the media query at the bottom; same rule as styles/reducedMotionRestingState).
+ */
+
+.pcel {
+  --pcel-veil-in: rgba(13, 19, 38, .94);
+  --pcel-veil-out: rgba(4, 7, 15, .985);
+  --pcel-ink: var(--cl-text, #F4F7FF);
+  --pcel-sub: var(--cl-muted, #A7B3D4);
+  --pcel-gold: var(--cl-glow, #FFC94D);
+  --pcel-gold-hi: #FFE9B0;
+  --pcel-gold-deep: #D99A1E;
+  --pcel-tile: rgba(28, 37, 66, .55);
+  --pcel-tile-border: rgba(255, 255, 255, .07);
+  --pcel-mote-a: rgba(37, 224, 200, .75);
+  --pcel-mote-b: rgba(255, 201, 77, .85);
+  --pcel-shaft: rgba(120, 240, 225, .07);
+  /* card width drives every card-internal size */
+  --cw: clamp(296px, 46vmin, 560px);
+
+  position: fixed;
+  inset: 0;
+  z-index: 2200; /* above the in-app checkout (2100) it takes over from */
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  isolation: isolate;
+  font-family: var(--cl-font-body, 'Nunito', sans-serif);
+  outline: none;
+  -webkit-app-region: no-drag;
+}
+/* The desktop app is dark-only today; this is ready for a light theme that
+   sets data-theme="light" on <html>. The card itself stays a dark object. */
+:root[data-theme="light"] .pcel {
+  --pcel-veil-in: rgba(248, 250, 255, .93);
+  --pcel-veil-out: rgba(222, 230, 245, .975);
+  --pcel-ink: #0B1430;
+  --pcel-sub: #4A5878;
+  --pcel-gold: #C98508;
+  --pcel-gold-hi: #EDB23A;
+  --pcel-gold-deep: #A86A00;
+  --pcel-tile: rgba(255, 255, 255, .78);
+  --pcel-tile-border: rgba(11, 20, 48, .08);
+  --pcel-mote-a: rgba(14, 160, 142, .55);
+  --pcel-mote-b: rgba(214, 150, 20, .6);
+  --pcel-shaft: rgba(37, 224, 200, .10);
+}
+
+.pcel-veil {
+  position: absolute;
+  inset: -2px;
+  background: radial-gradient(120% 90% at 50% 42%, var(--pcel-veil-in), var(--pcel-veil-out) 72%);
+  animation: pcel-fade .42s cubic-bezier(.2, .7, .2, 1) both;
+}
+@keyframes pcel-fade { from { opacity: 0 } }
+
+/* Out of the grid flow: the stage must be the overlay's only in-flow item or
+   it centres in half the height. */
+.pcel-fx { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
+
+/* Light from the surface: three soft shafts, faded in late and very quiet. */
+.pcel-shaft {
+  position: absolute;
+  top: -12%;
+  height: 80%;
+  pointer-events: none;
+  transform-origin: 50% 0;
+  background: linear-gradient(180deg, var(--pcel-shaft), transparent 85%);
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 35%, #000 65%, transparent);
+  mask-image: linear-gradient(90deg, transparent, #000 35%, #000 65%, transparent);
+  animation: pcel-fade 1.6s .7s ease-out both, pcel-shaft-breathe 9s 2.3s ease-in-out infinite alternate;
+}
+@keyframes pcel-shaft-breathe { to { opacity: .5 } }
+
+.pcel-mote {
+  position: absolute;
+  border-radius: 50%;
+  pointer-events: none;
+  opacity: 0;
+  animation: pcel-mote var(--dur) var(--del) linear infinite;
+}
+@keyframes pcel-mote {
+  0%   { opacity: 0; transform: translateY(0) }
+  15%  { opacity: var(--o) }
+  85%  { opacity: var(--o) }
+  100% { opacity: 0; transform: translateY(-26vh) }
+}
+
+.pcel-skip {
+  position: absolute;
+  top: 44px; /* clear of the custom titlebar */
+  right: 22px;
+  z-index: 3;
+  font: 700 13px var(--cl-font-body, 'Nunito', sans-serif);
+  color: var(--pcel-sub);
+  background: transparent;
+  border: 0;
+  padding: 8px 12px;
+  border-radius: 10px;
+  cursor: pointer;
+  opacity: .8;
+  animation: pcel-fade .4s .6s both;
+  transition: opacity .15s, background-color .15s;
+}
+.pcel-skip:hover { opacity: 1; background: rgba(255, 255, 255, .06); }
+.pcel-skip:focus-visible { opacity: 1; outline: 2px solid var(--cl-lume, #25E0C8); outline-offset: 2px; }
+
+.pcel-stage {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+  padding: 24px;
+}
+
+/* ── the card ── */
+.pcel-scene {
+  position: relative;
+  width: var(--cw);
+  height: calc(var(--cw) / 1.586);
+  perspective: 1400px;
+}
+.pcel-bloom {
+  position: absolute;
+  left: 50%; top: 52%;
+  width: 240%; height: 320%;
+  translate: -50% -50%;
+  pointer-events: none;
+  background: radial-gradient(closest-side, rgba(255, 201, 77, .17), rgba(37, 224, 200, .075) 45%, transparent 72%);
+  animation: pcel-bloom 1.4s .75s cubic-bezier(.16, 1, .3, 1) both;
+}
+.pcel-under {
+  position: absolute;
+  left: 8%; right: 8%;
+  bottom: -16%;
+  height: 30%;
+  border-radius: 50%;
+  pointer-events: none;
+  background: radial-gradient(closest-side, rgba(255, 201, 77, .45), rgba(37, 224, 200, .18) 55%, transparent);
+  animation: pcel-bloom 1.2s .9s cubic-bezier(.16, 1, .3, 1) both;
+}
+@keyframes pcel-bloom { from { opacity: 0; transform: scale(.4) } }
+
+.pcel-slit {
+  position: absolute;
+  left: -14%; right: -14%;
+  top: 50%;
+  height: 2px;
+  margin-top: -1px;
+  border-radius: 2px;
+  pointer-events: none;
+  opacity: 0; /* rest: gone */
+  background: linear-gradient(90deg, transparent, var(--pcel-gold-hi) 30%, #fff 50%, var(--cl-lume, #25E0C8) 70%, transparent);
+  box-shadow: 0 0 18px 2px rgba(255, 214, 120, .55);
+  animation: pcel-slit 1s .1s cubic-bezier(.3, .7, .2, 1) both;
+}
+@keyframes pcel-slit {
+  0%   { opacity: 0; transform: scaleX(0) }
+  30%  { opacity: 1; transform: scaleX(1) }
+  65%  { opacity: 1 }
+  100% { opacity: 0; transform: scaleX(1.08) }
+}
+
+/* Pointer tilt lives on its own wrapper so it never fights the card's
+   entrance/float animations (both are transforms). */
+.pcel-tilt {
+  position: absolute;
+  inset: 0;
+  transform-style: preserve-3d;
+  transform: rotateX(var(--pcel-rx, 0deg)) rotateY(var(--pcel-ry, 0deg));
+  transition: transform .5s cubic-bezier(.2, .8, .2, 1);
+}
+.pcel-card {
+  position: absolute;
+  inset: 0;
+  border-radius: calc(var(--cw) * .052);
+  overflow: hidden;
+  color: #F4F7FF;
+  background:
+    radial-gradient(120% 90% at 100% 0%, rgba(255, 201, 77, .30), transparent 55%),
+    radial-gradient(110% 100% at 0% 100%, rgba(37, 224, 200, .26), transparent 60%),
+    linear-gradient(140deg, #1B2652, #0F1736 55%, #0A1027);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, .18) inset, 0 40px 80px -20px rgba(0, 0, 0, .7), 0 18px 36px -18px rgba(0, 0, 0, .6);
+  animation: pcel-card 1.25s .32s cubic-bezier(.16, 1.12, .3, 1) both, pcel-float 7s 2.6s ease-in-out infinite;
+}
+:root[data-theme="light"] .pcel-card {
+  box-shadow: 0 1px 0 rgba(255, 255, 255, .18) inset, 0 40px 70px -24px rgba(11, 20, 48, .45), 0 16px 30px -18px rgba(11, 20, 48, .35);
+}
+/* gradient hairline rim: gold catching the light top-left, lume bottom-right */
+.pcel-card::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1.2px;
+  pointer-events: none;
+  background: linear-gradient(135deg, rgba(255, 232, 170, .75), rgba(255, 255, 255, .10) 35%, rgba(255, 255, 255, .05) 60%, rgba(37, 224, 200, .6));
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+}
+@keyframes pcel-card {
+  0%   { opacity: 0; transform: rotateX(88deg) scale(.86) }
+  25%  { opacity: 1 }
+  100% { opacity: 1; transform: none }
+}
+@keyframes pcel-float {
+  0%, 100% { transform: none }
+  50%      { transform: translateY(-6px) rotateX(3deg) rotateY(-3deg) }
+}
+/* sonar rings radiating from the medallion corner: signal, from the deep */
+.pcel-sonar {
+  position: absolute;
+  right: -28%; top: -46%;
+  width: 110%;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  opacity: .5;
+  pointer-events: none;
+  background: repeating-radial-gradient(circle, transparent 0 calc(var(--cw) * .043), rgba(255, 230, 170, .10) calc(var(--cw) * .043) calc(var(--cw) * .0455));
+}
+.pcel-sheen {
+  position: absolute;
+  inset: -20% -60%;
+  pointer-events: none;
+  opacity: 0; /* rest: gone */
+  mix-blend-mode: screen;
+  background: linear-gradient(105deg, transparent 42%, rgba(255, 244, 214, .12) 46%, rgba(255, 248, 228, .7) 49%, rgba(255, 244, 214, .12) 51.5%, rgba(140, 255, 236, .22) 54%, transparent 58%);
+  animation: pcel-sheen 1.15s 1.15s cubic-bezier(.45, .05, .3, 1) both;
+}
+@keyframes pcel-sheen {
+  0%   { opacity: 1; transform: translateX(-48%) }
+  90%  { opacity: 1 }
+  100% { opacity: 0; transform: translateX(48%) }
+}
+.pcel-card-in {
+  position: absolute;
+  inset: 0;
+  padding: calc(var(--cw) * .065);
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+.pcel-card-top { display: flex; align-items: center; justify-content: space-between; }
+.pcel-brand {
+  display: flex;
+  align-items: center;
+  gap: calc(var(--cw) * .022);
+  font: 600 calc(var(--cw) * .05)/1 var(--cl-font-display, 'Fredoka', sans-serif);
+  letter-spacing: .005em;
+}
+.pcel-brand img { width: calc(var(--cw) * .085); height: auto; display: block; }
+.pcel-medal {
+  position: relative;
+  width: calc(var(--cw) * .088);
+  aspect-ratio: 1;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  color: #5A3A00;
+  background: radial-gradient(circle at 35% 30%, #FFF0C4, #FFC94D 55%, #D18F12);
+  box-shadow: 0 0 22px rgba(255, 201, 77, .5), inset 0 1px 0 rgba(255, 255, 255, .7), inset 0 -2px 4px rgba(120, 70, 0, .35);
+  animation: pcel-medal .7s 1.45s cubic-bezier(.3, 1.6, .5, 1) both;
+}
+.pcel-medal svg { width: 56%; height: 56%; }
+@keyframes pcel-medal { 0% { transform: scale(.55) } 45% { transform: scale(1.18) } 100% { transform: none } }
+.pcel-medal-ring {
+  position: absolute;
+  inset: -6px;
+  border-radius: 50%;
+  pointer-events: none;
+  opacity: 0; /* rest: gone */
+  background: radial-gradient(closest-side, transparent 80%, rgba(255, 227, 161, .95) 90%, transparent);
+  animation: pcel-ring 1s 1.5s cubic-bezier(.12, .8, .3, 1) both;
+}
+.pcel-medal-ring + .pcel-medal-ring { animation-delay: 1.66s; animation-duration: 1.2s; }
+@keyframes pcel-ring { 0% { opacity: 0; transform: scale(.5) } 12% { opacity: 1 } 100% { opacity: 0; transform: scale(4) } }
+.pcel-card-word {
+  font: 600 calc(var(--cw) * .15)/1 var(--cl-font-display, 'Fredoka', sans-serif);
+  letter-spacing: -.01em;
+  background: linear-gradient(180deg, #FFF3D1, #FFC94D 60%, #D99A1E);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  padding-bottom: .04em; /* descender room for the clipped gradient */
+}
+.pcel-card-bot {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 12px;
+  font-family: var(--cl-font-mono, 'JetBrains Mono', monospace);
+  text-transform: uppercase;
+}
+.pcel-card-bot small {
+  display: block;
+  font-size: calc(var(--cw) * .021);
+  letter-spacing: .2em;
+  color: rgba(167, 179, 212, .75);
+  margin-bottom: 4px;
+}
+.pcel-card-bot b {
+  display: block;
+  font-weight: 600;
+  font-size: calc(var(--cw) * .036);
+  letter-spacing: .14em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: calc(var(--cw) * .56);
+}
+.pcel-card-bot > div:last-child { text-align: right; flex: none; }
+.pcel-card-bot > div:first-child { min-width: 0; }
+/* name / date print on a character at a time (inline, so the ellipsis still works) */
+.pcel-ch { animation: pcel-ch .18s ease-out both; }
+@keyframes pcel-ch { from { opacity: 0 } }
+
+/* ── words, unlocks, CTA ── */
+.pcel-title {
+  margin: clamp(22px, 4vmin, 44px) 0 0;
+  text-align: center;
+  font: 600 clamp(28px, 4.2vmin, 46px)/1.12 var(--cl-font-display, 'Fredoka', sans-serif);
+  color: var(--pcel-ink);
+  max-width: 90vw;
+  overflow-wrap: anywhere;
+  animation: pcel-up .8s 1.55s cubic-bezier(.2, .8, .2, 1) both;
+}
+.pcel-title em {
+  font-style: normal;
+  background: linear-gradient(180deg, var(--pcel-gold-hi), var(--pcel-gold) 60%, var(--pcel-gold-deep));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.pcel-sub {
+  margin: 8px 0 0;
+  text-align: center;
+  font: 600 clamp(14px, 1.75vmin, 18px)/1.4 var(--cl-font-body, 'Nunito', sans-serif);
+  color: var(--pcel-sub);
+  animation: pcel-up .8s 1.7s cubic-bezier(.2, .8, .2, 1) both;
+}
+@keyframes pcel-up { from { opacity: 0; transform: translateY(14px) } }
+
+.pcel-perks {
+  list-style: none;
+  margin: clamp(18px, 3vmin, 32px) 0 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: clamp(8px, 1.1vmin, 14px);
+  width: min(720px, 100%);
+}
+.pcel-perk {
+  background: var(--pcel-tile);
+  border: 1px solid var(--pcel-tile-border);
+  border-radius: 16px;
+  padding: clamp(12px, 1.6vmin, 18px) 10px;
+  text-align: center;
+  animation: pcel-up .7s calc(2s + var(--i) * 80ms) cubic-bezier(.2, .8, .2, 1) both;
+}
+.pcel-perk svg { color: var(--pcel-gold); display: inline-block; }
+.pcel-perk-t { font: 700 13.5px/1.25 var(--cl-font-body, 'Nunito', sans-serif); color: var(--pcel-ink); margin-top: 8px; }
+.pcel-perk-s { font: 600 12px/1.3 var(--cl-font-body, 'Nunito', sans-serif); color: var(--pcel-sub); margin-top: 3px; }
+/* Big screens at 100 % scaling (a 1440p/4K monitor with no OS zoom): the app's
+   own UI stays px-sized there, but a centrepiece this small reads as lost in
+   the dark. Scale the whole stage (static, laid out once; nothing animates zoom). */
+@media (min-width: 2200px) and (min-height: 1250px) { .pcel-stage { zoom: 1.3; } }
+@media (min-width: 3000px) and (min-height: 1700px) { .pcel-stage { zoom: 1.65; } }
+@media (max-width: 760px) {
+  .pcel-perks { grid-template-columns: repeat(2, minmax(0, 1fr)); width: min(420px, 100%); }
+}
+
+.pcel-cta {
+  margin-top: clamp(18px, 3vmin, 30px);
+  min-width: 200px;
+  padding: 13px 34px;
+  border: 0;
+  border-radius: 14px;
+  cursor: pointer;
+  font: 800 15px var(--cl-font-body, 'Nunito', sans-serif);
+  color: var(--cl-on-lume, #06251F);
+  background: var(--cl-lume, #25E0C8);
+  box-shadow: 0 8px 28px rgba(37, 224, 200, .28), inset 0 -2px 0 rgba(0, 0, 0, .12);
+  animation: pcel-up .6s 2.75s cubic-bezier(.2, .8, .2, 1) both;
+  transition: background-color .15s, transform .08s;
+}
+.pcel-cta:hover { background: var(--cl-lume-hi, #3BEAD6); }
+.pcel-cta:active { transform: scale(.98); }
+.pcel-cta:focus-visible { outline: 2px solid rgba(255, 255, 255, .55); outline-offset: 3px; }
+:root[data-theme="light"] .pcel-cta:focus-visible { outline-color: rgba(11, 20, 48, .45); }
+
+/* ── leaving ── */
+.pcel[data-phase="closing"] { pointer-events: none; animation: pcel-out .28s cubic-bezier(.4, 0, .6, 1) both; }
+.pcel[data-phase="closing"] .pcel-stage { animation: pcel-stage-out .28s cubic-bezier(.4, 0, .6, 1) both; }
+@keyframes pcel-out { to { opacity: 0 } }
+@keyframes pcel-stage-out { to { transform: scale(.97) } }
+
+/* ── reduced motion: the finished frame, still ── */
+@media (prefers-reduced-motion: reduce) {
+  .pcel *, .pcel *::before, .pcel *::after { animation: none !important; transition: none !important; }
+  .pcel-mote, .pcel-shaft { display: none; }
+  .pcel { animation: pcel-fade .2s ease-out both; }
+  .pcel[data-phase="closing"] { animation: pcel-out .12s linear both; }
+}

@@ -86,7 +86,6 @@ vi.mock('../utils/safetyNumber', async () => {
     };
 });
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 let SafetyVerificationModal: any;
 let root: Root | null = null;
 let host: HTMLDivElement;

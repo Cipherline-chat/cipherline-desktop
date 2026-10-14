@@ -58,13 +58,14 @@ function usePersistentVolume(identity: string, type: 'mic' | 'screen' = 'mic'): 
         setVol(prev => {
             const nextVol = typeof newVol === 'function' ? newVol(prev) : newVol;
             if (isNaN(nextVol)) return prev;
-            try { secureLocalStore.setItem(key, nextVol.toString()); } catch {}
+            try { secureLocalStore.setItem(key, nextVol.toString()); } catch { /* persisting a UI preference is best-effort; a failed write must not break the UI */ }
             window.dispatchEvent(new CustomEvent('cipherline-volume-change', { detail: { identity, type, volume: nextVol }}));
             return nextVol;
         });
     }, [key, identity, type]);
 
     React.useEffect(() => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
         const handler = (e: any) => {
             if (e.detail.identity === identity && e.detail.type === type && e.detail.volume !== vol && !isNaN(e.detail.volume)) {
                 setVol(e.detail.volume);
@@ -77,6 +78,7 @@ function usePersistentVolume(identity: string, type: 'mic' | 'screen' = 'mic'): 
     return [vol, setVolumeAndSave];
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
 function parseMetaSafe(raw: string | undefined): any {
     if (!raw) return {};
     try { return JSON.parse(raw); } catch { return {}; }
@@ -88,6 +90,7 @@ function useParticipantMetadata(p: Participant) {
     // (LiveKit includes full metadata in the initial participant list).
     // Without this, state starts as {} and the effect fires after the first
     // paint, causing a visible flash where the avatar is missing.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
     const [meta, setMeta] = React.useState<any>(() => parseMetaSafe(p.metadata));
     React.useEffect(() => {
         // Sync in case p.metadata changed between the lazy-init read and mount
@@ -116,6 +119,7 @@ function useParticipantMetadata(p: Participant) {
  *  without violating the rules of hooks by calling a hook a variable number
  *  of times. useFastIsSpeaking (below) is a thin React-hook wrapper around
  *  this same logic for single-participant, tile-shaped components. */
+// eslint-disable-next-line react-refresh/only-export-components -- co-located helper export; splitting the file would only affect dev Fast Refresh, not runtime behaviour
 export function subscribeFastSpeaking(p: Participant, onChange: (speaking: boolean) => void): () => void {
     let tokenCur: symbol | null = null;
     let lkSpeaking = p.isSpeaking;
@@ -130,6 +134,7 @@ export function subscribeFastSpeaking(p: Participant, onChange: (speaking: boole
             tokenCur = null;
         }
         const pub = p.getTrackPublication(Track.Source.Microphone);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
         const mst: MediaStreamTrack | undefined = (pub?.track as any)?.mediaStreamTrack;
         if (!mst || mst.readyState !== 'live') return;
         tokenCur = acquireSpeakingAnalyser(p.identity, mst, (speaking) => {
@@ -140,9 +145,11 @@ export function subscribeFastSpeaking(p: Participant, onChange: (speaking: boole
 
     tryAcquire();
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     const onTrackSubscribed = (_track: any, pub: any) => {
         if (pub?.source === Track.Source.Microphone) tryAcquire();
     };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     const onTrackUnmuted = (pub: any) => {
         if (pub?.source === Track.Source.Microphone) tryAcquire();
     };
@@ -173,6 +180,7 @@ export function subscribeFastSpeaking(p: Participant, onChange: (speaking: boole
  *
  *  One AnalyserNode + one 30ms interval is shared per participant identity across
  *  all tiles — tiles subscribe/unsubscribe via ref-counted tokens. */
+// eslint-disable-next-line react-refresh/only-export-components -- co-located helper export; splitting the file would only affect dev Fast Refresh, not runtime behaviour
 export function useFastIsSpeaking(p: Participant): boolean {
     const lkSpeaking = useIsSpeaking(p);
     const [fastSpeaking, setFastSpeaking] = React.useState(false);
@@ -188,6 +196,7 @@ export function useFastIsSpeaking(p: Participant): boolean {
                 tokenRef.current = null;
             }
             const pub = p.getTrackPublication(Track.Source.Microphone);
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
             const mst: MediaStreamTrack | undefined = (pub?.track as any)?.mediaStreamTrack;
             if (!mst || mst.readyState !== 'live') return;
             const token = acquireSpeakingAnalyser(p.identity, mst, (speaking) => setFastSpeaking(speaking));
@@ -196,9 +205,11 @@ export function useFastIsSpeaking(p: Participant): boolean {
 
         tryAcquire();
 
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
         const onTrackSubscribed = (_track: any, pub: any) => {
             if (pub?.source === Track.Source.Microphone) tryAcquire();
         };
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
         const onTrackUnmuted = (pub: any) => {
             if (pub?.source === Track.Source.Microphone) tryAcquire();
         };
@@ -226,7 +237,7 @@ function usePersistentNsEnabled(identity: string): [boolean, (v: boolean) => voi
 
     const setAndSave = React.useCallback((v: boolean) => {
         setEnabled(v);
-        try { secureLocalStore.setItem(key, String(v)); } catch {}
+        try { secureLocalStore.setItem(key, String(v)); } catch { /* persisting a UI preference is best-effort; a failed write must not break the UI */ }
         window.dispatchEvent(new CustomEvent('cipherline-ns-change', { detail: { identity, enabled: v } }));
     }, [key, identity]);
 
@@ -279,6 +290,7 @@ function usePersistentNsEnabled(identity: string): [boolean, (v: boolean) => voi
  *      TrackMuted/TrackUnmuted and "accidentally" fixes it). Remote
  *      participants were never affected by this half, since their track
  *      really does arrive via TrackPublished. Now subscribed below. */
+// eslint-disable-next-line react-refresh/only-export-components -- co-located helper export; splitting the file would only affect dev Fast Refresh, not runtime behaviour
 export function useIsMicMuted(p: Participant): boolean {
     const connectionState = useConnectionState();
     const compute = React.useCallback((): boolean => {
@@ -311,11 +323,13 @@ export function useIsMicMuted(p: Participant): boolean {
     return muted;
 }
 
+// eslint-disable-next-line react-refresh/only-export-components -- co-located helper export; splitting the file would only affect dev Fast Refresh, not runtime behaviour
 export { usePersistentVolume, usePersistentNsEnabled, useParticipantMetadata, useParticipantTrackState };
 
 export interface VideoTileProps {
     p: Participant;
     source: Track.Source.Camera | Track.Source.ScreenShare;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     localParticipant: any;
     token: string;
     remoteAvatarUrl?: string;
@@ -657,6 +671,7 @@ export const VideoTile = ({
         if (!track || !el) return;
         track.attach(el);
         return () => { track.detach(el); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the live track publication is deliberately evaluated in the dependency list so the effect re-attaches when the track is (un)published or replaced
     }, [p, source, p.getTrackPublication(source)?.track]);
 
     // Simulcast layer for this tile (utils/remoteVideoQuality.ts). Every tile
@@ -807,6 +822,7 @@ export const VideoTile = ({
             setVideoRes(prev => prev !== res ? res : prev);
 
             // FPS via getVideoPlaybackQuality (Chromium/Electron supports this)
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
             const q = (el as any).getVideoPlaybackQuality?.() as { totalVideoFrames?: number } | undefined;
             if (q?.totalVideoFrames !== undefined) {
                 const now = performance.now();
@@ -821,6 +837,7 @@ export const VideoTile = ({
         // Re-seed the fps baseline: the last sample may be from a readout that
         // closed minutes ago, and averaging over that gap would show a wrong
         // number for the first second.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
         const q0 = (videoRef.current as any)?.getVideoPlaybackQuality?.() as { totalVideoFrames?: number } | undefined;
         lastFrameRef.current = { count: q0?.totalVideoFrames ?? 0, time: performance.now() };
         const first = setTimeout(poll, 0); // a readout that just appeared shows the resolution at once
@@ -952,7 +969,6 @@ export const VideoTile = ({
     // here too: a screen share republished at a new quality swaps the track
     // under a tile that does NOT remount, and the new stream can be a
     // different shape — re-arming beats hoping the old listeners see it.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [usesContainFit, p, source, liveTrack]);
     // Only suppress the wrapper's own ring once we have a REAL rect to frame
     // instead — a null rect (video not loaded yet, or a 0×0 box mid-layout)

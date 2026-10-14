@@ -180,6 +180,7 @@ export const FocusedStreamBanner = ({
             return;
         }
         advance();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- callCtx is a context value re-created per provider render; reacting to it would re-run the focus-advance check on every call-state tick
     }, [focusedStream, focusedParticipantLive, participants]);
 
     // Auto-unfocus if the stream is hidden via the popover menu
@@ -189,6 +190,7 @@ export const FocusedStreamBanner = ({
             ? hiddenVideoIds.has(focusedStream.identity)
             : hiddenScreenShareIds.has(focusedStream.identity);
         if (isHidden) callCtx.setFocusedStream(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- callCtx is a context value re-created per provider render; only the focus/hidden sets should trigger the auto-unfocus
     }, [focusedStream, hiddenVideoIds, hiddenScreenShareIds]);
 
     // Auto-unfocus a remote share this client is not watching. The stage
@@ -210,6 +212,7 @@ export const FocusedStreamBanner = ({
     // Notify parent whenever focus becomes active / inactive
     React.useEffect(() => {
         onFocusedStreamChange?.(!!focusedStream);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- boolean edge only: notify the parent when focus turns on/off, not on every focusedStream identity change
     }, [!!focusedStream]);
 
     // ── Banner height: ratio-based + persisted, mirroring Dashboard's sidebar
@@ -268,7 +271,7 @@ export const FocusedStreamBanner = ({
     // which is a per-focus computation, not a preference.
     React.useEffect(() => {
         if (manualRatio === null) return;
-        try { secureLocalStore.setItem(BANNER_RATIO_KEY, String(manualRatio)); } catch {}
+        try { secureLocalStore.setItem(BANNER_RATIO_KEY, String(manualRatio)); } catch { /* persisting a UI preference is best-effort; a failed write must not break the UI */ }
     }, [manualRatio]);
 
     const videoHostRef = React.useRef<HTMLDivElement>(null);

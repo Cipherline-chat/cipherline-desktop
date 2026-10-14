@@ -130,6 +130,9 @@ export const KV_RULES: KvRule[] = [
     { pattern: 'cipherline_screenshare_codec',          match: 'exact',  include: false, why: 'Screen-share encoder override — about this device’s GPU, never travels' },
     { pattern: 'cipherline_loading_game_best',          match: 'exact',  include: false, why: 'Firewall mini-game best score on the loading/offline screens — device-local, shown before sign-in' },
     { pattern: 'cipherline_stream_stats_hud',           match: 'exact',  include: false, why: 'Stream-stats overlay toggle — device-local testing aid' },
+    // The "share the game window instead" hint (utils/shareFullscreenHint.ts) is
+    // shown ONCE per account; whether this device has shown it is a device fact.
+    { pattern: 'cipherline_share_window_hint_seen_{uid}', match: 'exact', include: false, why: '"Share the game window instead" hint shown once (utils/shareFullscreenHint.ts) — a per-device UI nicety, a restore must not carry it' },
     // The "video froze while gaming" offer's snooze / don't-ask-again flags
     // (utils/gamingVideoOffer.ts). About THIS machine's gaming load, like the
     // mode it offers (which lives in main's startup-flags.json, not here).
@@ -248,7 +251,7 @@ export const KV_RULES: KvRule[] = [
     // travels to Drive or a USB stick, and losing it to a restore costs nothing.
     { pattern: 'cipherline_firewall_best_{uid}',        match: 'exact',  include: false, why: 'Home easter-egg game best score — a toy, not account data; never travels' },
     { pattern: 'cipherline_keys_spam_bag_{uid}',        match: 'exact',  include: false, why: 'Which Home spam-egg show Keys does next (utils/keysSpamStore.ts) — a toy, not account data; never travels' },
-    { pattern: 'cipherline_pro_welcomed_{uid}',         match: 'exact',  include: false, why: 'One-shot' },
+    { pattern: 'cipherline_pro_seen_{uid}',             match: 'exact',  include: false, why: 'Last tier this device saw (utils/proCelebration.ts) — gates the once-per-purchase Pro celebration; per-device UI state: a fresh device records what it first sees and does not celebrate' },
     { pattern: 'cipherline_trial_banner_dismissed_{uid}', match: 'exact', include: false, why: 'Billing banner state' },
     { pattern: 'cipherline_pastdue_banner_shows_{uid}', match: 'exact',  include: false, why: 'Billing banner state' },
     // Announcement-banner dismissals: ephemeral per-device UI state, same
@@ -263,6 +266,13 @@ export const KV_RULES: KvRule[] = [
     // announcements.ts) restoring it could evict recent, still-relevant
     // dismissals in favor of stale ones.
     { pattern: 'cipherline_announcement_dismissed_{uid}', match: 'exact', include: false, why: 'Announcement-banner dismissal state (ephemeral per-device UI state)' },
+    // Server storage-grace notice dismissals (components/server/ServerStorageBanner.tsx),
+    // keyed by the API's notice_id. Same class as the announcement list above:
+    // only the after-the-fact notices (trimmed / all set) are dismissible, the
+    // API stops returning them on its own, and a restored device re-dismissing
+    // once costs a click. It would also put a list of server-scoped notice ids
+    // into a file that travels — not worth it for UI state.
+    { pattern: 'cipherline_storage_notice_dismissed_{uid}', match: 'exact', include: false, why: 'Server storage-grace notice dismissal state (ephemeral per-device UI state)' },
     // Crash-recovery rejoin record (utils/callRejoinStore.ts). MUST stay
     // excluded, and for a security reason rather than a size one: for a DM/
     // group call it carries the call's E2EE key, which is deliberately

@@ -56,7 +56,7 @@
  * switch (`bindProfileCacheViewer`).
  */
 import axios from 'axios';
-import { API_BASE } from '../constants';
+import { apiUrl } from './apiPath';
 import { TokenBucket } from './avatarWarmQueue';
 import { preloadAvatar, peekAvatarUrl } from '../hooks/useEncryptedAvatar';
 import {
@@ -206,7 +206,7 @@ export function fetchProfile(
     if (pending) return pending;
     const gen = generation;
     const p = axios
-        .get(`${API_BASE}/auth/users/${userId}`, { headers: { Authorization: `Bearer ${token}` } })
+        .get(apiUrl`/auth/users/${userId}`, { headers: { Authorization: `Bearer ${token}` } })
         .then(res => {
             const profile = res.data as PublicProfile;
             if (!profile || typeof profile !== 'object' || profile.user_id !== userId) {

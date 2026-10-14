@@ -16,7 +16,7 @@
  */
 
 import secureLocalStore from '../../utils/secureLocalStore';
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
     Hash, ChevronDown, ChevronRight, Settings,
     CheckCheck, Link as LinkIcon, Pencil, Trash2, Plus, Folder,
@@ -43,7 +43,7 @@ import { ServerIcon } from './ServerIcon';
 import { ChannelSettingsDialog } from './ChannelSettingsDialog';
 import { CategoryFormDialog } from './CategoryFormDialog';
 import { ChannelIconRenderer } from './ChannelIconPicker';
-import { API_BASE } from '../../constants';
+import { apiUrl } from '../../utils/apiPath';
 import { Permissions, hasPermission } from '@cipherline/shared';
 import { MascotEmpty } from '../MascotEmpty';
 import cipherlineMark from '../../assets/cipherline-mark.svg';
@@ -51,6 +51,10 @@ import { ClButton } from '../cl';
 import { writeToClipboard } from '../../utils/clipboard';
 import { useToast } from '../../contexts/ToastContext';
 import { hoverPrefetchChannelViewers, cancelHoverPrefetch } from '../../utils/channelViewerCache';
+import { usePrefersReducedMotion } from '../../hooks/usePrefersReducedMotion';
+import { buildUnreadModel, channelBadgeKind, channelKey, categoryKey } from './offscreenUnread';
+import { useOffscreenUnread } from './useOffscreenUnread';
+import { OffscreenUnreadPill } from './OffscreenUnreadPill';
 
 // ── Sortable wrappers (defined at module level — no re-creation on render) ──
 
@@ -272,6 +276,18 @@ export const ServerChannelList: React.FC<Props> = ({
         });
     };
 
+    /** Open a category if it is collapsed (the off-screen-unread jump landing in one). Persists like a manual toggle. */
+    const expandCategory = useCallback((id: string) => {
+        setCollapsedCats(prev => {
+            if (!prev[id]) return prev;
+            const next = { ...prev, [id]: false };
+            if (collapseKey) {
+                try { secureLocalStore.setItem(collapseKey, JSON.stringify(next)); } catch { /* full / disabled */ }
+            }
+            return next;
+        });
+    }, [collapseKey]);
+
     // ── DnD setup ────────────────────────────────────────────────────────
     const [activeId, setActiveId] = useState<string | null>(null);
     const [overId,   setOverId]   = useState<string | null>(null);
@@ -355,7 +371,7 @@ export const ServerChannelList: React.FC<Props> = ({
             setLocalCategories(newCats);
             localCategoriesRef.current = newCats;
 
-            axios.patch(`${API_BASE}/servers/${server.server_id}/categories/reorder`, {
+            axios.patch(apiUrl`/servers/${server.server_id}/categories/reorder`, {
                 category_ids: newCats.map(c => c.category_id),
             }, { headers: { Authorization: `Bearer ${token}` } })
                 .then(() => onChannelsChanged?.())
@@ -435,7 +451,7 @@ export const ServerChannelList: React.FC<Props> = ({
             }));
             if (items.length === 0) return;
 
-            axios.patch(`${API_BASE}/servers/${server.server_id}/channels/reorder`, { items }, {
+            axios.patch(apiUrl`/servers/${server.server_id}/channels/reorder`, { items }, {
                 headers: { Authorization: `Bearer ${token}` },
             })
                 .then(() => onChannelsChanged?.())
@@ -471,6 +487,22 @@ export const ServerChannelList: React.FC<Props> = ({
         }
         return { uncategorized, sortedCats: localCategories, byCat };
     }, [localChannels, localCategories]);
+
+    // ── Off-screen unread indicator ──────────────────────────────────────
+    // What each badge says, keyed by anchor (offscreenUnread.ts owns the rule,
+    // renderChannelRow draws from the same function). A channel inside a
+    // collapsed category has no row, so the category header stands in for it.
+    const unreadModel = useMemo(() => buildUnreadModel({
+        uncategorized: groups.uncategorized,
+        categories: groups.sortedCats.map(c => ({ category_id: c.category_id, channels: groups.byCat[c.category_id] ?? [] })),
+        collapsed: collapsedCats,
+        unreadCounts, mentionCounts, mutedChannelIds, serverNotifMode, activeChannelId,
+    }), [groups, collapsedCats, unreadCounts, mentionCounts, mutedChannelIds, serverNotifMode, activeChannelId]);
+    const reducedMotion = usePrefersReducedMotion();
+    const [listEl, setListEl] = useState<HTMLDivElement | null>(null);
+    const offscreen = useOffscreenUnread({
+        scroller: listEl, model: unreadModel, reducedMotion, onExpandCategory: expandCategory,
+    });
 
     // ── Context menu builders ────────────────────────────────────────────
     const buildChannelMenu = (ch: ChannelInfo): ContextMenuItem[] => {
@@ -552,17 +584,22 @@ export const ServerChannelList: React.FC<Props> = ({
         const isChannelMuted = serverNotifMode === 'none' || isMuted;
         const unread = unreadCounts?.[ch.channel_id] ?? 0;
         const mentions = mentionCounts?.[ch.channel_id] ?? 0;
-        const hasUnread = unread > 0 && !isChannelMuted;
-        const hasMention = mentions > 0;
-        // Quiet (grey) rather than lume when pings are off for this server but
-        // it is NOT muted: "there is something new here" without claiming it
-        // wants attention. Muted is handled by isChannelMuted above, which
-        // suppresses the plain-unread badge entirely — an @mention still gets
-        // its own badge either way.
-        const quietUnread = serverNotifMode === 'mentions';
+        // One rule for the badge AND the off-screen pill (offscreenUnread.ts):
+        //  - 'mention': the red badge, always, regardless of mute;
+        //  - 'unread':  the counted lume badge — not when muted;
+        //  - 'quiet':   the plain grey dot, no number, for a server on
+        //               "@mentions only" that is NOT muted: "there is something
+        //               new here" without claiming it wants attention. Same
+        //               treatment as the rail (components/RailBadge.tsx);
+        //  - null:      nothing (the open channel, or muted with no mention).
+        const badge = channelBadgeKind({
+            unread, mentions, serverNotifMode, channelMuted: isMuted, active: activeChannelId === ch.channel_id,
+        });
         return (
             <div
                 key={ch.channel_id}
+                /* Target for a clicked #channel link (utils/channelRefs.revealChannelRow). */
+                data-channel-id={ch.channel_id}
                 onClick={() => onSelectChannel(ch)}
                 // Rest the pointer on a restricted channel and its member-sidebar
                 // viewer set is fetched before the click (utils/channelViewerCache).
@@ -571,6 +608,7 @@ export const ServerChannelList: React.FC<Props> = ({
                 onContextMenu={(e) => ctx.open(e, buildChannelMenu(ch), `${ch.icon_emoji ?? '#'} ${ch.name}`)}
                 className={channelRowCls(ch.channel_id)}
                 title={ch.topic ?? ch.name}
+                data-unread-anchor={badge ? channelKey(ch.channel_id) : undefined}
             >
                 {ch.icon_name ? (
                     <ChannelIconRenderer
@@ -588,7 +626,7 @@ export const ServerChannelList: React.FC<Props> = ({
                 )}
                 <span className={`truncate flex-1 ${isChannelMuted ? 'opacity-50' : ''}`}>{ch.name}</span>
                 {/* @mention badge — always shown regardless of mute */}
-                {hasMention && activeChannelId !== ch.channel_id && (
+                {badge === 'mention' && (
                     <span className="ml-auto min-w-[16px] h-4 px-0.5 rounded-full bg-cl-flash text-cl-text text-[9px] font-bold flex items-center justify-center group-hover:opacity-0 transition-opacity shrink-0">
                         {mentions > 99 ? '99+' : mentions}
                     </span>
@@ -597,7 +635,7 @@ export const ServerChannelList: React.FC<Props> = ({
                 {/* @mentions-only draws a plain grey dot, no number: there is
                     something new, but the user asked not to be pinged for it.
                     Same treatment as the rail (components/RailBadge.tsx). */}
-                {hasUnread && !hasMention && activeChannelId !== ch.channel_id && (quietUnread ? (
+                {(badge === 'quiet' || badge === 'unread') && (badge === 'quiet' ? (
                     <span
                         role="img"
                         aria-label="Unread"
@@ -713,8 +751,14 @@ export const ServerChannelList: React.FC<Props> = ({
                 onDragOver={onDragOver}
                 onDragEnd={onDragEnd}
             >
+                {/* The pills overlay the scroller's edges, so they live in a
+                    positioned wrapper OUTSIDE it: they never scroll with the list
+                    and never change its layout. */}
+                <div className="relative flex-1 min-h-0 flex flex-col">
                 <div
-                    className="flex-1 overflow-y-auto overflow-x-hidden px-2 pb-4 custom-scrollbar"
+                    ref={setListEl}
+                    tabIndex={-1}
+                    className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-2 pb-4 custom-scrollbar outline-none"
                     onContextMenu={(e) => {
                         if (!canManage) return;
                         createMenu.open(e, [
@@ -793,6 +837,9 @@ export const ServerChannelList: React.FC<Props> = ({
                                                         ref={canManage ? setHeaderRef : undefined}
                                                         {...(canManage ? headerDragProps : {})}
                                                         className={`group flex items-center gap-2 w-full px-2 pt-0.5 pb-0 rounded relative hover:bg-cl-raise/40 transition-colors ${canManage ? 'cursor-grab active:cursor-grabbing select-none touch-none' : 'cursor-pointer'}`}
+                                                        // A COLLAPSED category stands in for the unread channels it hides
+                                                        // (the off-screen pill's jump expands it); see offscreenUnread.ts.
+                                                        data-unread-anchor={collapsed && unreadModel.has(categoryKey(cat.category_id)) ? categoryKey(cat.category_id) : undefined}
                                                         onContextMenu={(e) => {
                                                             e.stopPropagation();
                                                             // No actionable items for a member without MANAGE_CHANNELS —
@@ -867,6 +914,21 @@ export const ServerChannelList: React.FC<Props> = ({
                             </SortableContext>
                         </>
                     )}
+                </div>
+                {offscreen.above && (
+                    <div className="absolute top-2 inset-x-0 z-40 flex justify-center pointer-events-none">
+                        <span className="pointer-events-auto flex">
+                            <OffscreenUnreadPill direction="above" summary={offscreen.above} onJump={offscreen.jump} />
+                        </span>
+                    </div>
+                )}
+                {offscreen.below && (
+                    <div className="absolute bottom-2 inset-x-0 z-40 flex justify-center pointer-events-none">
+                        <span className="pointer-events-auto flex">
+                            <OffscreenUnreadPill direction="below" summary={offscreen.below} onJump={offscreen.jump} />
+                        </span>
+                    </div>
+                )}
                 </div>
 
                 {/* Drag overlay — ghost of the item being dragged */}

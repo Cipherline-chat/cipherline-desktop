@@ -67,7 +67,7 @@ export const GamingVideoSetting: React.FC = () => {
             <div className="sd-row" style={{ borderTop: 'none' }}>
                 <div className="sd-rl">
                     <b className="flex items-center gap-2"><Gamepad2 size={14} style={{ color: 'var(--cl-faint)' }} /> {GAMING_VIDEO_LABEL}</b>
-                    <span>{gamingVideoDescription(mode.platform)}</span>
+                    <span>{gamingVideoDescription()}</span>
                 </div>
                 <div className="sd-rc">
                     <ClToggle

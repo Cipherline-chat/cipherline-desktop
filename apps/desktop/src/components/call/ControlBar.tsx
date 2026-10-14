@@ -1,6 +1,6 @@
 import React from 'react';
 import ReactDOM from 'react-dom';
-import { PhoneCall, Mic, MicOff, Video, VideoOff, ScreenShare, Loader2, X, ChevronDown, ChevronLeft, Headphones, HeadphoneOff, Maximize2, Minimize2, Monitor, Sliders, Check, Volume2, VolumeX, LifeBuoy } from 'lucide-react';
+import { PhoneCall, ScreenShare, Loader2, X, ChevronDown, ChevronLeft, Maximize2, Minimize2, Monitor, Sliders, Check, Volume2, VolumeX, LifeBuoy } from 'lucide-react';
 import { useCallContextSafe } from '../../contexts/CallContext';
 import { useSubscription } from '../../contexts/SubscriptionContext';
 import { useDismissOnOutsideClick } from '../../hooks/useDismissOnOutsideClick';
@@ -10,13 +10,17 @@ import type { VoiceSettingsHook } from '../../hooks/useVoiceSettings';
 import type { ContextMenuItem } from '../primitives/ContextMenu';
 import type { ScreenShareOptions } from '../ScreenSharePickerModal';
 import { ClButton } from '../cl';
+import { ShareFpsNote } from '../ShareFpsNote';
+import { MicIcon, CamIcon, HeadphonesIcon } from '../icons/SlashableIcon';
 import { ClSlider } from '../ClSlider';
 import { playIco } from '../../utils/clPhysics';
 import { bumpStreak, firesAt, type Streak } from '../../utils/eggStreak';
 import { computeTooltipPlacement, type TooltipPlacement } from '../cl/tooltipPlacement';
 import { openReportProblem } from '../../utils/diagnostics/reportRequest';
+import { layoutsEqual, WHOLE_LAYOUT, type ShareLayout } from '../../utils/shareLayout';
 
 interface ControlBarProps {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     localParticipant: any;
     isLocalDeafened: boolean;
     onToggleMic: () => void;
@@ -34,6 +38,13 @@ interface ControlBarProps {
     currentShareResolution?: ScreenShareOptions['resolution'];
     currentShareFrameRate?: ScreenShareOptions['frameRate'];
     currentShareAudio?: boolean;
+    /** Ultra-wide display being shared (shareLayout.ts layoutChoices): the
+     *  whole display, or one screen of it. Empty/absent = nothing to choose. */
+    shareLayoutChoices?: Array<{ layout: ShareLayout; label: string }>;
+    /** The layout the live share is on (absent = the whole display). */
+    currentShareLayout?: ShareLayout;
+    /** Re-point a live share at another screen - applied at once, no Apply step, no re-pick. */
+    onChangeShareLayout?: (layout: ShareLayout) => void;
     /** A share start is in flight — a source was confirmed and LiveKit has not
      *  published it yet (SidebarConference / utils/screenShareStartState.ts).
      *  The share control shows a spinner and takes no clicks meanwhile. */
@@ -303,6 +314,9 @@ export const ControlBar = ({
     currentShareResolution,
     currentShareFrameRate,
     currentShareAudio,
+    shareLayoutChoices,
+    currentShareLayout,
+    onChangeShareLayout,
     screenShareStarting,
     onLeave,
     showFullscreenButton,
@@ -390,7 +404,7 @@ export const ControlBar = ({
         if (!voice) return;
         const build = (currentId: string): ContextMenuItem[] => [
             ...buildDeviceRows(inputDevices, currentId, 'Default Microphone', pickedId => {
-                voice.setMicDeviceId(pickedId);
+                voice.setMicDeviceId(pickedId, inputDevices.find(d => d.deviceId === pickedId));
                 micMenu.updateItems(build(pickedId));
             }),
             { divider: true },
@@ -406,7 +420,7 @@ export const ControlBar = ({
         if (!voice) return;
         const build = (currentId: string): ContextMenuItem[] => [
             ...buildDeviceRows(outputDevices, currentId, 'Default Speakers', pickedId => {
-                voice.setSpeakerDeviceId(pickedId);
+                voice.setSpeakerDeviceId(pickedId, outputDevices.find(d => d.deviceId === pickedId));
                 deafenMenu.updateItems(build(pickedId));
             }),
             { divider: true },
@@ -542,7 +556,7 @@ export const ControlBar = ({
     React.useLayoutEffect(() => {
         if (!ssMenuOpen) return;
         positionMenu();
-    }, [ssMenuOpen, ssMenuMode, qFps, positionMenu]);
+    }, [ssMenuOpen, ssMenuMode, qFps, positionMenu, shareLayoutChoices?.length]);
 
     // Recalculate position on window resize while open.
     React.useEffect(() => {
@@ -770,18 +784,35 @@ export const ControlBar = ({
                         <div className="grid grid-cols-4 gap-1.5">
                             {QUALITY_FPS.map(fps => (
                                 <Chip key={fps} active={qFps === fps} onClick={() => setQFps(fps)}>
-                                    {fps} fps{fps === 90 ? '*' : ''}
+                                    {fps} fps
                                 </Chip>
                             ))}
                         </div>
-                        {/* The `*` denotes "up to" — actual frame rate is
-                            source/display/network-dependent, not guaranteed. */}
-                        {qFps === 90 && (
-                            <p className="text-[10px] text-amber-400/90 mt-1 m-0 leading-snug">
-                                * Up to 90 fps — actual frame rate depends on your hardware and network speed.
-                            </p>
-                        )}
+                        {/* 90 is an "up to" target, not a guarantee - the shared
+                            informational note says so (rendered only at 90). */}
+                        <ShareFpsNote frameRate={qFps} className="mt-1.5" />
                     </div>
+
+                    {/* Ultra-wide display (Surround / Eyefinity): which screen to
+                        show. Applied the moment it is clicked - between screens it
+                        only moves the crop rectangle, so there is nothing to wait
+                        for and no Apply step. */}
+                    {shareLayoutChoices && shareLayoutChoices.length > 0 && onChangeShareLayout && (
+                        <div>
+                            <p className="text-[10px] text-cl-faint font-medium uppercase tracking-wide mb-1 m-0">Screen</p>
+                            <div className="grid grid-cols-2 gap-1.5">
+                                {shareLayoutChoices.map(c => (
+                                    <Chip
+                                        key={c.label}
+                                        active={layoutsEqual(c.layout, currentShareLayout ?? WHOLE_LAYOUT)}
+                                        onClick={() => onChangeShareLayout(c.layout)}
+                                    >
+                                        {c.label}
+                                    </Chip>
+                                ))}
+                            </div>
+                        </div>
+                    )}
 
                     {/* Apply — kept as an explicit step rather than applying each
                         chip immediately: onAdjustScreenShareQuality tears down
@@ -842,10 +873,7 @@ export const ControlBar = ({
                         : micOn ? 'Mute' : 'Unmute'
                     }
                 >
-                    <span className="cl-ico cl-ico--tog" data-off={!micOn}>
-                        <Mic className={`${iconSize} ico-on`} />
-                        <MicOff className={`${iconSize} ico-off`} />
-                    </span>
+                    <span className="cl-ico"><MicIcon off={!micOn} className={iconSize} /></span>
                 </CtrlBtn>
 
                 <CtrlBtn
@@ -862,10 +890,7 @@ export const ControlBar = ({
                     onContextMenu={openDeafenMenu}
                     title={deafenDisabled ? "You've been server deafened — you can't override this" : isLocalDeafened ? 'Undeafen' : 'Deafen'}
                 >
-                    <span className="cl-ico cl-ico--tog" data-off={isLocalDeafened}>
-                        <Headphones className={`${iconSize} ico-on`} />
-                        <HeadphoneOff className={`${iconSize} ico-off`} />
-                    </span>
+                    <span className="cl-ico"><HeadphonesIcon off={isLocalDeafened} className={iconSize} /></span>
                 </CtrlBtn>
 
                 {/* Audio ends here; video begins. The divider is what makes the
@@ -890,10 +915,7 @@ export const ControlBar = ({
                         : camOn ? 'Turn camera off' : 'Turn camera on'
                     }
                 >
-                    <span className="cl-ico cl-ico--tog" data-off={!camOn}>
-                        <Video className={`${iconSize} ico-on`} />
-                        <VideoOff className={`${iconSize} ico-off`} />
-                    </span>
+                    <span className="cl-ico"><CamIcon off={!camOn} className={iconSize} /></span>
                 </CtrlBtn>
 
                 {/* Screenshare — idle: plain | active: split stop + chevron */}

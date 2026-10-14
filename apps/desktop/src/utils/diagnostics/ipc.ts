@@ -92,10 +92,19 @@ export function parseSystemInfoReply(v: unknown, appVersion: string, buildCommit
     return out;
 }
 
+export type CrashHandled = 'recovered' | 'restart_prompted' | 'not_in_call';
+const CRASH_HANDLED: readonly CrashHandled[] = ['recovered', 'restart_prompted', 'not_in_call'];
+
 export interface PendingCrashEntry {
     signature: string;
     count: number;
     seen: boolean;
+    /**
+     * A GPU process restart this app HANDLED while running (electron/
+     * gpu-restart.ts, utils/gpuRecovery.ts) — the app never closed. Local
+     * bookkeeping only (like `seen`); not part of the report.
+     */
+    handled?: CrashHandled;
     crash: CrashInfo;
 }
 
@@ -119,6 +128,7 @@ export function parsePendingCrashesReply(v: unknown): PendingCrashEntry[] {
             signature: item.signature.slice(0, 600),
             count: Math.max(1, Math.round(num(item.count, 1))),
             seen: item.seen === true,
+            ...((CRASH_HANDLED as readonly unknown[]).includes(item.handled) ? { handled: item.handled as CrashHandled } : {}),
             crash,
         });
     }

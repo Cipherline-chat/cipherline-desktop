@@ -13,6 +13,7 @@ import { DevicesPane } from './panes/DevicesPane';
 import { DangerPane } from './panes/DangerPane';
 import AdvancedSettings from '../AdvancedSettings';
 import { StorageSettings } from '../StorageSettings';
+import type { ServerStorageData } from '../ServerStorageSection';
 import { KeybindSettings } from '../KeybindSettings';
 import { VoiceVideoSettings } from '../VoiceVideoSettings';
 import GameActivitySettings from '../GameActivitySettings';
@@ -110,13 +111,17 @@ export interface SettingsScreenProps {
     onLogout: () => void;
     onViewProfile?: () => void;
     retention: RetentionHook;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     messagesState: Record<string, any[]>;
     onClearAllMessages: () => void;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     conversations: any[];
     onPurgeConversation: (convId: string, olderThanMs: number) => void;
     onPurgeTypeNow: (type: 'dm' | 'group' | 'server') => void;
     /** Dry-run count for the "Remove N now" prompt - see StorageSettings. */
     countExpiringForType?: (type: 'dm' | 'group' | 'server', kind: 'msg' | 'att', newVal: MessageRetention | AttachmentRetention) => number;
+    /** Server channel history for Storage -> "Server storage" (see StorageSettings). */
+    serverStorage?: ServerStorageData;
     keybinds: KeybindHook;
     voice: VoiceSettingsHook;
     gameSettings: GameSettingsHook;
@@ -135,7 +140,7 @@ export interface SettingsScreenProps {
 export const SettingsScreen: React.FC<SettingsScreenProps> = ({
     onClose, initialTab,
     retention, messagesState, onClearAllMessages,
-    conversations, onPurgeConversation, onPurgeTypeNow, countExpiringForType,
+    conversations, onPurgeConversation, onPurgeTypeNow, countExpiringForType, serverStorage,
     keybinds, voice, gameSettings, currentGame, currentGameProcess, onIgnoreCurrentGame, privacy, screenLock, gif, onLogout,
 }) => {
     const [pane, setPane] = useState<PaneId>(initialTab ?? 'profile');
@@ -299,6 +304,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
                                             onPurgeConversation={onPurgeConversation}
                                             onPurgeTypeNow={onPurgeTypeNow}
                                             countExpiringForType={countExpiringForType}
+                                            serverStorage={serverStorage}
                                         />
                                     </>
                                 )}

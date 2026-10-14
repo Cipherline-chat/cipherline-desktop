@@ -46,6 +46,44 @@ export function fractionOf(w: AttachmentRetention): number {
     return POS[w] / RULER_STOPS;
 }
 
+/** Where a bar ends AND where its handle sits, as a CSS percentage. ONE number
+ *  feeds both (the bar's width and the handle's `left`), so they cannot drift:
+ *  the handle's centre is exactly on the bar's end, and Forever = 100% = the
+ *  ∞ stop on the ruler. */
+export function trackPercent(w: AttachmentRetention): number {
+    return (POS[w] / RULER_STOPS) * 100;
+}
+
+/** Start the intro once the shell's own entrance (the wizard fade, the step
+ *  slide) is within this long of finishing, i.e. mostly visible: otherwise the
+ *  first step's intro plays behind the fade and nobody sees it. */
+export const INTRO_OVERLAP_MS = 300;
+
+/** How long to hold the zero-width frame, from the entrance animations still
+ *  running on the shell (`.ob-wiz`, `.ob-step-anim`) around `from`. 0 when there
+ *  are none (a Back arrival late in a slide, tests, no Web Animations API). */
+export function introLeadMs(from: Element | null): number {
+    if (!from) return 0;
+    let lead = 0;
+    for (const anc of [from.closest('.ob-wiz'), from.closest('.ob-step-anim')]) {
+        if (!anc || typeof anc.getAnimations !== 'function') continue;
+        try {
+            for (const a of anc.getAnimations()) {
+                const t = a.effect?.getComputedTiming();
+                if (!t || a.playState === 'finished' || typeof t.endTime !== 'number') continue;
+                const local = typeof t.localTime === 'number' ? t.localTime : 0;
+                lead = Math.max(lead, t.endTime - local - INTRO_OVERLAP_MS);
+            }
+        } catch { /* a missing animation API just means no lead */ }
+    }
+    return Math.max(0, Math.min(lead, 1000));
+}
+
+/** What the tooltip over a dragged handle says: "1 year" / "1 month files". */
+export function tipFor(kind: Kind, w: MessageRetention | AttachmentRetention): string {
+    return kind === 'msg' ? labelFor(kind, w) : `${labelFor(kind, w)} files`;
+}
+
 export function labelFor(kind: Kind, w: MessageRetention | AttachmentRetention): string {
     return kind === 'msg'
         ? MESSAGE_RETENTION_LABELS[w as MessageRetention]

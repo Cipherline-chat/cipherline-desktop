@@ -1,4 +1,3 @@
-/* eslint-disable -- harness driver, not shipped */
 // The owner's flow in ChatPane's real feed shell: an image message with a
 // reaction is the LAST message; a follow-up is then appended through ChatPane's
 // own FLIP reveal + entrance animation. Measures the image's chip BEFORE and

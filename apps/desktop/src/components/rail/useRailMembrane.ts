@@ -94,6 +94,7 @@ export function useRailMembrane(
             raf.current = requestAnimationFrame(step);
         };
         raf.current = requestAnimationFrame(step);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- paint is a per-render closure; target/rest/node already cover what it reads, and including it would restart the animation every render
     }, [target, rest, node]);
 
     useEffect(() => () => {

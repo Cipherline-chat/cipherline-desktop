@@ -39,7 +39,7 @@ function installBridge(status: 'ok' | 'absent' = 'ok'): void {
     g.window.electronAPI = {
         getBlobCacheKey: vi.fn(async () =>
             status === 'ok' ? { status: 'ok', keyB64: KEY_B64 } : { status: 'absent' }),
-    };
+    } as never; // a one-method stub of the bridge; the real type has ~150 members
 }
 
 async function wipeDb(): Promise<void> {

@@ -2,6 +2,7 @@ import React from 'react';
 import ReactDOM from 'react-dom';
 import { AnimatePresence, LayoutGroup, motion } from 'framer-motion';
 import { useParticipants, useLocalParticipant, useRoomContext } from '@livekit/components-react';
+import { selfCallIntent, deriveSelfIntent } from '../utils/selfCallIntent';
 import { Track, RoomEvent, ParticipantEvent, TrackEvent, RemoteParticipant, RemoteTrackPublication, LocalAudioTrack, LocalVideoTrack, ConnectionState } from 'livekit-client';
 import { PCM_RING_WORKLET_SOURCE } from '../utils/pcmRingWorkletSource';
 import { Mic, WifiOff, VideoOff } from 'lucide-react';
@@ -21,6 +22,7 @@ import {
     probeHardwareEncoders,
     retuneScreenShareInPlace,
     captureFrameRateFor,
+    captureBoxFor,
     installH264HighPreference,
     watchH264HighStart,
     markH264HighFailed,
@@ -38,14 +40,27 @@ import { markPickerRequested, prefetchDesktopSources } from '../utils/desktopSou
 import { CameraLayeringPolicy, initialLayering, type CameraCodec } from '../utils/cameraQuality';
 import {
     HEVC_ATTR, HevcPolicy, formatDecodeCaps, hevcCapableCount, roomHevcState, probeHevcDecode, probeHevcEncode,
-    hasHevcFailed, markHevcFailed, type HevcMode,
+    hasHevcFailed, markHevcFailed, hasHevcGpuLost, parseDecodeCaps, type HevcMode,
 } from '../utils/hevcNegotiation';
 import { swapShareCodec, type ShareParticipantLike } from '../utils/shareRepublish';
 import { installShareLowLayerControl, type ShareTrackLike } from '../utils/shareLowLayer';
+import { ShareBackgroundProbe, subscribeWindowBackground, isWindowBackground } from '../utils/shareBackgroundProbe';
+import { createCropPipeline, supportsCropPipeline, type CropPipeline } from '../utils/shareCrop';
+import { sliceRect, layoutChoices, aspectOf, type ShareLayout } from '../utils/shareLayout';
+import { planEncode } from '../utils/shareEncoderLimits';
+import {
+    retuneLiveShare, applyLiveSelection, applyQualityAfterSwap, qualityEventDetails,
+    type LiveShareApplier,
+} from '../utils/shareLiveRetune';
+import { ShareStatsSampler, ShareEncoderWatchdog, decideStallAction, stallToastCopy, type EncoderStall } from '../utils/shareHealth';
+import { fetchForegroundDiag, foregroundLogFields } from '../utils/foregroundInfo';
+import {
+    FullscreenHintGate, accountHintSeenStore, shareKindOf, FULLSCREEN_HINT_TITLE, FULLSCREEN_HINT_MESSAGE, FULLSCREEN_HINT_ACTION,
+} from '../utils/shareFullscreenHint';
 import { logCallEvent } from '../utils/callEventLog';
 import { getCameraQualityTier, getCameraCodecPref, subscribeCameraQualityPrefs, useIncomingVideoMode } from '../utils/cameraQualityPrefs';
 import { chooseDecodedSet, DECODE_CAP } from '../utils/remoteVideoQuality';
-import { parseMainDiagnostics, setScreenShareSession, updateScreenShareSession } from '../utils/screenShareDiagnostics';
+import { parseMainDiagnostics, parseCaptureTiming, setScreenShareSession, updateScreenShareSession } from '../utils/screenShareDiagnostics';
 import { installShareStartBitrate, type StartBitrateParticipant } from '../utils/shareStartBitrate';
 import { ShareStartTracker, describeShareStartError, type ShareStartOutcome } from '../utils/screenShareStartState';
 
@@ -63,7 +78,7 @@ interface ScreenShareSendStats {
 }
 import { ScreenShare } from 'lucide-react';
 import axios from 'axios';
-import { API_BASE } from '../constants';
+import { apiUrl } from '../utils/apiPath';
 import { EncryptedAvatar } from './EncryptedAvatar';
 import { CallEncryptionIndicator, type CallEncryptionIndicatorMode } from './server/CallEncryptionIndicator';
 import { ScreenSharePickerModal } from './ScreenSharePickerModal';
@@ -91,10 +106,10 @@ import {
 } from '../utils/screenShareViewers';
 import { useScreenShareViewers } from './call/useScreenShareViewers';
 import {
-    DEFAULT_AUDIO_INPUT_ID,
-    MIC_CAPTURE_CONSTRAINTS,
+    UNPROCESSED_TRACK_SETTINGS,
     hasRealDeviceInfo,
-    pickMicDeviceId,
+    micCaptureConstraints,
+    resolveEchoCancellation,
     resolveMicDeviceId,
 } from '../utils/audioInput';
 import { DEFAULT_CAMERA_ID, pickCameraDeviceId, resolveCameraDeviceId } from '../utils/cameraInput';
@@ -104,14 +119,20 @@ import {
     formatDeviceSwitchLog,
     describeSwitchFailure,
     readCaptureDeviceId,
-    needsDeviceSwitch,
     type DeviceSwitchOutcome,
 } from '../utils/deviceSwitch';
+import {
+    createMicDeviceSync,
+    setRoomEchoCancellation,
+    type MicDeviceSync,
+    type MicTrackLike,
+} from '../utils/micDeviceSync';
 import { useNotificationPrefs } from '../contexts/NotificationContext';
 import { playSound } from '../utils/notificationSounds';
 import { useWindowFocus } from '../hooks/useWindowFocus';
 import { useToast } from '../contexts/ToastContext';
-import { onOutputDeviceChange, setOutputDeviceFailureHandler, shouldAdoptOutputReroute } from '../utils/audioOutput';
+import { reapplyOutputDevice, setOutputDeviceFallbackHandler } from '../utils/audioOutput';
+import type { DeviceHint } from '../utils/deviceResolve';
 import { SilenceWatchdog } from '../utils/audioSilenceWatchdog';
 import { getCurrentPipelineDbfs } from '../utils/micLevelRegistry';
 import { flatRecordEqual } from '../utils/flatRecordEqual';
@@ -142,7 +163,10 @@ interface SidebarConferenceProps {
      *  callback) — this flag just stops handleLeave from ALSO firing the
      *  regular-call end-of-call POST that doesn't apply here. */
     isHuddle?: boolean;
-    onLeave: (wasLastPerson: boolean) => void;
+    /** `deliberate` = the user chose to leave (Leave button / hotkey). Absent or
+     *  false for every automatic leave (inactivity). It rides to the server, where
+     *  it is the only thing that can end a call whose creator asked for that. */
+    onLeave: (wasLastPerson: boolean, deliberate?: boolean) => void;
     /** Fired when the local solo-inactivity countdown starts/stops (see the
      *  "Solo inactivity kick" effect below). Lets Dashboard know a matching
      *  server-side `call:solo_kick` for THIS session is redundant — the client
@@ -458,7 +482,9 @@ export const SidebarConference = ({
                 const camPub = p.getTrackPublication(Track.Source.Camera);
                 const ssPub  = p.getTrackPublication(Track.Source.ScreenShare);
                 tracks[p.identity] = {
+                    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
                     hasCamera:      !!(camPub && !camPub.isMuted && (camPub as any).track),
+                    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
                     hasScreenShare: !!(ssPub  && !ssPub.isMuted  && (ssPub  as any).track),
                     // Mirror the mic mute state so ServerContextPanel participant rows
                     // can show a red MicOff badge for self-muted participants without
@@ -489,7 +515,9 @@ export const SidebarConference = ({
             // this shared snapshot, so anything reading participantTracksCtx
             // saw stale state for you until an unrelated push() happened to
             // run. Same omission as the two hooks in call/VideoTile.tsx.
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
             p.on(ParticipantEvent.LocalTrackPublished as any,   push);
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
             p.on(ParticipantEvent.LocalTrackUnpublished as any, push);
             p.on(ParticipantEvent.ParticipantMetadataChanged, push);
             setCallParticipantSpeaking(p.identity, p.isSpeaking);
@@ -503,7 +531,9 @@ export const SidebarConference = ({
                 p.off(ParticipantEvent.TrackUnmuted,               push);
                 p.off(ParticipantEvent.TrackPublished,             push);
                 p.off(ParticipantEvent.TrackUnpublished,           push);
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
                 p.off(ParticipantEvent.LocalTrackPublished as any,   push);
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
                 p.off(ParticipantEvent.LocalTrackUnpublished as any, push);
                 p.off(ParticipantEvent.ParticipantMetadataChanged, push);
             }
@@ -550,6 +580,7 @@ export const SidebarConference = ({
         return () => {
             callCtx?.endCallFullscreen();
         };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- cleanup-only layout effect that must fire exactly once when this subtree unmounts (call ended); callCtx identity changes every render
     }, [callCtx?.endCallFullscreen]);
 
     // ── Tray voice-activity + mute/deafen indicator ───────────────────────────
@@ -600,109 +631,51 @@ export const SidebarConference = ({
         };
     }, [room]);
 
-    // ── Output-device auto-reroute reconciliation ───────────────────────────
-    // If the active OUTPUT device disappears mid-call (headphones unplugged,
-    // etc.), LiveKit's own internal Room.handleDeviceChange/selectDefaultDevices
-    // already reroutes every EXISTING <audio> element to a fallback device —
-    // that part just works, no code needed. What it doesn't do is tell US, so
-    // our own persisted speakerDeviceId setting (audioOutput.ts / useVoiceSettings)
-    // stayed pointed at the now-dead device. Any NEW <audio> element created
-    // afterward (NS toggle, fullscreen flip, new participant, track replace —
-    // all rebuild the chain) read that stale id via applyOutputDevice() and
-    // failed silently (setSinkId rejecting on a nonexistent device), landing on
-    // the true system default instead — split-brain between old and new
-    // elements, and the Settings dropdown kept showing a device that no longer
-    // existed as "selected." Adopting LiveKit's own choice as our new source of
-    // truth the moment it reroutes closes both gaps.
+    // ── Output device: keep livekit-client from re-pointing our playback ─────
+    // The speaker pick is applied for the whole session by useVoiceSettings
+    // (audioOutput.ts): routed at birth for every new element/context, on every
+    // change, and re-resolved on every devicechange (pick unplugged → system
+    // default with one notice; plugged back in → routed to it again, the pick
+    // is NEVER overwritten).
     //
-    // ── …but ONLY when the pick is actually gone ────────────────────────────
+    // This handler used to ADOPT livekit-client's ActiveDeviceChanged
+    // ('audiooutput', …) as the new setting once the pick looked gone. LiveKit
+    // emits that with the literal 'default' whenever the OS default moves —
+    // which is exactly what happens when a Bluetooth headset drops — so the
+    // explicit pick was overwritten with 'default' and never came back when the
+    // headset reconnected: "I set my output device and it just uses the
+    // default". Nothing is adopted any more.
     //
-    // This handler used to adopt every ActiveDeviceChanged unconditionally, and
-    // LiveKit emits that event far more often than "your device vanished":
-    // selectDefaultDevices() fires it on any devicechange where it believes the
-    // user is following the OS default — which, for us, is always (see
-    // shouldAdoptOutputReroute's comment for why activeDeviceMap is permanently
-    // 'default' here). So plugging in a headset could silently overwrite an
-    // explicit speaker choice, at exactly the moment a user is most likely to
-    // be making one. shouldAdoptOutputReroute is the gate; it deliberately
-    // mirrors syncMicDevice's `defaultMoved`, which likewise only auto-follows
-    // the OS default while the user hasn't pinned a specific device.
-    //
-    // ── Why not room.switchActiveDevice('audiooutput', …)? ──────────────────
-    //
-    // It looks like the "proper" fix — it is the only thing that writes
-    // livekit-client's activeDeviceMap, and a correct entry there would stop
-    // selectDefaultDevices() misreading us as default-following in the first
-    // place. We deliberately don't, for four reasons:
-    //
-    //   1. It does not route our audio. This app plays every remote participant
-    //      through Web Audio (useParticipantAudio mutes the attached element and
-    //      routes source → gain → limiter → AudioContext.destination), so the
-    //      audible sink is AudioContext.setSinkId. livekit-client only calls
-    //      that under `webAudioMix`, which this app does not enable — its
-    //      audiooutput branch otherwise just sets sinkId on remote participants'
-    //      elements, i.e. on the muted ones. audioOutput.ts would still have to
-    //      do the real work, so this would be pure addition, not replacement.
-    //   2. It wouldn't actually close the hole. Of selectDefaultDevices()'s
-    //      three override paths, a correct activeDeviceMap only silences the
-    //      one gated on === 'default'. The "active device was first in the
-    //      previous enumeration" heuristic can still switch an explicitly-picked
-    //      device out from under us — so this guard is needed regardless, and
-    //      once it exists it covers all three paths, present and future.
-    //   3. It emits ActiveDeviceChanged synchronously as part of the call —
-    //      feeding our own listener here — and it throws outright on browsers
-    //      where supportsSetSinkId() is false. Neither is worth inviting for a
-    //      call whose useful effect we've already ruled out.
-    //   4. Device-id conventions differ: ours is '' for "system default",
-    //      LiveKit's is the literal 'default'. Handing our value straight over
-    //      would need a translation layer with its own failure modes.
-    //
-    // Guarding on our side instead keeps the behaviour independent of
-    // livekit-client's internal heuristics, which are three ad-hoc branches with
-    // browser-specific carve-outs.
+    // What remains is undoing LiveKit's own reroutes: its selectDefaultDevices()
+    // calls switchActiveDevice('audiooutput', …) when it decides the active
+    // output vanished, and that sets the sink on every element a remote track
+    // is attached to — since the A/V-sync change those elements ARE the audible
+    // playback. Its idea of "active" ('default', for us, forever — we never
+    // call switchActiveDevice for output; see audioOutput.ts) is not ours, so
+    // every such event just re-applies our effective device.
     React.useEffect(() => {
         if (!room) return;
-        const onActiveDeviceChanged = (kind: MediaDeviceKind, deviceId: string) => {
-            if (kind !== 'audiooutput' || !voice) return;
-            const currentSetting = voice.settings.speakerDeviceId;
-            // Cheap rejections first, so the common no-op case never touches
-            // enumerateDevices(). The full predicate re-checks these.
-            if (deviceId === currentSetting || currentSetting === '') return;
-            navigator.mediaDevices.enumerateDevices().then(devices => {
-                const outputs = devices.filter(d => d.kind === 'audiooutput');
-                // Re-read rather than trusting the value captured before the
-                // await: the whole point of this guard is not to clobber a
-                // deliberate choice, and the user picking a device DURING the
-                // enumeration is exactly that choice, just a few ms later.
-                const settingNow = voice.settings.speakerDeviceId;
-                if (!shouldAdoptOutputReroute(settingNow, deviceId, outputs)) return;
-                voice.setSpeakerDeviceId(deviceId);
-                // Don't wait for the Settings panel to be mounted to reroute live
-                // elements — it usually isn't, during a call.
-                onOutputDeviceChange(deviceId);
-            }).catch(() => {
-                // Enumeration failed, so we can't tell whether the pick is gone.
-                // Leaving the explicit choice alone is the safe default: a stale
-                // id degrades to the system default, whereas a wrong overwrite
-                // is silent and sticky.
-            });
+        const onActiveDeviceChanged = (kind: MediaDeviceKind) => {
+            if (kind === 'audiooutput') reapplyOutputDevice();
         };
         room.on(RoomEvent.ActiveDeviceChanged, onActiveDeviceChanged);
         return () => { room.off(RoomEvent.ActiveDeviceChanged, onActiveDeviceChanged); };
-    }, [room, voice]);
+    }, [room]);
 
-    // Surface setSinkId failures (a device disappearing between LiveKit's
-    // reroute and our own applyOutputDevice() call on a freshly-built chain)
-    // as a toast instead of a console-only warning, while a call is live.
+    // The picked output going away mid-call: one notice per disappearance, while
+    // a call is live. (A rejected setSinkId is toasted session-long by
+    // useOutputDeviceNotices in Dashboard, so it also covers Settings.)
     React.useEffect(() => {
-        setOutputDeviceFailureHandler(() => {
+        setOutputDeviceFallbackHandler(() => {
             toast.push({
-                kind: 'warning',
-                title: 'Speaker switch failed',
-                message: "Couldn't route audio to your selected output device — falling back to the system default.",
+                kind: 'info',
+                title: 'Output device disconnected',
+                message: 'Your selected speakers or headset are no longer available — playing through your system default until they are back.',
             });
         });
-        return () => setOutputDeviceFailureHandler(null);
+        return () => {
+            setOutputDeviceFallbackHandler(null);
+        };
     }, [toast]);
 
     // ── "Connected but silent" watchdog ─────────────────────────────────────
@@ -783,21 +756,12 @@ export const SidebarConference = ({
      *  used to converge on a silent mute with only a console.warn, no banner
      *  at all — every mic failure mode had one, camera had none. */
     const [cameraError, setCameraError] = React.useState<string | null>(null);
-    const lastDefaultLabelRef = React.useRef<string>('');
-    /** Device id our last successful switch targeted — what we believe is live. */
-    const appliedMicDeviceRef = React.useRef<string | null>(null);
-    /** Serialises syncs; devicechange fires in bursts and restarts race badly. */
-    const micSyncBusyRef = React.useRef(false);
-    /** A devicechange that arrived mid-sync, to be serviced once it finishes. */
-    const micSyncPendingRef = React.useRef(false);
-    /** Latest syncMicDevice, so the tail of a sync can re-enter the newest one. */
-    const syncMicDeviceRef = React.useRef<((force?: boolean) => Promise<void>) | null>(null);
+    /** The published-mic device follower (utils/micDeviceSync.ts). One per Room. */
+    const micSyncRef = React.useRef<MicDeviceSync | null>(null);
 
-    // Camera equivalents of the mic-sync refs directly above — same shapes,
-    // same reasoning, kept as separate refs (not a generalized "device sync"
-    // abstraction) so this stays a small, reviewable diff against the
-    // existing, already-battle-tested mic implementation rather than a
-    // risky refactor of it.
+    // Camera device-sync bookkeeping. The camera keeps its own in-component
+    // implementation (syncCameraDevice below); the mic's equivalent moved to
+    // utils/micDeviceSync.ts so its decision logic could be unit-tested.
     const lastDefaultCameraLabelRef = React.useRef<string>('');
     const appliedCameraDeviceRef = React.useRef<string | null>(null);
     const cameraSyncBusyRef = React.useRef(false);
@@ -833,222 +797,90 @@ export const SidebarConference = ({
         if (outcome.ok) console.info(line); else console.warn(line);
     }, []);
 
-    /**
-     * Bring the live mic track in line with what the user asked for.
-     * `force` skips the "nothing changed" early-out (used when the setting
-     * itself changed rather than the hardware).
-     */
-    // Seed the default-device label at mount so the FIRST genuine default
-    // change is detected rather than swallowed by the "no previous label to
-    // compare against" guard in syncMicDevice.
+    // ── Published mic follows the selected device / the OS default ──────────
+    // All of the decision logic, the debounce and the busy/pending coalescing
+    // live in utils/micDeviceSync.ts (unit-tested there). This component only
+    // supplies the Room, the setting, and where outcomes are surfaced.
     //
-    // Guarded on hasRealDeviceInfo, which is the part the old implementation got
-    // wrong: it seeded unconditionally, so when it ran before mic permission
-    // resolved it recorded a BLANK label, and the first post-permission
-    // enumeration then looked like a device change and restarted the mic for
-    // nothing. By the time this component mounts LiveKit has normally already
-    // acquired the mic, so the list is real; if it isn't, the first devicechange
-    // records the baseline instead and we simply miss nothing.
-    React.useEffect(() => {
-        let cancelled = false;
-        navigator.mediaDevices.enumerateDevices().then(devices => {
-            if (cancelled) return;
-            const inputs = devices.filter(d => d.kind === 'audioinput');
-            if (!hasRealDeviceInfo(inputs)) return;
-            const def = inputs.find(d => d.deviceId === DEFAULT_AUDIO_INPUT_ID);
-            if (def?.label) lastDefaultLabelRef.current = def.label;
-        }).catch(() => {});
-        return () => { cancelled = true; };
-    }, []);
-
-    // Read once into a plain string so both the callback body and its dep array
-    // reference the same simple value — an optional-chained expression in deps
-    // defeats the React Compiler's memoization check.
+    // The reported bug it fixes: with "Default" selected, changing the Windows
+    // default input left the CALL on the old device while the Settings meters
+    // (which run their own getUserMedia) followed the new one — because
+    // `switchActiveDevice('audioinput','default')` is a silent no-op in
+    // livekit-client once the track's stored constraint is the plain string
+    // 'default' — i.e. from the second default change of a call on. See that
+    // file's header for the exact line.
+    //
+    // Read once into a plain string so the effect deps reference a simple
+    // value — an optional-chained expression in deps defeats the React
+    // Compiler's memoization check.
     const micDeviceSetting = voice?.settings.micDeviceId ?? '';
+    const micSettingRef = React.useRef(micDeviceSetting);
+    React.useEffect(() => { micSettingRef.current = micDeviceSetting; }, [micDeviceSetting]);
+    // The pick's label/groupId — lets the follower find it under a new id.
+    const micHintLabel = voice?.settings.micDeviceLabel ?? '';
+    const micHintGroup = voice?.settings.micDeviceGroupId ?? '';
+    const micHintRef = React.useRef<DeviceHint>({ label: micHintLabel, groupId: micHintGroup });
+    React.useEffect(() => { micHintRef.current = { label: micHintLabel, groupId: micHintGroup }; }, [micHintLabel, micHintGroup]);
+    // Echo cancellation, live. A ref so the follower's lazy captureConstraints
+    // (every re-acquire: default-follow, device recovery, the Restarted
+    // re-assert below) always reads the CURRENT value, not the one at join.
+    const echoCancellation = resolveEchoCancellation(voice?.settings.echoCancellation);
+    const echoCancellationRef = React.useRef(echoCancellation);
+    React.useEffect(() => { echoCancellationRef.current = echoCancellation; }, [echoCancellation]);
+    const toastRef = React.useRef(toast);
+    React.useEffect(() => { toastRef.current = toast; }, [toast]);
 
-    const syncMicDevice = React.useCallback(async (force = false) => {
-        if (!room) return;
-        if (micSyncBusyRef.current) {
-            // Coalesce rather than drop. A devicechange landing inside the
-            // ~getUserMedia-long window of an in-flight sync would otherwise be
-            // lost, stranding us on the wrong input until some later, unrelated
-            // device event happened to come along.
-            micSyncPendingRef.current = true;
-            return;
-        }
-        micSyncBusyRef.current = true;
-        try {
-            const devices = await navigator.mediaDevices.enumerateDevices();
-            const inputs = devices.filter(d => d.kind === 'audioinput');
-            // Pre-permission Chromium returns blank placeholders. Acting on that
-            // list would mean concluding the user's device vanished and switching
-            // them off it for no reason.
-            if (!hasRealDeviceInfo(inputs)) return;
-
-            const desired = pickMicDeviceId(micDeviceSetting, inputs);
-
-            const micPub = room.localParticipant?.getTrackPublication(Track.Source.Microphone);
-            const micTrack = micPub?.track;
-            // A track whose underlying MediaStreamTrack isn't 'live' is the dead
-            // state described above — always worth a re-acquire.
-            const trackAlive = !!micTrack && micTrack.mediaStreamTrack?.readyState === 'live';
-
-            // Did the OS default itself move? Only meaningful while we're
-            // following it, and only once we have a real label to compare
-            // against — seeding from a blank pre-permission label would make the
-            // first real enumeration look like a change and restart the mic for
-            // nothing.
-            const defaultEntry = inputs.find(d => d.deviceId === DEFAULT_AUDIO_INPUT_ID);
-            const defaultLabel = defaultEntry?.label ?? '';
-            const defaultMoved =
-                desired === DEFAULT_AUDIO_INPUT_ID &&
-                !!defaultLabel &&
-                !!lastDefaultLabelRef.current &&
-                defaultLabel !== lastDefaultLabelRef.current;
-            if (defaultLabel) lastDefaultLabelRef.current = defaultLabel;
-
-            // What the mic is capturing from RIGHT NOW, read past any attached
-            // processor (see readCaptureDeviceId). Needed before the decision,
-            // not just after it: on a fresh join `appliedMicDeviceRef` is null
-            // while the Room has already opened `desired` for us, and switching
-            // anyway restarts a perfectly good track — see needsDeviceSwitch.
-            const liveBefore = readCaptureDeviceId(micTrack);
-            if (!needsDeviceSwitch({
-                force, defaultMoved, trackAlive,
-                appliedId: appliedMicDeviceRef.current,
-                desiredId: desired,
-                activeId: liveBefore,
-                devices: inputs,
-            })) {
-                // Already on the requested device — record it so later passes
-                // short-circuit on the cheap `appliedId === desiredId` test.
-                appliedMicDeviceRef.current = desired;
-                return;
-            }
-
-            // `exact` is decided PER TARGET, not globally — see deviceSwitch.ts.
-            // A concrete device we just enumerated is satisfiable and is the only
-            // form Chromium actually honours; 'default' stays non-exact because
-            // {exact:'default'} is the unsatisfiable case that throws after
-            // LiveKit has already stopped the old track.
-            const useExact = shouldUseExactConstraint(desired, inputs);
-            const wasMuted = !!micTrack?.isMuted;
-            await room.switchActiveDevice('audioinput', desired, useExact);
-
-            // Read what is ACTUALLY live rather than trusting the request. The
-            // library's own success boolean is discarded on purpose: it is
-            // vacuously true when there are no publications and optimistically
-            // true for a muted track, so getSettings() is the stronger oracle.
-            const liveTrack = room.localParticipant
-                ?.getTrackPublication(Track.Source.Microphone)?.track;
-            // NOT `liveTrack.mediaStreamTrack.getSettings()`: that getter returns
-            // `processor?.processedTrack ?? _mediaStreamTrack`, so once the
-            // rnnoise processor is attached it reports the WebAudio graph's
-            // OUTPUT track — an id no enumerated device can ever match, which is
-            // what produced "still using Device WebAudio" on a switch that had
-            // in fact worked.
-            const activeId = readCaptureDeviceId(liveTrack);
-            const outcome = buildSwitchOutcome({
-                kind: 'mic',
-                requestedId: desired,
-                activeId,
-                devices: inputs,
-                usedExact: useExact,
-                muted: wasMuted,
-                noPublication: !liveTrack,
-                unverifiable: !!liveTrack && activeId === null,
-            });
-            reportDeviceSwitch(outcome);
-
-            if (!outcome.ok) {
-                // Do NOT record `desired` as applied — that is what made this
-                // failure sticky, since every later passive sync then concluded
-                // there was nothing to do and re-picking the same device from
-                // the menu is a React no-op.
-                appliedMicDeviceRef.current = outcome.activeId;
-                setMicError(describeSwitchFailure(outcome));
-                return;
-            }
-            appliedMicDeviceRef.current = desired;
-            setMicError(null);
-
-            if (defaultMoved) {
-                // Chromium labels the default entry "Default - <Device>"; the
-                // real entry (same groupId) carries the clean name.
-                const actualEntry = inputs.find(
-                    d => d.groupId === defaultEntry?.groupId && d.deviceId !== DEFAULT_AUDIO_INPUT_ID,
-                );
-                showDeviceBanner(
-                    actualEntry?.label ||
-                    defaultLabel.replace(/^Default\s*[-\u2013]\s*/i, '') ||
-                    'New microphone',
-                );
-            } else if (force) {
-                // The user just picked this device from a menu — switchActiveDevice
-                // above is silent on success, and with no live change to look at
-                // (a mic swap has no visual cue the way camera/screen-share do) a
-                // switch that genuinely worked and one that silently didn't were
-                // indistinguishable. Confirm it — with the device that is
-                // ACTUALLY live, not the one that was requested. Announcing the
-                // request is what let a completely failed switch present itself
-                // as a success for three reported rounds.
-                showDeviceBanner(
-                    outcome.deferred
-                        ? `${outcome.requestedLabel} — applies when you unmute`
-                        : outcome.activeLabel ?? outcome.requestedLabel,
-                );
-            }
-        } catch (err) {
-            console.warn('[Mic] device switch failed — attempting recovery:', err);
-            // Widest possible re-acquire. Reached when both the explicit id and
-            // 'default' were momentarily unsatisfiable, which is precisely when
-            // the old track has already been stopped and doing nothing would
-            // leave the user silently un-transmitting.
-            try {
-                const micTrack = room.localParticipant
-                    ?.getTrackPublication(Track.Source.Microphone)?.track;
-                if (micTrack instanceof LocalAudioTrack) {
-                    await micTrack.restartTrack({
-                        ...MIC_CAPTURE_CONSTRAINTS,
-                        deviceId: { ideal: DEFAULT_AUDIO_INPUT_ID },
-                    });
-                    appliedMicDeviceRef.current = DEFAULT_AUDIO_INPUT_ID;
-                    setMicError(null);
-                    console.log('[Mic] recovered onto the default device');
-                }
-            } catch (recoveryErr) {
-                console.error('[Mic] recovery failed — mic will stay silent until rejoin:', recoveryErr);
-                setMicError('Microphone unavailable — rejoin the call to retry.');
-            }
-        } finally {
-            micSyncBusyRef.current = false;
-            if (micSyncPendingRef.current) {
-                micSyncPendingRef.current = false;
-                // force:false — the queued pass re-evaluates from scratch, and
-                // if nothing actually changed its needsSwitch check returns
-                // immediately, so this can't spin.
-                setTimeout(() => { void syncMicDeviceRef.current?.(false); }, 0);
-            }
-        }
-    }, [room, micDeviceSetting, showDeviceBanner, reportDeviceSwitch]);
-
-    React.useEffect(() => { syncMicDeviceRef.current = syncMicDevice; }, [syncMicDevice]);
-
-    // Hardware changed. Debounced: plugging in one headset emits several
-    // devicechange events as the OS registers each endpoint, and each one would
-    // otherwise start its own stop-then-reacquire.
     React.useEffect(() => {
-        let debounce: ReturnType<typeof setTimeout> | null = null;
-        const onDeviceChange = () => {
-            if (debounce) clearTimeout(debounce);
-            debounce = setTimeout(() => { void syncMicDevice(); }, 300);
-        };
+        if (!room) return;
+        const follower = createMicDeviceSync({
+            enumerateDevices: () => navigator.mediaDevices.enumerateDevices(),
+            getMicTrack: () => {
+                const t = room.localParticipant?.getTrackPublication(Track.Source.Microphone)?.track;
+                return t instanceof LocalAudioTrack ? (t as unknown as MicTrackLike) : null;
+            },
+            switchActiveDevice: (id, exact) => room.switchActiveDevice('audioinput', id, exact),
+            getSetting: () => micSettingRef.current,
+            getSettingHint: () => micHintRef.current,
+            captureConstraints: () => micCaptureConstraints(echoCancellationRef.current),
+            onOutcome: (outcome) => {
+                reportDeviceSwitch(outcome);
+                // Shown only when the switch verifiably did NOT land — the
+                // "your mic is dead / wrong" case the user has to act on.
+                setMicError(outcome.ok ? null : describeSwitchFailure(outcome));
+            },
+            onFellBackToDefault: () => {
+                toastRef.current.push({
+                    kind: 'info',
+                    title: 'Microphone disconnected',
+                    message: 'Your selected microphone is no longer available — using your system default.',
+                });
+            },
+            onRecovered: () => {
+                setMicError(null);
+                console.log('[Mic] recovered onto the default device');
+            },
+            onUnrecoverable: (err) => {
+                console.error('[Mic] recovery failed — mic will stay silent until rejoin:', err);
+                setMicError('Microphone unavailable — rejoin the call to retry.');
+            },
+        });
+        micSyncRef.current = follower;
+        // The Room opened the mic with the current setting (CallPane's
+        // audioCaptureDefaults) — record that, and the default it resolved to,
+        // so the FIRST genuine default change is seen as one.
+        follower.setApplied(resolveMicDeviceId(micSettingRef.current));
+        void follower.seed();
+
+        // Hardware changed — debounced inside the follower (SoundSwitch and
+        // headset plug-ins fire several events per change).
+        const onDeviceChange = () => follower.schedule();
         navigator.mediaDevices.addEventListener('devicechange', onDeviceChange);
         return () => {
             navigator.mediaDevices.removeEventListener('devicechange', onDeviceChange);
-            if (debounce) clearTimeout(debounce);
+            follower.dispose();
+            if (micSyncRef.current === follower) micSyncRef.current = null;
         };
-    }, [syncMicDevice]);
+    }, [room, reportDeviceSwitch]);
 
     // Setting changed. This is what makes picking a mic mid-call take effect at
     // all — CallPane deliberately freezes audioCaptureDefaults.deviceId so that
@@ -1058,14 +890,26 @@ export const SidebarConference = ({
     React.useEffect(() => {
         if (!micSettingMountedRef.current) {
             micSettingMountedRef.current = true;
-            appliedMicDeviceRef.current = resolveMicDeviceId(micDeviceSetting);
             return;
         }
-        void syncMicDevice(true);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+        void micSyncRef.current?.sync('setting_changed');
     }, [micDeviceSetting]);
 
-    // ── Camera device sync — mirrors syncMicDevice above ────────────────────
+    // Echo cancellation toggled mid-call. Chromium ignores applyConstraints for
+    // this flag (settings and audio stay put), so the capture is re-opened with
+    // fresh constraints via restartTrack: same RTCRtpSender (no unpublish, the
+    // E2EE cryptor stays), mute state kept, voice processor re-attached to the
+    // new capture. A no-op when the capture already reports the wanted value —
+    // which is also the case on mount, so there is no skip-first-run guard.
+    React.useEffect(() => {
+        // The Room's capture defaults too: a mic track created LATER (joined
+        // muted, first unmute; setMicrophoneEnabled after an unpublish) is
+        // opened from these, and they were frozen at join.
+        setRoomEchoCancellation(room, echoCancellation);
+        void micSyncRef.current?.applyCapture();
+    }, [room, echoCancellation]);
+
+    // ── Camera device sync — same approach as the mic (utils/micDeviceSync) ─
     // Same story for the camera — frozen in CallPane's options for the same
     // Room-recreation reason, so mid-call camera changes are applied here.
     const cameraDeviceSetting = voice?.settings.cameraDeviceId ?? '';
@@ -1261,38 +1105,11 @@ export const SidebarConference = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [cameraDeviceSetting]);
 
-    // Output device (speakers/headphones). Was previously bridged ONLY by an
-    // effect inside VoiceVideoSettings.tsx — which is unmounted unless the
-    // voice settings pane happens to be open, so changing the device from
-    // anywhere else (e.g. the control-bar right-click menu) persisted the
-    // choice but changed nothing audible until the settings pane was next
-    // opened. Hoisted here since SidebarConference is mounted for the whole
-    // call, so every source of a speaker-device change gets live switching
-    // through one path, and audioOutput.ts's own storage key can't drift
-    // from voice.settings.speakerDeviceId — this is the only writer now.
-    const speakerDeviceSetting = voice?.settings.speakerDeviceId ?? '';
-    // Skip the confirmation banner for the value already active when the call
-    // started — only a change made DURING the call should announce itself.
-    const speakerSettingMountedRef = React.useRef(false);
-    React.useEffect(() => {
-        onOutputDeviceChange(speakerDeviceSetting);
-        if (!speakerSettingMountedRef.current) {
-            speakerSettingMountedRef.current = true;
-            return;
-        }
-        // Same reasoning as the mic/camera banners: setSinkId succeeding is
-        // invisible (audio just keeps playing, from wherever it now comes
-        // out), so a switch that worked and one that silently didn't looked
-        // identical from the UI. Confirm it.
-        navigator.mediaDevices.enumerateDevices().then(devices => {
-            const outputs = devices.filter(d => d.kind === 'audiooutput');
-            showDeviceBanner(
-                speakerDeviceSetting === ''
-                    ? 'System default'
-                    : outputs.find(d => d.deviceId === speakerDeviceSetting)?.label || 'Speaker',
-            );
-        }).catch(() => {});
-    }, [speakerDeviceSetting, showDeviceBanner]);
+    // Output device (speakers/headphones): no effect here any more. It is
+    // applied for the whole session by useVoiceSettings → audioOutput.ts, so a
+    // pick made outside a call (Settings) takes effect at once too, not only
+    // once a call mounts this component. See the ActiveDeviceChanged handler
+    // above for the one call-scoped piece left (undoing LiveKit's reroutes).
 
     // Active talker tracking — counts stored in a ref so the interval always
     // sees and mutates the latest value. Using setState with a functional updater
@@ -1357,6 +1174,7 @@ export const SidebarConference = ({
         return () => {
             clearInterval(interval);
             silenceTimerMapRef.current.forEach(t => clearTimeout(t));
+            // eslint-disable-next-line react-hooks/exhaustive-deps -- the map is a long-lived mutable ref; cleanup must clear whatever timers exist at unmount, so reading .current then is intended
             silenceTimerMapRef.current.clear();
         };
     }, []);
@@ -1452,7 +1270,7 @@ export const SidebarConference = ({
             localServerMutedVideo       = _localMeta.server_muted_video   === true;
             localServerMutedScreenShare = _localMeta.server_muted_screenshare === true;
         }
-    } catch {}
+    } catch { /* malformed or missing JSON is treated as absent */ }
     // Seeded from the joining controls (see initialMuted/initialDeafened):
     // a pre-muted join must not be switched back on by the undeafen effect
     // below, which runs on mount for everyone.
@@ -1465,6 +1283,22 @@ export const SidebarConference = ({
     const [localMutedParticipantIds, setLocalMutedParticipantIds] = React.useState<Set<string>>(new Set());
     const isLocalDeafened = localDeafened || baseLocalDeafened || baseServerDeafened;
 
+    // Publish MY mute / deafen (the user's own choice - not push-to-talk, not a
+    // moderator's server-mute, not a missing SPEAK permission) so the next call
+    // this user is put into - by themselves or by a moderator's move - starts with
+    // the same state instead of a live mic. See utils/selfCallIntent.ts.
+    React.useEffect(() => {
+        if (!localParticipant) return;
+        selfCallIntent.set(deriveSelfIntent({
+            micOff: localIsMuted,
+            selfDeafened: localDeafened || baseLocalDeafened,
+            wasMutedBeforeDeafen: wasMutedBeforeDeafenRef.current,
+            pushToTalk: !!voice?.settings.pushToTalk,
+            serverForcedMute: localServerMutedAudio || baseServerDeafened,
+            canSpeak,
+        }));
+    }, [localParticipant, localIsMuted, localDeafened, baseLocalDeafened, voice?.settings.pushToTalk, localServerMutedAudio, baseServerDeafened, canSpeak]);
+
     // Push combined tray state whenever any of the four dimensions change.
     // (Declared here, after isLocalDeafened, so the dep array doesn't hit a TDZ.)
     React.useEffect(() => {
@@ -1475,8 +1309,9 @@ export const SidebarConference = ({
     // Sync local avatar to LiveKit metadata
     React.useEffect(() => {
         if (!localParticipant || !localAvatarUrl) return;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
         let meta: Record<string, any> = {};
-        try { if (localParticipant.metadata) meta = JSON.parse(localParticipant.metadata); } catch {}
+        try { if (localParticipant.metadata) meta = JSON.parse(localParticipant.metadata); } catch { /* malformed or missing JSON is treated as absent */ }
         if (meta.avatar_url !== localAvatarUrl) {
             meta.avatar_url = localAvatarUrl;
             // setMetadata awaits a signaling ack from the LiveKit server and rejects
@@ -1573,7 +1408,7 @@ export const SidebarConference = ({
                 if (typeof m?.avatar_url === 'string' && m.avatar_url) {
                     metaSeed[p.identity] = m.avatar_url;
                 }
-            } catch {}
+            } catch { /* malformed or missing JSON is treated as absent */ }
         }
         if (Object.keys(metaSeed).length > 0) {
             setFallbackAvatars(prev => ({ ...prev, ...metaSeed }));
@@ -1582,7 +1417,7 @@ export const SidebarConference = ({
         let active = true;
         const fetchAvatars = async () => {
             try {
-                const res = await axios.get(`${API_BASE}/calls/${sessionId}/status`, {
+                const res = await axios.get(apiUrl`/calls/${sessionId}/status`, {
                     headers: { Authorization: `Bearer ${token}` }
                 });
                 if (active && res.data.participant_users) {
@@ -1592,13 +1427,14 @@ export const SidebarConference = ({
                     }
                     setFallbackAvatars(prev => ({...prev, ...map}));
                 }
-            } catch (e) {}
+            } catch { /* best-effort; failure is non-fatal and intentionally ignored */ }
         };
         fetchAvatars();
         return () => { active = false; };
     // metadataKey re-fires this when any participant's metadata changes so
     // the seed stays current (e.g. a participant who joined before the effect
     // last ran now has their metadata available).
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- participants.length and metadataKey are the intended triggers; the participants array identity changes every tick and would re-run the avatar fetch
     }, [sessionId, token, participants.length, metadataKey, memberAvatarMap]);
 
     const [subscribedScreenshares, setSubscribedScreenshares] = React.useState<Set<string>>(new Set());
@@ -1805,6 +1641,10 @@ export const SidebarConference = ({
     }, [activeScreenShareIds]);
 
     const [isScreenSharePickerOpen, setIsScreenSharePickerOpen] = React.useState(false);
+    // "Share the game window instead" (utils/shareFullscreenHint.ts): the picker
+    // opens on the Window tab with the game's window pre-selected. Cleared the
+    // moment the picker closes, so an ordinary open is never affected.
+    const [pickerPreset, setPickerPreset] = React.useState<{ exe: string } | null>(null);
     // Pending options during the getDisplayMedia handshake. This ref is cleared as
     // soon as Electron's setDisplayMediaRequestHandler resolves (see line ~620).
     const pendingScreenShareRef = React.useRef<ScreenShareOptions | null>(null);
@@ -1815,6 +1655,33 @@ export const SidebarConference = ({
     // quality panel can render the current values instead of stale hardcoded defaults.
     const currentShareRef = React.useRef<ScreenShareOptions | null>(null);
     const [currentShare, setCurrentShare] = React.useState<ScreenShareOptions | null>(null);
+
+    // Ultra-wide screen shares (utils/shareCrop.ts). The crop pipeline of a
+    // single-screen share, if one is running; stopped by stopCropPipeline() on
+    // every path that ends the share (it also releases the display capture).
+    const cropPipelineRef = React.useRef<CropPipeline | null>(null);
+    // The size the sender is handed by a cropped share (a generated track
+    // cannot report one), kept current by the pipeline's size callback.
+    const cropOutSizeRef = React.useRef<{ width: number; height: number } | null>(null);
+    // The whole display's size as the crop pipeline sees it.
+    const cropSourceSizeRef = React.useRef<{ width: number; height: number } | null>(null);
+    // The WHOLE display's size/aspect for the live share: drives which
+    // "Whole display / Left / Center / Right" choices the quality panel offers.
+    const [shareDisplayAspect, setShareDisplayAspect] = React.useState<number | null>(null);
+    // Black-screen fallback (utils/shareHealth.ts): how many times THIS source
+    // has been republished smaller after an encoder stall, and the watchdog
+    // that notices the next one. Reset when the share ends or a different
+    // source is shared.
+    const shareResStepRef = React.useRef(0);
+    const shareResStepSourceRef = React.useRef<string | null>(null);
+    const shareWatchdogRef = React.useRef<ShareEncoderWatchdog | null>(null);
+    const stopCropPipeline = () => {
+        const pipe = cropPipelineRef.current;
+        cropPipelineRef.current = null;
+        cropOutSizeRef.current = null;
+        cropSourceSizeRef.current = null;
+        try { pipe?.stop(); } catch { /* already stopped */ }
+    };
 
     // Desktop annotation overlay (docs/video-annotation-design.md, Phase 5) —
     // for the whole life of the local share. It used to live in the self-view
@@ -1927,7 +1794,7 @@ export const SidebarConference = ({
             gpus: cameraGpuVendors,
         },
         setWantH264High: on => { wantCameraH264HighRef.current = on; },
-        hevc: hevcModeRef.current === 'h265' && hevcEncodeRef.current && !hasHevcFailed(),
+        hevc: hevcModeRef.current === 'h265' && hevcEncodeRef.current && !hasHevcFailed() && !hasHevcGpuLost(),
         makeTrack: (t, c) => new LocalVideoTrack(t, c, false),
     }), []);
     React.useEffect(() => {
@@ -1935,10 +1802,13 @@ export const SidebarConference = ({
         const lp = room.localParticipant;
         let cancelled = false;
         void probeHevcEncode().then(v => { hevcEncodeRef.current = v; });
-        // Advertise what WE can decode (codec capability only).
+        // Advertise what WE can decode (codec capability only). Never H.265
+        // after a GPU process restart this session (hevcNegotiation
+        // markHevcGpuLost — no software HEVC to fall back on); utils/
+        // gpuRecovery.ts re-advertises "no H.265" itself mid-call.
         void probeHevcDecode().then(h265 => {
             if (cancelled) return;
-            lp.setAttributes({ [HEVC_ATTR]: formatDecodeCaps({ h265 }) }).catch(() => {});
+            lp.setAttributes({ [HEVC_ATTR]: formatDecodeCaps({ h265: h265 && !hasHevcGpuLost() }) }).catch(() => {});
         });
         let layering: CameraLayeringPolicy | null = null;
         const hevc = new HevcPolicy('base');
@@ -1957,12 +1827,15 @@ export const SidebarConference = ({
             });
             for (const id of [...firstSeen.keys()]) if (!live.has(id)) firstSeen.delete(id);
             const caps = hevcCapableCount(remotes);
-            const key = `${caps.capable}/${caps.total}/${hevcEncodeRef.current}`;
+            // What WE advertise (read back from our own attribute, so a
+            // post-GPU-restart "no H.265" re-advertisement shows up too).
+            const selfDecode = parseDecodeCaps(lp.attributes?.[HEVC_ATTR])?.h265 ?? false;
+            const key = `${caps.capable}/${caps.total}/${hevcEncodeRef.current}/${selfDecode}`;
             if (key !== capsKey) {
                 capsKey = key;
-                logCallEvent('h265_caps', { capable: caps.capable, total: caps.total, self_encode: hevcEncodeRef.current });
+                logCallEvent('h265_caps', { capable: caps.capable, total: caps.total, self_encode: hevcEncodeRef.current, self_decode: selfDecode });
             }
-            const allowed = (getAllowHevc() || getCameraCodecPref() === 'h265') && hevcEncodeRef.current && !hasHevcFailed();
+            const allowed = (getAllowHevc() || getCameraCodecPref() === 'h265') && hevcEncodeRef.current && !hasHevcFailed() && !hasHevcGpuLost();
             const hevcWant = hevc.observe(roomHevcState(remotes), allowed, now);
             if (hevcWant) { hevc.applied(hevcWant, now); hevcModeRef.current = hevcWant; }
             const wantHevc = hevcModeRef.current === 'h265';
@@ -2004,7 +1877,7 @@ export const SidebarConference = ({
                             const base = await chooseCameraCodec(cameraStartOptions().codec, s.width ?? 1280, s.height ?? 720);
                             wantCameraH264HighRef.current = base.codec === 'h264' && base.h264Profile === 'high';
                             codec = base.codec;
-                            reason = hasHevcFailed() ? 'H.265 failed' : 'someone cannot decode H.265';
+                            reason = hasHevcGpuLost() ? 'graphics driver reset' : hasHevcFailed() ? 'H.265 failed' : 'someone cannot decode H.265';
                         }
                     }
                     const ok = await republishCamera(asCameraParticipant(lp), {
@@ -2022,7 +1895,7 @@ export const SidebarConference = ({
                     await swapShareCodec(lp as unknown as ShareParticipantLike, codec, share, {
                         makeTrack: t => new LocalVideoTrack(t, undefined, true),
                         lowerLayer: getShareLowLayerEnabled() && (codec === 'h265' || (codec === 'h264' && shareHwH264Ref.current)),
-                        reason: wantHevc ? 'everyone can decode H.265' : (hasHevcFailed() ? 'H.265 failed' : 'someone cannot decode H.265'),
+                        reason: wantHevc ? 'everyone can decode H.265' : (hasHevcGpuLost() ? 'graphics driver reset' : hasHevcFailed() ? 'H.265 failed' : 'someone cannot decode H.265'),
                     });
                 }
             })().catch(err => console.warn('[Call] republish failed:', err)).finally(() => { busy = false; });
@@ -2124,6 +1997,7 @@ export const SidebarConference = ({
     const nativeAudioCtxRef     = React.useRef<AudioContext | null>(null);
     const nativeDestinationRef  = React.useRef<MediaStreamAudioDestinationNode | null>(null);
     const nativeWorkletNodeRef  = React.useRef<AudioWorkletNode | null>(null);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
     const nativeAudioPubRef     = React.useRef<any>(null); // LiveKit LocalTrackPublication
     // Watchdog timer ref so stopNativeWindowAudio can cancel it before it fires
     // on a subsequent share (e.g. swap-source within 3 s).
@@ -2141,12 +2015,12 @@ export const SidebarConference = ({
         window.electronAPI?.stopWindowAudioCapture?.();
 
         if (nativeWorkletNodeRef.current) {
-            try { nativeWorkletNodeRef.current.disconnect(); } catch (_) {}
-            try { nativeWorkletNodeRef.current.port.close(); } catch (_) {}
+            try { nativeWorkletNodeRef.current.disconnect(); } catch (_) { /* teardown is best-effort; the node/handle may already be closed */ }
+            try { nativeWorkletNodeRef.current.port.close(); } catch (_) { /* teardown is best-effort; the node/handle may already be closed */ }
             nativeWorkletNodeRef.current = null;
         }
         if (nativeDestinationRef.current) {
-            try { nativeDestinationRef.current.disconnect(); } catch (_) {}
+            try { nativeDestinationRef.current.disconnect(); } catch (_) { /* teardown is best-effort; the node/handle may already be closed */ }
             nativeDestinationRef.current = null;
         }
         if (nativeAudioCtxRef.current) {
@@ -2156,7 +2030,7 @@ export const SidebarConference = ({
         if (nativeAudioPubRef.current && localParticipant) {
             try {
                 await localParticipant.unpublishTrack(nativeAudioPubRef.current.track);
-            } catch (_) {}
+            } catch (_) { /* best-effort; failure is non-fatal and intentionally ignored */ }
             nativeAudioPubRef.current = null;
         }
     }, [localParticipant]);
@@ -2188,6 +2062,17 @@ export const SidebarConference = ({
             }
             if (nativeAudioPubRef.current || nativeAudioCtxRef.current) {
                 void stopNativeWindowAudio();
+            }
+            // A share that is being RESTARTED (change source / quality / layout,
+            // an encoder-stall fallback) is briefly "not enabled" too, with its
+            // next pipeline possibly already built: leave everything alone then.
+            if (!shareStartRef.current?.starting) {
+                stopCropPipeline();
+                shareWatchdogRef.current?.dispose();
+                shareWatchdogRef.current = null;
+                shareResStepRef.current = 0;
+                shareResStepSourceRef.current = null;
+                setShareDisplayAspect(null);
             }
         }
     }, [localParticipant?.isScreenShareEnabled, stopNativeWindowAudio]);
@@ -2428,9 +2313,7 @@ export const SidebarConference = ({
         const origGetSettings = mediaTrack.getSettings.bind(mediaTrack);
         mediaTrack.getSettings = () => ({
             ...origGetSettings(),
-            noiseSuppression: false,
-            echoCancellation: false,
-            autoGainControl:  false,
+            ...UNPROCESSED_TRACK_SETTINGS,
         });
 
         try {
@@ -2449,6 +2332,7 @@ export const SidebarConference = ({
                 red:    false,
                 forceStereo: true,
                 audioPreset: { maxBitrate: 192_000 },
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
             } as any);
             nativeAudioPubRef.current = publication;
             console.log('[NativeAudio] Published to LiveKit (music-grade, NS/EC/AGC disabled)');
@@ -2883,7 +2767,7 @@ export const SidebarConference = ({
         );
         obs.observe(sentinel);
         return () => obs.disconnect();
-    }, [anyVideo]); // eslint-disable-line react-hooks/exhaustive-deps
+    }, [anyVideo]);
 
     // Clear overflow only when the video participant count drops and the sentinel
     // is actually back in view — safe to do without risking oscillation because
@@ -2900,7 +2784,7 @@ export const SidebarConference = ({
             });
         }
         prevCamCountRef.current = curr;
-    }, [visibleRemoteCamParticipants.length]); // eslint-disable-line react-hooks/exhaustive-deps
+    }, [visibleRemoteCamParticipants.length]);
 
     // ── Solo inactivity kick ──────────────────────────────────────────────────
     // If the local user is alone in the call for 15 minutes, show a countdown
@@ -2951,7 +2835,7 @@ export const SidebarConference = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [inactivityCountdown]);
 
-    const handleLeave = () => {
+    const handleLeave = (deliberate: boolean = false) => {
         const wasLastPerson = participants.length <= 1;
         // P2-REND-5: route through playSound so notification prefs are respected.
         // Remaining participants hear it via CallAudioEffects' participant-count
@@ -2967,11 +2851,19 @@ export const SidebarConference = ({
         // correctly via HuddlesService.leaveCall, triggered separately through
         // onLeave below (Dashboard's handleDisconnectCall → handleLeaveHuddleCall).
         if (wasLastPerson && sessionId && !isHuddle) {
-            axios.post(`${API_BASE}/calls/${sessionId}/end`, {}, {
+            axios.post(apiUrl`/calls/${sessionId}/end`, {}, {
                 headers: { Authorization: `Bearer ${token}` }
             }).catch(e => console.error('Failed to end call', e));
         }
-        onLeave(wasLastPerson);
+        onLeave(wasLastPerson, deliberate === true);
+    };
+
+    /** The user pressed Leave (button or hotkey): a DELIBERATE leave. No prompt -
+     *  if they started this call and turned on "End call for everyone when I
+     *  leave" in the call's settings, the server ends it; otherwise it is an
+     *  ordinary leave. The server alone decides which. */
+    const handleUserLeave = () => {
+        handleLeave(true);
     };
 
     const toggleMic = () => {
@@ -3039,6 +2931,7 @@ export const SidebarConference = ({
         if (localParticipant.isScreenShareEnabled) {
             stopNativeWindowAudio();
             localParticipant.setScreenShareEnabled(false);
+            stopCropPipeline();
             currentShareRef.current = null;
             setCurrentShare(null);
         } else {
@@ -3053,6 +2946,55 @@ export const SidebarConference = ({
             setIsScreenSharePickerOpen(true);
         }
     };
+
+    // What the current share's sender params were built from, so they can be
+    // re-applied when the cropped size changes (a layout switch, a display
+    // mode change) without the original start's locals.
+    const shareParamsCtxRef = React.useRef<{ options: ScreenShareOptions; codec: ScreenShareCodec } | null>(null);
+
+    /**
+     * The ONE way a new resolution / frame rate reaches a LIVE share
+     * (utils/shareLiveRetune.ts): the "Adjust quality" chips, the picker opened
+     * mid-share for the same source, and the hot swap onto a new source all go
+     * through this. `retune` is retuneScreenShareInPlace on the live track
+     * (capture constraints + sender encodings, shareEncoderLimits clamp);
+     * `commit` keeps the share's bookkeeping in step and logs share_codec +
+     * share_clamp, exactly as a fresh publish does.
+     */
+    const liveShareApplier = (): LiveShareApplier => ({
+        cropActive: () => !!cropPipelineRef.current,
+        retune: async (resolution, frameRate) => {
+            const track = localParticipant?.getTrackPublication(Track.Source.ScreenShare)?.track;
+            return retuneScreenShareInPlace(track, resolution, frameRate, { step: shareResStepRef.current });
+        },
+        commit: (next, how) => {
+            currentShareRef.current = next;
+            setCurrentShare(next);
+            // Keep the diagnostics session's target in step with the live
+            // share (the stats overlay and the issue reporter measure against it).
+            updateScreenShareSession(next.sourceId, { requestedFps: next.frameRate, resolution: next.resolution });
+            try {
+                const track = localParticipant?.getTrackPublication(Track.Source.ScreenShare)?.track as
+                    (LocalVideoTrack & { sender?: RTCRtpSender }) | undefined;
+                const codec = asScreenShareCodec(track?.codec) ?? shareParamsCtxRef.current?.codec;
+                if (codec) shareParamsCtxRef.current = { options: next, codec };
+                const high = codec === 'h264' && wantH264HighRef.current;
+                const ev = qualityEventDetails({
+                    codec,
+                    h264High: high,
+                    hardware: codec === 'h265' || (codec === 'h264' && shareHwH264Ref.current),
+                    lighterCopy: (track?.sender?.getParameters?.().encodings?.length ?? 1) > 1,
+                    next,
+                    how,
+                    capture: track?.mediaStreamTrack?.getSettings?.(),
+                    step: shareResStepRef.current,
+                    layout: cropPipelineRef.current ? 'slice' : 'whole',
+                });
+                logCallEvent('share_codec', ev.codec);
+                logCallEvent('share_clamp', ev.clamp);
+            } catch { /* diagnostics must never break a retune */ }
+        },
+    });
 
     // Open the picker while the current share is still running (change source / quality mid-share).
     // handleScreenShareSelect will call setScreenShareEnabled(true, ...) which replaces the live track.
@@ -3078,6 +3020,7 @@ export const SidebarConference = ({
             resolution: cur.resolution,
             frameRate:  cur.frameRate,
             audio:      !cur.audio,
+            layout:     cur.layout,
         });
     };
 
@@ -3121,27 +3064,19 @@ export const SidebarConference = ({
         //
         // Audio is untouched here by construction, so none of the native-WASAPI
         // teardown ordering that the republish path has to worry about applies.
-        const ssPub = localParticipant.getTrackPublication(Track.Source.ScreenShare);
-        if (await retuneScreenShareInPlace(ssPub?.track, resolution, frameRate)) {
-            const retuned: ScreenShareOptions = {
-                sourceId:   current.sourceId,
-                resolution,
-                frameRate,
-                audio:      current.audio,
-            };
-            currentShareRef.current = retuned;
-            setCurrentShare(retuned);
-            // Keep the diagnostics session's target in step with the live
-            // share (the stats overlay and the issue reporter measure against it).
-            updateScreenShareSession(current.sourceId, { requestedFps: frameRate, resolution });
-            return;
-        }
+        // A cropped (single-screen) share has no display-capture track to
+        // applyConstraints() on - its quality is the encoder's scale - so it
+        // takes the republish path, which rebuilds the pipeline
+        // (retuneLiveShare says false for it). The picker opened mid-share for
+        // the SAME source goes through this same function (startScreenShareFrom).
+        if (await retuneLiveShare(liveShareApplier(), current, resolution, frameRate)) return;
 
         await handleScreenShareSelect({
             sourceId:   current.sourceId,
             resolution,
             frameRate,
             audio:      current.audio,
+            layout:     current.layout,
         });
     };
 
@@ -3170,8 +3105,13 @@ export const SidebarConference = ({
         const oldMs = lkTrack?.mediaStreamTrack;
         if (!lkTrack || !oldMs || oldMs.readyState !== 'live') return false;
         if (typeof lkTrack.replaceTrack !== 'function' || !lkTrack.sender) return false;
+        // A single-screen (cropped) share on either side of the swap needs its
+        // pipeline built or torn down: that is the republish path's job.
+        if (cropPipelineRef.current || options.layout?.kind === 'slice') return false;
 
-        const dims = resolveSSResolution(options.resolution);
+        // Held to what the live share's codec can encode (shareEncoderLimits.ts):
+        // the swapped-in capture goes straight onto the running encoder.
+        const dims = captureBoxFor(options.resolution, asScreenShareCodec(lkTrack.codec) ?? 'vp8');
         let newMs: MediaStreamTrack | undefined;
         // Held outside the try so the catch can still reach the underlying
         // request after Promise.race has abandoned it (see the timeout note).
@@ -3192,7 +3132,9 @@ export const SidebarConference = ({
                 video: {
                     width:     { max: dims.width },
                     height:    { max: dims.height },
-                    frameRate: { max: options.frameRate },
+                    // The paced capture rate (captureFrameRateFor), like a fresh
+                    // publish and the in-place retune; the encoder stays at the target.
+                    frameRate: { max: captureFrameRateFor(options.frameRate) },
                 },
                 audio: false,
             });
@@ -3232,14 +3174,29 @@ export const SidebarConference = ({
             // Re-assert our encoder overrides: LocalVideoTrack.onSenderTrackSwapped
             // recomputes sender encodings as part of replaceTrack, which would
             // otherwise revert maxFramerate/maxBitrate to LiveKit's defaults.
-            try {
-                await applyScreenShareSenderParams(
-                    lkTrack.sender, options.frameRate,
-                    computeSSBitrate(options.resolution, options.frameRate, asScreenShareCodec(lkTrack.codec)),
-                    { codec: asScreenShareCodec(lkTrack.codec) },
-                );
-            } catch (err) {
-                console.warn('[ScreenShare] hot-swap: setParameters override failed:', err);
+            // The chosen quality goes on through the SAME retune "Adjust
+            // quality" uses (capture constraints + sender encodings + the
+            // encoder-size clamp), and the share's options are recorded and
+            // share_codec / share_clamp logged here - not only after the
+            // audio tail, which may fail (see the catch below).
+            const recorded: ScreenShareOptions = {
+                sourceId:   options.sourceId,
+                resolution: options.resolution,
+                frameRate:  options.frameRate,
+                audio:      options.audio,
+                layout:     options.layout,
+            };
+            const retuned = await applyQualityAfterSwap(liveShareApplier(), recorded);
+            if (!retuned) {
+                try {
+                    await applyScreenShareSenderParams(
+                        lkTrack.sender, options.frameRate,
+                        computeSSBitrate(options.resolution, options.frameRate, asScreenShareCodec(lkTrack.codec)),
+                        { codec: asScreenShareCodec(lkTrack.codec), step: shareResStepRef.current },
+                    );
+                } catch (err) {
+                    console.warn('[ScreenShare] hot-swap: setParameters override failed:', err);
+                }
             }
 
             // Audio last — it is a separate publication, so it can catch up
@@ -3257,15 +3214,6 @@ export const SidebarConference = ({
                     });
                 }
             }
-
-            const recorded: ScreenShareOptions = {
-                sourceId:   options.sourceId,
-                resolution: options.resolution,
-                frameRate:  options.frameRate,
-                audio:      options.audio,
-            };
-            currentShareRef.current = recorded;
-            setCurrentShare(recorded);
 
             console.info(
                 `[ScreenShare] hot-swapped source in ${(performance.now() - tStart).toFixed(0)}ms ` +
@@ -3295,8 +3243,108 @@ export const SidebarConference = ({
         }
     };
 
+    /** Options for applyScreenShareSenderParams: the fallback step, and - for a cropped share, whose generated track reports no size - the size and box to scale to. */
+    const shareSenderParamOpts = (codec: ScreenShareCodec, options: ScreenShareOptions) => {
+        const out = cropOutSizeRef.current;
+        return {
+            codec,
+            step: shareResStepRef.current,
+            ...(cropPipelineRef.current && out ? { sourceSize: out, box: captureBoxFor(options.resolution, codec) } : {}),
+        };
+    };
+    const reapplyShareSenderParams = async () => {
+        const ctx = shareParamsCtxRef.current;
+        const track = localParticipant?.getTrackPublication(Track.Source.ScreenShare)?.track as { sender?: RTCRtpSender; codec?: string } | undefined;
+        if (!ctx || !track?.sender) return;
+        const codec = asScreenShareCodec(track.codec) ?? ctx.codec;
+        try {
+            await applyScreenShareSenderParams(
+                track.sender, ctx.options.frameRate,
+                computeSSBitrate(ctx.options.resolution, ctx.options.frameRate, codec),
+                shareSenderParamOpts(codec, ctx.options),
+            );
+        } catch (err) {
+            console.warn('[ScreenShare] re-applying sender params failed:', err);
+        }
+    };
+
+    /** The encoder produced nothing: republish smaller (once per step), or say plainly that nothing is left to try. */
+    const handleEncoderStall = (options: ScreenShareOptions, codec: ScreenShareCodec, info: EncoderStall) => {
+        const cur = currentShareRef.current;
+        if (!cur || cur.sourceId !== options.sourceId) return; // the share changed meanwhile
+        const step = shareResStepRef.current;
+        const action = decideStallAction(step);
+        logCallEvent('share_start_check', {
+            codec, verdict: 'stalled', ms: info.waitedMs,
+            res: info.width && info.height ? `${info.width}x${info.height}` : '',
+        });
+        logCallEvent('share_fallback', {
+            from: `res_${step}`, to: action.kind === 'resolution' ? `res_${action.step}` : 'none', reason: 'no-frames',
+        });
+        const copy = stallToastCopy(action);
+        toast.push({ kind: copy.kind, message: copy.message, durationMs: 12_000 });
+        if (action.kind !== 'resolution') return;
+        shareResStepRef.current = action.step;
+        republishShareRef.current?.({ ...cur });
+    };
+    const armEncoderWatchdog = (options: ScreenShareOptions, codec: ScreenShareCodec, sender: RTCRtpSender) => {
+        shareWatchdogRef.current?.dispose();
+        const wd = new ShareEncoderWatchdog({
+            getStats: () => sender.getStats(),
+            onHealthy: () => logCallEvent('share_start_check', { codec, verdict: 'ok' }),
+            onStall: info => handleEncoderStall(options, codec, info),
+        });
+        shareWatchdogRef.current = wd;
+        void wd.start();
+    };
+
+    /**
+     * Point a running ultra-wide share at another screen (or back to the whole
+     * display) without re-picking anything. Between screens it only re-points
+     * the crop rectangle, which the worker re-reads for every frame - no
+     * republish, no renegotiation. To the WHOLE display the encoder is told to
+     * scale first, because uncropped frames are 7680 px wide and must never
+     * reach it at that size.
+     */
+    const switchShareLayout = async (layout: ShareLayout) => {
+        const lp = localParticipant;
+        const cur = currentShareRef.current;
+        if (!lp || !cur) return;
+        const same = (cur.layout?.kind ?? 'whole') === layout.kind
+            && (layout.kind !== 'slice' || (cur.layout?.kind === 'slice' && cur.layout.count === layout.count && cur.layout.index === layout.index));
+        if (same) return;
+        const pipe = cropPipelineRef.current;
+        if (!pipe) {
+            // Started as the whole display: a screen needs a pipeline, i.e. a republish of the same source.
+            if (layout.kind === 'slice') await handleScreenShareSelect({ ...cur, layout });
+            return;
+        }
+        const recorded: ScreenShareOptions = { ...cur, layout: layout.kind === 'slice' ? layout : undefined };
+        if (layout.kind === 'whole') {
+            const full = cropSourceSizeRef.current;
+            if (full) cropOutSizeRef.current = full;
+            await reapplyShareSenderParams();
+            pipe.setLayout(layout);
+        } else {
+            pipe.setLayout(layout);
+            const full = cropSourceSizeRef.current;
+            if (full) {
+                const r = sliceRect(full.width, full.height, layout.count, layout.index);
+                cropOutSizeRef.current = { width: r.width, height: r.height };
+                await reapplyShareSenderParams();
+            }
+        }
+        currentShareRef.current = recorded;
+        setCurrentShare(recorded);
+        logCallEvent('share_clamp', {
+            codec: shareParamsCtxRef.current?.codec ?? 'none', layout: layout.kind, step: shareResStepRef.current,
+            over: false,
+        });
+    };
+
     const handleScreenShareSelect = async (options: ScreenShareOptions | null) => {
         setIsScreenSharePickerOpen(false);
+        setPickerPreset(null);
         if (!options || !localParticipant) {
             window.electronAPI?.resolveDesktopSource(null);
             return;
@@ -3321,6 +3369,8 @@ export const SidebarConference = ({
 
     /** A capture or publish error → the share notice (or nothing, for a cancel). */
     const reportShareStartError = (err: unknown): ShareStartOutcome => {
+        // A failed start must not leave a half-built crop pipeline holding the display capture.
+        stopCropPipeline();
         const view = describeShareStartError(err, window.electronAPI?.platform);
         if (view.kind === 'cancelled') {
             console.info('[ScreenShare] start cancelled:', err);
@@ -3341,6 +3391,12 @@ export const SidebarConference = ({
         if (!localParticipant) return 'cancelled';
         const tStart = performance.now();
         const since = (t: number) => (performance.now() - t).toFixed(0);
+        // The encoder-stall fallback ladder is per SOURCE: a stall-triggered
+        // republish of the same source keeps its step, anything else starts at 0.
+        if (shareResStepSourceRef.current !== options.sourceId) {
+            shareResStepRef.current = 0;
+            shareResStepSourceRef.current = options.sourceId;
+        }
 
         // ALL share types with audio route through the native WASAPI addon so we
         // can exclude Cipherline's own process tree from capture — otherwise the
@@ -3365,6 +3421,19 @@ export const SidebarConference = ({
             if (nativeReady) setNativeAudioSupported(true);  // cache for next time
         }
         const useNativeAudio = options.audio && nativeReady;
+
+        // ── Same source, new quality: the Adjust-quality retune ───────────────
+        // The picker opened mid-share can re-pick the SAME screen at another
+        // resolution / frame rate. That is a quality change, not a source
+        // change: retune the live track and the sender in place exactly as the
+        // chips do (and log the same share_codec / share_clamp), instead of
+        // re-acquiring a capture whose settings never reached the encoder.
+        // A different source, a layout or audio change, or an unchanged
+        // selection (a stall / codec republish passes the share's own options)
+        // is not matched and takes the paths below.
+        if (await applyLiveSelection(liveShareApplier(), localParticipant.isScreenShareEnabled, currentShareRef.current, options)) {
+            return 'published';
+        }
 
         // ── Fast path: hot-swap the capture instead of republishing ───────────
         // Changing SOURCE mid-share used to stop the share outright and rebuild
@@ -3469,6 +3538,7 @@ export const SidebarConference = ({
             } catch (err) {
                 console.warn('[ScreenShare] stop-before-swap failed:', err);
             }
+            stopCropPipeline();
             currentShareRef.current = null;
             setCurrentShare(null);
             // Yield a tick so LiveKit's internal publication state settles before we
@@ -3519,7 +3589,7 @@ export const SidebarConference = ({
         // H.265 when the room negotiation says everyone can decode it and this
         // machine HW-encodes it (hevcNegotiation.ts); otherwise the normal choice,
         // which the republish loop also falls back to mid-share.
-        const hevcShare = hevcModeRef.current === 'h265' && hevcEncodeRef.current && !hasHevcFailed();
+        const hevcShare = hevcModeRef.current === 'h265' && hevcEncodeRef.current && !hasHevcFailed() && !hasHevcGpuLost();
         shareBaseCodecRef.current = decision.codec;
         shareBaseHighRef.current = decision.codec === 'h264' && decision.h264Profile === 'high';
         const codec: ScreenShareCodec = hevcShare ? 'h265' : decision.codec;
@@ -3532,7 +3602,24 @@ export const SidebarConference = ({
         wantH264HighRef.current = h264High;
         // Ask the capturer for headroom above the send rate (see
         // captureFrameRateFor); the encoder's maxFramerate stays at the target.
-        const captureFps = captureFrameRateFor(options.frameRate);
+        // A capturer with a fixed ceiling (Linux Wayland/PipeWire: 60) is not
+        // asked for more than it can deliver; `share_codec` records both.
+        const captureCeiling = mainDiag?.captureFpsCeiling ?? null;
+        const captureFps = captureFrameRateFor(options.frameRate, captureCeiling);
+        // The capture box, held to what THIS codec can encode (the Surround
+        // 7680x1440 black screen: shareEncoderLimits.ts).
+        const box = captureBoxFor(options.resolution, codec);
+        // One screen of an ultra-wide display, cropped before the encoder
+        // (utils/shareCrop.ts). Needs the WebCodecs breakout box; without it the
+        // whole display is shared, scaled to fit.
+        const wantsSlice = options.layout?.kind === 'slice' ? options.layout : null;
+        const sliceLayout = wantsSlice && supportsCropPipeline() ? wantsSlice : null;
+        if (wantsSlice && !sliceLayout) {
+            setScreenShareNotice({ tone: 'warn', text: 'Sharing a single screen isn’t available in this build. Sharing the whole display, scaled to fit.' });
+        }
+        if (sliceLayout && options.audio && !useNativeAudio) {
+            setScreenShareNotice({ tone: 'warn', text: 'Sharing a single screen sends video only on this system (no system audio).' });
+        }
         const tProbed = performance.now();
         setScreenShareSession({
             sourceId: options.sourceId,
@@ -3556,6 +3643,7 @@ export const SidebarConference = ({
             codec, profile: h264High ? 'high' : codec === 'h264' ? 'cb' : 'none', hardware: shareHw,
             reason: hevcShare ? 'h265-negotiated' : decision.reason, res: options.resolution, fps: options.frameRate,
             lighter_copy: publishOptions.simulcast,
+            backend: mainDiag?.capturer.backend ?? 'unknown', ceiling: captureCeiling ?? 0,
         });
         const maxBitrate = publishOptions.screenShareEncoding.maxBitrate;
         console.info(
@@ -3621,12 +3709,73 @@ export const SidebarConference = ({
         // The share's ceiling, for its start bitrate (installShareStartBitrate
         // arms on the sender LiveKit creates inside this publish).
         shareMaxBitrateRef.current = maxBitrate;
+        shareParamsCtxRef.current = { options, codec };
+        // A single screen of the display, native size: capture the WHOLE display
+        // ourselves (the same getDisplayMedia -> main-process handler handshake
+        // LiveKit would do), crop each frame before the encoder ever sees it,
+        // and publish the cropped track as the screen share. To LiveKit it is an
+        // ordinary video track: E2EE, the sender-codec pin and the H.264 High
+        // preference all apply to it exactly as to a captured one.
+        let sliceStartSize: { width: number; height: number } | undefined;
+        let sliceCapture: { width: number; height: number } | undefined;
+        const publishCroppedShare = async (layout: Extract<ShareLayout, { kind: 'slice' }>) => {
+            pendingScreenShareRef.current = { ...options, audio: false };
+            const mediaPromise = navigator.mediaDevices.getDisplayMedia({
+                // Far above any display: the capturer never upscales, so this is
+                // "the display's own size" - the crop needs the real pixels.
+                video: { width: 16384, height: 8640, frameRate: captureFps },
+                audio: false,
+            });
+            let stream: MediaStream;
+            try {
+                stream = await Promise.race([
+                    mediaPromise,
+                    new Promise<never>((_, rej) => setTimeout(() => rej(new Error('getDisplayMedia handshake timed out')), 10_000)),
+                ]);
+            } catch (err) {
+                // Losing the race does not cancel the request: stop whatever it yields.
+                void mediaPromise
+                    .then(st => st.getTracks().forEach(t => { try { t.stop(); } catch { /* gone */ } }))
+                    .catch(() => { /* the request itself failed */ });
+                throw err;
+            }
+            const capTrack = stream.getVideoTracks()[0];
+            if (!capTrack) throw new Error('getDisplayMedia returned no video track');
+            capTrack.contentHint = 'motion';
+            const capSettings = capTrack.getSettings();
+            if (capSettings.width && capSettings.height) {
+                sliceCapture = { width: capSettings.width, height: capSettings.height };
+                cropSourceSizeRef.current = sliceCapture;
+                const r = sliceRect(capSettings.width, capSettings.height, layout.count, layout.index);
+                sliceStartSize = { width: r.width, height: r.height };
+                cropOutSizeRef.current = sliceStartSize;
+                setShareDisplayAspect(aspectOf(capSettings.width, capSettings.height));
+            }
+            const pipe = createCropPipeline(capTrack, layout);
+            cropPipelineRef.current = pipe;
+            pipe.onSize(size => {
+                cropSourceSizeRef.current = { width: size.sourceWidth, height: size.sourceHeight };
+                cropOutSizeRef.current = { width: size.outWidth, height: size.outHeight };
+                setShareDisplayAspect(aspectOf(size.sourceWidth, size.sourceHeight));
+                void reapplyShareSenderParams();
+            });
+            pipe.onSourceEnded(() => {
+                console.info('[ScreenShare] the shared display went away - ending the share');
+                stopCropPipeline();
+                void localParticipant.setScreenShareEnabled(false).catch(() => { /* already unpublished */ });
+            });
+            const croppedTrack = new LocalVideoTrack(pipe.track, undefined, true);
+            await localParticipant.publishTrack(croppedTrack, { source: Track.Source.ScreenShare, ...publishOptions });
+        };
         const tPublish = performance.now();
         try {
+          if (sliceLayout) {
+            await publishCroppedShare(sliceLayout);
+          } else {
             await localParticipant.setScreenShareEnabled(true, {
                 resolution: {
-                    width: dims.width,
-                    height: dims.height,
+                    width: box.width,
+                    height: box.height,
                     frameRate: captureFps,
                 },
                 audio: useNativeAudio ? false : options.audio,
@@ -3654,6 +3803,7 @@ export const SidebarConference = ({
                 // stream-stats overlay rather than assumed.
                 publishOptions,
             );
+          }
         } catch (err) {
             pendingScreenShareRef.current = null;
             return reportShareStartError(err);
@@ -3745,16 +3895,43 @@ export const SidebarConference = ({
             // maintaining a crisp 1080p — exactly backwards for any moving content.
             const ssMsTrack = ssPub?.track?.mediaStreamTrack;
             if (ssMsTrack) {
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
                 (ssMsTrack as any).contentHint = 'motion';
             }
             const sender = (ssPub?.track as { sender?: RTCRtpSender } | undefined)?.sender;
             if (sender) {
-                await applyScreenShareSenderParams(sender, options.frameRate, maxBitrate, { codec });
+                await applyScreenShareSenderParams(sender, options.frameRate, maxBitrate, shareSenderParamOpts(codec, options));
             } else {
                 console.warn('[ScreenShare] RTP sender not available — framerate override skipped');
             }
         } catch (err) {
             console.warn('[ScreenShare] setParameters override failed:', err);
+        }
+
+        // What the encoder was actually handed, and what it was held to
+        // (share_clamp): the record that says whether a share was scaled to fit
+        // its codec, and which screen of an ultra-wide display it is.
+        try {
+            const st = localParticipant.getTrackPublication(Track.Source.ScreenShare)?.track?.mediaStreamTrack?.getSettings();
+            const capSize = sliceCapture ?? (st?.width && st?.height ? { width: st.width, height: st.height } : undefined);
+            const sent = sliceStartSize ?? capSize;
+            const plan = planEncode(codec, sent?.width, sent?.height, shareResStepRef.current);
+            const capRes = capSize ? `${capSize.width}x${capSize.height}` : '';
+            const outRes = plan.width ? `${plan.width}x${plan.height}` : '';
+            const layoutKind = cropPipelineRef.current ? 'slice' : 'whole';
+            logCallEvent('share_clamp', {
+                codec, cap_res: capRes, res: outRes, scale: plan.scale, layout: layoutKind,
+                step: shareResStepRef.current, over: plan.overLimit,
+            });
+            if (!cropPipelineRef.current && capSize) setShareDisplayAspect(aspectOf(capSize.width, capSize.height));
+        } catch { /* diagnostics must never break publishing */ }
+
+        // Black-screen safety net for every share the two watchers above do not
+        // cover (they handle H.264 High and H.265 with a codec fallback): if no
+        // layer has encoded a frame after 3 s, republish smaller, and say so.
+        if (!h264High && codec !== 'h265') {
+            const wdSender = (localParticipant.getTrackPublication(Track.Source.ScreenShare)?.track as { sender?: RTCRtpSender } | undefined)?.sender;
+            if (wdSender) armEncoderWatchdog(options, codec, wdSender);
         }
 
         // ── Frame-rate diagnostics ────────────────────────────────────────────
@@ -3824,6 +4001,7 @@ export const SidebarConference = ({
             resolution: options.resolution,
             frameRate:  options.frameRate,
             audio:      options.audio,
+            layout:     sliceLayout ?? undefined,
         };
         currentShareRef.current = recorded;
         setCurrentShare(recorded);
@@ -3840,8 +4018,9 @@ export const SidebarConference = ({
             wasMutedBeforeDeafenRef.current = !localParticipant.isMicrophoneEnabled;
         }
         setLocalDeafened(newState);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
         let meta: any = {};
-        try { if (localParticipant.metadata) meta = JSON.parse(localParticipant.metadata); } catch {}
+        try { if (localParticipant.metadata) meta = JSON.parse(localParticipant.metadata); } catch { /* malformed or missing JSON is treated as absent */ }
         meta.deafened = newState;
         // Same as the avatar sync above — swallow SignalRequestError timeouts.
         // Remote-participant deafened icon may be out of date for a few seconds
@@ -3891,6 +4070,7 @@ export const SidebarConference = ({
     React.useEffect(() => {
         if (!voice) return;
         voiceProcessorManager.updateSettings(voice.settings);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the individual settings fields are the dependency list (so only real changes push settings to the processor); voice itself is a new object every render
     }, [
         voice?.settings.noiseSuppression,
         voice?.settings.volumeNormalization,
@@ -3899,6 +4079,7 @@ export const SidebarConference = ({
         voice?.settings.micVolume,
         voice?.settings.eqEnabled,
         // Stringify the bands array so React detects element-level changes
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- stringified so element-level changes in the EQ band array are detected by value
         JSON.stringify(voice?.settings.eqBands),
     ]);
 
@@ -3918,23 +4099,45 @@ export const SidebarConference = ({
     //
     // where `otherConstraints` comes from whatever that particular call site
     // passed. LiveKit's own device-ended recovery passes only {deviceId:'default'},
-    // so our echoCancellation/noiseSuppression/autoGainControl:false silently
-    // revert to Chromium's defaults — browser AEC+NS+AGC stacked on top of
-    // RNNoise and the gate, which is how a working mic turns quiet-then-gated
-    // after an unplug rather than simply carrying on.
+    // so our noiseSuppression/autoGainControl:false (and the echoCancellation
+    // setting) silently revert to Chromium's defaults — browser NS+AGC stacked
+    // on top of RNNoise and the gate, which is how a working mic turns
+    // quiet-then-gated after an unplug rather than simply carrying on.
     //
     // Re-asserting on TrackEvent.Restarted catches every one of those paths
-    // without having to enumerate them.
+    // without having to enumerate them. NOT with applyConstraints: measured on
+    // Chromium 153 it records the constraint and changes neither getSettings()
+    // nor the audio for these three flags (which made this handler a silent
+    // no-op). micDeviceSync.applyCapture compares what the capture REPORTS with
+    // what is wanted and re-opens it only when they differ.
     React.useEffect(() => {
         if (!localParticipant || !micTrackSid) return;
         const micTrack = localParticipant.getTrackPublication(Track.Source.Microphone)?.track;
         if (!(micTrack instanceof LocalAudioTrack)) return;
 
         const onRestarted = () => {
-            micTrack.mediaStreamTrack
-                ?.applyConstraints(MIC_CAPTURE_CONSTRAINTS)
-                .catch(err => console.warn('[Mic] could not re-apply capture constraints:', err));
+            // Checked on the RAW capture track (readCaptureTrack inside the
+            // follower), not `micTrack.mediaStreamTrack`: with the voice
+            // processor attached that getter is the processor's WebAudio
+            // output, where these flags mean nothing.
+            void micSyncRef.current?.applyCapture();
+            // A restart (ours or LiveKit's) swaps the capture track; keep the
+            // follower listening for ended/mute on the new one.
+            micSyncRef.current?.watchCapture();
+            // ...and check it reopened the device the user picked: LiveKit's
+            // own ended-recovery reopens `{deviceId:'default'}` regardless of
+            // the pick, which used to leave the call there for good.
+            micSyncRef.current?.verify();
         };
+        micSyncRef.current?.watchCapture();
+        // A new mic publication — the join, or a reconnect's republish: check
+        // it is on the picked device (a stale stored id makes the join's
+        // {exact} fail and livekit-client fall back to the default).
+        micSyncRef.current?.verify();
+        // ...and that it carries the CURRENT echo-cancellation setting: a mic
+        // first published after a mid-call toggle (joined muted, unmuted later)
+        // is opened from the Room's defaults. A no-op when it already does.
+        void micSyncRef.current?.applyCapture();
 
         // LiveKit probes for digital silence right after a track is created or
         // restarted and emits this when it finds it — i.e. the device opened
@@ -3946,7 +4149,7 @@ export const SidebarConference = ({
             if (recovered) return;
             recovered = true;
             console.warn('[Mic] captured track is silent — re-acquiring');
-            void syncMicDevice(true);
+            void micSyncRef.current?.sync('silence');
         };
 
         micTrack.on(TrackEvent.Restarted, onRestarted);
@@ -3955,7 +4158,7 @@ export const SidebarConference = ({
             micTrack.off(TrackEvent.Restarted, onRestarted);
             micTrack.off(TrackEvent.AudioSilenceDetected, onSilence);
         };
-    }, [localParticipant, micTrackSid, syncMicDevice]);
+    }, [localParticipant, micTrackSid]);
 
     // ── Keep the screen-share encoder overrides attached ──────────────────────
     // They live on the RTCRtpSender, and LiveKit builds a new one every time it
@@ -4011,6 +4214,148 @@ export const SidebarConference = ({
         });
     }, [localParticipant, ssTrackSid]);
 
+    // "For smooth game streaming, share the game window instead." One gate per
+    // share (reset when the share ends): the share_fps sampler below feeds it
+    // what has the screen, and it fires once when a fullscreen game covers the
+    // shared monitor. The button opens the picker on the Window tab with the
+    // game's window pre-selected; it never switches the share by itself.
+    const fullscreenHintGateRef = React.useRef<FullscreenHintGate | null>(null);
+    const fullscreenHintRef = React.useRef<(exe: string) => void>(() => {});
+    React.useEffect(() => {
+        fullscreenHintRef.current = (exe: string) => {
+            logCallEvent('share_hint', { result: 'shown' });
+            toast.push({
+                kind: 'info',
+                title: FULLSCREEN_HINT_TITLE,
+                message: FULLSCREEN_HINT_MESSAGE,
+                // Seen when the user tabs back out of the game, so it stays a while.
+                durationMs: 300_000,
+                action: {
+                    label: FULLSCREEN_HINT_ACTION,
+                    onClick: () => {
+                        logCallEvent('share_hint', { result: 'accepted' });
+                        setPickerPreset({ exe });
+                        openScreenSharePicker();
+                    },
+                },
+            });
+        };
+    });
+    React.useEffect(() => {
+        if (!currentShare) fullscreenHintGateRef.current = null;
+    }, [currentShare]);
+
+    // What the share does when Cipherline goes to the background
+    // (utils/shareBackgroundProbe.ts): capture and send rates before vs. after,
+    // whether the page was told it is hidden, and — with the capture timing
+    // log on — Chromium's grab time / timer interval / 0 Hz ratio, as one
+    // `share_background` call event per background episode. Owner report
+    // 2026-10-11: "fps tanks to 1–2 when Cipherline is not focused". Nothing
+    // is polled while the window is in the foreground. Keyed on the
+    // currentShare STATE as well as the publication: handleScreenShareSelect
+    // records the share only after its post-publish awaits, so on a fresh
+    // share the publication re-render usually comes first (the ref would
+    // still be null, or the previous source's options).
+    React.useEffect(() => {
+        if (!localParticipant || !ssTrackSid) return;
+        const share = currentShare;
+        const sender = (localParticipant.getTrackPublication(Track.Source.ScreenShare)?.track as { sender?: RTCRtpSender } | undefined)?.sender;
+        if (!share || !sender) return;
+        const api = window.electronAPI;
+        const probe = new ShareBackgroundProbe({
+            getStats: () => sender.getStats(),
+            getTiming: api?.getScreenCaptureTiming
+                ? async frames => parseCaptureTiming(await api.getScreenCaptureTiming!(frames))
+                : undefined,
+            getForeground: () => fetchForegroundDiag(share.sourceId),
+            docHidden: () => document.hidden,
+            targetFps: share.frameRate,
+            report: r => {
+                console.info(`[ScreenShare] background (${r.cause}): sent ${r.before.sent ?? '?'} → ${r.after.sent ?? '?'} fps, ` +
+                    `capture ${r.before.capture ?? '?'} → ${r.after.capture ?? '?'} fps, page hidden=${r.docHidden}, verdict=${r.verdict}`);
+                // NaN = not measured: the log drops non-finite values.
+                // 11 keys at most (the log keeps one slot for `repeat`): the fg_*
+                // trio, what had the screen (foregroundInfo.ts), took the slots
+                // of doc_hidden / target_fps / unchanged_pct - see
+                // shareBackgroundProbe.ts. '' = unknown: the log drops it.
+                const fgLog = foregroundLogFields(r.fg ?? null);
+                logCallEvent('share_background', {
+                    cause: r.cause,
+                    verdict: r.verdict,
+                    fg_state: fgLog.fg_state,
+                    fg_exe: fgLog.fg_exe,
+                    fg_cover: fgLog.fg_cover,
+                    capture_before: r.before.capture ?? NaN,
+                    sent_before: r.before.sent ?? NaN,
+                    capture_after: r.after.capture ?? NaN,
+                    sent_after: r.after.sent ?? NaN,
+                    grab_ms: r.timing?.captureMs ?? NaN,
+                    interval_ms: r.timing?.intervalMs ?? NaN,
+                });
+            },
+        });
+        // Shared while already in the background (picker → alt-tab): start there.
+        if (isWindowBackground()) probe.setBackground(true, document.hidden ? 'hidden' : 'blur');
+        const off = subscribeWindowBackground((bg, cause) => probe.setBackground(bg, cause));
+        return () => { off(); probe.dispose(); };
+    }, [localParticipant, ssTrackSid, currentShare]);
+
+    // Frame-rate instrumentation (utils/shareHealth.ts): one `share_fps` call
+    // event every ~10 s while sharing, and one 2 s after Cipherline gains or
+    // loses focus - capture / source / encode / send rates, the encoder's limit
+    // reason, which encoder and whether it is hardware, plus the window's focus
+    // and visibility. Owner report 2026-10-13 (1 fps in a game, 50-60 when
+    // focused, at 90 requested): the next test says which limit it hits.
+    React.useEffect(() => {
+        if (!localParticipant || !ssTrackSid) return;
+        const share = currentShare;
+        const track = localParticipant.getTrackPublication(Track.Source.ScreenShare)?.track as
+            { sender?: RTCRtpSender; mediaStreamTrack?: MediaStreamTrack } | undefined;
+        const sender = track?.sender;
+        if (!share || !sender) return;
+        const num = (v: unknown): number => (typeof v === 'number' ? v : NaN);
+        const sampler = new ShareStatsSampler({
+            getStats: () => sender.getStats(),
+            getCaptureFps: () => {
+                try { return (cropPipelineRef.current?.captureSettings() ?? track?.mediaStreamTrack?.getSettings())?.frameRate; } catch { return undefined; }
+            },
+            focused: () => { try { return document.hasFocus(); } catch { return false; } },
+            visible: () => { try { return !document.hidden; } catch { return true; } },
+            targetFps: share.frameRate,
+            getForeground: () => fetchForegroundDiag(share.sourceId),
+            // Every sample (the first one too): is a fullscreen game covering the
+            // shared screen? Once per share, a toast offers the game's window.
+            onForeground: fg => {
+                const gate = (fullscreenHintGateRef.current ??= new FullscreenHintGate({
+                    onHint: exe => fullscreenHintRef.current(exe),
+                    // Once EVER per account, not once per share (secureLocalStore).
+                    seen: accountHintSeenStore,
+                }));
+                gate.observe(fg, shareKindOf(share.sourceId));
+            },
+            report: (d, fg) => {
+                // NaN / '' = not measured: the log drops them. At most 11 keys
+                // (the log keeps one slot for `repeat`): the fg_* trio took the
+                // slots of cap_fps / vis / res (the encoded size is in share_clamp).
+                const src_fps = num(d.src_fps);
+                const enc_fps = num(d.enc_fps);
+                const sent_fps = num(d.sent_fps);
+                const limit = typeof d.limit === 'string' ? d.limit : '';
+                const enc = typeof d.enc === 'string' ? d.enc : '';
+                const hw = typeof d.hw === 'boolean' ? d.hw : '';
+                const fgLog = foregroundLogFields(fg);
+                logCallEvent('share_fps', {
+                    src_fps, enc_fps, sent_fps, limit, enc, hw,
+                    target: share.frameRate, focus: d.focus === true,
+                    fg_state: fgLog.fg_state, fg_exe: fgLog.fg_exe, fg_cover: fgLog.fg_cover,
+                });
+            },
+        });
+        sampler.start();
+        const off = subscribeWindowBackground(() => sampler.noteFocusChange());
+        return () => { off(); sampler.dispose(); };
+    }, [localParticipant, ssTrackSid, currentShare]);
+
     // Pin mic sender RTP priority HIGH — explicitly tells WebRTC's congestion
     // controller not to steal the mic's bitrate to feed screenshare video.
     // Without this, GCC's default allocation can still trim voice below the
@@ -4019,6 +4364,7 @@ export const SidebarConference = ({
     React.useEffect(() => {
         if (!localParticipant || !micTrackSid) return;
         const micPub = localParticipant.getTrackPublication(Track.Source.Microphone);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
         const sender = (micPub?.track as any)?.sender as RTCRtpSender | undefined;
         if (!sender) return;
         try {
@@ -4028,7 +4374,9 @@ export const SidebarConference = ({
             }
             for (const enc of params.encodings) {
                 enc.maxBitrate = 64_000; // match publishDefaults.audioPreset
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
                 (enc as any).priority = 'high';
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
                 (enc as any).networkPriority = 'high';
             }
             sender.setParameters(params).then(() => {
@@ -4039,9 +4387,12 @@ export const SidebarConference = ({
                 console.log('[Mic] RTP parameters applied:', {
                     encodings: finalParams.encodings?.map(e => ({
                         maxBitrate: e.maxBitrate,
+                        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
                         priority: (e as any).priority,
+                        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
                         networkPriority: (e as any).networkPriority,
                     })),
+                    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
                     degradationPreference: (finalParams as any).degradationPreference,
                 });
             }).catch(err => {
@@ -4151,6 +4502,7 @@ export const SidebarConference = ({
             if (!cameraProcessorRef.current) {
                 const processor = new CipherlineCameraProcessor(voice.settings, setCameraError);
                 cameraProcessorRef.current = processor;
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
                 camTrack.setProcessor(processor as any).catch(err => {
                     console.warn('[CameraProcessor] Failed to attach:', err);
                     cameraProcessorRef.current = null;
@@ -4165,6 +4517,7 @@ export const SidebarConference = ({
         } else if (cameraProcessorRef.current) {
             cameraProcessorRef.current.updateSettings(voice.settings);
         }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the individual camera-processing settings are the dependency list; voice itself is a new object every render and would re-attach the processor
     }, [
         localParticipant,
         localParticipant?.isCameraEnabled,
@@ -4192,7 +4545,7 @@ export const SidebarConference = ({
             'keybind:toggle-deafen':      toggleDeafen,
             'keybind:toggle-camera':      () => toggleCamera(),
             'keybind:toggle-screenshare': toggleScreenshare,
-            'keybind:leave-call':         handleLeave,
+            'keybind:leave-call':         handleUserLeave,
             'keybind:quick-screenshare':  () => {
                 // Quick share: toggle on/off. When starting fresh, resolve the
                 // best source without the picker — prefer a detected game
@@ -4203,6 +4556,7 @@ export const SidebarConference = ({
                 if (localParticipant.isScreenShareEnabled) {
                     stopNativeWindowAudio();
                     localParticipant.setScreenShareEnabled(false);
+                    stopCropPipeline();
                     currentShareRef.current = null;
                     setCurrentShare(null);
                     return;
@@ -4450,7 +4804,7 @@ export const SidebarConference = ({
                 </motion.div>
             )}
 
-            {/* Mic failure banner — the recovery paths in syncMicDevice all
+            {/* Mic failure banner — the recovery paths in micDeviceSync all
                 fell through, so the mic really is dead. Not auto-dismissed:
                 unlike the "Switched to X" notice this is a state the user has
                 to act on. */}
@@ -5190,8 +5544,11 @@ export const SidebarConference = ({
                             currentShareResolution={currentShare?.resolution}
                             currentShareFrameRate={currentShare?.frameRate}
                             currentShareAudio={currentShare?.audio}
+                            shareLayoutChoices={layoutChoices(shareDisplayAspect)}
+                            currentShareLayout={currentShare?.layout}
+                            onChangeShareLayout={switchShareLayout}
                             screenShareStarting={shareStarting}
-                            onLeave={handleLeave}
+                            onLeave={handleUserLeave}
                             showFullscreenButton={anyVideo}
                             canSpeak={canSpeak}
                             canVideo={canVideo}
@@ -5209,7 +5566,11 @@ export const SidebarConference = ({
 
             {/* Screen share picker */}
             {isScreenSharePickerOpen && (
-                <ScreenSharePickerModal onSelect={handleScreenShareSelect} />
+                <ScreenSharePickerModal
+                    onSelect={handleScreenShareSelect}
+                    initialTab={pickerPreset ? 'window' : undefined}
+                    preselectExe={pickerPreset?.exe}
+                />
             )}
 
             {/* Solo inactivity kick dialog — a LIVE countdown with a "Leave Now"
@@ -5243,7 +5604,7 @@ export const SidebarConference = ({
                         <ClButton
                             variant="danger"
                             fullWidth
-                            onClick={() => { setInactivityCountdown(null); handleLeave(); }}
+                            onClick={() => { setInactivityCountdown(null); handleLeave(false); }}
                         >
                             Leave Now
                         </ClButton>

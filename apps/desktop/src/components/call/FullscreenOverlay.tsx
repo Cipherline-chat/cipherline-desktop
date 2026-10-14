@@ -12,6 +12,7 @@ import {
     bestGrid,
     chooseFullscreenLayout,
     clampStripHeight,
+    focusAfterFullscreenToggle,
     focusToggleMeaningful,
     fullscreenConsoleBottom,
     fullscreenConsoleMetrics,
@@ -23,6 +24,7 @@ import {
     FS_CONSOLE_COLS,
     FS_CONSOLE_DOCK_GAP_PX,
     STRIP_JUSTIFY_CONTENT,
+    sameFocus,
     type StageTileRef,
 } from '../../utils/fullscreenCallLayout';
 import { ROSTER_ONLY } from '../../utils/callRosterEvents';
@@ -262,14 +264,24 @@ export const FullscreenOverlay = ({
     // only once every surface above it has closed. Never ends/leaves the call.
     useEscape(() => callCtx.setIsFullscreen(false), isFullscreen);
 
-    // Always open fullscreen showing everything — clear any prior focused
-    // stream on entry. With several streams that means the grid; with one it
-    // means solo, which ignores focus anyway. Kept from the previous version:
-    // landing on a focus carried over from the docked sidebar view was
-    // disorienting, and there is no "restore it on exit" here because a focus
-    // you did not pick is not worth restoring.
+    // Fullscreen KEEPS the docked view's focus (owner: "When you have a
+    // non-fullscreen focused video and go to full screen, I want it to have
+    // the focused full screen window"), and the docked view keeps whatever
+    // was focused in fullscreen on the way out. It used to clear focus on
+    // entry, which always dropped you onto the grid. The rule — both
+    // directions — is `focusAfterFullscreenToggle`; this effect only applies
+    // it, on a real toggle (not on mount, where nothing was toggled).
+    //
+    // Keeping the focus also means FocusedStreamBanner (#call-focus-root)
+    // simply stays mounted underneath the overlay instead of unmounting on
+    // entry and remounting on exit — so its `focus-banner-enter` animation
+    // does not replay on the way back out.
+    const prevFullscreenRef = React.useRef(isFullscreen);
     useEffect(() => {
-        if (isFullscreen) callCtx.setFocusedStream(null);
+        if (prevFullscreenRef.current === isFullscreen) return;
+        prevFullscreenRef.current = isFullscreen;
+        const next = focusAfterFullscreenToggle(isFullscreen, focusedStream);
+        if (!sameFocus(next, focusedStream)) callCtx.setFocusedStream(next);
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [isFullscreen]);
 

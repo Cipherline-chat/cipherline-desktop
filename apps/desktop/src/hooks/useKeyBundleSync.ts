@@ -46,6 +46,7 @@ export function useKeyBundleSync(): { bundleReady: boolean; bundleError: string 
                     setBundleReady(true);
                     setBundleError(null);
                     return; // Success — exit retry loop
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
                 } catch (err: any) {
                     const msg = err?.response?.data?.message || err?.message || 'Unknown error';
                     console.error(`[E2EE] Key bundle sync: attempt ${attempt} failed —`, msg);

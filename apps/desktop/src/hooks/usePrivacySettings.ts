@@ -56,14 +56,17 @@ export function usePrivacySettings() {
 
     // Persist to localStorage on every change.
     useEffect(() => {
-        try { secureLocalStore.setItem(STORAGE_KEY, JSON.stringify(settings)); } catch {}
+        try { secureLocalStore.setItem(STORAGE_KEY, JSON.stringify(settings)); } catch { /* persisting a UI preference is best-effort; a failed write must not break the UI */ }
     }, [settings]);
 
     // Sync allow_friend_requests FROM the server on login (source of truth is the server).
     useEffect(() => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
         if (user && typeof (user as any).allow_friend_requests === 'boolean') {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
             setSettings(prev => ({ ...prev, allowFriendRequests: (user as any).allow_friend_requests }));
         }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only re-run when the account changes (login/logout/switch); a refreshed user object must not overwrite the local setting
     }, [user?.user_id]); // only re-run when the user changes (login/logout)
 
     // Same pattern as allow_friend_requests above: the server is the source
@@ -72,9 +75,12 @@ export function usePrivacySettings() {
     // choice rather than trusting this device's local copy. An older server
     // doesn't return the field — the local value (default on) stands.
     useEffect(() => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
         if (user && typeof (user as any).show_mobile_presence === 'boolean') {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
             setSettings(prev => ({ ...prev, showMobilePresence: (user as any).show_mobile_presence }));
         }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only re-run when the account changes (login/logout/switch); a refreshed user object must not overwrite the local setting
     }, [user?.user_id]); // only re-run when the user changes (login/logout)
 
     // ...and kept in step afterwards: every (re)connect re-reads it from
@@ -87,6 +93,7 @@ export function usePrivacySettings() {
 
     // Push screen-capture-protection to the main process on change.
     useEffect(() => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- window.electronAPI members are optional/version-dependent and not all declared on the typed bridge
         const electronAPI = (window as any).electronAPI;
         if (!electronAPI?.setContentProtection) return;
         electronAPI.setContentProtection(settings.screenCaptureProtection);

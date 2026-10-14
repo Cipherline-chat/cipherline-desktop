@@ -23,4 +23,5 @@ export { ClConfirm } from './ClConfirm';
 export { ClRadioGroup } from './ClRadioGroup';
 export type { ClRadioOption } from './ClRadioGroup';
 export { ClPill, ClRole, ClProgress, ClSkeleton, ClAvatar } from './ClMisc';
+export { ClNote } from './ClNote';
 export { useClTooltip } from './useClTooltip';

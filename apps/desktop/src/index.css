@@ -744,6 +744,7 @@ img {
   transition: background .15s, color .15s, transform .2s var(--cl-spring, ease);
 }
 .msgbar-btn svg { width: 16px; height: 16px; }
+.msgbar-btn:focus-visible { outline: 2px solid var(--cl-lume); outline-offset: -2px; }
 .msgbar-btn:hover { background: rgba(37, 224, 200, 0.12); color: var(--cl-lume); }
 .msgbar-btn:active { transform: translateY(1px); }
 .msgbar-btn.on { color: var(--cl-lume); background: rgba(37, 224, 200, 0.14); }
@@ -764,6 +765,43 @@ img {
 @media (prefers-reduced-motion: reduce) {
   .msgbar { animation: none; }
   .msgbar-btn:active { transform: none; }
+}
+
+/* ── Message toolbar, STRADDLING placement (.msgbar.msgbar-inline) ───────
+ * Pinned to the hovered row's TOP-RIGHT and centred on its top edge: half
+ * inside the row, half poking out above it (owner's pick; it used to float a
+ * full bar-height above, -top-11, reached by crossing the previous message).
+ * The bar is a DESCENDANT of the row, so the pointer travelling row -> bar
+ * (including its upper half, which lies over the previous row's bottom edge, or
+ * over the 12px mt-3 gap above a header row) never leaves the row: the previous
+ * row gets no mouseenter and this row's bar stays open. z-index 30 paints it
+ * over the previous message's content. Nothing clips it: the feed is
+ * `overflow-y-auto` with py-4 (16px) of top padding, which is the clip edge, and
+ * the half that pokes out is 18px; the feed's top padding is 20px (py-5) so the
+ * first message's bar is never clipped (MsgActionBar tests pin 18 <= 20).
+ *
+ * Full size (owner 2026-10-13: the compact 22px version was too small): 28px
+ * buttons with a 16px glyph and 3px padding (=> 36px bar), the same size the
+ * floating bar always had; soft shadow. Opaque (--cl-deep) so it reads over text beneath it.
+ * Motion: a short fade-in only (no travel) and none at all under reduced motion. */
+:root {
+  --msgbar-btn: 28px;
+  --msgbar-pad: 3px;
+}
+@keyframes msgbar-inline-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+.msgbar.msgbar-inline {
+  position: absolute; top: 0; right: 8px; transform: translateY(-50%); z-index: 30;
+  gap: 2px; padding: var(--msgbar-pad); border-radius: 12px;
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.35);
+  animation: msgbar-inline-in 0.12s ease-out both;
+}
+.msgbar-inline .msgbar-btn { width: var(--msgbar-btn); height: var(--msgbar-btn); border-radius: 9px; }
+.msgbar-inline .msgbar-btn svg { width: 16px; height: 16px; }
+@media (prefers-reduced-motion: reduce) {
+  .msgbar.msgbar-inline { animation: none; }
 }
 
 /* ── Jump-to-reply highlight flash ──────────────────────────────────────── */
@@ -1052,28 +1090,27 @@ img {
 .cl-ctrlbtn .cl-ico svg { width: 100%; height: 100%; }
 
 
-/* ── State, carried by colour ─────────────────────────────────────────────
- * The "off" glyphs (MicOff, VideoOff, HeadphoneOff) are drawn with a gap
- * where the slash crosses, so they read cleanly at 20px. An earlier revision
- * overlaid its own slash on the intact glyph instead, which smeared a line
- * across it — that's why drawing the slash looked wrong, not the idea.
+/* ── State, carried by colour + a DRAWN slash ─────────────────────────────
+ * Mic / camera / deafen are ONE icon each (components/icons/SlashableIcon):
+ * the intact glyph plus <path class="cl-slash">. Muting draws the slash in
+ * (stroke-dashoffset 24 → 0, the brand guide's rule, verbatim below); the
+ * glyph is masked by a wider copy of the same path, dashed by the same rule,
+ * so the cut-out opens as the slash arrives and the end state matches the
+ * gapped lucide *Off glyphs. (Overlaying a bare slash on the intact glyph is
+ * what smeared a line across it in an earlier revision.)
  *
- * The two glyphs cross-fade on opacity ONLY. No rotation, no scale: at this
- * size any geometry change is noise, and it's the colour shift (neutral →
- * flash) that already tells you the control is off.
+ * No rotation, no scale: at this size any geometry change is noise, and it's
+ * the colour shift (neutral → flash) that already tells you the control is
+ * off. The end state is a plain dashoffset of 0 under .is-muted — never the
+ * product of an animation — and reduced motion drops the transition (below),
+ * so a muted control is correct on its very first paint either way.
+ *
+ * pathLength="24" on the paths makes "24" cover the whole line, whatever its
+ * real length (the diagonal is 28.28 user units, longer than the raw 24).
  * ───────────────────────────────────────────────────────────────────────── */
-.cl-ico--tog { position: relative; }
-.cl-ico--tog > svg {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  transition: opacity .17s ease;
-}
-.cl-ico--tog > .ico-on  { opacity: 1; }
-.cl-ico--tog > .ico-off { opacity: 0; }
-.cl-ico--tog[data-off="true"] > .ico-on  { opacity: 0; }
-.cl-ico--tog[data-off="true"] > .ico-off { opacity: 1; }
+.cl-slash{stroke-dasharray:24;stroke-dashoffset:24;transition:stroke-dashoffset .25s ease}
+.cl-btn.is-muted .cl-slash,
+.cl-slashable.is-muted .cl-slash{stroke-dashoffset:0}
 
 /* Legacy two-glyph cross-fade, still used where a control swaps icons.
  *
@@ -1147,8 +1184,9 @@ img {
   .cl-ctrlbtn.ctrl-roll .cl-ico,
   .cl-ctrlbtn.ctrl-party,
   .ctrl-combo { animation: none; }
-  .cl-ctrlbtn .cl-ico--swap > svg,
-  .cl-ico--tog > svg { transition: none; }
+  .cl-ctrlbtn .cl-ico--swap > svg { transition: none; }
+  /* Muted lands on the finished slash at once: no draw, same end state. */
+  .cl-slash { transition: none; }
   .cl-ctrlbtn::before, .cl-ctrlbtn::after { transition: none; }
   .cl-ctrlbtn[data-pulse] { animation: none; }
   .cl-ctrlbtn:hover:not(:disabled) { transform: none; }
@@ -2233,3 +2271,24 @@ button,.cl-btn,.cl-toggle,.cl-check,.cl-radio,.cl-seg,.cl-selt,.cl-selm,.cl-pill
    exactly like a delivered one — no dimming. If it has not been confirmed after
    10 s (or the queue reports a failure) it gets the red "!" instead
    (components/UndeliveredIndicator.tsx, utils/undeliveredSend.ts). */
+
+/* #channel link -> the sidebar / call-panel row it named (utils/channelRefs.ts
+   revealChannelRow). A short lume ring, not a layout change. */
+@keyframes cl-channel-row-flash {
+    0%   { box-shadow: 0 0 0 2px rgba(37, 224, 200, 0.55); }
+    100% { box-shadow: 0 0 0 2px rgba(37, 224, 200, 0); }
+}
+.cl-channel-row-flash {
+    border-radius: 9px;
+    animation: cl-channel-row-flash 1.2s ease-out;
+}
+@media (prefers-reduced-motion: reduce) {
+    .cl-channel-row-flash { animation: none; box-shadow: 0 0 0 2px rgba(37, 224, 200, 0.45); }
+}
+
+/* Message-row chrome text (components/primitives/ChromeText.tsx): the expiry
+   badge, its tooltip and "(edited)" are painted from a data attribute so the
+   characters are not in the DOM and can never be drag-selected or copied along
+   with the message text. */
+.cl-chrome-text { user-select: none; -webkit-user-select: none; }
+.cl-chrome-text::before { content: attr(data-chrome-text); }

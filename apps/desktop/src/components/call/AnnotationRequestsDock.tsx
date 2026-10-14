@@ -16,13 +16,26 @@
  * announces itself to assistive tech, it keeps a slow ring going for as long
  * as anyone is waiting rather than flashing once, and more than one waiting
  * person gets a count above the rows.
+ *
+ * It can also be answered from the keyboard, without focusing Cipherline
+ * (utils/annotationRequestKeybind). The rows here and the keybind's target come
+ * from the SAME selector (visibleAnnotationRequests), oldest first, and the
+ * first row carries the key hint - so the row the hint is on is exactly the
+ * one the key will answer, and the key can never answer anything that is not
+ * on screen here. This component also publishes the context that selector
+ * needs (who we are, who is in the room) for as long as it is mounted.
  */
 import React from 'react';
 import ReactDOM from 'react-dom';
 import { PenLine, Check, X } from 'lucide-react';
 import { useMaybeRoomContext } from '@livekit/components-react';
-import { annotationStore, useAnnotationStore, isScreenShareTrack } from '../../utils/annotationStore';
-import { ownerOf } from '../../utils/annotationTransport';
+import { RoomEvent } from 'livekit-client';
+import { useAnnotationStore, isScreenShareTrack, clock } from '../../utils/annotationStore';
+import {
+    visibleAnnotationRequests, setAnnotationKeybindContext, notifyAnnotationKeybindContextChanged,
+    allowAnnotationRequest, declineAnnotationRequest, useAnnotationKeyHints,
+    type AnnotationKeybindContext,
+} from '../../utils/annotationRequestKeybind';
 
 export interface AnnotationRequestsDockProps {
     /** The local participant's identity: only requests on OUR tracks show. */
@@ -31,12 +44,39 @@ export interface AnnotationRequestsDockProps {
 
 export const AnnotationRequestsDock: React.FC<AnnotationRequestsDockProps> = ({ me }) => {
     const requests = useAnnotationStore(s => s.requests);
+    const requestedAt = useAnnotationStore(s => s.requestedAt);
     const room = useMaybeRoomContext();
+    const hints = useAnnotationKeyHints();
+
+    // Who is in the call. Not reactive on its own (the Room is mutable), so
+    // roster changes bump `rosterTick` to re-render, and tell the keybind's
+    // arming gate to re-evaluate too.
+    const [rosterTick, bumpRoster] = React.useReducer((n: number) => n + 1, 0);
+    React.useEffect(() => {
+        if (!room) return;
+        const onRoster = () => { bumpRoster(); notifyAnnotationKeybindContextChanged(); };
+        room.on(RoomEvent.ParticipantConnected, onRoster);
+        room.on(RoomEvent.ParticipantDisconnected, onRoster);
+        room.on(RoomEvent.Reconnected, onRoster);
+        return () => {
+            room.off(RoomEvent.ParticipantConnected, onRoster);
+            room.off(RoomEvent.ParticipantDisconnected, onRoster);
+            room.off(RoomEvent.Reconnected, onRoster);
+        };
+    }, [room]);
+
+    const ctx = React.useMemo<AnnotationKeybindContext>(() => ({
+        me,
+        // A REMOTE participant only: our own identity is never a requester.
+        isPresent: (id: string) => !!room && id !== room.localParticipant.identity && !!room.remoteParticipants.get(id),
+    }), [me, room]);
+    React.useEffect(() => setAnnotationKeybindContext(ctx), [ctx]);
+
     const mine = React.useMemo(
-        () => Object.entries(requests)
-            .filter(([track, ids]) => me && ownerOf(track) === me && ids.length > 0)
-            .flatMap(([track, ids]) => ids.map(id => ({ track, id }))),
-        [requests, me],
+        () => visibleAnnotationRequests({ requests, requestedAt }, ctx, clock.now()),
+        // rosterTick: re-filter when someone joins or leaves.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+        [requests, requestedAt, ctx, rosterTick],
     );
     if (mine.length === 0 || typeof document === 'undefined') return null;
 
@@ -70,7 +110,7 @@ export const AnnotationRequestsDock: React.FC<AnnotationRequestsDockProps> = ({ 
                     {mine.length} people want to draw
                 </div>
             )}
-            {mine.map(({ track, id }) => (
+            {mine.map(({ track, id }, i) => (
                 <div
                     key={`${track}\n${id}`}
                     className="annot-req-row flex items-center gap-3 rounded-xl bg-cl-deep/95 backdrop-blur-md border border-cl-lume/40 px-3.5 py-2.5 text-[13px] text-cl-text"
@@ -81,16 +121,21 @@ export const AnnotationRequestsDock: React.FC<AnnotationRequestsDockProps> = ({ 
                     </span>
                     <button
                         type="button"
-                        onClick={() => annotationStore.grant(track, id)}
+                        onClick={() => allowAnnotationRequest(track, id)}
+                        // The key answers the OLDEST request, which is this
+                        // first row - so only this row carries the hint.
                         className="inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-[12px] font-semibold bg-cl-lume/15 text-cl-lume hover:bg-cl-lume/25 focus:outline-none focus-visible:ring-2 focus-visible:ring-cl-lume/70"
                     >
                         <Check size={13} aria-hidden /> Allow
+                        {i === 0 && hints.approve && (
+                            <span className="ml-0.5 font-normal text-cl-lume/70">({hints.approve})</span>
+                        )}
                     </button>
                     <button
                         type="button"
-                        title={`Decline — ${label(id)} cannot ask again for a minute`}
+                        title={`Decline — ${label(id)} cannot ask again for a minute${i === 0 && hints.decline ? ` (${hints.decline})` : ''}`}
                         aria-label={`Decline ${label(id)}`}
-                        onClick={() => annotationStore.denyRequest(track, id)}
+                        onClick={() => declineAnnotationRequest(track, id)}
                         className="inline-flex items-center justify-center rounded-lg w-7 h-7 text-white/70 hover:text-white hover:bg-white/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-cl-lume/70"
                     >
                         <X size={14} aria-hidden />

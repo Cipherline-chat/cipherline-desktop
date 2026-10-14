@@ -43,13 +43,53 @@
 /* Forever fades out past the end of the ruler */
 .ob .st-bar.inf { -webkit-mask-image: linear-gradient(90deg, #000 78%, transparent); mask-image: linear-gradient(90deg, #000 78%, transparent); }
 
-.ob .st-rh { position: absolute; width: 18px; height: 18px; margin-left: -9px; border-radius: 50%; border: 0; padding: 0; background: var(--text); cursor: ew-resize; opacity: 0; transform: scale(.6);
-  transition: opacity .15s, transform .25s var(--spr), left .55s var(--spr); box-shadow: 0 0 0 3px rgba(37, 224, 200, .35), 0 2px 8px rgba(0, 0, 0, .5); touch-action: none; }
-.ob .st-rh--m { top: 5px; }
-.ob .st-rh--f { top: 20px; width: 16px; height: 16px; margin-left: -8px; box-shadow: 0 0 0 3px rgba(255, 201, 77, .4), 0 2px 8px rgba(0, 0, 0, .5); }
-.ob .st-lane:hover .st-rh, .ob .st-rh:focus-visible, .ob .st-rh.drag { opacity: 1; transform: none; }
-.ob .st-rh:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--lume), 0 0 0 6px rgba(37, 224, 200, .3); }
-.ob .st-rh.drag { transition: opacity .15s, transform .25s var(--spr); }
+/* ── drag handles: a slim grip pill centred ON its bar's end ────────────────
+   Geometry contract (storage.css <-> StorageStep.tsx): the track is 40px, the
+   messages bar spans y 9..19 (centre 14), the files bar y 26..32 (centre 29).
+   `left` is set inline to the SAME percentage as the bar's width and the
+   handle is centred on it with translate(-50%, -50%), so the pill's centre is
+   the bar's end at every value (Forever = 100% = the ∞ stop). Hidden until the
+   lane is hovered/focused/dragged. */
+.ob .st-rh { --cy: 14px; --w: 6px; --h: 20px; --sc: .7; --c: var(--lume); --c-rgb: 37, 224, 200; --grip: rgba(3, 38, 34, .5);
+  position: absolute; top: var(--cy); width: var(--w); height: var(--h); padding: 0; border: 0; border-radius: 99px; background: var(--c); cursor: ew-resize; touch-action: none;
+  opacity: 0; transform: translate(-50%, -50%) scale(var(--sc));
+  box-shadow: inset 0 1.5px 0 rgba(255, 255, 255, .5), 0 0 10px rgba(var(--c-rgb), .45), 0 1px 3px rgba(0, 0, 0, .5);
+  transition: opacity .18s ease, transform .25s var(--spr), width .18s var(--out), box-shadow .18s ease, left .55s var(--spr); }
+.ob .st-rh--msg { --cy: 14px; }
+.ob .st-rh--file { --cy: 29px; --w: 5px; --h: 14px; --c: var(--glow); --c-rgb: 255, 201, 77; --grip: rgba(66, 40, 0, .5); }
+/* two 1px grip lines, centred */
+.ob .st-rh::after { content: ''; position: absolute; left: 50%; top: 50%; width: 3px; height: 8px; transform: translate(-50%, -50%); pointer-events: none;
+  background: linear-gradient(90deg, var(--grip) 0 1px, transparent 1px 2px, var(--grip) 2px 3px); }
+.ob .st-rh--file::after { height: 6px; }
+/* a bigger invisible grab area than the 5-6px pill */
+.ob .st-rh::before { content: ''; position: absolute; inset: -4px -9px; }
+.ob .st-lane:hover .st-rh, .ob .st-rh:focus-visible, .ob .st-rh.drag { opacity: 1; --sc: 1; }
+.ob .st-rh:hover, .ob .st-rh.drag { --w: 8px; box-shadow: inset 0 1.5px 0 rgba(255, 255, 255, .55), 0 0 16px rgba(var(--c-rgb), .75), 0 1px 3px rgba(0, 0, 0, .5); }
+.ob .st-rh--file:hover, .ob .st-rh--file.drag { --w: 7px; }
+.ob .st-rh:focus-visible { outline: 2px solid var(--c); outline-offset: 3px; }
+.ob .st-rh.drag { transition: opacity .18s ease, transform .25s var(--spr), width .18s var(--out), box-shadow .18s ease; }
+/* the dragged lane paints above the next one, so a tooltip hanging below the files handle isn't covered */
+.ob .st-track.dragging { z-index: 6; }
+
+/* value tooltip while dragging: above the messages handle, below the files one */
+.ob .st-tip { position: absolute; left: 50%; z-index: 2; padding: 4px 9px; border-radius: 8px; background: var(--deep); border: 1px solid rgba(var(--c-rgb), .45); color: var(--text);
+  font: 800 11.5px/1.2 var(--body); white-space: nowrap; pointer-events: none; box-shadow: 0 6px 16px rgba(0, 0, 0, .5);
+  opacity: 0; transform: translate(-50%, 4px); transition: opacity .15s ease, transform .2s var(--out); }
+.ob .st-rh--msg .st-tip { bottom: calc(100% + 7px); }
+.ob .st-rh--file .st-tip { top: calc(100% + 7px); transform: translate(-50%, -4px); }
+.ob .st-tip[data-open="true"], .ob .st-rh--file .st-tip[data-open="true"] { opacity: 1; transform: translate(-50%, 0); }
+
+/* ── intro: the bars grow in from 0 on the first paint only ─────────────────
+   StorageStep forces widths to 0 (`pre`), then to their values (`run`) with
+   per-element transition-delay set INLINE (lanes 90ms apart, files 120ms after
+   messages, value labels a beat later). The delays are removed once it finishes
+   (`done`) so drags and preset changes stay snappy. Handles stay hidden until then. */
+.ob .st-rc[data-intro="run"] .st-bar,
+.ob .st-rc[data-intro="run"] .st-rh { transition-property: width, left; transition-duration: .9s; transition-timing-function: cubic-bezier(.25, .75, .2, 1); }
+.ob .st-rc:not([data-intro="done"]) .st-rh:not(:focus-visible) { opacity: 0 !important; pointer-events: none; }
+.ob .st-rc[data-intro="pre"] .st-vals { opacity: 0; transform: translateX(-8px); transition: none; }
+.ob .st-rc[data-intro="run"] .st-vals { transition: opacity .5s ease-out, transform .7s var(--out); }
+/* after the intro rules (same specificity): dragging never animates the bar */
 .ob .st-track.dragging .st-bar { transition: none; }
 
 .ob .st-vals { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; }
@@ -82,8 +122,13 @@
   .ob .st-where { margin-top: 16px; }
 }
 
-/* reduced motion: bars and handles jump, nothing eases */
-.ob.rm .st-bar, .ob.rm .st-rh, .ob.rm .st-menu, .ob.rm .st-seg button { transition: none; animation: none; }
+/* reduced motion: no intro, no scale, no tooltip animation; bars and handles jump */
+.ob.rm .st-bar, .ob.rm .st-rh, .ob.rm .st-tip, .ob.rm .st-vals, .ob.rm .st-menu, .ob.rm .st-seg button { transition: none; animation: none; }
+.ob.rm .st-rh { --sc: 1; }
+.ob.rm .st-tip, .ob.rm .st-rh--file .st-tip { transform: translate(-50%, 0); }
 @media (prefers-reduced-motion: reduce) {
-  .ob .st-bar, .ob .st-rh, .ob .st-menu, .ob .st-seg button { transition: none; animation: none; }
+  .ob .st-bar, .ob .st-rh, .ob .st-tip, .ob .st-vals, .ob .st-menu, .ob .st-seg button { transition: none; animation: none; }
+  .ob .st-rh { --sc: 1; }
+  .ob .st-tip, .ob .st-rh--file .st-tip { transform: translate(-50%, 0); }
+  .ob .st-rc[data-intro] .st-vals { opacity: 1; transform: none; }
 }

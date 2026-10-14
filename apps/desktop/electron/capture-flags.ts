@@ -145,13 +145,25 @@ export function buildChromiumMediaSwitches(
     capturerPref: ScreenCapturerPref,
     /** What 'auto' resolved to (decideAutoScreenCapturer); only 'dxgi' changes anything. */
     autoBackend: AutoCapturerDecision['backend'] = 'chromium-default',
+    /** Extra --enable-features entries decided elsewhere, merged into the SAME
+     *  list (Linux hardware encode: ./linux-video-encode.ts). Any platform may
+     *  pass them; the caller decides which are meant for which. */
+    extraEnableFeatures: readonly string[] = [],
 ): ChromiumMediaSwitches {
     const enableFeatures: string[] = [];
     const disableFeatures: string[] = [];
     if (platform === 'linux') {
-        // See main.ts: routes Wayland capture through PipeWire and our picker.
+        // NOT load-bearing in Chromium 150: the `WebRTCPipeWireCapturer`
+        // feature no longer exists there (absent from the Electron 43.7.9
+        // feature table; the PipeWire capturer is compiled in, and BOTH it and
+        // the XShm one are chosen by the Ozone platform alone — Wayland ->
+        // PipeWire via xdg-desktop-portal, X11 -> X11). The name is kept
+        // because an unknown feature is ignored, so it costs nothing and keeps
+        // an older Electron on the PipeWire path. What actually selects the
+        // capturer is `--ozone-platform-hint=auto` in main.ts.
         enableFeatures.push('WebRTCPipeWireCapturer');
     }
+    for (const f of extraEnableFeatures) if (!enableFeatures.includes(f)) enableFeatures.push(f);
     if (platform === 'win32') {
         // Hardware H.264 for the profile LiveKit negotiates (see header).
         enableFeatures.push('PlatformH264CbpEncoding');
@@ -479,6 +491,47 @@ export function resolveCapturedDisplayHz(opts: {
     return { hz: null, how: null };
 }
 
+/**
+ * Is this process a native Wayland client (=> Chromium's PipeWire capturer),
+ * as opposed to X11 / XWayland (=> the X11 capturer)? main.ts launches with
+ * `--ozone-platform-hint=auto`, which picks Wayland whenever the session is
+ * one; an explicit `--ozone-platform=x11|wayland` wins. Same rule as
+ * annotation-overlay-target.ts linuxOverlayVerdict. Pure: env injected.
+ */
+export function isNativeWaylandClient(
+    env: Readonly<Record<string, string | undefined>>,
+    /** `app.commandLine.getSwitchValue('ozone-platform')` ('' when unset). */
+    ozonePlatform: string,
+): boolean {
+    const ozone = ozonePlatform.trim().toLowerCase();
+    if (ozone === 'wayland') return true;
+    if (ozone === 'x11') return false;
+    return (env.XDG_SESSION_TYPE ?? '').toLowerCase() === 'wayland' || !!env.WAYLAND_DISPLAY;
+}
+
+/**
+ * The highest frame rate the OS capturer can DELIVER, whatever is asked for;
+ * null = no fixed ceiling of its own (the display refresh rate and the
+ * per-grab cost still apply).
+ *
+ * pipewire -> 60. Measured 2026-10-14 (Electron 43.7.9 on a GPU-composited
+ * Wayland session with PipeWire + xdg-desktop-portal-wlr, `pw-dump` while
+ * sharing at a requested 90): Chromium's PipeWire consumer advertises
+ * `framerate` and `maxFramerate` ranges of 0..60/1 and negotiates
+ * maxFramerate 60/1, while getSettings() still said frameRate 90. Source:
+ * webrtc modules/desktop_capture/linux/wayland/shared_screencast_stream.cc
+ * initialises `frame_rate_ = 60` and only
+ * BaseCapturerPipeWire::SetMaxFrameRate changes it — and Chromium's
+ * DesktopCaptureDevice never calls that. Below 60 the request IS honoured
+ * (asked 30, delivered 29.7). The compositor/portal can lower it further
+ * (xdg-desktop-portal-wlr: its own max_fps, 60 by default). X11 (XShm) and
+ * macOS (ScreenCaptureKit minimumFrameInterval = 1/requested) have no such
+ * fixed ceiling: X11 delivered 59.4 of a 60 Hz source at a requested 90.
+ */
+export function captureFpsCeiling(backend: string | null | undefined): number | null {
+    return backend === 'pipewire' ? 60 : null;
+}
+
 export type CaptureBackend =
     | 'wgc'        // Windows.Graphics.Capture
     | 'dxgi'       // DXGI Desktop Duplication (GDI fallback)
@@ -615,6 +668,27 @@ export interface CaptureTiming {
     intervalMs?: number;
 }
 
+/** Newest polls parseCaptureTimingLog summarises when the caller names none (the HUD). */
+export const CAPTURE_TIMING_DEFAULT_WINDOW = 300;
+/** Smallest window that still yields a summary (parseCaptureTimingLog needs ≥ 10 polls). */
+export const CAPTURE_TIMING_MIN_WINDOW = 10;
+
+/**
+ * The renderer's optional `frames` argument to `screenshare:get-capture-timing`
+ * — a trust boundary. Absent = the HUD's default; otherwise an integer
+ * CAPTURE_TIMING_MIN_WINDOW..CAPTURE_TIMING_DEFAULT_WINDOW, and anything else
+ * is refused (null), never coerced. The share-background probe
+ * (src/utils/shareBackgroundProbe.ts) asks for a short window so a
+ * collapsed background rate is not averaged away by the foreground polls
+ * before it.
+ */
+export function validateCaptureTimingWindow(input: unknown): number | null {
+    if (input === undefined) return CAPTURE_TIMING_DEFAULT_WINDOW;
+    if (typeof input !== 'number' || !Number.isInteger(input)) return null;
+    if (input < CAPTURE_TIMING_MIN_WINDOW || input > CAPTURE_TIMING_DEFAULT_WINDOW) return null;
+    return input;
+}
+
 const mean1 = (xs: number[]): number => Math.round((xs.reduce((a, b) => a + b, 0) / xs.length) * 10) / 10;
 
 /**
@@ -622,7 +696,7 @@ const mean1 = (xs: number[]): number => Math.round((xs.reduce((a, b) => a + b, 0
  * capture start are used, so a previous share in the same log does not
  * pollute the numbers. `window` bounds it to the newest N frames.
  */
-export function parseCaptureTimingLog(text: string, window = 300): CaptureTiming | null {
+export function parseCaptureTimingLog(text: string, window = CAPTURE_TIMING_DEFAULT_WINDOW): CaptureTiming | null {
     const lines = text.split('\n');
     let start = 0;
     let requestedFps: number | undefined;

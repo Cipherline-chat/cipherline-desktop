@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef } from 'react';
 import { eventToCombo, GLOBAL_ACTIONS, type BindableAction, type KeybindHook } from './useKeybinds';
 import { isKeyComboClaimed } from '../utils/keyClaims';
+import { isScreenLockEngaged } from '../utils/screenLockEngaged';
 
 export interface KeybindActionHandlers {
     'toggle-mute'?:        () => void;
@@ -15,6 +16,14 @@ export interface KeybindActionHandlers {
     'focus-chat-input'?:   () => void;
     'toggle-gif-picker'?:  () => void;
     'toggle-emoji-picker'?: () => void;
+    /**
+     * Pass these two ONLY while a drawing request is waiting (Dashboard does).
+     * An action with no handler is ignored by both tiers before anything else
+     * happens - in particular Tier 2 returns before preventDefault, so the
+     * combo reaches the focused app untouched the rest of the time.
+     */
+    'approve-annotation-request'?: () => void;
+    'decline-annotation-request'?: () => void;
 }
 
 /** Two physical keypresses of the same action within this window count as one —
@@ -44,6 +53,17 @@ const DEDUP_MS = 400;
  * actions bypass the "skip while typing" guard that navigation actions get,
  * since they're meant to work regardless of focus/input state — including
  * while typing a message.
+ *
+ * LOCKED: while the Screen Lock is up NO action fires, from either tier
+ * (`fire` is the one choke point, plus both tiers return before consuming the
+ * key). Hotkeys act on the app behind the lock — leave the call, share the
+ * screen, turn the camera on, open settings, focus the composer — and the lock
+ * exists so a person at the machine cannot do that. Mute/deafen are blocked
+ * too: a toggle can OPEN the mic of an unattended machine. The one audio
+ * control that stays live is push-to-talk (SidebarConference's own hold-to-talk
+ * listener, not this dispatcher): it needs the key physically held, so someone
+ * is present on purpose, and it only ever opens the mic of a call that is
+ * already running — it reads nothing and changes nothing in the app.
  */
 export function useGlobalKeybindListener(
     keybinds: KeybindHook,
@@ -58,6 +78,7 @@ export function useGlobalKeybindListener(
     const lastFiredAtRef = useRef<Map<BindableAction, number>>(new Map());
 
     const fire = useCallback((action: BindableAction) => {
+        if (isScreenLockEngaged()) return;
         const handler = handlersRef.current[action];
         if (!handler) return;
         const now = Date.now();
@@ -69,6 +90,7 @@ export function useGlobalKeybindListener(
 
     // ── Tier 1: Electron global shortcut events ─────────────────────────────
     useEffect(() => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- window.electronAPI members are optional/version-dependent and not all declared on the typed bridge
         const api = (window as any).electronAPI;
         if (!api?.onGlobalShortcut) return;
 
@@ -86,6 +108,8 @@ export function useGlobalKeybindListener(
     // ── Tier 2: Local keydown listener (only when focused) ─────────────────
     useEffect(() => {
         const onKey = (e: KeyboardEvent) => {
+            // Screen Lock up: the press is not a hotkey (and is left alone).
+            if (isScreenLockEngaged()) return;
             // Modifier-only press — ignore
             if (['Control', 'Meta', 'Alt', 'Shift'].includes(e.key)) return;
 

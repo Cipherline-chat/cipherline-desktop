@@ -9,7 +9,7 @@ import {
     AtSign, Phone, UserCheck, UserMinus, Monitor, RotateCcw,
     Plus, X, Info, Gamepad2, ScreenShare, Play, Upload,
     Mic, MicOff, Headphones, HeadphoneOff, Video, VideoOff, Fish, PenLine,
-    SlidersHorizontal, ChevronRight, Eye, EyeOff,
+    SlidersHorizontal, ChevronRight, Eye, EyeOff, ArrowRightLeft,
 } from 'lucide-react';
 import { useNotificationPrefs } from '../contexts/NotificationContext';
 import { useToast } from '../contexts/ToastContext';
@@ -186,6 +186,10 @@ const CATEGORIES: Array<{ cat: SoundCategory; label: string; icon: React.ReactNo
     // leaves) Watch on a share you are publishing.
     { cat: 'stream_viewer_join',  label: 'Someone watches your share', icon: <Eye size={15} /> },
     { cat: 'stream_viewer_leave', label: 'Someone stops watching',     icon: <EyeOff size={15} /> },
+    // Confirms the approve-drawing-request keybind when Cipherline is in the background.
+    { cat: 'annotation_allowed',  label: 'You allow drawing by keybind', icon: <PenLine size={15} /> },
+    // Plays when a moderator moves YOU into another call (never a move you made).
+    { cat: 'call_moved',          label: 'Moved to another call',        icon: <ArrowRightLeft size={15} /> },
 ];
 
 // Seventeen categories × (toggle + file picker + volume slider) was a wall of
@@ -327,6 +331,7 @@ export const NotificationsTab: React.FC = () => {
                     right={
                         <ClSelect<string>
                             value={prefs.show_preview}
+                            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
                             onChange={v => set('show_preview', v as any)}
                             options={PREVIEW_OPTIONS}
                             style={{ width: 160 }}
@@ -453,6 +458,7 @@ export const NotificationsTab: React.FC = () => {
                             </div>
                             <ClToggle
                                 checked={prefs.dnd_auto[key as keyof typeof prefs.dnd_auto]}
+                                // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
                                 onChange={v => setAuto({ [key]: v } as any)}
                                 disabled={locked}
                             />

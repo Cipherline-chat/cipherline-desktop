@@ -4,7 +4,7 @@ import type { StoragePolicy } from '../../../hooks/useRetentionPolicy';
 import {
     FILE_WINDOWS, MSG_WINDOWS, choiceToRetention, detectPreset, fractionOf, labelFor, menuOptions,
     presetRetention, retentionEquals, retentionFromPolicy, retentionToChoice, stepWindow, windowAtFraction,
-    withWindow, type PresetId,
+    withWindow, tipFor, trackPercent, type PresetId,
 } from './storageModel';
 
 const basePolicy = (over: Partial<StoragePolicy> = {}): StoragePolicy => ({
@@ -165,5 +165,23 @@ describe('menus and labels', () => {
         expect(labelFor('msg', 'never')).toBe('Forever');
         expect(labelFor('msg', '1y')).toBe('1 year');
         expect(labelFor('file', '24h')).toBe('24 hours');
+    });
+});
+
+describe('trackPercent / tipFor', () => {
+    it('trackPercent is the bar width: position/7 of the track, Forever = 100', () => {
+        for (const w of FILE_WINDOWS) expect(trackPercent(w)).toBeCloseTo(fractionOf(w) * 100, 10);
+        expect(trackPercent('never')).toBe(100);
+        expect(trackPercent('24h')).toBeCloseTo(100 / 7, 10);
+        expect(trackPercent('1y')).toBeCloseTo(600 / 7, 10);
+        // strictly increasing along the list (a handle never jumps backwards)
+        const ps = FILE_WINDOWS.map(trackPercent);
+        expect(ps).toEqual([...ps].sort((a, b) => a - b));
+    });
+    it('tipFor: messages read "1 year", files read "1 month files"', () => {
+        expect(tipFor('msg', '1y')).toBe('1 year');
+        expect(tipFor('file', '1mo')).toBe('1 month files');
+        expect(tipFor('file', '24h')).toBe('24 hours files');
+        expect(tipFor('msg', 'never')).toBe('Forever');
     });
 });

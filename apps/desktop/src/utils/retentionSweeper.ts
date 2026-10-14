@@ -2,6 +2,7 @@ import type { StoragePolicy } from '../hooks/useRetentionPolicy';
 import { attachmentRetentionMs, messageRetentionMs, UNSAVE_EXPIRY_MS } from '../hooks/useRetentionPolicy';
 
 export interface SweepResult {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     prunedState: Record<string, any[]>;
     attachmentsToDelete: string[];
     /**
@@ -54,6 +55,7 @@ export function retentionRuleFor(type: unknown): 'attachment' | 'message' | 'kee
     return 'message';
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
 export function msgTimestamp(m: any): number {
     // Messages arrive with various timestamp field names throughout the codebase.
     // Fall back through the likely candidates and finally Date.now() so we never
@@ -101,7 +103,35 @@ export function clampFutureTimestamp(
  *   - If nothing changes, the original state reference is returned so callers
  *     can bail out of setState calls cheaply via identity comparison.
  */
+/**
+ * The policy's saved / unsaved id lists as Sets, built once per policy object.
+ * The sweep used to call `Array.includes` on them for EVERY message — O(history
+ * × saved ids) on the renderer thread, and the sweep runs on every window focus.
+ * Measured (src/utils/retentionSweep.bench.test.ts): 60k messages with 500
+ * saved + 500 unsaved ids took 1.5–2.3 s per sweep. Policies are replaced, never
+ * mutated (useRetentionPolicy spreads a new object on every change), so caching
+ * by object identity is exact.
+ */
+interface PolicyIdSets { savedMsg: Set<string>; unsavedMsg: Set<string>; savedAtt: Set<string>; unsavedAtt: Set<string> }
+const policyIdSets = new WeakMap<StoragePolicy, PolicyIdSets & { src: readonly unknown[] }>();
+function idSetsFor(policy: StoragePolicy): PolicyIdSets {
+    const src = [policy.savedMessageIds, policy.unsavedMessageIds, policy.savedAttachmentIds, policy.unsavedAttachmentIds];
+    const hit = policyIdSets.get(policy);
+    // Same arrays as when cached — guards against a caller mutating the policy in place.
+    if (hit && hit.src.every((a, i) => a === src[i])) return hit;
+    const sets = {
+        savedMsg: new Set(policy.savedMessageIds ?? []),
+        unsavedMsg: new Set(policy.unsavedMessageIds ?? []),
+        savedAtt: new Set(policy.savedAttachmentIds ?? []),
+        unsavedAtt: new Set(policy.unsavedAttachmentIds ?? []),
+        src,
+    };
+    policyIdSets.set(policy, sets);
+    return sets;
+}
+
 export function sweepRetention(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     state: Record<string, any[]>,
     policy: StoragePolicy,
     now: number = Date.now(),
@@ -115,18 +145,22 @@ export function sweepRetention(
     const attachmentExpiry = attachmentRetentionMs(policy.attachmentRetention);
     const messageExpiry    = messageRetentionMs(policy.messageRetention);
     const attachmentsToDelete: string[] = [];
+    const ids = idSetsFor(policy);
 
     let changed = false;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     const out: Record<string, any[]> = {};
     const purgedMessageIds: Record<string, string[]> = {};
 
     for (const [convId, msgs] of Object.entries(state)) {
         if (!Array.isArray(msgs)) {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
             out[convId] = msgs as any;
             continue;
         }
 
         let convChanged = false;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
         const kept: any[] = [];
         const purged: string[] = [];
         const pinnedForConv = pinnedIdsByConv[convId];
@@ -182,7 +216,7 @@ export function sweepRetention(
                 // the moment unsave was clicked (not from sentAt).
                 // Effective expiry = max(natural window end, unsavedAt + 24h) so that
                 // messages still inside their natural window expire at the natural time.
-                if (msgId && policy.unsavedMessageIds.includes(msgId)) {
+                if (msgId && ids.unsavedMsg.has(msgId)) {
                     const sentMs      = msgTimestamp(msg);
                     const unsavedAt   = policy.unsavedMessageTimestamps?.[msgId] ?? sentMs;
                     const graceExpiry = unsavedAt + UNSAVE_EXPIRY_MS;
@@ -197,7 +231,7 @@ export function sweepRetention(
                     continue;
                 }
                 // Explicit save-forever.
-                if (msgId && policy.savedMessageIds.includes(msgId)) {
+                if (msgId && ids.savedMsg.has(msgId)) {
                     kept.push(msg);
                     continue;
                 }
@@ -215,7 +249,7 @@ export function sweepRetention(
                 const attId: string | undefined = msg?.content?.attachment_id;
 
                 // Explicitly unsaved: same grace-period logic as text messages.
-                if (attId && policy.unsavedAttachmentIds.includes(attId)) {
+                if (attId && ids.unsavedAtt.has(attId)) {
                     const sentMs      = msgTimestamp(msg);
                     const unsavedAt   = policy.unsavedAttachmentTimestamps?.[attId] ?? sentMs;
                     const graceExpiry = unsavedAt + UNSAVE_EXPIRY_MS;
@@ -232,7 +266,7 @@ export function sweepRetention(
                 }
 
                 // Saved-for-life list.
-                if (attId && policy.savedAttachmentIds.includes(attId)) {
+                if (attId && ids.savedAtt.has(attId)) {
                     kept.push(msg);
                     continue;
                 }

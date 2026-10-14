@@ -411,8 +411,10 @@ const game: Game = newGame(0, (Date.now() & 0xffff) || 1);
 let t = 0; // scene clock (s)
 let exiting = false;
 let exitK = 0;
-/** Keys is drawn unless the host asked for the field alone ('keys' message). */
+/** Keys is drawn unless the host asked for the field alone ('keys' message, or lock mode). */
 let keysVisible = true;
+/** 'lock': the dot field alone (lock screen backdrop) — no Keys, no bar, no game. Set at init. */
+let lockMode = false;
 let lastTs = 0, lastDraw = 0, raf = 0, sentOk = false;
 /** Everything that eases. */
 const smooth = { cx: 0, cy: 0, k: 1, walls: 0, game: 0, burst: 0, mx: 0, my: 0, mz: 0, vx: CURRENT_X, vy: CURRENT_Y, tx: 0, ty: 0 };
@@ -569,7 +571,7 @@ function frame(ts: number) {
     const tilt = tiltToward(smooth.ty, smooth.tx, reduced ? 0 : 1 - smooth.game);
     gl.uniformMatrix3fv(u.uTilt, false, tiltHomography(tilt.ax, tilt.ay));
     gl.uniform4f(u.uBar, bar.x, bar.y, bar.w, bar.shown);
-    gl.uniform2f(u.uBarA, bar.w > 0 ? (1 - smooth.game) : 0, reduced ? 0 : 1);
+    gl.uniform2f(u.uBarA, bar.w > 0 && !lockMode ? (1 - smooth.game) : 0, reduced ? 0 : 1);
     gl.uniform4f(u.uBurst, burstAt.x, burstAt.y, smooth.burst, game.mode === 'over' ? 1 : 0);
 
     game.walls.forEach((w, i) => { wall[i * 2] = w.x * U(); wall[i * 2 + 1] = w.live ? smooth.walls * (1 - exitK) : 0; });
@@ -607,6 +609,13 @@ self.onmessage = (e: MessageEvent<ToWorker>) => {
             // A new canvas (the handoff remount): let go of the old context.
             if (G) { G.gl.getExtension('WEBGL_lose_context')?.loseContext(); G = null; }
             W = m.w; H = m.h; dpr = m.dpr; reduced = m.reduced;
+            lockMode = m.mode === 'lock';
+            keysVisible = !lockMode; // a boot init starts with Keys on, whatever this worker did before
+            if (lockMode) {
+                // The field alone, from the very first frame: no Keys, no bar
+                // (bar.w = 0 is what hides it), whatever this worker did before.
+                bar.x = 0; bar.y = 0; bar.w = 0; bar.shown = 0; bar.done = false;
+            }
             if (game.best < m.best) game.best = m.best;
             G = setupGl(m.canvas);
             if (!G) { post({ type: 'nogl' }); return; }
@@ -636,11 +645,13 @@ self.onmessage = (e: MessageEvent<ToWorker>) => {
             break;
         }
         case 'bar': {
+            if (lockMode) return;
             bar.x = m.x; bar.y = m.y; bar.w = m.w;
             schedule();
             break;
         }
         case 'progress': {
+            if (lockMode) return;
             // Never backwards: a lower floor or ceiling than we have is ignored.
             const floor = Math.max(bar.floor, m.floor);
             const ceil = Math.max(bar.ceil, m.ceil, floor);
@@ -650,7 +661,7 @@ self.onmessage = (e: MessageEvent<ToWorker>) => {
             break;
         }
         case 'act': {
-            if (exiting || reduced) return;
+            if (lockMode || exiting || reduced) return;
             const r = act(game, W / H, game.mode === 'over' ? 0.1 : smooth.cy / U());
             if (r !== 'wait') strokeT = 0; // every swim is one stroke
             if (r === 'start') { game.walls.forEach((w, i) => { if (w.live) writeWall(i); }); sendGame(); }
@@ -658,19 +669,21 @@ self.onmessage = (e: MessageEvent<ToWorker>) => {
             break;
         }
         case 'keys': {
+            if (lockMode) return;
             keysVisible = m.visible;
             dirty.all = true;
             schedule();
             break;
         }
         case 'quit': {
-            if (game.mode === 'idle') return;
+            if (lockMode || game.mode === 'idle') return;
             quit(game);
             sendGame();
             schedule();
             break;
         }
         case 'exit': {
+            if (lockMode) return;
             exiting = true;
             schedule();
             break;

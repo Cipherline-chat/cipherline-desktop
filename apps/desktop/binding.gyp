@@ -2,7 +2,10 @@
   "targets": [
     {
       "target_name": "audio_capture",
-      "sources": [ "src-native/audio_capture.cc", "src-native/window_geometry.cc" ],
+      # share_power.cc is platform-neutral (its Win32 half is #ifdef _WIN32; elsewhere
+      # every export is a no-op), so it stays in the list on mac too (the mac
+      # block below only swaps audio_capture.cc / window_geometry.cc).
+      "sources": [ "src-native/audio_capture.cc", "src-native/window_geometry.cc", "src-native/share_power.cc" ],
       "conditions": [
         [
           "OS=='win'",
@@ -13,6 +16,8 @@
               "-lmmdevapi.lib",
               "-luser32.lib",
               "-ldwmapi.lib",
+              "-lwinmm.lib",
+              "-lshell32.lib",
               "-ldelayimp.lib"
             ],
             "msvs_settings": {

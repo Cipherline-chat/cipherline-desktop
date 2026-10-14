@@ -32,6 +32,11 @@ describe('searchSettingsIndex', () => {
         expect(searchSettingsIndex('gdpr').danger).toContain('Delete account');
     });
 
+    it('finds the per-server purge list from "server history" / "purge"', () => {
+        expect(searchSettingsIndex('server history').storage).toContain('Server storage');
+        expect(searchSettingsIndex('purge').storage).toEqual(expect.arrayContaining(['Clear history', 'Server storage']));
+    });
+
     it('empty or whitespace query matches nothing', () => {
         expect(searchSettingsIndex('')).toEqual({});
         expect(searchSettingsIndex('   ')).toEqual({});

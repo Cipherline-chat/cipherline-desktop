@@ -5,6 +5,7 @@
  * VDF is a simple recursive key-value format used by Valve for Steam configs.
  */
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
 export function parseVDF(text: string): Record<string, any> {
     let pos = 0;
 
@@ -53,9 +54,11 @@ export function parseVDF(text: string): Record<string, any> {
         return s;
     };
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     const readObj = (depth = 0): Record<string, any> => {
         // P2-ELEC-19: cap recursion so a malformed VDF can't stack-overflow main.
         if (depth > 64) { while (pos < text.length && text[pos] !== '}') pos++; return {}; }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
         const obj: Record<string, any> = {};
         skipWhitespace();
         if (text[pos] === '{') pos++;

@@ -1,8 +1,12 @@
 import React, { useState, useEffect, useLayoutEffect, useCallback, useRef } from 'react';
 import { RefreshCw, Check, ChevronDown, Monitor, ArrowRight, ArrowLeft, Loader2, AlertTriangle, Settings, ShieldAlert, Info } from 'lucide-react';
 import { ClButton, ClCheckbox, ClModal } from './cl';
+import { ShareFpsNote } from './ShareFpsNote';
 import { getCachedSources, storeNames, refreshDesktopSources, cancelDesktopSourceRefresh, hasPreview, pickerRequestedAt } from '../utils/desktopSourceCache';
 import { logCallEvent } from '../utils/callEventLog';
+import {
+    aspectOf, defaultLayoutFor, layoutChoices, layoutsEqual, sliceLabel, WHOLE_LAYOUT, type ShareLayout,
+} from '../utils/shareLayout';
 import {
     screenSourcesVerdict,
     isScreenAccessRefused,
@@ -15,6 +19,12 @@ export interface ScreenShareOptions {
     resolution: 'source' | '1440p' | '1080p' | '720p' | '480p';
     frameRate: 15 | 30 | 60 | 90;
     audio: boolean;
+    /**
+     * Ultra-wide displays only (shareLayout.ts): the whole display scaled to fit
+     * the encoder, or one screen of it cropped at native resolution. Absent =
+     * the whole display.
+     */
+    layout?: ShareLayout;
 }
 // Screenshares are always encoded for motion (games, video, UI with animation).
 // We hardcode contentHint='motion' + degradationPreference='maintain-framerate'
@@ -22,6 +32,18 @@ export interface ScreenShareOptions {
 
 interface ScreenSharePickerModalProps {
     onSelect: (options: ScreenShareOptions | null) => void;
+    /**
+     * Open on this tab instead of "Entire screen" (the "share the game window
+     * instead" hint opens on 'window'). Read once, at mount.
+     */
+    initialTab?: 'screen' | 'window';
+    /**
+     * A running program's name ("game.exe"): once the window list is in, the
+     * window that belongs to it is pre-selected (main matches by process
+     * name; nothing is picked if none matches or the user already chose).
+     * Read once, at mount.
+     */
+    preselectExe?: string;
 }
 
 type SourceType = 'screen' | 'window';
@@ -297,6 +319,66 @@ const SourceGrid = ({
     </div>
 );
 
+/**
+ * The aspect ratio of a source's preview thumbnail. Electron scales a
+ * thumbnail to fit its box PRESERVING the source's aspect, so for a screen it
+ * is the display's own aspect - enough to tell a Surround / Eyefinity display
+ * (one 7680x1440 "monitor" to the OS) from an ordinary one without another
+ * round trip to the main process. null until the image has loaded.
+ */
+function useThumbAspect(dataUrl: string | undefined): number | null {
+    const [loaded, setLoaded] = useState<{ url: string; aspect: number | null } | null>(null);
+    useEffect(() => {
+        if (!dataUrl) return;
+        let alive = true;
+        const img = new Image();
+        img.onload = () => { if (alive) setLoaded({ url: dataUrl, aspect: aspectOf(img.naturalWidth, img.naturalHeight) }); };
+        img.onerror = () => { if (alive) setLoaded({ url: dataUrl, aspect: null }); };
+        img.src = dataUrl;
+        return () => { alive = false; img.onload = null; img.onerror = null; };
+    }, [dataUrl]);
+    return dataUrl && loaded?.url === dataUrl ? loaded.aspect : null;
+}
+
+/**
+ * "Whole display (scaled) / Left / Center / Right screen" - shown only when the
+ * chosen screen is ultra-wide (aspect > 2.4, shareLayout.ts). Why a choice: the
+ * whole of a 7680x1440 display fits an encoder only at 3840x720, a sliver;
+ * one screen of it is a native 2560x1440.
+ */
+const LayoutChooser = ({
+    choices, value, onChange, aspect,
+}: {
+    choices: Array<{ layout: ShareLayout; label: string }>;
+    value: ShareLayout;
+    onChange: (l: ShareLayout) => void;
+    aspect: number | null;
+}) => (
+    <div className="mb-3 rounded-lg px-3 py-2.5 border border-white/[0.08] bg-white/[0.02]" data-testid="share-layout-choice">
+        <div className="flex items-center gap-3 flex-wrap">
+            <span className="text-[11px] text-cl-faint font-medium whitespace-nowrap">Ultra-wide display</span>
+            <div className="flex items-center gap-1.5 flex-wrap" role="group" aria-label="What to share from this display">
+                {choices.map(c => (
+                    <ClButton
+                        key={c.label}
+                        variant="ghost"
+                        size="sm"
+                        active={layoutsEqual(c.layout, value)}
+                        onClick={() => onChange(c.layout)}
+                    >
+                        {c.label}
+                    </ClButton>
+                ))}
+            </div>
+        </div>
+        <p className="text-[10px] text-cl-faint m-0 mt-1.5 leading-snug">
+            {value.kind === 'slice'
+                ? `Shares the ${sliceLabel(value.count, value.index).toLowerCase()} at full size. You can switch screens while sharing.`
+                : `Shares everything${aspect ? ` (${aspect.toFixed(1)}:1)` : ''}, scaled down to fit the video encoder - text will be small.`}
+        </p>
+    </div>
+);
+
 const QualityControls = ({
     resolution, setResolution, frameRate, setFrameRate, has1440p, audio, setAudio, activePreset, applyPreset,
 }: {
@@ -378,7 +460,7 @@ const QualityControls = ({
 );
 
 const QualitySummary = ({
-    resolution, frameRate, activePreset, audio, maxRefreshHz,
+    resolution, frameRate, activePreset, audio, maxRefreshHz, captureCeiling = 0,
 }: {
     resolution: ScreenShareOptions['resolution'];
     frameRate: ScreenShareOptions['frameRate'];
@@ -386,12 +468,18 @@ const QualitySummary = ({
     audio: boolean;
     /** Highest display refresh rate available, or 0 when unknown. */
     maxRefreshHz: number;
+    /** The OS capturer's own fixed frame-rate limit (Wayland/PipeWire: 60), or 0. */
+    captureCeiling?: number;
 }) => {
     // Screen capture samples the compositor, so it can't produce more distinct
     // frames per second than the display actually generates. Requesting 90 on a
     // 60 Hz panel gets you 60 — this is a hardware ceiling, not a tuning
     // problem, so say so plainly instead of letting people chase it.
     const refreshCapped = maxRefreshHz > 0 && frameRate > maxRefreshHz;
+    // The capturer's own limit, when it is the tighter of the two: a 144 Hz
+    // monitor on Wayland still gets at most 60 fps out of PipeWire.
+    const captureCapped = captureCeiling > 0 && frameRate > captureCeiling
+        && !(refreshCapped && maxRefreshHz <= captureCeiling);
     return (
         <>
             <p className="text-[10px] text-cl-faint mt-2 m-0">
@@ -400,7 +488,25 @@ const QualitySummary = ({
                 {audio ? ' · Audio on' : ''}
             </p>
 
-            {refreshCapped ? (
+            {captureCapped ? (
+                <div
+                    className="mt-2.5 flex items-start gap-2 rounded-lg px-3 py-2 border"
+                    style={{
+                        background:  'rgba(234,179,8,0.08)',
+                        borderColor: 'rgba(234,179,8,0.35)',
+                    }}
+                >
+                    <svg className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-[1px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3m0 3h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+                    </svg>
+                    <p className="text-[11px] text-amber-300/95 m-0 leading-snug">
+                        <span className="font-semibold">Screen sharing is limited to {captureCeiling} fps here.</span>{' '}
+                        On Wayland the system&apos;s screen-capture service (PipeWire) delivers at
+                        most {captureCeiling} frames per second, whatever the monitor runs at, so
+                        this will send up to {captureCeiling} fps.
+                    </p>
+                </div>
+            ) : refreshCapped ? (
                 <div
                     className="mt-2.5 flex items-start gap-2 rounded-lg px-3 py-2 border"
                     style={{
@@ -418,23 +524,8 @@ const QualitySummary = ({
                         monitor is the only way past this.
                     </p>
                 </div>
-            ) : frameRate === 90 && (
-                <div
-                    className="mt-2.5 flex items-start gap-2 rounded-lg px-3 py-2 border"
-                    style={{
-                        background:  'rgba(234,179,8,0.08)',
-                        borderColor: 'rgba(234,179,8,0.35)',
-                    }}
-                >
-                    <svg className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-[1px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.2}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3m0 3h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
-                    </svg>
-                    <p className="text-[11px] text-amber-300/95 m-0 leading-snug">
-                        <span className="font-semibold">Up to 90 fps.</span>{' '}
-                        Actual frame rate depends on your hardware and network speed —
-                        slower machines or constrained uploads may land closer to 60 fps.
-                    </p>
-                </div>
+            ) : (
+                <ShareFpsNote frameRate={frameRate} className="mt-2.5" />
             )}
         </>
     );
@@ -458,7 +549,7 @@ const QualitySummary = ({
 // step to usefully ask before or after it.
 type LinuxStep = 'waiting' | 'error' | 'grid' | 'settings';
 
-export const ScreenSharePickerModal: React.FC<ScreenSharePickerModalProps> = ({ onSelect }) => {
+export const ScreenSharePickerModal: React.FC<ScreenSharePickerModalProps> = ({ onSelect, initialTab, preselectExe }) => {
     const platform = window.electronAPI?.platform ?? 'windows';
     const isLinux = platform === 'linux';
     const bypassNote = showMacPickerBypassNote(platform, window.electronAPI?.macOSMajor);
@@ -478,15 +569,18 @@ export const ScreenSharePickerModal: React.FC<ScreenSharePickerModalProps> = ({ 
         if (wi) seed.window = wi;
         return seed;
     });
-    const [loading, setLoading] = useState(() => !getCachedSources('screen'));
+    const [loading, setLoading] = useState(() => !getCachedSources(initialTab ?? 'screen'));
     // Entire-screen first (classic/non-Linux tabs only): it is the first tab
     // shown, a handful of sources rather than dozens of windows, so it also
     // paints fastest.
-    const [selectedTab, setSelectedTab] = useState<SourceType>('screen');
+    const [selectedTab, setSelectedTab] = useState<SourceType>(initialTab ?? 'screen');
     const [selectedSourceId, setSelectedSourceId] = useState<string | null>(null);
     const [resolution, setResolution] = useState<ScreenShareOptions['resolution']>('1080p');
     const [frameRate, setFrameRate] = useState<ScreenShareOptions['frameRate']>(30);
     const [audio, setAudio] = useState(false);
+    // The user's pick for ONE source (ultra-wide displays only); anything else
+    // - another source, no pick - falls back to defaultLayoutFor(aspect).
+    const [layoutPick, setLayoutPick] = useState<{ sourceId: string; layout: ShareLayout } | null>(null);
     const [closing, setClosing] = useState(false);   // drives the kit modal's exit animation
 
     // Highest display refresh rate on this machine — the hard ceiling on how
@@ -494,12 +588,16 @@ export const ScreenSharePickerModal: React.FC<ScreenSharePickerModalProps> = ({ 
     // preload without the IPC, or a platform that doesn't report a frequency),
     // in which case we say nothing rather than guess.
     const [maxRefreshHz, setMaxRefreshHz] = useState(0);
+    // A fixed frame-rate limit of the OS capturer itself (Linux Wayland/PipeWire:
+    // 60), reported by main; 0 = none. Independent of any display's refresh rate.
+    const [captureCeiling, setCaptureCeiling] = useState(0);
     useEffect(() => {
         let cancelled = false;
         window.electronAPI?.getDisplayRefreshRates?.()
             .then(displays => {
                 if (cancelled || !displays?.length) return;
                 setMaxRefreshHz(Math.max(0, ...displays.map(d => d.displayFrequency || 0)));
+                setCaptureCeiling(Math.max(0, ...displays.map(d => d.captureFpsCeiling || 0)));
             })
             .catch(() => { /* stay at 0 — advisory only */ });
         return () => { cancelled = true; };
@@ -634,6 +732,25 @@ export const ScreenSharePickerModal: React.FC<ScreenSharePickerModalProps> = ({ 
         void fetchSourcesFor(selectedTab);
     }, [isLinux, selectedTab, fetchSourcesFor]);
 
+    // "Share the game window instead": pre-select the window of `preselectExe`
+    // once the window list is in. Re-tried on each list update (the cached list
+    // can be stale; the fresh one replaces it) until a match is found; never
+    // overrides a tile the user has already picked.
+    const preselectDone = useRef(false);
+    const windowList = sourcesByType.window;
+    useEffect(() => {
+        if (isLinux || !preselectExe || preselectDone.current || !windowList || windowList.length === 0) return;
+        const find = window.electronAPI?.findWindowSourceByExe;
+        if (!find) return;
+        let stale = false;
+        void find(preselectExe, windowList.map(s => s.id)).then(id => {
+            if (stale || !id || !openRef.current || preselectDone.current) return;
+            preselectDone.current = true;
+            setSelectedSourceId(cur => cur ?? id);
+        }).catch(() => { /* the picker just opens on the Window tab */ });
+        return () => { stale = true; };
+    }, [isLinux, preselectExe, windowList]);
+
     const [openPaintMs, setOpenPaintMs] = useState<number | null>(null);
     useLayoutEffect(() => {
         const click = timing.current.click;
@@ -727,6 +844,23 @@ export const ScreenSharePickerModal: React.FC<ScreenSharePickerModalProps> = ({ 
     const chosenIsWindow = !!selectedSourceId?.startsWith('window:');
     const activePreset = detectPreset(resolution, frameRate);
 
+    // Ultra-wide handling: only whole screens, only once the preview has loaded.
+    const thumbAspect = useThumbAspect(!chosenIsWindow && chosenSource && hasPreview(chosenSource) ? chosenSource.thumbnailDataUrl : undefined);
+    const layoutOptions = chosenIsWindow ? [] : layoutChoices(thumbAspect);
+    const layout: ShareLayout = layoutOptions.length === 0
+        ? WHOLE_LAYOUT
+        : (layoutPick && layoutPick.sourceId === selectedSourceId ? layoutPick.layout : defaultLayoutFor(thumbAspect));
+    const layoutRow = layoutOptions.length > 0
+        ? (
+            <LayoutChooser
+                choices={layoutOptions}
+                value={layout}
+                aspect={thumbAspect}
+                onChange={l => { if (selectedSourceId) setLayoutPick({ sourceId: selectedSourceId, layout: l }); }}
+            />
+        )
+        : null;
+
     const applyPreset = (key: 'low' | 'default' | 'high') => {
         setResolution(PRESETS[key].resolution);
         setFrameRate(PRESETS[key].frameRate);
@@ -735,7 +869,10 @@ export const ScreenSharePickerModal: React.FC<ScreenSharePickerModalProps> = ({ 
     const handleShare = (sourceId?: string) => {
         const id = sourceId ?? selectedSourceId;
         if (!id) return;
-        dismiss({ sourceId: id, resolution, frameRate, audio });
+        // The layout only travels for the source it was chosen on (a double-click
+        // on another tile passes its id without selecting it first).
+        const useLayout = id === selectedSourceId && layout.kind === 'slice';
+        dismiss({ sourceId: id, resolution, frameRate, audio, ...(useLayout ? { layout } : {}) });
     };
 
     const handleCancel = () => { dismiss(null); };
@@ -833,6 +970,7 @@ export const ScreenSharePickerModal: React.FC<ScreenSharePickerModalProps> = ({ 
 
                     {/* Settings bar */}
                     <div className="shrink-0 border-t border-white/[0.06] bg-cl-abyss rounded-b-2xl px-6 py-3.5">
+                        {layoutRow}
                         <div className="flex items-center gap-4 flex-wrap">
                             <QualityControls
                                 resolution={resolution} setResolution={setResolution}
@@ -855,7 +993,7 @@ export const ScreenSharePickerModal: React.FC<ScreenSharePickerModalProps> = ({ 
                                 </ClButton>
                             </div>
                         </div>
-                        <QualitySummary resolution={resolution} frameRate={frameRate} activePreset={activePreset} audio={audio} maxRefreshHz={maxRefreshHz} />
+                        <QualitySummary resolution={resolution} frameRate={frameRate} activePreset={activePreset} audio={audio} maxRefreshHz={maxRefreshHz} captureCeiling={captureCeiling} />
                     </div>
                 </>
             ) : (
@@ -938,13 +1076,14 @@ export const ScreenSharePickerModal: React.FC<ScreenSharePickerModalProps> = ({ 
                                     </div>
                                 </div>
 
+                                {layoutRow}
                                 <QualityControls
                                     resolution={resolution} setResolution={setResolution}
                                     frameRate={frameRate} setFrameRate={setFrameRate}
                                     has1440p={has1440p} audio={audio} setAudio={setAudio}
                                     activePreset={activePreset} applyPreset={applyPreset}
                                 />
-                                <QualitySummary resolution={resolution} frameRate={frameRate} activePreset={activePreset} audio={audio} maxRefreshHz={maxRefreshHz} />
+                                <QualitySummary resolution={resolution} frameRate={frameRate} activePreset={activePreset} audio={audio} maxRefreshHz={maxRefreshHz} captureCeiling={captureCeiling} />
                             </div>
                             <div className="shrink-0 border-t border-white/[0.06] bg-cl-abyss rounded-b-2xl px-6 py-3.5 flex items-center justify-between gap-2">
                                 <ClButton

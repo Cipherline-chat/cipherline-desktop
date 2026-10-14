@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import axios from 'axios';
-import { API_BASE } from '../constants';
+import { apiUrl } from '../utils/apiPath';
 import { importKeyFromBase64, decryptBlob } from '../utils/crypto';
 import { loadAvatarKey, saveAvatarKey, deleteAvatarKey } from '../utils/avatarKeyStore';
 import { useHydrationGeneration } from '../contexts/HydrationContext';
@@ -177,7 +177,7 @@ export async function loadAvatarToCache(
     // load is two round trips. Same requests, same gates — the server still
     // authorises each one separately.
     const urlPromise = axios.get(
-        `${API_BASE}/attachments/${attachmentId}/download`,
+        apiUrl`/attachments/${attachmentId}/download`,
         { headers: { Authorization: `Bearer ${token}` } },
     );
     // A key failure returns early below; never leave this rejection unhandled.
@@ -196,7 +196,7 @@ export async function loadAvatarToCache(
         if (!keyData) {
             try {
                 const keyRes = await axios.get(
-                    `${API_BASE}/attachments/${attachmentId}/key`,
+                    apiUrl`/attachments/${attachmentId}/key`,
                     { headers: { Authorization: `Bearer ${token}` } },
                 );
                 keyData = {
@@ -514,7 +514,8 @@ export function useEncryptedAvatar(
             if (!promise) {
                 promise = loadAvatarToCache(attachmentId, token, inlineKey, kind ? { kind } : undefined)
                     .catch(err => {
-                        console.error(`[useEncryptedAvatar] failed to load ${attachmentId}`, err);
+                        // Constant format string: the id is an argument, never part of the format.
+                        console.error('[useEncryptedAvatar] failed to load %s', attachmentId, err);
                         return null;
                     })
                     .finally(() => {

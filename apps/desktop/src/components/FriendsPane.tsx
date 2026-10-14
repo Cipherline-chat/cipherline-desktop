@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { useAuth } from '../contexts/AuthContext';
 import { ClButton, ClSearch, ClConfirm, ClSegment } from './cl';
@@ -15,28 +15,26 @@ import { useContextMenu } from '../hooks/useContextMenu';
 import { AddFriendModal } from './AddFriendModal';
 import { useToast } from '../contexts/ToastContext';
 import { API_BASE } from '../constants';
+import { apiUrl } from '../utils/apiPath';
 import { EncryptedAvatar } from './EncryptedAvatar';
 import { formatRailBadgeCount } from '../utils/unreadBadges';
 import { MascotEmpty } from './MascotEmpty';
+import { EMPTY_FRIENDS, type FriendsPayload, type FriendsLoadStatus } from '../utils/friendsSync';
 
 interface FriendsPaneProps {
     onStartChat: (chat: { id: string, title?: string, type?: string, other_user_id?: string }) => void;
     onStartGroupChat?: () => void;
     onAddToGroup?: (friend: { user_id: string; username: string; avatar_url?: string }) => void;
-    onFriendsLoaded?: (friends: { accepted: any[] }) => void;
+    /** The ONE copy of GET /friends, owned by Dashboard (also feeds the
+     *  right-hand Active Now panel). `null` = never loaded successfully — which
+     *  is NOT the same as "loaded and you have no friends". */
+    friends: FriendsPayload | null;
+    friendsStatus: FriendsLoadStatus;
+    /** Re-fetch GET /friends. Never rejects; on failure the last good list stays. */
+    onRefresh: () => Promise<unknown>;
     onStartCall?: (targetUserId: string) => void;
     friendStatuses?: Record<string, FriendStatusEntry>;
     onViewProfile?: (userId: string) => void;
-    friendAcceptedEvent?: { requester_id: string, recipient_id: string } | null;
-    friendRequestEvent?: { recipient_id: string } | null;
-    friendRemovedEvent?: { removed_by: string, other_user_id: string } | null;
-    /** Bumps on every WS reconnect (sleep-resync). Previously this pane had
-     *  no reconnect resync at all — a friend request that arrived, was
-     *  accepted, or was withdrawn while the socket was down (asleep laptop,
-     *  dropped network) fired no event on wake, so the pending tab sat
-     *  stale until some LATER, unrelated friend event happened to trigger
-     *  a refetch. */
-    wsConnectCount?: number;
 }
 
 type SubTab = 'all' | 'pending' | 'blocked';
@@ -59,20 +57,20 @@ const rowEntrance = (i: number) => ({
 });
 
 const FriendsPane: React.FC<FriendsPaneProps> = ({
-    onStartChat, onStartGroupChat, onAddToGroup, onFriendsLoaded,
+    onStartChat, onStartGroupChat, onAddToGroup,
+    friends: friendsProp, friendsStatus, onRefresh,
     onStartCall, friendStatuses, onViewProfile,
-    friendAcceptedEvent, friendRequestEvent, friendRemovedEvent,
-    wsConnectCount
 }) => {
     const { token, deviceId } = useAuth();
     const openProfileCtx = useOpenProfile();
     const toast = useToast();
-    const [friends, setFriends] = useState<{ pending_incoming: any[], pending_outgoing: any[], accepted: any[], blocked: any[] }>({
-        pending_incoming: [],
-        pending_outgoing: [],
-        accepted: [],
-        blocked: []
-    });
+    // No private copy: this used to be a `useState` that started EMPTY on every
+    // mount and was filled by a one-shot, error-swallowing GET, so a single failed
+    // fetch left "Your circle is quiet" up while Dashboard's copy (the Active Now
+    // panel) had the friend. Read the shared payload instead; `loaded` separates
+    // "never loaded" from "loaded and empty". See utils/friendsSync.ts.
+    const loaded = friendsProp !== null;
+    const friends = friendsProp ?? EMPTY_FRIENDS;
     const [subTab, setSubTab] = useState<SubTab>('all');
     const [refreshing, setRefreshing] = useState(false);
     const [search, setSearch] = useState('');
@@ -91,51 +89,28 @@ const FriendsPane: React.FC<FriendsPaneProps> = ({
     const fetchFriends = async (silent = false) => {
         if (!silent) setRefreshing(true);
         try {
-            const res = await axios.get(`${API_BASE}/friends`, {
-                headers: { Authorization: `Bearer ${token}` }
-            });
-            setFriends(res.data);
-            onFriendsLoaded?.(res.data);
-        } catch (err) {
-            console.error('Failed to fetch friends:', err);
+            await onRefresh();
         } finally {
             setRefreshing(false);
         }
     };
 
+    // Revalidate on open. The shared list is already on screen (seeded from
+    // Dashboard), so this can only improve it; a failure keeps what is shown.
+    // Friend events and WS reconnects refetch in Dashboard, which this reads.
     useEffect(() => {
-        if (token) fetchFriends();
+        if (token) void onRefresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once per mount/token; onRefresh is a per-render closure
     }, [token]);
-
-    useEffect(() => {
-        if (!token) return;
-        if (!friendAcceptedEvent && !friendRequestEvent && !friendRemovedEvent) return;
-        fetchFriends(true);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [friendAcceptedEvent, friendRequestEvent, friendRemovedEvent]);
-
-    // Reconnect resync — see the wsConnectCount prop doc comment. Skips the
-    // initial connect (count goes 0→1) the same way Dashboard's own
-    // reconnect effect does, since the mount effect above already covers it.
-    const prevWsConnectCount = useRef(0);
-    useEffect(() => {
-        if (!token || wsConnectCount === undefined) return;
-        if (prevWsConnectCount.current === 0 && wsConnectCount <= 1) {
-            prevWsConnectCount.current = wsConnectCount;
-            return;
-        }
-        prevWsConnectCount.current = wsConnectCount;
-        fetchFriends(true);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [wsConnectCount, token]);
 
     const handleReject = async (friendId: string, rowId: string) => {
         setRejectingRequestIds(prev => new Set(prev).add(rowId));
         try {
-            await axios.delete(`${API_BASE}/friends/${friendId}`, {
+            await axios.delete(apiUrl`/friends/${friendId}`, {
                 headers: { Authorization: `Bearer ${token}` }
             });
             fetchFriends(true);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (err: any) {
             toast.push({ kind: 'error', title: 'Request Failed', message: err?.response?.data?.message || 'Failed to reject request' });
         } finally {
@@ -156,6 +131,7 @@ const FriendsPane: React.FC<FriendsPaneProps> = ({
                         headers: { Authorization: `Bearer ${token}` }
                     });
                     fetchFriends(true);
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
                 } catch (err: any) {
                     toast.push({ kind: 'error', title: 'Block Failed', message: err?.response?.data?.message || 'Failed to block user' });
                 }
@@ -169,6 +145,7 @@ const FriendsPane: React.FC<FriendsPaneProps> = ({
                 headers: { Authorization: `Bearer ${token}` }
             });
             fetchFriends(true);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (err: any) {
             toast.push({ kind: 'error', title: 'Unblock Failed', message: err?.response?.data?.message || 'Failed to unblock user' });
         }
@@ -181,6 +158,7 @@ const FriendsPane: React.FC<FriendsPaneProps> = ({
                 headers: { Authorization: `Bearer ${token}` }
             });
             fetchFriends(true);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (err: any) {
             toast.push({ kind: 'error', title: 'Accept Failed', message: err?.response?.data?.message || 'Failed to accept' });
         } finally {
@@ -188,6 +166,7 @@ const FriendsPane: React.FC<FriendsPaneProps> = ({
         }
     };
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     const handleMessageFriend = async (friend: any) => {
         try {
             const res = await axios.post(`${API_BASE}/conversations/dm`, {
@@ -201,11 +180,13 @@ const FriendsPane: React.FC<FriendsPaneProps> = ({
                 type: 'dm',
                 other_user_id: friend.user_id
             });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (err: any) {
             toast.push({ kind: 'error', title: 'DM Failed', message: err?.response?.data?.message || 'Failed to start DM' });
         }
     };
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     const handleRemoveFriend = (friend: any) => {
         setConfirmDialog({
             title: 'Remove Friend',
@@ -215,10 +196,11 @@ const FriendsPane: React.FC<FriendsPaneProps> = ({
             onConfirm: async () => {
                 setConfirmDialog(null);
                 try {
-                    await axios.delete(`${API_BASE}/friends/${friend.user_id}`, {
+                    await axios.delete(apiUrl`/friends/${friend.user_id}`, {
                         headers: { Authorization: `Bearer ${token}` }
                     });
                     fetchFriends(true);
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
                 } catch (err: any) {
                     toast.push({ kind: 'error', title: 'Remove Failed', message: err?.response?.data?.message || 'Failed to remove friend.' });
                 }
@@ -263,7 +245,7 @@ const FriendsPane: React.FC<FriendsPaneProps> = ({
                                 Friends
                             </h1>
                             <p className="text-xs text-cl-faint mt-0.5">
-                                {friends.accepted.length} friend{friends.accepted.length !== 1 ? 's' : ''}
+                                {loaded ? `${friends.accepted.length} friend${friends.accepted.length !== 1 ? 's' : ''}` : '\u00A0'}
                             </p>
                         </div>
                     </div>
@@ -337,8 +319,38 @@ const FriendsPane: React.FC<FriendsPaneProps> = ({
             {/* Content */}
             <div className="flex-1 overflow-y-auto custom-scrollbar">
 
+                {/* Never loaded (first fetch pending or failing): say so. Rendering the
+                    empty state here told people with friends that they had none. */}
+                {!loaded && (
+                    <div className="px-10 py-8" role="status" aria-live="polite">
+                        <MascotEmpty
+                            title={friendsStatus === 'error' ? "Couldn't load your friends" : 'Loading your friends…'}
+                            sub={friendsStatus === 'error'
+                                ? "We can't reach the server right now. Your friends are fine - we'll keep trying."
+                                : 'Hang on a moment.'}
+                        >
+                            {friendsStatus === 'error' && (
+                                <ClButton size="sm" onClick={() => { void fetchFriends(); }} disabled={refreshing}>
+                                    <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />
+                                    Try again
+                                </ClButton>
+                            )}
+                        </MascotEmpty>
+                    </div>
+                )}
+
+                {/* A later refresh failed: keep showing the last good list, say it may be old. */}
+                {loaded && friendsStatus === 'error' && (
+                    <div className="px-10 pt-6" role="status" aria-live="polite">
+                        <p className="text-cl-faint text-xs m-0">
+                            Couldn&rsquo;t refresh your friends - showing the last list we have. Retrying&hellip;{' '}
+                            <button type="button" className="underline" onClick={() => { void fetchFriends(); }}>Try now</button>
+                        </p>
+                    </div>
+                )}
+
                 {/* ── All Friends ── */}
-                {subTab === 'all' && (
+                {loaded && subTab === 'all' && (
                     <div className="px-10 py-8">
                         {friends.accepted.length > 0 && (
                             <div className="mb-6 max-w-sm">
@@ -368,6 +380,7 @@ const FriendsPane: React.FC<FriendsPaneProps> = ({
                             </p>
                         ) : (
                             <div className="grid grid-cols-1 gap-2 max-w-3xl">
+                                {/* eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt */}
                                 {filteredFriends.map((f: any, i: number) => (
                                     <div
                                         key={f.friend_table_id}
@@ -473,7 +486,7 @@ const FriendsPane: React.FC<FriendsPaneProps> = ({
                 )}
 
                 {/* ── Blocked ── */}
-                {subTab === 'blocked' && (
+                {loaded && subTab === 'blocked' && (
                     <div className="px-10 py-8 max-w-lg">
                         <div className="mb-8">
                             <h2 className="text-lg font-semibold text-cl-text mb-1 m-0" style={{ fontFamily: 'var(--cl-font-display)' }}>Blocked Users</h2>
@@ -482,6 +495,7 @@ const FriendsPane: React.FC<FriendsPaneProps> = ({
 
                         {friends.blocked && friends.blocked.length > 0 ? (
                             <div className="flex flex-col gap-2">
+                                {/* eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt */}
                                 {friends.blocked.map((f: any, i: number) => (
                                     <div key={f.friend_table_id} style={rowEntrance(i).style} className={`flex items-center gap-4 px-5 py-3.5 bg-cl-surface border border-cl-flash/10 rounded-xl ${rowEntrance(i).className}`}>
                                         <div className="relative w-10 h-10 shrink-0">
@@ -530,13 +544,14 @@ const FriendsPane: React.FC<FriendsPaneProps> = ({
                 )}
 
                 {/* ── Pending ── */}
-                {subTab === 'pending' && (
+                {loaded && subTab === 'pending' && (
                     <div className="px-10 py-8 max-w-lg">
                         {/* Incoming */}
                         {friends.pending_incoming.length > 0 && (
                             <div className="mb-8">
                                 <Eyebrow>Incoming Requests — {friends.pending_incoming.length}</Eyebrow>
                                 <div className="flex flex-col gap-2">
+                                    {/* eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt */}
                                     {friends.pending_incoming.map((f: any, i: number) => (
                                         <div key={f.friend_table_id} style={rowEntrance(i).style} className={`flex items-center gap-4 px-5 py-3.5 bg-cl-surface border border-cl-lume/20 rounded-xl ${rowEntrance(i).className}`}>
                                             <div className="w-10 h-10 rounded-full shrink-0 relative overflow-hidden">
@@ -589,6 +604,7 @@ const FriendsPane: React.FC<FriendsPaneProps> = ({
                             <div className="mb-8">
                                 <Eyebrow>Sent Requests — {friends.pending_outgoing.length}</Eyebrow>
                                 <div className="flex flex-col gap-2">
+                                    {/* eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt */}
                                     {friends.pending_outgoing.map((f: any, i: number) => (
                                         <div key={f.friend_table_id} style={rowEntrance(i).style} className={`flex items-center gap-4 px-5 py-3.5 bg-cl-surface border border-cl-border/40 rounded-xl ${rowEntrance(i).className}`}>
                                             <div className="w-10 h-10 rounded-full shrink-0 relative overflow-hidden">

@@ -13,12 +13,14 @@ import { buildDmPickerResults, isSelfDm, selfConversationTitle } from '../utils/
 interface StartDMModalProps {
     onClose: () => void;
     onDMStarted: (chat: { id: string; title: string; type: string; other_user_id: string; avatar_url?: string }) => void;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     existingConversations: any[];
 }
 
 export const StartDMModal: React.FC<StartDMModalProps> = ({ onClose, onDMStarted, existingConversations }) => {
     const { closing, handleClose } = useModalExit(onClose, 260);
     const { token, deviceId, user } = useAuth();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     const [friends, setFriends] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
     const [search, setSearch] = useState('');
@@ -60,6 +62,7 @@ export const StartDMModal: React.FC<StartDMModalProps> = ({ onClose, onDMStarted
         setEgg(null);
     };
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     const handleOpen = async (friend: any) => {
         if (openingId) return;
         setOpeningId(friend.user_id);

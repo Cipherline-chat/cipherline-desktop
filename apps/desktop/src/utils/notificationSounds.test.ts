@@ -40,9 +40,12 @@ interface FakeAudio {
     setSinkId: ReturnType<typeof vi.fn>;
     play: ReturnType<typeof vi.fn>;
     pause: ReturnType<typeof vi.fn>;
+    listeners?: Record<string, Array<() => void>>;
 }
 
 let built: FakeAudio[] = [];
+// How the NEXT setSinkId behaves (tests flip this to simulate a rejecting sink).
+let sinkBehavior: (id: string, el: FakeAudio) => Promise<void> = () => Promise.resolve();
 let sounds: typeof import('./notificationSounds');
 let audioOutput: typeof import('./audioOutput');
 
@@ -54,14 +57,17 @@ let audioOutput: typeof import('./audioOutput');
  */
 beforeEach(async () => {
     built = [];
+    sinkBehavior = () => Promise.resolve();
     class MockAudio implements FakeAudio {
         src = '';
         volume = 1;
         currentTime = 0;
         loop = false;
-        setSinkId = vi.fn<(id: string) => Promise<void>>(() => Promise.resolve());
+        setSinkId: ReturnType<typeof vi.fn> = vi.fn((id: string): Promise<void> => sinkBehavior(id, this as FakeAudio));
         play = vi.fn(() => Promise.resolve());
         pause = vi.fn();
+        listeners: Record<string, Array<() => void>> = {};
+        addEventListener = (type: string, fn: () => void) => { (this.listeners[type] ??= []).push(fn); };
         constructor(src?: string) {
             if (src) this.src = src;
             built.push(this);
@@ -419,5 +425,124 @@ describe('bundled sound assets', () => {
         expect(sounds.DEFAULT_SOUNDS.stream_viewer_leave).toBe('./sounds/stream_viewer_leave.wav');
         expect(sounds.DEFAULT_SOUNDS.stream_viewer_join)
             .not.toBe(sounds.DEFAULT_SOUNDS.stream_viewer_leave);
+    });
+});
+
+describe('call_moved cue ("Moved to another call")', () => {
+    const withMoved = (over: Partial<SoundsPrefs['sounds']['call_moved']> = {}, top: Partial<SoundsPrefs> = {}) => {
+        const p = prefs(top);
+        p.sounds.call_moved = { ...p.sounds.call_moved, ...over };
+        return p;
+    };
+
+    it('plays once, with the bundled reconnected sweep, by default', () => {
+        sounds.playSound('call_moved', prefs());
+        expect(built).toHaveLength(1);
+        expect(built[0].play).toHaveBeenCalledTimes(1);
+        expect(built[0].src).toBe('./sounds/reconnected.wav');
+    });
+
+    it('is distinct from the join and leave cues', () => {
+        expect(sounds.DEFAULT_SOUNDS.call_moved).not.toBe(sounds.DEFAULT_SOUNDS.join);
+        expect(sounds.DEFAULT_SOUNDS.call_moved).not.toBe(sounds.DEFAULT_SOUNDS.leave);
+    });
+
+    it('is silent when its own toggle is off', () => {
+        sounds.playSound('call_moved', withMoved({ enabled: false }));
+        expect(built.every(b => b.play.mock.calls.length === 0)).toBe(true);
+    });
+
+    it('is silent when sounds are globally muted', () => {
+        sounds.playSound('call_moved', withMoved({}, { sounds_enabled: false }));
+        expect(built.every(b => b.play.mock.calls.length === 0)).toBe(true);
+    });
+
+    it('is silent when the App-sounds group is switched off', () => {
+        const p = prefs({ sound_groups: { app: { enabled: false, volume: 1 } } });
+        sounds.playSound('call_moved', p);
+        expect(built.every(b => b.play.mock.calls.length === 0)).toBe(true);
+    });
+
+    it('has a settings default of enabled and lives in the App-sounds group', () => {
+        expect(sounds.DEFAULT_SOUND_PREFS.call_moved.enabled).toBe(true);
+        expect(sounds.soundGroupOf('call_moved')).toBe('app');
+        expect(sounds.buildDefaultSoundCategoryPrefs().call_moved.file).toBe('./sounds/reconnected.wav');
+    });
+
+    it('positive control: the same prefs with the toggle on DO play', () => {
+        sounds.playSound('call_moved', withMoved({ enabled: true }));
+        expect(built[0].play).toHaveBeenCalledTimes(1);
+    });
+});
+
+describe('testSpeakers ("Test speakers" in Settings)', () => {
+    const flush = async () => { for (let i = 0; i < 6; i++) await Promise.resolve(); };
+
+    it('plays the test sound on the SELECTED output, with the sink set BEFORE the source', async () => {
+        audioOutput.onOutputDeviceChange('headset-1');
+        let srcWhenRouted: string | null = null;
+        sinkBehavior = async (_id, el) => { srcWhenRouted = el.src; };
+
+        const r = await sounds.testSpeakers('./sounds/notification.wav', 0.5);
+
+        expect(built).toHaveLength(1);
+        expect(built[0].setSinkId).toHaveBeenCalledWith('headset-1');
+        expect(srcWhenRouted).toBe(''); // routed first, so the first audible frame is on the pick
+        expect(built[0].src).toBe('./sounds/notification.wav');
+        expect(built[0].volume).toBe(0.5);
+        expect(built[0].play).toHaveBeenCalledTimes(1);
+        expect(r.played).toBe(true);
+        expect(r.element).toMatchObject({ ok: true, landed: true });
+    });
+
+    it('on the system default it plays without routing anything', async () => {
+        const r = await sounds.testSpeakers('./sounds/notification.wav', 0.5);
+        expect(built[0].setSinkId).not.toHaveBeenCalled();
+        expect(built[0].play).toHaveBeenCalled();
+        expect(r).toMatchObject({ played: true, element: { ok: true }, context: { ok: true } });
+    });
+
+    it('a rejected switch is reported, toasted once, and the sound still plays', async () => {
+        audioOutput.setOutputDeviceFailureHandler(null);
+        const notice = vi.fn();
+        audioOutput.onOutputDeviceChange('headset-1');
+        audioOutput.setOutputDeviceFailureHandler(notice);
+        sinkBehavior = async () => { throw new DOMException('denied', 'NotAllowedError'); };
+
+        const r = await sounds.testSpeakers('./sounds/notification.wav', 0.5);
+
+        expect(r.element).toMatchObject({ ok: false, landed: false, error: 'NotAllowedError' });
+        expect(r.played).toBe(true);
+        expect(built[0].play).toHaveBeenCalled();
+        expect(notice).toHaveBeenCalledTimes(1);
+        audioOutput.setOutputDeviceFailureHandler(null);
+    });
+
+    it('stays registered while it plays (a device change mid-sound re-points it) and is released when it ends', async () => {
+        audioOutput.onOutputDeviceChange('headset-1');
+        await sounds.testSpeakers('./sounds/notification.wav', 0.5);
+        const el = built[0];
+
+        audioOutput.onOutputDeviceChange('speakers-1');
+        await flush();
+        expect(el.setSinkId).toHaveBeenLastCalledWith('speakers-1');
+
+        for (const fn of el.listeners?.ended ?? []) fn();
+        el.setSinkId.mockClear();
+        audioOutput.onOutputDeviceChange('headset-1');
+        await flush();
+        expect(el.setSinkId).not.toHaveBeenCalled();
+    });
+
+    it('a sound that cannot start (autoplay gate / no device) reports played:false', async () => {
+        (globalThis as unknown as { Audio: new () => FakeAudio }).Audio = class {
+            src = ''; volume = 1; currentTime = 0; loop = false;
+            setSinkId = vi.fn(() => Promise.resolve());
+            play = vi.fn(() => Promise.reject(new DOMException('blocked', 'NotAllowedError')));
+            pause = vi.fn();
+            addEventListener = vi.fn();
+        } as never;
+        const r = await sounds.testSpeakers('./sounds/notification.wav', 0.5);
+        expect(r.played).toBe(false);
     });
 });

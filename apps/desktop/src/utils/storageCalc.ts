@@ -23,6 +23,7 @@ export interface ConvStorageStats {
  */
 export function calcConversationStorage(
     conversationId: string,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     messages: any[],
 ): ConvStorageStats {
     let attachmentBytes = 0;
@@ -52,6 +53,7 @@ export function calcConversationStorage(
  * Conversations with 0 messages are excluded.
  */
 export function rankByStorage(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     messagesState: Record<string, any[]>,
     topN = 10,
 ): ConvStorageStats[] {
@@ -70,6 +72,7 @@ export function rankByStorage(
  * Sorted descending by totalBytes.
  */
 export function findOrphanedConversations(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     messagesState: Record<string, any[]>,
     knownConversationIds: Set<string>,
 ): ConvStorageStats[] {

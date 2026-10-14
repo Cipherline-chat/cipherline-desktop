@@ -16,7 +16,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import { X, Bell, BellOff, BellDot, HardDrive, Clock, Check, Database } from 'lucide-react';
 import { formatBytes } from '@cipherline/shared';
-import { API_BASE } from '../../constants';
+import { apiUrl } from '../../utils/apiPath';
 import type { ServerInfo } from '../../hooks/useServers';
 import type { AttachmentRetention, MessageRetention } from '../../hooks/useRetentionPolicy';
 import { ATTACHMENT_RETENTION_LABELS, MESSAGE_RETENTION_LABELS } from '../../hooks/useRetentionPolicy';
@@ -176,7 +176,7 @@ export const ServerMemberOptionsModal: React.FC<Props> = ({
     useEffect(() => {
         if (!token) { setNicknameLoading(false); return; }
         setNicknameLoading(true);
-        axios.get(`${API_BASE}/servers/${server.server_id}/me`, {
+        axios.get(apiUrl`/servers/${server.server_id}/me`, {
             headers: { Authorization: `Bearer ${token}` },
         }).then(res => {
             setNickname(res.data?.nickname ?? '');
@@ -239,7 +239,7 @@ export const ServerMemberOptionsModal: React.FC<Props> = ({
         setNicknameError(null);
         try {
             await axios.patch(
-                `${API_BASE}/servers/${server.server_id}/members/${userId}/nickname`,
+                apiUrl`/servers/${server.server_id}/members/${userId}/nickname`,
                 { nickname: nickname.trim() || null },
                 { headers: { Authorization: `Bearer ${token}` } },
             );
@@ -247,6 +247,7 @@ export const ServerMemberOptionsModal: React.FC<Props> = ({
             if (nickSavedTimer.current) clearTimeout(nickSavedTimer.current);
             nickSavedTimer.current = setTimeout(() => setNicknameSaved(false), 2000);
             onNicknameSaved?.();
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (e: any) {
             setNicknameError(e?.response?.data?.message ?? 'Failed to save nickname');
         } finally {
@@ -607,7 +608,9 @@ export const ServerMemberOptionsModal: React.FC<Props> = ({
  * Aggregate local cache stats across all channels of a server.
  * Pass `channelMessages` from Dashboard and the list of channel IDs for the server.
  */
+// eslint-disable-next-line react-refresh/only-export-components -- co-located helper export; splitting the file would only affect dev Fast Refresh, not runtime behaviour
 export function computeServerLocalStats(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     channelMessages: Record<string, any[]>,
     channelIds: string[],
 ): ServerLocalStats {

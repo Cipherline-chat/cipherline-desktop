@@ -1,3 +1,4 @@
+import { outputSinkRef } from '../utils/audioOutput';
 import React from 'react';
 import {
     Pin, PinOff, X, Paperclip, CornerUpLeft,
@@ -61,6 +62,7 @@ function FileTypeIcon({ mime, filename }: { mime?: string; filename?: string }) 
 // ── Props ─────────────────────────────────────────────────────────────────────
 
 interface PinnedMessagesPanelProps {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     messages: any[];
     pinnedMsgIds: string[];
     objectUrls: Record<string, string>;
@@ -135,6 +137,7 @@ const PinnedMessagesPanel: React.FC<PinnedMessagesPanelProps> = ({
     // Build resolved list: most recently pinned first
     const resolvedPins = [...pinnedMsgIds].reverse().map(id => ({
         id,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
         msg: messages.find((m: any) => m.id === id) ?? null,
     }));
 
@@ -325,6 +328,7 @@ const PinnedMessagesPanel: React.FC<PinnedMessagesPanelProps> = ({
                                             ) : mime?.startsWith('video/') ? (
                                                 objUrl ? (
                                                     <video
+                                                        ref={outputSinkRef}
                                                         src={objUrl}
                                                         className="max-h-32 max-w-full rounded-lg mt-1"
                                                         controls

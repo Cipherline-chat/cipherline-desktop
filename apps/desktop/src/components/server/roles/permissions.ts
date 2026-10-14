@@ -131,7 +131,15 @@ export const PERMISSION_GROUPS: PermissionGroup[] = [
         permissions: [
             { key: 'CONNECT',          label: 'Connect',          bit: Permissions.CONNECT,
               description: 'Join voice channels and Calls-channel calls.', channelSection: 'access',
-              channelDescription: { huddle: 'Join or start calls in this channel.' } },
+              channelDescription: { huddle: 'Join calls in this channel. Starting a new one also needs Start Calls.' } },
+            // Split out of CONNECT (2026-10-12): CONNECT still gates JOINING;
+            // this gates STARTING a new call in a Calls channel. The server
+            // enforces it (HuddlesService.spawnCall); voice channels are
+            // always-on rooms and are not affected.
+            { key: 'START_CALLS',      label: 'Start Calls',      bit: Permissions.START_CALLS,
+              description: 'Start a new call in call channels. Members without it can still join calls that are already running.',
+              channelSection: 'access',
+              channelDescription: { huddle: 'Start a new call in this channel. Members without it can still join calls that are already running.' } },
             { key: 'SPEAK',            label: 'Speak',            bit: Permissions.SPEAK,
               channelDescription: { huddle: 'Unmute their microphone.' } },
             { key: 'VIDEO',            label: 'Video',            bit: Permissions.VIDEO,
@@ -145,10 +153,14 @@ export const PERMISSION_GROUPS: PermissionGroup[] = [
             // Both are checked server-wide only (moderation.service /
             // huddles.service → requireServerPermission), so a per-channel
             // override on either would silently do nothing.
-            { key: 'DEAFEN_MEMBERS',   label: 'Deafen Members',   bit: Permissions.DEAFEN_MEMBERS, serverOnly: true,
-              description: "Server-mute a participant's audio, video, or screen share in voice calls." },
-            { key: 'MOVE_MEMBERS',     label: 'Move Members',     bit: Permissions.MOVE_MEMBERS, serverOnly: true,
-              description: 'Drag someone from one call into another — even a full one. They still need Connect on the destination.' },
+            //
+            // Bits 11 and 12, RENAMED (not moved) from "Deafen Members" /
+            // "Move Members": stored role permissions and overrides are bit
+            // values, so every existing grant carries over unchanged.
+            { key: 'MODERATE_CALL_MEDIA', label: 'Moderate Call Media', bit: Permissions.MODERATE_CALL_MEDIA, serverOnly: true,
+              description: "Server-mute, server-deafen, and turn off members' camera or screen share in calls." },
+            { key: 'MANAGE_CALL_MEMBERS', label: 'Manage Call Members', bit: Permissions.MANAGE_CALL_MEMBERS, serverOnly: true,
+              description: 'Move members between calls and disconnect them from calls.' },
         ],
     },
 ];

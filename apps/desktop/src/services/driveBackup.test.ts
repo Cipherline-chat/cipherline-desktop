@@ -572,10 +572,16 @@ describe('stale Drive folder recovery', () => {
         accessCheckError?: Error;
         defaultFolderExists?: boolean;
         existingFileInFolder?: DriveManifestFile | null;
+        /** What an anywhere-in-Drive file search (`mimeType!=folder`, no parent
+         *  clause) returns — i.e. app-created files whose folder we can't see. */
+        anywhereFiles?: Array<DriveManifestFile & { capabilities?: { canEdit: boolean } }>;
+        /** Metadata GET-by-id for a pinned file (`fields=id,size,modifiedTime,trashed`). */
+        pinnedFileStat?: { status: number; body?: unknown };
     }) {
         const {
             accessibleFolderIds, accessCheckStatus = 403, accessCheckError,
             defaultFolderExists = true, existingFileInFolder = null,
+            anywhereFiles = [], pinnedFileStat = { status: 200, body: { size: '10', modifiedTime: '2026-01-01T00:00:00Z' } },
         } = opts;
         return vi.fn(async (url: string, init?: { method?: string; body?: string }) => {
             const method = (init?.method || 'GET').toUpperCase();
@@ -586,6 +592,9 @@ describe('stale Drive folder recovery', () => {
                 if (accessCheckError) throw accessCheckError;
                 return jsonResponse(accessCheckStatus, {});
             }
+            if (/^https:\/\/www\.googleapis\.com\/drive\/v3\/files\/[^/?]+\?fields=/.test(url) && method === 'GET') {
+                return jsonResponse(pinnedFileStat.status, pinnedFileStat.body ?? {});
+            }
             if (method === 'POST' && url === DRIVE_FILES_URL) {
                 const body = JSON.parse(init!.body!);
                 return jsonResponse(200, { id: DEFAULT_FOLDER_ID, name: body.name });
@@ -593,6 +602,10 @@ describe('stale Drive folder recovery', () => {
             if (method === 'DELETE') return jsonResponse(200, {});
             if (url.startsWith(`${DRIVE_FILES_URL}?`)) {
                 const decoded = decodeURIComponent(url);
+                if (decoded.includes("mimeType!='application/vnd.google-apps.folder'")) {
+                    // findFileAnywhere / findBackupAnywhere — no parent clause.
+                    return jsonResponse(200, { files: anywhereFiles });
+                }
                 if (decoded.includes("mimeType='application/vnd.google-apps.folder'")) {
                     // findFolder — the default-folder lookup.
                     return jsonResponse(200, { files: defaultFolderExists ? [{ id: DEFAULT_FOLDER_ID }] : [] });
@@ -735,6 +748,282 @@ describe('stale Drive folder recovery', () => {
         });
     });
 
+    // ── drive.file only: the app folder, and backups in folders it can't see ──
+    // The app no longer holds drive.metadata.readonly, so it cannot browse
+    // Drive. Backups live in an app-created "Cipherline Backups" folder found by
+    // stored id, then by a name search (which drive.file limits to app-created
+    // folders). A user who once picked their OWN folder keeps their existing
+    // backup FILE (the app created it, so drive.file still covers it) updated
+    // in place, by id, even though the folder is no longer visible.
+    describe('app folder under drive.file', () => {
+        // Drive's raw files.list shape: editability sits under `capabilities`.
+        const LEGACY_FILE = {
+            id: 'legacy-file-id', name: 'cipherline-backup.enc', capabilities: { canEdit: true },
+            modifiedTime: '2026-02-02T00:00:00Z', size: '77', parents: ['users-own-folder'],
+        };
+        const searchedForFolder = (fetchMock: ReturnType<typeof makeDriveFetchRouter>) =>
+            fetchMock.mock.calls.some(([u]) => decodeURIComponent(String(u)).includes("mimeType='application/vnd.google-apps.folder'"));
+        const createdFolder = (fetchMock: ReturnType<typeof makeDriveFetchRouter>) =>
+            fetchMock.mock.calls.some(([u, init]) => (init as { method?: string } | undefined)?.method === 'POST' && u === DRIVE_FILES_URL);
+
+        async function backup(destinations: Parameters<typeof runBackup>[0]['destinations']) {
+            buildBackupPlanMock.mockResolvedValue(await makePlan());
+            return runBackup({ userId: 'user-1', token: 'api-token', password: 'pw', includeAttachments: false, destinations });
+        }
+
+        it('first backup creates "Cipherline Backups", uploads into it, and returns its id for the caller to remember', async () => {
+            const fetchMock = makeDriveFetchRouter({ accessibleFolderIds: new Set(), defaultFolderExists: false });
+            vi.stubGlobal('fetch', fetchMock);
+            const api = makeDriveElectronApi();
+            Object.assign(window, { electronAPI: api });
+
+            const res = await backup({ drive: true });
+
+            expect(createdFolder(fetchMock)).toBe(true);
+            expect(api.gdriveUploadFile).toHaveBeenCalledWith(DEFAULT_FOLDER_ID, 'cipherline-backup.enc', expect.any(String));
+            expect(res.driveFolder).toEqual({ folderId: DEFAULT_FOLDER_ID, folderName: DEFAULT_FOLDER_NAME });
+            // Not a "your folder went away" situation: no warning toast.
+            expect(res.driveFolderRecovered).toBeUndefined();
+        });
+
+        it('the next run goes straight to the remembered id — no folder search, nothing to persist again', async () => {
+            const fetchMock = makeDriveFetchRouter({ accessibleFolderIds: new Set([DEFAULT_FOLDER_ID]) });
+            vi.stubGlobal('fetch', fetchMock);
+            const api = makeDriveElectronApi();
+            Object.assign(window, { electronAPI: api });
+
+            const res = await backup({ drive: true, driveFolderId: DEFAULT_FOLDER_ID });
+
+            expect(searchedForFolder(fetchMock)).toBe(false);
+            expect(createdFolder(fetchMock)).toBe(false);
+            expect(res.driveFolder).toBeUndefined();
+            expect(res.driveFolderRecovered).toBeUndefined();
+            expect(api.gdriveUploadFile).toHaveBeenCalledWith(DEFAULT_FOLDER_ID, 'cipherline-backup.enc', expect.any(String));
+        });
+
+        it('a folder the user moved or renamed in Drive is still used by id (the app keeps access to what it created)', async () => {
+            // Whatever the folder is called or wherever it sits now, the access
+            // check is by id, so nothing is searched for and nothing is created.
+            const fetchMock = makeDriveFetchRouter({ accessibleFolderIds: new Set(['renamed-and-moved-id']) });
+            vi.stubGlobal('fetch', fetchMock);
+            const api = makeDriveElectronApi();
+            Object.assign(window, { electronAPI: api });
+
+            const res = await backup({ drive: true, driveFolderId: 'renamed-and-moved-id' });
+
+            expect(api.gdriveUploadFile).toHaveBeenCalledWith('renamed-and-moved-id', 'cipherline-backup.enc', expect.any(String));
+            expect(searchedForFolder(fetchMock)).toBe(false);
+            expect(res.driveFolder).toBeUndefined();
+        });
+
+        it('on a second device (no stored id) finds the folder device A created by name instead of creating another', async () => {
+            const fetchMock = makeDriveFetchRouter({ accessibleFolderIds: new Set(), defaultFolderExists: true });
+            vi.stubGlobal('fetch', fetchMock);
+            const api = makeDriveElectronApi();
+            Object.assign(window, { electronAPI: api });
+
+            const res = await backup({ drive: true });
+
+            expect(createdFolder(fetchMock)).toBe(false);
+            expect(api.gdriveUploadFile).toHaveBeenCalledWith(DEFAULT_FOLDER_ID, 'cipherline-backup.enc', expect.any(String));
+            expect(res.driveFolder).toEqual({ folderId: DEFAULT_FOLDER_ID, folderName: DEFAULT_FOLDER_NAME });
+        });
+
+        it('a legacy user-chosen folder the app can no longer see: the existing backup FILE is still written in place, by id', async () => {
+            const fetchMock = makeDriveFetchRouter({ accessibleFolderIds: new Set(), accessCheckStatus: 404, anywhereFiles: [LEGACY_FILE] });
+            vi.stubGlobal('fetch', fetchMock);
+            const api = makeDriveElectronApi();
+            Object.assign(window, { electronAPI: api });
+
+            const res = await backup({ drive: true, driveFolderId: 'users-own-folder', driveFolderName: 'My Stuff' });
+
+            // Same stored folder id, plus the file id to update — no migration.
+            expect(api.gdriveUploadFile).toHaveBeenCalledTimes(1);
+            expect(api.gdriveUploadFile).toHaveBeenCalledWith('users-own-folder', 'cipherline-backup.enc', expect.any(String), 'legacy-file-id');
+            expect(createdFolder(fetchMock)).toBe(false);
+            // The stored folder stays as it was: nothing to persist, nothing to warn about.
+            expect(res.driveFolder).toBeUndefined();
+            expect(res.driveFolderRecovered).toBeUndefined();
+            expect(res.drive?.skipped).toBe(false);
+        });
+
+        it('a legacy folder still visible (account on the old broad grant) is written exactly as before — no file-id path', async () => {
+            vi.stubGlobal('fetch', makeDriveFetchRouter({ accessibleFolderIds: new Set(['users-own-folder']), anywhereFiles: [LEGACY_FILE] }));
+            const api = makeDriveElectronApi();
+            Object.assign(window, { electronAPI: api });
+
+            await backup({ drive: true, driveFolderId: 'users-own-folder' });
+
+            expect(api.gdriveUploadFile).toHaveBeenCalledWith('users-own-folder', 'cipherline-backup.enc', expect.any(String));
+        });
+
+        it('a legacy file the app may no longer edit is not pinned: the backup moves to the app folder, and the caller is told', async () => {
+            vi.stubGlobal('fetch', makeDriveFetchRouter({
+                accessibleFolderIds: new Set(), accessCheckStatus: 404, anywhereFiles: [{ ...LEGACY_FILE, capabilities: { canEdit: false } }],
+            }));
+            const api = makeDriveElectronApi();
+            Object.assign(window, { electronAPI: api });
+
+            const res = await backup({ drive: true, driveFolderId: 'users-own-folder' });
+
+            expect(api.gdriveUploadFile).toHaveBeenCalledWith(DEFAULT_FOLDER_ID, 'cipherline-backup.enc', expect.any(String));
+            expect(res.driveFolderRecovered).toEqual({ folderId: DEFAULT_FOLDER_ID, folderName: DEFAULT_FOLDER_NAME });
+        });
+
+        it('legacy file with no backup of ours anywhere (stale folder, nothing found): falls back to the app folder', async () => {
+            vi.stubGlobal('fetch', makeDriveFetchRouter({ accessibleFolderIds: new Set(), accessCheckStatus: 404, anywhereFiles: [] }));
+            const api = makeDriveElectronApi();
+            Object.assign(window, { electronAPI: api });
+
+            const res = await backup({ drive: true, driveFolderId: 'users-own-folder' });
+
+            expect(api.gdriveUploadFile).toHaveBeenCalledWith(DEFAULT_FOLDER_ID, 'cipherline-backup.enc', expect.any(String));
+            expect(res.driveFolderRecovered).toEqual({ folderId: DEFAULT_FOLDER_ID, folderName: DEFAULT_FOLDER_NAME });
+        });
+
+        it('404 fallback: the in-place write of the legacy file 404s, so the SAME backup lands in the app folder instead', async () => {
+            vi.stubGlobal('fetch', makeDriveFetchRouter({ accessibleFolderIds: new Set(), accessCheckStatus: 404, anywhereFiles: [LEGACY_FILE] }));
+            const api = makeDriveElectronApi();
+            api.gdriveUploadFile
+                .mockRejectedValueOnce(new Error('Drive upload could not start: HTTP 404'))
+                .mockResolvedValueOnce({ size: 4242 });
+            Object.assign(window, { electronAPI: api });
+
+            const res = await backup({ drive: true, driveFolderId: 'users-own-folder' });
+
+            expect(api.gdriveUploadFile).toHaveBeenCalledTimes(2);
+            expect(api.gdriveUploadFile).toHaveBeenNthCalledWith(1, 'users-own-folder', 'cipherline-backup.enc', expect.any(String), 'legacy-file-id');
+            expect(api.gdriveUploadFile).toHaveBeenNthCalledWith(2, DEFAULT_FOLDER_ID, 'cipherline-backup.enc', expect.any(String));
+            expect(res.drive?.skipped).toBe(false);
+            expect(res.errors).toBeUndefined();
+            expect(res.driveFolderRecovered).toEqual({ folderId: DEFAULT_FOLDER_ID, folderName: DEFAULT_FOLDER_NAME });
+            expect(res.driveFolder).toEqual({ folderId: DEFAULT_FOLDER_ID, folderName: DEFAULT_FOLDER_NAME });
+        });
+
+        it('403 fallback works the same way', async () => {
+            vi.stubGlobal('fetch', makeDriveFetchRouter({ accessibleFolderIds: new Set(), accessCheckStatus: 404, anywhereFiles: [LEGACY_FILE] }));
+            const api = makeDriveElectronApi();
+            api.gdriveUploadFile
+                .mockRejectedValueOnce(new Error('Drive upload could not start: HTTP 403'))
+                .mockResolvedValueOnce({ size: 4242 });
+            Object.assign(window, { electronAPI: api });
+
+            const res = await backup({ drive: true, driveFolderId: 'users-own-folder' });
+
+            expect(api.gdriveUploadFile).toHaveBeenNthCalledWith(2, DEFAULT_FOLDER_ID, 'cipherline-backup.enc', expect.any(String));
+            expect(res.driveFolderRecovered?.folderId).toBe(DEFAULT_FOLDER_ID);
+        });
+
+        it('any other write failure (5xx, network) is a real failure — NOT silently moved to another folder', async () => {
+            vi.stubGlobal('fetch', makeDriveFetchRouter({ accessibleFolderIds: new Set(), accessCheckStatus: 404, anywhereFiles: [LEGACY_FILE] }));
+            const api = makeDriveElectronApi();
+            api.gdriveUploadFile.mockRejectedValue(new Error('Drive upload failed: HTTP 503'));
+            Object.assign(window, { electronAPI: api });
+
+            const outcome = await backup({ drive: true, driveFolderId: 'users-own-folder' }).then(r => r, (e: Error) => e);
+
+            expect(api.gdriveUploadFile).toHaveBeenCalledTimes(1);
+            const message = outcome instanceof Error ? outcome.message : (outcome as { errors?: { drive?: string } }).errors?.drive;
+            expect(message).toMatch(/503/);
+            if (!(outcome instanceof Error)) expect(outcome.driveFolderRecovered).toBeUndefined();
+        });
+    });
+
+    describe('finding existing backups without folder access', () => {
+        const LEGACY_FILE: DriveManifestFile = {
+            id: 'legacy-file-id', name: 'cipherline-backup.enc', modifiedTime: '2026-02-02T00:00:00Z', size: '77', parents: ['users-own-folder'],
+        };
+        /** A desktop bridge that gets as far as the download and stops there. */
+        function restoreApiThatStopsAtDownload() {
+            return {
+                gdriveGetToken: vi.fn(async () => 'drive-token'),
+                gdriveDownloadFile: vi.fn(async () => { throw new Error('STOP-AFTER-LOOKUP'); }),
+                backupStat: vi.fn(),
+                backupReadRange: vi.fn(),
+            };
+        }
+
+        it('info: a backup in a folder the app can no longer see is still reported, and the stored folder is NOT repointed away from it', async () => {
+            vi.stubGlobal('fetch', makeDriveFetchRouter({
+                accessibleFolderIds: new Set(), accessCheckStatus: 404, defaultFolderExists: false, anywhereFiles: [LEGACY_FILE],
+            }));
+            Object.assign(window, { electronAPI: { gdriveGetToken: vi.fn(async () => 'drive-token') } });
+
+            const info = await getDriveBackupInfo('users-own-folder', 'cipherline-backup');
+
+            expect(info).toEqual({ exists: true, modifiedTime: '2026-02-02T00:00:00Z', sizeBytes: 77, folderRecovered: undefined });
+        });
+
+        it('info: a brand-new account with no app folder and no backup anywhere reports "no backup", not an error', async () => {
+            vi.stubGlobal('fetch', makeDriveFetchRouter({ accessibleFolderIds: new Set(), defaultFolderExists: false }));
+            Object.assign(window, { electronAPI: { gdriveGetToken: vi.fn(async () => 'drive-token') } });
+
+            expect(await getDriveBackupInfo(null, 'cipherline-backup')).toEqual({ exists: false, folderRecovered: undefined });
+        });
+
+        it('restore: finds the backup file by name anywhere in Drive when the stored folder is out of reach', async () => {
+            vi.stubGlobal('fetch', makeDriveFetchRouter({
+                accessibleFolderIds: new Set(), accessCheckStatus: 404, defaultFolderExists: false, anywhereFiles: [LEGACY_FILE],
+            }));
+            const api = restoreApiThatStopsAtDownload();
+            Object.assign(window, { electronAPI: api });
+
+            await expect(restoreFromDrive({ userId: 'user-1', password: 'pw', folderId: 'users-own-folder', fileBase: 'cipherline-backup' }))
+                .rejects.toThrow('STOP-AFTER-LOOKUP');
+            expect(api.gdriveDownloadFile).toHaveBeenCalledWith('legacy-file-id', 'cipherline-backup.enc');
+        });
+
+        it('restore: on a new device (nothing stored) finds the backup in the app folder device A created', async () => {
+            vi.stubGlobal('fetch', makeDriveFetchRouter({
+                accessibleFolderIds: new Set(), defaultFolderExists: true,
+                existingFileInFolder: { id: 'app-folder-file', name: 'cipherline-backup.enc', modifiedTime: '2026-03-03T00:00:00Z', size: '5' },
+            }));
+            const api = restoreApiThatStopsAtDownload();
+            Object.assign(window, { electronAPI: api });
+
+            await expect(restoreFromDrive({ userId: 'user-1', password: 'pw', fileBase: 'cipherline-backup' }))
+                .rejects.toThrow('STOP-AFTER-LOOKUP');
+            expect(api.gdriveDownloadFile).toHaveBeenCalledWith('app-folder-file', 'cipherline-backup.enc');
+        });
+
+        it('restore: an app folder that was moved or renamed is still found by its stored id', async () => {
+            vi.stubGlobal('fetch', makeDriveFetchRouter({
+                accessibleFolderIds: new Set(['renamed-and-moved-id']),
+                existingFileInFolder: { id: 'in-moved-folder', name: 'cipherline-backup.enc', size: '5' },
+            }));
+            const api = restoreApiThatStopsAtDownload();
+            Object.assign(window, { electronAPI: api });
+
+            await expect(restoreFromDrive({ userId: 'user-1', password: 'pw', folderId: 'renamed-and-moved-id', fileBase: 'cipherline-backup' }))
+                .rejects.toThrow('STOP-AFTER-LOOKUP');
+            expect(api.gdriveDownloadFile).toHaveBeenCalledWith('in-moved-folder', 'cipherline-backup.enc');
+        });
+
+        it('restore: a legacy dated manifest (pre-single-file layout) is found anywhere too, newest first', async () => {
+            vi.stubGlobal('fetch', makeDriveFetchRouter({
+                accessibleFolderIds: new Set(), accessCheckStatus: 404, defaultFolderExists: false,
+                anywhereFiles: [
+                    { id: 'newer', name: 'cipherline-backup-2026-01-02.enc', modifiedTime: '2026-01-02T00:00:00Z' },
+                    { id: 'older', name: 'cipherline-backup-2026-01-01.enc', modifiedTime: '2026-01-01T00:00:00Z' },
+                ],
+            }));
+            const api = restoreApiThatStopsAtDownload();
+            Object.assign(window, { electronAPI: api });
+
+            await expect(restoreFromDrive({ userId: 'user-1', password: 'pw', folderId: 'gone', fileBase: 'cipherline-backup' }))
+                .rejects.toThrow('STOP-AFTER-LOOKUP');
+            expect(api.gdriveDownloadFile).toHaveBeenCalledWith('newer', 'cipherline-backup-2026-01-02.enc');
+        });
+
+        it('restore: no backup in the folder and none anywhere still says "No backup found"', async () => {
+            vi.stubGlobal('fetch', makeDriveFetchRouter({ accessibleFolderIds: new Set(), defaultFolderExists: false }));
+            Object.assign(window, { electronAPI: restoreApiThatStopsAtDownload() });
+
+            await expect(restoreFromDrive({ userId: 'user-1', password: 'pw', folderId: 'gone', fileBase: 'cipherline-backup' }))
+                .rejects.toThrow(/No backup found/);
+        });
+    });
+
     describe('getDriveBackupInfo — read path recovers too', () => {
         it('reports folderRecovered and looks in the default folder when the stored id 403s', async () => {
             vi.stubGlobal('fetch', makeDriveFetchRouter({
@@ -743,7 +1032,7 @@ describe('stale Drive folder recovery', () => {
             }));
             Object.assign(window, { electronAPI: { gdriveGetToken: vi.fn(async () => 'drive-token') } });
 
-            const info = await getDriveBackupInfo(DEFAULT_FOLDER_NAME, STALE_FOLDER_ID, 'cipherline-backup');
+            const info = await getDriveBackupInfo(STALE_FOLDER_ID, 'cipherline-backup');
             expect(info).toEqual({
                 exists: true, modifiedTime: '2026-01-01T00:00:00Z', sizeBytes: 10,
                 folderRecovered: { folderId: DEFAULT_FOLDER_ID, folderName: DEFAULT_FOLDER_NAME },
@@ -754,7 +1043,7 @@ describe('stale Drive folder recovery', () => {
             vi.stubGlobal('fetch', makeDriveFetchRouter({ accessibleFolderIds: new Set(), defaultFolderExists: false }));
             Object.assign(window, { electronAPI: { gdriveGetToken: vi.fn(async () => 'drive-token') } });
 
-            const info = await getDriveBackupInfo(DEFAULT_FOLDER_NAME, STALE_FOLDER_ID, 'cipherline-backup');
+            const info = await getDriveBackupInfo(STALE_FOLDER_ID, 'cipherline-backup');
             expect(info).toEqual({ exists: false, folderRecovered: undefined });
         });
     });

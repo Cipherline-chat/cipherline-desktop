@@ -3,7 +3,8 @@
  *
  * Thin by design: it only mirrors main-process state (electron/updater-state.ts
  * owns the actual transition logic) and exposes the actions a user can take —
- * install, open the manual download, and force a check. It deliberately does
+ * install, retry a failed update (always in the app), force a check, and —
+ * Linux AppImage only — open the manual download. It deliberately does
  * NOT know about calls — "are you sure, you'll
  * leave your call" is a UI decision made where call state actually lives
  * (Dashboard), not something this context should reach for.
@@ -21,8 +22,12 @@ export interface UpdateContextValue {
     state: UpdateStateShape;
     /** Restart into the downloaded build. Only meaningful when state.phase === 'ready'. */
     installNow: () => void;
-    /** Open this platform's direct download link in the OS browser. Only
-     *  meaningful when state.phase === 'manual'. */
+    /** Try a failed update again, in the app: main clears the half-finished
+     *  download and starts a fresh one. Meaningful in 'retrying' (retry now)
+     *  and 'failed'. */
+    retry: () => void;
+    /** Open the direct download link in the OS browser. Only meaningful when
+     *  state.phase === 'manual', which main produces on Linux only. */
     openDownload: () => void;
     /**
      * Force an update check now, instead of waiting up to four hours for the
@@ -70,6 +75,19 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
         });
     }, []);
 
+    const retry = useCallback(() => {
+        const api = window.electronAPI;
+        if (!api?.retryUpdate) return;
+        // Optimistic: the click visibly does something at once; main pushes
+        // the real state ('available' → 'downloading' …) right behind it.
+        setState(prev => (prev.phase === 'retrying' || prev.phase === 'failed' || prev.phase === 'manual')
+            ? { phase: 'available', version: prev.version }
+            : prev);
+        api.retryUpdate().catch((err) => {
+            console.warn('[UpdateContext] retryUpdate failed:', err);
+        });
+    }, []);
+
     const openDownload = useCallback(() => {
         if (state.phase !== 'manual') return;
         window.electronAPI?.openExternal?.(state.downloadUrl).catch((err) => {
@@ -86,13 +104,14 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
     }, []);
 
     const value = useMemo(
-        () => ({ state, installNow, openDownload, checkNow }),
-        [state, installNow, openDownload, checkNow],
+        () => ({ state, installNow, retry, openDownload, checkNow }),
+        [state, installNow, retry, openDownload, checkNow],
     );
 
     return <UpdateContext.Provider value={value}>{children}</UpdateContext.Provider>;
 }
 
+// eslint-disable-next-line react-refresh/only-export-components -- co-located helper export; splitting the file would only affect dev Fast Refresh, not runtime behaviour
 export function useUpdate(): UpdateContextValue {
     const ctx = useContext(UpdateContext);
     if (!ctx) throw new Error('useUpdate must be used within an UpdateProvider');

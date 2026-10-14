@@ -21,6 +21,19 @@ import { join } from 'node:path';
  * that one failing request no longer aborts the rest of a serve pass.
  */
 const src = readFileSync(join(__dirname, 'Dashboard.tsx'), 'utf8');
+// The serve pass and the member_join decision moved to utils/keyServePass.ts
+// (2026-10-11); Dashboard supplies their effects, recordDelivery included.
+const servePass = readFileSync(join(__dirname, '..', 'utils', 'keyServePass.ts'), 'utf8');
+
+function sliceOf(text: string, startMarker: string, endMarker: string): string {
+    const a = text.indexOf(startMarker);
+    expect(a, `marker not found: ${startMarker}`).toBeGreaterThan(-1);
+    const b = text.indexOf(endMarker, a + startMarker.length);
+    expect(b, `end marker not found after ${startMarker}: ${endMarker}`).toBeGreaterThan(a);
+    return text.slice(a, b);
+}
+const passBody = () => sliceOf(servePass, 'export function serveKeyRequestsPass(', 'export interface MemberJoinDeps');
+const joinBody = () => sliceOf(servePass, 'export async function runMemberJoinDistribution(', '\n}\n');
 
 function body(startMarker: string, endMarker: string): string {
     const a = src.indexOf(startMarker);
@@ -38,18 +51,21 @@ const memberJoined = () => body('const distributeKeysToNewMember = (server_id: s
 
 describe('holder side: serving a key request', () => {
     it('records a requester device that is not listed with a key bundle instead of skipping it silently', () => {
-        const fn = serve();
-        const skip = fn.slice(fn.indexOf('if (!dev)'));
-        expect(skip.slice(0, skip.indexOf('continue;'))).toContain("recordDelivery('channel_key_distribute'");
-        expect(fn).toContain('[E2EE:NO_RECIPIENT_BUNDLE]');
+        const pass = passBody();
+        const skip = pass.slice(pass.indexOf('if (!dev)'));
+        expect(skip.slice(0, skip.indexOf('continue;'))).toContain('deps.onNoRecipientBundle?.(req);');
+        const hook = serve().slice(serve().indexOf('onNoRecipientBundle: (req) => {'));
+        expect(hook.slice(0, 700)).toContain("recordDelivery('channel_key_distribute'");
+        expect(hook.slice(0, 700)).toContain('[E2EE:NO_RECIPIENT_BUNDLE]');
     });
 
     it('isolates each request: a throw is caught and recorded INSIDE the loop, so later requests are still served', () => {
-        const fn = serve();
-        const loop = fn.slice(fn.indexOf('const phases = latestFirstPhases(open);'));
+        const pass = passBody();
+        const loop = pass.slice(pass.indexOf('const phases = latestFirstPhases(walk);'));
         const perRequest = loop.slice(0, loop.indexOf('if (stop) { stoppedAt = i; break; }'));
         // The per-request try must have its own catch before its finally.
-        expect(perRequest).toMatch(/\} catch \(e\) \{[\s\S]*recordDelivery\('channel_key_distribute', e/);
+        expect(perRequest).toMatch(/\} catch \(e\) \{[\s\S]*deps\.onRequestError\?\.\(req, e\)/);
+        expect(serve()).toMatch(/onRequestError: \(req, e\) => \{[\s\S]*recordDelivery\('channel_key_distribute', e/);
     });
 
     it('records a failure to list pending requests at all', () => {
@@ -75,9 +91,11 @@ describe('holder side: wrapping and posting envelopes', () => {
 
 describe('holder side: server:member_joined distribution', () => {
     it('records a new member with no listed device instead of returning silently', () => {
-        const fn = memberJoined();
-        const noDev = fn.slice(fn.indexOf('if (!newMemberDevices.length)'));
-        expect(noDev.slice(0, noDev.indexOf('return;'))).toContain('[E2EE:NO_RECIPIENT_BUNDLE]');
+        const join = joinBody();
+        const noDev = join.slice(join.indexOf('if (!newMemberDevices.length)'));
+        expect(noDev.slice(0, noDev.indexOf('return '))).toContain('deps.onNoRecipientBundle?.();');
+        const hook = memberJoined().slice(memberJoined().indexOf('onNoRecipientBundle: () => {'));
+        expect(hook.slice(0, 600)).toContain('[E2EE:NO_RECIPIENT_BUNDLE]');
     });
 
     it('records a failed distribution', () => {

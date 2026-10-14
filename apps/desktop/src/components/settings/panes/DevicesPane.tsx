@@ -4,9 +4,16 @@ import { Laptop, Monitor, Smartphone, RefreshCw, AlertTriangle } from 'lucide-re
 import { ClButton, ClSkeleton } from '../../cl';
 import axios from 'axios';
 import { API_BASE } from '../../../constants';
+import { apiUrl } from '../../../utils/apiPath';
 import { useToast } from '../../../contexts/ToastContext';
 import { useOwnDevicePresence } from '../../../hooks/useOwnDevicePresence';
 import { PhoneLinkPanel } from '../../link/PhoneLinkPanel';
+import { DeviceApprovalModal, DeviceRemovedNotice } from '../../DeviceApprovalModal';
+import { ChangePasswordModal } from '../../auth/ChangePasswordModal';
+import {
+    deviceApprovalBus, denyPendingDevice, describeApprovalError, fetchPendingRequests, formatCountdown, pruneExpired,
+    platformLabel, removePending, secondsUntil, upsertPending, type PendingDeviceRequest,
+} from '../../../utils/deviceApproval';
 
 /**
  * Twilight · Devices — Descent redesign (phase 2).
@@ -49,8 +56,17 @@ function shortId(id: string): string {
 }
 
 export const DevicesPane: React.FC = () => {
-    const { token, deviceId: myDeviceId } = useAuth();
+    const { token, userId, deviceId: myDeviceId } = useAuth();
     const toast = useToast();
+    // Device approval: new devices waiting to join (DEVICE_APPROVAL_REQUIRED).
+    // Listed apart from the approved devices above — the server never mixes
+    // them into GET /devices, so an older client can't mistake one for "mine".
+    const [pending, setPending] = useState<PendingDeviceRequest[]>([]);
+    const [reviewing, setReviewing] = useState<PendingDeviceRequest | null>(null);
+    const [notMe, setNotMe] = useState<PendingDeviceRequest | null>(null);
+    const [changePw, setChangePw] = useState(false);
+    const [denyingId, setDenyingId] = useState<string | null>(null);
+    const [pendingNow, setPendingNow] = useState(() => Date.now());
     const [devices, setDevices] = useState<DeviceInfo[]>([]);
     const [devicesLoading, setDevicesLoading] = useState(true);
     const [devicesError, setDevicesError] = useState('');
@@ -91,15 +107,51 @@ export const DevicesPane: React.FC = () => {
 
     useEffect(() => { fetchDevices(); }, [fetchDevices]);
 
+    useEffect(() => {
+        if (!token) return;
+        let cancelled = false;
+        // An older server has no /pending: nothing to show.
+        fetchPendingRequests(token).then(list => { if (!cancelled) setPending(list); }).catch(() => undefined);
+        return () => { cancelled = true; };
+    }, [token]);
+    useEffect(() => deviceApprovalBus.subscribe(ev => {
+        if (ev.kind === 'pending') setPending(p => upsertPending(p, ev.request));
+        else {
+            setPending(p => removePending(p, ev.resolved.device_id));
+            // An approved request becomes a device row.
+            if (ev.resolved.status === 'approved') void fetchDevices();
+        }
+    }), [fetchDevices]);
+    useEffect(() => {
+        if (pending.length === 0) return;
+        const t = setInterval(() => { setPendingNow(Date.now()); setPending(p => pruneExpired(p, Date.now())); }, 1000);
+        return () => clearInterval(t);
+    }, [pending.length]);
+
+    const handleDenyPending = async (req: PendingDeviceRequest) => {
+        if (!token || !userId || !myDeviceId) return;
+        setDenyingId(req.device_id);
+        try {
+            await denyPendingDevice({ token, userId, deviceId: myDeviceId }, req);
+            setPending(p => removePending(p, req.device_id));
+            toast.push({ kind: 'info', title: 'Request denied', message: `${req.device_name} was signed out.` });
+        } catch (e) {
+            toast.push({ kind: 'error', title: 'Could not deny', message: describeApprovalError(e).message });
+        } finally {
+            setDenyingId(null);
+        }
+    };
+
     const handleRevokeDevice = async (targetId: string) => {
         if (!token || !myDeviceId) return;
         if (!window.confirm('Remove this device? It will be signed out immediately and any pending messages for it will be deleted.')) return;
         setRevokingId(targetId);
         try {
-            await axios.post(`${API_BASE}/devices/${targetId}/revoke`, {}, {
+            await axios.post(apiUrl`/devices/${targetId}/revoke`, {}, {
                 headers: { Authorization: `Bearer ${token}`, 'x-device-id': myDeviceId },
             });
             setDevices(prev => prev.filter(d => d.device_id !== targetId));
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (e: any) {
             toast.push({ kind: 'error', title: 'Revoke failed', message: e?.response?.data?.message || 'Failed to revoke device.' });
         } finally {
@@ -126,6 +178,7 @@ export const DevicesPane: React.FC = () => {
                 message: `Signed out ${res.data.revoked} other device${res.data.revoked === 1 ? '' : 's'}.`,
             });
             await fetchDevices();
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (e: any) {
             toast.push({ kind: 'error', title: 'Sign out failed', message: e?.response?.data?.message || 'Failed to sign out other devices.' });
         } finally {
@@ -145,6 +198,35 @@ export const DevicesPane: React.FC = () => {
                         {devicesError}
                         <span style={{ flex: 1 }} />
                         <ClButton variant="ghost" size="sm" onClick={fetchDevices}>Retry</ClButton>
+                    </div>
+                )}
+
+                {pending.length > 0 && (
+                    <div className="sd-listin" style={{ marginBottom: 14 }} data-testid="pending-devices">
+                        {pending.map(r => {
+                            const left = secondsUntil(r.expires_at, pendingNow);
+                            return (
+                                <div key={r.device_id} className="sd-row">
+                                    <span className="sd-tile">{platformIcon(r.platform)}</span>
+                                    <div className="sd-rl">
+                                        <b>
+                                            {r.device_name}
+                                            <span className="sd-chip sd-chip--lume">Waiting for approval</span>
+                                            <span className="sd-chip">{platformLabel(r.platform)}</span>
+                                        </b>
+                                        <span className="sd-mono">
+                                            {r.reset_due_at ? 'asked to reset your devices' : left != null ? `expires in ${formatCountdown(left)}` : 'pending'}
+                                        </span>
+                                    </div>
+                                    <div className="sd-rc" style={{ display: 'flex', gap: 6 }}>
+                                        <ClButton size="sm" onClick={() => setReviewing(r)}>Review</ClButton>
+                                        <ClButton variant="ghost" size="sm" disabled={denyingId === r.device_id} onClick={() => handleDenyPending(r)}>
+                                            {denyingId === r.device_id ? 'Denying…' : 'Deny'}
+                                        </ClButton>
+                                    </div>
+                                </div>
+                            );
+                        })}
                     </div>
                 )}
 
@@ -235,6 +317,20 @@ export const DevicesPane: React.FC = () => {
                     </div>
                 )}
             </div>
+
+            {reviewing && (
+                <DeviceApprovalModal
+                    key={`${reviewing.device_id}:${reviewing.nonce_b64}`}
+                    request={reviewing}
+                    onClose={() => setReviewing(null)}
+                    onResolved={(id) => { setPending(p => removePending(p, id)); setReviewing(null); void fetchDevices(); }}
+                    onNotMe={(r) => { setPending(p => removePending(p, r.device_id)); setReviewing(null); setNotMe(r); }}
+                />
+            )}
+            {notMe && !changePw && (
+                <DeviceRemovedNotice deviceName={notMe.device_name} onLater={() => setNotMe(null)} onChangePassword={() => setChangePw(true)} />
+            )}
+            <ChangePasswordModal open={changePw} onClose={() => { setChangePw(false); setNotMe(null); }} />
 
             {/* docs/QR-LINKING.md, reverse flow: THIS desktop shows the QR, a
                 new phone scans it from its sign-in screen. Mirrors the

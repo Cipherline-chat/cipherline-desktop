@@ -96,6 +96,9 @@ export interface LinkInvitePollResponse {
     device_label?: string;
     platform?: string;
     ek_pub_b64?: string;
+    /** Device approval: the joined device's identity key, if it advertised one.
+     *  What this desktop's signed approval commits to. */
+    identity_key_pub_b64?: string | null;
     requires_2fa?: 'totp' | null;
     reason?: 'locked';
 }
@@ -105,6 +108,12 @@ export interface ApproveLinkSessionBody {
     code: string;
     totp_code?: string;
     backup_code?: string;
+    /** Device approval: Ed25519 signature by THIS (approving) device's
+     *  identity key over the canonical link-approve message. With it, the
+     *  session the phone claims registers an APPROVED device. Optional: an
+     *  unsigned approval still links, but the phone then waits for approval. */
+    approver_sig_b64?: string;
+    approver_ts?: number;
 }
 
 /** The v2 shape of `POST /v1/link/sessions/:id/approve`. */

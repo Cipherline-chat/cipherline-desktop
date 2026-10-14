@@ -12,6 +12,10 @@
  *    Other users with active calls (not yours) see a neutral gray tint,
  *    two independently-bordered boxes stacked, same as before. The + spawn
  *    button is hidden while you're already in a call here.
+ *  - START_CALLS (`canStart`): a member who can connect but not start calls
+ *    ("join-only") sees the "+" DISABLED with a tooltip, and the row does not
+ *    spawn — but the row is not dimmed and the running calls below it keep
+ *    their Join affordances. UX mirror only; the server enforces it.
  */
 
 import React, { useRef, useState } from 'react';
@@ -19,6 +23,7 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { Volume2, ChevronDown, ChevronRight, Plus, Lock, Loader2, ShieldAlert } from 'lucide-react';
 import { ChannelIconRenderer } from './ChannelIconPicker';
 import { FlatIconBtn } from '../primitives/HoverActions';
+import { START_CALLS_DENIED_MESSAGE } from '../../utils/startCallsGate';
 
 interface Props {
     name: string;
@@ -31,6 +36,12 @@ interface Props {
     /** Max concurrent calls allowed under this Huddle — shows "X/Y" when set. */
     maxCalls?: number | null;
     canConnect: boolean;
+    /**
+     * START_CALLS in this channel (utils/startCallsGate.canStartCallsWith).
+     * False while `canConnect` is true = join-only: may join running calls,
+     * may not start one. Defaults to true (older callers / not yet loaded).
+     */
+    canStart?: boolean;
     /**
      * True when `activeCallCount >= maxCalls` (server's per-Huddle call cap
      * from HuddlesService.spawnCall — "This Calls channel has reached its
@@ -71,7 +82,7 @@ interface RippleState { id: number; x: number; y: number; }
 export const HuddleButton: React.FC<Props> = ({
     name, iconName, iconEmoji,
     activeParticipantCount, activeCallCount, maxCalls,
-    canConnect, atCallLimit = false, cooldownSecs, isActiveForMe, encryptionState, expanded, onToggleExpanded, onSpawn, onContextMenu, children,
+    canConnect, canStart = true, atCallLimit = false, cooldownSecs, isActiveForMe, encryptionState, expanded, onToggleExpanded, onSpawn, onContextMenu, children,
 }) => {
     const buttonRef = useRef<HTMLDivElement>(null);
     const [ripples, setRipples] = useState<RippleState[]>([]);
@@ -83,7 +94,10 @@ export const HuddleButton: React.FC<Props> = ({
     // alone stays the permission/cooldown signal (still drives the Lock icon
     // and the "no permission" copy below); `canSpawn` is the narrower gate
     // that also accounts for the channel being full.
-    const canSpawn = canConnect && !atCallLimit;
+    const canSpawn = canConnect && canStart && !atCallLimit;
+    // Join-only: can connect (so the running calls below stay joinable) but
+    // may not start a new one. Distinct from !canConnect, which locks the row.
+    const startBlocked = canConnect && !canStart;
 
     const handleMouseDown = (e: React.MouseEvent) => {
         if (!canSpawn) return;
@@ -100,6 +114,13 @@ export const HuddleButton: React.FC<Props> = ({
     };
 
     const handleClick = (e: React.MouseEvent) => {
+        if (startBlocked && activeCallCount > 0) {
+            // Nothing to start — the useful thing a click can do is show the
+            // running calls they CAN join.
+            e.stopPropagation();
+            if (!expanded) onToggleExpanded();
+            return;
+        }
         if (!canSpawn) return;
         e.stopPropagation();
         onSpawn();
@@ -132,9 +153,13 @@ export const HuddleButton: React.FC<Props> = ({
 
     const nameColor = 'text-white/85';
 
+    // Join-only is NOT dimmed: the channel is usable (its calls are joinable),
+    // only the start affordance is off.
     const rowStateCls = mergedTeal
-        ? (canSpawn ? 'hover:bg-cl-lume/[0.06]' : 'opacity-50 cursor-not-allowed')
-        : (canSpawn ? `hover:bg-white/[0.05] ${cardBg}` : `opacity-50 cursor-not-allowed ${cardBg}`);
+        ? (canSpawn || startBlocked ? 'hover:bg-cl-lume/[0.06]' : 'opacity-50 cursor-not-allowed')
+        : (canSpawn ? `hover:bg-white/[0.05] ${cardBg}`
+            : startBlocked ? `${cardBg} ${isLive ? '' : 'cursor-default'}`
+            : `opacity-50 cursor-not-allowed ${cardBg}`);
 
     return (
         <div
@@ -152,9 +177,12 @@ export const HuddleButton: React.FC<Props> = ({
                     rowStateCls,
                 ].join(' ')}
                 style={{ borderRadius: mergedTeal ? 0 : 12 }}
+                data-start-blocked={startBlocked ? 'true' : undefined}
                 title={
                     !canConnect
                         ? (cooldownSecs ? `Slow down — wait ${cooldownSecs}s` : "You don't have permission to connect")
+                        : startBlocked
+                            ? START_CALLS_DENIED_MESSAGE
                         : atCallLimit
                             ? `This Calls channel has reached its call limit${maxCalls != null ? ` (${activeCallCount}/${maxCalls})` : ''}`
                             : `Click to start a new call in ${name}`
@@ -262,14 +290,30 @@ export const HuddleButton: React.FC<Props> = ({
                                         )}
                                     </span>
                                 )
-                                : <span className="text-cl-faint">Click to start a call</span>
+                                : startBlocked
+                                    ? <span className="text-cl-faint">No call running · you can't start one here</span>
+                                    : <span className="text-cl-faint">Click to start a call</span>
                         }
                     </div>
                 </div>
 
                 {/* + spawn button — hidden while you're already in a call here */}
                 {canSpawn && !isActiveForMe && (
-                    <div className="w-6 h-6 rounded-md flex items-center justify-center bg-cl-lume/15 text-cl-lume shrink-0 transition-transform hover:scale-110">
+                    <div data-testid="huddle-start" className="w-6 h-6 rounded-md flex items-center justify-center bg-cl-lume/15 text-cl-lume shrink-0 transition-transform hover:scale-110">
+                        <Plus size={13} />
+                    </div>
+                )}
+                {/* Join-only: the start affordance stays visible but disabled,
+                    so the member can see WHY there is no way to start one. */}
+                {startBlocked && !isActiveForMe && !atCallLimit && (
+                    <div
+                        role="button"
+                        aria-disabled="true"
+                        aria-label="Start a call (not allowed)"
+                        title={START_CALLS_DENIED_MESSAGE}
+                        data-testid="huddle-start-disabled"
+                        className="w-6 h-6 rounded-md flex items-center justify-center bg-white/[0.06] text-cl-faint shrink-0 opacity-60 cursor-not-allowed"
+                    >
                         <Plus size={13} />
                     </div>
                 )}

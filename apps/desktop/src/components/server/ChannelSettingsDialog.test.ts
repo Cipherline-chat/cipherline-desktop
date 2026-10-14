@@ -444,3 +444,138 @@ describe('Call names (Calls channels)', () => {
         expect(channelPatches()).toHaveLength(0);
     });
 });
+
+describe('Call behavior: "End call when the starter leaves" (Calls channels)', () => {
+    const LABEL = 'End call when the starter leaves';
+    const huddle = {
+        ...channel, kind: 'huddle' as const, name: 'General', parent_category_id: null,
+    };
+    const card = () => $('[data-testid="call-behavior"]');
+    const sw = () => $<HTMLButtonElement>(`button[role="switch"][aria-label="${LABEL}"]`)!;
+    const channelPatches = () => calls.filter(c => c[0] === 'PATCH' && !/overrides$/.test(c[1]));
+    const saveBtn = () => [...document.querySelectorAll('button')].find(b => /^Save/.test(b.textContent?.trim() ?? '')) as HTMLButtonElement;
+    const cancelBtn = () => [...document.querySelectorAll('button')].find(b => b.textContent?.trim() === 'Cancel') as HTMLButtonElement;
+    const remount = () => { act(() => root.unmount()); root = createRoot(host); calls = []; };
+
+    it('is shown for a Calls channel only, as its own "Call behavior" card between Call limits and Call names', async () => {
+        await mount({ defaultKind: 'text' });
+        expect(card()).toBeNull();
+        expect(document.body.textContent).not.toContain('Call behavior');
+        remount();
+        await mount({ channel: huddle });
+        expect(card()).toBeTruthy();
+        const text = document.body.textContent ?? '';
+        expect(text.indexOf('Call limits')).toBeGreaterThan(-1);
+        expect(text.indexOf('Call behavior')).toBeGreaterThan(text.indexOf('Call limits'));
+        expect(text.indexOf('Call names')).toBeGreaterThan(text.indexOf('Call behavior'));
+        // NOT inside the Call names card - it is not about names.
+        expect($('[data-testid="call-naming"]')!.contains(sw())).toBe(false);
+        expect(card()!.contains(sw())).toBe(true);
+    });
+
+    it('the row: title, sub-copy, and a ClToggle switch that is OFF by default', async () => {
+        await mount({ channel: huddle });
+        expect(card()!.textContent).toContain(LABEL);
+        expect(card()!.textContent).toContain('Everyone is disconnected when whoever started the call leaves.');
+        expect(sw().getAttribute('aria-checked')).toBe('false');
+        expect(sw().disabled).toBe(false);
+        expect(card()!.querySelector('input[type="checkbox"]')).toBeNull();
+        // same row chrome as the call-name switches (the shared Row)
+        const namingTitle = $('[data-testid="call-naming"] .font-semibold')!;
+        const title = card()!.querySelector('.font-semibold')!;
+        expect(title.textContent).toBe(LABEL);
+        expect(title.className).toBe(namingTitle.className);
+    });
+
+    it('reflects the channel as the server sent it', async () => {
+        await mount({ channel: { ...huddle, end_call_when_starter_leaves: true } });
+        expect(sw().getAttribute('aria-checked')).toBe('true');
+        remount();
+        await mount({ channel: { ...huddle, end_call_when_starter_leaves: false } });
+        expect(sw().getAttribute('aria-checked')).toBe('false');
+        remount();
+        await mount({ channel: huddle }); // an older API: field absent = off
+        expect(sw().getAttribute('aria-checked')).toBe('false');
+    });
+
+    it('toggling it makes the dialog dirty and enables Save; toggling back clears it', async () => {
+        await mount({ channel: huddle });
+        expect(saveBtn().disabled).toBe(true);
+        await click(sw());
+        expect(sw().getAttribute('aria-checked')).toBe('true');
+        expect(saveBtn().disabled).toBe(false);
+        expect(document.body.textContent).toContain('Unsaved changes');
+        await click(sw());
+        expect(sw().getAttribute('aria-checked')).toBe('false');
+        expect(saveBtn().disabled).toBe(true);
+    });
+
+    it('create: left off sends NO field (an older API would reject it); switched on sends true', async () => {
+        await mount({ defaultKind: 'huddle' });
+        await typeName('Lounge');
+        await press(nameInput(), 'Enter');
+        await flush(20);
+        expect(posts()[0][2]).not.toHaveProperty('end_call_when_starter_leaves');
+
+        remount();
+        await mount({ defaultKind: 'huddle' });
+        await click(sw());
+        await typeName('Lounge');
+        await press(nameInput(), 'Enter');
+        await flush(20);
+        expect((posts()[0][2] as Record<string, unknown>).end_call_when_starter_leaves).toBe(true);
+    });
+
+    it('edit: an unrelated change does not send the field; flipping it sends exactly the new value and onSaved carries it', async () => {
+        await mount({ channel: huddle });
+        await typeName('General two');
+        await click(saveBtn());
+        await flush(20);
+        expect(channelPatches()).toHaveLength(1);
+        expect(channelPatches()[0][2]).not.toHaveProperty('end_call_when_starter_leaves');
+
+        remount();
+        const h = await mount({ channel: huddle });
+        await click(sw());
+        await click(saveBtn());
+        await flush(20);
+        expect(channelPatches()).toHaveLength(1);
+        expect((channelPatches()[0][2] as Record<string, unknown>).end_call_when_starter_leaves).toBe(true);
+        expect(h.onSaved.mock.calls[0][0].end_call_when_starter_leaves).toBe(true);
+
+        remount();
+        const h2 = await mount({ channel: { ...huddle, end_call_when_starter_leaves: true } });
+        await click(sw());
+        await click(saveBtn());
+        await flush(20);
+        expect((channelPatches()[0][2] as Record<string, unknown>).end_call_when_starter_leaves).toBe(false);
+        expect(h2.onSaved.mock.calls[0][0].end_call_when_starter_leaves).toBe(false);
+    });
+
+    it('Cancel reverts it: nothing is sent, and re-opening the channel shows the stored value', async () => {
+        const h = await mount({ channel: huddle });
+        await click(sw());
+        expect(sw().getAttribute('aria-checked')).toBe('true');
+        await click(cancelBtn());
+        // dirty -> asks before discarding
+        const discard = byText('Discard');
+        expect(discard).toBeTruthy();
+        await click(discard);
+        await flush(300);
+        expect(h.onClose).toHaveBeenCalled();
+        expect(channelPatches()).toHaveLength(0);
+        expect(h.onSaved).not.toHaveBeenCalled();
+
+        remount();
+        await mount({ channel: huddle });
+        expect(sw().getAttribute('aria-checked')).toBe('false');
+    });
+
+    it('the switch is disabled while a save is in flight (the section honours `disabled`)', async () => {
+        const { CallBehaviorSection } = await import('./CallBehaviorSection');
+        await act(async () => {
+            root.render(React.createElement(CallBehaviorSection, { value: false, onChange: () => {}, disabled: true }));
+        });
+        expect(sw().disabled).toBe(true);
+    });
+});

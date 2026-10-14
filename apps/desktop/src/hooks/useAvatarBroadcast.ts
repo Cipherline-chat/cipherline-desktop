@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { API_BASE } from '../constants';
+import { apiUrl } from '../utils/apiPath';
 import { useCallback } from 'react';
 
 /**
@@ -26,7 +26,7 @@ export function useAvatarBroadcast(token: string | null, _userId: string | null)
             if (!token) return;
             try {
                 await axios.patch(
-                    `${API_BASE}/attachments/${attachmentId}/key`,
+                    apiUrl`/attachments/${attachmentId}/key`,
                     { file_key_b64: keyB64, file_nonce_b64: nonceB64 },
                     { headers: { Authorization: `Bearer ${token}` } }
                 );
@@ -46,7 +46,7 @@ export function useAvatarBroadcast(token: string | null, _userId: string | null)
             if (!token) return;
             try {
                 await axios.patch(
-                    `${API_BASE}/attachments/${attachmentId}/key`,
+                    apiUrl`/attachments/${attachmentId}/key`,
                     { file_key_b64: keyB64, file_nonce_b64: nonceB64 },
                     { headers: { Authorization: `Bearer ${token}` } }
                 );
@@ -62,6 +62,7 @@ export function useAvatarBroadcast(token: string | null, _userId: string | null)
      * Friends who reconnect after missing an avatar update fetch the key directly
      * from the server via GET /v1/attachments/:id/key.
      */
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     const broadcastCurrentAvatar = useCallback(async (_conversationsList?: any[]) => {
         // No-op — server holds the key permanently; no client-side re-broadcast needed.
     }, []);

@@ -491,6 +491,7 @@ const GifPicker: React.FC<Props> = ({ anchorRect, onGifSelect, onKlipySelect, on
 
     // ── Saved: import / remove / send ─────────────────────────────────────
     const handleImport = async () => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- window.electronAPI members are optional/version-dependent and not all declared on the typed bridge
         const result = await (window as any).electronAPI.showOpenDialog({
             title:      'Add GIF',
             filters:    [{ name: 'GIF Images', extensions: ['gif'] }],
@@ -499,6 +500,7 @@ const GifPicker: React.FC<Props> = ({ anchorRect, onGifSelect, onKlipySelect, on
         if (result.canceled || !result.filePaths?.length) return;
         setLoading(true);
         try {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- window.electronAPI members are optional/version-dependent and not all declared on the typed bridge
             const ab    = await (window as any).electronAPI.readFile(result.filePaths[0]) as ArrayBuffer;
             const blob  = new Blob([ab], { type: 'image/gif' });
             const label = (result.filePaths[0] as string).split(/[\\/]/).pop() ?? 'animation.gif';

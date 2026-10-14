@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { User, Users } from 'lucide-react';
 import { useEncryptedAvatar , evictAvatar } from '../hooks/useEncryptedAvatar';
+import { safeImageSrc } from '../utils/safeMediaUrl';
 import { userColor } from '../utils/avatarColor';
 import { useOpenProfile } from '../contexts/ProfileOpenContext';
 import { useIsFriendOrSelf } from '../contexts/FriendshipContext';
@@ -49,7 +50,8 @@ export const EncryptedAvatar: React.FC<EncryptedAvatarProps> = ({
     // pass `bypassFriendGate` because once you're in a call together you're
     // already sharing audio/video — hiding the avatar adds nothing.
     const allowImage = bypassFriendGate || isGroup || !userId || isFriendOrSelf(userId);
-    const avatarUrl = useEncryptedAvatar(allowImage ? attachmentId : null, token);
+    // Only a validated image URL (blob:, data:image/*, trusted https) ever reaches <img src>.
+    const avatarUrl = safeImageSrc(useEncryptedAvatar(allowImage ? attachmentId : null, token)) ?? null;
     const openProfile = useOpenProfile();
 
     // Fade the image in ONLY when it resolved asynchronously (download+decrypt).

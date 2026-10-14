@@ -36,7 +36,6 @@ vi.mock('./ClButton', () => ({
     ),
 }));
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 let PinnedMessagesPanel: any;
 
 let root: Root | null = null;
@@ -59,7 +58,6 @@ afterEach(() => {
     vi.restoreAllMocks();
 });
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 const BASE_PROPS: any = {
     objectUrls: {},
     searchQuery: '',

@@ -2,14 +2,26 @@ import React, { useRef, useEffect, useState, useCallback, useSyncExternalStore }
 import { Mic, Volume2, Headphones, Radio, VideoOff } from 'lucide-react';
 import { eventToCombo, formatCombo } from '../hooks/useKeybinds';
 import {
+    type VoiceSettings,
     type VoiceSettingsHook,
 } from '../hooks/useVoiceSettings';
 import { useMediaDevices, deviceLabel } from '../hooks/useMediaDevices';
 import { CipherlineVoiceProcessor } from '../utils/voiceProcessor';
 import { ClSlider } from './ClSlider';
-import { MIC_CAPTURE_CONSTRAINTS, hasRealDeviceInfo, resolveMicDeviceId } from '../utils/audioInput';
+import {
+    DEFAULT_AUDIO_INPUT_ID,
+    hasRealDeviceInfo,
+    micCaptureConstraints,
+    micDeviceConstraint,
+    pickMicDeviceId,
+    resolveEchoCancellation,
+} from '../utils/audioInput';
+import { findStoredDevice, type DeviceHint } from '../utils/deviceResolve';
+import { GATE_METER_REPORT_MS } from '../utils/voiceChain';
 import { setMasterVolume } from '../hooks/useParticipantAudio';
 import { registerOutputAudioContext, unregisterOutputAudioContext } from '../utils/audioOutput';
+import { testSpeakers, DEFAULT_SOUNDS } from '../utils/notificationSounds';
+import { describeSpeakerTest } from '../utils/speakerTestSummary';
 import { subscribe as subscribeAudioHealth, getSnapshot as getAudioHealthSnapshot } from '../utils/audioHealth';
 import { ClToggle, ClButton, ClSelect } from './cl';
 import type { ClSelectOption } from './cl';
@@ -81,12 +93,21 @@ const VuMeter: React.FC<{ level: number }> = ({ level }) => {
 
 const GATE_DEFAULT_THRESHOLD = -45; // dBFS
 
+/**
+ * `level` is the gate's OWN detector — the loudest 128-sample block of each
+ * 50 ms, measured where the gate measures it (after noise suppression, before
+ * EQ / auto gain / mic volume) — and `open` is the gate's real state. It used
+ * to be the end-of-chain level instead: shifted by AGC and mic volume, and
+ * blank whenever the gate was closed, so with noise suppression off the room
+ * noise could sit visibly under the thumb while the gate let it through.
+ */
 const GateSlider: React.FC<{
     threshold: number;
     level: number;
+    open: boolean;
     onChange: (v: number) => void;
     disabled?: boolean;
-}> = ({ threshold, level, onChange, disabled }) => {
+}> = ({ threshold, level, open, onChange, disabled }) => {
     const trackRef = useRef<HTMLDivElement>(null);
     const dragging = useRef(false);
     const [grabbing, setGrabbing] = useState(false);
@@ -130,7 +151,14 @@ const GateSlider: React.FC<{
     return (
         <div className={`mt-2.5 ${disabled ? 'opacity-35 pointer-events-none' : ''}`}>
             <div className="flex items-center justify-between mb-1.5">
-                <span className="text-[11px]" style={{ color: 'var(--cl-faint)' }}>Activity Threshold</span>
+                <span className="text-[11px]" style={{ color: 'var(--cl-faint)' }}>
+                    Activity Threshold
+                    {!disabled && (
+                        <span className="sd-mono" style={{ marginLeft: 8, color: open ? 'var(--cl-ok)' : 'var(--cl-faint)' }}>
+                            {open ? '● transmitting' : '○ gated'}
+                        </span>
+                    )}
+                </span>
                 <span className="text-[11px] font-mono" style={{ color: 'var(--cl-muted)' }}>{threshold} dBFS</span>
             </div>
             {/* Kit slider chrome (.cls/.strk/.sfill/.sthw) — the fill is the LIVE
@@ -498,6 +526,25 @@ const AudioHealthPanel: React.FC = () => {
     );
 };
 
+// ── Device picks ──────────────────────────────────────────────────────────────
+
+const micHintOf = (s: VoiceSettings): DeviceHint => ({ label: s.micDeviceLabel, groupId: s.micDeviceGroupId });
+const speakerHintOf = (s: VoiceSettings): DeviceHint => ({ label: s.speakerDeviceLabel, groupId: s.speakerDeviceGroupId });
+
+/** The device id the mic test should open for the stored pick: the pick, the
+ *  same device under a new id, or the default when it is not plugged in. Before
+ *  permission (placeholder list) the stored id is tried as-is. */
+async function resolvePreviewMic(stored: string, s: VoiceSettings): Promise<string> {
+    if (!stored) return DEFAULT_AUDIO_INPUT_ID;
+    try {
+        const inputs = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'audioinput');
+        if (!hasRealDeviceInfo(inputs)) return stored;
+        return pickMicDeviceId(stored, inputs, micHintOf(s));
+    } catch {
+        return stored;
+    }
+}
+
 // ── Main Component ────────────────────────────────────────────────────────────
 
 export const VoiceVideoSettings: React.FC<VoiceVideoSettingsProps> = ({ voice }) => {
@@ -509,7 +556,13 @@ export const VoiceVideoSettings: React.FC<VoiceVideoSettingsProps> = ({ voice })
     const { inputDevices, outputDevices, videoDevices, refresh: enumerateDevices } = useMediaDevices();
 
     const [monitorOn, setMonitorOn]   = useState(false);
+    // "Test speakers": null = idle; otherwise the last verdict.
+    const [speakerTest, setSpeakerTest] = useState<{ running: boolean; tone: 'ok' | 'bad'; text: string } | null>(null);
     const [localLevel, setLocalLevel] = useState<number>(-Infinity);
+    // What the gate itself measures (its detector, before AGC/mic volume) and
+    // whether it is open — the meter under the threshold slider. See
+    // GATE_METER_REPORT_MS in utils/voiceChain.ts for why it is not localLevel.
+    const [gateLevel, setGateLevel] = useState<{ db: number; open: boolean }>({ db: -Infinity, open: false });
 
     const monitorCtxRef       = useRef<AudioContext | null>(null);
     const monitorStreamRef    = useRef<MediaStream | null>(null);
@@ -519,13 +572,16 @@ export const VoiceVideoSettings: React.FC<VoiceVideoSettingsProps> = ({ voice })
     const settingsRef         = useRef(settings);
     settingsRef.current       = settings;
     const initTokenRef        = useRef<{ cancelled: boolean } | null>(null);
+    /** The device id the preview capture actually opened (DEFAULT_AUDIO_INPUT_ID
+     *  when it fell back), so a devicechange can tell whether to reopen. */
+    const monitorDeviceRef    = useRef<string | null>(null);
 
 
     const stopMicStream = useCallback(() => {
         const outputNode = monitorProcessorRef.current?.outputNode;
         const ctx = monitorCtxRef.current;
         if (outputNode && ctx) {
-            try { outputNode.disconnect(ctx.destination); } catch {}
+            try { outputNode.disconnect(ctx.destination); } catch { /* teardown is best-effort; the node/handle may already be closed */ }
         }
         monitorProcessorRef.current?.destroy().catch(() => {});
         monitorProcessorRef.current = null;
@@ -535,6 +591,7 @@ export const VoiceVideoSettings: React.FC<VoiceVideoSettingsProps> = ({ voice })
         monitorCtxRef.current  = null;
         monitorStreamRef.current = null;
         setLocalLevel(-Infinity);
+        setGateLevel({ db: -Infinity, open: false });
     }, []);
 
     const startMicStream = useCallback(async (deviceId: string) => {
@@ -545,17 +602,40 @@ export const VoiceVideoSettings: React.FC<VoiceVideoSettingsProps> = ({ voice })
         stopMicStream();
 
         try {
-            // Identical capture settings to a real call (audioInput.ts). This
-            // used to open with echoCancellation: TRUE while calls use false, so
+            // Identical capture settings to a real call (audioInput.ts), echo
+            // cancellation included — the user's setting, like the call's. This
+            // used to open with echoCancellation: TRUE while calls used false, so
             // the level meter — and therefore the voice-gate threshold you set
             // against it — reflected a differently-processed signal than the one
-            // actually transmitted.
-            const stream = await navigator.mediaDevices.getUserMedia({
+            // actually transmitted. (With echo cancellation on and "Listen to
+            // mic" playing through speakers, the canceller removes that
+            // playback from the capture, as it would in a call.)
+            //
+            // And the SAME device: the picked mic (followed to a new id if
+            // Windows re-enumerated it — deviceResolve.ts), opened with
+            // {exact}. This used to pass the bare id, which Chromium ignores:
+            // the meter, the gate meter and "Listen to mic" all ran on the
+            // system DEFAULT mic whatever was picked here.
+            const target = await resolvePreviewMic(deviceId, settingsRef.current);
+            const open = (id: string) => navigator.mediaDevices.getUserMedia({
                 audio: {
-                    ...MIC_CAPTURE_CONSTRAINTS,
-                    deviceId: resolveMicDeviceId(deviceId),
+                    ...micCaptureConstraints(resolveEchoCancellation(settingsRef.current.echoCancellation)),
+                    deviceId: micDeviceConstraint(id),
                 },
             });
+            let stream: MediaStream;
+            let opened = target;
+            try {
+                stream = await open(target);
+            } catch (err) {
+                // The pick vanished between enumerating and opening: follow the
+                // default, as the call would.
+                const name = (err as { name?: string } | null)?.name;
+                if (target === DEFAULT_AUDIO_INPUT_ID || (name !== 'OverconstrainedError' && name !== 'NotFoundError')) throw err;
+                stream = await open(DEFAULT_AUDIO_INPUT_ID);
+                opened = DEFAULT_AUDIO_INPUT_ID;
+            }
+            monitorDeviceRef.current = opened;
 
             if (token.cancelled) {
                 stream.getTracks().forEach(t => t.stop());
@@ -569,9 +649,12 @@ export const VoiceVideoSettings: React.FC<VoiceVideoSettingsProps> = ({ voice })
             // headphones you just picked. Unregistered in stopMicStream.
             registerOutputAudioContext(ctx);
 
+            // The same processor as a call, so the same thresholds, attack,
+            // hold and release — plus the gate's own detector for the meter.
             const processor = new CipherlineVoiceProcessor(settingsRef.current, {
                 onInputLevel: (db) => setLocalLevel(db),
-            });
+                onGateLevel: (db, open) => setGateLevel({ db, open }),
+            }, { gateMeterMs: GATE_METER_REPORT_MS });
 
             const rawTrack = stream.getAudioTracks()[0];
             await processor.init({ track: rawTrack, audioContext: ctx });
@@ -610,6 +693,17 @@ export const VoiceVideoSettings: React.FC<VoiceVideoSettingsProps> = ({ voice })
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [settings.micDeviceId]);
 
+    // Echo cancellation toggled: Chromium ignores applyConstraints for it, so
+    // re-open the preview (same as the call does with restartTrack). Skipped on
+    // mount, where the effect above has just opened it with the current value.
+    const echoCancellationSetting = resolveEchoCancellation(settings.echoCancellation);
+    const echoMountedRef = useRef(false);
+    useEffect(() => {
+        if (!echoMountedRef.current) { echoMountedRef.current = true; return; }
+        startMicStream(settingsRef.current.micDeviceId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [echoCancellationSetting]);
+
     // Keep the monitor stream pointed at the right device as hardware changes.
     // Without this the preview binds to whatever was default when the pane
     // mounted and stays there: unplug that mic, or change the OS default, and
@@ -618,38 +712,64 @@ export const VoiceVideoSettings: React.FC<VoiceVideoSettingsProps> = ({ voice })
     // change and so never re-runs the effect above.
     useEffect(() => {
         const onDeviceChange = () => {
-            const stored = settingsRef.current.micDeviceId;
-            // An explicitly-chosen device that still exists is left alone —
-            // restarting it would pointlessly interrupt the meter.
+            const s = settingsRef.current;
             navigator.mediaDevices.enumerateDevices().then(devices => {
                 const inputs = devices.filter(d => d.kind === 'audioinput');
                 if (!hasRealDeviceInfo(inputs)) return;
-                if (stored && inputs.some(d => d.deviceId === stored)) return;
-                startMicStream(stored);
+                const target = pickMicDeviceId(s.micDeviceId, inputs, micHintOf(s));
+                // A picked device the preview is already open on is left alone
+                // — restarting it would pointlessly interrupt the meter. One
+                // that came back after the preview fell back to the default is
+                // reopened; following the default always reopens (it may have
+                // moved).
+                if (target !== DEFAULT_AUDIO_INPUT_ID && target === monitorDeviceRef.current) return;
+                startMicStream(s.micDeviceId);
             }).catch(() => {});
         };
         navigator.mediaDevices.addEventListener('devicechange', onDeviceChange);
         return () => navigator.mediaDevices.removeEventListener('devicechange', onDeviceChange);
     }, [startMicStream]);
 
-    // Repair a stored device id that no longer resolves to anything. Ids are
-    // per-origin salted and rotate (storage clear, profile change) as well as
-    // simply being unplugged, and a bare deviceId constraint does NOT error for
-    // a missing device — Chromium quietly opens a different mic. So a stale id
-    // means capturing from the wrong input while the dropdown shows "Select…",
-    // with nothing anywhere reporting a problem. Reset to "follow the system
-    // default", which is always valid.
+    // A stored pick whose id no longer matches anything. This used to RESET
+    // the setting to "follow the system default" — so a headset that was
+    // merely switched off (Bluetooth) or re-enumerated by Windows under a new
+    // id lost its selection for good the moment this pane saw the list without
+    // it: "I set my mic and it just uses the default". Now: a pick that is
+    // still plugged in under a new id (same groupId+label, deviceResolve.ts) is
+    // re-pointed at that id; a pick that is genuinely absent is KEPT (listed as
+    // "not connected" below) while everything falls back to the default, and
+    // is used again as soon as it is back.
     useEffect(() => {
         if (!settings.micDeviceId) return;
         if (inputDevices.length === 0 || !hasRealDeviceInfo(inputDevices)) return;
-        if (inputDevices.some(d => d.deviceId === settings.micDeviceId)) return;
-        console.warn('[VoiceSettings] stored mic device is gone — falling back to system default');
-        voice.setMicDeviceId('');
-    }, [inputDevices, settings.micDeviceId, voice]);
+        const { device, match } = findStoredDevice(settings.micDeviceId, micHintOf(settings), inputDevices);
+        if (device && match !== 'exact') voice.setMicDeviceId(device.deviceId, device);
+    }, [inputDevices, settings, voice]);
+    useEffect(() => {
+        if (!settings.speakerDeviceId) return;
+        if (outputDevices.length === 0 || !hasRealDeviceInfo(outputDevices)) return;
+        const { device, match } = findStoredDevice(settings.speakerDeviceId, speakerHintOf(settings), outputDevices);
+        if (device && match !== 'exact') voice.setSpeakerDeviceId(device.deviceId, device);
+    }, [outputDevices, settings, voice]);
 
     useEffect(() => {
         monitorProcessorRef.current?.updateSettings(settings);
     }, [settings]);
+
+    // Plays the bundled test sound on the SELECTED output through the same
+    // routing calls use (notificationSounds.testSpeakers), then says what
+    // actually happened - so a pick can be verified without joining a call.
+    const runSpeakerTest = useCallback(async () => {
+        setSpeakerTest({ running: true, tone: 'ok', text: 'Playing\u2026' });
+        const volume = Math.max(0.25, Math.min(1, settingsRef.current.speakerVolume / 100)) * 0.8;
+        try {
+            const result = await testSpeakers(DEFAULT_SOUNDS.message, volume);
+            const verdict = describeSpeakerTest(result, settingsRef.current.speakerDeviceId === '');
+            setSpeakerTest({ running: false, tone: verdict.ok ? 'ok' : 'bad', text: verdict.text });
+        } catch {
+            setSpeakerTest({ running: false, tone: 'bad', text: "Couldn't play the test sound." });
+        }
+    }, []);
 
     const toggleMonitor = useCallback(() => {
         const next = !monitorOn;
@@ -658,27 +778,48 @@ export const VoiceVideoSettings: React.FC<VoiceVideoSettingsProps> = ({ voice })
         const ctx = monitorCtxRef.current;
         if (!outputNode || !ctx) return;
         if (next) {
-            try { outputNode.connect(ctx.destination); } catch {}
+            try { outputNode.connect(ctx.destination); } catch { /* listener registration is best-effort */ }
         } else {
-            try { outputNode.disconnect(ctx.destination); } catch {}
+            try { outputNode.disconnect(ctx.destination); } catch { /* teardown is best-effort; the node/handle may already be closed */ }
         }
     }, [monitorOn]);
 
-    // Live speaker switching now lives in SidebarConference.tsx, which is
-    // mounted for the whole call — this pane can be open outside a call too
-    // (testing devices before joining), where there's nothing to switch.
-    // Removing the duplicate effect here means there's exactly one place
-    // that writes audioOutput.ts's storage key, so it can't drift from
+    // Live speaker switching is applied by useVoiceSettings (audioOutput.ts)
+    // for the whole session, in a call or not — so "Listen to mic" and the
+    // sound previews here follow a pick made here at once. Exactly one place
+    // writes audioOutput.ts's storage key, so it can't drift from
     // voice.settings.speakerDeviceId.
 
     useEffect(() => {
         setMasterVolume(settings.speakerVolume);
     }, [settings.speakerVolume]);
 
-    const makeDeviceOptions = (devices: MediaDeviceInfo[], placeholder: string): ClSelectOption<string>[] => [
-        { value: '', label: devices.length === 0 ? 'No devices found' : placeholder },
-        ...devices.map(d => ({ value: d.deviceId, label: deviceLabel(d) })),
-    ];
+    /** `missingLabel`: the stored pick when it is not plugged in — still listed
+     *  (and still selected) so the choice is visibly kept, not silently lost. */
+    const makeDeviceOptions = (
+        devices: MediaDeviceInfo[],
+        placeholder: string,
+        storedId: string,
+        missingLabel: string | undefined,
+    ): ClSelectOption<string>[] => {
+        const options: ClSelectOption<string>[] = [
+            { value: '', label: devices.length === 0 ? 'No devices found' : placeholder },
+            ...devices.map(d => ({ value: d.deviceId, label: deviceLabel(d) })),
+        ];
+        if (storedId && hasRealDeviceInfo(devices) && !devices.some(d => d.deviceId === storedId)) {
+            options.push({ value: storedId, label: `${missingLabel || 'Selected device'} (not connected — using default)` });
+        }
+        return options;
+    };
+    /** onChange for a device picker: records the picked device's label/groupId
+     *  with its id (deviceResolve.ts). Re-picking the kept-but-absent entry is a
+     *  no-op rather than wiping the label it would be found by. */
+    const pickFrom = (devices: MediaDeviceInfo[], storedId: string, set: (id: string, device?: MediaDeviceInfo | null) => void) =>
+        (id: string) => {
+            const device = devices.find(d => d.deviceId === id) ?? null;
+            if (id && !device && id === storedId) return;
+            set(id, device);
+        };
 
     return (
         <>
@@ -688,8 +829,8 @@ export const VoiceVideoSettings: React.FC<VoiceVideoSettingsProps> = ({ voice })
                 <p className="sd-sub">Your voice is encrypted per frame on the way out — tune it here first.</p>
                 <ClSelect<string>
                     value={settings.micDeviceId}
-                    onChange={voice.setMicDeviceId}
-                    options={makeDeviceOptions(inputDevices, 'Default Microphone')}
+                    onChange={pickFrom(inputDevices, settings.micDeviceId, voice.setMicDeviceId)}
+                    options={makeDeviceOptions(inputDevices, 'Default Microphone', settings.micDeviceId, settings.micDeviceLabel)}
                     style={{ width: '100%' }}
                 />
                 <div className="flex items-center gap-2.5 mt-3">
@@ -721,8 +862,8 @@ export const VoiceVideoSettings: React.FC<VoiceVideoSettingsProps> = ({ voice })
                 <h3>Output</h3>
                 <ClSelect<string>
                     value={settings.speakerDeviceId}
-                    onChange={voice.setSpeakerDeviceId}
-                    options={makeDeviceOptions(outputDevices, 'Default Speakers')}
+                    onChange={pickFrom(outputDevices, settings.speakerDeviceId, voice.setSpeakerDeviceId)}
+                    options={makeDeviceOptions(outputDevices, 'Default Speakers', settings.speakerDeviceId, settings.speakerDeviceLabel)}
                     style={{ width: '100%' }}
                 />
                 <div className="flex items-center gap-2.5 mt-3">
@@ -730,6 +871,20 @@ export const VoiceVideoSettings: React.FC<VoiceVideoSettingsProps> = ({ voice })
                     <div className="flex-1">
                         <VolumeSlider value={settings.speakerVolume} onChange={voice.setSpeakerVolume} />
                     </div>
+                </div>
+                <div className="flex items-center gap-2.5 mt-3">
+                    <ClButton variant="ghost" size="sm" onClick={runSpeakerTest} disabled={speakerTest?.running}>
+                        <Volume2 className="w-3.5 h-3.5" /> Test speakers
+                    </ClButton>
+                    {speakerTest && (
+                        <span
+                            role="status"
+                            aria-live="polite"
+                            style={{ fontSize: 12.5, fontWeight: 600, color: speakerTest.tone === 'bad' ? 'var(--cl-danger, #e5484d)' : 'var(--cl-faint)' }}
+                        >
+                            {speakerTest.text}
+                        </span>
+                    )}
                 </div>
             </div>
 
@@ -743,7 +898,7 @@ export const VoiceVideoSettings: React.FC<VoiceVideoSettingsProps> = ({ voice })
                 <ClSelect<string>
                     value={settings.cameraDeviceId}
                     onChange={voice.setCameraDeviceId}
-                    options={makeDeviceOptions(videoDevices, 'Default Camera')}
+                    options={makeDeviceOptions(videoDevices, 'Default Camera', '', undefined)}
                     style={{ width: '100%' }}
                 />
                 <div className="sd-row">
@@ -801,6 +956,16 @@ export const VoiceVideoSettings: React.FC<VoiceVideoSettingsProps> = ({ voice })
                     </div>
                 </div>
 
+                <div className="sd-row">
+                    <div className="sd-rl">
+                        <b>Echo cancellation</b>
+                        <span>Stops others from hearing themselves when you use speakers. Turn off if you use headphones and want the most natural sound.</span>
+                    </div>
+                    <div className="sd-rc">
+                        <ClToggle checked={echoCancellationSetting} onChange={voice.setEchoCancellation} />
+                    </div>
+                </div>
+
                 <div className="sd-row" style={{ display: 'block' }}>
                     <div className={rowCls}>
                         <div className="sd-rl">
@@ -841,7 +1006,8 @@ export const VoiceVideoSettings: React.FC<VoiceVideoSettingsProps> = ({ voice })
                     </div>
                     <GateSlider
                         threshold={settings.voiceGateThreshold}
-                        level={localLevel}
+                        level={gateLevel.db}
+                        open={gateLevel.open}
                         onChange={voice.setVoiceGateThreshold}
                         disabled={!settings.voiceGate}
                     />

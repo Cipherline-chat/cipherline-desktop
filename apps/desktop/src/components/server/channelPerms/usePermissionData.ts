@@ -13,7 +13,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import axios from 'axios';
-import { API_BASE } from '../../../constants';
+import { apiUrl } from '../../../utils/apiPath';
 import type { Role } from '../roles/types';
 import { sortRolesForDisplay } from '../roles/roleOrder';
 import { overrideFromWire, type PermOverride } from './effectivePermissions';
@@ -69,7 +69,7 @@ export function usePermissionData({ serverId, token, inheritFromCategoryId, own,
     useEffect(() => {
         if (!token) return;
         let cancelled = false;
-        axios.get(`${API_BASE}/servers/${serverId}/roles`, auth(token))
+        axios.get(apiUrl`/servers/${serverId}/roles`, auth(token))
             .then(res => {
                 if (cancelled) return;
                 setRoles(sortRolesForDisplay((res.data ?? []) as Role[]));
@@ -78,7 +78,7 @@ export function usePermissionData({ serverId, token, inheritFromCategoryId, own,
             .catch(e => { if (!cancelled) { setRolesState('error'); setRolesError(errMsg(e, 'Couldn’t load roles')); } });
         // Members are an enhancement (member overrides, preview, hierarchy):
         // a failure degrades those features instead of blocking the editor.
-        axios.get(`${API_BASE}/servers/${serverId}/members`, auth(token))
+        axios.get(apiUrl`/servers/${serverId}/members`, auth(token))
             .then(res => {
                 if (cancelled) return;
                 const rows = (res.data ?? []) as {
@@ -94,7 +94,7 @@ export function usePermissionData({ serverId, token, inheritFromCategoryId, own,
             })
             .catch(() => { /* degrade */ });
         if (myPermissions === undefined) {
-            axios.get(`${API_BASE}/servers/${serverId}/me/permissions`, auth(token))
+            axios.get(apiUrl`/servers/${serverId}/me/permissions`, auth(token))
                 .then(res => { if (!cancelled) setFetchedPerms(BigInt(res.data?.permissions ?? '0')); })
                 .catch(() => { if (!cancelled) setFetchedPerms(0n); });
         }
@@ -106,7 +106,7 @@ export function usePermissionData({ serverId, token, inheritFromCategoryId, own,
         if (!token || !inheritFromCategoryId) return;
         let cancelled = false;
         const id = inheritFromCategoryId;
-        axios.get(`${API_BASE}/servers/${serverId}/categories/${id}/overrides`, auth(token))
+        axios.get(apiUrl`/servers/${serverId}/categories/${id}/overrides`, auth(token))
             .then(res => {
                 if (!cancelled) setInheritedResult({ id, ok: true, overrides: ((res.data ?? []) as WireOverride[]).map(overrideFromWire) });
             })
@@ -126,7 +126,7 @@ export function usePermissionData({ serverId, token, inheritFromCategoryId, own,
         const key = keyOf(t);
         try {
             const path = t.scope === 'channel' ? 'channels' : 'categories';
-            const res = await axios.get(`${API_BASE}/servers/${serverId}/${path}/${t.id}/overrides`, auth(token));
+            const res = await axios.get(apiUrl`/servers/${serverId}/${path}/${t.id}/overrides`, auth(token));
             const rows = (res.data ?? []) as WireOverride[];
             setOwnResult({ key, rows, error: null });
             return rows;
@@ -141,7 +141,7 @@ export function usePermissionData({ serverId, token, inheritFromCategoryId, own,
         let cancelled = false;
         const key = `${ownScope}:${ownId}`;
         const path = ownScope === 'channel' ? 'channels' : 'categories';
-        axios.get(`${API_BASE}/servers/${serverId}/${path}/${ownId}/overrides`, auth(token))
+        axios.get(apiUrl`/servers/${serverId}/${path}/${ownId}/overrides`, auth(token))
             .then(res => { if (!cancelled) setOwnResult({ key, rows: (res.data ?? []) as WireOverride[], error: null }); })
             .catch(e => { if (!cancelled) setOwnResult({ key, rows: null, error: errMsg(e, 'Couldn’t load the saved permissions') }); });
         return () => { cancelled = true; };

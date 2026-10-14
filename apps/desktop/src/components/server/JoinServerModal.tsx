@@ -3,7 +3,7 @@ import { X, Link, Users, ServerCrash, CheckCircle2, RotateCw } from 'lucide-reac
 import { ClModal, ClButton, ClInput, ClField } from '../cl';
 import { useModalExit } from '../../hooks/useModalExit';
 import axios from 'axios';
-import { API_BASE } from '../../constants';
+import { apiUrl } from '../../utils/apiPath';
 import { ServerIcon } from './ServerIcon';
 import { motion, useReducedMotion } from 'framer-motion';
 import { useInvitePreview } from '../../hooks/useInvitePreview';
@@ -56,7 +56,7 @@ export const InvitePreviewModal: React.FC<InvitePreviewModalProps> = ({
         setJoinError(null);
         try {
             await axios.post(
-                `${API_BASE}/invites/${code}/accept`,
+                apiUrl`/invites/${code}/accept`,
                 {},
                 { headers: { Authorization: `Bearer ${token}` } },
             );
@@ -212,6 +212,7 @@ export const JoinServerModal: React.FC<Props> = ({ onClose, onJoinServer }) => {
         try {
             await onJoinServer(parsedCode);
             handleClose();
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (err: any) {
             const msg = err?.response?.data?.message;
             if (msg?.includes('banned')) {

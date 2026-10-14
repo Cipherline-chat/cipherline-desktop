@@ -17,6 +17,7 @@ interface CallStatsPillProps {
  *  1 bar  red     — anything worse (but connected)
  *  0 bars gray    — no data yet
  */
+// eslint-disable-next-line react-refresh/only-export-components -- co-located helper export; splitting the file would only affect dev Fast Refresh, not runtime behaviour
 export function signalQuality(pingMs: number | null, lossPercent: number | null): { bars: number; color: string } {
     if (pingMs === null) return { bars: 0, color: '#4b5563' };
 

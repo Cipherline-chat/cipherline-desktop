@@ -6,6 +6,8 @@
  */
 import type { GameMode } from '../utils/loadingGame';
 
+export type SceneMode = 'boot' | 'lock';
+
 export type ToWorker =
     | {
         type: 'init';
@@ -18,6 +20,16 @@ export type ToWorker =
         best: number;
         /** prefers-reduced-motion: one still frame, no pointer, no game. */
         reduced: boolean;
+        /**
+         * Which screen the scene is for. Omitted / 'boot' = the loading screen
+         * (Keys, the bar, the game). 'lock' = the lock screen's backdrop: the
+         * same dot field and pointer parallax and NOTHING else. In lock mode
+         * the worker never draws Keys or the loading bar, and ignores the
+         * messages that would put them there (`bar`, `progress`, `act`,
+         * `quit`, `keys`, `exit`), so no trace of loading can appear behind
+         * the PIN card however the worker is driven.
+         */
+        mode?: SceneMode;
     }
     | { type: 'resize'; w: number; h: number; dpr: number }
     /** The pointer, -1..1 from the centre (y up), at most once a frame. `on` = inside the window. */
@@ -33,9 +45,8 @@ export type ToWorker =
     /** Space: start a run, or one stroke. */
     | { type: 'act' }
     /**
-     * Show or hide Keys. The lock screen (components/LockScreenField.tsx) wants
-     * the dot field alone, behind its own PIN card; every other screen leaves
-     * him on (the default).
+     * Show or hide Keys (boot mode only; ignored in lock mode, where Keys is
+     * never drawn). Every screen but the lock leaves him on (the default).
      */
     | { type: 'keys'; visible: boolean }
     /** Esc while still loading: leave the game. */

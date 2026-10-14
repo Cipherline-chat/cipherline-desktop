@@ -1,9 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import {
     DEFAULT_AUDIO_INPUT_ID,
-    MIC_CAPTURE_CONSTRAINTS,
+    DEFAULT_ECHO_CANCELLATION,
+    MIC_CAPTURE_BASE_CONSTRAINTS,
+    UNPROCESSED_TRACK_SETTINGS,
     hasRealDeviceInfo,
+    micCaptureConstraints,
     pickMicDeviceId,
+    resolveEchoCancellation,
     resolveMicDeviceId,
 } from './audioInput';
 
@@ -81,22 +85,84 @@ describe('hasRealDeviceInfo', () => {
     });
 });
 
-describe('MIC_CAPTURE_CONSTRAINTS', () => {
-    it('leaves all browser DSP off so it cannot stack with the voice processor', () => {
-        // Chromium AGC/NS/AEC on top of RNNoise + the gate is what turns a quiet
+describe('MIC_CAPTURE_BASE_CONSTRAINTS', () => {
+    it('leaves browser NS and AGC off so they cannot stack with the voice processor', () => {
+        // Chromium AGC/NS on top of RNNoise + the gate is what turns a quiet
         // mic into a silent one (two gates in series).
-        expect(MIC_CAPTURE_CONSTRAINTS.echoCancellation).toBe(false);
-        expect(MIC_CAPTURE_CONSTRAINTS.noiseSuppression).toBe(false);
-        expect(MIC_CAPTURE_CONSTRAINTS.autoGainControl).toBe(false);
+        expect(MIC_CAPTURE_BASE_CONSTRAINTS.noiseSuppression).toBe(false);
+        expect(MIC_CAPTURE_BASE_CONSTRAINTS.autoGainControl).toBe(false);
+    });
+
+    it('does not decide echoCancellation — that is the user setting', () => {
+        expect('echoCancellation' in MIC_CAPTURE_BASE_CONSTRAINTS).toBe(false);
     });
 
     it('requests 48 kHz as ideal, never exact', () => {
         // An unsatisfiable `exact` fails the whole getUserMedia call instead of
         // degrading, which on a restart path leaves the mic dead.
-        expect(MIC_CAPTURE_CONSTRAINTS.sampleRate).toEqual({ ideal: 48000 });
+        expect(MIC_CAPTURE_BASE_CONSTRAINTS.sampleRate).toEqual({ ideal: 48000 });
     });
 
     it('carries no deviceId — callers own device selection', () => {
-        expect('deviceId' in MIC_CAPTURE_CONSTRAINTS).toBe(false);
+        expect('deviceId' in MIC_CAPTURE_BASE_CONSTRAINTS).toBe(false);
+    });
+});
+
+describe('micCaptureConstraints (echo cancellation)', () => {
+    it('defaults to ON', () => {
+        expect(DEFAULT_ECHO_CANCELLATION).toBe(true);
+        expect(micCaptureConstraints().echoCancellation).toBe(true);
+    });
+
+    it('ON asks for the boolean true — the form that cancels HTMLMediaElement AND Web Audio playback', () => {
+        // Not 'remote-only' (WebRTC playout only) and not 'all' (absent from the
+        // track capabilities on Chromium 153): see the function's comment.
+        expect(micCaptureConstraints(true).echoCancellation).toBe(true);
+    });
+
+    it('OFF asks for exactly false', () => {
+        expect(micCaptureConstraints(false).echoCancellation).toBe(false);
+    });
+
+    it('only echoCancellation differs between ON and OFF; NS, AGC and voiceIsolation stay false', () => {
+        const on = micCaptureConstraints(true);
+        const off = micCaptureConstraints(false);
+        const withoutEc = (c: Record<string, unknown>) => Object.fromEntries(Object.entries(c).filter(([k]) => k !== 'echoCancellation'));
+        expect(withoutEc(on)).toEqual(withoutEc(off));
+        for (const c of [on, off]) {
+            expect(c.noiseSuppression).toBe(false);
+            expect(c.autoGainControl).toBe(false);
+            expect(c.voiceIsolation).toBe(false);
+            expect(c.channelCount).toBe(1);
+            expect(c.sampleRate).toEqual({ ideal: 48000 });
+            expect('deviceId' in c).toBe(false);
+        }
+    });
+
+    it('returns a fresh object each call (a caller mutating it cannot poison the next open)', () => {
+        const a = micCaptureConstraints(true);
+        (a as { echoCancellation: boolean }).echoCancellation = false;
+        expect(micCaptureConstraints(true).echoCancellation).toBe(true);
+    });
+
+    it('negative control: the OFF form really is distinguishable from the ON form', () => {
+        expect(micCaptureConstraints(false)).not.toEqual(micCaptureConstraints(true));
+    });
+});
+
+describe('resolveEchoCancellation', () => {
+    it('honours an explicit boolean either way', () => {
+        expect(resolveEchoCancellation(true)).toBe(true);
+        expect(resolveEchoCancellation(false)).toBe(false);
+    });
+
+    it('a missing or non-boolean saved value gets the default (ON), never silently OFF', () => {
+        for (const v of [undefined, null, 'false', 0, 1, {}, []]) expect(resolveEchoCancellation(v)).toBe(true);
+    });
+});
+
+describe('UNPROCESSED_TRACK_SETTINGS', () => {
+    it('is all-false (the native screen-share audio track must not announce processing it never had)', () => {
+        expect(UNPROCESSED_TRACK_SETTINGS).toEqual({ noiseSuppression: false, echoCancellation: false, autoGainControl: false });
     });
 });

@@ -208,16 +208,40 @@ describe('channel override editor tables are derived from PERMISSION_GROUPS', ()
         ]);
     });
 
-    it('Calls: view + call bits + Manage Calls, including ANNOTATE; never the server-only DEAFEN/MOVE', () => {
+    it('Calls: view + call bits + Manage Calls, including ANNOTATE; never the server-only Moderate Call Media / Manage Call Members', () => {
         const rows = channelPermissionRows('huddle');
         const keys = rows.map(r => r.key);
         expect(keys).toEqual(expect.arrayContaining([
             'VIEW_CHANNEL', 'CONNECT', 'SPEAK', 'VIDEO', 'SCREEN_SHARE', 'ANNOTATE', 'PRIORITY_SPEAKER', 'MANAGE_CHANNELS',
         ]));
-        expect(keys).not.toContain('DEAFEN_MEMBERS');
-        expect(keys).not.toContain('MOVE_MEMBERS');
+        expect(keys).not.toContain('MODERATE_CALL_MEDIA');
+        expect(keys).not.toContain('MANAGE_CALL_MEMBERS');
         expect(keys).not.toContain('SEND_MESSAGES');
         expect(rows.find(r => r.key === 'MANAGE_CHANNELS')!.label).toBe('Manage Calls');
+    });
+
+    it('Calls: "Start Calls" (START_CALLS) sits in Access next to Connect, with join-vs-start wording', () => {
+        const access = channelPermissionSections('huddle').find(s => s.section === 'access')!;
+        const keys = access.permissions.map(p => p.key);
+        expect(keys).toContain('START_CALLS');
+        expect(keys.indexOf('START_CALLS')).toBe(keys.indexOf('CONNECT') + 1);
+        const row = access.permissions.find(p => p.key === 'START_CALLS')!;
+        expect(row.label).toBe('Start Calls');
+        expect(row.bit).toBe(Permissions.START_CALLS);
+        expect(row.description).toBe('Start a new call in this channel. Members without it can still join calls that are already running.');
+        // Connect no longer claims it lets you start calls.
+        expect(access.permissions.find(p => p.key === 'CONNECT')!.description).not.toMatch(/or start/);
+        // The "Allow all" scope of the Calls editor includes it.
+        expect(channelPermissionMask('huddle') & Permissions.START_CALLS).toBe(Permissions.START_CALLS);
+    });
+
+    it('role editor: "Start Calls" is in Voice & Calls with the owner-approved description; never in the text editor', () => {
+        const voice = PERMISSION_GROUPS.find(g => g.title === 'Voice & Calls')!;
+        const d = voice.permissions.find(p => p.key === 'START_CALLS')!;
+        expect(d).toBeDefined();
+        expect(d.serverOnly).toBeFalsy(); // channel-overridable, like Connect
+        expect(d.description).toBe('Start a new call in call channels. Members without it can still join calls that are already running.');
+        expect(channelPermissionRows('text').map(r => r.key)).not.toContain('START_CALLS');
     });
 
     it('buckets rows into ordered sections and the mask covers exactly the rows', () => {
@@ -227,5 +251,50 @@ describe('channel override editor tables are derived from PERMISSION_GROUPS', ()
         const mask = channelPermissionMask('huddle');
         expect(mask).toBe(channelPermissionRows('huddle').reduce((m, r) => m | r.bit, 0n));
         expect(mask & Permissions.SEND_MESSAGES).toBe(0n);
+    });
+});
+
+
+describe('call-moderation permission names (rename of bits 11 and 12 — values unchanged)', () => {
+    const find = (key: PermissionKey) => SERVER_PERMISSIONS.find(p => p.key === key)!;
+
+    it('bit 11 reads "Moderate Call Media" and says it covers all four media controls', () => {
+        const p = find('MODERATE_CALL_MEDIA');
+        expect(p.label).toBe('Moderate Call Media');
+        expect(p.description).toBe("Server-mute, server-deafen, and turn off members' camera or screen share in calls.");
+        expect(p.bit).toBe(1n << 11n);
+    });
+
+    it('bit 12 reads "Manage Call Members" and says it covers move AND disconnect', () => {
+        const p = find('MANAGE_CALL_MEMBERS');
+        expect(p.label).toBe('Manage Call Members');
+        expect(p.description).toBe('Move members between calls and disconnect them from calls.');
+        expect(p.bit).toBe(1n << 12n);
+    });
+
+    it('the old names are gone from the role editor (no "Deafen Members" / "Move Members" chip)', () => {
+        const labels = SERVER_PERMISSIONS.map(p => p.label);
+        expect(labels).not.toContain('Deafen Members');
+        expect(labels).not.toContain('Move Members');
+        expect(SERVER_PERMISSIONS.map(p => p.key)).not.toContain('DEAFEN_MEMBERS' as PermissionKey);
+        expect(SERVER_PERMISSIONS.map(p => p.key)).not.toContain('MOVE_MEMBERS' as PermissionKey);
+    });
+
+    it('the deprecated aliases still compile and still mean the same bits (older code / mobile)', () => {
+        expect(Permissions.MOVE_MEMBERS).toBe(Permissions.MANAGE_CALL_MEMBERS);
+        expect(Permissions.DEAFEN_MEMBERS).toBe(Permissions.MODERATE_CALL_MEDIA);
+    });
+
+    it('both stay server-wide-only: neither appears in any channel override editor', () => {
+        for (const kind of ['text', 'huddle'] as const) {
+            const keys = channelPermissionRows(kind).map(r => r.key);
+            expect(keys).not.toContain('MODERATE_CALL_MEDIA');
+            expect(keys).not.toContain('MANAGE_CALL_MEMBERS');
+        }
+    });
+
+    it('negative control: the lookup helper does find a real permission, so the "gone" checks are not vacuous', () => {
+        expect(find('KICK_MEMBERS').label).toBe('Kick Members');
+        expect(SERVER_PERMISSIONS.map(p => p.label)).toContain('Moderate Call Media');
     });
 });

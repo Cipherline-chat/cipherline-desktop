@@ -69,3 +69,26 @@ export function stepFocusSuspension<F>(input: FocusSuspensionInput<F>): FocusSus
     // 5. Nothing parked.
     return { saved: null };
 }
+
+/**
+ * Is focus suspended right now?
+ *
+ * `viewLacksFocusPane` is the tab rule (Friends / Home have no
+ * `#call-focus-root`). The fullscreen call overlay is the exception: it paints
+ * its own focused stage over every tab, so while it is up there IS somewhere to
+ * paint a focus, whichever tab is underneath.
+ *
+ * Without this, fullscreen opened from Home or Friends could never show a
+ * focused stream: the parked focus stayed parked (so it opened on the grid
+ * even when a stream had been focused), and clicking a tile INSIDE fullscreen
+ * to focus it was parked again on the very next effect (rule 2 above runs on
+ * every focus change) — the click did nothing.
+ *
+ * With it, the ordinary suspension machine does the rest unchanged: entering
+ * fullscreen un-suspends (rule 4 restores the parked focus, so fullscreen opens
+ * focused on it), and leaving fullscreen on Home re-suspends (rule 2 parks
+ * whatever is focused then, which comes back on the next chat/channel view).
+ */
+export function isFocusSuspended(viewLacksFocusPane: boolean, fullscreen: boolean): boolean {
+    return viewLacksFocusPane && !fullscreen;
+}

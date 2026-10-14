@@ -36,7 +36,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import axios from 'axios';
 import { UserPlus, X, Check, Shield, Search } from 'lucide-react';
-import { API_BASE } from '../../../constants';
+import { apiUrl } from '../../../utils/apiPath';
 import { EncryptedAvatar } from '../../EncryptedAvatar';
 import type { Role } from './types';
 import { ClButton, ClSearch } from '../../cl';
@@ -86,7 +86,7 @@ export const RoleMembersEditor: React.FC<Props> = ({
         if (!token) { setLoading(false); return; }
         if (!hasLoadedRef.current) setLoading(true);
         try {
-            const res = await axios.get(`${API_BASE}/servers/${serverId}/members`, {
+            const res = await axios.get(apiUrl`/servers/${serverId}/members`, {
                 headers: { Authorization: `Bearer ${token}` },
             });
             const incoming: ServerMember[] = res.data ?? [];
@@ -95,6 +95,7 @@ export const RoleMembersEditor: React.FC<Props> = ({
             // after our own mutation renders nothing at all.
             setMembers(prev => reconcileMembers(prev, incoming));
             hasLoadedRef.current = true;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (e: any) {
             onErrorRef.current?.(e?.response?.data?.message ?? 'Failed to load members');
         } finally {
@@ -139,9 +140,10 @@ export const RoleMembersEditor: React.FC<Props> = ({
         setMembers(prev => unassignRoleLocally(prev, [userId], role.role_id));
         try {
             await axios.delete(
-                `${API_BASE}/servers/${serverId}/members/${userId}/roles/${role.role_id}`,
+                apiUrl`/servers/${serverId}/members/${userId}/roles/${role.role_id}`,
                 { headers: { Authorization: `Bearer ${token}` } },
             );
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (e: any) {
             // Put it back where it was and say so — never leave the list
             // disagreeing with the server in silence.
@@ -170,7 +172,7 @@ export const RoleMembersEditor: React.FC<Props> = ({
             const results = await Promise.allSettled(
                 targets.map(uid =>
                     axios.put(
-                        `${API_BASE}/servers/${serverId}/members/${uid}/roles/${role.role_id}`,
+                        apiUrl`/servers/${serverId}/members/${uid}/roles/${role.role_id}`,
                         {},
                         { headers: { Authorization: `Bearer ${token}` } },
                     ),

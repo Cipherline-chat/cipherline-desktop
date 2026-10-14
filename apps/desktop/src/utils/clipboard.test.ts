@@ -19,12 +19,10 @@ import { writeToClipboard } from './clipboard';
  * silently starts lying again and nothing else in the suite would notice.
  */
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 const g = globalThis as any;
 
 /** Restores whatever the setup file / Node put on these. */
 let savedNavigator: PropertyDescriptor | undefined;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 let savedDocument: any;
 
 function setBridge(fn?: (t: string) => Promise<void>) {

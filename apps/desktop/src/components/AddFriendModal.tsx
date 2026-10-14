@@ -48,6 +48,7 @@ export const AddFriendModal: React.FC<AddFriendModalProps> = ({ onClose }) => {
             setSuccess(`Friend request sent to ${input}!`);
             setUsername('');
             setTimeout(() => { handleClose(); }, 1500);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (err: any) {
             setError(err?.response?.data?.message || 'Failed to send friend request');
         } finally {

@@ -33,7 +33,7 @@
 /** A phase-only view of UpdateStateShape (env.d.ts) — everything this module
  *  needs from the updater without depending on the version/percent fields. */
 export interface UpdaterStateLike {
-    phase: 'idle' | 'available' | 'downloading' | 'ready' | 'manual';
+    phase: UpdateStateShape['phase'];
     version?: string;
 }
 
@@ -45,7 +45,7 @@ export type ManualCheckState =
     /** The check finished and the updater still has nothing. */
     | { kind: 'up-to-date' }
     /** The check turned up a build; the updater is downloading it in the
-     *  background (or has already handed off to the manual-download path). */
+     *  background (retrying in-app if an attempt failed). */
     | { kind: 'found'; version: string }
     /** No updater in this build (dev server / smoke test). Distinct from
      *  'up-to-date' on purpose — "we didn't ask" is not "there's nothing". */

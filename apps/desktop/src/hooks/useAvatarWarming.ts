@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import axios from 'axios';
-import { API_BASE } from '../constants';
+import { apiUrl } from '../utils/apiPath';
 import { preloadAvatarsBackground, warmAvatarsFromDiskCache } from './useEncryptedAvatar';
 import secureLocalStore from '../utils/secureLocalStore';
 import { hydratePeerIdentityCache, knownAvatarIds } from '../utils/peerIdentityCache';
@@ -221,7 +221,7 @@ async function warmServerMembers(
 ): Promise<void> {
     let members: Array<{ user_id?: string | null; avatar_url?: string | null }>;
     try {
-        const res = await axios.get(`${API_BASE}/servers/${serverId}/members`, {
+        const res = await axios.get(apiUrl`/servers/${serverId}/members`, {
             headers: { Authorization: `Bearer ${token}` },
         });
         if (!Array.isArray(res.data)) return;

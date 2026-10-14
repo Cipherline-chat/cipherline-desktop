@@ -24,7 +24,7 @@ import { Permissions, hasPermission } from '@cipherline/shared';
  */
 
 export type ServerSettingsTab =
-    | 'overview' | 'roles' | 'members' | 'invites' | 'bans' | 'audit' | 'emojis';
+    | 'overview' | 'storage' | 'roles' | 'members' | 'invites' | 'bans' | 'audit' | 'emojis';
 
 /**
  * Which tabs this permission set can act in.
@@ -48,6 +48,10 @@ export function serverSettingsTabVisibility(
 
     return {
         overview: all || has(Permissions.MANAGE_SERVER),
+        // Storage: the usage meter plus the storage-grace countdown. Same gate
+        // as the API's non-member audience for GET storage-status (owner or
+        // MANAGE_SERVER), so nobody lands on a meter the API won't fill.
+        storage:  all || has(Permissions.MANAGE_SERVER),
         roles:    all || has(Permissions.MANAGE_ROLES),
         members:  all
             || has(Permissions.KICK_MEMBERS)

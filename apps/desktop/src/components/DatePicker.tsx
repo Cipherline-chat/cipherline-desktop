@@ -1,10 +1,13 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { ClButton } from './ClButton';
 import { ClSelect } from './cl';
 import { useDismissOnOutsideClick } from '../hooks/useDismissOnOutsideClick';
 import { useEscape } from '../hooks/useEscape';
-import { MONTH_LABELS, daysInMonth, parseIsoDate, formatIsoDate, formatDisplayDate, resolveTypedDate } from '../utils/isoDate';
+import {
+    MONTH_LABELS, daysInMonth, parseIsoDate, formatIsoDate, formatMdyDate,
+    applyDobEdit, checkTypedDob, resolveTypedDate, type IsoDateParts,
+} from '../utils/isoDate';
 
 const WEEKDAY_LABELS = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
 
@@ -26,20 +29,37 @@ const WEEKDAY_LABELS = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
 const NEUTRAL_YEAR = 1990;
 const NEUTRAL_MONTH = 0; // January
 
+const DOB_FORMAT_HINT = 'MM/DD/YYYY';
+const ERROR_INVALID = 'Enter your date of birth as MM/DD/YYYY (e.g. 01/31/1990), or pick it from the calendar.';
+const ERROR_FUTURE = 'That date is in the future.';
+
+/** Local "today" for the not-in-the-future check. Read at event time, never at module load. */
+const todayParts = (): IsoDateParts => {
+    const n = new Date();
+    return { y: n.getFullYear(), m: n.getMonth(), d: n.getDate() };
+};
+
+const isoToDisplay = (iso: string): string => {
+    const p = parseIsoDate(iso);
+    return p ? formatMdyDate(p.y, p.m, p.d) : '';
+};
+
 export interface DatePickerProps {
     /** Rendered as a left-inset icon, matching AuthScreen's `Field` treatment. */
     icon?: React.ReactNode;
     placeholder?: string;
     /** `'YYYY-MM-DD'` or `''` — same wire format the native `<input type="date">`
-     *  this replaces already produced, so no downstream consumer needs to change. */
+     *  this replaces already produced, so no downstream consumer needs to change.
+     *  (The field DISPLAYS and accepts `MM/DD/YYYY`; that is purely a view.) */
     value: string;
     onChange: (v: string) => void;
     disabled?: boolean;
     /** Accessible name for the trigger button (falls back to `placeholder`). */
     ariaLabel?: string;
-    /** Oldest selectable year. No age-based floor here on purpose — the
-     *  server is the sole authority on what's acceptable (see the module
-     *  doc above); this only bounds how far back the year list scrolls. */
+    /** Oldest selectable/typeable year. No age-based floor here on purpose —
+     *  the server is the sole authority on what's acceptable (see the module
+     *  doc above); this only bounds how far back the year list scrolls and
+     *  rejects typed years before it. */
     minYear?: number;
     /** Newest selectable year. Defaults to the current year — deliberately
      *  NOT offset to exclude "too-young" years, and nothing about a year
@@ -64,20 +84,22 @@ export interface DatePickerProps {
  *
  * The trigger is a real `<input>`, not a button: clicking it still opens the
  * calendar exactly as before (same toggle-on-click), but it also accepts
- * keystrokes so the date can be TYPED instead of picked. Both directions
- * stay in sync through the single `value`/`onChange` contract already used
- * by the calendar: picking a day calls `onChange`, which is what makes the
- * typed text follow it (see the "external value changed" effect below);
- * typing a complete, valid date calls the SAME `onChange` (via
- * `resolveTypedDate`, which runs the SAME `parseIsoDate` a picked day is
- * built from — see isoDate.ts), which is what makes the calendar's month/
- * year follow the typed text. A typed value that is merely partial (the
- * user is still mid-keystroke) or impossible (e.g. `2024-02-30`) never
- * commits — the field just holds the raw text with an inline error shown
- * once they leave it, rather than throwing or rounding to a nearby date.
+ * keystrokes so the date can be TYPED instead of picked. The field shows and
+ * accepts month/day/year (`MM/DD/YYYY`) with an auto-mask (digits only; the
+ * slashes are inserted for you), while `value`/`onChange` stay ISO
+ * `YYYY-MM-DD`. Both directions stay in sync through that single contract:
+ * picking a day calls `onChange`, which is what makes the typed text follow it
+ * (see the "external value changed" effect below); typing a complete, valid,
+ * non-future date calls the SAME `onChange` (via `resolveTypedDate`, whose
+ * real-calendar check is the one a picked day is built from — see
+ * isoDate.ts), which is what makes the calendar's month/year follow the typed
+ * text. Anything short of that (still mid-typing, impossible like 02/30, or in
+ * the future) commits `''` so a stale earlier date can never ride along
+ * unseen; the inline error appears only when the field is left (blur) or Enter
+ * is pressed — never while the user is still typing.
  */
 export const DatePicker: React.FC<DatePickerProps> = ({
-    icon, placeholder = 'Select a date (YYYY-MM-DD)', value, onChange, disabled, ariaLabel,
+    icon, placeholder = DOB_FORMAT_HINT, value, onChange, disabled, ariaLabel,
     minYear = 1900, maxYear = new Date().getFullYear(),
 }) => {
     const parsed = useMemo(() => parseIsoDate(value), [value]);
@@ -85,17 +107,25 @@ export const DatePicker: React.FC<DatePickerProps> = ({
     const [viewYear, setViewYear] = useState(() => parsed?.y ?? NEUTRAL_YEAR);
     const [viewMonth, setViewMonth] = useState(() => parsed?.m ?? NEUTRAL_MONTH);
     const containerRef = useRef<HTMLDivElement>(null);
+    const inputRef = useRef<HTMLInputElement>(null);
+    const uid = useId();
+    const hintId = `${uid}-hint`;
+    const errorId = `${uid}-error`;
 
-    // Typing support. `draft` is the raw text of an in-progress edit — kept
-    // separate from `value` so a partial/invalid keystroke (e.g. "1990-0")
-    // never has to become a fake committed value. `focused` switches the
-    // input between showing `draft` (editable) and the pretty `displayText`
-    // (read-only-looking, matches the original button's rendering exactly).
-    // `showTypedError` survives a blur so a rejected edit stays visible with
-    // its error instead of silently snapping back to the last valid date.
-    const [draft, setDraft] = useState(value);
-    const [focused, setFocused] = useState(false);
-    const [showTypedError, setShowTypedError] = useState(false);
+    // Typing support. `draft` is the masked text of the field (always
+    // `MM/DD/YYYY`-shaped, possibly partial) — kept separate from `value` so a
+    // partial keystroke never has to become a fake committed value.
+    // `typedError` is set only by blur/Enter, and cleared by the next edit.
+    const [draft, setDraft] = useState(() => isoToDisplay(value));
+    const [typedError, setTypedError] = useState<'invalid' | 'future' | null>(null);
+    // Caret to restore after the masked text re-renders (re-masking would
+    // otherwise throw the caret to the end). The tick state forces a render
+    // even when the masked text is unchanged (e.g. a 9th digit being ignored).
+    const pendingCaret = useRef<number | null>(null);
+    const [, setCaretTick] = useState(0);
+    // The last value THIS component emitted, so the external-value effect can
+    // tell its own commits from outside changes and not overwrite the draft.
+    const selfEmitted = useRef<string | null>(null);
 
     // The year dropdown (ClSelect) portals its open menu to `document.body`
     // (`.selm.cl-portal`, see ClSelect.tsx) so it can escape this popover's
@@ -114,39 +144,75 @@ export const DatePicker: React.FC<DatePickerProps> = ({
     // right month — but don't re-run this on every render, or it would fight
     // the user's own in-popover navigation (e.g. paging to a different month
     // without having picked a day yet). This is also the ONE place `draft`
-    // (the typed text) is pulled back into sync with a pick: `pick()` below
-    // only calls `onChange`, same as a typed commit would, so both directions
-    // funnel through here and there is exactly one way `draft` gets
-    // externally overwritten.
+    // is pulled back into sync with a pick: `pick()` below only calls
+    // `onChange`. A value this component emitted itself (a typed commit or
+    // clear) leaves the draft alone — the user is mid-edit.
     const lastValueRef = useRef(value);
     useEffect(() => {
         if (value !== lastValueRef.current) {
             lastValueRef.current = value;
-            setDraft(value);
-            setShowTypedError(false);
+            const own = selfEmitted.current === value;
+            selfEmitted.current = null;
+            if (!own) {
+                setDraft(isoToDisplay(value));
+                setTypedError(null);
+            }
             const p = parseIsoDate(value);
             if (p) { setViewYear(p.y); setViewMonth(p.m); }
         }
     }, [value]);
 
+    useLayoutEffect(() => {
+        if (pendingCaret.current !== null && inputRef.current) {
+            inputRef.current.setSelectionRange(pendingCaret.current, pendingCaret.current);
+            pendingCaret.current = null;
+        }
+    });
+
     useEscape(() => setOpen(false), open);
 
-    // Runs on every keystroke. Only ever commits a FULL, valid ISO date (or
-    // an explicit clear) — a partial or impossible date just updates the
-    // visible draft and waits; see resolveTypedDate's contract in isoDate.ts.
-    const handleTypedInput = (raw: string) => {
-        setDraft(raw);
-        setShowTypedError(false);
-        const resolved = resolveTypedDate(raw);
-        if (resolved !== null) onChange(resolved);
+    const emit = (next: string) => {
+        if (next === value) return;
+        selfEmitted.current = next;
+        onChange(next);
     };
 
-    // On leaving the field, flag anything left over that never resolved to a
-    // valid date — visibly, rather than silently discarding what was typed
-    // or quietly falling back to the last accepted value.
-    const handleBlur = () => {
-        setFocused(false);
-        if (draft !== '' && !parseIsoDate(draft)) setShowTypedError(true);
+    // Runs on every edit (keystroke, paste, autofill, delete). Re-masks the
+    // text, and commits ONLY a complete valid non-future date (as ISO) or an
+    // explicit clear — see resolveTypedDate's contract in isoDate.ts. Never
+    // shows an error: that waits for blur/Enter.
+    const handleTypedInput = (el: HTMLInputElement) => {
+        const { text, caret } = applyDobEdit(draft, el.value, el.selectionStart ?? el.value.length);
+        pendingCaret.current = caret;
+        setCaretTick(t => t + 1);
+        setDraft(text);
+        setTypedError(null);
+        const resolved = resolveTypedDate(text, todayParts(), minYear);
+        if (resolved === null) {
+            emit('');
+            return;
+        }
+        emit(resolved);
+        const p = parseIsoDate(resolved);
+        if (p) { setViewYear(p.y); setViewMonth(p.m); }
+    };
+
+    // Flag anything left over that never resolved to a valid date — visibly,
+    // rather than silently discarding what was typed.
+    const validate = () => {
+        const r = checkTypedDob(draft, todayParts(), minYear);
+        if (r.status === 'future') setTypedError('future');
+        else if (r.status === 'incomplete' || r.status === 'invalid') setTypedError('invalid');
+        else setTypedError(null);
+    };
+
+    const handleBlur = (e: React.FocusEvent<HTMLInputElement>) => {
+        // Focus moving into the calendar popover (a day button) is part of
+        // picking, not "leaving the field": showing the error here would shift
+        // the popover down under the cursor mid-click.
+        const next = e.relatedTarget as Node | null;
+        if (next && isInsideDatePicker(next)) return;
+        validate();
     };
 
     // A real scrollable list (via ClSelect) rather than a plain input — so
@@ -179,56 +245,65 @@ export const DatePicker: React.FC<DatePickerProps> = ({
         ...Array.from({ length: numDays }, (_, i) => i + 1),
     ];
 
-    const displayText = parsed ? formatDisplayDate(parsed.y, parsed.m, parsed.d) : '';
-    // While editing (or while a rejected edit is still showing its error),
-    // show the raw typed text so it stays editable/visible. Otherwise show
-    // the same pretty formatted text the original button-only picker did.
-    const shownValue = (focused || showTypedError) ? draft : displayText;
+    const errorText = typedError === 'future' ? ERROR_FUTURE : typedError === 'invalid' ? ERROR_INVALID : null;
 
     return (
         <div ref={containerRef} className="relative">
-            {icon && (
-                <span
-                    className="absolute left-3.5 top-1/2 -translate-y-1/2 flex pointer-events-none"
-                    style={{ color: 'var(--cl-faint)' }}
-                >
-                    {icon}
-                </span>
-            )}
-            <input
-                type="text"
-                autoComplete="off"
-                spellCheck={false}
-                className="inp"
-                style={{
-                    textAlign: 'left',
-                    paddingLeft: icon ? 44 : undefined,
-                    cursor: disabled ? 'default' : 'text',
-                    opacity: disabled ? 0.6 : 1,
-                    ...(showTypedError ? { borderColor: 'var(--cl-flash)' } : {}),
-                }}
-                value={shownValue}
-                placeholder={placeholder}
-                // Preserves the original click-to-toggle exactly: a click both
-                // focuses the input (native) and toggles the popup (this
-                // handler), same as the old button did.
-                onClick={() => !disabled && setOpen(o => !o)}
-                onFocus={() => setFocused(true)}
-                onBlur={handleBlur}
-                onChange={e => handleTypedInput(e.target.value)}
-                onKeyDown={e => {
-                    if (e.key === 'Enter') { e.preventDefault(); (e.target as HTMLInputElement).blur(); }
-                }}
-                disabled={disabled}
-                role="combobox"
-                aria-haspopup="dialog"
-                aria-expanded={open}
-                aria-invalid={showTypedError || undefined}
-                aria-label={ariaLabel ?? placeholder}
-            />
-            {showTypedError && (
-                <p role="alert" className="text-xs mt-1" style={{ color: 'var(--cl-flash)' }}>
-                    Enter the date as YYYY-MM-DD (e.g. 1990-01-31), or click to pick it from the calendar.
+            {/* The icon is positioned against THIS wrapper (input + icon only),
+                not the outer container — the outer one also holds the error
+                text and the calendar popover, and when it grew the icon
+                (top-1/2) drifted down off the input. */}
+            <div className="relative" data-testid="date-input-wrap">
+                {icon && (
+                    <span
+                        className="absolute left-3.5 top-1/2 -translate-y-1/2 flex pointer-events-none"
+                        style={{ color: 'var(--cl-faint)' }}
+                    >
+                        {icon}
+                    </span>
+                )}
+                <input
+                    ref={inputRef}
+                    type="text"
+                    inputMode="numeric"
+                    autoComplete="bday"
+                    spellCheck={false}
+                    className="inp"
+                    style={{
+                        textAlign: 'left',
+                        paddingLeft: icon ? 44 : undefined,
+                        cursor: disabled ? 'default' : 'text',
+                        opacity: disabled ? 0.6 : 1,
+                        ...(errorText ? { borderColor: 'var(--cl-flash)' } : {}),
+                    }}
+                    value={draft}
+                    placeholder={placeholder}
+                    // Preserves the original click-to-toggle exactly: a click both
+                    // focuses the input (native) and toggles the popup (this
+                    // handler), same as the old button did.
+                    onClick={() => !disabled && setOpen(o => !o)}
+                    onBlur={handleBlur}
+                    onChange={e => handleTypedInput(e.target)}
+                    onKeyDown={e => {
+                        if (e.key === 'Enter') {
+                            e.preventDefault();
+                            validate();
+                            (e.target as HTMLInputElement).blur();
+                        }
+                    }}
+                    disabled={disabled}
+                    role="combobox"
+                    aria-haspopup="dialog"
+                    aria-expanded={open}
+                    aria-invalid={errorText ? true : undefined}
+                    aria-describedby={errorText ? `${hintId} ${errorId}` : hintId}
+                    aria-label={ariaLabel ?? placeholder}
+                />
+            </div>
+            <span id={hintId} className="sr-only">Month, day, year, as {DOB_FORMAT_HINT}. Or pick it from the calendar.</span>
+            {errorText && (
+                <p id={errorId} role="alert" className="text-xs mt-1" style={{ color: 'var(--cl-flash)' }}>
+                    {errorText}
                 </p>
             )}
 

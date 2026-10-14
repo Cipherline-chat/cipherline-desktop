@@ -10,12 +10,14 @@ import {
 import { labelVoiceUsers } from './serverCallPresence';
 
 /**
- * Out-of-call camera / screen-share presence: "who in that call has their
- * camera on or is sharing their screen", for members who are NOT in the call
- * (server sidebar rosters, the Home "Happening now" tile).
+ * Out-of-call camera / screen-share / mute / deafen presence: "who in that
+ * call has their camera on, is sharing their screen, is muted or is
+ * deafened", for members who are NOT in the call (server sidebar rosters,
+ * the Home "Happening now" tile).
  *
  * Inside a call those icons come straight from LiveKit track state
- * (CallTelemetry.participantTrackStates). Outside it the only source is the
+ * (CallTelemetry.participantTrackStates / participantMetadata). Outside it
+ * the only source is the
  * server: seeded by the presence seeds (`media` on each call / voice channel
  * in GET /v1/voice-participants and GET /v1/huddles/:hid/calls) and kept live
  * by `call:media_state` WS events. The server has already applied the
@@ -46,19 +48,28 @@ function notify(key: string): void {
     anyListeners.forEach(l => l());
 }
 
-function sameState(a: CallMediaState | undefined, b: CallMediaState | undefined): boolean {
+function sameState(a: Partial<CallMediaState> | undefined, b: Partial<CallMediaState> | undefined): boolean {
     return (a?.camera ?? false) === (b?.camera ?? false)
-        && (a?.screen_share ?? false) === (b?.screen_share ?? false);
+        && (a?.screen_share ?? false) === (b?.screen_share ?? false)
+        && (a?.muted ?? false) === (b?.muted ?? false)
+        && (a?.deafened ?? false) === (b?.deafened ?? false);
 }
 
-/** Set (or clear, when all-off) one participant's flags. */
-export function setCallMedia(key: string, userId: string, state: CallMediaState): void {
+/** Set (or clear, when all-off) one participant's flags. A flag left out
+ *  reads as false (the same tolerance the wire has). */
+export function setCallMedia(key: string, userId: string, input: Partial<CallMediaState>): void {
+    const state: CallMediaState = {
+        camera: input.camera === true,
+        screen_share: input.screen_share === true,
+        muted: input.muted === true,
+        deafened: input.deafened === true,
+    };
     const bucket = media.get(key);
     const prev = bucket?.get(userId);
     if (sameState(prev, state)) return;
     if (hasAnyCallMedia(state)) {
         const b = bucket ?? new Map<string, CallMediaState>();
-        b.set(userId, { camera: state.camera, screen_share: state.screen_share });
+        b.set(userId, state);
         media.set(key, b);
     } else if (bucket) {
         bucket.delete(userId);
@@ -177,6 +188,8 @@ export function useCallMediaVersion(): number {
  * in THIS call uses live LiveKit track state (instant, authoritative for what
  * they are actually receiving); anyone else uses the server presence, which
  * is that same LiveKit state as reported by the participant's own client.
+ * (Camera / screen share only; {@link resolveParticipantAudio} is the same
+ * rule for self mute / deafen.)
  */
 export function resolveParticipantMedia(
     inThisCall: boolean,
@@ -185,6 +198,23 @@ export function resolveParticipantMedia(
 ): { hasCamera: boolean; hasScreenShare: boolean } {
     if (inThisCall) return { hasCamera: !!live?.hasCamera, hasScreenShare: !!live?.hasScreenShare };
     return { hasCamera: presence.camera, hasScreenShare: presence.screen_share };
+}
+
+/**
+ * Same rule for SELF mute / deafen. In this call: the live mic-track mute and
+ * the participant's `deafened` metadata flag (what the in-call row has always
+ * drawn). Not in it: the participant's own report via server presence.
+ * Server-moderation badges are NOT here — they exist only in LiveKit
+ * metadata, so they stay in-call-only.
+ */
+export function resolveParticipantAudio(
+    inThisCall: boolean,
+    live: { isMuted?: boolean } | undefined,
+    liveMeta: { deafened?: boolean } | undefined,
+    presence: CallMediaState,
+): { muted: boolean; deafened: boolean } {
+    if (inThisCall) return { muted: !!live?.isMuted, deafened: !!liveMeta?.deafened };
+    return { muted: presence.muted, deafened: presence.deafened };
 }
 
 /** Seed entries from a list of huddle calls (GET /huddles/:hid/calls, or a

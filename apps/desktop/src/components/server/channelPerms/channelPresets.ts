@@ -23,8 +23,8 @@ export const STAFF_SIGNAL_PERMISSIONS =
     | Permissions.KICK_MEMBERS
     | Permissions.BAN_MEMBERS
     | Permissions.MUTE_MEMBERS
-    | Permissions.DEAFEN_MEMBERS
-    | Permissions.MOVE_MEMBERS;
+    | Permissions.MODERATE_CALL_MEDIA
+    | Permissions.MANAGE_CALL_MEMBERS;
 
 /**
  * Roles a preset should treat as staff, in hierarchy order: any non-@everyone

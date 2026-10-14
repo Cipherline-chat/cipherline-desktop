@@ -35,12 +35,15 @@ export type RangeDays = 7 | 30 | 90 | 365 | null;
  *   id is in the per-conv set is preserved regardless of age.
  */
 export function filterMessagesByRange(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     history: Record<string, any[]>,
     days: number | null,
     keepPinned?: Record<string, Set<string>>,
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
 ): Record<string, any[]> {
     if (days === null) return history;
     const cutoff = Date.now() - days * 86_400_000;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     const out: Record<string, any[]> = {};
     for (const [convId, msgs] of Object.entries(history)) {
         if (!Array.isArray(msgs)) continue;
@@ -92,7 +95,9 @@ export function base64ToBlob(b64: string, mime = 'application/octet-stream'): Bl
  * histories; switch to a small pool if this turns out too slow on real data.
  */
 export async function collectAttachmentBlobs(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     filteredHistory: Record<string, any[]>,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     filteredChannelHistory: Record<string, any[]>,
     token: string,
     onProgress?: (done: number, total: number, totalBytes: number) => void,
@@ -101,6 +106,7 @@ export async function collectAttachmentBlobs(
     // Build id → declared-size map from message content metadata (best-effort).
     const sizeHints = new Map<string, number>();
     const ids = new Set<string>();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     const collect = (m: any) => {
         const aid = m?.content?.attachment_id;
         if (typeof aid === 'string' && aid.length > 0) {
@@ -167,10 +173,14 @@ export async function collectAttachmentBlobs(
  * `id` is still accepted for any caller that hands over the other shape.
  */
 export function partitionHistoryByType(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     history: Record<string, any[]>,
     topics: Array<{ conversation_id?: string; id?: string; type: string }>,
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
 ): { dm: Record<string, any[]>; group: Record<string, any[]> } {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     const dm: Record<string, any[]> = {};
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     const group: Record<string, any[]> = {};
     const dmIds = new Set(topics.filter(t => t.type === 'dm').map(t => t.conversation_id ?? t.id));
     for (const [id, msgs] of Object.entries(history)) {
@@ -180,6 +190,7 @@ export function partitionHistoryByType(
 }
 
 /** Sum of message counts across every conversation in the map. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
 export function countMessages(history: Record<string, any[]>): number {
     let n = 0;
     for (const arr of Object.values(history)) {

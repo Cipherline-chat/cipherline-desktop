@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import axios from 'axios';
 import { Copy, Check, AlertTriangle, ChevronDown, X, Send, Info } from 'lucide-react';
 import { API_BASE } from '../constants';
+import { apiUrl } from '../utils/apiPath';
 import { ClButton } from './ClButton';
 import { ClModal, ClInput } from './cl';
 import { TrustBadge } from './TrustBadge';
@@ -417,7 +418,7 @@ export const SafetyVerificationModal: React.FC<Props> = ({
                 // not display material. This modal used to burn the contact's
                 // OTPs on every open.
                 const res = await axios.get(
-                    `${API_BASE}/keys/identity_keys?user_id=${remoteUserId}`,
+                    apiUrl`/keys/identity_keys?user_id=${remoteUserId}`,
                     { headers: { Authorization: `Bearer ${token}` } },
                 );
                 const bundles: { device_id: string; identity_key_pub_b64: string }[] = res.data ?? [];
@@ -468,7 +469,7 @@ export const SafetyVerificationModal: React.FC<Props> = ({
                 // of the contact, which is the direction that matters here.
                 try {
                     const mine = await axios.get(
-                        `${API_BASE}/keys/identity_keys?user_id=${myUserId}`,
+                        apiUrl`/keys/identity_keys?user_id=${myUserId}`,
                         { headers: { Authorization: `Bearer ${token}` } },
                     );
                     const myBundles: { device_id: string; identity_key_pub_b64: string }[] = mine.data ?? [];
@@ -541,7 +542,7 @@ export const SafetyVerificationModal: React.FC<Props> = ({
         rejectOwnDevice(myUserId, d.device_id, d.pub);
         reassessOwn();
         try {
-            await axios.post(`${API_BASE}/devices/${encodeURIComponent(d.device_id)}/revoke`, {}, {
+            await axios.post(apiUrl`/devices/${d.device_id}/revoke`, {}, {
                 headers: { Authorization: `Bearer ${token}`, ...(myDeviceId ? { 'x-device-id': myDeviceId } : {}) },
             });
         } catch { /* the local record already withholds the code */ }

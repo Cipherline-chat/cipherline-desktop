@@ -17,11 +17,12 @@
  * which also stops Chromium from ticking the GIF's animation loop — saving CPU.
  * When playing the img is shown and the canvas is hidden.
  */
-import React, { useCallback, useLayoutEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Play } from 'lucide-react';
 import { useGifSettings } from '../hooks/useGifSettings';
 import { useWindowFocus } from '../hooks/useWindowFocus';
 import { usePrefersReducedMotion } from '../hooks/usePrefersReducedMotion';
+import { safeImageSrc } from '../utils/safeMediaUrl';
 
 export interface GifPlayerProps {
     src: string;
@@ -54,6 +55,15 @@ export const GifPlayer: React.FC<GifPlayerProps> = ({
     const windowFocused = useWindowFocus();
     const [isHovered, setIsHovered] = useState(false);
     const [imgLoaded, setImgLoaded] = useState(false);
+
+    // Only a validated image URL (blob:, data:image/*, KLIPY / Cipherline media
+    // https) is ever given to <img>. A rejected, non-empty src is reported the
+    // same way a failed load is, so callers show their existing fallback.
+    const safeSrc = safeImageSrc(src);
+    useEffect(() => {
+        if (src && !safeSrc) onError?.();
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- fire per rejected src, not per render of an inline onError
+    }, [src, safeSrc]);
 
     const imgRef    = useRef<HTMLImageElement>(null);
     const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -115,7 +125,7 @@ export const GifPlayer: React.FC<GifPlayerProps> = ({
             {/* Animated GIF — shown when playing */}
             <img
                 ref={imgRef}
-                src={src}
+                src={safeSrc}
                 alt={alt ?? ''}
                 draggable={draggable}
                 decoding="async"

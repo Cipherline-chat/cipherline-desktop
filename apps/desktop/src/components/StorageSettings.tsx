@@ -20,6 +20,10 @@ import { rankByStorage, findOrphanedConversations } from '../utils/storageCalc';
 import { PurgeDropdown, PurgeConfirmModal, countMessagesToPurge } from './PurgeControls';
 import { ClButton, ClSelect } from './cl';
 import type { ClSelectOption } from './cl';
+import { StorageRow } from './StorageRow';
+import { StorageConvAvatar } from './StorageConvAvatar';
+import { ServerStorageSection, type ServerStorageData } from './ServerStorageSection';
+import { formatBytes } from '../utils/formatBytes';
 
 const ATTACHMENT_OPTIONS: AttachmentRetention[] = ['never', '1y', '6mo', '3mo', '1mo', '1wk', '24h'];
 const MESSAGE_OPTIONS: MessageRetention[]       = ['never', '1y', '6mo', '3mo', '1mo', '1wk'];
@@ -33,7 +37,9 @@ const ATT_SELECT_OPTIONS: ClSelectOption<AttachmentRetention>[] = ATTACHMENT_OPT
 
 interface StorageSettingsProps {
     retention: RetentionHook;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     messagesState: Record<string, any[]>;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     conversations: any[];
     onClearAllMessages: () => void;
     onPurgeConversation: (convId: string, olderThanMs: number) => void;
@@ -45,14 +51,12 @@ interface StorageSettingsProps {
      * local estimate below is used, which cannot see server channels.
      */
     countExpiringForType?: (type: ConvType, kind: 'msg' | 'att', newVal: MessageRetention | AttachmentRetention) => number;
-}
-
-export function formatBytes(n: number): string {
-    if (!Number.isFinite(n) || n < 0) return '—';
-    if (n < 1024) return `${n} B`;
-    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-    if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
-    return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+    /**
+     * Server channel history, for the "Server storage" section. Optional so a
+     * caller that has no server state simply gets no section; Dashboard owns
+     * the channel cache and supplies it.
+     */
+    serverStorage?: ServerStorageData;
 }
 
 export const StorageSettings: React.FC<StorageSettingsProps> = ({
@@ -63,11 +67,13 @@ export const StorageSettings: React.FC<StorageSettingsProps> = ({
     onPurgeConversation,
     onPurgeTypeNow,
     countExpiringForType,
+    serverStorage,
 }) => {
     const [orphanOpen, setOrphanOpen] = useState(false);
 
     const countMsgsForType = (type: ConvType, windowMs: number): number => {
         if (type === 'server') {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
             const convIdSet = new Set(conversations.map((c: any) => c.conversation_id as string));
             return Object.entries(messagesState).reduce((acc, [id, msgs]) => {
                 if (convIdSet.has(id) || !Array.isArray(msgs)) return acc;
@@ -75,7 +81,9 @@ export const StorageSettings: React.FC<StorageSettingsProps> = ({
             }, 0);
         }
         return conversations
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
             .filter((c: any) => c.type === type)
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
             .reduce((acc: number, c: any) => {
                 return acc + countMessagesToPurge(messagesState[c.conversation_id], windowMs);
             }, 0);
@@ -85,13 +93,16 @@ export const StorageSettings: React.FC<StorageSettingsProps> = ({
         const now = Date.now();
         const matchKeys = (id: string): boolean => {
             if (type === 'server') {
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
                 const convIdSet = new Set(conversations.map((c: any) => c.conversation_id as string));
                 return !convIdSet.has(id);
             }
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
             return conversations.some((c: any) => c.type === type && c.conversation_id === id);
         };
         return Object.entries(messagesState).reduce((acc, [id, msgs]) => {
             if (!matchKeys(id) || !Array.isArray(msgs)) return acc;
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
             return acc + msgs.filter((m: any) => {
                 if (m?._pending || m?.content?.type !== 'attachment') return false;
                 const t = m?.timestamp ?? m?.sent_at ?? m?.created_at ?? m?.received_at ?? null;
@@ -176,6 +187,16 @@ export const StorageSettings: React.FC<StorageSettingsProps> = ({
         return m;
     }, [conversations]);
 
+    // id -> row, for the avatar beside each storage row (same fields the sidebar reads).
+    const convById = useMemo(() => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
+        const m = new Map<string, any>();
+        for (const c of conversations) m.set(c.conversation_id as string, c);
+        return m;
+    }, [conversations]);
+    const avatarToken = serverStorage?.token ?? null;
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     const knownIds = useMemo(() => new Set(conversations.map((c: any) => c.conversation_id as string)), [conversations]);
 
     const top10 = useMemo(() => rankByStorage(messagesState, 10), [messagesState]);
@@ -191,7 +212,7 @@ export const StorageSettings: React.FC<StorageSettingsProps> = ({
                 if (m?.content?.type === 'attachment') totalBytes += m.content.byte_size || 0;
             }
         }
-        try { totalBytes = Math.max(totalBytes, JSON.stringify(messagesState).length); } catch {}
+        try { totalBytes = Math.max(totalBytes, JSON.stringify(messagesState).length); } catch { /* best-effort; failure is non-fatal and intentionally ignored */ }
         return { totalBytes, messageCount };
     }, [messagesState]);
 
@@ -331,24 +352,18 @@ export const StorageSettings: React.FC<StorageSettingsProps> = ({
                             const isOrphaned = !knownIds.has(stats.conversationId);
                             const barPct = maxBytes > 0 ? Math.round((stats.totalBytes / maxBytes) * 100) : 0;
                             return (
-                                <div key={stats.conversationId} className="p-3 rounded-xl space-y-2" style={{ background: 'rgba(0,0,0,.2)', border: '1px solid var(--cl-border)' }}>
-                                    <div className="flex items-center justify-between gap-2">
-                                        <div className="flex items-center gap-2 min-w-0">
-                                            <span className="text-sm font-medium truncate" style={{ color: 'var(--cl-text)' }}>{title}</span>
-                                            {isOrphaned && (
-                                                <span className="text-[10px] font-bold rounded-full px-1.5 py-0.5 shrink-0" style={{ color: 'var(--cl-glow)', background: 'rgba(245,158,11,.1)', border: '1px solid rgba(245,158,11,.3)' }}>deleted</span>
-                                            )}
-                                        </div>
-                                        <span className="text-xs shrink-0" style={{ color: 'var(--cl-muted)' }}>{formatBytes(stats.totalBytes)}</span>
-                                    </div>
-                                    <div className="flex items-center gap-2">
-                                        <div className="flex-1 h-1.5 rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,.06)' }}>
-                                            <div className="h-full rounded-full" style={{ width: `${barPct}%`, background: 'rgba(37,224,200,.6)' }} />
-                                        </div>
-                                        <span className="text-[11px] shrink-0" style={{ color: 'var(--cl-faint)' }}>{stats.messageCount.toLocaleString()} msgs</span>
-                                    </div>
-                                    <div className="flex items-center gap-2 pt-0.5">
+                                <StorageRow
+                                    key={stats.conversationId}
+                                    title={title}
+                                    lead={<StorageConvAvatar conv={convById.get(stats.conversationId)} token={avatarToken} />}
+                                    badge={isOrphaned ? 'deleted' : undefined}
+                                    sizeLabel={formatBytes(stats.totalBytes)}
+                                    barPct={barPct}
+                                    countLabel={`${stats.messageCount.toLocaleString()} msgs`}
+                                    attachmentCount={stats.attachmentCount}
+                                    purge={
                                         <PurgeDropdown
+                                            messages={messagesState[stats.conversationId]}
                                             onSelect={(ms, label) => {
                                                 const count = countMessagesToPurge(messagesState[stats.conversationId], ms);
                                                 setPendingPurge({
@@ -358,11 +373,8 @@ export const StorageSettings: React.FC<StorageSettingsProps> = ({
                                                 });
                                             }}
                                         />
-                                        {stats.attachmentCount > 0 && (
-                                            <span className="text-[11px] shrink-0" style={{ color: 'var(--cl-faint)' }}>{stats.attachmentCount} attachments</span>
-                                        )}
-                                    </div>
-                                </div>
+                                    }
+                                />
                             );
                         })}
                     </div>
@@ -385,6 +397,9 @@ export const StorageSettings: React.FC<StorageSettingsProps> = ({
                     </ClButton>
                 </div>
             </div>
+
+            {/* Section D2 — Server Storage (same rows, same purge menu as above) */}
+            {serverStorage && <ServerStorageSection data={serverStorage} />}
 
             {/* Section E — Orphaned Chats */}
             {orphaned.length > 0 && (

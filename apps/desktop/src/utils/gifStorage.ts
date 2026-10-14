@@ -195,6 +195,7 @@ export function isSyncOriginChange(ev: Event): boolean {
 }
 
 async function getGifDir(): Promise<string> {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- window.electronAPI members are optional/version-dependent and not all declared on the typed bridge
     const userData: string = await (window as any).electronAPI.getUserDataPath();
     return `${userData}/cipherline-gifs`;
 }
@@ -234,6 +235,7 @@ export async function addFavorite(
     const gifDir = await getGifDir();
     const filePath = `${gifDir}/${fileName}`;
     const buf = await encryptedBlob.arrayBuffer();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- window.electronAPI members are optional/version-dependent and not all declared on the typed bridge
     await (window as any).electronAPI.writeFile(filePath, new Uint8Array(buf));
 
     // Persist key and metadata independently.
@@ -368,6 +370,7 @@ export async function loadGifFile(fav: FavoriteGif): Promise<Blob> {
     const keyB64 = secureLocalStore.getItem(gifKeyKey(uid, fav.id));
     if (!keyB64) throw new Error(`GIF decryption key not found for id=${fav.id}`);
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- window.electronAPI members are optional/version-dependent and not all declared on the typed bridge
     const ab = await (window as any).electronAPI.readFile(filePath) as ArrayBuffer;
     const encBlob = new Blob([ab]);
     const key = await importKeyFromBase64(keyB64);
@@ -405,6 +408,7 @@ export async function removeFavorite(id: string): Promise<void> {
     if (!isKlipyRefEntry(entry)) {
         const gifDir = await getGifDir();
         try {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- window.electronAPI members are optional/version-dependent and not all declared on the typed bridge
             await (window as any).electronAPI.deleteFile(`${gifDir}/${entry.fileName}`);
         } catch {
             // File may already be gone — continue cleaning up metadata.

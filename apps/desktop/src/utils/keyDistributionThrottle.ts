@@ -83,7 +83,32 @@ export const REDELIVERY_COOLDOWN_MS = 10 * 60 * 1000;
 export const SERVER_ERROR_GIVE_UP = 3;
 
 export const BACKOFF_BASE_MS = 2_000;
-export const BACKOFF_MAX_MS = 5 * 60 * 1000;
+/** Cap on the exponential back-off after transient failures (5xx, network,
+ *  timeout) and on a 429 that carries no readable Retry-After.
+ *
+ *  Was 5 minutes. On prod the key-handshake route sees bursts of transient
+ *  failures (cloudflared logged ~6.3k failed key-handshake POSTs in 72 h,
+ *  2026-10-09..11: client-side cancels, origin resets, broken pipes), and the
+ *  back-off is account-wide and only resets on a success — so a holder that
+ *  hit a run of them stopped serving EVERY joiner for up to 5 minutes after
+ *  the API had already recovered. That is a 5-minute "waiting for keys".
+ *
+ *  30 s keeps the storm fix's guarantee (a failure STOPS the pass; at most one
+ *  probe POST per holder per 30 s while the API is down — the storm was
+ *  ~60/s) and bounds the wait after recovery to 30 s. */
+export const BACKOFF_MAX_MS = 30_000;
+/** A 429's Retry-After is honoured up to this: the API's longest bucket on
+ *  every key-handshake path is the 60 s `default` window (fixed window,
+ *  blockDuration = ttl), so no throttle lasts longer. */
+export const RETRY_AFTER_MAX_MS = 60_000;
+
+/** Per-POST timeout for key-handshake. Without one, a POST the origin never
+ *  answers is held by Cloudflare for ~100 s (then 524) while every other
+ *  distribution of this account waits behind it (the POSTs are sequential).
+ *  A timeout is a transient failure: short back-off, then retry — the
+ *  envelope upsert is idempotent, so a POST that did land is harmless to
+ *  repeat. */
+export const KEY_HANDSHAKE_POST_TIMEOUT_MS = 15_000;
 
 /** Upper bound on automatic resumptions of a one-shot distribution
  *  (bootstrap / rotation / member_join / recovery) after deferrals. The
@@ -190,10 +215,15 @@ export class HandshakeBackoff {
      */
     onFailure(retryAfterMs?: number): number {
         this.failures += 1;
+        // A readable Retry-After may exceed the exponential cap (up to the
+        // API's longest window) — waiting less would only earn another 429.
+        const cap = retryAfterMs !== undefined
+            ? Math.max(this.maxMs, Math.min(retryAfterMs, RETRY_AFTER_MAX_MS))
+            : this.maxMs;
         const exp = Math.min(this.maxMs, this.baseMs * 2 ** (this.failures - 1));
-        const floor = Math.min(this.maxMs, Math.max(retryAfterMs ?? 0, exp));
+        const floor = Math.min(cap, Math.max(retryAfterMs ?? 0, exp));
         const jitter = Math.floor(this.random() * floor * 0.5);
-        const wait = Math.min(this.maxMs, floor + jitter);
+        const wait = Math.min(cap, floor + jitter);
         this.blockedUntil = Math.max(this.blockedUntil, this.now() + wait);
         return this.remainingMs();
     }
@@ -298,6 +328,13 @@ export class DeliveryLedger {
         if (e.version === version) return { action: 'skip' };
         if (askSeenAt !== undefined && askSeenAt <= e.at) return { action: 'skip' };
         return { action: 'send' };
+    }
+
+    /** Has THIS device handed (channel, epoch) to that device at all — by any
+     *  path, for any ask? (Used to tell "I served this request, its history is
+     *  mine to finish" from "someone else answered it".) */
+    hasDelivered(channelId: string, epoch: number, deviceId: string): boolean {
+        return this.map.has(DeliveryLedger.key(channelId, epoch, deviceId));
     }
 
     shouldSkip(channelId: string, epoch: number, deviceId: string, version?: string, askSeenAt?: number): boolean {

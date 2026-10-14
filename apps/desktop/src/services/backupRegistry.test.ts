@@ -235,3 +235,49 @@ describe('backupRegistry — every persisted key in the source tree is classifie
         expect([...unknown], 'unclassified SecureStore keys — add to APP_PREF_KEYS or SECURE_STORE_EXCLUDED').toEqual([]);
     });
 });
+
+describe('backupRegistry — Settings → Storage → Server storage adds no persisted state', () => {
+    // The server purge lives entirely on keys that already exist. It must stay
+    // that way: a new key would have to be classified here, and a purge that
+    // rode a backed-up key would carry one device's deletions to another.
+    it('every key the feature reads or writes is already classified EXCLUDED', () => {
+        const keys = [
+            `cipherline_channel_msgs_${UID}_chan-1`,        // the channel history cache the purge edits
+            `cipherline_retention_purged_${UID}_chan-1`,    // the tombstone ledger the purge appends to
+            `cipherline_srv_channels_${UID}_srv-1`,         // the channel-list cache that names Left servers
+            `cipherline_servers_${UID}`,
+        ];
+        for (const k of keys) expect(classifyKvKey(k, UID), k).toBe('exclude');
+    });
+
+    it('the feature’s own files persist nothing', () => {
+        const here = dirname(fileURLToPath(import.meta.url));
+        const files = ['../utils/serverStorage.ts', '../components/ServerStorageSection.tsx', '../components/StorageRow.tsx'];
+        for (const f of files) {
+            const text = readFileSync(join(here, f), 'utf8');
+            expect(text, f).not.toMatch(/\.setItem\(|localStorage|secureStore\.set\(/);
+        }
+    });
+});
+
+describe('backupRegistry — "Prioritize calls and screen share while gaming"', () => {
+    it('is deliberately NOT a backed-up key: it lives in main\'s machine-specific startup-flags.json, not in secureLocalStore', () => {
+        // No rule, preference key or excluded key names it - the merged setting kept the
+        // `gamingVideo` key in startup-flags.json and added NOTHING to the renderer store.
+        const names = [...KV_RULES.map(r => r.pattern), ...APP_PREF_KEYS, ...SECURE_STORE_EXCLUDED].join('\n');
+        expect(names).not.toMatch(/shareBoost|gamingVideo|share_boost|startup[-_]flags/i);
+    });
+
+    it('the one gaming-related key that IS classified is the freeze-offer snooze, and it is excluded (machine-specific)', () => {
+        const gaming = KV_RULES.filter(r => /gaming/i.test(r.pattern));
+        expect(gaming.map(r => r.pattern)).toEqual(['cipherline_gaming_video_offer']);
+        expect(gaming[0].include).toBe(false);
+        expect(classifyKvKey('cipherline_gaming_video_offer', UID)).toBe('exclude');
+    });
+
+    it('the retired separate screen-share setting never got a renderer key to classify', () => {
+        const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'backupRegistry.ts'), 'utf8');
+        expect(src).not.toMatch(/\bshareBoost\b/);
+        expect(src).toContain("mode it offers (which lives in main's startup-flags.json, not here)");
+    });
+});

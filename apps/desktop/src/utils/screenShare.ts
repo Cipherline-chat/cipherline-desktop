@@ -1,5 +1,6 @@
 import type { ScreenShareOptions } from '../components/ScreenSharePickerModal';
 import { VideoPreset } from 'livekit-client';
+import { clampCaptureBox, planEncode } from './shareEncoderLimits';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Screen-share pipeline settings: capture box → codec → publish options →
@@ -42,6 +43,20 @@ export function resolveSSResolution(res: ScreenShareOptions['resolution']): { wi
         case '720p':   return { width: 1280, height:  720 };
         case '480p':   return { width:  854, height:  480 };
     }
+}
+
+/**
+ * The capture box actually handed to the capturer: the picker's box, held to
+ * what `codec` can encode (shareEncoderLimits.ts). The 'source' box is 8K, and
+ * an 8K-wide capture (or a Surround display's native 7680x1440) is a frame no
+ * encoder opens - the black screen of 2026-10-13. Chromium fits the display
+ * inside the box preserving aspect: 7680x1440 in a 3840x2160 box = 3840x720.
+ */
+export function captureBoxFor(
+    res: ScreenShareOptions['resolution'],
+    codec: ScreenShareCodec,
+): { width: number; height: number } {
+    return clampCaptureBox(codec, resolveSSResolution(res));
 }
 
 /** Codecs a screen share can be published with. AV1 is deliberately absent:
@@ -460,9 +475,15 @@ export function resetH264HighFailedForTests(): void { h264HighFailedThisSession 
  * WGC grab still caps at ~52 fps. Capped at 240 (no display we care about
  * refreshes faster, and it bounds the extra grabs).
  */
-export function captureFrameRateFor(targetFps: number): number {
+export function captureFrameRateFor(targetFps: number, ceiling?: number | null): number {
     if (!Number.isFinite(targetFps) || targetFps <= 0) return targetFps;
-    return Math.min(240, Math.ceil(targetFps * 1.25));
+    // A capturer that cannot deliver more than `ceiling` (Linux Wayland/PipeWire:
+    // 60, see electron/capture-flags.ts captureFpsCeiling) gains nothing from
+    // being asked for 1.25x a target above it - only a faster poll. The
+    // headroom is kept on top of the ceiling: polling a source exactly as fast
+    // as it delivers can alias and drop frames, which is what the headroom is for.
+    const base = ceiling && ceiling > 0 ? Math.min(targetFps, ceiling) : targetFps;
+    return Math.min(240, Math.ceil(base * 1.25));
 }
 
 // ── The lower layer ─────────────────────────────────────────────────────────
@@ -611,7 +632,17 @@ export async function applyScreenShareSenderParams(
     sender: RTCRtpSender,
     frameRate: number,
     maxBitrate: number,
-    opts: { codec?: ScreenShareCodec } = {},
+    opts: {
+        codec?: ScreenShareCodec;
+        /** The size the sender is actually handed, when the track cannot say
+         *  (a cropped, generated track reports none). Default: the track's own settings. */
+        sourceSize?: { width: number; height: number };
+        /** Black-screen fallback step (shareEncoderLimits RESOLUTION_STEP_PIXELS). Default 0. */
+        step?: number;
+        /** The user's resolution choice as a box, for a source the capturer did not
+         *  fit to it (a cropped screen): the encoding is scaled to fit inside. */
+        box?: { width: number; height: number };
+    } = {},
 ): Promise<void> {
     const params = sender.getParameters();
     if (!params.encodings || params.encodings.length === 0) {
@@ -622,16 +653,32 @@ export async function applyScreenShareSenderParams(
     // lower one gets its own ≤ 30 fps / ~2.5–3 Mbps, re-derived from the
     // actual capture size. `active` is never touched — dynacast owns it.
     const n = params.encodings.length;
-    const settings = n > 1 ? sender.track?.getSettings?.() : undefined;
-    const low = n > 1 ? shareLowEncoding(settings?.width, settings?.height, frameRate, opts.codec ?? 'vp8') : null;
+    const settings = sender.track?.getSettings?.();
+    const size = opts.sourceSize ?? { width: settings?.width, height: settings?.height };
+    // The encoder-size clamp, from the size the sender REALLY receives: the
+    // capture box (captureBoxFor) normally already kept it legal; this holds
+    // the line when it did not (a source the box could not shrink, a fallback
+    // step after an encoder stall). Scale 1 = nothing to do.
+    const limitPlan = planEncode(opts.codec ?? 'h264', size.width, size.height, opts.step ?? 0);
+    const boxScale = opts.box && size.width && size.height
+        ? Math.max(1, size.width / opts.box.width, size.height / opts.box.height)
+        : 1;
+    const plan = { scale: Math.ceil(Math.max(limitPlan.scale, boxScale) * 1e6) / 1e6 };
+    const low = n > 1 ? shareLowEncoding(size.width, size.height, frameRate, opts.codec ?? 'vp8') : null;
     params.encodings.forEach((enc, i) => {
         if (low && i < n - 1) {
-            enc.scaleResolutionDownBy = low.scaleResolutionDownBy;
+            // The lighter copy must stay lighter than a clamped full layer.
+            enc.scaleResolutionDownBy = plan.scale > 1
+                ? Math.max(low.scaleResolutionDownBy, Math.round(plan.scale * 1.5 * 1000) / 1000)
+                : low.scaleResolutionDownBy;
             enc.maxFramerate = low.maxFramerate;
             enc.maxBitrate   = low.maxBitrate;
         } else {
             enc.maxFramerate = frameRate;
             enc.maxBitrate   = maxBitrate;
+            if (plan.scale > 1) enc.scaleResolutionDownBy = plan.scale;
+            // Undo OUR earlier downscale when the capture no longer needs it.
+            else if (enc.scaleResolutionDownBy !== undefined && enc.scaleResolutionDownBy > 1) enc.scaleResolutionDownBy = 1;
         }
         // Raise stream priority so GCC probes this flow aggressively. Chromium
         // takes the priority of the WHOLE sender from encodings[0] and rejects
@@ -683,6 +730,7 @@ export async function retuneScreenShareInPlace(
     track: { mediaStreamTrack?: MediaStreamTrack; sender?: RTCRtpSender; codec?: string } | undefined,
     resolution: ScreenShareOptions['resolution'],
     frameRate: ScreenShareOptions['frameRate'],
+    opts: { step?: number } = {},
 ): Promise<boolean> {
     const msTrack = track?.mediaStreamTrack;
     const sender  = track?.sender;
@@ -692,7 +740,7 @@ export async function retuneScreenShareInPlace(
     }
     const t0 = performance.now();
     try {
-        const dims = resolveSSResolution(resolution);
+        const dims = captureBoxFor(resolution, asScreenShareCodec(track.codec) ?? 'vp8');
         await msTrack.applyConstraints({
             width:     { max: dims.width },
             height:    { max: dims.height },
@@ -703,7 +751,7 @@ export async function retuneScreenShareInPlace(
         const tConstraints = performance.now();
         await applyScreenShareSenderParams(
             sender, frameRate, computeSSBitrate(resolution, frameRate, asScreenShareCodec(track.codec)),
-            { codec: asScreenShareCodec(track.codec) },
+            { codec: asScreenShareCodec(track.codec), step: opts.step },
         );
         const tParams = performance.now();
 

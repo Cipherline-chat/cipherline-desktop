@@ -311,6 +311,8 @@ interface Props {
     participantIds: string[];
     /** True when the local user spawned this call — drives "· you started this". */
     canRename: boolean;
+    /** "This call ends when X leaves" while the channel's setting is on. */
+    endsNote?: string | null;
     token: string | null;
     userId: string;
     myUsername: string;
@@ -328,7 +330,7 @@ interface Props {
      * comment on encryptionState. Never hardcoded.
      */
     encryptionState?: 'connecting' | 'connected' | 'mixed' | null;
-    /** True when the local user holds DEAFEN_MEMBERS / ADMINISTRATOR on the
+    /** True when the local user holds MODERATE_CALL_MEDIA / ADMINISTRATOR on the
      *  call's server — surfaces the moderation block in the row popover.
      *  UX-only: the server re-checks the permission on every call-mute. */
     canServerMute?: boolean;
@@ -337,7 +339,7 @@ interface Props {
 
 export const FloatingHuddleCard: React.FC<Props> = ({
     channelName, iconName, iconEmoji, maxCalls, callId, callName, spawnedAt,
-    participantIds, canRename, token, userId, myUsername, myAvatarUrl, friendNameMap,
+    participantIds, canRename, endsNote, token, userId, myUsername, myAvatarUrl, friendNameMap,
     expanded, onToggleExpanded, encryptionState, canServerMute = false, onServerMuteTrack,
 }) => {
     return (
@@ -373,6 +375,7 @@ export const FloatingHuddleCard: React.FC<Props> = ({
                 participants={participantIds.map(id => ({ user_id: id }))}
                 isMine
                 canRename={canRename}
+                endsNote={endsNote}
                 canConnect={false}
                 token={token}
                 spawnedAt={spawnedAt}

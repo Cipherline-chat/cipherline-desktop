@@ -28,6 +28,7 @@ The following packages are distributed under the MIT License:
 - **electron-updater** — Copyright (c) Loopline Systems
 - **electron-log** — Copyright (c) Alexey Prokhorov (transitive via electron-updater)
 - **exceljs** — Copyright (c) Guyon Morée
+- **obscenity** — Copyright (c) Joseph Liu (via @cipherline/shared: the username profanity filter)
 
 > Permission is hereby granted, free of charge, to any person obtaining a copy
 > of this software and associated documentation files (the "Software"), to deal

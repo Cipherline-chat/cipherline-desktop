@@ -6,6 +6,7 @@ import { Worker } from 'worker_threads';
 import { app, safeStorage, dialog } from 'electron';
 import { classifyKeyProtection, type KeyProtection } from './key-protection';
 import { freezeMonitor } from './freeze-monitor';
+import { deriveRecoveryApprovalKeypair, type RecoveryApprovalKeypair } from './device-approval-keys';
 
 const ALG = 'aes-256-gcm';
 
@@ -249,6 +250,17 @@ export class SecureStore {
     }
 
     /**
+     * Device approval: the recovery-approval keypair derived from the master
+     * key (electron/device-approval-keys.ts), WITHOUT handing the key itself to
+     * the caller — main.ts reads the raw master key in exactly the places
+     * recovery-key-gate.test.ts / secureStorePolicy.test.ts pin, and this must
+     * not become another. Null when locked/uninitialized.
+     */
+    deriveRecoveryApprovalKeypair(): RecoveryApprovalKeypair | null {
+        return deriveRecoveryApprovalKeypair(this.getMasterKeyB64());
+    }
+
+    /**
      * Initialize the store WITHOUT holding the Electron main-process message
      * loop for the whole of it.
      *
@@ -476,7 +488,7 @@ export class SecureStore {
             // here, which matches the old behaviour exactly: existsSync() would
             // pass and readFileSync()/JSON.parse() would throw into this catch.
             const bakPath = `${this.dbPath}.corrupt-${Date.now()}`;
-            try { fs.renameSync(this.dbPath, bakPath); } catch {}
+            try { fs.renameSync(this.dbPath, bakPath); } catch { /* best-effort filesystem operation; failure is non-fatal */ }
             console.warn(`[SecureStore] Corrupt store moved to ${path.basename(bakPath)} — starting fresh`);
             this.data = {};
             this._corruptBackupFile = path.basename(bakPath);
@@ -551,8 +563,8 @@ export class SecureStore {
         // wipe: drop the scheduled write and invalidate any write in flight.
         this.clearWriteTimer();
         this.saveGen++;
-        try { if (fs.existsSync(this.dbPath)) fs.unlinkSync(this.dbPath); } catch {}
-        try { if (fs.existsSync(this.keyPath)) fs.unlinkSync(this.keyPath); } catch {}
+        try { if (fs.existsSync(this.dbPath)) fs.unlinkSync(this.dbPath); } catch { /* best-effort filesystem operation; failure is non-fatal */ }
+        try { if (fs.existsSync(this.keyPath)) fs.unlinkSync(this.keyPath); } catch { /* best-effort filesystem operation; failure is non-fatal */ }
         this.data = {};
         this.indexes.clear();
         // Nothing of the old vault is owed to disk any more — it was deleted on

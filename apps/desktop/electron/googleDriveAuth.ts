@@ -30,54 +30,48 @@ import { secureStore } from './storage';
 function readDriveCredential(field: 'googleDriveClientId' | 'googleDriveClientSecret', envKey: string): string {
     if (process.env[envKey]) return process.env[envKey]!;
     try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports -- main process is compiled to CommonJS; lazy runtime require
         const { app } = require('electron') as typeof import('electron');
+        // eslint-disable-next-line @typescript-eslint/no-require-imports -- runtime read of the packaged package.json via CJS require (main process is compiled to CommonJS)
         const pkg = require(require('path').join(app.getAppPath(), 'package.json'));
         if (pkg && typeof pkg[field] === 'string') return pkg[field];
-    } catch {}
+    } catch { /* best-effort; failure is non-fatal and intentionally ignored */ }
     return '';
 }
 const CLIENT_ID     = readDriveCredential('googleDriveClientId',     'GOOGLE_DRIVE_CLIENT_ID');
 const CLIENT_SECRET = readDriveCredential('googleDriveClientSecret', 'GOOGLE_DRIVE_CLIENT_SECRET');
 // ── OAuth scopes ──────────────────────────────────────────────────────────────
 //
-//   drive.file             — read/write ONLY the items this app created (or that
-//                            the user explicitly handed us). This is what the
-//                            backup itself runs on: creating the folder, writing
-//                            <base>.enc, re-uploading it, reading it back on
-//                            restore (see driveBackup.ts / driveTransfer.ts).
-//                            NEVER remove it — dropping it breaks backups.
+//   drive.file — read/write ONLY the items this app created (or that the user
+//                explicitly handed us). This is what the backup itself runs on:
+//                creating the "Cipherline Backups" folder, writing <base>.enc,
+//                re-uploading it, reading it back on restore (see
+//                driveBackup.ts / driveTransfer.ts / utils/driveFolders.ts).
+//                It is a NON-SENSITIVE scope: no Google verification review,
+//                no "unverified app" warning for it. NEVER remove it —
+//                dropping it breaks backups.
 //
-//   drive.metadata.readonly — read-only access to file/folder METADATA (names,
-//                            ids, parents) with NO access to any file CONTENT.
-//                            This is the only thing that lets the in-app folder
-//                            browser (src/components/DriveFolderPicker.tsx via
-//                            src/utils/driveFolders.ts) enumerate the user's own
-//                            existing folders so they can pick where backups go.
-//                            `drive.file` cannot do that by design: a
-//                            `files.list` walk of "'root' in parents" comes back
-//                            empty or 403s, which is the SCOPE_MISSING failure
-//                            the browser hits without this scope.
+//   email      — shows which Google account is connected in Settings (the
+//                userinfo `email` field read in startOAuth below). Also
+//                non-sensitive.
 //
-// ⚠️  ACTION REQUIRED IN GOOGLE CLOUD CONSOLE — READ BEFORE SHIPPING ⚠️
+// Deliberately NOT requested: drive.metadata.readonly. It is a RESTRICTED Drive
+// scope — it lets an app see the names and layout of the user's entire Drive —
+// and requesting it without Google's OAuth verification (and, for restricted
+// scopes, a security assessment) makes every user see Google's "unverified app"
+// warning. It was only ever needed for the in-app Drive folder browser, which
+// is gone: backups now live in one app-created folder found again by stored
+// folder id, falling back to a name search that `drive.file` limits to folders
+// this app created. Do not add a feature that needs it back without checking
+// with the owner — it re-introduces the verification requirement.
 //
-// drive.metadata.readonly is NOT a normal scope. Google lists it among Drive's
-// **restricted** scopes (alongside drive, drive.readonly, drive.metadata) —
-// a tier above "sensitive". An app requesting it must pass Google's **OAuth app
-// verification**, and restricted scopes can additionally require an annual
-// third-party security assessment (CASA). Confirm the current classification in
-// the Cloud Console when adding the scope; it is shown there. Until that
-// verification is granted:
-//   • up to 100 accounts added under "Test users" in the OAuth consent screen
-//     can connect Drive normally;
-//   • EVERY OTHER ACCOUNT is hard-blocked at consent with "Access blocked: this
-//     app's request is invalid / has not completed the Google verification
-//     process" — which means they cannot connect Drive AT ALL, not merely that
-//     they lose folder browsing.
-// This was the reason the scope was dropped in f86626d9 (2026-06-12) and again
-// in 8db34c2f (2026-09-03). Re-added deliberately 2026-09-05 as a product
-// decision: the full in-app folder browser is worth the verification process.
-// Do not "simplify" this back out without checking with the owner first.
-const SCOPE = 'email https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.metadata.readonly';
+// Accounts that connected before this change still hold a refresh token that
+// carries the old, broader grant. Nothing here checks the granted-scope list
+// and refresh requests never name a scope, so those tokens keep working
+// unchanged until the user next disconnects and reconnects, at which point
+// consent shows only the two scopes below. They can also remove the old
+// grant themselves from their Google account's third-party access page.
+const SCOPE = 'email https://www.googleapis.com/auth/drive.file';
 
 // ── SecureStore keys ──────────────────────────────────────────────────────────
 const KEYS = {
@@ -193,6 +187,7 @@ function renderCallbackPage(opts: { icon: 'success' | 'error'; heading: string; 
 }
 
 /** POST to a Google endpoint and return parsed JSON. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
 function googlePost(path: string, body: Record<string, string>): Promise<any> {
     return new Promise((resolve, reject) => {
         const payload = new URLSearchParams(body).toString();
@@ -226,6 +221,7 @@ function googlePost(path: string, body: Record<string, string>): Promise<any> {
 }
 
 /** GET from a Google API endpoint with a Bearer token, return parsed JSON. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
 function googleGet(hostname: string, path: string, accessToken: string): Promise<any> {
     return new Promise((resolve, reject) => {
         const req = https.request({

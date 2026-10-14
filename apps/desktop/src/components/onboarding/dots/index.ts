@@ -10,3 +10,4 @@ export { place, clampTagX } from './placement';
 export { DotTagLayer } from './DotTagLayer';
 export type { DotTag, DotTagLayerProps } from './DotTagLayer';
 export { useDotField } from './useDotField';
+export { POINTER_REACTION, applyPointerReaction, effectiveFollow } from './pointerReaction';

@@ -35,7 +35,7 @@ import {
 } from '../utils/incrementalBackup';
 import {
     ContainerWriter, openContainer, memorySource, teeSink, isContainerFile, CONTAINER_VERSION,
-    type ByteSink, type ByteSource, type OpenedContainer,
+    type ByteSink, type ByteSource, type OpenedContainer, BackupWrongPasswordError,
 } from '../utils/backupContainer';
 import {
     buildBackupPlan, writeBackupRecords, applyBackupContainer,
@@ -48,8 +48,16 @@ import {
 
 export type { BackupStaleWarning } from './backupGenerationFloor';
 
-const DRIVE_FILES  = 'https://www.googleapis.com/drive/v3/files';
-export const DEFAULT_DRIVE_FOLDER = 'Cipherline Backups';
+import {
+    DRIVE_FILES, FOLDER_MIME, APP_BACKUP_FOLDER, escapeDriveQuery,
+    isFolderAccessible, ensureAppFolder, resolveDriveFolder,
+    type DriveFolderResolution,
+} from '../utils/driveFolders';
+
+export { resolveDriveFolder };
+export type { DriveFolderResolution };
+
+export const DEFAULT_DRIVE_FOLDER = APP_BACKUP_FOLDER;
 const DEFAULT_FILE_BASE = 'cipherline-backup';
 const PASSWORD_KEY = 'drive_backup_password';
 /** Default per-attachment size cap (matches the free-tier upload limit). */
@@ -93,11 +101,15 @@ export interface BackupDestinations {
     localDir?: string | null;
     /** Whether to upload to the connected Google Drive. */
     drive?: boolean;
-    /** Name of the Drive folder to store the backup in (created if missing).
-     *  Used only when `driveFolderId` is not set. */
+    /** @deprecated Ignored. The user can no longer choose a Drive folder (the
+     *  app only holds `drive.file`), so the folder is always the app-created
+     *  DEFAULT_DRIVE_FOLDER. Kept so stored configs still type-check. */
     driveFolderName?: string;
-    /** Explicit Drive folder ID chosen via the Google Picker. Takes priority
-     *  over `driveFolderName` — the backup is written directly into it. */
+    /** The Drive folder id last used (persisted by the caller from
+     *  `BackupResult.driveFolder`). Tried first: the app keeps access to a
+     *  folder it created even if the user moves or renames it. For accounts
+     *  that picked their own folder under the old broader grant it is that
+     *  folder. When unset or unusable the app folder is found or created. */
     driveFolderId?: string | null;
     /** Filename base (e.g. `cipherline-backup-mypc`). The file written is
      *  `${base}.enc` (a value already ending in `.enc` is used as-is).
@@ -142,13 +154,19 @@ export interface BackupResult {
      *  succeeded. A failure here is reported per-destination and NEVER
      *  implies the other destination wasn't attempted; see runBackup. */
     errors?: Partial<Record<DestinationLabel, string>>;
-    /** Set when the previously-selected Drive folder (`destinations.driveFolderId`)
-     *  had gone stale — 403/404 under the app's current OAuth grant — and this
-     *  run fell back to (and possibly created) the default folder instead of
-     *  failing outright. The caller should persist this as the new folder and
-     *  surface it to the user; otherwise every future run keeps retrying the
-     *  same dead folder ID. */
+    /** Set when the previously-stored Drive folder (`destinations.driveFolderId`)
+     *  had gone stale — 403/404 under the app's current OAuth grant, or in the
+     *  trash — and this run fell back to (and possibly created) the app folder
+     *  instead of failing outright. The caller should persist this as the new
+     *  folder and surface it to the user; otherwise every future run keeps
+     *  retrying the same dead folder ID. */
     driveFolderRecovered?: { folderId: string; folderName: string };
+    /** The Drive folder id this run settled on, whenever it differs from the
+     *  stored `destinations.driveFolderId` (first backup: the folder was just
+     *  created or found by name). The caller should persist it so later runs
+     *  go straight to it by id. A superset of `driveFolderRecovered`, which
+     *  additionally means "tell the user". */
+    driveFolder?: { folderId: string; folderName: string };
 }
 
 // ── Passphrase caching (OS-wrapped SecureStore via IPC) ─────────────────────
@@ -202,37 +220,62 @@ async function driveGet(token: string, query: string): Promise<any> {
     if (!res.ok) throw new Error(`Drive query failed: ${res.status}`);
     return res.json();
 }
-async function findFolder(token: string, name: string): Promise<string | null> {
-    const q = encodeURIComponent(`name='${name}' and 'root' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`);
-    const data = await driveGet(token, `q=${q}&fields=files(id)`);
-    return data.files?.[0]?.id ?? null;
-}
-async function ensureFolder(token: string, name: string): Promise<string> {
-    const existing = await findFolder(token, name);
-    if (existing) return existing;
-    const res = await fetch(DRIVE_FILES, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, mimeType: 'application/vnd.google-apps.folder' }),
-    });
-    if (!res.ok) throw new Error(`Drive folder create failed: ${res.status}`);
-    return (await res.json()).id;
-}
 export interface DriveManifestFile {
     id: string;
     name: string;
     createdTime?: string;
     modifiedTime?: string;
     size?: string;
+    /** Folder(s) the file sits in. Only requested by the anywhere-in-Drive
+     *  lookups, which is where the parent isn't already known. */
+    parents?: string[];
+    /** Whether this app may write the file; undefined = not asked. */
+    canEdit?: boolean;
 }
 async function findFile(token: string, parentId: string, name: string): Promise<DriveManifestFile | null> {
-    const q = encodeURIComponent(`name='${name}' and '${parentId}' in parents and trashed=false`);
+    const q = encodeURIComponent(`name='${escapeDriveQuery(name)}' and '${escapeDriveQuery(parentId)}' in parents and trashed=false`);
     const data = await driveGet(token, `q=${q}&fields=files(id,name,modifiedTime,createdTime,size)`);
     const f = data.files?.[0];
     return f ? { id: f.id, name: f.name, modifiedTime: f.modifiedTime, createdTime: f.createdTime, size: f.size } : null;
 }
+
+const ANYWHERE_FIELDS = encodeURIComponent('files(id,name,modifiedTime,createdTime,size,parents,capabilities/canEdit)');
+const NEWEST_FIRST = encodeURIComponent('modifiedTime desc');
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped Drive REST file resource
+const toManifestFile = (f: any): DriveManifestFile => ({
+    id: f.id, name: f.name, modifiedTime: f.modifiedTime, createdTime: f.createdTime, size: f.size,
+    parents: Array.isArray(f.parents) ? f.parents : undefined,
+    canEdit: typeof f.capabilities?.canEdit === 'boolean' ? f.capabilities.canEdit : undefined,
+});
+
+/**
+ * The backup file named exactly `name`, wherever in Drive it sits (newest
+ * first if several). Under `drive.file` this can only match files THIS app
+ * created, which is precisely the point: a backup written into a folder the
+ * user chose back when the app could browse is still the app's own file, so it
+ * is still found even though its folder is no longer visible.
+ */
+async function findFileAnywhere(token: string, name: string): Promise<DriveManifestFile | null> {
+    const q = encodeURIComponent(`name='${escapeDriveQuery(name)}' and mimeType!='${FOLDER_MIME}' and trashed=false`);
+    const data = await driveGet(token, `q=${q}&orderBy=${NEWEST_FIRST}&fields=${ANYWHERE_FIELDS}&pageSize=10`);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped Drive REST JSON
+    const f = (data.files as any[] | undefined)?.find(x => x?.name === name);
+    return f ? toManifestFile(f) : null;
+}
+
+/** Anywhere-in-Drive twin of findDriveBackup: the exact `<base>.enc`, else the
+ *  newest legacy dated manifest. Restore's last resort when the folder lookup
+ *  came up empty. */
+async function findBackupAnywhere(token: string, fileBase?: string | null): Promise<DriveManifestFile | null> {
+    const exact = await findFileAnywhere(token, backupFileName(fileBase));
+    if (exact) return exact;
+    const q = encodeURIComponent(`name contains '${escapeDriveQuery(manifestBasePattern(fileBase))}' and mimeType!='${FOLDER_MIME}' and trashed=false`);
+    const data = await driveGet(token, `q=${q}&orderBy=${NEWEST_FIRST}&fields=${ANYWHERE_FIELDS}&pageSize=100`);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped Drive REST JSON
+    return selectLatestManifest(((data.files || []) as any[]).map(toManifestFile), manifestBasePattern(fileBase));
+}
 async function listDriveFiles(token: string, folderId: string): Promise<DriveManifestFile[]> {
-    const q = encodeURIComponent(`'${folderId}' in parents and trashed=false`);
+    const q = encodeURIComponent(`'${escapeDriveQuery(folderId)}' in parents and trashed=false`);
     const data = await driveGet(token, `q=${q}&fields=files(id,name,createdTime,modifiedTime,size)&pageSize=1000`);
     return data.files || [];
 }
@@ -243,73 +286,34 @@ async function downloadDriveFileById(token: string, fileId: string): Promise<Uin
 }
 
 /**
- * True for the specific Drive REST statuses that mean "this app no longer
- * has access to this exact file/folder" — a revoked/expired Picker grant, or
- * the item was deleted or moved out of the narrow `drive.file` scope's view.
- * Anything else (network outage, a 401 from an expired token, a 5xx) is NOT
- * this and must propagate as a real failure rather than be papered over.
- */
-function isStaleAccessStatus(status: number): boolean {
-    return status === 403 || status === 404;
-}
-
-/**
- * Whether `folderId` — an explicit, previously-chosen Drive folder (from the
- * Picker, or persisted from before this app's OAuth scope was narrowed) — is
- * still reachable under the app's current grant. A lightweight metadata GET
- * scoped to that exact ID, so classification is unambiguous: a 403/404 on
- * THIS call means the folder itself is the problem, not a transient or
- * auth-wide failure. Any other error (network, 401, 5xx) rethrows so the
- * caller fails normally instead of silently reassigning the backup target.
- */
-async function isFolderAccessible(token: string, folderId: string): Promise<boolean> {
-    const res = await fetch(`${DRIVE_FILES}/${folderId}?fields=id,trashed`, {
-        headers: { Authorization: `Bearer ${token}` },
-    });
-    if (res.ok) {
-        const data = await res.json().catch(() => null);
-        return !(data && data.trashed === true);
-    }
-    if (isStaleAccessStatus(res.status)) return false;
-    throw new Error(`Drive query failed: ${res.status}`);
-}
-
-export interface DriveFolderResolution {
-    /** Folder to use for this run/operation. Null only when `create` is
-     *  false and no folder could be found at all (nothing picked or created
-     *  yet — e.g. a first-ever restore/info check). */
-    folderId: string | null;
-    /** True when an explicit, previously-stored folder ID was no longer
-     *  accessible (403/404) and this fell back to the app's default folder
-     *  instead of failing. The caller should persist the new folder id/name
-     *  (replacing the stale one) and tell the user their selection changed. */
-    recovered: boolean;
-}
-
-/**
- * Resolve the Drive folder for an operation, recovering from a stale
- * explicit folder ID instead of letting every future run 403/404 forever:
+ * Where a Drive backup run writes. Either a folder (the normal case), or —
+ * for an account that picked its own folder under the old broader grant and has
+ * since re-connected with only `drive.file` — a single existing backup FILE
+ * that is kept up to date in place.
  *
- *   - No explicit ID: unchanged — find (or, with `create: true`, create)
- *     the named default folder.
- *   - An explicit ID that's still accessible: used as-is.
- *   - An explicit ID that 403s/404s: NOT propagated as fatal. Falls back to
- *     the default folder (created if `create: true` and missing) and
- *     reports `recovered: true`.
- *   - Any other failure while checking the explicit ID (network outage, an
- *     expired token, ...) is a real failure and propagates unchanged — never
- *     treated as a stale folder.
+ * Why the file case exists: that folder is not the app's (so it is invisible
+ * and unwritable now), but the `<base>.enc` inside it IS: the app created it.
+ * Updating it by id keeps ONE backup file, with the user's Drive revision
+ * history and without abandoning their existing backup in a folder the app can
+ * no longer see. If that ever stops working (404/403) the run falls back to the
+ * app folder — see driveDestination.
  */
-export async function resolveDriveFolder(
-    token: string,
-    explicitFolderId: string | null | undefined,
-    folderName: string,
-    opts: { create: boolean },
-): Promise<DriveFolderResolution> {
-    const findOrCreate = () => (opts.create ? ensureFolder(token, folderName) : findFolder(token, folderName));
-    if (!explicitFolderId) return { folderId: await findOrCreate(), recovered: false };
-    if (await isFolderAccessible(token, explicitFolderId)) return { folderId: explicitFolderId, recovered: false };
-    return { folderId: await findOrCreate(), recovered: true };
+export type DriveBackupTarget =
+    | { kind: 'folder'; folderId: string; recovered: boolean }
+    | { kind: 'file'; folderId: string; file: DriveManifestFile };
+
+export async function resolveDriveBackupTarget(
+    token: string, storedFolderId: string | null | undefined, fileName: string,
+): Promise<DriveBackupTarget> {
+    if (storedFolderId) {
+        if (await isFolderAccessible(token, storedFolderId)) return { kind: 'folder', folderId: storedFolderId, recovered: false };
+        // Stored folder is out of reach. Keep writing the backup file the app
+        // already owns, if there is one it may still edit; `folderId` stays the
+        // stored id so fingerprints and the generation floor keep their key.
+        const file = await findFileAnywhere(token, fileName);
+        if (file && file.canEdit !== false) return { kind: 'file', folderId: storedFolderId, file };
+    }
+    return { kind: 'folder', folderId: await ensureAppFolder(token), recovered: !!storedFolderId };
 }
 
 /**
@@ -469,17 +473,37 @@ function localDestination(dir: string): SingleFileDestination {
 function driveDestination(
     token: string, folderId: string,
     onTransfer?: (p: { done: number; total: number }) => void,
-): SingleFileDestination {
+    /** An existing backup file to keep updating in place instead of looking in
+     *  `folderId` (see DriveBackupTarget). */
+    pinnedFile?: DriveManifestFile | null,
+): SingleFileDestination & { fellBackToFolderId?: string } {
     const api = () => {
         const a = window.electronAPI;
         if (!a?.backupStagingDir || !a.gdriveUploadFile) throw new Error('Desktop bridge not loaded. Fully quit and re-run the app.');
         return a;
     };
-    return {
+    let pin = pinnedFile ?? null;
+    let folder = folderId;
+    const isPinned = (fileName: string) => !!pin && pin.name === fileName;
+    const dest: SingleFileDestination & { fellBackToFolderId?: string } = {
         label: 'drive',
         supportsUpdate: false,
         stat: async (fileName) => {
-            const f = await findFile(token, folderId, fileName);
+            if (pin && isPinned(fileName)) {
+                const res = await fetch(`${DRIVE_FILES}/${pin.id}?fields=${encodeURIComponent('id,size,modifiedTime,trashed')}`, {
+                    headers: { Authorization: `Bearer ${token}` },
+                });
+                if (res.ok) {
+                    const f = await res.json();
+                    if (f.trashed === true) return null;
+                    return { size: f.size ? parseInt(f.size, 10) : 0, modifiedTime: f.modifiedTime };
+                }
+                // Gone or no longer ours: report absent; the write below then
+                // takes the fallback path rather than failing the run.
+                if (res.status === 403 || res.status === 404) return null;
+                throw new Error(`Drive query failed: ${res.status}`);
+            }
+            const f = await findFile(token, folder, fileName);
             return f ? { size: f.size ? parseInt(f.size, 10) : 0, modifiedTime: f.modifiedTime } : null;
         },
         openSink: async (fileName) => {
@@ -500,7 +524,22 @@ function driveDestination(
                     stagedPath = staged.path;
                     const unsub = onTransfer ? a.onGdriveTransferProgress?.(p => { if (p.kind === 'upload') onTransfer(p); }) : undefined;
                     try {
-                        const stored = await a.gdriveUploadFile(folderId, fileName, staged.path);
+                        if (pin && isPinned(fileName)) {
+                            try {
+                                const stored = await a.gdriveUploadFile(folder, fileName, staged.path, pin.id);
+                                return { size: stored.size };
+                            } catch (err) {
+                                // The file we were updating in place can no longer
+                                // be written (deleted, access revoked): that is the
+                                // one case where the backup moves to the app folder.
+                                // Anything else (network, 5xx) is a real failure.
+                                if (!/HTTP (403|404)\b/.test(errorMessage(err) || '')) throw err;
+                                folder = await ensureAppFolder(token);
+                                pin = null;
+                                dest.fellBackToFolderId = folder;
+                            }
+                        }
+                        const stored = await a.gdriveUploadFile(folder, fileName, staged.path);
                         return { size: stored.size };
                     } finally {
                         unsub?.();
@@ -518,18 +557,22 @@ function driveDestination(
         // just verified locally (or would have been) — nothing to re-download.
         verify: async () => {},
         openSource: async (fileName) => {
-            const f = await findFile(token, folderId, fileName);
+            const f = pin && isPinned(fileName) ? pin : await findFile(token, folder, fileName);
             if (!f) return null;
             const bytes = await downloadDriveFileById(token, f.id);
             return bytes ? memorySource(bytes) : null;
         },
+        // Legacy chunked-era leftovers are cleaned up only inside a folder the
+        // app can see; a pinned file's (invisible) folder is left alone.
         listFiles: async () => {
-            try { return (await listDriveFiles(token, folderId)).map(f => f.name); } catch { return []; }
+            if (pin) return [];
+            try { return (await listDriveFiles(token, folder)).map(f => f.name); } catch { return []; }
         },
         deleteFiles: async (names) => {
+            if (pin) return;
             const want = new Set(names);
             let files: DriveManifestFile[] = [];
-            try { files = await listDriveFiles(token, folderId); } catch { return; }
+            try { files = await listDriveFiles(token, folder); } catch { return; }
             const results = await Promise.allSettled(files.filter(f => want.has(f.name)).map(f =>
                 fetch(`${DRIVE_FILES}/${f.id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } })
             ));
@@ -537,6 +580,7 @@ function driveDestination(
             if (failed > 0) console.warn(`[backup] ${failed}/${results.length} old Drive backup file deletions failed`);
         },
     };
+    return dest;
 }
 
 // ── Orchestration (destination-agnostic; unit-tested) ───────────────────────
@@ -745,7 +789,7 @@ export async function runBackup(opts: {
     const maxAttachmentBytes = (opts.maxAttachmentBytes ?? DEFAULT_MAX_ATTACHMENT_BYTES) || undefined;
     const wantLocal = !!destinations.localDir;
     const wantDrive = !!destinations.drive;
-    const driveFolderName = destinations.driveFolderName || DEFAULT_DRIVE_FOLDER;
+    const driveFolderName = DEFAULT_DRIVE_FOLDER;
     if (!wantLocal && !wantDrive) throw new Error('No backup destination selected.');
     const fileName = backupFileName(destinations.fileName);
     const basePattern = manifestBasePattern(destinations.fileName);
@@ -759,6 +803,7 @@ export async function runBackup(opts: {
     // attempted, whatever happens to Drive.
     const setupErrors: Partial<Record<DestinationLabel, string>> = {};
 
+    notifyBackupStateChanged(); // run started
     try {
         onProgress?.({ phase: 'export', message: 'Gathering your data…' });
         const plan = await buildBackupPlan(userId, { includeAttachments, token, maxAttachmentBytes });
@@ -766,6 +811,8 @@ export async function runBackup(opts: {
         const dests: SingleFileDestination[] = [];
         const targets: Partial<Record<SingleFileDestination['label'], string>> = {};
         let driveFolderRecovered: { folderId: string; folderName: string } | undefined;
+        let driveFolder: { folderId: string; folderName: string } | undefined;
+        let driveDest: ReturnType<typeof driveDestination> | undefined;
         if (wantLocal) {
             dests.push(localDestination(destinations.localDir!));
             targets.local = backupTarget(destinations.localDir!, fileName);
@@ -774,19 +821,28 @@ export async function runBackup(opts: {
             try {
                 const driveToken = await window.electronAPI?.gdriveGetToken?.() ?? null;
                 if (!driveToken) throw new Error('Google Drive is not connected.');
-                // A stored, explicit folder ID (from the Picker, or from before
-                // the OAuth scope was narrowed) can go stale — deleted, moved, or
-                // simply no longer in the app's `drive.file` grant. Recover
-                // instead of 403ing every run forever. Note the two failure
-                // modes compose here rather than overlapping: resolveDriveFolder
+                // The app only holds `drive.file`, so the backup lives in the one
+                // folder it created itself. A stored folder id is tried first (the
+                // app keeps access to a folder it created even after the user
+                // moves or renames it); a stale one — or one an older build let
+                // the user pick, which the narrow grant can't see — is recovered
+                // from instead of 403ing every run forever. Note the two failure
+                // modes compose here rather than overlapping: resolveDriveBackupTarget
                 // handles a *stale folder* internally (falling back, never
                 // throwing), while a genuine Drive failure — no token, network
                 // down, 401, 5xx — still throws and is caught below as a
                 // per-destination setup error, so it can't take local down.
-                const { folderId, recovered } = await resolveDriveFolder(driveToken, destinations.driveFolderId, driveFolderName, { create: true });
-                if (recovered) driveFolderRecovered = { folderId: folderId!, folderName: driveFolderName };
-                dests.push(driveDestination(driveToken, folderId!, (transfer) => onProgress?.({ phase: 'upload', transfer })));
-                targets.drive = backupTarget(folderId!, fileName);
+                const target = await resolveDriveBackupTarget(driveToken, destinations.driveFolderId, fileName);
+                if (target.kind === 'folder') {
+                    if (target.recovered) driveFolderRecovered = { folderId: target.folderId, folderName: driveFolderName };
+                    if (target.folderId !== destinations.driveFolderId) driveFolder = { folderId: target.folderId, folderName: driveFolderName };
+                }
+                driveDest = driveDestination(
+                    driveToken, target.folderId, (transfer) => onProgress?.({ phase: 'upload', transfer }),
+                    target.kind === 'file' ? target.file : null,
+                );
+                dests.push(driveDest);
+                targets.drive = backupTarget(target.folderId, fileName);
             } catch (err) {
                 setupErrors.drive = errorMessage(err) || 'Google Drive backup failed.';
             }
@@ -814,6 +870,15 @@ export async function runBackup(opts: {
         });
         const errors: Partial<Record<DestinationLabel, string>> = { ...setupErrors, ...writeErrors };
 
+        // The file being updated in place stopped accepting writes mid-run and
+        // the backup landed in the app folder instead (see driveDestination):
+        // record it under THAT folder and tell the caller to repoint.
+        if (driveDest?.fellBackToFolderId && results.drive) {
+            driveFolderRecovered = { folderId: driveDest.fellBackToFolderId, folderName: driveFolderName };
+            driveFolder = driveFolderRecovered;
+            targets.drive = backupTarget(driveDest.fellBackToFolderId, fileName);
+        }
+
         const at = new Date().toISOString();
         const stamps = getDestinationStamps(userId);
         for (const label of ['local', 'drive'] as const) {
@@ -840,14 +905,17 @@ export async function runBackup(opts: {
         onProgress?.(hasErrors
             ? { phase: 'error', message: summarizeDestinationErrors(errors) }
             : { phase: 'done' });
+        notifyBackupStateChanged(); // run finished
         return {
             at, fileName, fingerprint: plan.fingerprint, attachments,
             local: results.local, drive: results.drive,
             errors: hasErrors ? errors : undefined,
             driveFolderRecovered,
+            driveFolder,
         };
     } catch (err: unknown) {
         onProgress?.({ phase: 'error', message: errorMessage(err) || 'Backup failed.' });
+        notifyBackupStateChanged(); // run failed — nothing was stamped, so subscribers keep their nudge
         throw err;
     }
 }
@@ -884,19 +952,34 @@ export function getDestinationLastMs(userId: string, label: DestinationLabel): n
     return getLastBackupMs(userId);
 }
 
-/** Fired on window whenever backup state the UI summarises changes: a backup
- *  completed (stampLastBackup), the backup config was saved, or the
- *  scheduler's blocked reason changed. The Home backup tile computes its
- *  nudge from secureLocalStore on render, so without this it kept showing
- *  "You have no backup yet" after the user set backups up and ran one. */
+/** Fired on window whenever backup state the UI summarises changes: the backup
+ *  config was saved (destinations / automatic on-off), a run started, a run
+ *  completed (stampLastBackup) or failed, or the scheduler's blocked reason
+ *  changed. Anything that shows "set up backups" (the Home tile, the
+ *  onboarding checklist) subscribes via hooks/useBackupState so it updates in
+ *  place instead of only when it next happens to mount. */
 export const BACKUP_STATE_EVENT = 'cipherline:backup-state';
 
+let notifyQueued = false;
+
+/** Announce a backup-state change. Deferred to a microtask and coalesced: the
+ *  config is written from inside a React state updater (BackupSection.persist),
+ *  and a synchronous dispatch there would run subscribers' setState during
+ *  another component's render. By the time the microtask runs, the
+ *  secure-store writes behind the change have landed, so subscribers read a
+ *  consistent snapshot. */
 export function notifyBackupStateChanged(): void {
-    try {
-        if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
-            window.dispatchEvent(new Event(BACKUP_STATE_EVENT));
-        }
-    } catch { /* non-fatal: the next render still reads fresh state */ }
+    if (notifyQueued) return;
+    notifyQueued = true;
+    const fire = () => {
+        notifyQueued = false;
+        try {
+            if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
+                window.dispatchEvent(new Event(BACKUP_STATE_EVENT));
+            }
+        } catch { /* non-fatal: the next render still reads fresh state */ }
+    };
+    if (typeof queueMicrotask === 'function') queueMicrotask(fire); else void Promise.resolve().then(fire);
 }
 
 /** Record a successful backup. The ONLY place either timestamp is written —
@@ -933,48 +1016,64 @@ export function getLastBackupMs(userId: string): number | null {
 }
 
 /** Drive backup file info (without downloading). A stale `folderIdOverride`
- *  (403/404) falls back to the default folder rather than reporting "no
- *  backup" forever — `folderRecovered` tells the caller to re-persist it. */
+ *  (403/404) falls back to the app folder rather than reporting "no backup"
+ *  forever — `folderRecovered` tells the caller to re-persist it. Looks for the
+ *  backup anywhere in the app's reach before giving up (a backup an older build
+ *  wrote into a folder the user picked is still the app's own file). */
 export async function getDriveBackupInfo(
-    folderName: string = DEFAULT_DRIVE_FOLDER,
     folderIdOverride?: string | null,
     fileBase?: string | null,
 ): Promise<{ exists: boolean; modifiedTime?: string; sizeBytes?: number; folderRecovered?: { folderId: string; folderName: string } } | null> {
     const token = await window.electronAPI?.gdriveGetToken?.();
     if (!token) return null;
     try {
-        const { folderId, recovered } = await resolveDriveFolder(token, folderIdOverride, folderName, { create: false });
-        const folderRecovered = recovered && folderId ? { folderId, folderName } : undefined;
-        if (!folderId) return { exists: false, folderRecovered };
-        const file = await findDriveBackup(token, folderId, fileBase);
+        const { folderId, recovered } = await resolveDriveFolder(token, folderIdOverride, DEFAULT_DRIVE_FOLDER, { create: false });
+        const folderRecovered = recovered && folderId ? { folderId, folderName: DEFAULT_DRIVE_FOLDER } : undefined;
+        const inFolder = folderId ? await findDriveBackup(token, folderId, fileBase) : null;
+        // Found somewhere else: report it, but do NOT repoint the stored folder
+        // at the (empty) fallback — the real backup is where it already is.
+        const file = inFolder ?? await findBackupAnywhere(token, fileBase);
         if (!file) return { exists: false, folderRecovered };
-        return { exists: true, modifiedTime: file.modifiedTime, sizeBytes: file.size ? parseInt(file.size, 10) : undefined, folderRecovered };
+        return {
+            exists: true, modifiedTime: file.modifiedTime, sizeBytes: file.size ? parseInt(file.size, 10) : undefined,
+            folderRecovered: inFolder ? folderRecovered : undefined,
+        };
     } catch { return null; }
 }
 
 // ── Public: restore ─────────────────────────────────────────────────────────
 
 export async function restoreFromDrive(opts: {
-    userId: string; password: string; folderName?: string; folderId?: string | null;
+    userId: string; password: string;
+    /** @deprecated Ignored — the app folder's name is fixed (DEFAULT_DRIVE_FOLDER). */
+    folderName?: string;
+    /** The stored Drive folder id, if any (see BackupDestinations.driveFolderId). */
+    folderId?: string | null;
     fileBase?: string | null;
     onProgress?: (p: DriveBackupProgress) => void;
     /** Advisory: asked when the file is older than the last backup this
      *  device wrote to this Drive folder. Omit to always proceed. */
     onStaleBackup?: StaleBackupConfirm;
 }): Promise<{ restored: boolean; staleWarning?: BackupStaleWarning; folderRecovered?: { folderId: string; folderName: string } }> {
-    const { userId, password, folderName = DEFAULT_DRIVE_FOLDER, folderId: folderIdOverride, fileBase, onProgress, onStaleBackup } = opts;
+    const { userId, password, folderId: folderIdOverride, fileBase, onProgress, onStaleBackup } = opts;
     try {
         const token = await window.electronAPI?.gdriveGetToken?.();
         if (!token) throw new Error('Google Drive is not connected.');
         onProgress?.({ phase: 'download', message: 'Downloading from Google Drive…' });
-        // A stale explicit folder (403/404) falls back to the default folder
+        // A stale stored folder (403/404) falls back to the app folder
         // instead of permanently failing restore — see resolveDriveFolder.
-        const { folderId, recovered } = await resolveDriveFolder(token, folderIdOverride, folderName, { create: false });
-        if (!folderId) throw new Error('No backup found in Google Drive.');
-        const folderRecovered = recovered ? { folderId, folderName } : undefined;
-        const file = await findDriveBackup(token, folderId, fileBase);
+        const { folderId: appFolderId, recovered } = await resolveDriveFolder(token, folderIdOverride, DEFAULT_DRIVE_FOLDER, { create: false });
+        const inFolder = appFolderId ? await findDriveBackup(token, appFolderId, fileBase) : null;
+        // Nothing in the folder (or no folder at all, e.g. a backup an older
+        // build wrote into a folder the user picked, which the narrow grant can
+        // no longer see): look for the app's own backup file anywhere in Drive.
+        // `drive.file` limits that search to files this app created.
+        const file = inFolder ?? await findBackupAnywhere(token, fileBase);
         if (!file) throw new Error('No backup found in Google Drive.');
-        const dest = driveDestination(token, folderId);
+        // Only repoint the stored folder when the backup really was in it.
+        const folderRecovered = inFolder && recovered && appFolderId ? { folderId: appFolderId, folderName: DEFAULT_DRIVE_FOLDER } : undefined;
+        const folderId = inFolder ? appFolderId! : (folderIdOverride || file.parents?.[0] || '');
+        const dest = driveDestination(token, inFolder ? folderId : (file.parents?.[0] || folderId));
         // Same string the backup side recorded the floor under, built by the
         // same helper so the two can't drift; a mismatch just means no floor.
         const site: FloorSite = { label: 'drive', target: backupTarget(folderId, file.name) };
@@ -1212,7 +1311,7 @@ async function applyLegacy(
         if (!chunkDest) throw new Error('This backup references separate chunk files that could not be located — try restoring from the original folder.');
         onProgress?.({ phase: 'download', message: 'Fetching backup data…' });
         const recovered = await recoverBackupKey(await encBlob.arrayBuffer(), password);
-        if (!recovered) throw new Error('Could not decrypt this backup with the given passphrase.');
+        if (!recovered) throw new BackupWrongPasswordError();
         const chunkJsonById: Record<string, string> = {};
         for (const ref of parsed.chunks) {
             const src = await chunkDest.openSource(ref.file);

@@ -1,7 +1,7 @@
 {
   "name": "desktop",
   "private": true,
-  "version": "1.0.21",
+  "version": "1.0.22",
   "license": "Apache-2.0",
   "homepage": "https://cipherline.chat",
   "main": "dist-electron/entry.js",
@@ -14,7 +14,7 @@
     "dev:packaged": "npm run build && npx electron-builder --dir",
     "dev:vite": "vite --host --port 5174",
     "build": "vite build && tsc -p tsconfig.electron.json",
-    "rebuild-native": "npx --package=@electron/rebuild -- electron-rebuild -f -w audio_capture -v 43.2.0",
+    "rebuild-native": "npx --package=@electron/rebuild -- electron-rebuild -f -w audio_capture -v 43.7.9",
     "rebuild-native:mac": "bash scripts/rebuild-native-mac.sh",
     "package": "npm run rebuild-native && npm run build && npx electron-builder",
     "lint": "eslint .",
@@ -25,7 +25,7 @@
   "build": {
     "appId": "com.cipherline.desktop",
     "productName": "Cipherline",
-    "electronVersion": "43.2.0",
+    "electronVersion": "43.7.9",
     "directories": {
       "output": "release"
     },
@@ -57,7 +57,11 @@
         "nsis",
         "portable"
       ],
-      "icon": "build-assets/icon.png"
+      "icon": "build-assets/icon.png",
+      "signExts": [
+        ".dll",
+        ".node"
+      ]
     },
     "nsis": {
       "oneClick": true,
@@ -153,9 +157,9 @@
     "@stripe/react-stripe-js": "^3.10.0",
     "@stripe/stripe-js": "^5.10.0",
     "@types/zxcvbn": "^4.4.5",
-    "axios": "^1.13.5",
+    "axios": "^1.20.0",
     "dbus-native": "^0.15.1",
-    "electron-updater": "^6.8.9",
+    "electron-updater": "^6.8.10",
     "emoji-mart": "^5.6.0",
     "exceljs": "^4.4.0",
     "framer-motion": "^12.38.0",
@@ -166,7 +170,7 @@
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "react-resizable-panels": "^4.7.1",
-    "react-router-dom": "^7.13.0",
+    "react-router-dom": "^7.18.4",
     "zxcvbn": "^4.4.2"
   },
   "devDependencies": {
@@ -180,25 +184,27 @@
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.1.1",
+    "@vitest/coverage-v8": "^4.1.11",
     "autoprefixer": "^10.4.27",
-    "concurrently": "^9.1.2",
+    "concurrently": "^9.2.5",
     "cross-env": "^7.0.3",
-    "electron": "43.2.0",
-    "electron-builder": "^26.8.1",
+    "electron": "43.7.9",
+    "electron-builder": "26.15.7",
     "eslint": "^9.39.1",
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.4.24",
     "fake-indexeddb": "^6.2.5",
+    "fast-check": "^4.10.2",
     "globals": "^16.5.0",
     "jsdom": "^20.0.3",
     "node-abi": "^4.33.0",
     "node-addon-api": "^8.7.0",
-    "postcss": "^8.5.8",
+    "postcss": "^8.5.23",
     "tailwindcss": "^3.4.19",
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.48.0",
     "vite": "^7.3.1",
-    "vitest": "^4.1.9",
+    "vitest": "^4.1.11",
     "wait-on": "^8.0.2"
   }
 }

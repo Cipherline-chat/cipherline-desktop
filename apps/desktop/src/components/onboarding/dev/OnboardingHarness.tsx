@@ -28,6 +28,7 @@ import type { FriendRequestResult, OnboardingDeps, OnboardingUser } from '../typ
  *   &bonus=0    (with &ref=1) the referral applied but gave no bonus days
  *   &fr=fail|already  what the stubbed POST /friends/request answers
  *   &sent=x     pretend a friend request was already sent to tag `x` (the ending's toast)
+ *   &referral=pending  (invite) my referral link never loads: the skeleton + disabled Copy link
  *   &official=1 pretend "also join the official server" was switched on
  *
  * Simulate "a friend signed up with your link" from devtools / Playwright:
@@ -100,7 +101,9 @@ export const OnboardingHarness: React.FC = () => {
         uploadAvatar: async (blob) => { log('uploadAvatar', blob.size); await sleep(300); return 'harness-avatar'; },
         uploadBanner: async (blob) => { log('uploadBanner', blob.size); await sleep(300); return 'harness-banner'; },
         sendFriendRequest: async (u, d) => { log('POST /friends/request', u, d); await sleep(600); return friendResult; },
-        fetchMyReferral: async () => ({ code: '7C41E9A2', url: 'https://cipherline.chat/ref/7C41E9A2', count: 0, recent: [] }),
+        fetchMyReferral: q.get('referral') === 'pending'
+            ? () => new Promise<never>(() => {})
+            : async () => ({ code: '7C41E9A2', url: 'https://cipherline.chat/ref/7C41E9A2', count: 0, recent: [] }),
         fetchOfficialServer: async () => officialServerDefault(),
         joinServer: async (code) => { log('POST /invites/accept', code); await sleep(300); },
         pushToast: toast.push,

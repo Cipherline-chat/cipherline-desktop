@@ -30,6 +30,7 @@
    No globals, no network. Nothing touches the DOM / GL at import time.
    ============================================================ */
 import { BREATHING_GAP_MS, frameBudget } from './frameBudget';
+import { effectiveFollow } from './pointerReaction';
 
 /** A point cloud: `pos`/`col` are 3 floats per point; `size` (optional) is 1 float per point. */
 export interface Shape {
@@ -399,7 +400,8 @@ export function createDotField(canvas: HTMLCanvasElement, opts: DotFieldOptions 
     const r = canvas.getBoundingClientRect();
     mouse.tx = ((e.clientX - r.left) / r.width) * 2 - 1;
     mouse.ty = -(((e.clientY - r.top) / r.height) * 2 - 1);
-    if (paused) return;
+    /* paused, or reduced motion: the pointer moves nothing, so wake nothing */
+    if (paused || RM) return;
     mouse.tz = 1; mouse.moved = now(); kick();
   };
   const onLeave = (): void => { mouse.tz = 0; kick(); };
@@ -452,7 +454,7 @@ export function createDotField(canvas: HTMLCanvasElement, opts: DotFieldOptions 
     mouse.x += (mouse.tx - mouse.x) * k; mouse.y += (mouse.ty - mouse.y) * k; mouse.z += (mouse.tz - mouse.z) * k;
     P.spin.v += P.spinRate.v * dtReal;
     pulse *= Math.pow(0.02, dtReal);
-    const fol = P.follow.v;
+    const fol = effectiveFollow(P.follow.v, RM);
     const yaw = P.yaw.v + mouse.x * 0.42 * fol * mouse.z;
     const pitch = P.pitch.v - mouse.y * 0.22 * fol * mouse.z;
 

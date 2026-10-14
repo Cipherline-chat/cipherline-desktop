@@ -15,7 +15,7 @@ import { getGroupRowPosition, getGroupRowRoundingClass, type GroupRowPosition } 
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import axios from 'axios';
-import { Volume2, MoreVertical, ChevronDown, ChevronRight, User, MessageSquare, PhoneCall, UserMinus, UserPlus, Ban, Flag, Link as LinkIcon, LogOut, Radio, Edit3, Folder, Plus, Pencil, Trash2, Crown, Shield, VolumeX, Gavel, Lock, Pin, X, Search, MicOff, VideoOff, MonitorOff, HeadphoneOff, PencilOff, PenLine } from 'lucide-react';
+import { Volume2, MoreVertical, ChevronDown, ChevronRight, User, MessageSquare, PhoneCall, UserMinus, UserPlus, Ban, Flag, Link as LinkIcon, LogOut, Radio, Edit3, Folder, Plus, Pencil, Trash2, Crown, Shield, VolumeX, Gavel, Lock, Pin, X, Search, MicOff, VideoOff, MonitorOff, HeadphoneOff, PencilOff, PenLine, PhoneOff } from 'lucide-react';
 import {
     annotationStore, ownedGrantTracks, selectCanGrantAnnotation, selectGrantTarget, isScreenShareTrack,
 } from '../../utils/annotationStore';
@@ -37,6 +37,7 @@ import {
     type ParsedParticipantDrag,
 } from './moveDrag';
 import { API_BASE } from '../../constants';
+import { apiUrl } from '../../utils/apiPath';
 import { EncryptedAvatar } from '../EncryptedAvatar';
 import { StatusIcon } from '../StatusPicker';
 import { GameControllerIcon } from '../GameControllerIcon';
@@ -51,6 +52,10 @@ import { ChannelMessageSearch, type SearchableMessage } from './ChannelMessageSe
 import { CategoryFormDialog } from './CategoryFormDialog';
 import { ChannelSettingsDialog } from './ChannelSettingsDialog';
 import { ConfirmDialog, type ConfirmOptions } from '../primitives/ConfirmDialog';
+import {
+    canOfferDisconnect, disconnectConfirmCopy, disconnectErrorToast, hasManageCallMembers, hasModerateCallMedia,
+    requestDisconnect, type DisconnectTarget,
+} from '../../utils/callMemberDisconnect';
 import { Permissions, hasPermission } from '@cipherline/shared';
 import { getHighestRoleColor, getTopHoistedRole } from '../../utils/roleColor';
 import { useCallContextSafe, useCallTelemetrySafe } from '../../contexts/CallContext';
@@ -77,6 +82,8 @@ import { useChannelMemberFilter } from '../../hooks/useChannelMemberFilter';
 import { filterMembers } from '../../utils/channelViewerCache';
 import { useIncrementalRows } from '../../hooks/useIncrementalRows';
 import { allocateRows, ROW_PX_ESTIMATE } from '../../utils/incrementalRows';
+import { canStartCallsIn, isJoinOnlyIn } from '../../utils/startCallsGate';
+import { endsWhenNotice } from '../../utils/endCallOnLeave';
 
 // ── Sortable wrappers for Huddle DnD ────────────────────────────────────────
 
@@ -107,6 +114,8 @@ function SortableHuddleItem({ huddle, disabled, isDragging, dropLine, children }
             ref={setNodeRef}
             style={{ transform: CSS.Transform.toString(transform), transition }}
             className="relative"
+            /* Target for a clicked #channel link (utils/channelRefs.revealChannelRow). */
+            data-channel-id={huddle.channel_id}
             {...(disabled ? {} : { ...attributes, ...listeners })}
         >
             {dropLine === 'top' && <HuddleDropIndicator position="top" />}
@@ -118,7 +127,7 @@ function SortableHuddleItem({ huddle, disabled, isDragging, dropLine, children }
     );
 }
 
-// ── Force-move drag-and-drop (MOVE_MEMBERS) ─────────────────────────────────
+// ── Force-move drag-and-drop (MANAGE_CALL_MEMBERS) ─────────────────────────────────
 //
 // Drag a participant out of one call and drop them on another. These share the
 // huddle-reorder DndContext below rather than nesting a second one, and are
@@ -130,7 +139,7 @@ function SortableHuddleItem({ huddle, disabled, isDragging, dropLine, children }
 //   hud:{huddleId}        droppable — a Calls channel with no active call
 //
 /** Wraps a participant row so it can be picked up and carried to another call.
- *  `disabled` covers both "you lack MOVE_MEMBERS" and "this row is you"
+ *  `disabled` covers both "you lack MANAGE_CALL_MEMBERS" and "this row is you"
  *  (dragging yourself is handled by the caller as an ordinary join).
  *
  *  pointerdown is stopped at this level so the enclosing SortableHuddleItem —
@@ -149,6 +158,7 @@ function DraggableParticipant({ callId, userId, disabled, children }: {
         disabled,
     });
     if (disabled) return <>{children}</>;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     const { onPointerDown, ...restListeners } = (listeners ?? {}) as Record<string, any>;
     return (
         <div
@@ -444,6 +454,20 @@ export const ServerContextPanel: React.FC<Props> = ({
         return !!(p & Permissions.CONNECT);
     }, [channelPermissionsMap]);
 
+    /** START_CALLS in a Calls channel — may the current user START a new
+     *  call there (as opposed to joining a running one, which needs only
+     *  CONNECT)? UX mirror of HuddlesService.spawnCall, read from the live
+     *  channel row's `can_start_call` (old API without it → old rule);
+     *  optimistic until loaded, same as canConnect. utils/startCallsGate.ts. */
+    const canStartCalls = useCallback(
+        (channelId: string): boolean => canStartCallsIn(allChannels.find(c => c.channel_id === channelId)),
+        [allChannels],
+    );
+    const isJoinOnlyChannel = useCallback(
+        (channelId: string): boolean => isJoinOnlyIn(allChannels.find(c => c.channel_id === channelId)),
+        [allChannels],
+    );
+
     // Compute userId→hex-color once and emit to parent whenever data changes.
     const memberRoleColors = useMemo<Record<string, string | null>>(() => {
         if (!serverRoles.length) return {};
@@ -517,12 +541,13 @@ export const ServerContextPanel: React.FC<Props> = ({
         setNicknameError(null);
         try {
             await axios.patch(
-                `${API_BASE}/servers/${server.server_id}/members/${targetUserId}/nickname`,
+                apiUrl`/servers/${server.server_id}/members/${targetUserId}/nickname`,
                 { nickname: value.trim() },
                 { headers: { Authorization: `Bearer ${token}` } },
             );
             loadMembers();
             setNicknameDialog(null);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (err: any) {
             setNicknameError(err?.response?.data?.message || 'Failed to update nickname');
         } finally {
@@ -541,7 +566,7 @@ export const ServerContextPanel: React.FC<Props> = ({
         setIgnoredUsers(prev => {
             const next = new Set(prev);
             if (next.has(targetId)) next.delete(targetId); else next.add(targetId);
-            try { secureLocalStore.setItem(`cipherline_ignored_${userId}_${server.server_id}`, JSON.stringify([...next])); } catch {}
+            try { secureLocalStore.setItem(`cipherline_ignored_${userId}_${server.server_id}`, JSON.stringify([...next])); } catch { /* persisting a UI preference is best-effort; a failed write must not break the UI */ }
             return next;
         });
     };
@@ -590,22 +615,16 @@ export const ServerContextPanel: React.FC<Props> = ({
         hasPermission(myPermissions, Permissions.MANAGE_NICKNAMES) ||
         hasPermission(myPermissions, Permissions.ADMINISTRATOR)
     );
-    /** DEAFEN_MEMBERS gives the moderator the ability to server-mute any
+    /** MODERATE_CALL_MEDIA gives the moderator the ability to server-mute any
      *  participant's mic / camera / screen-share track in any call on this
      *  server — not just calls the moderator is in. Powers the right-click
      *  menu on voice-channel and huddle-call participant rows below. */
-    const canServerMute = !!userId && (
-        hasPermission(myPermissions, Permissions.DEAFEN_MEMBERS) ||
-        hasPermission(myPermissions, Permissions.ADMINISTRATOR)
-    );
-    /** MOVE_MEMBERS lets the moderator drag a participant from one call into
+    const canServerMute = !!userId && hasModerateCallMedia(myPermissions);
+    /** MANAGE_CALL_MEMBERS lets the moderator drag a participant from one call into
      *  another — including one that's at its member limit. The server still
      *  enforces that the moved member has CONNECT on the destination, so this
      *  can't be used to pull someone into a call their roles forbid. */
-    const canMoveMembers = !!userId && (
-        hasPermission(myPermissions, Permissions.MOVE_MEMBERS) ||
-        hasPermission(myPermissions, Permissions.ADMINISTRATOR)
-    );
+    const canMoveMembers = !!userId && hasManageCallMembers(myPermissions);
 
     /** Server-side track-mute helper for the participant context menu. Pairs
      *  with `serverCallMute` on the API; uses the participant's call/room name
@@ -616,7 +635,7 @@ export const ServerContextPanel: React.FC<Props> = ({
         (roomName: string, targetUserId: string, trackType: 'audio' | 'video' | 'screenshare' | 'deafen', muted: boolean) => {
             if (!token || !roomName) return;
             axios.patch(
-                `${API_BASE}/servers/${server.server_id}/members/${targetUserId}/call-mute`,
+                apiUrl`/servers/${server.server_id}/members/${targetUserId}/call-mute`,
                 { track_type: trackType, muted, room_name: roomName },
                 { headers: { Authorization: `Bearer ${token}` } },
             ).catch(err => {
@@ -637,6 +656,7 @@ export const ServerContextPanel: React.FC<Props> = ({
     // the one re-rendering at that cadence, not low-freq siblings.
     const callTelemetry = useCallTelemetrySafe();
     const participantTrackStates = callTelemetry?.participantTrackStates ?? {};
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- falls back to a fresh {} only when no call telemetry is available (no call in progress); with telemetry the reference is stable
     const participantMetadata = callTelemetry?.participantMetadata ?? {};
 
     // Context menu instance for participants in active calls (voice channels +
@@ -686,8 +706,8 @@ export const ServerContextPanel: React.FC<Props> = ({
     ) => {
         if (!token) return;
         const url = dest.kind === 'call'
-            ? `${API_BASE}/huddles/calls/${dest.callId}/move`
-            : `${API_BASE}/huddles/${dest.huddleId}/move`;
+            ? apiUrl`/huddles/calls/${dest.callId}/move`
+            : apiUrl`/huddles/${dest.huddleId}/move`;
         try {
             const res = await axios.post(url, { user_id: targetUserId },
                 { headers: { Authorization: `Bearer ${token}` }, timeout: 15000 });
@@ -696,6 +716,7 @@ export const ServerContextPanel: React.FC<Props> = ({
                 setLandedCallId(landed);
                 window.setTimeout(() => setLandedCallId(prev => (prev === landed ? null : prev)), 500);
             }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (err: any) {
             const msg = err?.response?.data?.message;
             toast.push({
@@ -742,7 +763,9 @@ export const ServerContextPanel: React.FC<Props> = ({
             }
             for (const h of huddles) {
                 if ((huddleCalls[h.channel_id] ?? []).length > 0) continue;
-                if (!canConnect(h.channel_id)) continue;
+                // A move onto an empty Calls channel STARTS a call (the actor
+                // is its spawner), so it needs START_CALLS there too.
+                if (!canConnect(h.channel_id) || !canStartCalls(h.channel_id)) continue;
                 targets.push({
                     icon: <Radio />,
                     label: `New call in ${h.name}`,
@@ -757,7 +780,47 @@ export const ServerContextPanel: React.FC<Props> = ({
                 { icon: <LogOut />, label: 'Move to', onSelect: () => {}, submenu: targets },
             ];
         },
-        [canMoveMembers, userId, huddleCalls, allChannels, canConnect, commitMove],
+        [canMoveMembers, userId, huddleCalls, allChannels, canConnect, canStartCalls, commitMove],
+    );
+
+    /** Disconnect `uid` from the call they are in. The server removes their
+     *  presence (and tells everyone through the ordinary participant leave), so
+     *  nothing is mutated here; a rejection is explained in the server's words. */
+    const commitDisconnect = React.useCallback(async (target: DisconnectTarget, uid: string) => {
+        if (!token) return;
+        try {
+            await requestDisconnect((u, b, c) => axios.post(u, b, c), API_BASE, token, target, uid);
+        } catch (err) {
+            toast.push(disconnectErrorToast(err));
+        }
+    }, [token, toast]);
+
+    /** "Disconnect" for a participant, offered next to "Move to": needs
+     *  MANAGE_CALL_MEMBERS, never on yourself, and only for someone listed in a
+     *  call of this server. Asks "Disconnect <name> from the call?" first. */
+    const buildDisconnectItems = React.useCallback(
+        (uid: string, displayName: string): import('../primitives/ContextMenu').ContextMenuItem[] => {
+            const huddleCall = Object.values(huddleCalls).flat().find(c => c.participants.includes(uid));
+            const voiceChannelId = huddleCall
+                ? undefined
+                : Object.entries(voiceParticipants).find(([chId, ids]) =>
+                    ids.includes(uid) && allChannels.some(c => c.channel_id === chId && c.kind === 'voice'))?.[0];
+            const target: DisconnectTarget | null = huddleCall
+                ? { kind: 'huddle', callId: huddleCall.call_id }
+                : voiceChannelId ? { kind: 'voice', channelId: voiceChannelId } : null;
+            if (!target || !canOfferDisconnect({
+                canManageCallMembers: canMoveMembers, targetUserId: uid, selfUserId: userId, targetInCall: true,
+            })) return [];
+            const copy = disconnectConfirmCopy(displayName);
+            return [{
+                icon: <PhoneOff />, label: 'Disconnect', danger: true,
+                onSelect: () => setPendingConfirm({
+                    ...copy,
+                    onConfirm: () => { void commitDisconnect(target, uid); },
+                }),
+            }];
+        },
+        [canMoveMembers, userId, huddleCalls, voiceParticipants, allChannels, commitDisconnect, setPendingConfirm],
     );
 
     const buildCallParticipantMenu = React.useCallback(
@@ -769,7 +832,8 @@ export const ServerContextPanel: React.FC<Props> = ({
                 },
             ];
             items.push(...buildMoveToSubmenu(uid));
-            // Server-side moderation block — only when caller has DEAFEN_MEMBERS
+            items.push(...buildDisconnectItems(uid, displayName));
+            // Server-side moderation block — only when caller has MODERATE_CALL_MEDIA
             // and is not acting on themselves, and we have a room to target.
             if (canServerMute && uid !== userId && roomName) {
                 const meta = participantMetadata[uid];
@@ -847,7 +911,7 @@ export const ServerContextPanel: React.FC<Props> = ({
             });
             return items;
         },
-        [canServerMute, userId, onOpenProfile, server.server_id, serverMuteCallParticipant, participantMetadata, onReport],
+        [canServerMute, userId, onOpenProfile, server.server_id, serverMuteCallParticipant, participantMetadata, onReport, buildMoveToSubmenu, buildDisconnectItems, toast],
     );
 
 
@@ -958,11 +1022,14 @@ export const ServerContextPanel: React.FC<Props> = ({
                     onJoinExistingHuddleCall?.(dest.callId, target?.name ?? 'Call');
                 } else {
                     const hd = localHuddlesRef.current.find(h => h.channel_id === dest.huddleId);
-                    if (hd) onSpawnHuddleCall?.(hd);
+                    if (hd && canStartCalls(hd.channel_id)) onSpawnHuddleCall?.(hd);
                 }
                 return;
             }
             if (!canMoveMembers) return;
+            // Moving someone onto an EMPTY Calls channel spawns a call there
+            // with us as spawner — the server refuses it without START_CALLS.
+            if (dest.kind === 'huddle' && !canStartCalls(dest.huddleId)) return;
             void commitMove(pt.userId, dest);
             return;
         }
@@ -997,7 +1064,7 @@ export const ServerContextPanel: React.FC<Props> = ({
             setLocalHuddleCats(newCats);
             localHuddleCatsRef.current = newCats;
 
-            axios.patch(`${API_BASE}/servers/${server.server_id}/categories/reorder`, {
+            axios.patch(apiUrl`/servers/${server.server_id}/categories/reorder`, {
                 category_ids: newCats.map(c => c.category_id),
             }, { headers: { Authorization: `Bearer ${token}` } })
                 .then(() => onChannelsChanged?.())
@@ -1057,7 +1124,7 @@ export const ServerContextPanel: React.FC<Props> = ({
             }));
             if (items.length === 0) return;
 
-            axios.patch(`${API_BASE}/servers/${server.server_id}/channels/reorder`, { items }, {
+            axios.patch(apiUrl`/servers/${server.server_id}/channels/reorder`, { items }, {
                 headers: { Authorization: `Bearer ${token}` },
             })
                 .then(() => onChannelsChanged?.())
@@ -1291,9 +1358,9 @@ export const ServerContextPanel: React.FC<Props> = ({
                     // API call; on completion clear the optimistic state.
                     try {
                         if (assigned) {
-                            await axios.delete(`${API_BASE}/servers/${server.server_id}/members/${m.user_id}/roles/${r.role_id}`, { headers: { Authorization: `Bearer ${token}` } });
+                            await axios.delete(apiUrl`/servers/${server.server_id}/members/${m.user_id}/roles/${r.role_id}`, { headers: { Authorization: `Bearer ${token}` } });
                         } else {
-                            await axios.put(`${API_BASE}/servers/${server.server_id}/members/${m.user_id}/roles/${r.role_id}`, {}, { headers: { Authorization: `Bearer ${token}` } });
+                            await axios.put(apiUrl`/servers/${server.server_id}/members/${m.user_id}/roles/${r.role_id}`, {}, { headers: { Authorization: `Bearer ${token}` } });
                         }
                         delete optimisticRoleIdsRef.current[m.user_id];
                         loadMembers();
@@ -1338,7 +1405,7 @@ export const ServerContextPanel: React.FC<Props> = ({
                 {
                     icon: <UserMinus />, label: 'Remove Friend', danger: true,
                     onSelect: async () => {
-                        try { await axios.delete(`${API_BASE}/friends/${m.user_id}`, { headers: { Authorization: `Bearer ${token}` } }); }
+                        try { await axios.delete(apiUrl`/friends/${m.user_id}`, { headers: { Authorization: `Bearer ${token}` } }); }
                         catch { /* non-fatal */ }
                     },
                 },
@@ -1352,6 +1419,7 @@ export const ServerContextPanel: React.FC<Props> = ({
                             await axios.post(`${API_BASE}/friends/request`, { target_username: m.username, target_discriminator: m.discriminator }, { headers: { Authorization: `Bearer ${token}` } });
                             setSentFriendRequests(prev => new Set(prev).add(m.user_id));
                             nudges.notify({ kind: 'friend_request_sent' });
+                        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
                         } catch (err: any) {
                             const msg = err?.response?.data?.message || 'Could not send friend request.';
                             toast.push({ kind: 'error', title: 'Friend request failed', message: msg });
@@ -1423,7 +1491,7 @@ export const ServerContextPanel: React.FC<Props> = ({
                         message: `${displayName} will be removed from the server but can rejoin with an invite.`,
                         confirmLabel: 'Kick',
                         onConfirm: async () => {
-                            try { await axios.post(`${API_BASE}/servers/${server.server_id}/members/${m.user_id}/kick`, {}, { headers: { Authorization: `Bearer ${token}` } }); loadMembers(); }
+                            try { await axios.post(apiUrl`/servers/${server.server_id}/members/${m.user_id}/kick`, {}, { headers: { Authorization: `Bearer ${token}` } }); loadMembers(); }
                             catch { /* non-fatal */ }
                         },
                     }),
@@ -1437,7 +1505,7 @@ export const ServerContextPanel: React.FC<Props> = ({
                         message: `${displayName} will be permanently banned and cannot rejoin unless unbanned.`,
                         confirmLabel: 'Ban',
                         onConfirm: async () => {
-                            try { await axios.post(`${API_BASE}/servers/${server.server_id}/members/${m.user_id}/ban`, {}, { headers: { Authorization: `Bearer ${token}` } }); loadMembers(); }
+                            try { await axios.post(apiUrl`/servers/${server.server_id}/members/${m.user_id}/ban`, {}, { headers: { Authorization: `Bearer ${token}` } }); loadMembers(); }
                             catch { /* non-fatal */ }
                         },
                     }),
@@ -1445,9 +1513,10 @@ export const ServerContextPanel: React.FC<Props> = ({
             ] : []),
         ];
         // "Move to ▸" — only materialises when they're actually in a call and
-        // we hold MOVE_MEMBERS, so it stays absent from the ordinary member
+        // we hold MANAGE_CALL_MEMBERS, so it stays absent from the ordinary member
         // list where it would mean nothing.
         items.push(...buildMoveToSubmenu(m.user_id));
+        items.push(...buildDisconnectItems(m.user_id, displayName));
         return items;
     };
     // Keep the ref always pointing at the latest closure so onSelect can
@@ -1579,7 +1648,7 @@ export const ServerContextPanel: React.FC<Props> = ({
     // ── Huddle channel delete ───────────────────────────────────────────────
     const deleteHuddleApi = async (h: ChannelInfo) => {
         if (!token) return;
-        await axios.delete(`${API_BASE}/servers/${server.server_id}/channels/${h.channel_id}`, {
+        await axios.delete(apiUrl`/servers/${server.server_id}/channels/${h.channel_id}`, {
             headers: { Authorization: `Bearer ${token}` },
         });
         onChannelsChanged?.();
@@ -1588,7 +1657,7 @@ export const ServerContextPanel: React.FC<Props> = ({
     // ── Per-huddle category delete ──────────────────────────────────────────
     const deleteCategoryApi = async (cat: CategoryInfo) => {
         if (!token) return;
-        await axios.delete(`${API_BASE}/servers/${server.server_id}/categories/${cat.category_id}`, {
+        await axios.delete(apiUrl`/servers/${server.server_id}/categories/${cat.category_id}`, {
             headers: { Authorization: `Bearer ${token}` },
         });
         onChannelsChanged?.();
@@ -1665,7 +1734,12 @@ export const ServerContextPanel: React.FC<Props> = ({
         // HuddleButton below) — the right-click "Start a new call" item used
         // to skip the cooldown check, so it stayed clickable while the "+"
         // button was disabled for it.
-        const canStartNewCall = callCooldownSecs === 0 && hCanJoin && !hAtCallLimit;
+        // START_CALLS: may start a NEW call here. Joining the running calls
+        // listed under the row needs only hCanJoin — a join-only member gets
+        // a disabled "+" with a tooltip instead (HuddleButton `canStart`).
+        const hCanStart = canStartCalls(h.channel_id);
+        const hJoinOnly = isJoinOnlyChannel(h.channel_id);
+        const canStartNewCall = callCooldownSecs === 0 && hCanJoin && hCanStart && !hAtCallLimit;
         // This channel's "Call names" setting — game titles + who may rename.
         const hNaming = callNamingOf(h);
         return (
@@ -1675,7 +1749,7 @@ export const ServerContextPanel: React.FC<Props> = ({
             // overlapping target would make the hit-testing ambiguous.
             <MoveDropZone
                 id={`${HUDDLE_DROP_PREFIX}${h.channel_id}`}
-                eligible={!!movingParticipant && calls.length === 0}
+                eligible={!!movingParticipant && calls.length === 0 && hCanStart}
             >
             <HuddleButton
                 key={h.channel_id}
@@ -1686,6 +1760,7 @@ export const ServerContextPanel: React.FC<Props> = ({
                 activeCallCount={calls.length}
                 maxCalls={h.max_calls}
                 canConnect={callCooldownSecs === 0 && hCanJoin}
+                canStart={hCanStart}
                 atCallLimit={hAtCallLimit}
                 cooldownSecs={callCooldownSecs > 0 ? callCooldownSecs : undefined}
                 isActiveForMe={isActiveForMe}
@@ -1701,7 +1776,13 @@ export const ServerContextPanel: React.FC<Props> = ({
                         icon: <Radio />, label: 'Start a new call',
                         onSelect: () => onSpawnHuddleCall?.(h),
                     }] : []),
-                    ...(canStartNewCall && canManage ? [{ divider: true as const }] : []),
+                    // Join-only: show the action greyed out rather than
+                    // silently missing, so it reads as "not allowed here".
+                    ...(!canStartNewCall && hJoinOnly ? [{
+                        icon: <Radio />, label: "Start a new call (you don't have permission)",
+                        onSelect: () => {}, disabled: true,
+                    }] : []),
+                    ...((canStartNewCall || hJoinOnly) && canManage ? [{ divider: true as const }] : []),
                     ...(canManage ? [
                         {
                             icon: <Pencil />, label: 'Edit Calls channel',
@@ -1746,6 +1827,11 @@ export const ServerContextPanel: React.FC<Props> = ({
                             avatar_url: m?.avatar_url ?? null,
                         };
                     });
+                    // "End call when the starter leaves" is a CHANNEL setting (Calls channel
+                    // settings -> Call behavior). Here it is only a quiet line on the card for
+                    // everyone who can see the call; the server decides when a call ends.
+                    const creatorMember = memberMap.get(c.spawner_user_id);
+                    const endsNote = endsWhenNotice(c, h, userId, creatorMember?.nickname || creatorMember?.username);
                     return (
                         <motion.div
                             // render_key: a call this client started is drawn
@@ -1779,6 +1865,7 @@ export const ServerContextPanel: React.FC<Props> = ({
                                         isMine={isMine}
                                         canRename={canRename}
                                         startedByMe={startedByMe}
+                                        endsNote={endsNote}
                                         canConnect={callCooldownSecs === 0 && hCanJoin}
                                         token={token}
                                         spawnedAt={c.spawned_at}
@@ -1809,7 +1896,7 @@ export const ServerContextPanel: React.FC<Props> = ({
                                                     userId={uid}
                                                     // You can always drag yourself (it's just a quick
                                                     // way to switch calls); dragging anyone else needs
-                                                    // MOVE_MEMBERS.
+                                                    // MANAGE_CALL_MEMBERS.
                                                     disabled={!canMoveMembers && !isMe}
                                                 >
                                                 <div
@@ -1921,6 +2008,7 @@ export const ServerContextPanel: React.FC<Props> = ({
                                     isMine={isMine}
                                     canRename={canRename}
                                     startedByMe={startedByMe}
+                                    endsNote={endsNote}
                                     canConnect={callCooldownSecs === 0 && hCanJoin}
                                     token={token}
                                     spawnedAt={c.spawned_at}

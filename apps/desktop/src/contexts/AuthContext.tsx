@@ -22,6 +22,12 @@ interface AuthState {
          *  (the onboarding profile step has not run). Absent until /auth/me
          *  answers, and on an API that predates it. See utils/onboardingProgress.ts. */
         username_pending?: boolean,
+        /** /auth/me, own profile only: the 24 h username-change cooldown.
+         *  `next_username_change_at` is null when a change is allowed now.
+         *  Absent on an API that predates it (= never locked). See
+         *  utils/usernameField.ts. */
+        username_changed_at?: string | null,
+        next_username_change_at?: string | null,
     } | null;
     /** Set when this session was force-revoked by the server (password change / disable).
      *  Shown as a banner on the login screen, then cleared on next login. */
@@ -263,7 +269,6 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         return () => window.removeEventListener('cipherline:session-revoked', onRevoked);
     // logout is stable (no deps that change) — intentionally omitted to avoid
     // re-subscribing on every render.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
     const login = async (token: string, userId: string, deviceId: string, _isPairingPending?: boolean, refreshToken?: string) => {
@@ -342,6 +347,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     );
 };
 
+// eslint-disable-next-line react-refresh/only-export-components -- co-located helper export; splitting the file would only affect dev Fast Refresh, not runtime behaviour
 export const useAuth = () => {
     const context = useContext(AuthContext);
     if (context === undefined) {

@@ -50,6 +50,7 @@ interface CallTelemetryValue {
 
 const CallTelemetryContext = createContext<CallTelemetryValue | null>(null);
 
+// eslint-disable-next-line react-refresh/only-export-components -- co-located helper export; splitting the file would only affect dev Fast Refresh, not runtime behaviour
 export const useCallTelemetry = () => {
     const ctx = useContext(CallTelemetryContext);
     if (!ctx) throw new Error('useCallTelemetry must be used within a CallProvider');
@@ -57,6 +58,7 @@ export const useCallTelemetry = () => {
 };
 
 /** Returns null when called outside a CallProvider (for components that may render without a call). */
+// eslint-disable-next-line react-refresh/only-export-components -- co-located helper export; splitting the file would only affect dev Fast Refresh, not runtime behaviour
 export const useCallTelemetrySafe = () => useContext(CallTelemetryContext);
 
 // Narrow slices (setters-only, stats-only) live in ./callTelemetrySlices.ts —
@@ -132,6 +134,7 @@ export const MANUAL_FOCUS_GRACE_MS = 1200;
 
 const CallContext = createContext<CallContextValue | null>(null);
 
+// eslint-disable-next-line react-refresh/only-export-components -- co-located helper export; splitting the file would only affect dev Fast Refresh, not runtime behaviour
 export const useCallContext = () => {
     const ctx = useContext(CallContext);
     if (!ctx) throw new Error('useCallContext must be used within a CallProvider');
@@ -139,6 +142,7 @@ export const useCallContext = () => {
 };
 
 /** Optional hook that returns null if not inside a CallProvider (for components that may render outside call context) */
+// eslint-disable-next-line react-refresh/only-export-components -- co-located helper export; splitting the file would only affect dev Fast Refresh, not runtime behaviour
 export const useCallContextSafe = () => useContext(CallContext);
 
 export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -320,7 +324,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setHiddenScreenShareIds,
         watchedScreenShareIds,
         setWatchedScreenShareIds,
-    }), [focusedStream, isFullscreen, endCallFullscreen, soloKickDialog, toggleFocusedStream, markAdjusting, isAdjusting, isRecentManualFocus, localMutedIds, hiddenVideoIds, hiddenScreenShareIds, watchedScreenShareIds, toggleLocalMute, toggleHideVideo, toggleHideScreenShare, registerLocalToggles]);
+    }), [focusedStream, isFullscreen, endCallFullscreen, setIsFullscreen, soloKickDialog, toggleFocusedStream, markAdjusting, isAdjusting, isRecentManualFocus, localMutedIds, hiddenVideoIds, hiddenScreenShareIds, watchedScreenShareIds, toggleLocalMute, toggleHideVideo, toggleHideScreenShare, registerLocalToggles]);
 
     // High-frequency telemetry — separate memo so 30 Hz speaking-flag updates
     // only re-render CallTelemetryContext subscribers (ServerContextPanel, ParticipantCard).

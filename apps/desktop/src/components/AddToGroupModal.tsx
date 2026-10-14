@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import axios from 'axios';
-import { API_BASE } from '../constants';
+import { apiUrl } from '../utils/apiPath';
 import { useAuth } from '../contexts/AuthContext';
 import { Search, Plus, CheckCircle, X } from 'lucide-react';
 import { EncryptedAvatar } from './EncryptedAvatar';
@@ -9,6 +9,7 @@ import { ClModal, ClButton, ClSearch } from './cl';
 
 interface AddToGroupModalProps {
     targetUser: { user_id: string; username: string; avatar_url?: string };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     myGroups: any[];
     onClose: () => void;
     onGroupJoined: (groupConvId: string) => void;
@@ -29,18 +30,20 @@ export const AddToGroupModal: React.FC<AddToGroupModalProps> = ({
     const [addedIds, setAddedIds] = useState<Set<string>>(new Set());
     const [errors, setErrors] = useState<Record<string, string>>({});
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     const handleAdd = async (group: any) => {
         if (addingId || addedIds.has(group.conversation_id)) return;
         setAddingId(group.conversation_id);
         setErrors(prev => { const n = { ...prev }; delete n[group.conversation_id]; return n; });
         try {
             await axios.post(
-                `${API_BASE}/conversations/${group.conversation_id}/invite`,
+                apiUrl`/conversations/${group.conversation_id}/invite`,
                 { user_id: targetUser.user_id },
                 { headers: { Authorization: `Bearer ${token}` } }
             );
             setAddedIds(prev => new Set(prev).add(group.conversation_id));
             setTimeout(() => onGroupJoined(group.conversation_id), 800);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (err: any) {
             const msg = err?.response?.data?.message || 'Failed to add';
             setErrors(prev => ({ ...prev, [group.conversation_id]: msg }));

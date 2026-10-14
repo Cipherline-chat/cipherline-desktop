@@ -45,8 +45,27 @@ describe('micPrewarm', () => {
         expect(getUserMedia).toHaveBeenCalledTimes(1);
         const audio = calls[0].audio as MediaTrackConstraints;
         expect(audio.deviceId).toBe('default');
-        expect(audio.echoCancellation).toBe(false); // same processing as the call (MIC_CAPTURE_CONSTRAINTS)
+        expect(audio.echoCancellation).toBe(true); // the default, same as the call (micCaptureConstraints)
+        expect(audio.noiseSuppression).toBe(false);
+        expect(audio.autoGainControl).toBe(false);
         expect(mod.__micPrewarmStateForTests().open).toBe(true);
+    });
+
+    it('carries the echo-cancellation setting: OFF warms an OFF capture (negative control for the default)', async () => {
+        const { calls } = installFakeMedia();
+        mod.prewarmMic('default', false);
+        await vi.advanceTimersByTimeAsync(1);
+        const audio = calls[0].audio as MediaTrackConstraints;
+        expect(audio.echoCancellation).toBe(false);
+        expect(audio.noiseSuppression).toBe(false);
+        expect(audio.autoGainControl).toBe(false);
+    });
+
+    it('a picked mic is warmed with {exact} — a bare id would warm the DEFAULT device instead', async () => {
+        const { calls } = installFakeMedia();
+        mod.prewarmMic('id-usb-mic');
+        await vi.advanceTimersByTimeAsync(1);
+        expect((calls[0].audio as MediaTrackConstraints).deviceId).toEqual({ exact: 'id-usb-mic' });
     });
 
     it('release stops the warm capture (call mic published / join ended)', async () => {

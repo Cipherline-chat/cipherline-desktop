@@ -146,6 +146,7 @@ export const DangerPane: React.FC<DangerPaneProps> = ({ onLogout, onCloseSetting
                                             try {
                                                 await axios.post(`${API_BASE}/auth/account/deletion-code`, {}, { headers: { Authorization: `Bearer ${token}` } });
                                                 setDeleteCodeSent(true);
+                                            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
                                             } catch (err: any) {
                                                 setDeleteError(err?.response?.data?.message || 'Failed to send code.');
                                             } finally {
@@ -193,6 +194,7 @@ export const DangerPane: React.FC<DangerPaneProps> = ({ onLogout, onCloseSetting
                                     setShowDeleteConfirm(false);
                                     onCloseSettings();
                                     onLogout();
+                                // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
                                 } catch (err: any) {
                                     setDeleteError(err?.response?.data?.message || 'Deletion failed. Please try again.');
                                 } finally {

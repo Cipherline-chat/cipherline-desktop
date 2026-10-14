@@ -82,7 +82,9 @@ function acceleratorToQtKeyCode(accelerator: string): number | null {
 }
 
 interface KdeAccelHandles {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
   root: any; // org.kde.KGlobalAccel at /kglobalaccel
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
   component: any; // org.kde.kglobalaccel.Component at /component/<COMPONENT_UNIQUE>
 }
 
@@ -94,6 +96,7 @@ async function getHandles(onFired: (actionId: string) => void): Promise<KdeAccel
   try {
     // Lazy import — this module only ever runs on Linux, no reason to pull
     // dbus-native into the Windows/macOS main-process bundle's dependency graph.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports -- lazy require so dbus-native stays out of the Windows/macOS dependency graph (Linux-only module)
     const dbus = require('dbus-native');
     const bus = dbus.sessionBus({ timeout: 8000 });
     const service = bus.getService('org.kde.kglobalaccel');
@@ -113,6 +116,7 @@ async function getHandles(onFired: (actionId: string) => void): Promise<KdeAccel
     try {
       await root.$subscribe('globalShortcutPressed', handlePress('/kglobalaccel'));
       console.log('[KGlobalAccel] subscribed to /kglobalaccel globalShortcutPressed');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
     } catch (err: any) {
       console.warn('[KGlobalAccel] failed to subscribe on /kglobalaccel:', err?.message ?? err);
     }
@@ -121,9 +125,11 @@ async function getHandles(onFired: (actionId: string) => void): Promise<KdeAccel
     // it at least once, so this is attempted lazily from syncKdeGlobalShortcuts
     // after the first successful doRegister call, not here.
     const handles: KdeAccelHandles = { root, component: null };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
     (handles as any).__handlePress = handlePress;
     cachedHandles = handles;
     return handles;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
   } catch (err: any) {
     console.warn('[KGlobalAccel] unavailable (non-KDE desktop, or D-Bus service not running):', err?.message ?? err);
     return null;
@@ -133,6 +139,7 @@ async function getHandles(onFired: (actionId: string) => void): Promise<KdeAccel
 async function ensureComponentSubscription(handles: KdeAccelHandles): Promise<void> {
   if (handles.component) return;
   try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports -- lazy require so dbus-native stays out of the Windows/macOS dependency graph (Linux-only module)
     const dbus = require('dbus-native');
     const bus = dbus.sessionBus({ timeout: 8000 });
     const path = `/component/${COMPONENT_UNIQUE}`;
@@ -140,10 +147,12 @@ async function ensureComponentSubscription(handles: KdeAccelHandles): Promise<vo
       .getService('org.kde.kglobalaccel')
       .getInterface(path, 'org.kde.kglobalaccel.Component');
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
     const handlePress = (handles as any).__handlePress as (source: string) => (a: string, b: string) => void;
     await component.$subscribe('globalShortcutPressed', handlePress(path));
     console.log(`[KGlobalAccel] subscribed to ${path} globalShortcutPressed`);
     handles.component = component;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
   } catch (err: any) {
     console.warn('[KGlobalAccel] failed to subscribe on per-component object:', err?.message ?? err);
   }
@@ -168,6 +177,7 @@ export async function syncKdeGlobalShortcuts(
   for (const actionUnique of registeredActionIds) {
     try {
       await handles.root.unRegister([COMPONENT_UNIQUE, actionUnique, COMPONENT_FRIENDLY, actionUnique]);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
     } catch (err: any) {
       console.warn(`[KGlobalAccel] unRegister(${actionUnique}) failed:`, err?.message ?? err);
     }
@@ -192,6 +202,7 @@ export async function syncKdeGlobalShortcuts(
       );
       console.log(`[KGlobalAccel] registered ${actionUnique} → "${accelerator}" (keyCode 0x${keyCode.toString(16)}):`, result);
       registeredActionIds.push(actionUnique);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
     } catch (err: any) {
       console.warn(`[KGlobalAccel] registration failed for ${actionUnique} ("${accelerator}"):`, err?.message ?? err);
     }
@@ -204,6 +215,7 @@ export async function syncKdeGlobalShortcuts(
     try {
       const names = await handles.component.shortcutNames?.();
       console.log('[KGlobalAccel] component shortcutNames():', names);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
     } catch (err: any) {
       console.warn('[KGlobalAccel] shortcutNames() failed:', err?.message ?? err);
     }

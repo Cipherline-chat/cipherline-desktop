@@ -4,7 +4,7 @@ import { resolve } from 'node:path';
 
 const src = readFileSync(resolve(__dirname, './ChatPane.tsx'), 'utf8');
 const start = src.indexOf('const handleContextMenu = (e: React.MouseEvent, msg: any)');
-const menu = src.slice(start, start + 14000);
+const menu = src.slice(start, start + 16000);
 
 describe('message right-click menu — KLIPY GIFs', () => {
     it('offers Copy GIF link (the KLIPY media URL) and Save GIF / Remove from saved GIFs', () => {

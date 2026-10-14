@@ -33,7 +33,10 @@
  * plays into a device the user isn't listening to reads as a broken sound
  * file, on the very page they opened to check that file.
  */
-import { applyOutputDevice, unregisterOutputDeviceTarget } from './audioOutput';
+import {
+    applyOutputDevice, applyOutputDeviceChecked, probeContextSink, unregisterOutputDeviceTarget,
+    type SinkOutcome,
+} from './audioOutput';
 
 export type SoundCategory =
     | 'message' | 'mention' | 'call' | 'join' | 'leave'
@@ -68,7 +71,16 @@ export type SoundCategory =
     // never for the other people already watching. See
     // utils/screenShareViewers.ts for how the viewer set is derived and why
     // the first couple of seconds of a share are deliberately silent.
-    | 'stream_viewer_join' | 'stream_viewer_leave';
+    | 'stream_viewer_join' | 'stream_viewer_leave'
+    // You allowed someone to draw using the approve-drawing-request keybind
+    // while Cipherline was NOT focused. The only confirmation a presenter in
+    // a game gets that the key did something, so it plays only then (in
+    // focus, the dock row disappearing is the confirmation, as for a click).
+    | 'annotation_allowed'
+    // A moderator (MANAGE_CALL_MEMBERS) moved YOU into another call. Plays once, as
+    // you arrive, and never for a move you made yourself. 'app' group, so it
+    // gets its own on/off toggle under "Choose individual sounds".
+    | 'call_moved';
 
 export interface SoundCategoryPrefs {
     enabled: boolean;
@@ -195,6 +207,15 @@ export const DEFAULT_SOUNDS: Record<SoundCategory, string> = {
     // identical sample.
     stream_viewer_join:  './sounds/stream_viewer_join.wav',
     stream_viewer_leave: './sounds/stream_viewer_leave.wav',
+    // "A request was accepted" - which is literally what just happened.
+    annotation_allowed:  './sounds/friend_accepted.wav',
+    // reconnected.wav: a 0.65 s rising sweep from the same in-house "signals in
+    // the deep" synthesized set as every other bundled cue (c922e37f), and
+    // until now referenced by nothing. Chosen over join_call_sound because
+    // being moved is NOT someone joining your call: a rising sweep reads as
+    // "carried across" and cannot be mistaken for the join glorp or the leave
+    // ebb. If it is ever retuned, keep it distinct from join/leave.
+    call_moved:          './sounds/reconnected.wav',
 };
 
 // ── Default per-category enable/volume ──────────────────────────────────────
@@ -270,6 +291,12 @@ export const DEFAULT_SOUND_PREFS: Record<SoundCategory, { enabled: boolean; volu
     // annotation request there is no deadline and nothing to answer.
     stream_viewer_join:  { enabled: true, volume: 0.7 },
     stream_viewer_leave: { enabled: true, volume: 0.7 },
+    // Self-toggle tier, with mute/unmute: it confirms your OWN key press, and
+    // it lands on top of whatever game audio the presenter is in.
+    annotation_allowed:  { enabled: true, volume: 0.55 },
+    // Something happened TO you rather than something you did, and it changes
+    // which room you are in — peer-action tier (0.7), like join/leave.
+    call_moved:          { enabled: true, volume: 0.7 },
 };
 
 /**
@@ -401,6 +428,49 @@ function getOrCreatePreview(): HTMLAudioElement {
         applyOutputDevice(previewEl);
     }
     return previewEl;
+}
+
+/** What "Test speakers" found out. */
+export interface SpeakerTestResult {
+    /** The <audio> element path (the one remote voices use). */
+    element: SinkOutcome;
+    /** The AudioContext path (noise-suppressed / boosted voices). */
+    context: SinkOutcome;
+    /** The sound itself started playing. */
+    played: boolean;
+}
+
+/**
+ * "Test speakers": play the bundled test sound on the SELECTED output through
+ * the same routing calls use, and report whether each path really moved.
+ *
+ * A fresh element every press (setSinkId is awaited BEFORE the source is set,
+ * so the first audible frame is already on the picked device), registered with
+ * audioOutput like any call element - a device change mid-sound re-points it -
+ * and unregistered when it ends. If routing fails the sound still plays (on
+ * the device it is actually on): silence plus an error reads as a broken
+ * sound, the sound on the wrong device plus the verdict is the diagnosis.
+ * The AudioContext path is exercised silently by probeContextSink in parallel.
+ */
+export async function testSpeakers(file: string, volume: number): Promise<SpeakerTestResult> {
+    const el = new Audio();
+    const [element, context] = await Promise.all([
+        applyOutputDeviceChecked(el, 'test'),
+        probeContextSink('test'),
+    ]);
+    let played = false;
+    const done = () => unregisterOutputDeviceTarget(el);
+    try {
+        el.addEventListener?.('ended', done);
+        el.addEventListener?.('error', done);
+        el.src = file;
+        el.volume = Math.min(1, Math.max(0, volume));
+        await el.play();
+        played = true;
+    } catch {
+        done(); // autoplay gate, no device, missing file
+    }
+    return { element, context, played };
 }
 
 /**

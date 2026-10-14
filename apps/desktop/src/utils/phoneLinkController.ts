@@ -79,6 +79,14 @@ export interface PhoneLinkDeps {
     pollInvite: (inviteId: string) => Promise<LinkInvitePollResponse>;
     /** `POST /v1/link/sessions/:id/approve` with the typed code (+ TOTP). */
     approve: (inviteId: string, body: ApproveLinkSessionBody) => Promise<ApproveLinkSessionResponse>;
+    /**
+     * Device approval: sign "this approved device vouches for the phone that
+     * joined this invite" with this device's identity key (main process).
+     * Resolves null when the signer is unavailable — the approval then goes
+     * out unsigned and the phone waits for approval instead of auto-approving.
+     * Optional so existing callers/tests are unchanged.
+     */
+    signApproval?: (inviteId: string, newIdentityKeyB64: string | null) => Promise<{ sig: string; ts: number } | null>;
     /** `POST /v1/link/sessions/:id/deny`. */
     deny: (inviteId: string) => Promise<void>;
     /** `window.electronAPI.linkSeal` — seals in the main process. */
@@ -126,6 +134,8 @@ export class PhoneLinkController {
     /** The phone's ephemeral key, from the `joined` poll. The one thing the
      *  grant is sealed to. */
     private phoneEkPubB64: string | null = null;
+    /** Device approval: the identity key the phone advertised at join, if any. */
+    private phoneIdentityKeyB64: string | null = null;
     private active = false;
     private disposed = false;
     private readonly deps: PhoneLinkDeps;
@@ -156,6 +166,7 @@ export class PhoneLinkController {
         this.clearTimers();
         this.active = false;
         this.phoneEkPubB64 = null;
+        this.phoneIdentityKeyB64 = null;
     }
 
     private fail(err: unknown, message = describeError(err)): void {
@@ -181,6 +192,7 @@ export class PhoneLinkController {
                 // put the code form on screen — once; re-polls while the user
                 // is typing must not reset the form.
                 if (typeof data.ek_pub_b64 === 'string') this.phoneEkPubB64 = data.ek_pub_b64;
+                this.phoneIdentityKeyB64 = typeof data.identity_key_pub_b64 === 'string' ? data.identity_key_pub_b64 : null;
                 if (this.snapshot.phase === 'active') {
                     this.set({
                         phase: 'joined',
@@ -274,6 +286,9 @@ export class PhoneLinkController {
             const body: ApproveLinkSessionBody = { code: trimmed };
             if (second.totp_code) body.totp_code = second.totp_code.replace(/\s+/g, '');
             else if (second.backup_code) body.backup_code = second.backup_code.trim();
+            // Never let a signer failure block the link itself.
+            const signed = await this.deps.signApproval?.(inviteId, this.phoneIdentityKeyB64).catch(() => null);
+            if (signed) { body.approver_sig_b64 = signed.sig; body.approver_ts = signed.ts; }
             approved = await this.deps.approve(inviteId, body);
         } catch (err) {
             if (this.disposed) return;

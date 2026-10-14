@@ -1,7 +1,7 @@
 /**
- * "Prioritize call video while gaming" — the main-process half.
+ * "Prioritize calls and screen share while gaming" — the main-process half.
  *
- * Settings → Voice & Video, OFF by default. Stored as `gamingVideo` in
+ * Settings → Voice & Video, ON by default (it was call-only and OFF). Stored as `gamingVideo` in
  * <userData>/startup-flags.json (./startup-flags.ts) because part of it is a
  * set of Chromium command-line switches, which Chromium reads only at launch.
  *
@@ -37,7 +37,14 @@
  * Deliberately free of any `electron` import so every decision here is unit
  * testable (gaming-video-mode.test.ts); main.ts supplies app.getAppMetrics()
  * and os.getPriority/setPriority.
+ *
+ * Which of these parts exist on which OS is ./share-platform.ts (one table).
+ * Short version: the launch switches apply everywhere, the occlusion feature
+ * and the priority boost are Windows-only, and off Windows this file NEVER
+ * touches a process's priority — neither up (needs CAP_SYS_NICE) nor down.
  */
+
+import { shareBoostSupport } from './share-platform';
 
 /** Startup switches the mode adds. Values are empty: these are presence flags. */
 export const GAMING_VIDEO_SWITCHES: readonly string[] = Object.freeze([
@@ -64,7 +71,7 @@ export function gamingVideoStartupSwitches(enabled: boolean, platform: string): 
     if (!enabled) return { switches: [], disableFeatures: [] };
     return {
         switches: [...GAMING_VIDEO_SWITCHES],
-        disableFeatures: platform === 'win32' ? [GAMING_VIDEO_DISABLED_FEATURE] : [],
+        disableFeatures: shareBoostSupport(platform).occlusionFeatureOff ? [GAMING_VIDEO_DISABLED_FEATURE] : [],
     };
 }
 
@@ -80,11 +87,20 @@ export function validateCallMediaActive(input: unknown): boolean {
 /** Node's os.constants.priority values (identical on every platform). */
 export const PRIORITY_NORMAL = 0;
 export const PRIORITY_ABOVE_NORMAL = -7;
+/** HIGH_PRIORITY_CLASS on Windows: no privilege needed (REALTIME is the one that needs it, and is never used). */
+export const PRIORITY_HIGH = -14;
 
 export interface PriorityBoosterDeps {
     platform: string;
     /** Every Cipherline process id right now (app.getAppMetrics()). */
     listPids(): number[];
+    /**
+     * Optional richer listing (app.getAppMetrics() pid + Electron process
+     * `type`: 'Browser' | 'Tab' | 'GPU' | 'Utility' ...). When present it is
+     * used instead of listPids, so the GPU process can be raised higher than
+     * the rest while a screen share is live.
+     */
+    listProcesses?(): Array<{ pid: number; type?: string }>;
     /** os.getPriority — throws for a process that has exited. Lower = higher priority. */
     getPriority(pid: number): number;
     /** os.setPriority — throws when not permitted or the process has exited. */
@@ -92,27 +108,42 @@ export interface PriorityBoosterDeps {
 }
 
 /**
- * Raises Cipherline's processes to ABOVE_NORMAL while (setting on) AND (in a
- * call) on Windows, and puts each one back exactly as it found it otherwise.
+ * Raises Cipherline's processes while a boost is wanted on Windows, and puts
+ * each one back exactly as it found it otherwise. Two independent reasons to
+ * boost, either of which is enough:
+ *   - the "Prioritize call video while gaming" mode: setting on AND in a call
+ *     -> every process to ABOVE_NORMAL;
+ *   - the same setting, while a screen share is live (./share-boost.ts): setting on AND a
+ *     screen share live -> every process to ABOVE_NORMAL, the GPU process
+ *     (capture readback + the hardware encoder's command submission) and the
+ *     browser/main process (the desktop-capture thread) to HIGH.
  *
- * Why Windows only: there, ABOVE_NORMAL_PRIORITY_CLASS needs no privilege.
- * On Linux and macOS a negative nice value needs root / CAP_SYS_NICE, so the
- * call would just fail — the mode's other parts still apply there.
+ * Why Windows only: there, ABOVE_NORMAL / HIGH priority classes need no
+ * privilege. On Linux and macOS a negative nice value needs root /
+ * CAP_SYS_NICE, so the call would just fail — the mode's other parts still
+ * apply there.
  */
 export class CallPriorityBooster {
     private enabled = false;
     private inCall = false;
-    /** pid → the priority it had before we raised it. */
-    private readonly raised = new Map<number, number>();
+    private shareEnabled = false;
+    private sharing = false;
+    /** pid -> the priority it had before we raised it, and the one we set. */
+    private readonly raised = new Map<number, { before: number; set: number }>();
 
     constructor(private readonly deps: PriorityBoosterDeps) {}
 
     /** True while the boost should be in force. */
     get active(): boolean {
-        return this.enabled && this.inCall && this.deps.platform === 'win32';
+        return shareBoostSupport(this.deps.platform).priorityBoost && ((this.enabled && this.inCall) || this.shareActive);
     }
 
-    /** pids currently held at ABOVE_NORMAL by us (for tests / diagnostics). */
+    /** True while the SCREEN-SHARE boost (setting on AND a share live) is wanted. */
+    get shareActive(): boolean {
+        return this.shareEnabled && this.sharing;
+    }
+
+    /** pids currently held above their original priority by us (for tests / diagnostics). */
     raisedPids(): number[] {
         return [...this.raised.keys()];
     }
@@ -124,6 +155,16 @@ export class CallPriorityBooster {
 
     setInCall(on: boolean): void {
         this.inCall = on;
+        this.sync();
+    }
+
+    setShareEnabled(on: boolean): void {
+        this.shareEnabled = on;
+        this.sync();
+    }
+
+    setSharing(on: boolean): void {
+        this.sharing = on;
         this.sync();
     }
 
@@ -143,11 +184,11 @@ export class CallPriorityBooster {
 
     /** Restore everything we raised. Safe to call any number of times. */
     reset(): void {
-        for (const [pid, before] of this.raised) {
+        for (const [pid, entry] of this.raised) {
             try {
                 // Only undo OUR change: if something else has set a different
                 // priority since, theirs stands.
-                if (this.deps.getPriority(pid) === PRIORITY_ABOVE_NORMAL) this.deps.setPriority(pid, before);
+                if (this.deps.getPriority(pid) === entry.set) this.deps.setPriority(pid, entry.before);
             } catch { /* process exited — nothing to restore */ }
         }
         this.raised.clear();
@@ -158,28 +199,47 @@ export class CallPriorityBooster {
         else this.reset();
     }
 
+    /** What this process should be held at right now. */
+    private targetFor(type: string | undefined): number {
+        // During a share the GPU process (readback + encoder) AND the browser
+        // process (which owns the desktop-capture thread) go to HIGH; the rest
+        // stay ABOVE_NORMAL. HIGH_PRIORITY_CLASS needs no privilege.
+        return this.shareActive && (type === 'GPU' || type === 'Browser') ? PRIORITY_HIGH : PRIORITY_ABOVE_NORMAL;
+    }
+
     private apply(): void {
-        let pids: number[];
-        try { pids = this.deps.listPids(); } catch { return; }
-        const live = new Set(pids);
+        let procs: Array<{ pid: number; type?: string }>;
+        try {
+            procs = this.deps.listProcesses
+                ? this.deps.listProcesses()
+                : this.deps.listPids().map(pid => ({ pid }));
+        } catch { return; }
+        const live = new Set(procs.map(p => p.pid));
         // Forget processes that are gone.
         for (const pid of [...this.raised.keys()]) if (!live.has(pid)) this.raised.delete(pid);
-        for (const pid of live) {
+        for (const { pid, type } of procs) {
             if (!Number.isInteger(pid) || pid <= 0) continue;
             let current: number;
             try { current = this.deps.getPriority(pid); } catch { continue; }
-            const before = this.raised.get(pid);
-            if (before === undefined) {
+            const target = this.targetFor(type);
+            const entry = this.raised.get(pid);
+            if (entry === undefined) {
                 // Never LOWER a process that is already at or above the boost.
-                if (current <= PRIORITY_ABOVE_NORMAL) continue;
+                if (current <= target) continue;
                 try {
-                    this.deps.setPriority(pid, PRIORITY_ABOVE_NORMAL);
-                    this.raised.set(pid, current);
+                    this.deps.setPriority(pid, target);
+                    this.raised.set(pid, { before: current, set: target });
                 } catch { /* not permitted / exited — skip it */ }
-            } else if (current === before) {
+            } else if (current === entry.set) {
+                // Still ours; move it if the wanted level changed (a share
+                // started or ended while the call boost stays).
+                if (entry.set !== target) {
+                    try { this.deps.setPriority(pid, target); entry.set = target; } catch { /* skip */ }
+                }
+            } else if (current === entry.before) {
                 // Put back to its original value by someone else (Chromium) — re-raise.
-                try { this.deps.setPriority(pid, PRIORITY_ABOVE_NORMAL); } catch { /* skip */ }
-            } else if (current !== PRIORITY_ABOVE_NORMAL) {
+                try { this.deps.setPriority(pid, target); entry.set = target; } catch { /* skip */ }
+            } else {
                 // Moved somewhere else entirely: not ours any more.
                 this.raised.delete(pid);
             }

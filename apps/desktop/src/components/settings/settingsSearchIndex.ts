@@ -53,7 +53,8 @@ export const SETTINGS_INDEX: Record<PaneId, SettingsIndexEntry[]> = {
         { label: 'Volume normalization', keywords: ['loudness', 'agc', 'auto gain'] },
         { label: 'Camera', keywords: ['webcam', 'video device', 'preview'] },
         { label: 'Camera adjustments', keywords: ['brightness', 'contrast', 'saturation'] },
-        { label: 'Prioritize call video while gaming', keywords: ['game', 'gaming', 'freeze', 'frozen', 'stutter', 'fps', 'camera freezes', 'screen share freezes', 'priority'] },
+        { label: 'Prioritize calls and screen share while gaming', keywords: ['game', 'gaming', 'freeze', 'frozen', 'stutter', 'fps', 'camera freezes', 'screen share', 'screen share freezes', 'priority'] },
+        { label: 'End call for everyone when I leave', keywords: ['creator leaves', 'end call on leave', 'start a call', 'hang up for everyone', 'close call', 'host leaves'] },
         { label: 'Camera quality', keywords: ['resolution', '1080p', '1440p', '720p', 'hd', 'webcam quality', 'sharpness'] },
         { label: 'Incoming video quality', keywords: ['data saver', 'reduced', 'bandwidth', 'metered', 'other cameras', 'lag', 'slow'] },
     ],
@@ -76,6 +77,7 @@ export const SETTINGS_INDEX: Record<PaneId, SettingsIndexEntry[]> = {
         { label: 'Mute keybind', keywords: ['push to talk', 'ptt', 'toggle mute'] },
         { label: 'Global shortcuts', keywords: ['background keybinds', 'system wide'] },
         { label: 'Lock screen keybind', keywords: ['screen lock hotkey'] },
+        { label: 'Drawing request keybinds', keywords: ['annotation', 'annotate', 'allow drawing', 'approve request', 'decline request'] },
     ],
     activity: [
         { label: 'Show game activity', keywords: ['rich presence', 'playing status', 'now playing'] },
@@ -96,6 +98,7 @@ export const SETTINGS_INDEX: Record<PaneId, SettingsIndexEntry[]> = {
         { label: 'Encrypted backups', keywords: ['auto backup', 'backup folder', 'google drive', 'restore'] },
         { label: 'Message retention', keywords: ['auto delete', 'expiry', 'disappearing'] },
         { label: 'Clear history', keywords: ['purge', 'delete messages', 'free space'] },
+        { label: 'Server storage', keywords: ['server history', 'purge server', 'channel history', 'free space'] },
         { label: 'Orphaned chats', keywords: ['leftover data'] },
     ],
     billing: [

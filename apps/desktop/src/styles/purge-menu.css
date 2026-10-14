@@ -1,0 +1,53 @@
+/* ============================================================================
+   PurgeDropdown (components/PurgeControls.tsx) — Settings → Storage
+   "Purge older than…" menu.
+
+   The panel REUSES the app's canonical menu vocabulary (.ctxm / .ctxm-row /
+   .ctxm-sep / .ctxm-acc in cl-kit-ext.css — the message right-click menu):
+   deep panel, lume hover tint, flash-tinted danger row, spring-family
+   entrance. This file only overrides what the purge menu sizes differently:
+   a tighter 12px panel (4px padding), 13px / 600 rows, a plain-body faint
+   count column instead of the mono accessory, a slightly stronger danger
+   hover, and a scale-from-trigger entrance. UNSCOPED on purpose (the .ctxm
+   base rules sit inside @scope(.cl-kit)); the doubled class selectors beat
+   them on specificity. The cl/ primitives are untouched.
+   ============================================================================ */
+
+/* Trigger — the kit's .selt input look (same as the neighbouring ClSelects),
+   tightened to a compact, left-aligned menu button. */
+.purge-wrap.sel{display:block;min-width:0;width:100%}
+.purge-trigger.selt{padding:7px 10px;border-radius:10px;font-size:13px;font-weight:600;color:var(--cl-muted, #A7B3D4);gap:8px;text-align:left}
+.purge-trigger.selt:hover:not(:disabled),
+.purge-trigger.selt.open{color:var(--cl-text, #F4F7FF)}
+.purge-trigger.selt:disabled{opacity:.5;cursor:not-allowed}
+.purge-trigger.selt:focus-visible{outline:2px solid var(--cl-lume, #25E0C8);outline-offset:2px}
+.purge-trigger.selt--md{padding:9px 12px;font-size:13.5px}
+.purge-trigger .purge-trigger-label{display:flex;align-items:center;gap:8px;min-width:0;flex:1}
+.purge-trigger .purge-trigger-label > span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.purge-trigger .purge-trigger-label > svg{flex:none;color:var(--cl-faint, #5E6B8F)}
+.purge-trigger.selt .chev{color:var(--cl-faint, #5E6B8F)}
+.purge-trigger.selt.open .chev{transform:rotate(180deg)}
+
+/* Panel */
+.purge-menu.ctxm{
+  border-radius:12px;padding:4px;
+  box-shadow:0 12px 32px rgba(0,0,0,.55);
+  transform:scale(.96);transform-origin:var(--purge-origin, top left);
+  animation:purge-menu-in 150ms cubic-bezier(.2,.8,.25,1) forwards;
+}
+.purge-menu .ctxm-row{
+  min-height:32px;padding:0 10px;border-radius:9px;gap:8px;
+  font-size:13px;font-weight:600;line-height:16px;
+}
+.purge-menu .ctxm-row .ctxm-acc{font-family:var(--body, 'Nunito', sans-serif);font-size:12px;font-weight:600;color:var(--faint, #5E6B8F);font-variant-numeric:tabular-nums}
+.purge-menu .ctxm-row.danger:hover:not(:disabled),
+.purge-menu .ctxm-row.danger.focus:not(:disabled),
+.purge-menu .ctxm-row.danger:focus-visible{background:rgba(255,107,94,.12);color:var(--flash, #FF6B5E)}
+.purge-menu .ctxm-sep{margin:4px 6px}
+
+@keyframes purge-menu-in{to{opacity:1;transform:none}}
+
+@media (prefers-reduced-motion:reduce){
+  .purge-menu.ctxm{animation:none;opacity:1;transform:none}
+  .purge-trigger.selt .chev{transition:none}
+}

@@ -1,10 +1,11 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { LogOut } from 'lucide-react';
 import { ClButton } from './cl';
 import SlottedCodeInput, { type SlottedCodeInputHandle } from './SlottedCodeInput';
 import { useAuth } from '../contexts/AuthContext';
 import type { ScreenLockHook } from '../hooks/useScreenLock';
 import LockScreenField from './LockScreenField';
+import { isolateFromLock, trapTabWithin } from '../utils/lockIsolation';
 import '../styles/screen-lock.css';
 
 /**
@@ -54,6 +55,12 @@ const Padlock: React.FC<{ state: 'idle' | 'typing' | 'bad' | 'cool' }> = ({ stat
  * background sync (matches Signal Desktop / Slack's screen lock, not a full
  * app suspend). Mounted inside Dashboard at the highest z-index in the app so
  * it covers every modal, portal, and call-panel node.
+ *
+ * Covering is not enough: while it is mounted everything ELSE in the document
+ * is made inert + aria-hidden (utils/lockIsolation.ts), so Tab, clicks and
+ * assistive tech cannot reach the composer or any control behind it. Focus
+ * moves to the PIN field, wraps inside this overlay, and on unlock returns to
+ * whatever had it (or to the body if that is gone).
  */
 const ScreenLockOverlay: React.FC<{ screenLock: ScreenLockHook }> = ({ screenLock }) => {
     const { logout } = useAuth();
@@ -64,6 +71,30 @@ const ScreenLockOverlay: React.FC<{ screenLock: ScreenLockHook }> = ({ screenLoc
     const [cooldownSecs, setCooldownSecs] = useState(0);
     const [fieldLive, setFieldLive] = useState(false);
     const codeInputRef = useRef<SlottedCodeInputHandle>(null);
+    const rootRef = useRef<HTMLDivElement>(null);
+    // What had focus when the lock came up (read once, before this mounts).
+    const [focusBefore] = useState<Element | null>(() => {
+        const a = typeof document !== 'undefined' ? document.activeElement : null;
+        return a && a !== document.body ? a : null;
+    });
+
+    // Isolate the rest of the document, move focus to the PIN field, and undo
+    // both on unlock. Layout effect: no frame where the app is both uncovered
+    // by inert and reachable.
+    useLayoutEffect(() => {
+        const root = rootRef.current;
+        if (!root) return;
+        const release = isolateFromLock(root);
+        const untrap = trapTabWithin(root);
+        codeInputRef.current?.focus();
+        return () => {
+            untrap();
+            release();
+            const el = focusBefore as HTMLElement | null;
+            if (el && el.isConnected && typeof el.focus === 'function') el.focus({ preventScroll: true });
+            else (document.activeElement as HTMLElement | null)?.blur?.();
+        };
+    }, [focusBefore]);
 
     // Refocus the hidden PIN input whenever the Cipherline window regains OS
     // focus (alt-tab back, click the taskbar icon, etc.) — SlottedCodeInput's
@@ -112,6 +143,8 @@ const ScreenLockOverlay: React.FC<{ screenLock: ScreenLockHook }> = ({ screenLoc
 
     return (
         <div
+            ref={rootRef}
+            data-screen-lock
             onClick={() => codeInputRef.current?.focus()}
             style={{
                 position: 'fixed', inset: 0, zIndex: 999999,

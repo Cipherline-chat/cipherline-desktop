@@ -17,6 +17,9 @@ import {
     recordOwed,
     takeOwed,
     OWED_SERVE_TTL_MS,
+    BACKOFF_MAX_MS,
+    RETRY_AFTER_MAX_MS,
+    KEY_HANDSHAKE_POST_TIMEOUT_MS,
     type KeyDistributionDeps,
     type DistributionRecipient,
 } from './keyDistributionThrottle';
@@ -151,6 +154,31 @@ describe('HandshakeBackoff — exponential with jitter, reset on success', () =>
         clock.advance(8_000);
         b.onSuccess();
         expect(b.onFailure()).toBe(1_000);
+    });
+
+    it('2026-10-11: the default cap is 30 s, not 5 min — a holder resumes at most 30 s after the API recovers', () => {
+        const clock = makeClock();
+        const b = new HandshakeBackoff({ now: clock.now, random: () => 0.999 });
+        let last = 0;
+        for (let i = 0; i < 12; i++) { last = b.onFailure(); clock.advance(last); }
+        // Control (1.0.20/1.0.21): BACKOFF_MAX_MS was 5 min, so after ~8
+        // consecutive failures the next attempt was up to 5 min away.
+        expect(last).toBe(BACKOFF_MAX_MS);
+        expect(BACKOFF_MAX_MS).toBe(30_000);
+    });
+
+    it('a readable Retry-After is still honoured beyond that cap, up to the API\'s 60 s window', () => {
+        const clock = makeClock();
+        const b = new HandshakeBackoff({ now: clock.now, random: () => 0 });
+        expect(b.onFailure(45_000)).toBe(45_000);
+        clock.advance(45_000);
+        expect(b.onFailure(10 * 60_000)).toBe(RETRY_AFTER_MAX_MS);
+    });
+
+    it('a POST timeout (no response) is a transient failure: stop, short back-off, retry', () => {
+        const timeout = Object.assign(new Error('timeout of 15000ms exceeded'), { code: 'ECONNABORTED' });
+        expect(classifyHandshakeError(timeout)).toBe('transient');
+        expect(KEY_HANDSHAKE_POST_TIMEOUT_MS).toBeLessThan(100_000); // Cloudflare's 524
     });
 
     it('adds up to +50 % jitter so devices released by the same window do not resume in lock-step', () => {

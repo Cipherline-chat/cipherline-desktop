@@ -118,13 +118,13 @@ export function useDndState(
             const next = compute();
             return (prev.active === next.active && prev.reason === next.reason) ? prev : next;
         });
-    }, [prefs, userStatus, activeCall, screensharing, gameActive]); // eslint-disable-line react-hooks/exhaustive-deps
+    }, [prefs, userStatus, activeCall, screensharing, gameActive]);
 
     // Also tick every 60s to catch schedule transitions without needing re-render
     useEffect(() => {
         const t = setInterval(() => setStatus(compute()), 60_000);
         return () => clearInterval(t);
-    }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    }, []);
 
     return status;
 }

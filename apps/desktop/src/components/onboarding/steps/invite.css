@@ -37,6 +37,18 @@
 .ob .ob-invite .lbox-url em { font-style: normal; color: var(--lume); }
 .ob .ob-invite .lbox-skel { display: inline-block; vertical-align: middle; width: 88px; height: 12px; margin-left: 2px; border-radius: 4px; background: rgba(255, 255, 255, .07); }
 .ob .ob-invite .lbox .clb { flex: none; }
+/* Vertical centring of the Copy-link button. The kit's solid button is a cap
+   plus two depth sheets (.l1/.l2) that hang --o1/--o2 (2px/4px) BELOW it, but
+   layout only sees the cap: `align-items: center` centred the cap and left the
+   visible button (cap + ledge) 2px low, with only ~2px of padding under the
+   ledge against ~6px above the cap. So the ledge is reserved as a bottom margin
+   (the flex row then centres cap + ledge as one unit), and the two states that
+   press the cap down onto its ledge are nudged back onto the same centre line.
+   ClButton itself is shared with the website and stays untouched. */
+.ob .ob-invite .lbox .clb { margin-bottom: var(--o2, 4px); transition: transform .2s var(--spr, ease-out); }
+/* pressed: "Copied" (is-done) and the loading link (disabled). The cap sits --o1 lower
+   on its ledge, so the silhouette is --o1 shorter on top: shift up by half of that. */
+.ob .ob-invite .lbox .clb.dis, .ob .ob-invite .lbox .clb.is-done { transform: translateY(calc(var(--o1, 2px) / -2)); }
 /* "Copied": the prototype's .clb.is-done (a pressed, green, settled button) */
 .ob .ob-invite .clb.is-done .cap { background: rgba(74, 222, 128, .12); color: var(--ok); box-shadow: inset 0 0 0 1.5px rgba(74, 222, 128, .4); transform: translateY(2px); }
 .ob .ob-invite .clb.is-done .l { opacity: 0; }

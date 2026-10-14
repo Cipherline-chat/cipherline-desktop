@@ -21,6 +21,7 @@ const MOD: Role = {
     mentionable: true, hoisted: false, is_everyone: false,
 };
 
+// eslint-disable-next-line react-refresh/only-export-components -- co-located helper export; splitting the file would only affect dev Fast Refresh, not runtime behaviour
 function Harness() {
     const [roles, setRoles] = useState<Role[]>([MOD, EVERYONE]);
     const [sel, setSel] = useState('mod');

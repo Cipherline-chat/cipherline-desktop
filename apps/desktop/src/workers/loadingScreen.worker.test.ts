@@ -102,3 +102,106 @@ describe('loading screen worker', () => {
         [1, 0, 0, 0, 1, 0, 0, 0, 1].forEach((v, i) => expect(m[i] / m[8]).toBeCloseTo(v, 6));
     });
 });
+
+/**
+ * Lock mode: the same dot-field scene as the loading screen, with Keys and the
+ * loading bar structurally absent. The bar is hidden by `uBarA.x` (its alpha)
+ * and Keys by `uKeys.w`; both must be exactly 0 on every frame in lock mode,
+ * even when the worker is sent the messages that would turn them on. The boot
+ * mode cases are the negative controls: the same probes DO see the bar and
+ * Keys there, so a 0 means "hidden", not "probe broken".
+ */
+describe('loading screen worker — lock mode (dots only)', () => {
+    type Call = [string, unknown[]];
+    const last = (c: FakeCanvas, fn: string, name: string): number[] | undefined => {
+        const hit = (c.gl.calls as Call[]).filter(([n, a]) => n === fn && (a[0] as { name?: string })?.name === name).pop();
+        return hit ? (hit[1].slice(1) as number[]) : undefined;
+    };
+    const initMode = (c: FakeCanvas, mode?: 'lock' | 'boot', reduced = false) =>
+        send({ type: 'init', canvas: c as unknown as OffscreenCanvas, w: 1440, h: 900, dpr: 1, best: 0, reduced, ...(mode ? { mode } : {}) });
+    const barOn = () => { send({ type: 'bar', x: 0, y: -57, w: 180 }); send({ type: 'progress', floor: 0.2, ceil: 0.6, done: false }); };
+
+    it('negative control (boot mode): the probes see Keys and the bar', () => {
+        const c = canvas();
+        initMode(c);
+        barOn();
+        runFrames(4);
+        expect(last(c, 'uniform4f', 'uKeys')![3]).toBeGreaterThan(0.5);
+        expect(last(c, 'uniform2f', 'uBarA')![0]).toBeGreaterThan(0.5);
+        expect(last(c, 'uniform4f', 'uBar')![2]).toBe(180);
+    });
+
+    it('lock mode draws neither Keys nor the bar from the very first frame', () => {
+        const c = canvas();
+        initMode(c, 'lock');
+        runFrames(1);
+        expect(last(c, 'uniform4f', 'uKeys')![3]).toBe(0);
+        expect(last(c, 'uniform2f', 'uBarA')![0]).toBe(0);
+        expect(c.gl.calls.some(([n]) => n === 'drawArrays')).toBe(true); // ...but the field is drawn
+    });
+
+    it('lock mode ignores bar / progress / keys / act / quit / exit, however it is driven', () => {
+        const c = canvas();
+        initMode(c, 'lock');
+        barOn();
+        send({ type: 'keys', visible: true });
+        send({ type: 'act' });
+        send({ type: 'quit' });
+        send({ type: 'exit' });
+        runFrames(6);
+        expect(last(c, 'uniform4f', 'uKeys')![3]).toBe(0);
+        expect(last(c, 'uniform2f', 'uBarA')![0]).toBe(0);
+        expect(last(c, 'uniform4f', 'uBar')![2]).toBe(0); // no width: the bar has no place to be
+        expect(posted.map(m => m.type)).not.toContain('game'); // no run was started
+        expect(frames.length).toBeGreaterThan(0); // and 'exit' did not stop the field
+    });
+
+    it('lock mode on a worker that previously showed the bar still starts clean', () => {
+        const boot = canvas();
+        initMode(boot);
+        barOn();
+        runFrames(3);
+        const c = canvas();
+        initMode(c, 'lock');
+        runFrames(2);
+        expect(last(c, 'uniform4f', 'uBar')![2]).toBe(0);
+        expect(last(c, 'uniform2f', 'uBarA')![0]).toBe(0);
+        expect(last(c, 'uniform4f', 'uKeys')![3]).toBe(0);
+    });
+
+    it('lock mode follows the pointer: the field is told where it is', () => {
+        const c = canvas();
+        initMode(c, 'lock');
+        runFrames(2);
+        send({ type: 'pointer', x: 0.5, y: 0.25, on: true });
+        runFrames(40); // the camera eases toward it
+        const cam = last(c, 'uniform4f', 'uCam')!;
+        const mouse = last(c, 'uniform3f', 'uMouse')!;
+        expect(cam.length).toBe(4);
+        expect(mouse[0]).toBeGreaterThan(0.2);
+        expect(mouse[1]).toBeGreaterThan(0.1);
+    });
+
+    it('negative control: with no pointer message the mouse stays at the centre', () => {
+        const c = canvas();
+        initMode(c, 'lock');
+        send({ type: 'pointer', x: 0, y: 0, on: false }); // (the module keeps the last pointer between tests)
+        runFrames(120);
+        const mouse = last(c, 'uniform3f', 'uMouse')!;
+        expect(Math.abs(mouse[0])).toBeLessThan(1e-6);
+        expect(Math.abs(mouse[1])).toBeLessThan(1e-6);
+    });
+
+    it('lock mode honours reduced motion: one still frame, no loop, pointer ignored', () => {
+        const c = canvas();
+        initMode(c, 'lock', true);
+        runFrames(1);
+        const drawn = c.gl.calls.filter(([n]) => n === 'drawArrays').length;
+        expect(drawn).toBe(1);
+        expect(frames.length).toBe(0); // nothing scheduled after the still frame
+        send({ type: 'pointer', x: 1, y: 1, on: true });
+        runFrames(3);
+        expect(c.gl.calls.filter(([n]) => n === 'drawArrays').length).toBe(1);
+    });
+});
+

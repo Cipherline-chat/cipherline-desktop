@@ -46,7 +46,7 @@
  * events, which are applied in place across every cached server.
  */
 import axios from 'axios';
-import { API_BASE } from '../constants';
+import { apiUrl } from './apiPath';
 import { beginActivity } from './freezeLog';
 import { clearChannelViewerCache } from './channelViewerCache';
 
@@ -263,10 +263,10 @@ async function fetchOnce(serverId: string, token: string, ctl: { prefetch: boole
         const headers = { Authorization: `Bearer ${token}` };
         const prev = cache.get(serverId);
         const [membersRes, rolesRes] = await Promise.all([
-            axios.get(`${API_BASE}/servers/${serverId}/members`, { headers }),
+            axios.get(apiUrl`/servers/${serverId}/members`, { headers }),
             // Roles are best-effort, as before: a failure keeps the last known
             // roles rather than blanking every name colour and role group.
-            axios.get(`${API_BASE}/servers/${serverId}/roles`, { headers }).catch(() => null),
+            axios.get(apiUrl`/servers/${serverId}/roles`, { headers }).catch(() => null),
         ]);
         if (gen !== generation) return null;   // account changed mid-flight
         const members: RosterMember[] = Array.isArray(membersRes.data) ? membersRes.data : [];

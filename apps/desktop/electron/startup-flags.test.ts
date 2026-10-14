@@ -32,19 +32,54 @@ describe('parseStartupFlags', () => {
 
     it('falls back per field: a bad value resets only that field', () => {
         expect(parseStartupFlags('{"screenCapturer":"gdi","captureLog":true}'))
-            .toEqual({ screenCapturer: 'auto', captureLog: true, gamingVideo: false });
+            .toEqual({ screenCapturer: 'auto', captureLog: true, gamingVideo: true });
         expect(parseStartupFlags('{"screenCapturer":"wgc","captureLog":"true"}'))
-            .toEqual({ screenCapturer: 'wgc', captureLog: false, gamingVideo: false });
+            .toEqual({ screenCapturer: 'wgc', captureLog: false, gamingVideo: true });
     });
 
-    it('gamingVideo is OFF unless the file holds exactly true', () => {
-        expect(DEFAULT_STARTUP_FLAGS.gamingVideo).toBe(false);
-        expect(parseStartupFlags('{"gamingVideo":true}').gamingVideo).toBe(true);
-        expect(parseStartupFlags('{"gamingVideo":"true"}').gamingVideo).toBe(false);
-        expect(parseStartupFlags('{"gamingVideo":1}').gamingVideo).toBe(false);
-        // A file written before the setting existed keeps it off and the others intact.
+    it('gamingVideo is ON by default (it used to be off)', () => {
+        expect(DEFAULT_STARTUP_FLAGS.gamingVideo).toBe(true);
+        expect(parseStartupFlags('').gamingVideo).toBe(true);
+    });
+
+    // The migration: the call-only "Prioritize call video while gaming" toggle (OFF by
+    // default, key `gamingVideo`) became "Prioritize calls and screen share while gaming"
+    // (ON by default, SAME key - there is no second key to migrate from).
+    it.each([
+        ['old ON (stored true) stays ON', '{"screenCapturer":"auto","captureLog":false,"gamingVideo":true}', true],
+        ['old OFF (stored false) stays OFF - the explicit choice is respected', '{"screenCapturer":"auto","captureLog":false,"gamingVideo":false}', false],
+        ['unset: a file from before the setting existed gets ON', '{"screenCapturer":"dxgi","captureLog":true}', true],
+        ['unset: no file / empty text gets ON', '', true],
+        ['unset: an empty object gets ON', '{}', true],
+        ['a garbled string gets the default, ON', '{"gamingVideo":"false"}', true],
+        ['a garbled number gets the default, ON', '{"gamingVideo":0}', true],
+        ['a null gets the default, ON', '{"gamingVideo":null}', true],
+    ])('migration: %s', (_label, text, expected) => {
+        expect(parseStartupFlags(text).gamingVideo).toBe(expected);
+    });
+
+    it('migration keeps the other fields intact', () => {
         expect(parseStartupFlags('{"screenCapturer":"dxgi","captureLog":true}'))
+            .toEqual({ screenCapturer: 'dxgi', captureLog: true, gamingVideo: true });
+        expect(parseStartupFlags('{"screenCapturer":"dxgi","captureLog":true,"gamingVideo":false}'))
             .toEqual({ screenCapturer: 'dxgi', captureLog: true, gamingVideo: false });
+    });
+
+    it('an explicit OFF survives a save/load round trip, and ON writes true (never a bare default-false)', () => {
+        const off = parseStartupFlags(serializeStartupFlags({ ...DEFAULT_STARTUP_FLAGS, gamingVideo: false }));
+        expect(off.gamingVideo).toBe(false);
+        expect(serializeStartupFlags({ ...DEFAULT_STARTUP_FLAGS })).toContain('"gamingVideo": true');
+        // saving ANOTHER flag for a never-touched user writes the new default, not a false
+        const onlyLog = serializeStartupFlags({ ...parseStartupFlags(''), captureLog: true });
+        expect(parseStartupFlags(onlyLog).gamingVideo).toBe(true);
+    });
+
+    it('the old separate screen-share key is gone: ignored on read, rejected on write, never written', () => {
+        expect(parseStartupFlags('{"shareBoost":false}').gamingVideo).toBe(true);
+        expect(parseStartupFlags('{"gamingVideo":false,"shareBoost":true}').gamingVideo).toBe(false);
+        expect(() => validateStartupFlagsPatch({ shareBoost: true })).toThrow(/unknown key/);
+        expect(serializeStartupFlags({ ...DEFAULT_STARTUP_FLAGS })).not.toContain('shareBoost');
+        expect(Object.keys(DEFAULT_STARTUP_FLAGS).sort()).toEqual(['captureLog', 'gamingVideo', 'screenCapturer']);
     });
 
     it('is exact, not lenient: no case folding, trimming or truthy coercion', () => {
@@ -56,7 +91,7 @@ describe('parseStartupFlags', () => {
 
     it('ignores unknown keys and does not honour inherited ones', () => {
         expect(parseStartupFlags('{"captureLog":true,"enable-logging":"stderr","vmodule":"*=9"}'))
-            .toEqual({ screenCapturer: 'auto', captureLog: true, gamingVideo: false });
+            .toEqual({ screenCapturer: 'auto', captureLog: true, gamingVideo: true });
         expect(parseStartupFlags('{"__proto__":{"captureLog":true}}')).toEqual(DEFAULT_STARTUP_FLAGS);
     });
 
@@ -96,23 +131,23 @@ describe('validateStartupFlagsPatch (IPC trust boundary)', () => {
 });
 
 describe('resolveStartupFlags — env > file > default', () => {
-    const file: StartupFlags = { screenCapturer: 'dxgi', captureLog: true, gamingVideo: false };
+    const file: StartupFlags = { screenCapturer: 'dxgi', captureLog: true, gamingVideo: true };
 
     it('default when neither env nor file sets anything', () => {
         const r = resolveStartupFlags({ file: { ...DEFAULT_STARTUP_FLAGS }, env: {}, packaged: true });
-        expect(r).toEqual({ screenCapturer: 'auto', captureLog: false, gamingVideo: false, source: { screenCapturer: 'default', captureLog: 'default', gamingVideo: 'default' } });
+        expect(r).toEqual({ screenCapturer: 'auto', captureLog: false, gamingVideo: true, source: { screenCapturer: 'default', captureLog: 'default', gamingVideo: 'default' } });
     });
 
     it('file wins over default', () => {
         const r = resolveStartupFlags({ file, env: {}, packaged: true });
-        expect(r).toEqual({ screenCapturer: 'dxgi', captureLog: true, gamingVideo: false, source: { screenCapturer: 'file', captureLog: 'file', gamingVideo: 'default' } });
+        expect(r).toEqual({ screenCapturer: 'dxgi', captureLog: true, gamingVideo: true, source: { screenCapturer: 'file', captureLog: 'file', gamingVideo: 'default' } });
     });
 
     it('env wins over file (dev build)', () => {
         const r = resolveStartupFlags({
             file, env: { CIPHERLINE_SCREEN_CAPTURER: 'wgc', CIPHERLINE_CAPTURE_LOG: '0' }, packaged: false,
         });
-        expect(r).toEqual({ screenCapturer: 'wgc', captureLog: false, gamingVideo: false, source: { screenCapturer: 'env', captureLog: 'env', gamingVideo: 'default' } });
+        expect(r).toEqual({ screenCapturer: 'wgc', captureLog: false, gamingVideo: true, source: { screenCapturer: 'env', captureLog: 'env', gamingVideo: 'default' } });
     });
 
     it('an env capturer that is set but unrecognised still wins, as auto (the pre-existing env semantics)', () => {
@@ -139,13 +174,13 @@ describe('resolveStartupFlags — env > file > default', () => {
         expect(off.source.captureLog).toBe('file');
     });
 
-    it('gamingVideo comes from the file only (no env override)', () => {
-        const on = resolveStartupFlags({ file: { ...DEFAULT_STARTUP_FLAGS, gamingVideo: true }, env: {}, packaged: true });
+    it('gamingVideo comes from the file only (no env override); only an explicit OFF is "file"', () => {
+        const on = resolveStartupFlags({ file: { ...DEFAULT_STARTUP_FLAGS }, env: { CIPHERLINE_CAPTURE_LOG: '1' }, packaged: false });
         expect(on.gamingVideo).toBe(true);
-        expect(on.source.gamingVideo).toBe('file');
-        const off = resolveStartupFlags({ file: { ...DEFAULT_STARTUP_FLAGS }, env: { CIPHERLINE_CAPTURE_LOG: '1' }, packaged: false });
+        expect(on.source.gamingVideo).toBe('default');
+        const off = resolveStartupFlags({ file: { ...DEFAULT_STARTUP_FLAGS, gamingVideo: false }, env: {}, packaged: true });
         expect(off.gamingVideo).toBe(false);
-        expect(off.source.gamingVideo).toBe('default');
+        expect(off.source.gamingVideo).toBe('file');
     });
 
     it('dev: CIPHERLINE_CAPTURE_LOG=1 turns it on, anything else set turns it off', () => {
@@ -234,3 +269,4 @@ describe('startup-flags.json and capture-log files on disk', () => {
         expect(fs.readFileSync(cur(), 'utf8')).toBe('after\n');
     });
 });
+

@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useEncryptedAvatar, evictAvatar } from '../hooks/useEncryptedAvatar';
+import { safeImageSrc } from '../utils/safeMediaUrl';
 import { useIsFriendOrSelf } from '../contexts/FriendshipContext';
 import cipherlineMark from '../assets/cipherline-mark.svg';
 
@@ -81,7 +82,8 @@ export const Banner: React.FC<BannerProps> = ({
     // `kind: 'banner'` only picks the persisted blob's prune budget — banners
     // are ~3x an avatar and must not evict the avatars every chat row paints.
     const resolvedUrl = useEncryptedAvatar(allowImage && !src ? attachmentId : null, token, null, BANNER_KIND);
-    const bannerUrl = src || resolvedUrl;
+    // Only a validated image URL (blob:, data:image/*, trusted https) ever reaches <img src>.
+    const bannerUrl = safeImageSrc(src || resolvedUrl) ?? null;
 
     // ── No blank flash, no pop ───────────────────────────────────────────────
     // The default banner is ALWAYS underneath, so there is never an empty box.

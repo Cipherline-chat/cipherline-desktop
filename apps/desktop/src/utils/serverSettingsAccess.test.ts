@@ -133,4 +133,13 @@ describe('serverSettingsTabVisibility', () => {
         }
         expect(serverSettingsTabVisibility(Permissions.MANAGE_SERVER, NOT_OWNER).overview).toBe(true);
     });
+
+    it('Storage (meter + grace countdown) is owner/ADMINISTRATOR/MANAGE_SERVER, like the API audience for storage-status', () => {
+        expect(serverSettingsTabVisibility(0n, true).storage).toBe(true);
+        expect(serverSettingsTabVisibility(Permissions.ADMINISTRATOR, NOT_OWNER).storage).toBe(true);
+        expect(serverSettingsTabVisibility(Permissions.MANAGE_SERVER, NOT_OWNER).storage).toBe(true);
+        for (const bit of [Permissions.MANAGE_EMOJIS, Permissions.MANAGE_ROLES, Permissions.BAN_MEMBERS, Permissions.CREATE_INVITE]) {
+            expect(serverSettingsTabVisibility(bit, NOT_OWNER).storage).toBe(false);
+        }
+    });
 });

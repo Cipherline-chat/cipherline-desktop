@@ -10,7 +10,10 @@
  *         rnnoise.worker.ts) if the in-worklet path fails to come up. The
  *         RNNoise compensation gain, +3.5 dB when a sample was actually
  *         processed, is applied INSIDE this worklet either way — see nsKernel.js)
- *     → GateWorkletNode (RMS gate; pass-through when disabled)
+ *     → GateWorkletNode (RMS gate; pass-through when disabled). A stage of its
+ *         own: it gates the raw capture when NS is off exactly as it gates
+ *         RNNoise's output when NS is on (see voiceChain.ts for the bug that
+ *         tied them together)
  *     → EQ[80Hz, 250Hz, 1kHz, 4kHz, 12kHz] (5× BiquadFilterNode; gains zeroed when disabled)
  *     → AgcWorkletNode (slow adaptive gain toward a target speech level, with a
  *         built-in fast peak limiter; pass-through at unity gain when the
@@ -57,6 +60,9 @@
  *     (raw copy) when disabled (or not yet ready).
  *
  * All parameters are updatable in real-time without tearing down the pipeline.
+ * Each worklet stage (RNNoise, gate, AGC) is built independently; one failing
+ * to load drops only itself. With EVERY per-user stage off the call publishes
+ * the raw capture with no processor at all (voiceProcessorManager.ts).
  */
 
 import RNNoiseWorker from '../workers/rnnoise.worker?worker';
@@ -67,6 +73,7 @@ import { loadInlineRnnoiseWorkletSource, loadRnnoiseWorkletSource } from './rnno
 import { AGC_WORKLET_SOURCE } from './agcWorkletSource';
 import { registerCtxForUnlock } from './audioUnlock';
 import { workletModuleUrl, forgetWorkletModuleUrl } from './workletModuleUrl';
+import { planVoiceChain, type VoiceChainAvailability, type VoiceChainPlan } from './voiceChain';
 
 // ── Compressor preset (applied when volumeNormalization is ON) ──────────────
 // Goal: genuine level normalisation — quiet mics come up, loud mics come down.
@@ -249,7 +256,7 @@ const registeredWorkletProcessors = new WeakMap<BaseAudioContext, Set<string>>()
 //   2. If RMS >= threshold → reset hold counter, ramp gate open (fast attack).
 //   3. If in hold period → keep gate open, decrement hold counter.
 //   4. Otherwise → ramp gate closed (slow release so words don't get cut).
-const GATE_WORKLET_SOURCE = `
+export const GATE_WORKLET_SOURCE = `
 class GateWorklet extends AudioWorkletProcessor {
     constructor() {
         super();
@@ -266,6 +273,12 @@ class GateWorklet extends AudioWorkletProcessor {
         this.attackRate  = 1 / 32;
         // Release: close over ~50 ms (2400 samples at 48 kHz).
         this.releaseRate = 1 / 2400;
+        // Detector meter (off unless a meter asked for it): the loudest
+        // block RMS of each report interval — the exact quantity the gate
+        // compares against its threshold — plus whether the gate is open.
+        this.reportEvery = 0;
+        this.reportLeft  = 0;
+        this.reportPeak  = 0;
 
         this.port.onmessage = ({ data }) => {
             if (data.type === 'gate') {
@@ -279,8 +292,25 @@ class GateWorklet extends AudioWorkletProcessor {
                 this.threshold = Math.pow(10, data.value / 20);
             } else if (data.type === 'hold') {
                 this.holdTotal = Math.round((data.ms / 1000) * sampleRate);
+            } else if (data.type === 'report') {
+                this.reportEvery = data.ms > 0 ? Math.max(1, Math.round((data.ms / 1000) * sampleRate / 128)) : 0;
+                this.reportLeft  = this.reportEvery;
+                this.reportPeak  = 0;
             }
         };
+    }
+
+    meter(rms) {
+        if (!this.reportEvery) return;
+        if (rms > this.reportPeak) this.reportPeak = rms;
+        if (--this.reportLeft > 0) return;
+        this.port.postMessage({
+            type: 'level',
+            rms: this.reportPeak,
+            open: !this.enabled || this.holdLeft > 0 || this.gain > 0.5,
+        });
+        this.reportLeft = this.reportEvery;
+        this.reportPeak = 0;
     }
 
     process(inputs, outputs) {
@@ -288,17 +318,18 @@ class GateWorklet extends AudioWorkletProcessor {
         const out = outputs[0]?.[0];
         if (!out) return true;
 
-        if (!this.enabled) {
-            if (inp) out.set(inp); else out.fill(0);
-            return true;
-        }
-
-        if (!inp) { out.fill(0); return true; }
+        if (!inp) { out.fill(0); this.meter(0); return true; }
 
         // RMS for this 128-sample quantum
         let sum = 0;
         for (let i = 0; i < inp.length; i++) sum += inp[i] * inp[i];
         const rms = Math.sqrt(sum / inp.length);
+
+        if (!this.enabled) {
+            out.set(inp);
+            this.meter(rms);
+            return true;
+        }
 
         if (rms >= this.threshold) {
             this.holdLeft = this.holdTotal; // voice detected — reset hold timer
@@ -318,6 +349,7 @@ class GateWorklet extends AudioWorkletProcessor {
             }
             out[i] = inp[i] * this.gain;
         }
+        this.meter(rms);
         return true;
     }
 }
@@ -342,14 +374,17 @@ export interface VoiceProcessorCallbacks {
      *  currently-applied gain in dB and whether it currently considers the
      *  input to be speech (see agcKernel.js's floor-based voice detection). */
     onAgcStats?: (stats: { gainDb: number; voiceActive: boolean }) => void;
-    /** Fires once if the worklet pipeline (gate + RNNoise) failed to come up
-     *  at all — a CSP block, a torn-down context, or WASM failing to load —
-     *  and the processor fell back to a chain with no NS/gate. EQ, the
-     *  compressor, and mic volume still work; this call never had a raw-mic
-     *  fallback, since the processor is always attached now (see
-     *  voiceProcessorManager.ts). Distinct from onNsAutoBypass, which is a
-     *  temporary load-driven pause that recovers on its own. */
+    /** Fires once if RNNoise failed to come up at all — a CSP block, a
+     *  torn-down context, or WASM failing to load — and the chain runs without
+     *  noise suppression. The gate, EQ, AGC and mic volume are separate stages
+     *  and keep working. Distinct from onNsAutoBypass, which is a temporary
+     *  load-driven pause that recovers on its own. */
     onNsUnavailable?: () => void;
+    /** The gate's own detector, for a meter (only when constructed with
+     *  `gateMeterMs`): the loudest 128-sample block RMS of each interval in
+     *  dBFS — the exact quantity compared against the threshold — and whether
+     *  the gate is open. See GATE_METER_REPORT_MS in voiceChain.ts. */
+    onGateLevel?: (dbfs: number, open: boolean) => void;
 }
 
 export class CipherlineVoiceProcessor {
@@ -402,11 +437,33 @@ export class CipherlineVoiceProcessor {
      *  call processor polls at 100 ms — 40 fewer main-thread wakeups a second
      *  for the whole call, same latest-value semantics for the watchdog. */
     private readonly levelPollMs: number;
+    /** Gate detector report interval for onGateLevel; 0 = no reports (a call
+     *  has no gate meter, so it pays no extra messages from the audio thread). */
+    private readonly gateMeterMs: number;
 
-    constructor(settings: VoiceSettings, callbacks: VoiceProcessorCallbacks = {}, opts: { levelPollMs?: number } = {}) {
+    constructor(
+        settings: VoiceSettings,
+        callbacks: VoiceProcessorCallbacks = {},
+        opts: { levelPollMs?: number; gateMeterMs?: number } = {},
+    ) {
         this._settings = { ...settings };
         this._callbacks = callbacks;
         this.levelPollMs = opts.levelPollMs ?? 20;
+        this.gateMeterMs = opts.gateMeterMs ?? 0;
+    }
+
+    /** Which worklet stages came up on the current context — see planVoiceChain. */
+    private availability(): VoiceChainAvailability {
+        return {
+            ns: !!this.rnnoiseWorkletNode && this._nsSupported,
+            gate: !!this.gateWorkletNode,
+            agc: !!this.agcWorkletNode,
+        };
+    }
+
+    /** The live stage composition (diagnostics / tests). Null before init. */
+    get chainPlan(): VoiceChainPlan | null {
+        return this.ctx ? planVoiceChain(this._settings, this.availability()) : null;
     }
 
     /**
@@ -506,56 +563,88 @@ export class CipherlineVoiceProcessor {
         // Disable browser NS — the Worker+Worklet pipeline handles it.
         opts.track.applyConstraints({ noiseSuppression: false }).catch(() => {});
 
-        // ── Worklet + RNNoise pipeline (wrapped: must never fail the whole init) ──
-        // The processor is now attached PRE-PUBLISH (see voiceProcessorManager.ts) —
-        // LiveKit's createLocalTracks() awaits init() and calling code no longer has
-        // a "just don't attach it" fallback the way the old post-publish setProcessor
-        // effect did. If addModule/AudioWorkletNode construction throws here and we
-        // let it propagate, the entire call join fails, not just noise suppression.
-        // That's strictly worse than a call with degraded audio processing. So:
-        // catch failures in this block and fall back to a chain with NO gate/NS
-        // worklets (source connects straight into the EQ/compressor chain below,
-        // which are plain nodes and can't fail this way) — everything downstream
-        // still works, and `_workletsSupported=false` drives a visible "noise
-        // suppression unavailable" notice via onNsUnavailable.
-        let workletsOk = true;
-        try {
-            // LiveKit can reuse the same AudioContext across restart() calls, in
-            // which case addModule() throws because the processor name is already
-            // registered — that specific failure is harmless, the class is still
-            // available. Anything else (CSP block, revoked blob URL, torn-down
-            // context) is a REAL failure. Distinguish the two by probing: if a
-            // node can actually be constructed after the "failure", registration
-            // really did succeed; if the probe ALSO throws, re-throw so the outer
-            // catch below falls back to the no-worklet chain.
-            const addWorkletModule = async (source: string, processorName: string) => {
-                // A device switch restarts the processor on the SAME retained
-                // context (see restart()); its processors are still registered
-                // there, so skip the reload — for RNNoise that is a ~4.8 MB
-                // module re-evaluated on the real-time audio thread, i.e. an
-                // audible hitch on every mic switch.
-                const known = registeredWorkletProcessors.get(ctx);
-                if (known?.has(processorName)) return;
-                // One Blob URL per source for the session — see workletModuleUrl.ts
-                // (wrapping the 4.8 MB RNNoise source used to cost ~120 ms of
-                // main thread per context, twice per join).
-                const url = workletModuleUrl(processorName, source);
+        // ── Worklet stages (each wrapped on its own: must never fail the init) ──
+        // The processor is attached right after the mic publishes (see
+        // voiceProcessorManager.ts) and LiveKit awaits init(): if addModule /
+        // AudioWorkletNode construction throws out of here, the mic is left on a
+        // half-built processor. That's strictly worse than a call with degraded
+        // audio processing. So every worklet stage — the gate, RNNoise, AGC — is
+        // built in its OWN try and wired in only if it came up. One stage failing
+        // never takes another with it: in particular the gate does not depend on
+        // RNNoise (it used to be built in the same try and only connected when
+        // the RNNoise node existed, so a machine where RNNoise could not load had
+        // no gate either — see utils/voiceChain.ts). EQ, the compressor and the
+        // gains are plain nodes and can't fail this way.
+        //
+        // LiveKit can reuse the same AudioContext across restart() calls, in
+        // which case addModule() throws because the processor name is already
+        // registered — that specific failure is harmless, the class is still
+        // available. Anything else (CSP block, revoked blob URL, torn-down
+        // context) is a REAL failure. Distinguish the two by probing: if a
+        // node can actually be constructed after the "failure", registration
+        // really did succeed; if the probe ALSO throws, re-throw so that
+        // stage's catch drops just that stage.
+        const addWorkletModule = async (source: string, processorName: string) => {
+            // A device switch restarts the processor on the SAME retained
+            // context (see restart()); its processors are still registered
+            // there, so skip the reload — for RNNoise that is a ~4.8 MB
+            // module re-evaluated on the real-time audio thread, i.e. an
+            // audible hitch on every mic switch.
+            const known = registeredWorkletProcessors.get(ctx);
+            if (known?.has(processorName)) return;
+            // One Blob URL per source for the session — see workletModuleUrl.ts
+            // (wrapping the 4.8 MB RNNoise source used to cost ~120 ms of
+            // main thread per context, twice per join).
+            const url = workletModuleUrl(processorName, source);
+            try {
+                await ctx.audioWorklet.addModule(url);
+            } catch (err) {
                 try {
-                    await ctx.audioWorklet.addModule(url);
-                } catch (err) {
-                    try {
-                        const probe = new AudioWorkletNode(ctx, processorName);
-                        probe.disconnect();
-                    } catch {
-                        forgetWorkletModuleUrl(processorName);
-                        throw err;
-                    }
+                    const probe = new AudioWorkletNode(ctx, processorName);
+                    probe.disconnect();
+                } catch {
+                    forgetWorkletModuleUrl(processorName);
+                    throw err;
                 }
-                if (known) known.add(processorName);
-                else registeredWorkletProcessors.set(ctx, new Set([processorName]));
-            };
-            await addWorkletModule(GATE_WORKLET_SOURCE, 'gate-worklet');
+            }
+            if (known) known.add(processorName);
+            else registeredWorkletProcessors.set(ctx, new Set([processorName]));
+        };
 
+        // ── Gate stage ──
+        // Runs in the audio rendering thread every 128 samples (~2.67 ms).
+        // Detection latency is imperceptible; no JS setInterval jitter. Its
+        // input is whatever precedes it — RNNoise's output with NS on, the raw
+        // capture with NS off — and it works the same either way.
+        try {
+            await addWorkletModule(GATE_WORKLET_SOURCE, 'gate-worklet');
+            const gate = new AudioWorkletNode(ctx, 'gate-worklet', {
+                numberOfInputs: 1,
+                numberOfOutputs: 1,
+                outputChannelCount: [1],
+            });
+            gate.port.postMessage({ type: 'gate',      enabled: this._settings.voiceGate });
+            gate.port.postMessage({ type: 'threshold', value: this._settings.voiceGateThreshold });
+            gate.port.postMessage({ type: 'hold',      ms: 150 });
+            if (this.gateMeterMs > 0) {
+                // The Settings meter under the threshold slider reads the gate's
+                // OWN detector — see GATE_METER_REPORT_MS in voiceChain.ts.
+                gate.port.postMessage({ type: 'report', ms: this.gateMeterMs });
+                gate.port.onmessage = ({ data }: MessageEvent) => {
+                    if (data?.type !== 'level') return;
+                    const dbfs = data.rms > 0 ? 20 * Math.log10(data.rms) : -Infinity;
+                    this._callbacks.onGateLevel?.(dbfs, !!data.open);
+                };
+            }
+            this.gateWorkletNode = gate;
+        } catch (err) {
+            console.error('[VoiceProcessor] Voice gate unavailable — continuing without it:', err);
+            try { this.gateWorkletNode?.disconnect(); } catch { /* never connected */ }
+            this.gateWorkletNode = undefined;
+        }
+
+        // ── Noise suppression stage ──
+        try {
             // ── RNNoise worklet: in-worklet synchronous (Phase 3), else the
             // Worker-fed design as an automatic fallback ──────────────────────
             // Try the inline path first: RNNoise's WASM runs directly inside this
@@ -566,9 +655,9 @@ export class CipherlineVoiceProcessor {
             // pair is wrapped in its OWN try, separate from the outer one), fall
             // back to the original Worker-fed 'rnnoise-worklet' — proven, still
             // fully present in the codebase, not deleted. Only if BOTH fail does
-            // this propagate to the outer catch below (which disables gate/AGC
-            // too, on the theory that two independent worklet failures in the
-            // same AudioContext point at something systemic like a CSP block).
+            // this propagate to the stage's own catch below — which leaves the
+            // call without noise suppression and NOTHING else: the gate and AGC
+            // are separate stages (they used to be dropped along with it).
             try {
                 await addWorkletModule(await loadInlineRnnoiseWorkletSource(), 'rnnoise-inline-worklet');
                 this.rnnoiseWorkletNode = new AudioWorkletNode(ctx, 'rnnoise-inline-worklet', {
@@ -601,7 +690,7 @@ export class CipherlineVoiceProcessor {
                     '[VoiceProcessor] In-worklet RNNoise unavailable, falling back to the ' +
                     'Worker-fed design:', inlineErr
                 );
-                try { this.rnnoiseWorkletNode?.disconnect(); } catch {}
+                try { this.rnnoiseWorkletNode?.disconnect(); } catch { /* teardown is best-effort; the node/handle may already be closed */ }
                 this.rnnoiseWorkletNode = undefined;
 
                 await addWorkletModule(await loadRnnoiseWorkletSource(), 'rnnoise-worklet');
@@ -645,7 +734,7 @@ export class CipherlineVoiceProcessor {
                         if (this.rnnoiseWorker) {
                             this.rnnoiseWorker.onmessage = null;
                             const w = this.rnnoiseWorker;
-                            setTimeout(() => { try { w.terminate(); } catch {} }, 100);
+                            setTimeout(() => { try { w.terminate(); } catch { /* teardown is best-effort; the node/handle may already be closed */ } }, 100);
                             this.rnnoiseWorker = undefined;
                         }
                         this.workerChannel = undefined;
@@ -682,19 +771,27 @@ export class CipherlineVoiceProcessor {
                 // Kick off WASM loading in the Worker (fire-and-forget).
                 this.rnnoiseWorker.postMessage({ type: 'init' }, [this.workerChannel.port1]);
             }
+        } catch (err) {
+            console.error(
+                '[VoiceProcessor] Noise suppression unavailable — continuing without it ' +
+                '(gate, EQ, AGC and mic volume are unaffected):', err
+            );
+            try { this.rnnoiseWorkletNode?.disconnect(); } catch { /* teardown is best-effort; the node/handle may already be closed */ }
+            this.rnnoiseWorkletNode = undefined;
+            if (this.rnnoiseWorker) {
+                this.rnnoiseWorker.onmessage = null;
+                this.rnnoiseWorker.onerror = null;
+                const w = this.rnnoiseWorker;
+                setTimeout(() => { try { w.terminate(); } catch { /* already gone */ } }, 100);
+                this.rnnoiseWorker = undefined;
+            }
+            this.workerChannel = undefined;
+            this._callbacks.onNsUnavailable?.();
+        }
 
+        // ── AGC stage ──
+        try {
             await addWorkletModule(AGC_WORKLET_SOURCE, 'agc-worklet');
-
-            // Gate worklet — runs in the audio rendering thread every 128 samples
-            // (~2.67ms). Detection latency is imperceptible; no JS setInterval jitter.
-            this.gateWorkletNode = new AudioWorkletNode(ctx, 'gate-worklet', {
-                numberOfInputs: 1,
-                numberOfOutputs: 1,
-                outputChannelCount: [1],
-            });
-            this.gateWorkletNode.port.postMessage({ type: 'gate',      enabled: this._settings.voiceGate });
-            this.gateWorkletNode.port.postMessage({ type: 'threshold', value: this._settings.voiceGateThreshold });
-            this.gateWorkletNode.port.postMessage({ type: 'hold',      ms: 150 });
 
             // AGC worklet — the slow adaptive-gain stage (see module doc comment
             // and agcKernel.js). "Auto gain control" in Settings maps to
@@ -712,19 +809,9 @@ export class CipherlineVoiceProcessor {
                 }
             };
         } catch (err) {
-            console.error(
-                '[VoiceProcessor] Worklet pipeline unavailable — falling back to a ' +
-                'passthrough chain with no noise suppression, voice gate, or AGC ' +
-                '(EQ/compressor/mic-volume still work):', err
-            );
-            workletsOk = false;
-            try { this.rnnoiseWorkletNode?.disconnect(); } catch {}
-            this.rnnoiseWorkletNode = undefined;
-            try { this.gateWorkletNode?.disconnect(); } catch {}
-            this.gateWorkletNode = undefined;
-            try { this.agcWorkletNode?.disconnect(); } catch {}
+            console.error('[VoiceProcessor] Auto gain control unavailable — continuing without it:', err);
+            try { this.agcWorkletNode?.disconnect(); } catch { /* never connected */ }
             this.agcWorkletNode = undefined;
-            this._callbacks.onNsUnavailable?.();
         }
 
         // ── Audio graph nodes ──
@@ -785,24 +872,22 @@ export class CipherlineVoiceProcessor {
         // boost (0–300%). Analyser follows so the level meter reflects
         // the final gain the user has dialed in.
         //
-        // If the worklet pipeline failed to come up (workletsOk === false),
-        // rnnoiseWorkletNode/gateWorkletNode/agcWorkletNode don't exist —
-        // connect straight from source into the EQ/compressor chain instead.
-        // Everything past that point is plain WebAudio nodes that can't fail
-        // the way worklet registration can, so mic volume, EQ, and the
-        // (unchanged) compressor still work even with no noise suppression,
-        // voice gate, or AGC.
+        // A worklet stage that failed to come up (see above) is simply absent:
+        // the chain skips it and every other stage still runs.
         let current: AudioNode = this.source;
-        if (workletsOk && this.rnnoiseWorkletNode && this.gateWorkletNode) {
-            this.source.connect(this.rnnoiseWorkletNode);
-            this.rnnoiseWorkletNode.connect(this.gateWorkletNode);
+        if (this.rnnoiseWorkletNode) {
+            current.connect(this.rnnoiseWorkletNode);
+            current = this.rnnoiseWorkletNode;
+        }
+        if (this.gateWorkletNode) {
+            current.connect(this.gateWorkletNode);
             current = this.gateWorkletNode;
         }
         for (const filter of this.eqFilters) {
             current.connect(filter);
             current = filter;
         }
-        if (workletsOk && this.agcWorkletNode) {
+        if (this.agcWorkletNode) {
             current.connect(this.agcWorkletNode);
             current = this.agcWorkletNode;
         }
@@ -853,35 +938,35 @@ export class CipherlineVoiceProcessor {
 
         if (this.rnnoiseWorkletNode) {
             this.rnnoiseWorkletNode.port.onmessage = null;
-            try { this.rnnoiseWorkletNode.disconnect(); } catch {}
+            try { this.rnnoiseWorkletNode.disconnect(); } catch { /* teardown is best-effort; the node/handle may already be closed */ }
             this.rnnoiseWorkletNode = undefined;
         }
 
-        try { this.source?.disconnect(); } catch {}
-        try { this.compressorMakeupGain?.disconnect(); } catch {}
+        try { this.source?.disconnect(); } catch { /* teardown is best-effort; the node/handle may already be closed */ }
+        try { this.compressorMakeupGain?.disconnect(); } catch { /* teardown is best-effort; the node/handle may already be closed */ }
         this.compressorMakeupGain = undefined;
-        try { this.micVolumeGain?.disconnect(); } catch {}
-        try { this.analyser?.disconnect(); } catch {}
+        try { this.micVolumeGain?.disconnect(); } catch { /* teardown is best-effort; the node/handle may already be closed */ }
+        try { this.analyser?.disconnect(); } catch { /* teardown is best-effort; the node/handle may already be closed */ }
         if (this.gateWorkletNode) {
             this.gateWorkletNode.port.onmessage = null;
-            try { this.gateWorkletNode.disconnect(); } catch {}
+            try { this.gateWorkletNode.disconnect(); } catch { /* teardown is best-effort; the node/handle may already be closed */ }
             this.gateWorkletNode = undefined;
         }
         if (this.agcWorkletNode) {
             this.agcWorkletNode.port.onmessage = null;
-            try { this.agcWorkletNode.disconnect(); } catch {}
+            try { this.agcWorkletNode.disconnect(); } catch { /* teardown is best-effort; the node/handle may already be closed */ }
             this.agcWorkletNode = undefined;
         }
-        this.eqFilters.forEach(f => { try { f.disconnect(); } catch {} });
+        this.eqFilters.forEach(f => { try { f.disconnect(); } catch { /* teardown is best-effort; the node/handle may already be closed */ } });
         this.eqFilters = [];
-        try { this.compressor?.disconnect(); } catch {}
-        try { this.destination?.disconnect(); } catch {}
+        try { this.compressor?.disconnect(); } catch { /* teardown is best-effort; the node/handle may already be closed */ }
+        try { this.destination?.disconnect(); } catch { /* teardown is best-effort; the node/handle may already be closed */ }
         this.processedTrack = undefined;
 
         // P2-REND-11: close the AudioContext only if this instance created it;
         // if the caller passed one in via opts.audioContext it owns the lifetime.
         if (this._ownCtx && this.ctx) {
-            try { this.ctx.close(); } catch {}
+            try { this.ctx.close(); } catch { /* teardown is best-effort; the node/handle may already be closed */ }
             this.ctx = undefined;
             this._ownCtx = false;
         }
@@ -972,9 +1057,12 @@ export class CipherlineVoiceProcessor {
         }
 
         // ── Voice Gate ──
+        // Independent of noise suppression: the plan's `gate` reads only the
+        // gate's own setting and availability (see voiceChain.ts).
         if (this.gateWorkletNode) {
             if (prev.voiceGate !== settings.voiceGate) {
-                this.gateWorkletNode.port.postMessage({ type: 'gate', enabled: settings.voiceGate });
+                const plan = planVoiceChain(settings, this.availability());
+                this.gateWorkletNode.port.postMessage({ type: 'gate', enabled: plan.gate });
             }
             if (prev.voiceGateThreshold !== settings.voiceGateThreshold) {
                 this.gateWorkletNode.port.postMessage({ type: 'threshold', value: settings.voiceGateThreshold });

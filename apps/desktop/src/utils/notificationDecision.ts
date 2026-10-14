@@ -29,6 +29,7 @@
  */
 
 import { matchesKeyword } from './mentionKeywords';
+import { channelTextMentionsViewer } from './mentionTokens';
 
 export type NotifMode = 'all' | 'mentions' | 'none';
 
@@ -132,4 +133,44 @@ export function resolveNotification(input: NotifDecisionInput): NotifDecision {
         playsSound: alerts,
         showsToast: alerts,
     };
+}
+
+/** Content types that are actions ON another message, never a new message. */
+const CHANNEL_ACTION_TYPES = new Set(['edit', 'delete', 'reaction']);
+
+export interface ChannelMessageDecisionInput
+    extends Omit<NotifDecisionInput, 'text' | 'directMention'> {
+    /** The DECRYPTED content. Never anything the server can read. */
+    content: { type?: string; text?: string } | null | undefined;
+    senderUserId: string | null | undefined;
+    userId: string | null | undefined;
+    /** The row's sender-set @everyone/@here flag (the one plaintext hint). */
+    mentionsEveryone?: boolean;
+    /** Role ids the viewer holds in the channel's server. */
+    myRoleIds: ReadonlySet<string>;
+}
+
+/**
+ * What a decrypted SERVER-CHANNEL message does to badges and alerts — the
+ * channel counterpart of resolveNotification, with the mention detection and
+ * the "is this a countable message at all" gate folded in, so the live path,
+ * the boot/reconnect reconcile and the late-key replay cannot disagree.
+ *
+ * Returns null for a message that never counts: our own (or one with no
+ * sender), or an edit / delete / reaction.
+ *
+ * The notification level gates only what NON-mentions do: a mention always
+ * sets countsMention (red badge) unless the user is looking right at it,
+ * whatever the level — see resolveNotification.
+ */
+export function decideChannelMessage(input: ChannelMessageDecisionInput): NotifDecision | null {
+    const { content, senderUserId, userId, mentionsEveryone, myRoleIds, ...rest } = input;
+    if (!content?.type || CHANNEL_ACTION_TYPES.has(content.type)) return null;
+    if (!senderUserId || senderUserId === userId) return null;
+    const text = content.type === 'text' ? (content.text ?? '') : '';
+    return resolveNotification({
+        ...rest,
+        text,
+        directMention: channelTextMentionsViewer({ text, userId, mentionsEveryone, myRoleIds }),
+    });
 }

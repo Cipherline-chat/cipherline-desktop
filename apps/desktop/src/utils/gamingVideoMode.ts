@@ -1,6 +1,8 @@
 /**
- * "Prioritize call video while gaming" — the renderer half, and the one store
- * every surface (Voice & Video settings, the freeze offer, the call) reads.
+ * "Prioritize calls and screen share while gaming" — the renderer half, and
+ * the one store every surface (Voice & Video settings, the freeze offer, the
+ * call, the screen share) reads. ONE setting, ON by default; it used to be
+ * call-only, off by default.
  *
  * The setting itself lives in main's <userData>/startup-flags.json as
  * `gamingVideo` (electron/startup-flags.ts, electron/gaming-video-mode.ts):
@@ -11,8 +13,11 @@
  * separate — utils/gamingVideoOffer.ts.)
  *
  * What the mode does, by layer:
- *   - next launch: Chromium occlusion / backgrounding switches (main);
+ *   - next launch: Chromium occlusion / backgrounding / EcoQoS switches (main);
  *   - immediately, during a call, Windows: ABOVE_NORMAL process priority (main);
+ *   - immediately, while SHARING, Windows: the GPU process to HIGH as well, and
+ *     (every platform) a prevent-app-suspension power request (main,
+ *     electron/share-boost.ts; the renderer only says when a share is live);
  *   - immediately, during a call: the outgoing CAMERA's degradation preference
  *     becomes 'maintain-framerate' (here — applyCameraDegradation below). Under
  *     CPU starvation WebRTC then sheds resolution instead of frame rate, so the
@@ -90,23 +95,19 @@ export function __resetGamingVideoModeForTests(): void {
 
 // ── Settings copy (Voice & Video → While gaming) ───────────────────────────
 
-export const GAMING_VIDEO_LABEL = 'Prioritize call video while gaming';
+export const GAMING_VIDEO_LABEL = 'Prioritize calls and screen share while gaming';
 
 /** The row's explanation. */
-export function gamingVideoDescription(platform: string): string {
-    const priority = platform === 'win32' ? 'Cipherline asks Windows for more CPU time during calls, ' : '';
-    return 'For when cameras or screen shares freeze while a game has focus. '
-        + `${priority}${priority ? 'keeps' : 'Cipherline keeps'} drawing video while a fullscreen game covers it, `
-        + 'and keeps your camera’s frame rate up by lowering its sharpness first. '
-        + 'This can cost your game a few FPS, which is why it’s off by default.';
+export function gamingVideoDescription(): string {
+    return 'Keeps calls and screen shares smooth while you play. May lower your game’s FPS.';
 }
 
-/** The restart notice, or null when nothing waits on a restart. */
-export function gamingVideoRestartCopy(enabled: boolean, restartPending: boolean): string | null {
-    if (!restartPending) return null;
-    return enabled
-        ? 'On for calls now. The rest takes effect after restarting Cipherline.'
-        : 'Off for calls now. Restart Cipherline to switch it off completely.';
+/**
+ * The restart notice, or null when nothing waits on a restart. Only shown when
+ * a launch switch actually changed (restartPending); the live layers apply at once.
+ */
+export function gamingVideoRestartCopy(_enabled: boolean, restartPending: boolean): string | null {
+    return restartPending ? 'Restart Cipherline to fully apply.' : null;
 }
 
 // ── Outgoing camera: degradation preference ────────────────────────────────

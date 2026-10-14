@@ -33,7 +33,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import axios from 'axios';
 import { AlertTriangle, Users } from 'lucide-react';
-import { API_BASE } from '../../../constants';
+import { apiUrl } from '../../../utils/apiPath';
 import {
     PERMISSION_GROUPS,
     countGroup,
@@ -94,11 +94,12 @@ export const RolePermissionsEditor: React.FC<Props> = ({
         setSaving(true);
         try {
             await axios.patch(
-                `${API_BASE}/servers/${serverId}/roles/${role.role_id}`,
+                apiUrl`/servers/${serverId}/roles/${role.role_id}`,
                 { permissions: bits.toString(10) },
                 { headers: { Authorization: `Bearer ${token}` } },
             );
             onSaved({ ...role, permissions: bits.toString(10) });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (e: any) {
             onError?.(e?.response?.data?.message ?? 'Failed to save permissions');
         } finally { setSaving(false); }

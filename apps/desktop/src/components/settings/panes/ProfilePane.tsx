@@ -19,7 +19,8 @@ import { AVATAR_OUTPUT, BANNER_OUTPUT } from '../../../utils/imageCrop';
 import { useReportDirty } from '../../../hooks/useUnsavedChangesGuard';
 import { IMAGE_ACCEPT_ATTR, validateImageUpload } from '../../../utils/imageUploadValidation';
 import { useToast } from '../../../contexts/ToastContext';
-import { padDiscriminator, USERNAME_REGEX } from '@cipherline/shared';
+import { padDiscriminator } from '@cipherline/shared';
+import { usernameFieldState, usernameBlocksSave, usernameSaveError } from '../../../utils/usernameField';
 
 /**
  * Surface · Profile — Descent redesign (phase 1).
@@ -56,6 +57,13 @@ export const ProfilePane: React.FC<{ onDirtyChange?: (dirty: boolean) => void }>
     const [saved, setSaved] = useState(false);
     const [showPwModal, setShowPwModal] = useState(false);
     const [bioPlaceholder, setBioPlaceholder] = useState(BIO_PLACEHOLDERS[0]);
+    /** A username rejection from the last save (filter / cooldown / clash),
+     *  for the value it was rejected on. */
+    const [usernameServerError, setUsernameServerError] = useState<{ value: string; message: string } | null>(null);
+    /** `next_change_at` from a 429, so the field locks at once instead of
+     *  waiting for /auth/me to catch up. */
+    const [lockedUntil, setLockedUntil] = useState<string | null>(null);
+    const [now, setNow] = useState(() => Date.now());
     /** The image awaiting crop, and which surface it was picked for. */
     const [cropTarget, setCropTarget] = useState<{ kind: 'avatar' | 'banner'; file: File } | null>(null);
     const bioFocusCount = useRef(0);
@@ -78,21 +86,42 @@ export const ProfilePane: React.FC<{ onDirtyChange?: (dirty: boolean) => void }>
     const { uploadEncryptedFile } = useAttachments(token);
     const { broadcastProfileAvatarKey } = useAvatarBroadcast(token, user?.user_id || null);
 
+    // The username field: format, the shared profanity filter, and the 24 h
+    // change cooldown — mirrored for UX; the server enforces all three.
+    const nextUsernameChangeAt = lockedUntil ?? user?.next_username_change_at ?? null;
+    const usernameField = usernameFieldState({
+        draft: usernameDraft,
+        current: user?.username || '',
+        nextChangeAt: nextUsernameChangeAt,
+        pending: user?.username_pending === true,
+        now,
+    });
+    const usernameLocked = usernameField.kind === 'locked';
+    const usernameInvalid = usernameBlocksSave(usernameField);
+    // Tick while locked so "again in N h" counts down and the field unlocks on time.
+    useEffect(() => {
+        if (!nextUsernameChangeAt) return;
+        const t = window.setInterval(() => setNow(Date.now()), 30_000);
+        return () => window.clearInterval(t);
+    }, [nextUsernameChangeAt]);
+    // While locked the field shows (and saves) the current name, whatever
+    // the draft holds, so a stale draft can never ride along with a bio save.
+    const effectiveUsernameDraft = usernameLocked ? (user?.username || '') : usernameDraft;
+    const usernameErrorFor = usernameServerError && usernameServerError.value === usernameDraft.trim() ? usernameServerError.message : null;
+
     // Anything to save? Compares drafts against the profile the server knows.
     const dirty = useMemo(() => {
         const baseName = user?.username || '';
         const baseBio = user?.bio || '';
-        if (usernameDraft.trim() !== baseName) return true;
+        if (effectiveUsernameDraft.trim() !== baseName) return true;
         if (bio !== baseBio) return true;
         if (avatarFile || bannerFile) return true;
         if (avatarUrl === '' && user?.avatar_url) return true;   // pending removal
         if (bannerUrl === '' && user?.banner_url) return true;   // pending removal
         return false;
-    }, [usernameDraft, bio, avatarFile, bannerFile, avatarUrl, bannerUrl, user]);
+    }, [effectiveUsernameDraft, bio, avatarFile, bannerFile, avatarUrl, bannerUrl, user]);
 
     useReportDirty(dirty, onDirtyChange);
-
-    const usernameInvalid = usernameDraft.trim() !== '' && !USERNAME_REGEX.test(usernameDraft.trim());
 
     const handleReset = () => {
         if (avatarUrl?.startsWith('blob:')) URL.revokeObjectURL(avatarUrl);
@@ -159,8 +188,8 @@ export const ProfilePane: React.FC<{ onDirtyChange?: (dirty: boolean) => void }>
                 await broadcastProfileAvatarKey(attachmentId, keyB64, nonceB64);
             }
             const patchBody: Record<string, unknown> = { bio };
-            if (usernameDraft.trim() && usernameDraft.trim() !== user?.username) {
-                patchBody.username = usernameDraft.trim();
+            if (effectiveUsernameDraft.trim() && effectiveUsernameDraft.trim() !== user?.username) {
+                patchBody.username = effectiveUsernameDraft.trim();
             }
             if (finalAvatarId !== undefined) patchBody.avatar_url = finalAvatarId === '' ? null : finalAvatarId;
             if (finalBannerId !== undefined) patchBody.banner_url = finalBannerId === '' ? null : finalBannerId;
@@ -183,7 +212,22 @@ export const ProfilePane: React.FC<{ onDirtyChange?: (dirty: boolean) => void }>
             setTimeout(() => setSaved(false), 3000);
         } catch (err) {
             console.error('Failed to save profile', err);
-            toast.push({ kind: 'error', title: 'Save Failed', message: 'Failed to save profile. Please try again.' });
+            const nameErr = usernameSaveError(err);
+            if (nameErr) {
+                // About the username: say so next to the field. A cooldown
+                // also locks it now and puts the old name back, so pressing
+                // Save again saves everything else.
+                setUsernameServerError({ value: usernameDraft.trim(), message: nameErr.message });
+                if (nameErr.nextChangeAt) {
+                    setLockedUntil(nameErr.nextChangeAt);
+                    setUsernameDraft(user?.username || '');
+                    setNow(Date.now());
+                    void refreshProfile();
+                }
+                toast.push({ kind: 'error', title: 'Profile not saved', message: nameErr.message });
+            } else {
+                toast.push({ kind: 'error', title: 'Save Failed', message: 'Failed to save profile. Please try again.' });
+            }
         } finally {
             setSaving(false);
         }
@@ -282,11 +326,14 @@ export const ProfilePane: React.FC<{ onDirtyChange?: (dirty: boolean) => void }>
                                 <div className="flex-1">
                                     <ClInput
                                         type="text"
-                                        value={usernameDraft}
+                                        value={effectiveUsernameDraft}
                                         onChange={(e) => setUsernameDraft(e.target.value)}
                                         placeholder="Username"
                                         maxLength={32}
                                         minLength={3}
+                                        disabled={usernameLocked}
+                                        aria-invalid={usernameInvalid || !!usernameErrorFor}
+                                        aria-describedby="sd-username-msg"
                                         style={{ width: '100%' }}
                                     />
                                 </div>
@@ -296,12 +343,24 @@ export const ProfilePane: React.FC<{ onDirtyChange?: (dirty: boolean) => void }>
                                     </span>
                                 )}
                             </div>
-                            {usernameInvalid && (
-                                <p className="cl-fmsg">3–32 characters — letters, digits, underscore.</p>
-                            )}
-                            {!usernameInvalid && usernameDraft.trim() !== '' && usernameDraft.trim() !== user?.username && (
-                                <p className="text-[11px] mt-1" style={{ color: 'var(--cl-glow)' }}>Saving will reassign your #tag under the new name.</p>
-                            )}
+                            <div id="sd-username-msg" aria-live="polite">
+                                {usernameField.kind === 'locked' && (
+                                    <p className="text-[11px] mt-1 flex items-center gap-1" style={{ color: 'var(--cl-muted)' }}>
+                                        <Lock size={11} aria-hidden /> {usernameField.message}
+                                    </p>
+                                )}
+                                {(usernameField.kind === 'invalid' || usernameField.kind === 'not_allowed') && (
+                                    <p className="cl-fmsg">{usernameField.message}</p>
+                                )}
+                                {usernameField.kind === 'ok' && usernameErrorFor && (
+                                    <p className="cl-fmsg">{usernameErrorFor}</p>
+                                )}
+                                {usernameField.kind === 'ok' && !usernameErrorFor && (
+                                    <p className="text-[11px] mt-1" style={{ color: 'var(--cl-glow)' }}>
+                                        Saving will reassign your #tag under the new name. You can change it once every 24 hours.
+                                    </p>
+                                )}
+                            </div>
                         </div>
 
                         <div className="cl-fld">

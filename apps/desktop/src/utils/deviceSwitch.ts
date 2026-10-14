@@ -42,11 +42,10 @@
  *
  *   - "follow the system default" (`'default'`) → non-exact. Proven to work:
  *     `{deviceId:'default'}` opened "Default" and reported `deviceId:'default'`
- *     back. This is also the path that makes changing the OS default switch the
- *     call by itself — the track is bound to Chromium's follow-the-default
- *     virtual device and the OS re-routes underneath it, with no app code
- *     involved. That is why that path always worked while explicit picks never
- *     did; they are not the same mechanism.
+ *     back. (An earlier version of this note claimed the OS then re-routes an
+ *     already-open 'default' track by itself when the default changes. It does
+ *     not — the track stays on the endpoint it opened; following a new default
+ *     takes a fresh getUserMedia. See micDeviceSync.ts.)
  *   - a concrete device present in the current enumeration → exact. Satisfiable,
  *     and the only form Chromium honours.
  *

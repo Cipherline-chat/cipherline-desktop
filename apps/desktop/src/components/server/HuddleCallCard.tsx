@@ -37,6 +37,9 @@ interface Props {
     /** True when the local user is the spawner — drives "you started this".
      *  Falls back to `canRename` for callers that predate it. */
     startedByMe?: boolean;
+    /** "This call ends when X leaves" while the channel's "End call when the
+     *  starter leaves" setting is on (utils/endCallOnLeave). */
+    endsNote?: string | null;
     canConnect: boolean;
     token: string | null;
     /** ISO timestamp the call was spawned — used to render the duration timer. */
@@ -63,7 +66,7 @@ const formatDuration = (startIso: string): string => {
 };
 
 export const HuddleCallCard: React.FC<Props> = ({
-    callId, name, participants, isMine, canRename, startedByMe, canConnect,
+    callId, name, participants, isMine, canRename, startedByMe, endsNote, canConnect,
     token, spawnedAt, memberLimit, onJoin, onContextMenu, onMoreClick,
 }) => {
     const visible = participants.slice(0, MAX_AVATARS);
@@ -113,6 +116,19 @@ export const HuddleCallCard: React.FC<Props> = ({
                         : `${participants.length} in call`
                     }{(startedByMe ?? canRename) ? ' · you started this' : ''}
                 </div>
+                {endsNote && (
+                    // A quiet, always-visible line (not only a hover tooltip) so it is
+                    // never a surprise, plus the same text as the tooltip for the
+                    // truncated case.
+                    <div
+                        className="text-[10px] text-cl-faint truncate flex items-center gap-1"
+                        title={endsNote}
+                        data-testid="call-ends-when-note"
+                    >
+                        <span className="w-1 h-1 rounded-full bg-cl-flash/70 shrink-0" aria-hidden />
+                        {endsNote}
+                    </div>
+                )}
             </div>
 
             {/* Right slot: duration timer for all calls */}

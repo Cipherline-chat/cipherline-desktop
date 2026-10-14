@@ -43,6 +43,7 @@ import { secureLocalStore } from './secureLocalStore';
  * after it (the awaited account can change underneath us).
  */
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
 export type ThreadMap = Record<string, any[]>;
 export type MessageKind = 'dm' | 'channel';
 
@@ -59,6 +60,7 @@ const threadPrefix = (kind: MessageKind, userId: string) => `${legacyKey(kind, u
  * test: React state updates replace the arrays that changed and keep the
  * identity of the ones that didn't.
  */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
 const lastWritten = new Map<string, any[]>();
 
 /**

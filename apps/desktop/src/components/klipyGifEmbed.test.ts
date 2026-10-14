@@ -29,7 +29,6 @@ vi.mock('../utils/secureLocalStore', () => ({ default: fakeStore, secureLocalSto
 // Import-time browser probes in the embed's dependency tree (the cl physics
 // module asks matchMedia for reduced motion) — set up BEFORE the imports.
 {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test-only global stubs
     const g = globalThis as Record<string, any>;
     g.document.hidden = false;
     g.document.hasFocus = () => true;

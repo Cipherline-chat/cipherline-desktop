@@ -76,3 +76,21 @@ describe('ChatPane replaces the list, keeps header and composer', () => {
         expect(pane).toContain("'Waiting for channel keys — they arrive automatically…'");
     });
 });
+
+describe('2026-10-11: the fast re-ask keeps the layer honest', () => {
+    it('a check that installs the open channel\'s key re-reads it (else the layer sits on "received" and falls back)', () => {
+        const fn = between(dash, 'onSatisfied: (cid) => {', 'lastAskedAt: (cid) =>');
+        expect(fn).toContain('activeChannelRef.current?.channel_id === cid');
+        expect(fn).toContain('.some(isUndecryptablePlaceholder)');
+        expect(fn).toContain('void refreshChannelHistoryRef.current(sid, cid)');
+        expect(fn).toContain('.finally(() => noteNewestKeyPending(cid, false));');
+    });
+    it('a request filed while keyless sets the pending flag; giving up clears it', () => {
+        expect(between(dash, 'if (keyless && latestEpoch !== 0) {', 'keyReaskScheduler.arm(serverId);')).toContain('noteNewestKeyPending(channelId, true);');
+        expect(between(dash, 'onExhausted: (sid) => {', 'keyReaskTargets.clearServer(sid);')).toContain('noteNewestKeyPending(cid, false)');
+    });
+    it('the hook feeds the pending flag into the decision', () => {
+        const hook = readFileSync(join(__dirname, '..', 'hooks', 'useChannelKeyWait.ts'), 'utf8');
+        expect(hook).toContain('needsKeyWaitState(messages, undefined, { newestKeyPending })');
+    });
+});

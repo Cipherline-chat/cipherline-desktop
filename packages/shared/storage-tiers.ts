@@ -24,6 +24,11 @@
  * The plan comes from `BillingService.getEntitlements(owner).serverStorage`
  * — the single source of truth; nothing here re-derives subscription status.
  * Ownership transfer changes the owner, so the new owner's plan applies.
+ *
+ * A server that is OVER the flat 25 MB while its owner is on the free plan
+ * cannot grow (new saves/emojis are refused) and enters the 60-day storage
+ * grace described in storage-grace.ts: transfer to a Pro member, resubscribe,
+ * or free space — otherwise it is trimmed back to 25 MB at the deadline.
  */
 
 const MB = 1024 * 1024;

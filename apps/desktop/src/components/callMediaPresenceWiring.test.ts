@@ -25,9 +25,18 @@ describe('reporting MY state', () => {
         const at = dashboard.indexOf('<CallMediaReporterBridge');
         expect(at).toBeGreaterThan(dashboard.indexOf('<CallProvider>'));
         const el = dashboard.slice(at, dashboard.indexOf('/>', at));
-        for (const prop of ['userId={userId}', 'huddleCallId={activeHuddleCallId}', 'voiceChannelId={activeVoiceChannelId}', 'connCount={wsConnectCount}', 'send={sendCallMediaReport}']) {
+        for (const prop of ['userId={userId}', 'huddleCallId={activeHuddleCallId}', 'voiceChannelId={activeVoiceChannelId}', 'connCount={wsConnectCount}', 'pushToTalk={voice.settings.pushToTalk}', 'send={sendCallMediaReport}']) {
             expect(el).toContain(prop);
         }
+    });
+
+    it('the bridge feeds the reporter MY mic, deafen (metadata) and push-to-talk state', () => {
+        const bridge = read('call/CallMediaReporterBridge.tsx');
+        expect(bridge).toContain('micOff: !!mine?.isMuted');
+        expect(bridge).toContain('deafened: !!myMeta?.deafened');
+        expect(bridge).toContain('pushToTalk,');
+        // The mute rule itself lives in the reporter hook, not duplicated here.
+        expect(bridge).not.toContain('selfMutedForPresence');
     });
 
     it('useRealtime sends call:media_report and exposes the sender', () => {

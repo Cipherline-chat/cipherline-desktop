@@ -17,6 +17,7 @@
 import React from 'react';
 import { useEncryptedAvatar } from '../../hooks/useEncryptedAvatar';
 import { userColor } from '../../utils/avatarColor';
+import { safeImageSrc } from '../../utils/safeMediaUrl';
 
 interface Props {
     /** Server id — drives the deterministic fallback color. */
@@ -40,7 +41,8 @@ function abbreviate(name: string): string {
 
 export const ServerIcon: React.FC<Props> = ({ serverId, name, attachmentId, keyB64, nonceB64, token, className }) => {
     const inlineKey = (attachmentId && keyB64 && nonceB64) ? { keyB64, nonceB64 } : null;
-    const url = useEncryptedAvatar(attachmentId, token, inlineKey);
+    // Only a validated image URL (blob:, data:image/*, trusted https) ever reaches <img src>.
+    const url = safeImageSrc(useEncryptedAvatar(attachmentId, token, inlineKey));
 
     if (url) {
         return <img src={url} alt={name} className={`object-cover ${className ?? ''}`} />;

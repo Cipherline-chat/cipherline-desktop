@@ -231,6 +231,7 @@ export async function recoverBackupKey(
     if (!header) return null;
     try {
         const key = await deriveBackupKey(password, header.salt, header.iterations, header.hash);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
         const pt = await window.crypto.subtle.decrypt({ name: 'AES-GCM', iv: header.iv as any }, key, header.ct);
         const manifest = JSON.parse(new TextDecoder().decode(pt)) as IncrementalManifest;
         if (manifest?.v !== MANIFEST_VERSION || !Array.isArray(manifest.chunks)) return null;

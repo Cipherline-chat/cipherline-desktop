@@ -55,8 +55,6 @@ export const KLIPY_MAX_DIMENSION = 8192;
 /** KLIPY slugs are `[A-Za-z0-9._-]`. Anything else is refused, never repaired. */
 export const KLIPY_SLUG_RE = /^[A-Za-z0-9._-]{1,200}$/;
 
-const escapeHost = (h: string) => h.replace(/\./g, '\\.');
-
 /**
  * `https://` + one exact media host + `/` + path [+ `?query`]. The host must be
  * followed immediately by `/`, which rules out a port (`:8443`), userinfo
@@ -67,11 +65,13 @@ const escapeHost = (h: string) => h.replace(/\./g, '\\.');
  * or angle brackets, no fragment. Hosts are lowercase: KLIPY returns them that
  * way, and a mixed-case host from a sender is a sign someone is being creative.
  */
-export const KLIPY_MEDIA_URL_RE = new RegExp(
-    `^https://(?:${KLIPY_MEDIA_HOSTS.map(escapeHost).join('|')})/`
-    + `[A-Za-z0-9\\-._~%!$&'()*+,;=:@/]*`
-    + `(?:\\?[A-Za-z0-9\\-._~%!$&'()*+,;=:@/?]*)?$`,
-);
+export const KLIPY_MEDIA_URL_RE =
+    // The host alternation is a LITERAL, not built from KLIPY_MEDIA_HOSTS: nothing
+    // is interpolated into the pattern, so there is nothing to escape (building it
+    // from the list needed a RegExp-escaper, and a dot-only one is an incomplete
+    // sanitiser). apps/desktop/src/utils/klipyMediaUrlRe.test.ts pins it to the
+    // list: every KLIPY_MEDIA_HOSTS entry matches, every near-miss host is refused.
+    /^https:\/\/(?:static|static1|static2)\.klipy\.com\/[A-Za-z0-9\-._~%!$&'()*+,;=:@/]*(?:\?[A-Za-z0-9\-._~%!$&'()*+,;=:@/?]*)?$/;
 
 /** True only for a URL a client may load KLIPY media from. */
 export function isKlipyMediaUrl(raw: unknown): raw is string {

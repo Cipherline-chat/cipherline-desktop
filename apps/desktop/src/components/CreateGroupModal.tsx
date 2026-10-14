@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import { API_BASE } from '../constants';
+import { apiUrl } from '../utils/apiPath';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import { useAttachments } from '../hooks/useAttachments';
@@ -15,6 +16,7 @@ import { ClButton, ClInput, ClSearch, ClCheckbox, ClModal, ClImageCropper } from
 
 interface CreateGroupModalProps {
     onClose: () => void;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     onGroupCreated: (group: any) => void;
     /** Users to pre-select when the modal opens (e.g. from "Add to Group → Create New") */
     preSelectedUsers?: { user_id: string; username: string; avatar_url?: string }[];
@@ -34,6 +36,7 @@ export const CreateGroupModal: React.FC<CreateGroupModalProps> = ({ onClose, onG
     const { uploadEncryptedFile } = useAttachments(token);
     const { broadcastGroupAvatarKey } = useAvatarBroadcast(token, userId);
     const { closing, handleClose } = useModalExit(onClose, 260);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     const [friends, setFriends] = useState<any[]>([]);
     const [loadingFriends, setLoadingFriends] = useState(true);
 
@@ -136,6 +139,7 @@ export const CreateGroupModal: React.FC<CreateGroupModalProps> = ({ onClose, onG
                 headers: { Authorization: `Bearer ${token}`, 'x-device-id': deviceId }
             });
             conversationId = res.data.conversation_id;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (err: any) {
             setError(err?.response?.data?.message || 'Failed to create group');
             setIsCreating(false);
@@ -157,7 +161,7 @@ export const CreateGroupModal: React.FC<CreateGroupModalProps> = ({ onClose, onG
                 );
                 await saveAvatarKey(attachmentId, keyB64, nonceB64);
                 await broadcastGroupAvatarKey(conversationId, attachmentId, keyB64, nonceB64);
-                await axios.patch(`${API_BASE}/conversations/${conversationId}`, {
+                await axios.patch(apiUrl`/conversations/${conversationId}`, {
                     avatar_attachment: attachmentId,
                 }, { headers: { Authorization: `Bearer ${token}` } });
             } catch {

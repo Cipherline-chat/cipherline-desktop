@@ -16,6 +16,7 @@ export type ScreenCapturerChoice = 'auto' | 'dxgi' | 'wgc';
 export interface StartupFlagValues {
     screenCapturer: ScreenCapturerChoice;
     captureLog: boolean;
+    /** Settings -> Voice & Video -> "Prioritize calls and screen share while gaming". ON by default. */
     gamingVideo: boolean;
 }
 
@@ -39,7 +40,9 @@ const values = (v: unknown): StartupFlagValues => {
     return {
         screenCapturer: capturer(r.screenCapturer),
         captureLog: r.captureLog === true,
-        gamingVideo: r.gamingVideo === true,
+        // Default ON: only an explicit false is off (an older main without the
+        // field never reaches here as "off" - it has no setting to show).
+        gamingVideo: r.gamingVideo !== false,
     };
 };
 

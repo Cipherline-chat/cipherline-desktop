@@ -1,13 +1,15 @@
 import { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
 import { API_BASE } from '../constants';
+import { apiUrl } from '../utils/apiPath';
 import { secureLocalStore } from '../utils/secureLocalStore';
 import type { CallNamingSettings, CallMediaByUser } from '@cipherline/shared';
 import { isQuietRenameRefusal } from '../utils/callNaming';
 import { applyCallMediaSeed, callMediaEntriesFromCalls } from '../utils/callMediaPresence';
 import { fetchWithRetry } from '../utils/fetchWithRetry';
 import { huddleJoinHeaders } from '../utils/callJoinFlow';
-import { removeParticipantFromCall } from '../utils/joinView';
+import { removeParticipantFromCall, addSpawnedCall } from '../utils/joinView';
+import { leaveRequestBody } from '../utils/endCallOnLeave';
 
 /**
  * Local cache for the server list and each server's channels/categories.
@@ -85,10 +87,18 @@ export interface ChannelInfo {
      *  from a current API; absent from an older one — read it through
      *  `callNamingOf`, which fills the defaults). */
     call_naming?: CallNamingSettings;
+    /** Calls channels only: a call here ENDS FOR EVERYONE when the person who
+     *  started it leaves on purpose ("End call when the starter leaves",
+     *  Calls channel settings). Server-owned; absent from an older API = off.
+     *  Read it through `endsWhenStarterLeaves` (utils/endCallOnLeave). */
+    end_call_when_starter_leaves?: boolean;
     /** Resolved effective permissions for the current user in this channel.
      *  Serialised as a decimal BigInt string by the API — parse with BigInt(ch.my_permissions).
      *  Present only for server channels; undefined for locally-constructed channel objects. */
     my_permissions?: string;
+    /** Calls channels only: may I START a new call here? Absent from an API
+     *  that predates START_CALLS — see utils/startCallsGate.ts. */
+    can_start_call?: boolean;
     /** Highest registered Sender-Key epoch for this (text) channel — 0 means
      *  no one has ever minted a key for it yet; undefined for non-API-sourced
      *  channel objects. Drives the mint-vs-wait decision in Dashboard's
@@ -175,6 +185,7 @@ export function useServers(token: string | null, userId?: string | null, deviceI
                     secureLocalStore.setItem(serversCacheKey(userId), JSON.stringify(fetched));
                 } catch { /* quota — cache is an optimisation, never required */ }
             }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (err: any) {
             console.error('[useServers] Failed to load servers:', err);
             // P2-REND-18: surface error so callers can show a retry prompt.
@@ -210,7 +221,7 @@ export function useServers(token: string | null, userId?: string | null, deviceI
     const loadMyPermissions = useCallback(async (serverId: string) => {
         if (!token) return;
         try {
-            const res = await axios.get(`${API_BASE}/servers/${serverId}/me/permissions`, {
+            const res = await axios.get(apiUrl`/servers/${serverId}/me/permissions`, {
                 headers: { Authorization: `Bearer ${token}` },
             });
             const bits = BigInt(res.data?.permissions ?? '0');
@@ -243,10 +254,10 @@ export function useServers(token: string | null, userId?: string | null, deviceI
         try {
             // Load channels, categories, and own permissions in parallel.
             const [chRes, catRes] = await Promise.all([
-                axios.get(`${API_BASE}/servers/${serverId}/channels`, {
+                axios.get(apiUrl`/servers/${serverId}/channels`, {
                     headers: { Authorization: `Bearer ${token}` },
                 }),
-                axios.get(`${API_BASE}/servers/${serverId}/categories`, {
+                axios.get(apiUrl`/servers/${serverId}/categories`, {
                     headers: { Authorization: `Bearer ${token}` },
                 }).catch(() => ({ data: [] })), // tolerate older API instances
                 loadMyPermissions(serverId),     // fire-and-forget into myPermissions
@@ -285,13 +296,13 @@ export function useServers(token: string | null, userId?: string | null, deviceI
     const loadHuddleCalls = useCallback(async (huddleId: string) => {
         if (!token) return;
         try {
-            const res = await axios.get(`${API_BASE}/huddles/${huddleId}/calls`, {
+            const res = await axios.get(apiUrl`/huddles/${huddleId}/calls`, {
                 headers: { Authorization: `Bearer ${token}` },
             });
             setHuddleCalls(prev => ({ ...prev, [huddleId]: res.data ?? [] }));
             // Partial seed: replaces media only for the calls this list covers.
             applyCallMediaSeed(callMediaEntriesFromCalls(Array.isArray(res.data) ? res.data : []));
-        } catch (err) {
+        } catch {
             // Non-fatal; clear stale entries.
             setHuddleCalls(prev => ({ ...prev, [huddleId]: [] }));
         }
@@ -320,13 +331,8 @@ export function useServers(token: string | null, userId?: string | null, deviceI
      * Apply a `huddle:call_spawned` WS event to local state. Idempotent —
      * if the call_id already exists in the bucket the spawn is dropped.
      */
-    const applyHuddleSpawn = useCallback((huddleId: string, call: Omit<HuddleCallInfo, 'huddle_id' | 'participants'>) => {
-        setHuddleCalls(prev => {
-            const bucket = prev[huddleId] ?? [];
-            if (bucket.some(c => c.call_id === call.call_id)) return prev;
-            const next = [...bucket, { ...call, huddle_id: huddleId, participants: [call.spawner_user_id] }];
-            return { ...prev, [huddleId]: next };
-        });
+    const applyHuddleSpawn = useCallback((huddleId: string, call: Omit<HuddleCallInfo, 'huddle_id' | 'participants'> & { participants?: string[] }) => {
+        setHuddleCalls(prev => addSpawnedCall(prev, huddleId, call));
     }, []);
 
     /** Apply a `huddle:call_destroyed` WS event. */
@@ -373,7 +379,7 @@ export function useServers(token: string | null, userId?: string | null, deviceI
     const spawnHuddleCall = useCallback(async (huddleId: string) => {
         if (!token) return null;
         const res = await axios.post(
-            `${API_BASE}/huddles/${huddleId}/calls`,
+            apiUrl`/huddles/${huddleId}/calls`,
             {},
             { headers: huddleJoinHeaders(token, deviceId), timeout: 15000 },
         );
@@ -394,7 +400,7 @@ export function useServers(token: string | null, userId?: string | null, deviceI
     const joinHuddleCall = useCallback(async (callId: string) => {
         if (!token) return null;
         const res = await axios.post(
-            `${API_BASE}/huddles/calls/${callId}/join`,
+            apiUrl`/huddles/calls/${callId}/join`,
             {},
             { headers: huddleJoinHeaders(token, deviceId), timeout: 15000 },
         );
@@ -407,14 +413,14 @@ export function useServers(token: string | null, userId?: string | null, deviceI
         };
     }, [token, deviceId]);
 
-    /** Force-move another member into an existing call (needs MOVE_MEMBERS).
+    /** Force-move another member into an existing call (needs MANAGE_CALL_MEMBERS).
      *  The server derives the source call itself — we only say who and where
      *  to. Throws on rejection so the caller can roll back its optimistic
      *  update and surface the server's message. */
     const moveMemberToCall = useCallback(async (callId: string, userId: string) => {
         if (!token) return null;
         const res = await axios.post(
-            `${API_BASE}/huddles/calls/${callId}/move`,
+            apiUrl`/huddles/calls/${callId}/move`,
             { user_id: userId },
             { headers: { Authorization: `Bearer ${token}` }, timeout: 15000 },
         );
@@ -426,7 +432,7 @@ export function useServers(token: string | null, userId?: string | null, deviceI
     const moveMemberToNewCall = useCallback(async (huddleId: string, userId: string) => {
         if (!token) return null;
         const res = await axios.post(
-            `${API_BASE}/huddles/${huddleId}/move`,
+            apiUrl`/huddles/${huddleId}/move`,
             { user_id: userId },
             { headers: { Authorization: `Bearer ${token}` }, timeout: 15000 },
         );
@@ -441,7 +447,7 @@ export function useServers(token: string | null, userId?: string | null, deviceI
      *  emitted their `huddle:participant` leave (owner report 2026-10-08,
      *  during a Postgres connection-exhaustion window). The server's
      *  reconciler is the backstop if every attempt fails. */
-    const leaveHuddleCall = useCallback(async (callId: string) => {
+    const leaveHuddleCall = useCallback(async (callId: string, opts?: { deliberate?: boolean }) => {
         if (!token) return;
         // Take ourselves out of the call's card NOW, on every leave path
         // (Leave, switching calls, undoing a superseded join) — not when the
@@ -452,9 +458,15 @@ export function useServers(token: string | null, userId?: string | null, deviceI
             setHuddleCalls(prev => removeParticipantFromCall(prev, callId, userId));
         }
         try {
+            // `deliberate: true` ONLY when the user chose to leave (Leave, or
+            // switching calls). It is what lets the server end the call for
+            // everyone when its channel has "End call when the starter leaves" on; every other leave
+            // (an undone join, a failed connect) sends the body-less leave it
+            // always did. Idempotent, so the retry cannot end a call twice.
+            const body = leaveRequestBody(opts?.deliberate);
             const res = await fetchWithRetry(() => axios.post(
-                `${API_BASE}/huddles/calls/${callId}/leave`,
-                {},
+                apiUrl`/huddles/calls/${callId}/leave`,
+                body,
                 { headers: { Authorization: `Bearer ${token}` }, timeout: 15000 },
             ), { attempts: 4, baseDelayMs: 1000 });
             // Eagerly remove the call card when the server confirms it was
@@ -481,7 +493,7 @@ export function useServers(token: string | null, userId?: string | null, deviceI
         if (!token) return;
         try {
             await axios.patch(
-                `${API_BASE}/huddles/calls/${callId}`,
+                apiUrl`/huddles/calls/${callId}`,
                 { name },
                 { headers: { Authorization: `Bearer ${token}` } },
             );
@@ -497,7 +509,7 @@ export function useServers(token: string | null, userId?: string | null, deviceI
     const reloadCategories = useCallback(async (serverId: string) => {
         if (!token) return;
         try {
-            const res = await axios.get(`${API_BASE}/servers/${serverId}/categories`, {
+            const res = await axios.get(apiUrl`/servers/${serverId}/categories`, {
                 headers: { Authorization: `Bearer ${token}` },
             });
             setCategories(prev => ({ ...prev, [serverId]: res.data ?? [] }));
@@ -529,7 +541,7 @@ export function useServers(token: string | null, userId?: string | null, deviceI
         if (!token) return null;
         try {
             const res = await axios.post(
-                `${API_BASE}/invites/${code}/accept`,
+                apiUrl`/invites/${code}/accept`,
                 {},
                 { headers: { Authorization: `Bearer ${token}` } },
             );
