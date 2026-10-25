@@ -1,5 +1,7 @@
 import { secureLocalStore } from './secureLocalStore';
 import { VERIFICATION_STRENGTH, isLegacyVerified } from './verificationStrength';
+import { noteContactVerified } from './firstVerification';
+import { noteAchievementVerified } from './achievements/tracker';
 
 export type VerificationState = 'unverified' | 'verified' | 'key_changed';
 
@@ -43,8 +45,10 @@ interface DeviceRecord {
     verified: boolean;
     first_seen: number;
     last_seen: number;
-    /** Strength of the comparison behind `verified`. Absent = legacy. */
+    /** Strength of the comparison behind `verified`. Recorded only; age (`verified_at`) decides the re-check nudge. */
     sv?: number;
+    /** When the codes were last compared (ms). Drives the one-year re-check nudge. */
+    verified_at?: number;
 }
 
 interface V2Store {
@@ -298,16 +302,24 @@ export function acknowledgeKeyChange(
  * number matches out-of-band. Verification is per-device — verifying one
  * device of a contact says nothing about their other devices.
  *
- * Stamps `sv: VERIFICATION_STRENGTH`. Every caller compares a current-strength
- * check (a v2 safety number or the per-party contact code), and re-marking a
- * legacy record is how it is refreshed.
+ * Stamps `sv: VERIFICATION_STRENGTH` and `verified_at: now`. Every caller
+ * compares a current-strength check (a v2 safety number or the per-party
+ * contact code), and re-marking a record is how its one-year clock is
+ * refreshed.
  */
 export function markVerified(
     myUserId: string,
     theirUserId: string,
     theirPub: string,
     deviceId?: string,
+    /** The contact's display name, when the caller has it: spoken by the first-verification ceremony. */
+    peerName?: string | null,
 ): void {
+    // Read BEFORE the pin is written: "had anyone been verified until now?" is what
+    // makes this commit a first (utils/firstVerification.ts). Unknown counts as yes.
+    let hadVerifiedBefore = true;
+    try { hadVerifiedBefore = hasVerifiedAnyone(myUserId); } catch { /* unknown = not a first */ }
+
     const store = readStore(myUserId, theirUserId);
     if (deviceId) adopt(store, deviceId, theirPub);
     const key = deviceId ?? pubBucketKey(theirPub);
@@ -318,8 +330,41 @@ export function markVerified(
         first_seen: store.devices[key]?.first_seen ?? now,
         last_seen: now,
         sv: VERIFICATION_STRENGTH,
+        verified_at: now,
     };
     writeStore(myUserId, theirUserId, store);
+
+    // THE verification commit point. Every route to "verified" ends here, so the
+    // one-time hint and the first-verification ceremony hook here and nowhere else.
+    // It can never throw out of a verification.
+    try { noteContactVerified({ myUserId, peerName, hadVerifiedBefore }); } catch { /* never undo a verification */ }
+    // Achievements: a verified friend, counted locally (a user id in a set; nothing is sent).
+    try { noteAchievementVerified(theirUserId); } catch { /* never undo a verification */ }
+}
+
+/**
+ * Has ANY contact been verified on this device, by this account? Any device of
+ * anyone counts, and so does an old (re-check-suggested) vouch. Reads the v2
+ * pin records and, for contacts not yet migrated, the v1 ones. Throws when the
+ * store cannot enumerate its keys; callers decide what unknown means.
+ */
+export function hasVerifiedAnyone(myUserId: string): boolean {
+    const v2Prefix = v2Key(myUserId, '');
+    for (const k of secureLocalStore.keysWithPrefix(v2Prefix)) {
+        try {
+            const parsed = JSON.parse(secureLocalStore.getItem(k) ?? 'null') as V2Store | null;
+            if (parsed?.devices && Object.values(parsed.devices).some(r => r?.verified === true)) return true;
+        } catch { /* corrupt record: not a vouch */ }
+    }
+    const v1Prefix = v1Key(myUserId, '');
+    for (const k of secureLocalStore.keysWithPrefix(v1Prefix)) {
+        if (k.startsWith(V2_PREFIX)) continue;
+        try {
+            const legacy = JSON.parse(secureLocalStore.getItem(k) ?? 'null') as LegacyRecord | null;
+            if (legacy?.verified === true) return true;
+        } catch { /* corrupt record: not a vouch */ }
+    }
+    return false;
 }
 
 /**

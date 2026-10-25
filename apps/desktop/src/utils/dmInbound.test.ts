@@ -34,7 +34,7 @@ const fakeStore = {
 vi.mock('./secureLocalStore', () => ({ default: fakeStore, secureLocalStore: fakeStore }));
 
 const {
-    applyIncomingDmMessages, commitPulledBatch, decryptFailureOutcome, deletedDmTargets, persistIncomingDms,
+    applyIncomingDmMessages, commitPulledBatch, decryptFailureOutcome, deletedDmTargets, isCallKeyControl, persistIncomingDms,
     undecryptablePlaceholder, UNDECRYPTABLE_KIND, TRANSIENT_STRIKE_LIMIT, isSameAuthor,
 } = await import('./dmInbound');
 const messageStore = await import('./messageStore');
@@ -225,6 +225,10 @@ describe('applyIncomingDmMessages — one pure merge for disk and state', () => 
             { id: 'x4', content: { type: 'delete', target_id: 'm2' }, sender_device_id: 'dev-B' },
             { id: 'x5', content: { type: 'pin', target_id: 'm1', action: 'add' } },
             { id: 'x6', content: { type: 'profile_update', avatar_attachment_id: 'a' } },
+            { id: 'x7', content: { type: 'call_key_request', call_id: 'call-1' }, sender_device_id: 'dev-D' },
+            { id: 'x8', content: { type: 'call_key', call_id: 'call-1', epoch: 4, e2ee_key_b64: 'k', key_id: 'share' }, sender_device_id: 'dev-D' },
+            { id: 'x9', content: { type: 'call_key', call_id: 'call-1', epoch: 5, e2ee_key_b64: 'k', key_id: 'rotate-5' }, sender_device_id: 'dev-D' },
+            { id: 'x10', content: { type: 'call_key', call_id: 'call-1', epoch: 2, e2ee_key_b64: 'k', key_id: 'mint' }, sender_device_id: 'dev-D' },
         ],
     };
 
@@ -482,5 +486,25 @@ describe('handleOptimisticMessage unpins a sender\'s own deleted pinned message'
         const unpinAt = fn.indexOf('handleUnpinMessage(m.conversation_id, deletedTargetId)');
         expect(unpinAt).toBeGreaterThan(setStateAt);
         expect(fn).toContain('pinnedMessagesStateRef.current[m.conversation_id]?.includes(deletedTargetId)');
+    });
+});
+
+describe('isCallKeyControl — which call_key messages are not a call bar', () => {
+    it('a key handed over, rotated or minted is control; the call start is not', () => {
+        for (const key_id of ['share', 'mint', 'rotate-2', 'rotate-17']) {
+            expect(isCallKeyControl({ type: 'call_key', key_id })).toBe(true);
+        }
+        for (const key_id of ['initial', '', 'whatever', undefined, 7]) {
+            expect(isCallKeyControl({ type: 'call_key', key_id })).toBe(false);
+        }
+        expect(isCallKeyControl({ type: 'text', key_id: 'share' })).toBe(false);
+        expect(isCallKeyControl(null)).toBe(false);
+        expect(isCallKeyControl('share')).toBe(false);
+    });
+    it('the call start still becomes the one call bar, once', () => {
+        const start = { id: 's', content: { type: 'call_key', call_id: 'c', epoch: 1, e2ee_key_b64: 'k', key_id: 'initial' }, sender_device_id: 'dev-B' };
+        const share = { id: 'sh', content: { type: 'call_key', call_id: 'c', epoch: 1, e2ee_key_b64: 'k', key_id: 'share' }, sender_device_id: 'dev-C' };
+        const out = applyIncomingDmMessages({ c1: [] }, { c1: [start, share, share] });
+        expect(out.c1.map(m => m.id)).toEqual(['s']);
     });
 });

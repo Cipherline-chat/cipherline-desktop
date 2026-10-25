@@ -1,0 +1,60 @@
+/* "Read receipt: also you." — components/moments/views/NoteToSelfMoment.tsx.
+   9 s, transform/opacity only. Phases: notice 0–0.5, main 0.5–4.8,
+   read 4.8–7.4, hold 7.4–8.4, exit 8.4–9.0. */
+/* The swell rolls in during the notice beat and drifts until the hold. */
+.mo-nts-swell {
+  position: absolute; left: -300px; top: 92px;
+  animation: mo-nts-swell-in .5s ease-out both, mo-nts-swell var(--mo-hold, 7.4s) cubic-bezier(.3, 0, .4, 1) both;
+}
+@keyframes mo-nts-swell-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes mo-nts-swell { from { transform: translateX(-60px); } to { transform: translateX(40px); } }
+.mo-nts-bottle {
+  position: absolute; left: -45px; top: -80px;
+  animation: mo-nts-rise 1.2s cubic-bezier(.2, .8, .3, 1) .5s both, mo-nts-sink .7s cubic-bezier(.45, 0, .55, 1) 2.5s forwards;
+}
+@keyframes mo-nts-rise { from { transform: translateY(60vh); } to { transform: none; } }
+@keyframes mo-nts-sink { from { transform: none; opacity: 1; } to { transform: translateY(36vh) rotate(16deg); opacity: 0; } }
+.mo-nts-bob { position: relative; transform-origin: 50% 80%; animation: mo-nts-bob 1.6s ease-in-out .5s both; }
+@keyframes mo-nts-bob {
+  0% { transform: rotate(-22deg); } 35% { transform: rotate(10deg); } 65% { transform: rotate(-5deg); } 100% { transform: rotate(0); }
+}
+.mo-nts-cork {
+  position: absolute; left: 30px; top: -8px;
+  animation: mo-nts-cork .7s cubic-bezier(.2, .7, .4, 1) 2s both;
+}
+@keyframes mo-nts-cork {
+  0% { transform: none; opacity: 1; } 15% { transform: translateY(-14px); opacity: 1; }
+  100% { transform: translate(60px, -150px) rotate(220deg); opacity: 0; }
+}
+
+.mo-nts-note {
+  position: absolute; left: -200px; top: -105px; width: 400px; height: 170px;
+  animation: mo-nts-out .5s cubic-bezier(.2, .8, .3, 1) 2.3s both;
+}
+@keyframes mo-nts-out { from { transform: translateY(40px) scale(.5); opacity: 0; } to { transform: none; opacity: 1; } }
+.mo-nts-paper {
+  position: absolute; inset: 0; background: #F6F1E4; border-radius: 6px;
+  transform-origin: 50% 50%;
+  animation: mo-nts-unroll .6s cubic-bezier(.3, .8, .3, 1) 2.8s both;
+}
+@keyframes mo-nts-unroll { from { transform: scaleX(.07); } to { transform: none; } }
+.mo-nts-rod {
+  position: absolute; top: -7px; width: 14px; height: 184px; border-radius: 7px; background: #B8865A;
+}
+.mo-nts-rod-l { left: -7px;  animation: mo-nts-rod-l .6s cubic-bezier(.3, .8, .3, 1) 2.8s both; }
+.mo-nts-rod-r { right: -7px; animation: mo-nts-rod-r .6s cubic-bezier(.3, .8, .3, 1) 2.8s both; }
+@keyframes mo-nts-rod-l { from { transform: translateX(188px); } to { transform: none; } }
+@keyframes mo-nts-rod-r { from { transform: translateX(-188px); } to { transform: none; } }
+.mo-nts-text {
+  position: absolute; inset: 0; padding: 22px 28px; box-sizing: border-box;
+  color: #0B0F1E; font-family: var(--cl-font-sans, 'Nunito', sans-serif);
+  animation: mo-fade-in .35s ease-out 3.3s both;
+}
+@keyframes mo-fade-in { from { opacity: 0; } to { opacity: 1; } }
+.mo-nts-dear { font-family: var(--cl-font-display, 'Fredoka', sans-serif); font-size: 22px; font-weight: 600; color: #0E8F80; }
+.mo-nts-body { margin-top: 6px; font-size: 15px; font-weight: 700; color: #5B6788; }
+.mo-nts .mo-nts-punch {
+  margin-top: 14px; font-size: 27px; color: #0B0F1E; white-space: nowrap;
+  animation: mo-nts-punch .5s cubic-bezier(.2, .8, .3, 1.2) 4.3s both;
+}
+@keyframes mo-nts-punch { from { transform: scale(.7); opacity: 0; } to { transform: none; opacity: 1; } }

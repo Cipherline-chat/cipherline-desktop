@@ -1,0 +1,42 @@
+/* ============================================================================
+   Profile motion policy (owner rule 2026-10-24).
+
+   A profile's animation - its effect, its decoration, an animated banner -
+   plays CONTINUOUSLY while Cipherline is in front, and pauses only when the
+   window is unfocused or hidden. Reduced motion = still (profile-cosmetics.css
+   already stops every loop under prefers-reduced-motion with !important).
+
+   Two things used to stop it:
+     1. ProfileEffect played once (2.6 s), faded and settled. Cards now pass
+        `loop` (ProfileCosmetics.tsx): the effect stays in data-phase="play"
+        and carries data-loop="true". Effects are canvas programs
+        (components/cosmetics/effects/) that pause their own frame loop on
+        `data-cl-window="inactive"` - nothing here drives them.
+     2. The app-wide decoration gate (`data-cl-motion="idle"`, utils/idleMotion.ts)
+        also goes idle after 45 s with no input - so a card you were simply
+        READING froze. Profile cosmetics follow the narrower window bit
+        (`data-cl-window`, focus + visibility only) instead.
+
+   The decoration classes below are the loops profile-cosmetics.css defines
+   (components/cosmetics/decorations.tsx). `.pc-fx > i` is kept for any old
+   DOM-particle effect a stale stylesheet could still produce.
+
+   Cost is bounded by where loops render: only the open preview popover, the
+   open full profile and the Settings preview loop. Picker thumbnails play on
+   hover / selection only. Everything here is transform / opacity.
+   ============================================================================ */
+
+/* 1. Keep looping through input-idle: undo any idle pause (more specific than a
+      [data-cl-motion="idle"] rule) unless the window itself is inactive. */
+:root[data-cl-motion="idle"]:not([data-cl-window="inactive"]) :is(.pc-spin, .pc-breathe, .pc-glint, .pc-dashflow, .pc-flicker, .pc-twinkle,
+  .pc-sway, .pc-stream, .pc-bob, .pc-jelly, .pc-glide, .pc-cloak, .pc-photophore) { animation-play-state: running; }
+:root[data-cl-motion="idle"]:not([data-cl-window="inactive"]) .pc-fx > i { animation-play-state: running; }
+
+/* 2. Window not in front: pause. !important so no looping shorthand can reset the play state. */
+:root[data-cl-window="inactive"] :is(.pc-spin, .pc-breathe, .pc-glint, .pc-dashflow, .pc-flicker, .pc-twinkle,
+  .pc-sway, .pc-stream, .pc-bob, .pc-jelly, .pc-glide, .pc-cloak, .pc-photophore) { animation-play-state: paused !important; }
+:root[data-cl-window="inactive"] .pc-fx > i { animation-play-state: paused !important; }
+
+@media (prefers-reduced-motion: reduce) {
+  .pc-fx > i { animation: none !important; }
+}

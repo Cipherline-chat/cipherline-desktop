@@ -61,10 +61,15 @@ describe('ServerContextPanel — START_CALLS gates', () => {
     });
 
     it('the "Move to ▸ New call in …" submenu entries need canStartCalls; existing-call entries do not', () => {
+        // The destination rule lives in utils/callMoveDestinations.ts (behaviour
+        // covered by its own test); the menu must hand it BOTH viewer gates.
         const menu = between(src, 'const buildMoveToSubmenu = React.useCallback(', 'const buildCallParticipantMenu').block;
-        expect(menu).toContain('if (!canConnect(h.channel_id) || !canStartCalls(h.channel_id)) continue;');
-        // The existing-call loop is unchanged: CONNECT only.
-        expect(menu).toMatch(/if \(!canConnect\(c\.huddle_id\)\) continue;/);
+        expect(menu).toContain('listMoveDestinations({');
+        expect(menu).toMatch(/canConnect,\s*canStartCalls,/);
+        const dests = readFileSync(join(here, '..', '..', 'utils', 'callMoveDestinations.ts'), 'utf8');
+        expect(dests).toContain('if (!input.canConnect(h.channel_id) || !input.canStartCalls(h.channel_id)) continue;');
+        // The existing-call loop: CONNECT only.
+        expect(dests).toMatch(/if \(!input\.canConnect\(c\.huddle_id\)\) continue;/);
     });
 });
 

@@ -33,6 +33,8 @@ describe('gpuRestartFromChildGone — which child-process-gone becomes a rendere
 
     it('negative controls: quitting, other process types, clean exits, junk', () => {
         expect(gpuRestartFromChildGone(PROD_GPU_GONE, 1, true)).toBeNull(); // teardown of a quit
+        // Windows logging the user off (0xC000026B) takes the GPU process too: nothing to recover.
+        expect(gpuRestartFromChildGone({ type: 'GPU', reason: 'crashed', exitCode: -1073741205 }, 1, false)).toBeNull();
         for (const type of ['Utility', 'Zygote', 'Pepper Plugin', 'gpu', undefined]) {
             expect(gpuRestartFromChildGone({ ...PROD_GPU_GONE, type }, 1, false)).toBeNull();
         }

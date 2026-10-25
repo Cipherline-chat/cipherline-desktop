@@ -34,7 +34,7 @@ describe('profile media wiring', () => {
     });
 
     it('editing your own profile tells the cache (Settings and onboarding)', () => {
-        expect(profilePane).toContain('noteProfileEdited(user?.user_id, patchBody');
+        expect(profilePane).toContain('noteProfileEdited(latest.current.user?.user_id, body');
         expect(onboardingHost).toContain('noteProfileEdited(userId, body');
     });
 });

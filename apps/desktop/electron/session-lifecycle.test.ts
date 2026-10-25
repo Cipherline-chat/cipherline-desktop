@@ -39,7 +39,7 @@ function launch(fs: MarkerFs, version = '1.0.21', at = T0) {
         start() { const r = lc.start(); if (r) records.push(r); return this; },
         /** Any crash signal, through the same gate main.ts uses. */
         event(e: CrashEvent) {
-            const r = crashRecordFor(e, lc.isQuitting, { ...ctx, appVersion: version });
+            const r = crashRecordFor(e, lc.ignoresCrashes, { ...ctx, appVersion: version });
             if (r) records.push(r);
             return this;
         },
@@ -297,5 +297,109 @@ describe('stale unclean exits from an older version are dropped on attach', () =
         const store = new PendingCrashStore();
         store.attach({ read: () => stored, write: (v) => { stored = v; }, clear: () => { stored = null; } });
         expect(store.all()).toHaveLength(1);
+    });
+});
+
+// ── Windows log-off / shutdown: reports b40df5f4, 8034b4a1, 5f888d8a, 88ce6334 ─
+
+describe('Windows ends the session: the child dies first, or session-end never arrives', () => {
+    const LOGOFF = -1073741205; // 0xC000026B STATUS_DLL_INIT_FAILED_LOGOFF
+    const netService: CrashEvent = { source: 'child-process-gone', details: { type: 'Utility', reason: 'crashed', exitCode: LOGOFF, serviceName: 'network.mojom.NetworkService' } };
+    const videoCapture: CrashEvent = { source: 'child-process-gone', details: { type: 'Utility', reason: 'crashed', exitCode: LOGOFF, serviceName: 'video_capture.mojom.VideoCaptureService' } };
+
+    it('the log-off exit code is never a crash record, with the app otherwise running (b40df5f4 / 8034b4a1)', () => {
+        for (const e of [netService, videoCapture]) expect(crashRecordFor(e, false, ctx)).toBeNull();
+        expect(crashRecordFor({ source: 'render-process-gone', details: { reason: 'crashed', exitCode: LOGOFF } }, false, ctx)).toBeNull();
+    });
+
+    it('POSITIVE CONTROL: the same process dying with any other crash code is still a record', () => {
+        const other = (exitCode: number): CrashEvent => ({ source: 'child-process-gone', details: { type: 'Utility', reason: 'crashed', exitCode, serviceName: 'network.mojom.NetworkService' } });
+        for (const code of [-1073741819, -1073741795, 34, 1, LOGOFF + 1]) {
+            expect(crashRecordFor(other(code), false, ctx), `exit ${code}`).toMatchObject({ kind: 'child_process_gone', exit_code: code });
+        }
+    });
+
+    it('query-session-end (negotiation) drops the marker and silences crash events', () => {
+        const fs = memFs();
+        const a = launch(fs).start();
+        a.lc.suspectSessionEnd();
+        expect(fs.files[P]).toBeUndefined();
+        expect(a.lc.isQuitting).toBe(false); // not a quit: close-to-tray keeps hiding the window
+        expect(a.lc.ignoresCrashes).toBe(true);
+        // Windows takes the children down, then the app, without ever dispatching session-end
+        for (const e of TEARDOWN) a.event(e);
+        expect(a.records).toEqual([]);
+        expect(nextLaunchRecords(fs)).toEqual([]); // 5f888d8a / 88ce6334: no "closed unexpectedly"
+    });
+
+    it('a child dying of the log-off code is a session end: the marker goes even with no query/session-end event', () => {
+        const fs = memFs();
+        const a = launch(fs).start();
+        // main.ts noteOsSessionEndExit → beginQuit('session-end') before recordCrash
+        a.quit('session-end').event(netService);
+        expect(a.records).toEqual([]);
+        expect(a.lc.quitTrigger).toBe('session-end');
+        expect(nextLaunchRecords(fs)).toEqual([]);
+    });
+
+    it('a shutdown that was CANCELLED re-arms the marker and crash events (a later kill is caught)', () => {
+        const fs = memFs();
+        const a = launch(fs).start();
+        a.lc.suspectSessionEnd();
+        a.lc.resumeAfterSuspectedEnd();
+        expect(a.lc.ignoresCrashes).toBe(false);
+        expect(a.lc.armed).toBe(true);
+        expect(JSON.parse(fs.files[P]).started_at).toBe(new Date(T0).toISOString());
+        a.event({ source: 'render-process-gone', details: { reason: 'crashed', exitCode: -1073741819 } });
+        expect(a.records).toHaveLength(1);
+        expect(nextLaunchRecords(fs).map(r => r.kind)).toEqual(['unclean_exit']);
+    });
+
+    it('session-end after a suspected end stays a quit; a late resume cannot resurrect the marker', () => {
+        const fs = memFs();
+        const a = launch(fs).start();
+        a.lc.suspectSessionEnd();
+        a.quit('session-end');
+        a.lc.resumeAfterSuspectedEnd(); // the timer firing afterwards
+        expect(a.lc.isQuitting).toBe(true);
+        expect(fs.files[P]).toBeUndefined();
+        expect(nextLaunchRecords(fs)).toEqual([]);
+    });
+
+    it('suspecting before start() leaves no marker either', () => {
+        const fs = memFs();
+        const a = launch(fs);
+        a.lc.suspectSessionEnd();
+        a.start();
+        expect(fs.files[P]).toBeUndefined();
+    });
+
+    it('suspecting after a quit changes nothing; resume without a suspicion is a no-op', () => {
+        const fs = memFs();
+        const a = launch(fs).start().quit('before-quit');
+        a.lc.suspectSessionEnd();
+        a.lc.resumeAfterSuspectedEnd();
+        expect(a.lc.isQuitting).toBe(true);
+        expect(fs.files[P]).toBeUndefined();
+        const b = launch(memFs()).start();
+        b.lc.resumeAfterSuspectedEnd();
+        expect(b.lc.armed).toBe(true);
+    });
+});
+
+// ── Transient network failures: report 49e3d5ce ──────────────────────────────
+
+describe('a bare net::ERR_* unhandled rejection is not a crash', () => {
+    const rejection = (m: string): CrashEvent => ({ source: 'main-exception', thrown: new Error(m), origin: 'unhandledRejection' });
+
+    it('net::ERR_HTTP2_PROTOCOL_ERROR (the updater download on 1.0.20)', () => {
+        expect(crashRecordFor(rejection('net::ERR_HTTP2_PROTOCOL_ERROR'), false, ctx)).toBeNull();
+        expect(crashRecordFor(rejection('net::ERR_CONNECTION_RESET'), false, ctx)).toBeNull();
+    });
+
+    it('POSITIVE CONTROL: every other rejection, and a net error as an uncaught EXCEPTION, still records', () => {
+        expect(crashRecordFor(rejection('Cannot read properties of undefined'), false, ctx)).toMatchObject({ kind: 'main_exception' });
+        expect(crashRecordFor(rejection('request failed: net::ERR_HTTP2_PROTOCOL_ERROR at https://x'), false, ctx)).toMatchObject({ kind: 'main_exception' });
+        expect(crashRecordFor({ source: 'main-exception', thrown: new Error('net::ERR_HTTP2_PROTOCOL_ERROR'), origin: 'uncaughtException' }, false, ctx)).toMatchObject({ kind: 'main_exception' });
     });
 });

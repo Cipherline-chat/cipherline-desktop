@@ -289,10 +289,11 @@ export const BillingTab: React.FC = () => {
     // effective_status or a trial that ran out never reads as expired.
     const isPastDue = status.subscription_status === 'past_due';
     const isExpired = status.effective_status === 'expired' && !isPastDue;
-    const trialLive = status.subscription_status === 'trial' && !isExpired;
+    // A comp is never on a trial, whatever the raw column says (trialBannerRule.ts).
+    const trialLive = status.subscription_status === 'trial' && !isExpired && status.is_comp !== true;
     // extendTrial revives a lapsed trial server-side (GREATEST(ends, NOW())+3d),
     // so the extend offer stays visible after expiry too.
-    const showExtend = status.subscription_status === 'trial' && !status.trial_extended;
+    const showExtend = status.subscription_status === 'trial' && !status.trial_extended && status.is_comp !== true;
     // past_due is deliberately NOT an upgrade state — a new checkout would
     // stack a second subscription; the fix is updating the card (portal).
     const canUpgrade = trialLive || isExpired;
@@ -644,7 +645,7 @@ export const BillingTab: React.FC = () => {
                     // A past-due account becomes payable again the moment the
                     // card is good, and Stripe retries on its own schedule —
                     // re-read status so the banner clears as soon as it does.
-                    void refresh();
+                    refresh().catch(() => { /* statusError is recorded by the context */ });
                 }}
             />
         </>

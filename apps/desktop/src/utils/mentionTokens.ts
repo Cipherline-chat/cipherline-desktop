@@ -21,10 +21,137 @@
  */
 
 import type { MentionEntry } from '@cipherline/shared';
+import { stripBidiControls } from './fileSafety';
 
-const MENTION_TOKEN_RE = /(<@[ur]:[^:>]+:[^>]+>|<:[^:>]+:[^>]+>|@everyone|@here)/g;
+/**
+ * The token grammar, as a regex. Every quantifier is BOUNDED, on purpose:
+ * message text is chosen by the sender, and the unbounded form
+ * (`[^:>]+:[^>]+>`) scanned to the end of the text from every `<` that never
+ * closed, so a pass over `'<:a:'.repeat(25_000)` cost several seconds and the
+ * scan runs with no click (notification body, conversation-list preview,
+ * every render of the row).
+ *
+ * The bounds sit well above any real token: ids are UUIDs (36), usernames are
+ * at most 32 characters, role and emoji names at most 50. A longer "token" is
+ * not one a client produces and is shown as the text it is.
+ *
+ * Code that WALKS text uses `findMentionTokens` / `mentionTokenMatcher` below,
+ * not this regex: even bounded, a backtracking engine still spends up to
+ * ID_MAX + LABEL_MAX steps at every unclosed `<`, which is hundreds of
+ * milliseconds on a 200k-character message. The scanner finds the same
+ * matches in one linear pass. This regex stays as the grammar's reference
+ * form (tests pin the scanner against it).
+ */
+export const MENTION_TOKEN_ID_MAX = 64;
+export const MENTION_TOKEN_LABEL_MAX = 128;
+
+const MENTION_TOKEN_RE = /(<@[ur]:[^:>]{1,64}:[^>]{1,128}>|<:[^:>]{1,64}:[^>]{1,128}>|@everyone|@here)/g;
 
 export { MENTION_TOKEN_RE };
+
+/** One token found in text: `index` and `[0]` mirror a RegExpExecArray. */
+export interface MentionTokenMatch {
+    index: number;
+    0: string;
+}
+
+/**
+ * Every token in `text`, left to right, non-overlapping: exactly the matches
+ * `MENTION_TOKEN_RE` (or, with `'emoji'`, `EMOJI_TOKEN_RE`) finds with the `g`
+ * flag, but in time linear in `text.length` whatever the content.
+ *
+ * Why it is linear: for a candidate `<` at `i`, the grammar's id runs to the
+ * FIRST `:` after it and its label to the FIRST `>` after that (neither part
+ * may contain its terminator), so each candidate has at most one possible
+ * match. The scanner looks those terminators up with `indexOf` and caches
+ * each answer while it is still ahead of the scan; every cache only moves
+ * forward, so all lookups together read the text a constant number of times,
+ * plus one character-by-character pass.
+ */
+export function findMentionTokens(text: string, kind: 'all' | 'emoji' = 'all'): MentionTokenMatch[] {
+    const out: MentionTokenMatch[] = [];
+    if (typeof text !== 'string' || text.length === 0) return out;
+    if (text.indexOf(kind === 'all' ? '<' : '<:') < 0 && (kind === 'emoji' || text.indexOf('@') < 0)) return out;
+    const n = text.length;
+    const all = kind === 'all';
+    // Forward-only caches: the first `>` at/after the scan position, and the
+    // first `:` at/after each id start (`i + 4` for <@u:/<@r:, `i + 2` for <:).
+    // Each is only ever queried at a non-decreasing position, so a cached
+    // answer that is still >= the query is still the answer.
+    let gtAt = -1;
+    let urColonAt = -1;
+    let emColonAt = -1;
+
+    let i = 0;
+    while (i < n) {
+        const ch = text.charCodeAt(i);
+        let end = -1;
+        if (ch === 0x3c /* < */) {
+            const c1 = text.charCodeAt(i + 1);
+            let idStart = -1;
+            let colon = -1;
+            if (c1 === 0x3a /* : */) {
+                idStart = i + 2;
+                if (emColonAt < idStart) { const k = text.indexOf(':', idStart); emColonAt = k < 0 ? n : k; }
+                colon = emColonAt;
+            } else if (all && c1 === 0x40 /* @ */) {
+                const c2 = text.charCodeAt(i + 2);
+                if ((c2 === 0x75 /* u */ || c2 === 0x72 /* r */) && text.charCodeAt(i + 3) === 0x3a /* : */) {
+                    idStart = i + 4;
+                    if (urColonAt < idStart) { const k = text.indexOf(':', idStart); urColonAt = k < 0 ? n : k; }
+                    colon = urColonAt;
+                }
+            }
+            if (idStart > 0) {
+                // The first `>` after `<` is the first after the id start too.
+                if (gtAt < i) { const k = text.indexOf('>', i); gtAt = k < 0 ? n : k; }
+                const idLen = colon - idStart;
+                const labelLen = gtAt - colon - 1;
+                if (gtAt < n && colon < gtAt
+                    && idLen >= 1 && idLen <= MENTION_TOKEN_ID_MAX
+                    && labelLen >= 1 && labelLen <= MENTION_TOKEN_LABEL_MAX) {
+                    end = gtAt + 1;
+                }
+            }
+        } else if (all && ch === 0x40 /* @ */) {
+            if (text.startsWith('@everyone', i)) end = i + 9;
+            else if (text.startsWith('@here', i)) end = i + 5;
+        }
+        if (end > 0) {
+            out.push({ index: i, 0: text.slice(i, end) });
+            i = end;
+        } else {
+            i += 1;
+        }
+    }
+    return out;
+}
+
+/**
+ * A drop-in for the `const re = new RegExp(MENTION_TOKEN_RE.source, 'g');
+ * while ((m = re.exec(text)) !== null)` loop: `exec(text)` returns the next
+ * token (with `index` and `[0]`) or null, from a linear `findMentionTokens`.
+ */
+export function mentionTokenMatcher(kind: 'all' | 'emoji' = 'all'): { exec(text: string): MentionTokenMatch | null } {
+    let forText: string | null = null;
+    let matches: MentionTokenMatch[] = [];
+    let next = 0;
+    return {
+        exec(text: string): MentionTokenMatch | null {
+            if (text !== forText) {
+                forText = text;
+                matches = findMentionTokens(text, kind);
+                next = 0;
+            }
+            if (next >= matches.length) {
+                // Like a global RegExp reaching the end: reset for the next walk.
+                forText = null;
+                return null;
+            }
+            return matches[next++];
+        },
+    };
+}
 
 export interface ParsedMentionToken {
     kind: 'user' | 'role' | 'everyone' | 'here' | 'emoji';
@@ -40,12 +167,14 @@ export interface ParsedMentionToken {
 export function parseMentionToken(token: string): ParsedMentionToken | null {
     if (token === '@everyone') return { kind: 'everyone', label: 'everyone' };
     if (token === '@here')     return { kind: 'here',     label: 'here' };
-    const userMatch = token.match(/^<@u:([^:>]+):([^>]+)>$/);
-    if (userMatch) return { kind: 'user', id: userMatch[1], label: userMatch[2] };
-    const roleMatch = token.match(/^<@r:([^:>]+):([^>]+)>$/);
-    if (roleMatch) return { kind: 'role', id: roleMatch[1], label: roleMatch[2] };
-    const emojiMatch = token.match(/^<:([^:>]+):([^>]+)>$/);
-    if (emojiMatch) return { kind: 'emoji', id: emojiMatch[2], label: emojiMatch[1] };
+    // Labels are sender-chosen display text: bidi / control characters are
+    // stripped (utils/fileSafety.ts) so a label cannot reorder the line.
+    const userMatch = token.match(/^<@u:([^:>]{1,64}):([^>]{1,128})>$/);
+    if (userMatch) return { kind: 'user', id: userMatch[1], label: stripBidiControls(userMatch[2]) };
+    const roleMatch = token.match(/^<@r:([^:>]{1,64}):([^>]{1,128})>$/);
+    if (roleMatch) return { kind: 'role', id: roleMatch[1], label: stripBidiControls(roleMatch[2]) };
+    const emojiMatch = token.match(/^<:([^:>]{1,64}):([^>]{1,128})>$/);
+    if (emojiMatch) return { kind: 'emoji', id: emojiMatch[2], label: stripBidiControls(emojiMatch[1]) };
     return null;
 }
 
@@ -103,12 +232,13 @@ export function mentionsToPlainText(
     resolveUsername: (userId: string) => string | undefined,
     opts: MentionsToPlainTextOptions = {},
 ): string {
+    // Callers pass `content.text` from decrypted, sender-chosen content; a
+    // non-string there must not throw out of a render.
+    if (typeof text !== 'string') return '';
     if (!text) return text;
     let out = '';
     let lastIndex = 0;
-    const re = new RegExp(MENTION_TOKEN_RE.source, 'g');
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(text)) !== null) {
+    for (const m of findMentionTokens(text)) {
         out += text.slice(lastIndex, m.index);
         const parsed = parseMentionToken(m[0]);
         if (!parsed) {
@@ -174,11 +304,10 @@ export function mentionsToDisplayText(text: string): string {
  * Mirrors mobile's `extractMentionEntries` (`src/features/chat/logic/mentions.ts`).
  */
 export function extractMentionsFromText(text: string): MentionEntry[] {
+    if (typeof text !== 'string') return [];
     const seen = new Set<string>();
     const entries: MentionEntry[] = [];
-    const re = new RegExp(MENTION_TOKEN_RE.source, 'g');
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(text)) !== null) {
+    for (const m of findMentionTokens(text)) {
         const parsed = parseMentionToken(m[0]);
         if (!parsed || parsed.kind === 'emoji') continue;
         const key =
@@ -203,6 +332,7 @@ export function extractMentionsFromText(text: string): MentionEntry[] {
  * re-exports it under the same name.
  */
 export function messageTextMentionsUser(text: string, userId: string): boolean {
+    if (typeof text !== 'string') return false;
     if (text.includes('@everyone') || text.includes('@here')) return true;
     return text.includes(`<@u:${userId}:`);
 }
@@ -212,11 +342,12 @@ export function messageTextMentionsUser(text: string, userId: string): boolean {
  * for any role ID in `myRoleIds`.
  */
 export function messageTextMentionsRole(text: string, myRoleIds: ReadonlySet<string>): boolean {
-    if (myRoleIds.size === 0) return false;
-    const re = /<@r:([^:>]+):[^>]+>/g;
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(text)) !== null) {
-        if (myRoleIds.has(m[1])) return true;
+    if (myRoleIds.size === 0 || typeof text !== 'string') return false;
+    // The linear scanner, not a regex (see MENTION_TOKEN_RE for why).
+    if (!text.includes('<@r:')) return false;
+    for (const m of findMentionTokens(text)) {
+        const parsed = parseMentionToken(m[0]);
+        if (parsed?.kind === 'role' && parsed.id && myRoleIds.has(parsed.id)) return true;
     }
     return false;
 }

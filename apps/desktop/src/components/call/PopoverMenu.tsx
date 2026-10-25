@@ -1,11 +1,14 @@
 import React from 'react';
-import { MicOff, Monitor, Eye, EyeOff, Users, AudioLines, VideoOff, MonitorOff, HeadphoneOff, Check, PencilOff, PenLine, Flag, PhoneOff, X } from 'lucide-react';
+import { MicOff, Monitor, Eye, EyeOff, Users, AudioLines, VideoOff, MonitorOff, HeadphoneOff, Check, PencilOff, PenLine, Flag, PhoneOff, X, Music } from 'lucide-react';
 import { ResetSlider } from '../ResetSlider';
+import { MAX_PER_USER_VOLUME, DEFAULT_PER_USER_VOLUME } from '../../utils/volumeLimits';
+import { VolumeCeilingWatch } from '../moments/VolumeCeilingWatch';
 import { useOpenProfile } from '../../contexts/ProfileOpenContext';
 import { useCallServerCtx } from '../../contexts/CallServerCtx';
 import { useReportOpen } from '../../contexts/ReportOpenContext';
 import { useEscape } from '../../hooks/useEscape';
 import { disconnectConfirmCopy } from '../../utils/callMemberDisconnect';
+import { useEntranceMuted, setEntranceMuted } from '../../utils/entrancePrefs';
 import {
     annotationStore, useAnnotationStore, selectCanRevoke, selectCanGrantAnnotation,
     selectGrantTarget, isScreenShareTrack,
@@ -183,6 +186,8 @@ export const PopoverMenu = ({
     const callServerCtx = useCallServerCtx();
     const openReport = useReportOpen();
     const canViewProfile = !!userId && !!openProfile;
+    // Per-person switch for THEIR entrance sound (listener side, this device only).
+    const entranceMuted = useEntranceMuted(userId);
     // No isSelf check needed: every caller of this menu (ParticipantCard,
     // VideoTile, ScreenShareGate, FloatingHuddleCard,
     // ServerContextPanel's HuddleParticipantPopover) already gates it to
@@ -216,26 +221,29 @@ export const PopoverMenu = ({
                     </div>
                 )}
 
-                {/* Mic volume — range widened from 0..2 to 0..4 (max 400%). The
+                {/* Mic volume — 0..2 (max 200%, utils/volumeLimits.ts). The
                     perceptual gain curve in useParticipantAudio.ts converts slider
-                    value → linear gain via x^1.5, so 200% lands at ≈+9 dB and 400%
-                    at ≈+18 dB — enough headroom to recover a genuinely quiet peer. */}
+                    value → linear gain via x^1.5, so 200% lands at ≈+9 dB. */}
                 <div className="flex flex-col gap-1 px-[11px] mb-2.5">
                     <div className="flex justify-between items-center text-[10px]">
                         <span className="text-cl-faint">Volume</span>
                         <span className="text-cl-lume font-semibold">{Math.round(volume * 100)}%</span>
                     </div>
-                    <ResetSlider min={0} max={4} step={0.05} value={volume} resetValue={1} onChangeValue={onVolumeChange} />
+                    <VolumeCeilingWatch>
+                        <ResetSlider min={0} max={MAX_PER_USER_VOLUME} step={0.05} value={volume} resetValue={DEFAULT_PER_USER_VOLUME} onChangeValue={onVolumeChange} />
+                    </VolumeCeilingWatch>
                 </div>
 
-                {/* Screenshare audio volume — same widened range. */}
+                {/* Screenshare audio volume — same 200% ceiling. */}
                 {isScreenShare && onScreenShareVolumeChange && (
                     <div className="flex flex-col gap-1 px-[11px] mb-2.5 pt-2 border-t border-white/5">
                         <div className="flex justify-between items-center text-[10px]">
                             <span className="text-cl-faint">Screen Audio</span>
                             <span className="text-cl-lume font-semibold">{Math.round((screenShareVolume ?? 1) * 100)}%</span>
                         </div>
-                        <ResetSlider min={0} max={4} step={0.05} value={screenShareVolume ?? 1} resetValue={1} onChangeValue={onScreenShareVolumeChange} />
+                        <VolumeCeilingWatch>
+                            <ResetSlider min={0} max={MAX_PER_USER_VOLUME} step={0.05} value={screenShareVolume ?? DEFAULT_PER_USER_VOLUME} resetValue={DEFAULT_PER_USER_VOLUME} onChangeValue={onScreenShareVolumeChange} />
+                        </VolumeCeilingWatch>
                     </div>
                 )}
 
@@ -245,6 +253,10 @@ export const PopoverMenu = ({
 
                 {onNsEnabledChange !== undefined && (
                     <CheckRow icon={<AudioLines size={15} />} label="Noise Suppression" checked={nsEnabled ?? false} onChange={onNsEnabledChange} />
+                )}
+
+                {userId && (
+                    <CheckRow icon={<Music size={15} />} label="Mute Entrance Sound" checked={entranceMuted} onChange={v => setEntranceMuted(userId, v)} />
                 )}
 
                 {isScreenShare && onScreenShareMuteChange !== undefined && (

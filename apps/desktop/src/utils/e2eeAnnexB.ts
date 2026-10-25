@@ -58,7 +58,12 @@
  * Runs inside the E2EE worker (workers/e2eeWorker.ts): it wraps LiveKit's
  * `onmessage` and puts this transform in front of each sender's encoded
  * stream before LiveKit's cryptor sees it.
+ *
+ * The same wrapper also puts the audio-lag cap (e2eeAudioLag.ts) in front of
+ * every sender AND receiver stream: over-late AUDIO frames are dropped
+ * instead of queued, video passes untouched.
  */
+import { createAudioLagStage, AUDIO_LAG_STATS_KIND, type AudioLagStats } from './e2eeAudioLag';
 
 export type E2EEVideoCodec = 'vp8' | 'h264' | 'vp9' | 'av1' | 'h265';
 
@@ -223,6 +228,10 @@ export function installAnnexBCanonicalizer(scope: WorkerScopeLike, now: () => nu
         stats.frames = stats.rewritten = stats.shortStartCode = stats.leadingData = stats.keyRewritten = stats.deltaRewritten = 0;
     };
 
+    const postLag = (s: AudioLagStats) => {
+        try { scope.postMessage({ kind: AUDIO_LAG_STATS_KIND, data: { ...s } }); } catch { /* page gone */ }
+    };
+
     scope.onmessage = function (this: unknown, ev: MessageEvent) {
         const msg = ev?.data as { kind?: string; data?: Record<string, unknown> } | undefined;
         try {
@@ -250,7 +259,16 @@ export function installAnnexBCanonicalizer(scope: WorkerScopeLike, now: () => nu
                         controller.enqueue(frame);
                     },
                 });
-                const readableStream = (msg.data.readableStream as ReadableStream<EncodedFrameLike>).pipeThrough(canonical);
+                // Audio-lag cap FIRST, so it sees how long the frame waited
+                // before anything in this worker touched it (e2eeAudioLag.ts).
+                const readableStream = (msg.data.readableStream as ReadableStream<EncodedFrameLike>)
+                    .pipeThrough(createAudioLagStage<EncodedFrameLike>('send', postLag, now))
+                    .pipeThrough(canonical);
+                ev = { data: { ...msg, data: { ...msg.data, readableStream } } } as MessageEvent;
+            } else if (msg?.kind === 'decode' && msg.data?.readableStream instanceof ReadableStream) {
+                // Incoming: only the audio-lag cap (video and the cryptor untouched).
+                const readableStream = (msg.data.readableStream as ReadableStream<EncodedFrameLike>)
+                    .pipeThrough(createAudioLagStage<EncodedFrameLike>('recv', postLag, now));
                 ev = { data: { ...msg, data: { ...msg.data, readableStream } } } as MessageEvent;
             }
         } catch { /* fall through to LiveKit with the original message */ }

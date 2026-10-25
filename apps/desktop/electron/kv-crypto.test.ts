@@ -27,6 +27,7 @@ import {
     TAG_RAW,
     TAG_WRAPPED,
     USER_VAULT_INFO_PREFIX,
+    KV_RAW_MIGRATION_FLAG,
     type MasterKeySource,
     type KvKeyStatus,
 } from './kv-crypto';
@@ -242,10 +243,65 @@ describe('kv-crypto — no-keystore (TAG_RAW) fallback', () => {
         expect(kv.open([{ k: 'k', o: null, b: sealed.b! }])).toEqual([{ k: 'k', v: 'plain' }]);
     });
 
-    it('reads a TAG_RAW record even when a key IS available (mixed store)', () => {
+    // F10: a raw record has no authentication, so with a key present it is
+    // either a legacy record (re-sealed once) or a forgery by whoever can
+    // write the profile's IndexedDB.
+    const rawOf = (v: string) => new Uint8Array([TAG_RAW, ...Buffer.from(v, 'utf8')]);
+    const flagStore = () => {
+        const m = new Map<string, string>();
+        return { m, get: (k: string) => m.get(k) ?? null, set: (k: string, v: string) => { m.set(k, v); } };
+    };
+
+    it('refuses a TAG_RAW record when a key IS available and no migration store is wired', () => {
         const kv = new KvCrypto(source());
-        const raw = new Uint8Array([TAG_RAW, ...Buffer.from('legacy', 'utf8')]);
-        expect(kv.open([{ k: 'k', o: null, b: raw }])).toEqual([{ k: 'k', v: 'legacy' }]);
+        expect(kv.open([{ k: 'k', o: null, b: rawOf('legacy') }])).toEqual([{ k: 'k', v: null }]);
+    });
+
+    it('refuses a forged raw "verified" pin even with a per-account key (audit PoC)', () => {
+        const flags = flagStore();
+        flags.m.set(KV_RAW_MIGRATION_FLAG, 'done');
+        const kv = new KvCrypto(source(), { rawMigrationFlags: flags });
+        const forged = rawOf(JSON.stringify({ v: 2, devices: { rogue: { pub: 'X', verified: true } } }));
+        expect(kv.open([{ k: `kv_verify_v2_${USER_A}_them`, o: USER_A, b: forged }])[0].v).toBeNull();
+    });
+
+    it('migration boot: accepts a legacy non-security raw record ONCE, flags it for re-seal, then never again', () => {
+        const flags = flagStore();
+        const boot1 = new KvCrypto(source(), { rawMigrationFlags: flags });
+        expect(boot1.open([{ k: 'cipherline_keybinds', o: null, b: rawOf('ctrl+k') }]))
+            .toEqual([{ k: 'cipherline_keybinds', v: 'ctrl+k', m: true }]);
+        // The flag is written the moment the window is decided.
+        expect(flags.m.get(KV_RAW_MIGRATION_FLAG)).toBeTruthy();
+        // The same process keeps its window (the renderer re-seals on a timer).
+        expect(boot1.open([{ k: 'cipherline_voice_settings', o: null, b: rawOf('v') }])[0].v).toBe('v');
+
+        const boot2 = new KvCrypto(source(), { rawMigrationFlags: flags });
+        expect(boot2.open([{ k: 'cipherline_keybinds', o: null, b: rawOf('ctrl+k') }])[0].v).toBeNull();
+    });
+
+    it('migration boot still refuses security-state keys', () => {
+        const kv = new KvCrypto(source(), { rawMigrationFlags: flagStore() });
+        for (const k of [`kv_verify_v2_${USER_A}_x`, `kv_warn_v1_${USER_A}`, `kv_own_devices_v1_${USER_A}`]) {
+            expect(kv.open([{ k, o: USER_A, b: rawOf('{}') }])[0].v).toBeNull();
+        }
+    });
+
+    it('a flag store that throws closes the window (fails closed)', () => {
+        const kv = new KvCrypto(source(), { rawMigrationFlags: { get: () => { throw new Error('x'); }, set: () => {} } });
+        expect(kv.open([{ k: 'cipherline_keybinds', o: null, b: rawOf('a') }])[0].v).toBeNull();
+    });
+
+    it('refuses raw records while LOCKED', () => {
+        const kv = new KvCrypto(source(null, 'locked'), { rawMigrationFlags: flagStore() });
+        expect(kv.open([{ k: 'k', o: null, b: rawOf('x') }])[0].v).toBeNull();
+    });
+
+    it('positive control: wrapped records still open normally with the migration store wired', () => {
+        const flags = flagStore();
+        flags.m.set(KV_RAW_MIGRATION_FLAG, 'done');
+        const kv = new KvCrypto(source(), { rawMigrationFlags: flags });
+        const [sealed] = kv.seal([{ k: `kv_verify_v2_${USER_A}_t`, o: USER_A, v: 'pins' }]);
+        expect(kv.open([{ k: `kv_verify_v2_${USER_A}_t`, o: USER_A, b: sealed.b! }])[0].v).toBe('pins');
     });
 });
 

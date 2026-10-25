@@ -89,9 +89,11 @@ describe('contentProblem — the content boundary', () => {
         expect(contentProblem(c)).not.toBeNull();
     });
 
-    it('leaves other variants alone (it is not a general schema)', () => {
+    it('is a full schema now: other variants pass on their own rules, an unknown type is a placeholder', () => {
         expect(contentProblem({ type: 'text', text: 'hi' })).toBeNull();
-        expect(contentProblem({ type: 'some_future_type' })).toBeNull();
+        // Was accepted unchecked; an unknown shape now becomes a "couldn't be
+        // shown" row rather than reaching renderers (utils/contentValidation.test.ts).
+        expect(contentProblem({ type: 'some_future_type' })).toEqual(expect.any(String));
     });
 
     it('parseSafetyNumberContent returns only what the card needs — never an outcome field', () => {

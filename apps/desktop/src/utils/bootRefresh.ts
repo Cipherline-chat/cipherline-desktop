@@ -14,6 +14,19 @@
 export const BOOT_REFRESH_WAIT_MS = 3000;
 
 /**
+ * Is this HTTP status from POST /auth/refresh the server REJECTING the refresh
+ * token (→ sign out), as opposed to the server being unable to answer right
+ * now (→ keep the session)? The API answers 401 for every invalid / expired /
+ * revoked / reused refresh token and 400 for a malformed body; 403 is kept for
+ * parity with the rest of the app. Everything else — 5xx (proxy, deploy, the
+ * admin kill switch's 503 APP_SUSPENDED), 429, an unknown status — is NOT a
+ * verdict on the token, and signing someone out over it is destructive.
+ */
+export function isRefreshRejection(status: number | undefined): boolean {
+    return status === 400 || status === 401 || status === 403;
+}
+
+/**
  * Calls `onSettle` exactly once: with the refresh's result if it lands within
  * `waitMs`, otherwise — ONLY while the current token is still unexpired — with
  * `null` (meaning "keep using the existing token") when `waitMs` elapses. An

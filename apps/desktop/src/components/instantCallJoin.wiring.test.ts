@@ -122,7 +122,10 @@ describe('real latency cuts', () => {
     });
 
     it('the Calls-channel key derives while the join request is in flight', () => {
-        expect(dash).toContain('const callsChannelKey = useCallsChannelKey(activeCallsChannelId ?? pendingKeyChannelId);');
+        expect(dash).toContain('const derivedCallsChannelKey = useCallsChannelKey(activeCallsChannelId ?? pendingKeyChannelId);');
+        // A moved-in guest's key (utils/guestCallKey) only ever fills in when the
+        // derivation has nothing for this channel; it is bound to the active call.
+        expect(dash).toMatch(/const callsChannelKey = pickCallsRoomKey\(\s*derivedCallsChannelKey,/);
         expect(dash).toMatch(/const beginCallJoin = useCallback\([\s\S]*?setPendingKeyChannelId\(keyChannelId\);/);
         expect(dash).toMatch(/const beginCallJoin = useCallback\([\s\S]*?prefetchRnnoiseSources\(\);[\s\S]*?prewarmMic\(/);
     });

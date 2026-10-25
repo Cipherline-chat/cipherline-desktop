@@ -242,6 +242,15 @@ export interface ViewerCueOptions {
  * the feature brief are decided here rather than in the 4.4k-line conference
  * component, which is the whole reason this function exists.
  */
+/** `pending:<x>` → `<sid>:<x>`: the publication of the same share run got its sid. */
+export function isSidArrival(prevEpoch: string, nextEpoch: string): boolean {
+    const p = prevEpoch.indexOf(':');
+    const n = nextEpoch.indexOf(':');
+    if (p < 0 || n < 0) return false;
+    return prevEpoch.slice(0, p) === 'pending' && nextEpoch.slice(0, n) !== 'pending'
+        && prevEpoch.slice(p) === nextEpoch.slice(n);
+}
+
 export function reduceViewerCues(
     prev: ViewerCueState,
     input: ViewerCueInput,
@@ -260,6 +269,17 @@ export function reduceViewerCues(
     }
 
     const viewers = [...new Set(input.viewers)].sort();
+
+    // The SAME run getting its track sid: 'pending:live' → '<sid>:live'. Not a
+    // new epoch. The component only re-renders on roster events, so the first
+    // render that sees the sid is very often the one CAUSED by the first
+    // viewer clicking Watch — and treating that as a new epoch adopted the
+    // viewer into the silent baseline: "I don't hear the viewer sound most of
+    // the time when someone joins right after I start sharing" (owner,
+    // 2026-10-24). Keep the run's arming time and diff normally.
+    if (prev.epoch !== input.epoch && isSidArrival(prev.epoch, input.epoch)) {
+        prev = { ...prev, epoch: input.epoch };
+    }
 
     // New epoch (share started, restarted, or the connection came back):
     // adopt whatever is on screen as the baseline, silently.

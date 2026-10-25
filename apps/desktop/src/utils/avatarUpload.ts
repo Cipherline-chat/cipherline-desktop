@@ -77,9 +77,11 @@ export async function uploadAvatarBlob(
     blob: Blob,
     deps: AvatarUploadDeps,
     fileName = 'avatar.jpg',
+    /** 'image/gif' / 'image/webp' for an animated pick that skipped the crop. */
+    mimeType = 'image/jpeg',
 ): Promise<string> {
     const { attachmentId, keyB64, nonceB64 } =
-        await deps.uploadEncryptedFile(blob, fileName, 'image/jpeg');
+        await deps.uploadEncryptedFile(blob, fileName, mimeType);
     await saveAvatarKey(attachmentId, keyB64, nonceB64);
     await deps.broadcastProfileAvatarKey(attachmentId, keyB64, nonceB64);
     // The account's PUBLIC profile picture (the one unencrypted copy, shown on

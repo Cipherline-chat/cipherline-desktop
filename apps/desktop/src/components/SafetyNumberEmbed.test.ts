@@ -35,12 +35,12 @@ vi.mock('axios', () => ({
 // set of pins so the resting-state derivation has something to read.
 const markVerified = vi.fn();
 /** Whatever this device has pinned for the sender, keyed by device id. */
-let pinStore: Record<string, { pub: string; verified: boolean; first_seen: number; last_seen: number; sv?: number }> = {};
-/** A pin as written today: a verified one carries the v2 provenance stamp. */
+let pinStore: Record<string, { pub: string; verified: boolean; first_seen: number; last_seen: number; sv?: number; verified_at?: number }> = {};
+/** A pin as written today: a verified one carries the provenance stamp and a fresh date. */
 const pin = (pub: string, verified: boolean) =>
-    (verified ? { pub, verified, first_seen: 1, last_seen: 1, sv: 2 } : { pub, verified, first_seen: 1, last_seen: 1 });
-/** A verification written before safety-number v2 (no `sv`). */
-const legacyPin = (pub: string) => ({ pub, verified: true, first_seen: 1, last_seen: 1 });
+    (verified ? { pub, verified, first_seen: 1, last_seen: 1, sv: 2, verified_at: Date.now() } : { pub, verified, first_seen: 1, last_seen: 1 });
+/** A verification made over a year ago: the "Re-check suggested" case. */
+const legacyPin = (pub: string) => ({ pub, verified: true, first_seen: 1, last_seen: 1, sv: 2, verified_at: Date.now() - 366 * 24 * 60 * 60 * 1000 });
 vi.mock('../utils/keyVerification', () => ({
     markVerified: (...a: unknown[]) => markVerified(...a),
     getKnownDevices: () => pinStore,
@@ -220,7 +220,7 @@ describe('SafetyNumberEmbed — a match alone never grants trust', () => {
         expect(markVerified).toHaveBeenCalledTimes(1);
         // Pins the pub the CLIENT fetched and compared, not anything the
         // message supplied.
-        expect(markVerified).toHaveBeenCalledWith('bob-user-id', ALICE, b64(1), 'dev-a1');
+        expect(markVerified).toHaveBeenCalledWith('bob-user-id', ALICE, b64(1), 'dev-a1', 'Alice');
         expect(host.textContent).toContain('Marked verified');
     });
 
@@ -306,7 +306,7 @@ describe('SafetyNumberEmbed — a verification already done is not asked for aga
         expect(markVerified).not.toHaveBeenCalled();
     }, 30_000);
 
-    it('G1 migration: a LEGACY-verified contact is not "already verified", and the re-check offers the refresh', async () => {
+    it('a year-old verified contact is not "already verified", and the re-check offers the refresh', async () => {
         directoryKeys = ALICE_REAL;
         pinStore = { 'dev-a1': legacyPin(b64(1)) };
         render({ code: await computeContactCode(ALICE, [b64(1)]) });
@@ -322,7 +322,7 @@ describe('SafetyNumberEmbed — a verification already done is not asked for aga
         // The code comparison is a current-strength check, so attesting it is
         // how the legacy vouch is refreshed: the prompt must be offered.
         clickButtonContaining('I compared this elsewhere');
-        expect(markVerified).toHaveBeenCalledWith('bob-user-id', ALICE, b64(1), 'dev-a1');
+        expect(markVerified).toHaveBeenCalledWith('bob-user-id', ALICE, b64(1), 'dev-a1', 'Alice');
     }, 30_000);
 
     it('positive control: the same re-check DOES ask when the pins are not verified', async () => {
@@ -495,7 +495,7 @@ describe('SafetyNumberEmbed — a match never paints over an unresolved key chan
 
         // Only the explicit attestation resolves it.
         clickButtonContaining('I compared this elsewhere');
-        expect(markVerified).toHaveBeenCalledWith('bob-user-id', ALICE, b64(9), 'dev-a1');
+        expect(markVerified).toHaveBeenCalledWith('bob-user-id', ALICE, b64(9), 'dev-a1', 'Alice');
         expect(host.textContent).not.toContain(KEY_CHANGED);
         expect(host.querySelector('.cl-sn-card--ok')).not.toBeNull();
     }, 30_000);

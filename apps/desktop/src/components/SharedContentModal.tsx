@@ -14,9 +14,10 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
     Download, ExternalLink, FileText, ImageIcon as ImageIco, Link as LinkIcon,
-    FolderOpen, Play, X, Film, FileAudio, FileArchive, MessageSquare,
+    FolderOpen, Play, X, Film, FileAudio, FileArchive, MessageSquare, Lock,
 } from 'lucide-react';
 import { ClModal, ClSegment, ClButton } from './cl';
+import { DialogHeader, DialogBody, DialogFooter } from './dialog/DialogFrame';
 import { ImageLightbox } from './ImageLightbox';
 import { useEscape } from '../hooks/useEscape';
 import { importKeyFromBase64, decryptBlob } from '../utils/crypto';
@@ -24,6 +25,8 @@ import { openExternalLink } from '../utils/openExternalLink';
 import { getEncryptedAttachment, putEncryptedAttachment } from '../utils/attachmentCache';
 import { downloadEncryptedAttachment } from '../utils/attachmentDownload';
 import { API_BASE } from '../constants';
+import { saveReceivedFile } from './executableDownloadGuard';
+import { safeDisplayFilename } from '../utils/fileSafety';
 
 export type SharedTab = 'media' | 'files' | 'links';
 
@@ -402,12 +405,8 @@ const FileRow: React.FC<{
         setFailed(false);
         try {
             const url = await decryptToUrl(item, token);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = item.filename || 'download';
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
+            // Safe save name + a confirmation for executables.
+            await saveReceivedFile(url, item.filename);
             // Give the save a beat before releasing the blob.
             setTimeout(() => URL.revokeObjectURL(url), 10_000);
         } catch {
@@ -430,7 +429,7 @@ const FileRow: React.FC<{
             <span className="flex items-center gap-2.5 min-w-0">
                 <span className="shrink-0 text-cl-lume flex">{kind.icon}</span>
                 <span className="text-[13px] font-semibold text-cl-text truncate">
-                    {item.filename || 'File'}
+                    {safeDisplayFilename(item.filename)}
                     {failed && <span className="text-cl-flash font-normal"> — couldn’t decrypt</span>}
                 </span>
             </span>
@@ -521,15 +520,17 @@ export const SharedContentModal: React.FC<SharedContentModalProps> = ({
             <ClModal
                 open={open}
                 onClose={onClose}
-                width={640}
+                width={680}
                 label={`Shared in ${title}`}
-                cardStyle={{ padding: 20, display: 'flex', flexDirection: 'column', maxHeight: 'min(78vh, 720px)' }}
+                cardClassName="dlg-card"
+                cardStyle={{ minHeight: 'min(460px, calc(100vh - 48px))' }}
             >
-                <div className="flex items-center justify-between gap-3 mb-3.5">
-                    <h3 className="text-[17px] m-0" style={{ fontFamily: 'var(--cl-font-display)', fontWeight: 600, color: 'var(--cl-text)' }}>
-                        Shared in {title}
-                    </h3>
-                </div>
+                <DialogHeader
+                    icon={<FolderOpen size={19} strokeWidth={2.2} />}
+                    title={<>Shared in {title}</>}
+                    subtitle="Media, files and links from this chat."
+                />
+                <DialogBody>
                 <ClSegment<SharedTab>
                     value={tab}
                     onChange={setTab}
@@ -660,6 +661,10 @@ export const SharedContentModal: React.FC<SharedContentModalProps> = ({
                         )
                     )}
                 </div>
+                </DialogBody>
+                <DialogFooter hint={<><Lock size={13} /><span>Decrypted only on this device</span></>}>
+                    <ClButton size="sm" onClick={onClose}>Done</ClButton>
+                </DialogFooter>
             </ClModal>
 
             {lightboxUrl && (

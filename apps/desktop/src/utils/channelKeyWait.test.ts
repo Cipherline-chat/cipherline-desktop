@@ -1,9 +1,11 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
-    needsKeyWaitState, summarizeNewestPage, deriveKeyWaitStage, nextStageDeadline, stallAt,
-    noteKeyRequestAcked, noteChannelKeyReceived, beginChannelPageDecrypt, getKeyWaitSignals,
-    subscribeKeyWaitSignals, resetKeyWaitSignals, EMPTY_SIGNALS, KEY_WAIT_STALL_MS,
-    KEY_WAIT_MIN_BEFORE_STALL_MS, KEY_RECEIVED_GRACE_MS, KEY_WAIT_COPY, type KeyWaitSignals,
+    needsKeyWaitState, summarizeNewestPage, summarizeVisibleWindow, hasEncryptedRows, keyMissingRuns, keyMissingRunLabel,
+    deriveKeyWaitStage, nextStageDeadline, stallAt, keyWaitGiveUpAt, isGiveUpRemembered,
+    noteKeyRequestAcked, noteChannelKeyReceived, beginChannelPageDecrypt, beginChannelOpen, noteKeyWaitGaveUp, isOpening,
+    getKeyWaitSignals, subscribeKeyWaitSignals, resetKeyWaitSignals, EMPTY_SIGNALS, KEY_WAIT_STALL_MS,
+    KEY_WAIT_MIN_BEFORE_STALL_MS, KEY_RECEIVED_GRACE_MS, KEY_WAIT_COPY, KEY_WAIT_VISIBLE_ROWS, KEY_WAIT_STALLED_DWELL_MS,
+    KEY_WAIT_GIVE_UP_MEMORY_MS, KEY_WAIT_BANNER_COPY, type KeyWaitSignals,
 } from './channelKeyWait';
 import { channelPlaceholderContent, type ChannelPlaceholderReason } from './channelDecryptFailure';
 
@@ -11,26 +13,44 @@ let n = 0;
 const pill = (reason: ChannelPlaceholderReason = 'key_missing') => ({ id: `p${++n}`, content: channelPlaceholderContent(reason, 3), sender_device_id: 'd1' });
 const legacyPill = () => ({ id: `l${++n}`, content: { type: 'system', kind: 'encrypted' }, sender_device_id: 'd1' });
 const text = () => ({ id: `t${++n}`, content: { type: 'text', text: 'hi' }, sender_device_id: 'd1' });
-const joined = () => ({ id: `sys_${++n}`, content: { type: 'system', text: 'ann joined the server.' }, sender_device_id: '' });
+const joined = () => ({ id: `sys_${++n}`, content: { type: 'system', kind: 'member_event', event: 'member_joined' }, sender_device_id: '' });
 const many = <T,>(k: number, f: () => T) => Array.from({ length: k }, f);
 
-describe('needsKeyWaitState — only when NO key for anything the newest page needs', () => {
-    it('shows for a page of nothing but key_missing pills (legacy reason-less pills count too)', () => {
+describe('needsKeyWaitState — the key-loading view whenever what is on screen needs keys (2026-10-20)', () => {
+    it('fresh join: a page of nothing but key_missing pills (legacy reason-less pills count too)', () => {
         expect(needsKeyWaitState(many(100, () => pill()))).toBe(true);
         expect(needsKeyWaitState([legacyPill(), legacyPill()])).toBe(true);
     });
     it('a single key_missing row is enough (a channel with one message)', () => {
         expect(needsKeyWaitState([pill()])).toBe(true);
     });
-    it('not for a channel with no messages', () => {
+    it('not for a channel with no messages (the composer gate says what is missing)', () => {
         expect(needsKeyWaitState([])).toBe(false);
     });
-    it('not when even one row of the newest page decrypted (some keys are held)', () => {
-        expect(needsKeyWaitState([...many(99, () => pill()), text()])).toBe(false);
-        expect(needsKeyWaitState([text(), ...many(99, () => pill())])).toBe(false);
+    it('THE REPORT: newest epoch missing, older epochs held — a readable minority no longer cancels it', () => {
+        // a joiner holding epoch 10 but not 20: older rows read, newest are pills
+        expect(needsKeyWaitState([...many(60, text), ...many(40, () => pill())])).toBe(true);
+        // even one readable row used to cancel the state for good
+        expect(needsKeyWaitState([text(), ...many(99, () => pill())])).toBe(true);
     });
-    it('not when a row failed with a key this device DOES hold (key_mismatch)', () => {
-        expect(needsKeyWaitState([...many(50, () => pill()), pill('key_mismatch')])).toBe(false);
+    it('newest epoch missing: the newest message alone is a pill on an otherwise readable screen', () => {
+        expect(needsKeyWaitState([...many(99, text), pill()])).toBe(true);
+    });
+    it('the visible window mostly waiting, even when the newest row happens to read', () => {
+        expect(needsKeyWaitState([...many(99, () => pill()), text()])).toBe(true);
+        // half is not "mostly"
+        const half = [...many(75, text), ...many(12, () => pill()), ...many(13, text)];
+        expect(summarizeVisibleWindow(half)).toEqual({ total: KEY_WAIT_VISIBLE_ROWS, keyMissing: 12, newestWaiting: false });
+        expect(needsKeyWaitState(half)).toBe(false);
+        const over = [...many(75, text), ...many(13, () => pill()), ...many(12, text)];
+        expect(needsKeyWaitState(over)).toBe(true);
+    });
+    it('history-only gap: older rows waiting, what is on screen reads → no view (feed + one collapsed row)', () => {
+        expect(needsKeyWaitState([...many(70, () => pill()), ...many(30, text)])).toBe(false);
+    });
+    it('key_mismatch rows do not block it, but a page that is MOSTLY mismatched keeps its labels', () => {
+        expect(needsKeyWaitState([...many(50, () => pill()), pill('key_mismatch')])).toBe(true);
+        expect(needsKeyWaitState([...many(5, () => pill('key_mismatch')), pill()])).toBe(false);
     });
     it('not for rows withheld by Read Message History (their own honest label)', () => {
         expect(needsKeyWaitState(many(20, () => pill('history_restricted')))).toBe(false);
@@ -45,15 +65,87 @@ describe('needsKeyWaitState — only when NO key for anything the newest page ne
     it('local system lines ("X joined the server.") are neutral either way', () => {
         expect(needsKeyWaitState([...many(10, () => pill()), joined()])).toBe(true);
         expect(needsKeyWaitState([joined()])).toBe(false);
+        // the newest ENCRYPTED row is what counts: a join line under it changes nothing
+        expect(needsKeyWaitState([...many(90, text), pill(), joined()])).toBe(true);
     });
-    it('looks only at the newest page (100 rows): a readable row further up does not count', () => {
+    it('looks only at the newest page (100 rows): what is further up does not count', () => {
         const rows = [text(), ...many(100, () => pill())];
         expect(summarizeNewestPage(rows).readable).toBe(0);
         expect(needsKeyWaitState(rows)).toBe(true);
-        // control: inside the page it does
-        expect(needsKeyWaitState([text(), ...many(99, () => pill())])).toBe(false);
+        // and pills above the newest page do not bring it up
+        expect(needsKeyWaitState([...many(50, () => pill()), ...many(100, text)])).toBe(false);
+    });
+    it('newestKeyPending (asked while keyless) still widens a page with more waiting than readable', () => {
+        // newest row reads, the window is under half, but the page is mostly waiting
+        const rows = [...many(60, () => pill()), ...many(15, text), ...many(10, () => pill()), ...many(15, text)];
+        expect(needsKeyWaitState(rows)).toBe(false);
+        expect(needsKeyWaitState(rows, undefined, { newestKeyPending: true })).toBe(true);
     });
 });
+
+describe('hasEncryptedRows — what may latch the pane', () => {
+    it('a thread of only local system lines says nothing yet (the joiner\'s own join line)', () => {
+        expect(hasEncryptedRows([])).toBe(false);
+        expect(hasEncryptedRows([joined()])).toBe(false);
+        expect(hasEncryptedRows([joined(), text()])).toBe(true);
+        expect(hasEncryptedRows([pill()])).toBe(true);
+    });
+});
+
+describe('keyMissingRuns — consecutive waiting rows collapse into one', () => {
+    it('a run of ≥ 2 key_missing rows: count on the first, 0 on the rest; singles stay as they are', () => {
+        const a = pill(), b = pill(), c = pill(), t = text(), d = pill();
+        const runs = keyMissingRuns([a, b, c, t, d]);
+        expect(runs.get(a.id)).toBe(3);
+        expect(runs.get(b.id)).toBe(0);
+        expect(runs.get(c.id)).toBe(0);
+        expect(runs.has(t.id)).toBe(false);
+        expect(runs.has(d.id)).toBe(false);
+    });
+    it('other placeholder reasons break a run and keep their own label', () => {
+        const a = pill(), r = pill('history_restricted'), b = pill(), c = pill();
+        const runs = keyMissingRuns([a, r, b, c]);
+        expect(runs.has(a.id)).toBe(false);
+        expect(runs.has(r.id)).toBe(false);
+        expect(runs.get(b.id)).toBe(2);
+    });
+    it('a history-gap marker breaks a run', () => {
+        const a = pill(), b = pill(), c = pill(), d = pill();
+        const runs = keyMissingRuns([a, b, c, d], id => id === c.id);
+        expect(runs.get(a.id)).toBe(2);
+        expect(runs.get(c.id)).toBe(2);
+        expect(runs.get(d.id)).toBe(0);
+    });
+    it('label', () => {
+        expect(keyMissingRunLabel(12)).toBe('12 messages waiting for this channel’s key');
+    });
+});
+
+describe('give-up — never trap the user behind the layer', () => {
+    const shown = 1_000_000;
+    const s = (p: Partial<KeyWaitSignals>): KeyWaitSignals => ({ ...EMPTY_SIGNALS, ...p });
+    it('the stalled copy is readable for a dwell, then the feed takes over', () => {
+        expect(keyWaitGiveUpAt(s({}), shown)).toBe(shown + KEY_WAIT_STALL_MS + KEY_WAIT_STALLED_DWELL_MS);
+        // a request filed long before the open: sooner, never before min + dwell
+        expect(keyWaitGiveUpAt(s({ requestAckSeq: 1, firstRequestAckAt: shown - 600_000 }), shown))
+            .toBe(shown + KEY_WAIT_MIN_BEFORE_STALL_MS + KEY_WAIT_STALLED_DWELL_MS);
+    });
+    it('a key arriving keeps the wait alive (progress is not a reason to give up)', () => {
+        expect(keyWaitGiveUpAt(s({ keyReceivedSeq: 3, keyReceivedAt: shown + 20_000 }), shown)).toBe(shown + 20_000 + KEY_WAIT_STALL_MS);
+    });
+    it('remembered per channel until a key arrives or the memory lapses', () => {
+        const gave = s({ keyReceivedSeq: 4, gaveUpAt: shown, gaveUpKeySeq: 4 });
+        expect(isGiveUpRemembered(gave, shown + 1000)).toBe(true);
+        expect(isGiveUpRemembered({ ...gave, keyReceivedSeq: 9 }, shown + 1000)).toBe(false);
+        expect(isGiveUpRemembered(gave, shown + KEY_WAIT_GIVE_UP_MEMORY_MS)).toBe(false);
+        expect(isGiveUpRemembered(s({}), shown)).toBe(false);
+    });
+    it('banner copy: the owner\'s words, one action', () => {
+        expect(KEY_WAIT_BANNER_COPY.title).toBe('Waiting for someone with the keys to come online');
+        expect(KEY_WAIT_BANNER_COPY.retry).toMatch(/again/i);
+    });
+});
+
 
 const sig = (p: Partial<KeyWaitSignals>): KeyWaitSignals => ({ ...EMPTY_SIGNALS, ...p });
 
@@ -111,7 +203,7 @@ describe('deriveKeyWaitStage — copy follows real signals', () => {
             expect(c.title + c.detail).not.toMatch(/%|\d+ ?of ?\d+/);
         }
         expect(KEY_WAIT_COPY.stalled.title).toMatch(/answered yet/);
-        expect(KEY_WAIT_COPY.stalled.detail).toMatch(/on its own/);
+        expect(KEY_WAIT_COPY.stalled.detail).toMatch(/on their own/);
     });
 });
 
@@ -158,5 +250,23 @@ describe('signal store', () => {
         expect(deriveKeyWaitStage(getKeyWaitSignals('c1'), shown, shown)).toBe('building');
         end();
         expect(deriveKeyWaitStage(getKeyWaitSignals('c1'), shown, shown)).toBe('asked');
+    });
+    it('channel opens nest and end exactly once', () => {
+        const a = beginChannelOpen('c1');
+        const b = beginChannelOpen('c1');
+        expect(isOpening(getKeyWaitSignals('c1'))).toBe(true);
+        a(); a();
+        expect(isOpening(getKeyWaitSignals('c1'))).toBe(true);
+        b();
+        expect(isOpening(getKeyWaitSignals('c1'))).toBe(false);
+        expect(isOpening(getKeyWaitSignals('c2'))).toBe(false);
+    });
+    it('a give-up remembers the key seq it happened at', () => {
+        noteChannelKeyReceived('c1', 1000);
+        noteKeyWaitGaveUp('c1', 2000);
+        const s = getKeyWaitSignals('c1');
+        expect(isGiveUpRemembered(s, 3000)).toBe(true);
+        noteChannelKeyReceived('c1', 4000);
+        expect(isGiveUpRemembered(getKeyWaitSignals('c1'), 5000)).toBe(false);
     });
 });

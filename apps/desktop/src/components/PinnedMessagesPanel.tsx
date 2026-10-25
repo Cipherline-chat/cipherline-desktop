@@ -9,36 +9,21 @@ import { useAuth } from '../contexts/AuthContext';
 import ClButton from './ClButton';
 import { useEscape } from '../hooks/useEscape';
 import { mentionsToDisplayText } from '../utils/mentionTokens';
-import { messageTextMatches } from '../utils/messagePreviewText';
+import { clipForPreview, messageTextMatches } from '../utils/messagePreviewText';
+import { previewSnippet } from '../utils/longMessage';
+import { safeDisplayFilename } from '../utils/fileSafety';
+import { extractYouTubeId } from '../utils/youtubeLink';
 import KlipyGifEmbed from './KlipyGifEmbed';
 
 // ── URL helpers (mirrors ChatPane) ────────────────────────────────────────────
 
 const URL_REGEX = /https?:\/\/[^\s<>"{}|\\^`[\]]+/g;
-const IMAGE_EXT_RE = /\.(jpe?g|png|gif|webp|avif|bmp)(\?[^#]*)?(?:#.*)?$/i;
 
 function extractUrls(text: string): string[] {
     return text.match(URL_REGEX) ?? [];
 }
 
-function extractYouTubeId(url: string): string | null {
-    const patterns = [
-        /[?&]v=([a-zA-Z0-9_-]{11})/,
-        /youtu\.be\/([a-zA-Z0-9_-]{11})/,
-        /\/embed\/([a-zA-Z0-9_-]{11})/,
-        /\/shorts\/([a-zA-Z0-9_-]{11})/,
-    ];
-    for (const p of patterns) {
-        const m = url.match(p);
-        if (m) return m[1];
-    }
-    return null;
-}
-
-function isDirectImageUrl(url: string): boolean {
-    try { return IMAGE_EXT_RE.test(new URL(url).pathname); }
-    catch { return false; }
-}
+// extractYouTubeId lives in ../utils/youtubeLink (host-pinned, unit-tested).
 
 // ── File-type icon helper ─────────────────────────────────────────────────────
 
@@ -214,16 +199,16 @@ const PinnedMessagesPanel: React.FC<PinnedMessagesPanelProps> = ({
                         }
 
                         const isMe = myDeviceIds.has(msg.sender_device_id);
+                        // F4: the user id names the sender; the device id is
+                        // the sender's own claim, used only when there is none.
                         const senderName =
                             isMe ? (user?.username ?? 'You')
-                            : deviceToUsername[msg.sender_device_id]
-                            ?? (msg.sender_user_id ? userIdToUsername[msg.sender_user_id] : null)
+                            : (msg.sender_user_id ? userIdToUsername[msg.sender_user_id] : deviceToUsername[msg.sender_device_id])
                             ?? 'Unknown';
 
                         const avatarId: string | undefined =
                             isMe ? (user?.avatar_url ?? undefined)
-                            : deviceToAvatar?.[msg.sender_device_id]
-                            ?? (msg.sender_user_id ? userIdToAvatar?.[msg.sender_user_id] : undefined);
+                            : (msg.sender_user_id ? userIdToAvatar?.[msg.sender_user_id] : deviceToAvatar?.[msg.sender_device_id]);
 
                         // Drive the deterministic colored fallback — for your
                         // own messages use your user_id, for others use whatever
@@ -241,7 +226,7 @@ const PinnedMessagesPanel: React.FC<PinnedMessagesPanelProps> = ({
                             : '';
 
                         // Attachment fields — field name is `mime` (not `mime_type`)
-                        const filename = msg.content?.filename as string | undefined;
+                        const filename = msg.content?.type === 'attachment' ? safeDisplayFilename(msg.content?.filename) : undefined;
                         const mime = msg.content?.mime as string | undefined;
                         const objUrl = objectUrls[id];
 
@@ -251,11 +236,10 @@ const PinnedMessagesPanel: React.FC<PinnedMessagesPanelProps> = ({
                         // extraction below still runs on this same value —
                         // mention tokens never contain a URL, so nothing is lost.
                         const textContent = msg.content?.type === 'text'
-                            ? mentionsToDisplayText(msg.content.text as string)
+                            ? mentionsToDisplayText(clipForPreview(msg.content.text))
                             : null;
                         const urls = textContent ? extractUrls(textContent) : [];
                         const firstYtId = urls.map(extractYouTubeId).find(Boolean) ?? null;
-                        const firstImgUrl = !firstYtId ? urls.find(isDirectImageUrl) : null;
 
                         return (
                             <div key={id} className="group relative flex gap-3 py-3 px-4 hover:bg-white/[0.03] transition-colors">
@@ -281,7 +265,9 @@ const PinnedMessagesPanel: React.FC<PinnedMessagesPanelProps> = ({
                                     {msg.content?.type === 'text' && (
                                         <>
                                             <p className="text-[13px] text-[var(--cl-muted)] leading-relaxed line-clamp-3 break-words">
-                                                {textContent}
+                                                {/* line-clamp-3 does the visual cut; the slice just keeps
+                                                    a 100k-character message from being laid out to be clamped. */}
+                                                {previewSnippet(textContent ?? '')}
                                             </p>
 
                                             {/* YouTube embed */}
@@ -297,15 +283,10 @@ const PinnedMessagesPanel: React.FC<PinnedMessagesPanelProps> = ({
                                                 </div>
                                             )}
 
-                                            {/* Direct image URL */}
-                                            {firstImgUrl && !firstYtId && (
-                                                <img
-                                                    src={firstImgUrl}
-                                                    className="mt-1.5 max-h-24 rounded-lg object-cover"
-                                                    alt="Embedded image"
-                                                    loading="lazy"
-                                                />
-                                            )}
+                                            {/* No inline image for a direct image URL: an <img> here
+                                                fetched the sender's URL the moment the panel opened,
+                                                bypassing the image auto-load privacy setting the chat
+                                                honours. The link text above is still shown. */}
                                         </>
                                     )}
 

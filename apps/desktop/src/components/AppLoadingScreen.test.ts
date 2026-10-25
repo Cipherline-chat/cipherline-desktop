@@ -665,7 +665,7 @@ describe('perf: the stylesheet', () => {
     })();
 
     it('has keyframes to check (positive control)', () => {
-        expect(Object.keys(keyframes).sort()).toEqual(['lo-bob', 'lo-fade', 'lo-fade-out', 'lo-keys-out', 'lo-out', 'lo-pop', 'lo-rise', 'lo-sweep']);
+        expect(Object.keys(keyframes).sort()).toEqual(['lo-bob', 'lo-fade', 'lo-fade-out', 'lo-keys-out', 'lo-out', 'lo-pop', 'lo-rise', 'lo-sweep', 'lo-tip']);
     });
 
     it('animates only transform and opacity, and never through a custom property', () => {

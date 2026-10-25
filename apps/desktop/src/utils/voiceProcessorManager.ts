@@ -67,6 +67,8 @@ const stableCallbacks: VoiceProcessorCallbacks = {
     onNsAutoBypass: (active) => latestCallbacks.onNsAutoBypass?.(active),
     onNsStats: (stats) => latestCallbacks.onNsStats?.(stats),
     onNsUnavailable: () => latestCallbacks.onNsUnavailable?.(),
+    onNsLoadFallback: (info) => latestCallbacks.onNsLoadFallback?.(info),
+    onAudioRender: (w) => latestCallbacks.onAudioRender?.(w),
 };
 
 /**

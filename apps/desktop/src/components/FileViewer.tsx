@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { outputSinkRef } from '../utils/audioOutput';
 import { Bookmark, Download, FileCode, FileText, FileSpreadsheet } from 'lucide-react';
 import { useGifFavorite } from '../hooks/useGifFavorite';
@@ -7,6 +7,14 @@ import { ImageLightbox } from './ImageLightbox';
 import { GifPlayer } from './GifPlayer';
 import { acquireMediaThumb, peekMediaThumb, putMediaThumb, releaseMediaThumb, type MediaThumb } from '../utils/decryptedMediaCache';
 import { ClButton } from './cl';
+import { hasTransparentPixel, mayHaveAlpha, pickThumbEncoding, thumbPreservesAlpha } from '../utils/imageThumbEncoding';
+import {
+    AUTO_INFLATE_LIMITS, MANUAL_INFLATE_LIMITS, TEXT_PREVIEW_READ_BYTES,
+    csvPreview, formatPreviewBytes, previewGate, type PreviewGate, type SheetPreview,
+} from '../utils/documentPreview';
+import { parseDocumentPreview } from '../utils/documentPreviewHost';
+import { isExecutableFilename, safeDisplayFilename } from '../utils/fileSafety';
+import { saveReceivedFile } from './executableDownloadGuard';
 
 interface FileViewerProps {
     objectUrl: string | null;
@@ -20,7 +28,6 @@ interface FileViewerProps {
 // original (a 4000×3000px phone photo → a ~50–80 KB JPEG instead of multi-MB).
 // Full resolution is always available via the lightbox (click to enlarge).
 const THUMB_MAX_PX = 500;
-const THUMB_QUALITY = 0.75;
 
 function shouldSkipThumb(mime: string) {
     return mime === 'image/gif' || mime === 'image/svg+xml';
@@ -107,27 +114,6 @@ function langLabel(mime: string, f: string) {
     return 'Text';
 }
 
-// ── CSV parser ───────────────────────────────────────────────────────────────
-function parseCsv(text: string, delimiter: string): string[][] {
-    const rows: string[][] = [];
-    for (const line of text.split(/\r?\n/)) {
-        if (!line.trim()) continue;
-        const cells: string[] = [];
-        let cell = '', inQuote = false;
-        for (let i = 0; i < line.length; i++) {
-            const ch = line[i];
-            if (ch === '"') {
-                if (inQuote && line[i + 1] === '"') { cell += '"'; i++; }
-                else inQuote = !inQuote;
-            } else if (ch === delimiter && !inQuote) { cells.push(cell); cell = ''; }
-            else cell += ch;
-        }
-        cells.push(cell);
-        rows.push(cells);
-    }
-    return rows;
-}
-
 // ── Constants ────────────────────────────────────────────────────────────────
 const MAX_TABLE_ROWS = 6;
 const MAX_TABLE_COLS = 7;
@@ -162,7 +148,11 @@ const badge = (color: string): React.CSSProperties => ({
 function DownloadLink({ href, filename }: { href: string; filename: string }) {
     const [hov, setHov] = useState(false);
     return (
-        <a href={href} download={filename} onClick={e => e.stopPropagation()}
+        <a href={href} download={filename} onClick={e => {
+            e.stopPropagation();
+            // A program / script needs a confirmation first (executableDownloadGuard).
+            if (isExecutableFilename(filename)) { e.preventDefault(); void saveReceivedFile(href, filename); }
+        }}
             style={{
                 display: 'inline-flex', alignItems: 'center', gap: '5px',
                 fontSize: '0.72rem', textDecoration: 'none', padding: '4px 8px',
@@ -238,13 +228,19 @@ function SheetTable({ rows, totalRows, totalCols }: {
 }
 
 // ── Component ────────────────────────────────────────────────────────────────
-const FileViewer: React.FC<FileViewerProps> = ({ objectUrl, filename, mime }) => {
+const FileViewer: React.FC<FileViewerProps> = ({ objectUrl, filename: rawFilename, mime: rawMime }) => {
+    // Both come from the sender's message. The content boundary refuses a
+    // non-string, but a row stored before it existed must not throw here.
+    // Bidi / control characters are stripped: "a\u202Etxt.exe" must not
+    // display (or save) as "aexe.txt" (utils/fileSafety.ts).
+    const filename = safeDisplayFilename(rawFilename);
+    const mime = typeof rawMime === 'string' ? rawMime : '';
     const [textContent, setTextContent] = useState<string | null>(null);
     const [showLightbox, setShowLightbox] = useState(false);
     const [gifBlob, setGifBlob]           = useState<Blob | null>(null);
 
-    // Excel: list of { name, rows } per sheet
-    const [excelSheets, setExcelSheets] = useState<{ name: string; rows: string[][] }[] | null>(null);
+    // Excel: per sheet, the first rows + counts (parsed off-thread, utils/documentPreview.ts)
+    const [excelSheets, setExcelSheets] = useState<SheetPreview[] | null>(null);
     const [activeSheet, setActiveSheet] = useState(0);
 
     // Word: extracted plain-text paragraphs
@@ -252,6 +248,15 @@ const FileViewer: React.FC<FileViewerProps> = ({ objectUrl, filename, mime }) =>
 
     // Preview parse failure — rendered instead of the permanent "Loading preview…" spinner (P2-REND-14)
     const [previewError, setPreviewError] = useState<string | null>(null);
+
+    // The file is chosen by another user: large spreadsheets / Word files are
+    // not parsed until asked ("Preview anyway"), and a PDF is only handed to
+    // the PDF viewer on a click. See utils/documentPreview.ts.
+    const [gate, setGate] = useState<PreviewGate | null>(null);
+    const [forcedPreview, setForcedPreview] = useState(false);
+    const [pdfOpen, setPdfOpen] = useState(false);
+    // CSV / text: only the head of the file is read; `truncated` = there is more.
+    const [textTruncated, setTextTruncated] = useState(false);
 
     // Root element ref — used to dispatch cipherline:content-loaded so ChatPane
     // can snap to bottom the moment any content type finishes rendering.
@@ -330,11 +335,27 @@ const FileViewer: React.FC<FileViewerProps> = ({ objectUrl, filename, mime }) =>
                 const ctx = canvas.getContext('2d');
                 if (!ctx || cancelled) return;
                 ctx.drawImage(img, 0, 0, w, h);
+                // JPEG has no alpha: encoding a transparent PNG/WebP as one
+                // turns every transparent pixel BLACK. Only formats that can
+                // carry alpha are scanned (a photo costs nothing); one that
+                // really uses it gets an alpha-capable encoding instead. If the
+                // scan itself fails, assume alpha — a bigger thumbnail beats a
+                // black box.
+                let hasAlpha = false;
+                if (mayHaveAlpha(sanitizeMime(mime))) {
+                    try { hasAlpha = hasTransparentPixel(ctx.getImageData(0, 0, w, h).data); }
+                    catch { hasAlpha = true; }
+                }
+                const enc = pickThumbEncoding(hasAlpha);
                 canvas.toBlob(blob => {
                     if (!blob) return;
+                    // A transparent source must never come out as a JPEG (a
+                    // browser that can't encode WebP falls back to PNG, which
+                    // keeps alpha). If it somehow did, show the original.
+                    if (hasAlpha && !thumbPreservesAlpha(blob.type)) return;
                     const made = putMediaThumb(objectUrl, URL.createObjectURL(blob), blob.size, w, h);
                     take(made);
-                }, 'image/jpeg', THUMB_QUALITY);
+                }, enc.type, enc.quality);
             })();
         }
         return () => {
@@ -348,12 +369,14 @@ const FileViewer: React.FC<FileViewerProps> = ({ objectUrl, filename, mime }) =>
         ? (() => { const k = Math.min(1, 320 / thumb.width!, 320 / thumb.height!); return { width: Math.round(thumb.width! * k), height: Math.round(thumb.height! * k) }; })()
         : null;
 
-    // Text / CSV content — cancellation guard prevents stale setState (P2-REND-14)
+    // Text / CSV content — cancellation guard prevents stale setState (P2-REND-14).
+    // Only the head is read: the card shows a few lines / rows.
     useEffect(() => {
         if (!objectUrl || (!isText && !isCsv)) return;
         let cancelled = false;
-        fetch(objectUrl).then(r => r.text()).then(text => {
-            if (!cancelled) { setTextContent(text); notifyLoaded(); }
+        fetch(objectUrl).then(r => r.blob()).then(async blob => {
+            const text = await blob.slice(0, TEXT_PREVIEW_READ_BYTES).text();
+            if (!cancelled) { setTextTruncated(blob.size > TEXT_PREVIEW_READ_BYTES); setTextContent(text); notifyLoaded(); }
         }).catch(err => {
             console.error('FileViewer: text load failed', err);
             if (!cancelled) setPreviewError('Preview failed to load.');
@@ -361,87 +384,70 @@ const FileViewer: React.FC<FileViewerProps> = ({ objectUrl, filename, mime }) =>
         return () => { cancelled = true; };
     }, [objectUrl, isText, isCsv]);
 
-    // Excel parsing via ExcelJS (MIT) — replaces SheetJS which is commercially locked post-0.18.5
+    // Excel (ExcelJS, MIT) and Word (mammoth) previews: size-gated, then
+    // parsed in a Worker with an inflate cap and a timeout
+    // (utils/documentPreview.ts, utils/documentPreviewHost.ts).
+    const docKind: 'excel' | 'word' | null = isExcel ? 'excel' : isWord ? 'word' : null;
     useEffect(() => {
-        if (!objectUrl || !isExcel) return;
+        if (!objectUrl || !docKind) return;
         let cancelled = false;
-
-        async function loadExcel() {
-            const [buf, mod] = await Promise.all([
-                fetch(objectUrl!).then(r => r.arrayBuffer()),
-                import('exceljs'),
-            ]);
+        (async () => {
+            const blob = await fetch(objectUrl).then(r => r.blob());
             if (cancelled) return;
-
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
-            const ExcelJS = (mod as any).default ?? mod;
-            const wb = new ExcelJS.Workbook();
-            await wb.xlsx.load(buf);
-
-            const sheets: { name: string; rows: string[][] }[] = [];
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
-            wb.eachSheet((ws: any) => {
-                const rows: string[][] = [];
-                let maxCols = 0;
-                // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
-                ws.eachRow({ includeEmpty: false }, (row: any) => {
-                    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
-                    const vals: any[] = Array.isArray(row.values) ? row.values : [];
-                    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
-                    const cells = vals.slice(1).map((v: any) => {
-                        if (v == null) return '';
-                        if (v instanceof Date) return v.toLocaleDateString();
-                        if (typeof v === 'object') {
-                            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
-                            if (Array.isArray(v.richText)) return v.richText.map((rt: any) => rt.text ?? '').join('');
-                            if ('result' in v) return String(v.result ?? '');
-                            if ('error' in v) return String(v.error);
-                            return '';
-                        }
-                        return String(v);
-                    });
-                    maxCols = Math.max(maxCols, cells.length);
-                    rows.push(cells);
-                });
-                // Pad to rectangular array so the table renderer can rely on uniform widths
-                const padded = rows.map(r => [...r, ...Array(Math.max(0, maxCols - r.length)).fill('')]);
-                while (padded.length > 0 && padded[padded.length - 1].every((c: string) => c === '')) padded.pop();
-                sheets.push({ name: ws.name, rows: padded });
-            });
+            const g = previewGate(blob.size, forcedPreview);
+            if (g.state !== 'auto') { setGate(g); return; }
+            setGate(null);
+            setPreviewError(null);
+            const buf = await blob.arrayBuffer();
             if (cancelled) return;
-            setExcelSheets(sheets);
-            setActiveSheet(0);
-            notifyLoaded();
-        }
-
-        loadExcel().catch(err => {
-            console.error('FileViewer: Excel parse failed', err);
+            const r = await parseDocumentPreview(docKind, buf, forcedPreview ? MANUAL_INFLATE_LIMITS : AUTO_INFLATE_LIMITS);
+            if (cancelled) return;
+            if (r.ok && r.kind === 'excel') {
+                setExcelSheets(r.sheets);
+                setActiveSheet(0);
+                notifyLoaded();
+            } else if (r.ok && r.kind === 'word') {
+                setWordText(r.text);
+                notifyLoaded();
+            } else if (!r.ok && r.reason === 'limits' && !forcedPreview) {
+                // Small file, large contents: same choice as a large file.
+                setGate({ state: 'ask', bytes: blob.size });
+            } else if (!r.ok) {
+                console.warn(`FileViewer: ${docKind} preview not shown (${r.reason})`);
+                setPreviewError(r.reason === 'limits' ? 'Too large to preview.'
+                    : r.reason === 'timeout' ? 'Preview took too long.'
+                    : r.reason === 'unavailable' ? 'Preview unavailable.'
+                    : 'Preview failed to load.');
+            }
+        })().catch(err => {
+            console.error(`FileViewer: ${docKind} preview failed`, err);
             if (!cancelled) setPreviewError('Preview failed to load.');
         });
         return () => { cancelled = true; };
-    }, [objectUrl, isExcel]);
+    }, [objectUrl, docKind, forcedPreview]);
 
-    // Word parsing via mammoth (browser build aliased in vite.config)
-    useEffect(() => {
-        if (!objectUrl || !isWord) return;
-        let cancelled = false;
-        Promise.all([
-            fetch(objectUrl).then(r => r.arrayBuffer()),
-            import('mammoth'),
-        ]).then(([buf, mod]) => {
-            if (cancelled) return;
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
-            const mammoth = (mod as any).default ?? mod;
-            return mammoth.extractRawText({ arrayBuffer: buf });
-        }).then(result => {
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
-            if (!cancelled && result) { setWordText((result as any).value); notifyLoaded(); }
-        }).catch(err => {
-            console.error('FileViewer: Word parse failed', err);
-            if (!cancelled) setPreviewError('Preview failed to load.');
-        });
-        return () => { cancelled = true; };
-    }, [objectUrl, isWord]);
+    // CSV preview, parsed once per loaded text (not on every render).
+    const csvDelimiter = ext(filename) === 'tsv' || mime === 'text/tab-separated-values' ? '\t' : ',';
+    const csv = useMemo(
+        () => (isCsv && textContent !== null ? csvPreview(textContent, csvDelimiter, textTruncated) : null),
+        [isCsv, textContent, csvDelimiter, textTruncated],
+    );
+
+    // "Too large to preview automatically" — shown instead of a parse.
+    const gateNotice = (g: PreviewGate) => (
+        <div style={{ padding: '12px', fontSize: '0.75rem', display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+            <span style={{ opacity: 0.55 }}>
+                {g.state === 'too_large'
+                    ? `Too large to preview (${formatPreviewBytes(g.bytes)}).`
+                    : 'Large file — not previewed automatically.'}
+            </span>
+            {g.state === 'ask' && (
+                <ClButton variant="ghost" size="sm" onClick={(e: React.MouseEvent) => { e.stopPropagation(); setForcedPreview(true); }}>
+                    Preview anyway
+                </ClButton>
+            )}
+        </div>
+    );
 
     // ── Loading ──────────────────────────────────────────────────────────────
     if (!objectUrl) {
@@ -587,19 +593,29 @@ const FileViewer: React.FC<FileViewerProps> = ({ objectUrl, filename, mime }) =>
                     then clip it with overflow:hidden on the position:relative
                     parent. This works reliably now that the parent card has a
                     definite pixel width (from the flex-1 content column fix). */}
-                <div style={{ position: 'relative', height: '340px', overflow: 'hidden' }}>
-                    <embed
-                        src={`${objectUrl}#toolbar=0&navpanes=0&scrollbar=0&view=FitH`}
-                        type="application/pdf"
-                        style={{
-                            position: 'absolute', top: 0, left: 0,
-                            width: 'calc(100% + 17px)',
-                            height: '100%',
-                            border: 'none',
-                        }}
-                        onLoad={notifyLoaded}
-                    />
-                </div>
+                {/* Click to preview: the PDF comes from another user, so it is
+                    only handed to the PDF viewer when asked. */}
+                {pdfOpen ? (
+                    <div style={{ position: 'relative', height: '340px', overflow: 'hidden' }}>
+                        <embed
+                            src={`${objectUrl}#toolbar=0&navpanes=0&scrollbar=0&view=FitH`}
+                            type="application/pdf"
+                            style={{
+                                position: 'absolute', top: 0, left: 0,
+                                width: 'calc(100% + 17px)',
+                                height: '100%',
+                                border: 'none',
+                            }}
+                            onLoad={notifyLoaded}
+                        />
+                    </div>
+                ) : (
+                    <div style={{ padding: '12px', display: 'flex', alignItems: 'center', gap: '10px' }}>
+                        <ClButton variant="ghost" size="sm" onClick={(e: React.MouseEvent) => { e.stopPropagation(); setPdfOpen(true); }}>
+                            Preview PDF
+                        </ClButton>
+                    </div>
+                )}
 
                 <div style={cardFooter}>
                     <DownloadLink href={objectUrl} filename={filename} />
@@ -611,9 +627,9 @@ const FileViewer: React.FC<FileViewerProps> = ({ objectUrl, filename, mime }) =>
     // ── Excel ────────────────────────────────────────────────────────────────
     if (isExcel) {
         const sheet   = excelSheets?.[activeSheet];
-        const allRows = sheet?.rows ?? [];
-        const preview = allRows.slice(0, MAX_TABLE_ROWS + 1);
-        const totalCols = allRows.reduce((m, r) => Math.max(m, r.length), 0);
+        const preview = sheet?.rows ?? [];
+        const rowCount = sheet?.totalRows ?? 0;
+        const totalCols = sheet?.totalCols ?? 0;
 
         return (
             <div ref={rootRef} style={cardBase}>
@@ -642,19 +658,19 @@ const FileViewer: React.FC<FileViewerProps> = ({ objectUrl, filename, mime }) =>
                     </div>
                 )}
 
-                {excelSheets === null ? (
+                {excelSheets === null && gate ? gateNotice(gate) : excelSheets === null ? (
                     <div style={{ padding: '14px 12px', fontSize: '0.78rem', opacity: 0.5, color: previewError ? 'var(--cl-flash)' : undefined }}>
                         {previewError ?? 'Loading…'}
                     </div>
-                ) : allRows.length === 0 ? (
+                ) : rowCount === 0 ? (
                     <div style={{ padding: '14px 12px', fontSize: '0.78rem', opacity: 0.3, fontStyle: 'italic' }}>(empty sheet)</div>
                 ) : (
-                    <SheetTable rows={preview.slice(0, MAX_TABLE_ROWS)} totalRows={allRows.length} totalCols={totalCols} />
+                    <SheetTable rows={preview.slice(0, MAX_TABLE_ROWS)} totalRows={rowCount} totalCols={totalCols} />
                 )}
 
-                {excelSheets && allRows.length > 0 && (
+                {excelSheets && rowCount > 0 && (
                     <div style={{ padding: '4px 12px 0', fontSize: '0.67rem', opacity: 0.3 }}>
-                        {allRows.length} row{allRows.length !== 1 ? 's' : ''} · {totalCols} col{totalCols !== 1 ? 's' : ''}
+                        {rowCount} row{rowCount !== 1 ? 's' : ''} · {totalCols} col{totalCols !== 1 ? 's' : ''}
                         {excelSheets.length > 1 && ` · ${excelSheets.length} sheets`}
                     </div>
                 )}
@@ -691,7 +707,9 @@ const FileViewer: React.FC<FileViewerProps> = ({ objectUrl, filename, mime }) =>
                     alignItems: wordText === null ? 'center' : undefined,
                     justifyContent: wordText === null ? 'center' : undefined,
                 }}>
-                    {wordText === null
+                    {wordText === null && gate
+                        ? gateNotice(gate)
+                        : wordText === null
                         ? <span style={{ opacity: 0.5, color: previewError ? 'var(--cl-flash)' : undefined }}>{previewError ?? 'Loading preview…'}</span>
                         : preview || <span style={{ opacity: 0.3, fontStyle: 'italic' }}>(empty document)</span>
                     }
@@ -709,10 +727,10 @@ const FileViewer: React.FC<FileViewerProps> = ({ objectUrl, filename, mime }) =>
 
     // ── CSV / TSV ────────────────────────────────────────────────────────────
     if (isCsv) {
-        const delimiter = ext(filename) === 'tsv' || mime === 'text/tab-separated-values' ? '\t' : ',';
         const label     = ext(filename) === 'tsv' ? 'TSV' : 'CSV';
-        const allRows   = textContent ? parseCsv(textContent, delimiter) : [];
-        const totalCols = allRows.reduce((m, r) => Math.max(m, r.length), 0);
+        const rowCount  = csv?.totalRows ?? 0;
+        const totalCols = csv?.totalCols ?? 0;
+        const more      = csv?.truncated ? '+' : '';
 
         return (
             <div ref={rootRef} style={cardBase}>
@@ -728,15 +746,15 @@ const FileViewer: React.FC<FileViewerProps> = ({ objectUrl, filename, mime }) =>
                     <div style={{ padding: '14px 12px', fontSize: '0.78rem', opacity: 0.5, color: previewError ? 'var(--cl-flash)' : undefined }}>
                         {previewError ?? 'Loading preview…'}
                     </div>
-                ) : allRows.length === 0 ? (
+                ) : rowCount === 0 ? (
                     <div style={{ padding: '14px 12px', fontSize: '0.78rem', opacity: 0.3, fontStyle: 'italic' }}>(empty file)</div>
                 ) : (
-                    <SheetTable rows={allRows.slice(0, MAX_TABLE_ROWS)} totalRows={allRows.length} totalCols={totalCols} />
+                    <SheetTable rows={(csv?.rows ?? []).slice(0, MAX_TABLE_ROWS)} totalRows={rowCount} totalCols={totalCols} />
                 )}
 
-                {textContent !== null && allRows.length > 0 && (
+                {textContent !== null && rowCount > 0 && (
                     <div style={{ padding: '4px 12px 0', fontSize: '0.67rem', opacity: 0.3 }}>
-                        {allRows.length} row{allRows.length !== 1 ? 's' : ''} · {totalCols} col{totalCols !== 1 ? 's' : ''}
+                        {rowCount}{more} row{rowCount !== 1 || more ? 's' : ''} · {totalCols} col{totalCols !== 1 ? 's' : ''}
                     </div>
                 )}
 
@@ -752,7 +770,7 @@ const FileViewer: React.FC<FileViewerProps> = ({ objectUrl, filename, mime }) =>
         const label    = langLabel(mime, filename);
         const rawLines = (textContent ?? '').split('\n');
         const preview  = rawLines.slice(0, PREVIEW_LINES).join('\n').slice(0, PREVIEW_CHARS);
-        const isTrunc  = rawLines.length > PREVIEW_LINES || (textContent ?? '').length > PREVIEW_CHARS;
+        const isTrunc  = textTruncated || rawLines.length > PREVIEW_LINES || (textContent ?? '').length > PREVIEW_CHARS;
 
         return (
             <div ref={rootRef} style={cardBase}>
@@ -804,6 +822,7 @@ const FileViewer: React.FC<FileViewerProps> = ({ objectUrl, filename, mime }) =>
                 </span>
             </div>
             <a href={objectUrl} download={filename}
+                onClick={e => { if (isExecutableFilename(filename)) { e.preventDefault(); void saveReceivedFile(objectUrl, filename); } }}
                 style={{ color: 'var(--cl-text)', opacity: 0.6, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: '32px', height: '32px', borderRadius: '8px', background: 'rgba(255,255,255,0.06)', textDecoration: 'none' }}
                 onMouseOver={e => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.background = 'rgba(255,255,255,0.12)'; }}
                 onMouseOut={e => { e.currentTarget.style.opacity = '0.6'; e.currentTarget.style.background = 'rgba(255,255,255,0.06)'; }}>

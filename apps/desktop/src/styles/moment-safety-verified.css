@@ -1,0 +1,90 @@
+/* "Verified. Only you and {name} hold the keys." — components/moments/views/SafetyVerifiedMoment.tsx.
+   4 s, transform/opacity only. Phases (utils/moments.ts CEREMONIES): notice 0–0.3, main 0.3–1.5,
+   read 1.5–3.2, hold 3.2–3.6, exit 3.6–4.0.
+   Geometry is around .mo-anchor (the screen centre): orbs at x ±130 / y -96, the lock between them,
+   the two blocks below meeting at x 0, the line under those. */
+.mo-sv { --sv-lume: var(--cl-lume, #25E0C8); --sv-glow: var(--cl-glow, #FFC94D); }
+
+/* Notice (0–0.3): the dim is quicker than a moment's, and the orbs come up with it. */
+.mo-sv .mo-dim { animation-duration: .3s; }
+.mo-sv-orb {
+  position: absolute; top: -132px; width: 72px; height: 72px; border-radius: 50%;
+  box-sizing: border-box;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--cl-deep, #131A30);
+  animation: mo-sv-orb-in .35s cubic-bezier(.2, .8, .3, 1) both;
+}
+.mo-sv-orb-l { left: -166px; border: 2px solid var(--sv-lume); }
+.mo-sv-orb-r { left: 94px; border: 2px solid var(--sv-glow); animation-delay: .06s; }
+@keyframes mo-sv-orb-in { from { transform: scale(.6); opacity: 0; } to { transform: none; opacity: 1; } }
+.mo-sv-person { fill: var(--sv-lume); opacity: .8; }
+.mo-sv-initial { font: 600 32px/1 var(--cl-font-display, 'Fredoka', sans-serif); color: var(--sv-glow); }
+
+/* 0.3–0.9: the two blocks slide in from the screen edges (travel = ease-in-out) and meet at x 0. */
+.mo-sv-blocks { position: absolute; left: 0; top: -30px; width: 0; height: 92px; }
+.mo-sv-slide { position: absolute; top: 0; width: 180px; height: 92px; }
+.mo-sv-slide-l { left: -186px; animation: mo-sv-from-l .6s cubic-bezier(.45, 0, .4, 1) .3s both; }
+.mo-sv-slide-r { left: 6px; animation: mo-sv-from-r .6s cubic-bezier(.45, 0, .4, 1) .3s both; }
+@keyframes mo-sv-from-l { from { transform: translateX(-60vw); opacity: 0; } 20% { opacity: 1; } to { transform: none; opacity: 1; } }
+@keyframes mo-sv-from-r { from { transform: translateX(60vw); opacity: 0; } 20% { opacity: 1; } to { transform: none; opacity: 1; } }
+/* 0.9–1.1: the lock. Each half squeezes a few pixels past the other and settles. */
+.mo-sv-snap-l { animation: mo-sv-snap-l .2s ease-out .9s both; }
+.mo-sv-snap-r { animation: mo-sv-snap-r .2s ease-out .9s both; }
+@keyframes mo-sv-snap-l { 0% { transform: none; } 45% { transform: translateX(5px); } 100% { transform: none; } }
+@keyframes mo-sv-snap-r { 0% { transform: none; } 45% { transform: translateX(-5px); } 100% { transform: none; } }
+.mo-sv-blk { display: block; }
+.mo-sv-card { fill: var(--cl-deep, #131A30); stroke-width: 1.5; }
+.mo-sv-blk-l .mo-sv-card { stroke: var(--sv-lume); }
+.mo-sv-blk-r .mo-sv-card { stroke: var(--sv-glow); }
+.mo-sv-blk-l .mo-sv-pill { fill: var(--sv-lume); opacity: .7; }
+.mo-sv-blk-r .mo-sv-pill { fill: var(--sv-glow); opacity: .7; }
+/* The seam where they meet lights up on the lock and stays. */
+.mo-sv-seam {
+  position: absolute; left: -1px; top: 6px; width: 2px; height: 80px; border-radius: 1px;
+  background: var(--cl-text, #F4F7FF); opacity: 0;
+  animation: mo-sv-seam .35s ease-out .95s both;
+}
+@keyframes mo-sv-seam { 0% { transform: scaleY(.2); opacity: 0; } 40% { opacity: 1; } 100% { transform: none; opacity: .75; } }
+
+/* 0.95–1.3: the link between the orbs grows out from the middle, and the lock forms on it. */
+.mo-sv-link {
+  position: absolute; left: -94px; top: -97px; width: 188px; height: 2px; border-radius: 1px;
+  background: linear-gradient(90deg, var(--sv-lume), var(--sv-glow));
+  transform-origin: 50% 50%; opacity: 0;
+  animation: mo-sv-link .35s cubic-bezier(.2, .8, .3, 1) .95s both;
+}
+@keyframes mo-sv-link { from { transform: scaleX(.05); opacity: 0; } to { transform: none; opacity: .9; } }
+.mo-sv-lock { position: absolute; left: -32px; top: -128px; width: 64px; height: 64px; animation: mo-sv-lock-in .35s cubic-bezier(.2, .8, .3, 1.25) 1s both; }
+@keyframes mo-sv-lock-in { from { transform: scale(.3); opacity: 0; } to { transform: none; opacity: 1; } }
+.mo-sv-lock-disc { fill: var(--cl-abyss, #0B0F1E); stroke: var(--sv-lume); stroke-width: 2.5; }
+.mo-sv-lock-body { fill: var(--sv-lume); }
+.mo-sv-keyhole { fill: var(--cl-abyss, #0B0F1E); }
+.mo-sv-shackle { stroke: var(--sv-lume); animation: mo-sv-shackle .16s ease-in 1.2s both; }
+@keyframes mo-sv-shackle { from { transform: translateY(-5px); } to { transform: none; } }
+
+/* 1.25–2.4: a bioluminescent pulse leaves the lock, twice. A band of light that scales up and fades. */
+.mo-sv-pulse {
+  position: absolute; left: -80px; top: -176px; width: 160px; height: 160px; border-radius: 50%;
+  background: radial-gradient(circle, transparent 52%, rgba(37, 224, 200, .45) 61%, rgba(37, 224, 200, .12) 69%, transparent 76%);
+  opacity: 0; transform: scale(.3);
+  animation: mo-sv-pulse 1.1s cubic-bezier(.2, .6, .3, 1) 1.25s both;
+}
+.mo-sv-pulse-2 { animation-delay: 1.45s; animation-duration: 1s; }
+@keyframes mo-sv-pulse { 0% { transform: scale(.3); opacity: 0; } 15% { opacity: 1; } 100% { transform: scale(10); opacity: 0; } }
+
+/* 1.25–1.5: the line rises in (arrival = ease-out). */
+.mo-sv-text {
+  position: absolute; left: -280px; top: 96px; width: 560px; text-align: center; white-space: normal;
+  font-size: 24px; line-height: 1.3;
+  opacity: 0;
+  animation: mo-sv-text .25s cubic-bezier(.2, .8, .3, 1) 1.25s both;
+}
+.mo-sv-text b { color: var(--sv-lume); font-weight: 600; }
+@keyframes mo-sv-text { from { transform: translateY(10px); opacity: 0; } to { transform: none; opacity: 1; } }
+@media (max-width: 640px) { .mo-sv-text { left: -45vw; width: 90vw; font-size: 20px; } }
+
+/* Reduced motion: the shared still card (MomentStill), fading in and out on opacity alone.
+   moments.css's blanket "no animation" rule has to be beaten on purpose (!important, and more
+   specific): a fade is what keeps the card gentle rather than abrupt, and it does not travel. */
+.mo-ceremony.mo-reduced .mo-still { opacity: 0; animation: mo-sv-still var(--mo-still, 6s) linear both !important; }
+@keyframes mo-sv-still { 0% { opacity: 0; } 5% { opacity: 1; } 92% { opacity: 1; } 100% { opacity: 0; } }

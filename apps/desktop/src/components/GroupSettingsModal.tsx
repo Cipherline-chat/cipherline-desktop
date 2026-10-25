@@ -1,18 +1,23 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
+import { Camera, Settings2, UserPlus } from 'lucide-react';
 import { apiUrl } from '../utils/apiPath';
 import { useAuth } from '../contexts/AuthContext';
-import { Camera, Save, X } from 'lucide-react';
 import { useAttachments } from '../hooks/useAttachments';
 import { useAvatarBroadcast } from '../hooks/useAvatarBroadcast';
 import { EncryptedAvatar } from './EncryptedAvatar';
+import { GroupBackdrop } from './GroupBackdrop';
+import { memberCountLabel } from './GroupContextHeader';
 import { saveAvatarKey } from '../utils/avatarKeyStore';
 import { useModalExit } from '../hooks/useModalExit';
 import { AVATAR_OUTPUT } from '../utils/imageCrop';
 import { IMAGE_ACCEPT_ATTR, validateImageUpload } from '../utils/imageUploadValidation';
 import { useToast } from '../contexts/ToastContext';
 import { ClButton, ClInput, ClModal, ClImageCropper } from './cl';
-import { AddGroupMembersPicker } from './AddGroupMembersPicker';
+import { DialogHeader, DialogBody, DialogFooter, DialogError, DialogOk, DialogField } from './dialog/DialogFrame';
+import { AddGroupMembersModal } from './AddGroupMembersModal';
+import '../styles/dialog-extras.css';
+import '../styles/group-settings.css';
 
 interface GroupSettingsModalProps {
     conversationId: string;
@@ -23,38 +28,57 @@ interface GroupSettingsModalProps {
     onGroupUpdated?: (newTitle: string, newAvatarUrl: string) => void;
 }
 
+interface GroupMember { user_id: string; username: string; avatar_url: string | null }
+
 export const GroupSettingsModal: React.FC<GroupSettingsModalProps> = ({ conversationId, conversationTitle, avatarUrl: initialAvatarUrl, onClose, onGroupUpdated }) => {
     const { closing, handleClose } = useModalExit(onClose, 260);
     const { token, user, deviceId } = useAuth();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
-    const [members, setMembers] = useState<any[]>([]);
+    const [members, setMembers] = useState<GroupMember[]>([]);
     const [loading, setLoading] = useState(true);
+    const [membersFailed, setMembersFailed] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [success, setSuccess] = useState<string | null>(null);
 
     const [title, setTitle] = useState(conversationTitle);
-    const [avatarUrl, setAvatarUrl] = useState(initialAvatarUrl || '');
+    /** What the server has now (name + picture id) — the baseline "changed" is measured against. */
+    const [savedTitle, setSavedTitle] = useState(conversationTitle);
+    const [savedAttachment, setSavedAttachment] = useState(initialAvatarUrl || '');
+    /** Local preview (blob:) of a picked-and-cropped picture, unsaved or just saved. */
+    const [previewUrl, setPreviewUrl] = useState('');
     const [avatarFile, setAvatarFile] = useState<Blob | null>(null);
     /** The picked image awaiting crop. Non-null ⇒ the cropper is open. */
     const [cropFile, setCropFile] = useState<File | null>(null);
     const [saving, setSaving] = useState(false);
-    const fileInputRef = React.useRef<HTMLInputElement>(null);
+    const [addPeopleOpen, setAddPeopleOpen] = useState(false);
+    const fileInputRef = useRef<HTMLInputElement>(null);
     // P2-REND-13: track latest blob URL so unmount cleanup revokes it (empty-deps effect).
-    const avatarUrlRef = useRef(avatarUrl);
-    avatarUrlRef.current = avatarUrl;
+    const previewUrlRef = useRef(previewUrl);
+    useEffect(() => { previewUrlRef.current = previewUrl; });
 
     useEffect(() => {
         return () => {
-            if (avatarUrlRef.current?.startsWith('blob:')) URL.revokeObjectURL(avatarUrlRef.current);
+            if (previewUrlRef.current?.startsWith('blob:')) URL.revokeObjectURL(previewUrlRef.current);
         };
+    }, []);
+
+    // ClModal focuses the card's FIRST focusable — the picture button, which would
+    // open with its "Change" overlay + focus ring showing. The name is the common
+    // edit, so land there (after ClModal's own focus move, same 80ms as useInitialFocus).
+    useEffect(() => {
+        const t = window.setTimeout(() => document.getElementById('group-settings-name')?.focus(), 80);
+        return () => window.clearTimeout(t);
     }, []);
 
     const { uploadEncryptedFile } = useAttachments(token);
     const toast = useToast();
     const { broadcastGroupAvatarKey } = useAvatarBroadcast(token, user?.user_id || null);
 
+    /** What the picture slot shows: the local preview if there is one, else the stored attachment. */
+    const picture = previewUrl || savedAttachment;
+
     const fetchMembers = async () => {
         setLoading(true);
+        setMembersFailed(false);
         try {
             const devicesRes = await axios.get(apiUrl`/conversations/${conversationId}/devices`, {
                 headers: {
@@ -63,7 +87,7 @@ export const GroupSettingsModal: React.FC<GroupSettingsModalProps> = ({ conversa
                 }
             });
 
-            const uniqueUsers = new Map();
+            const uniqueUsers = new Map<string, GroupMember>();
             // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
             devicesRes.data.forEach((d: any) => {
                 if (d.user_id && !uniqueUsers.has(d.user_id)) {
@@ -82,6 +106,7 @@ export const GroupSettingsModal: React.FC<GroupSettingsModalProps> = ({ conversa
             setMembers(Array.from(uniqueUsers.values()));
         } catch (err) {
             console.error('Failed to fetch members:', err);
+            setMembersFailed(true);
         }
 
         setLoading(false);
@@ -89,11 +114,6 @@ export const GroupSettingsModal: React.FC<GroupSettingsModalProps> = ({ conversa
 
     // eslint-disable-next-line react-hooks/exhaustive-deps -- fetch once per conversation; fetchMembers is a per-render closure and including it would refetch on every render
     useEffect(() => { fetchMembers(); }, [conversationId]);
-
-    // Friend list, search, staged multi-select and the invite calls live in
-    // AddGroupMembersPicker (shared with the right-hand panel's "+").
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
-    const memberIds = useMemo(() => new Set(members.map((m: any) => m.user_id)), [members]);
 
     const handleAvatarChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         const result = validateImageUpload(e.target.files?.[0]);
@@ -111,19 +131,24 @@ export const GroupSettingsModal: React.FC<GroupSettingsModalProps> = ({ conversa
     const handleCropped = (blob: Blob) => {
         setCropFile(null);
         setAvatarFile(blob);
-        setAvatarUrl(prev => {
+        setSuccess(null);
+        setPreviewUrl(prev => {
             if (prev?.startsWith('blob:')) URL.revokeObjectURL(prev);
             return URL.createObjectURL(blob);
         });
     };
 
+    const trimmedTitle = title.trim();
+    const dirty = trimmedTitle !== savedTitle.trim() || !!avatarFile;
+    const canSave = dirty && !!trimmedTitle && !saving;
+
     const handleSaveGroup = async () => {
-        if (!token) return;
+        if (!token || !canSave) return;
         setSaving(true);
         setError(null);
         setSuccess(null);
         try {
-            let finalAttachmentId = avatarUrl;
+            let finalAttachmentId = savedAttachment;
 
             if (avatarFile) {
                 const { attachmentId, keyB64, nonceB64 } = await uploadEncryptedFile(
@@ -138,15 +163,18 @@ export const GroupSettingsModal: React.FC<GroupSettingsModalProps> = ({ conversa
             }
 
             await axios.patch(apiUrl`/conversations/${conversationId}`, {
-                title: title,
+                title: trimmedTitle,
                 avatar_attachment: finalAttachmentId
             }, {
                 headers: { Authorization: `Bearer ${token}` }
             });
 
             setAvatarFile(null);
-            setSuccess('Group updated successfully');
-            if (onGroupUpdated) onGroupUpdated(title, finalAttachmentId);
+            setSavedAttachment(finalAttachmentId);
+            setSavedTitle(trimmedTitle);
+            setTitle(trimmedTitle);
+            setSuccess('Group updated');
+            if (onGroupUpdated) onGroupUpdated(trimmedTitle, finalAttachmentId);
         // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (err: any) {
             console.error('Failed to save group settings', err);
@@ -159,137 +187,143 @@ export const GroupSettingsModal: React.FC<GroupSettingsModalProps> = ({ conversa
     /**
      * Overlay-close guard for the host modal.
      *
-     * Escape itself no longer needs this: ClModal's Escape now goes through
-     * the shared escapeStack (see utils/escapeStack.ts), so with the cropper
-     * open its layer is on top and a press closes ONLY the cropper. This guard
-     * remains for a backdrop click reaching the host's `onClose` while a crop
-     * is in progress — swallow it and close the cropper first rather than
-     * discarding unsaved edits underneath it.
+     * Escape itself no longer needs this: ClModal's Escape goes through the
+     * shared escapeStack (see utils/escapeStack.ts), so with the cropper or the
+     * add-people dialog open its layer is on top and a press closes ONLY that
+     * layer. This guard remains for a backdrop click reaching the host's
+     * `onClose` while a crop is in progress — swallow it and close the cropper
+     * first rather than discarding unsaved edits underneath it.
      */
     const requestClose = () => {
         if (cropFile) { setCropFile(null); return; }
+        if (addPeopleOpen) return;
         handleClose();
     };
+
+    let hint: React.ReactNode;
+    if (saving) hint = <span>Saving…</span>;
+    else if (dirty && !trimmedTitle) hint = <span>Give the group a name to save</span>;
+    else if (dirty) hint = <span className="dlg-hint-strong">Unsaved changes</span>;
+    else hint = <span>Change the name or photo to save</span>;
 
     return (
       <>
         <ClModal
             open={!closing}
             onClose={requestClose}
-            width={460}
-            cardStyle={{ padding: '32px', maxHeight: '90vh', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '20px' }}
-            cardClassName="custom-scrollbar"
+            width={480}
+            label="Group settings"
+            cardClassName="dlg-card"
         >
-                {/* Header */}
-                <div className="flex justify-between items-center">
-                    <h2 className="m-0 text-cl-text text-xl font-semibold tracking-tight">Manage Group</h2>
-                    <ClButton
-                        variant="ghost"
-                        icon
-                        onClick={handleClose}
-                    >
-                        <X size={18} />
-                    </ClButton>
-                </div>
-
-                {/* Avatar + name */}
-                <div className="flex flex-col items-center gap-4 py-2">
-                    <div className="relative group">
-                        <div className="w-24 h-24 rounded-full border-2 border-cl-border flex items-center justify-center overflow-hidden">
-                            <EncryptedAvatar attachmentId={avatarUrl} token={token} isGroup className="w-full h-full" fallbackSize={40} />
-                        </div>
+          <form className="dlg-form" noValidate onSubmit={(e) => { e.preventDefault(); void handleSaveGroup(); }}>
+            <DialogHeader
+                icon={<Settings2 size={19} strokeWidth={2.2} />}
+                title="Group settings"
+                subtitle="Rename the group, change its photo, and see who's in."
+            />
+            <DialogBody>
+                {/* Banner: the group picture, blurred + darkened (the same treatment as
+                    the right-hand panel's card), with the real picture on top to edit. */}
+                <div className="cl-group-hero cl-group-hero--banner" data-testid="group-settings-banner">
+                    <GroupBackdrop attachmentId={picture} token={token} />
+                    <div className="cl-group-hero-copy">
                         {/* Plain button, not ClButton — the kit's .cap fixes its own
-                            size/background/radius and ClButton puts the `style` prop
-                            on the outer wrapper, not .cap, so this rendered as two
-                            overlapping teal circles (a correctly-sized 32px wrapper
-                            underneath the kit's default 46px icon-button surface).
-                            Same fix already applied in CreateGroupModal.tsx. */}
+                            size/background/radius (same reason as CreateGroupModal). */}
                         <button
                             type="button"
+                            className="cl-group-pic-btn"
                             onClick={() => fileInputRef.current?.click()}
-                            className="cl-avatar-corner-badge"
                             aria-label="Change group photo"
+                            disabled={saving}
                         >
-                            <Camera size={14} />
+                            <EncryptedAvatar attachmentId={picture} token={token} isGroup className="w-full h-full" fallbackSize={38} />
+                            <span className="cl-group-pic-btn-overlay" aria-hidden="true">
+                                <Camera size={18} />
+                                Change
+                            </span>
                         </button>
                     </div>
-                    <input type="file" ref={fileInputRef} onChange={handleAvatarChange} className="hidden" accept={IMAGE_ACCEPT_ATTR} />
+                </div>
+                <input type="file" ref={fileInputRef} onChange={handleAvatarChange} className="hidden" accept={IMAGE_ACCEPT_ATTR} />
 
-                    <div className="w-full space-y-1.5">
-                        <label className="text-[11px] font-bold text-cl-faint uppercase tracking-wider ml-1">Group Name</label>
+                <div style={{ marginTop: 16 }}>
+                    <DialogField label="Group name" htmlFor="group-settings-name">
                         <ClInput
+                            id="group-settings-name"
                             type="text"
                             value={title}
-                            onChange={(e) => setTitle(e.target.value)}
+                            onChange={(e) => { setTitle(e.target.value); setSuccess(null); }}
                             placeholder="Enter group name…"
+                            autoComplete="off"
                         />
-                    </div>
+                    </DialogField>
+                </div>
 
+                <div className="gset-members-head">
+                    <div className="gset-members-title">
+                        <span>Members</span>
+                        {!loading && !membersFailed && (
+                            <span className="gset-count" data-testid="member-count" title={memberCountLabel(members.length)}>{members.length}</span>
+                        )}
+                    </div>
                     <ClButton
-                        fullWidth
-                        onClick={handleSaveGroup}
-                        loading={saving}
-                        disabled={saving || (title === conversationTitle && !avatarFile)}
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setAddPeopleOpen(true)}
+                        disabled={loading || membersFailed}
                     >
-                        <Save size={16} />
-                        Save Changes
+                        <UserPlus size={14} />
+                        Add people
                     </ClButton>
                 </div>
-
-                {error && (
-                    <div className="text-cl-flash bg-cl-flash/10 px-4 py-3 rounded-lg text-sm font-medium border border-cl-flash/20">
-                        {error}
-                    </div>
-                )}
-                {success && (
-                    <div className="text-cl-ok bg-cl-ok/10 px-4 py-3 rounded-lg text-sm font-medium border border-cl-ok/20">
-                        {success}
-                    </div>
-                )}
-
-                {/* Members */}
-                <div className="flex flex-col gap-3">
-                    <h3 className="text-sm font-semibold text-cl-faint m-0 uppercase tracking-wider">
-                        Members ({members.length})
-                    </h3>
-                    <div className="max-h-[180px] overflow-y-auto bg-cl-sink rounded-xl border border-white/5 p-2 flex flex-col gap-1 custom-scrollbar">
-                        {loading ? (
-                            <div className="text-cl-faint text-center py-4 text-sm font-medium">Loading members…</div>
-                        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
-                        ) : members.map((m: any) => (
-                            <div key={m.user_id} className="flex items-center p-2 rounded-lg hover:bg-white/5 transition-colors">
-                                <div className="w-8 h-8 rounded-full flex items-center justify-center mr-3 shrink-0 overflow-hidden">
-                                    <EncryptedAvatar
-                                        attachmentId={m.avatar_url ?? null}
-                                        userId={m.user_id}
-                                        token={token}
-                                        className="w-full h-full"
-                                        fallbackSize={16}
-                                    />
-                                </div>
-                                <span className="flex-1 text-sm font-medium text-cl-text truncate">
-                                    {m.username}
-                                    {m.user_id === user?.user_id && (
-                                        <span className="text-cl-faint italic ml-1 text-xs">(You)</span>
-                                    )}
-                                </span>
+                <div className="gset-members custom-scrollbar" aria-busy={loading}>
+                    {loading ? (
+                        <div className="gset-members-note">Loading members…</div>
+                    ) : membersFailed ? (
+                        <div className="gset-members-note">
+                            Couldn't load members.{' '}
+                            <button type="button" className="dlg-linkbtn" onClick={() => { void fetchMembers(); }}>Try again</button>
+                        </div>
+                    ) : members.map((m) => (
+                        <div key={m.user_id} className="gset-member">
+                            <div className="gset-member-av">
+                                <EncryptedAvatar
+                                    attachmentId={m.avatar_url ?? null}
+                                    userId={m.user_id}
+                                    token={token}
+                                    className="w-full h-full"
+                                    fallbackSize={16}
+                                />
                             </div>
-                        ))}
-                    </div>
+                            <span className="gset-member-name">
+                                {m.username}
+                                {m.user_id === user?.user_id && <span className="gset-you">(You)</span>}
+                            </span>
+                        </div>
+                    ))}
                 </div>
-
-                {/* Add members — the shared picker (friend search, staged
-                    multi-select + confirm, 200-member cap, added/failed messaging).
-                    Re-load the member list above once an add settles. */}
-                <AddGroupMembersPicker
-                    conversationId={conversationId}
-                    memberIds={memberIds}
-                    membersLoading={loading}
-                    onResult={() => { fetchMembers(); }}
-                />
-
-                <ClButton variant="ghost" fullWidth onClick={handleClose}>Done</ClButton>
+            </DialogBody>
+            {error && <DialogError>{error}</DialogError>}
+            {success && <DialogOk>{success}</DialogOk>}
+            <DialogFooter hint={hint}>
+                <ClButton type="button" variant="ghost" size="sm" onClick={handleClose}>{success && !dirty ? 'Done' : 'Cancel'}</ClButton>
+                <ClButton type="submit" size="sm" loading={saving} disabled={!canSave}>Save</ClButton>
+            </DialogFooter>
+          </form>
         </ClModal>
+
+        {/* Stacked above this dialog; outside the <form> so nothing it renders can submit it.
+            Shares the invite logic (useGroupMemberInvites) with the panel's "+". */}
+        {addPeopleOpen && !closing && (
+            <AddGroupMembersModal
+                conversationId={conversationId}
+                conversationTitle={title.trim() || conversationTitle}
+                memberIds={members.map(m => m.user_id)}
+                onClose={() => setAddPeopleOpen(false)}
+                onAdded={() => { void fetchMembers(); }}
+            />
+        )}
 
         <ClImageCropper
             open={!!cropFile}

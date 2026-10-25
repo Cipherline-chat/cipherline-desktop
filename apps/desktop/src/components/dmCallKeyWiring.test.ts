@@ -46,12 +46,13 @@ describe('DM/group call keys this device generated are recorded locally', () => 
     // whole duration. recordCallKey bumps an epoch so the gate re-runs.
     it('startGlobalCall records the session key it generated', () => {
         const body = bodyAfter('const startGlobalCall', 3000);
-        expect(body).toMatch(/recordCallKeyRef\.current\(initRes\.data\.session_id,\s*sessionKey\)/);
+        // F11: keyed by (conversation, call); `!joined` = this device generated it.
+        expect(body).toMatch(/recordCallKeyRef\.current\(convId,\s*initRes\.data\.session_id,\s*sessionKey,\s*!joined\)/);
     });
 
     it('startGlobalCall records it BEFORE setActiveCall, so no mount can race the write', () => {
         const body = bodyAfter('const startGlobalCall', 8000);
-        const write = body.search(/recordCallKeyRef\.current\(initRes\.data\.session_id/);
+        const write = body.search(/recordCallKeyRef\.current\(convId, initRes\.data\.session_id/);
         const mount = body.indexOf('setActiveCall({');
         expect(write).toBeGreaterThan(-1);
         expect(mount).toBeGreaterThan(-1);
@@ -60,7 +61,7 @@ describe('DM/group call keys this device generated are recorded locally', () => 
 
     it('the ChatPane start/rotate path records its key too (handleConvCallChange)', () => {
         const body = bodyAfter('const handleConvCallChange', 1200);
-        expect(body).toMatch(/recordCallKeyRef\.current\(callData\.id,\s*callData\.e2ee_key_b64\)/);
+        expect(body).toMatch(/recordCallKeyRef\.current\(callData\.conversation_id,\s*callData\.id,\s*callData\.e2ee_key_b64,\s*callData\.isInitiator !== false\)/);
     });
 
     it('a key is only ever recorded when it is non-empty (never clobber a real key with "")', () => {
@@ -68,20 +69,24 @@ describe('DM/group call keys this device generated are recorded locally', () => 
         // turn "we have not learned this key yet" into "this call has no key".
         // Guarded twice now — at both call sites AND inside recordCallKey, which
         // is what makes a future fourth caller safe by default.
-        expect(dashboard).toMatch(/if \(sessionKey\) recordCallKeyRef\.current\(initRes\.data\.session_id, sessionKey\)/);
-        expect(dashboard).toMatch(/if \(callData\.e2ee_key_b64\) recordCallKeyRef\.current\(callData\.id, callData\.e2ee_key_b64\)/);
+        expect(dashboard).toMatch(/if \(sessionKey\) recordCallKeyRef\.current\(convId, initRes\.data\.session_id, sessionKey, !joined\)/);
+        expect(dashboard).toMatch(/if \(callData\.e2ee_key_b64\) recordCallKeyRef\.current\(callData\.conversation_id, callData\.id, callData\.e2ee_key_b64,/);
         const guard = bodyAfter('const recordCallKey = useCallback', 400);
-        expect(guard).toContain('if (!callId || !keyB64) return;');
+        expect(guard).toContain('if (!callId || !keyB64 || !userId) return');
     });
 
     it('every writer goes through recordCallKey — the ref is never assigned directly', () => {
         // A direct assignment would skip the epoch bump and silently reinstate
         // the lost-late-key bug. `=` not followed by `=` so recordCallKey's own
         // `if (store[id] === key) return;` comparison is not counted.
-        const direct = dashboard.match(/callKeyStoreRef\.current\[[^\]]+\]\s*=(?!=)/g) ?? [];
-        expect(direct).toHaveLength(1); // the one inside recordCallKey itself
-        const inside = bodyAfter('const recordCallKey = useCallback', 400);
-        expect(inside).toMatch(/callKeyStoreRef\.current\[callId\]\s*=\s*keyB64;/);
+        // F11: the store is a CallKeyStore; its two writers are recordCallKey
+        // (local) and acceptRemoteCallKey (a decrypted call_key), and both
+        // bump the epoch.
+        const direct = dashboard.match(/callKeyStoreRef\.current\.record(Local|Remote)\(/g) ?? [];
+        expect(direct).toHaveLength(2);
+        expect(bodyAfter('const recordCallKey = useCallback', 400)).toContain('callKeyStoreRef.current.recordLocal(');
+        expect(bodyAfter('const acceptRemoteCallKey = useCallback', 1200)).toContain('callKeyStoreRef.current.recordRemote(');
+        expect(bodyAfter('const acceptRemoteCallKey = useCallback', 1200)).toContain('setCallKeyEpoch(n => n + 1)');
     });
 
     it('the store is still never fed from a server response — only local generation or a decrypted envelope', () => {
@@ -90,8 +95,11 @@ describe('DM/group call keys this device generated are recorded locally', () => 
         // needs the same scrutiny — a key handed over by the server would defeat
         // the entire point of distributing it through the E2EE message channel.
         const calls = dashboard.match(/recordCallKeyRef\.current\(/g) ?? [];
-        expect(calls).toHaveLength(3);
-        expect(dashboard).not.toMatch(/recordCallKeyRef\.current\([^,]+,\s*(res|initRes)\.data/);
+        expect(calls).toHaveLength(2);
+        const remote = dashboard.match(/acceptRemoteCallKeyRef\.current\(/g) ?? [];
+        expect(remote).toHaveLength(1);
+        expect(dashboard).not.toMatch(/recordCallKeyRef\.current\([^,]+,[^,]+,\s*(res|initRes)\.data/);
+        expect(dashboard).not.toMatch(/keyB64:\s*(res|initRes)\.data/);
     });
 
     it('the crash-recovery rejoin is the one other writer, and its only key source is our own persisted record', () => {
@@ -100,7 +108,7 @@ describe('DM/group call keys this device generated are recorded locally', () => 
         // It goes through recordCallKey, never the ref, and never from a response.
         const body = bodyAfter('const acceptRejoin = useCallback', 2600);
         expect(body).toMatch(/const key = d\.callKeyB64 \?\? ''/);
-        expect(body).toMatch(/recordCallKey\(d\.sessionId,\s*key\)/);
+        expect(body).toMatch(/recordCallKey\(d\.conversationId,\s*d\.sessionId,\s*key,\s*false\)/);
         expect(body).not.toMatch(/recordCallKey\([^)]*(res|initRes)\.data/);
         // Startup must not seed the store from disk just by launching.
         const startup = bodyAfter('// (2) Startup check', 3800);

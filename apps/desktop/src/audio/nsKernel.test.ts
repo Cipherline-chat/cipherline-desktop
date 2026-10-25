@@ -328,3 +328,23 @@ describe('NsOutputRing — no per-quantum allocation on the audio thread', () =>
         expect(ring.process(makeRaw(QUANTUM, 0), out)).toBe(first);
     });
 });
+
+describe('NsOutputRing — latency is bounded by the ring size (2026-10-24 audio-delay audit)', () => {
+    it('a burst larger than the ring drops the OLDEST samples: available() never exceeds the size, newest audio survives', () => {
+        const ring = new NsOutputRing();
+        for (let i = 0; i < ring.size * 5; i++) ring.push(i);
+        expect(ring.available()).toBe(ring.size);
+        expect(ring.overflowDrops).toBe(ring.size * 4);
+        // The next sample read is the oldest one still held, in order.
+        expect(ring.buf[ring.r % ring.size]).toBe(ring.size * 4);
+    });
+    it('normal producer/consumer balance never overflows', () => {
+        const ring = new NsOutputRing();
+        const out = new Float32Array(QUANTUM);
+        for (let q = 0; q < 2000; q++) {
+            for (let i = 0; i < QUANTUM; i++) ring.push(0.1);
+            ring.process(makeRaw(QUANTUM), out);
+        }
+        expect(ring.overflowDrops).toBe(0);
+    });
+});

@@ -18,6 +18,32 @@ import { mentionsToDisplayText } from './mentionTokens';
  * longer matches messages because of the hidden token.
  */
 
+/**
+ * How much of a message any PREVIEW surface (conversation-list line, reply
+ * quote, OS notification body, pinned-message row) ever looks at. Each of
+ * them shows at most a few hundred characters, but they all ran the token
+ * scanner over the WHOLE text first, and they run with no click: a large
+ * message must not cost its full length on every list render or toast.
+ * Cutting mid-token is harmless here: the cut is far past what is shown.
+ */
+export const PREVIEW_SCAN_MAX = 2000;
+
+/** `text` cut to PREVIEW_SCAN_MAX (never between the halves of a surrogate pair); '' for a non-string. */
+export function clipForPreview(text: unknown, max: number = PREVIEW_SCAN_MAX): string {
+    if (typeof text !== 'string') return '';
+    if (text.length <= max) return text;
+    let cut = max;
+    const prev = text.charCodeAt(cut - 1);
+    if (prev >= 0xd800 && prev <= 0xdbff) cut -= 1;
+    return text.slice(0, cut);
+}
+
+/** Display text of a message's content, cut for a preview (see PREVIEW_SCAN_MAX). */
+export function displayPreviewOf(content: { text?: unknown } | null | undefined): string | undefined {
+    const text = content?.text;
+    return typeof text === 'string' ? mentionsToDisplayText(clipForPreview(text)) : undefined;
+}
+
 /** Display text of a message's content, or undefined when it has no text. */
 export function displayTextOf(content: { text?: unknown } | null | undefined): string | undefined {
     const text = content?.text;

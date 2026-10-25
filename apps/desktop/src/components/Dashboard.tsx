@@ -1,5 +1,12 @@
+import { ingestInboundContent, ingestInboundStatusEmoji } from '../utils/personalEmoji/inbound';
+import { useStatusEmojiShare } from '../hooks/useStatusEmojiShare';
+import { keepsakeRainEmojiRef } from '../utils/profileCosmetics';
+import { usePersonalEmojiSync } from '../hooks/usePersonalEmojiSync';
 import secureLocalStore from '../utils/secureLocalStore';
 import { mentionsToPlainText } from '../utils/mentionTokens';
+import { clipForPreview } from '../utils/messagePreviewText';
+import { RowErrorBoundary } from './RowErrorBoundary';
+import { stripBidiControls } from '../utils/fileSafety';
 import { fetchChannelSaveState, withId, withoutId, asSaveRequestError, type ChannelSaveState } from '../utils/channelServerSaves';
 import { unpinChannelMessage, unsaveChannelMessage, type ChannelSaveActionDeps } from '../utils/channelSaveActions';
 import { quotaExceededMessage } from '../utils/serverStorageCopy';
@@ -11,6 +18,12 @@ import FriendsPane from './FriendsPane';
 import ChatPane, { messageTextMentionsUser } from './ChatPane';
 import { CallPane } from './CallPane';
 import { useCallsChannelKey } from '../hooks/useCallsChannelKey';
+import {
+    pickCallsRoomKey, deliverGuestCallKey, onGuestMove, shouldServeGuestKeyRequest, acceptGuestCallKey,
+    guestCallServerInfo, GUEST_KEY_REQUEST_DELAYS_MS, type GuestCall, type GuestRoomKey, type GuestMove,
+} from '../utils/guestCallKey';
+import { useNightDiveActive } from '../hooks/useNightDive';
+import { titleBarColor } from '../utils/nightDive';
 import { resolveCallKeyGate, CALL_KEY_STALL_MS, CALL_KEY_DEGRADED_GRACE_MS } from '../utils/callKeyGate';
 import { createJoinAttemptTracker, deriveCallJoinPhase, isJoinPending, describeCallJoinFailure, isSameJoinInFlight, type CallJoinKind, type JoinAttempt } from '../utils/callJoinFlow';
 import { canStartCallsIn, START_CALLS_DENIED_MESSAGE } from '../utils/startCallsGate';
@@ -48,9 +61,13 @@ import { useContextMenu } from '../hooks/useContextMenu';
 import { useConversationRailMenu } from '../hooks/useConversationRailMenu';
 import { runMarkRead, unreadConversationIds, type ConversationScope } from '../utils/markAllRead';
 import { HoverActions } from './primitives/HoverActions';
-import { unlockAudioContext } from '../hooks/useParticipantAudio';
+import { unlockAudioContext, setMasterVolume } from '../hooks/useParticipantAudio';
 import { unlockPendingContexts } from '../utils/audioUnlock';
 import { setHasActiveCall } from '../utils/activeCallRegistry';
+import { requestMoment, voiceJoinMoment, noteServerLeft, serverRejoined } from '../utils/moments';
+import { useMomentInviteRequest } from '../hooks/useMomentInviteRequest';
+import { useCountMilestone } from '../hooks/useCountMilestone';
+import { noteServerCreated } from '../utils/milestones';
 import { shouldTeardownForCallStatus, shouldKeepRetryingStalenessCheck, type CallStatusResponse } from '../utils/callStalenessPolicy';
 import {
     buildDescriptor as buildRejoinDescriptor,
@@ -68,18 +85,20 @@ import { buildAnnotationKeybindHandlers, useAnnotationKeyHintPublisher } from '.
 import { useHasAnswerableAnnotationRequest } from '../utils/annotationRequestKeybind';
 import { useOutputDeviceNotices } from '../hooks/useOutputDeviceNotices';
 import { useVoiceSettings } from '../hooks/useVoiceSettings';
+import { OPEN_SETTINGS_EVENT, type OpenSettingsDetail } from '../utils/openSettingsRequest';
 import { useKeyRotation } from '../hooks/useKeyRotation';
 import { clampFutureTimestamp, sweepRetention } from '../utils/retentionSweeper';
 import { parseRetentionOverride, pinnedIdsForChannel, serverRetentionKey, sweepPolicyFor } from '../utils/retentionResolve';
-import { pageNeedsKeyRequest, splitExpiredIncoming, type IncomingRetention } from '../utils/channelHistoryRetention';
+import { pageNeedsKeyRequest, placeholderEpochsWantingKey, splitExpiredIncoming, type IncomingRetention } from '../utils/channelHistoryRetention';
 import { attachmentToDeleteWithMessage } from '../utils/attachmentOnDelete';
 import { planServerPurge, type ServerPurgeResult, type StorageChannel } from '../utils/serverStorage';
 import type { ServerStorageData } from './ServerStorageSection';
-import { foldChannelHistory, isUndecryptablePlaceholder, deletedChannelTargetIds, editedContent } from '../utils/channelHistoryMerge';
-import { classifyChannelDecryptFailure, channelPlaceholderContent, placeholderRetryable, placeholderWantsKey, isChannelTombstone } from '../utils/channelDecryptFailure';
-import { beginChannelPageDecrypt, noteChannelKeyReceived, noteKeyRequestAcked, noteNewestKeyPending, resetKeyWaitSignals } from '../utils/channelKeyWait';
+import { foldChannelHistory, isUndecryptablePlaceholder, deletedChannelTargetIds, editedContent, applyChannelEditDelete, findChannelActionTarget, sameChannelAuthor } from '../utils/channelHistoryMerge';
+import { classifyChannelDecryptFailure, resetReportedChannelFailures, channelPlaceholderContent, placeholderRetryable, placeholderWantsKey, isChannelTombstone } from '../utils/channelDecryptFailure';
+import { ackInBatches, decideReplayEnvelope, HeldBackEnvelopes, isEnvelopeReplay, orderEnvelopesForInstall } from '../utils/channelKeyEnvelopes';
+import { beginChannelOpen, beginChannelPageDecrypt, noteChannelKeyReceived, noteKeyRequestAcked, noteNewestKeyPending, resetKeyWaitSignals } from '../utils/channelKeyWait';
 import { splitReusableChannelRows } from '../utils/channelRowReuse';
-import { isRawSystemRow, memberEventFromHistory, memberEventFromLive, memberEventFromLegacy, addMemberEventRow, addEphemeralMemberEventRow, dropShadowedEphemeralRows, decideChannelSystemRow, memberEventIsMine } from '../utils/systemMessages';
+import { isRawSystemRow, isMemberEventContent, memberEventFromHistory, memberEventFromLive, memberEventFromLegacy, addMemberEventRow, addEphemeralMemberEventRow, dropShadowedEphemeralRows, decideChannelSystemRow, memberEventIsMine } from '../utils/systemMessages';
 import {
     HISTORY_PAGE_SIZE, addCoveredRange, rangeForPage, demoteLiveTop, shrinkToCached, reachesHistoryStart, historyGaps, proofWindow, isUuid,
     type ChannelCoverage, type CoveredSegment, type HistoryGap, type PageRequest,
@@ -94,12 +113,18 @@ import { markAttachmentsRemoved } from '../utils/removedAttachmentTracker';
 import { PurgeConfirmModal } from './PurgeControls';
 import { formatLastSeen } from '../utils/formatLastSeen';
 import { chatBucket, chatBucketLabel } from '../utils/chatListDividers';
-import { HandshakeBackoff, Pacer, DeliveryLedger, KeyedMutex, SingleFlight, ResumeTimers, runKeyDistribution, MAX_DISTRIBUTION_RESUMES, KEY_HANDSHAKE_POST_TIMEOUT_MS, type DistributionOutcome, type OwedServe } from '../utils/keyDistributionThrottle';
-import { serveKeyRequestsPass, runMemberJoinDistribution, pickServeJitterMs, walkOffsetFor, type PendingKeyRequest, type DeviceBundle } from '../utils/keyServePass';
+import { recordEggFound } from '../utils/eggProgress';
+import { EggSeen } from './EggSeen';
+import { HandshakeBackoff, Pacer, DeliveryLedger, KeyedMutex, SingleFlight, ResumeTimers, runKeyDistribution, runKeyDistributionMany, classifyHandshakeError, MAX_DISTRIBUTION_RESUMES, KEY_HANDSHAKE_POST_TIMEOUT_MS, type DistributionOutcome, type OwedServe } from '../utils/keyDistributionThrottle';
+import { serveKeyRequestsPass, runMemberJoinDistribution, joinCheckRows, pickServeJitterMs, walkOffsetFor, type PendingKeyRequest, type DeviceBundle } from '../utils/keyServePass';
 import { KeyReaskScheduler, ReaskBudget, ReaskTargets, runReaskTick, type ReaskTickResult } from '../utils/keyReask';
-import { computeMissingKeyChannels, computeUnmintedChannels, splitMissingKeyChannels, canMintChannelKey, decideChannelEntryAction, shouldMintAfterKeyRequest, buildChannelKeyContent, pickJitterMs, resolveEpochClaim, resolveEpochDivergence, computeMissingEpochsForChannel, decideGapReask, type GapAsk, coalesceKeyRequestEvents, coalesceEnvelopesReadyEvents, decideEnvelopesReadyAction, channelEpochKey, shouldGiveUpOnChannelKey, computeCoolOffUntil, isCoolingOff, channelCarriesSenderKeys, coalesceRotationEvents, epochReasonForRotationSignal, decideRotationAction, decideRotationScheduling, computeRotationEpoch, resolveRotationClaim, normalizeRotationReason, type ServerEpochInfo } from '../utils/channelKeyDistribution';
+import { planKeyPrefetch, PrefetchLedger, KeyAskLimiter, KeyAskQueue, noteKeyRequestError, requestEpochList, askableEpochRange, refineQueuedAsk, PREFETCH_TICK_MS, type KeyAskOutcome, type QueuedAsk } from '../utils/channelKeyPrefetch';
+import { computeUnmintedChannels, splitMissingKeyChannels, canMintChannelKey, decideChannelEntryAction, shouldMintAfterKeyRequest, buildChannelKeyContent, channelKeyContentMatchesEnvelope, channelKeyInstallProblem, needsRegistryEpochCheck, epochWithinRegistry, pickJitterMs, resolveEpochClaim, resolveEpochDivergence, computeMissingEpochsForChannel, decideGapReask, type GapAsk, coalesceKeyRequestEvents, coalesceEnvelopesReadyEvents, decideEnvelopesReadyAction, channelEpochKey, shouldGiveUpOnChannelKey, computeCoolOffUntil, isCoolingOff, channelCarriesSenderKeys, coalesceRotationEvents, epochReasonForRotationSignal, decideRotationAction, decideRotationScheduling, computeRotationEpoch, mergeEpochAtSignal, rotationAlreadyDone, ROTATION_STAND_DOWN_VERIFY_MS, resolveRotationClaim, normalizeRotationReason, type ServerEpochInfo } from '../utils/channelKeyDistribution';
 import { HistoryRequestModal } from './HistoryRequestModal';
 import { DeviceApprovalHost } from './DeviceApprovalHost';
+import { StaleDevicesHost } from './StaleDevicesHost';
+import { ShortcutsSheetHost } from './ShortcutsSheet';
+import { WhatsNewHost } from './WhatsNewDialog';
 import { HistorySyncBanner } from './HistorySyncBanner';
 import { DeviceStorageSetupModal } from './DeviceStorageSetupModal';
 import { useDeviceStorageSetup } from '../hooks/useDeviceStorageSetup';
@@ -107,6 +132,7 @@ import { TrialBanner } from './billing/TrialBanner';
 import { ServerStorageBanner } from './server/ServerStorageBanner';
 import type { StorageSettingsTarget } from './server/storageGraceActions';
 import { AnnouncementBanners } from './AnnouncementBanners';
+import { ClBannerStack } from './ClBanner';
 import { KeyProtectionNotice } from './KeyProtectionNotice';
 import { EncryptionAtRestNotice } from './EncryptionAtRestNotice';
 // “The Descent” full-screen settings (replaced the centered SettingsModal —
@@ -151,6 +177,8 @@ import { useGameSettings } from '../hooks/useGameSettings';
 import { usePrivacySettings } from '../hooks/usePrivacySettings';
 import { useGifSettings } from '../hooks/useGifSettings';
 import { StatusPicker, StatusIcon } from './StatusPicker';
+import { StatusLine } from './StatusLine';
+import { useListeningShare } from '../hooks/useListeningShare';
 import { useClTooltip } from './cl/useClTooltip';
 import { computeTooltipPlacement, type TooltipRect, type TooltipPlacement } from './cl/tooltipPlacement';
 import { CreateGroupModal } from './CreateGroupModal';
@@ -159,6 +187,7 @@ import { AddToGroupModal } from './AddToGroupModal';
 import { GroupSettingsModal } from './GroupSettingsModal';
 import { AddGroupMembersModal } from './AddGroupMembersModal';
 import { GroupMembersHeading } from './GroupMembersHeading';
+import { GroupContextHeader } from './GroupContextHeader';
 import type { AddGroupMembersResult } from './AddGroupMembersPicker';
 import { SoloKickDialog } from './call/SoloKickDialog';
 import { FloatingHuddleCard } from './call/FloatingHuddleCard';
@@ -188,12 +217,13 @@ import {
     folderOfServer, parseKey, railIndexOfServer, railItemKey, serverKey,
 } from './rail/serverFolders';
 import { trackActivity, beginActivity, setFreezeLogView } from '../utils/freezeLog';
-import { applyPruned, makeSliceYield, unchangedSince } from '../utils/sweepCommit';
+import { applyPruned, makeSliceYield, removeInChunks, unchangedSince, yieldMainThread } from '../utils/sweepCommit';
 import { registerSensitiveTermsSource } from '../utils/diagnostics/sensitiveTerms';
 import { createCoalescedRunner } from '../utils/coalescedRun';
 import { createTaskQueue, type TaskQueue } from '../utils/idleTasks';
 import { useServerRailLayout } from './rail/useServerRailLayout';
 import { scrollTopToReveal } from './rail/railScrollReveal';
+import { rareRingtoneAlternate } from '../utils/rareRingtone';
 import { TitleBarWordmark } from './TitleBarWordmark';
 import { ConfirmDialog } from './primitives/ConfirmDialog';
 import { CallProvider, useCallContextSafe, type FocusedStream } from '../contexts/CallContext';
@@ -201,9 +231,13 @@ import { useNotificationDispatch } from '../hooks/useNotificationDispatch';
 import { useNotificationPrefs } from '../contexts/NotificationContext';
 import { playSound, playLoopingSound, type SoundCategory } from '../utils/notificationSounds';
 import { computeDnd as computeNotifDnd } from '../hooks/useDndState';
+import { useComposerDraftPrune } from '../hooks/useComposerDraftPrune';
+import { ConversationPreviewLine } from './ConversationPreviewLine';
 import { useServers, type ChannelInfo, type ServerInfo, type HuddleCallInfo } from '../hooks/useServers';
 import { useCoalescedPersist } from '../hooks/useCoalescedPersist';
 import { usePersonalSavesSync } from '../hooks/usePersonalSavesSync';
+import { useAchievementSignals } from '../hooks/useAchievementSignals';
+import { useProfileMoments } from '../hooks/useProfileMoments';
 import { useGifLibrarySync } from '../hooks/useGifLibrarySync';
 import type { SavesLocalBinding } from '../services/personalSavesSyncEnv';
 import { addedSaves, mergeScope } from '../utils/personalSavesSync';
@@ -222,9 +256,12 @@ import type { ChannelMessageEvent } from '../hooks/useRealtime';
 import type { ChannelSystemMessageEvent } from '@cipherline/shared';
 
 import { useToast } from '../contexts/ToastContext';
+import { useFirewallGame } from '../hooks/useFirewallGame';
+import { FirewallOverlay } from './FirewallOverlay';
+import { railGameRefusal } from '../utils/railKeysGame';
 import { writeToClipboard } from '../utils/clipboard';
 import { parseConversationReadStates, mergeReadCursors, isReadByCursor, messageServerMs, reconcileDmUnread, cursorsFromSelfReads, type ReadCursors } from '../utils/conversationReadSync';
-import { dmGroupRailBadges, serverChannelBadges, clearCountsForIds, resolveBadge, trayBadgeCount, effectiveChannelMode, type BadgeState, type CountMap } from '../utils/unreadBadges';
+import { dmGroupRailBadges, serverChannelBadges, clearCountsForIds, resolveBadge, trayBadgeCount, hasUnreadMention, effectiveChannelMode, type BadgeState, type CountMap } from '../utils/unreadBadges';
 import { clearCounts, reconcileChannelUnread, shouldAdvanceChannelCursor } from '../utils/channelReadSync';
 import { RailBadge } from './RailBadge';
 import { RailTile } from './rail/RailTile';
@@ -232,8 +269,9 @@ import { IncomingCallWaves } from './call/IncomingCallWaves';
 import { deriveServerCallPresence, summarizeCallRoster, mergeVoiceUserName, mergeVoiceUserAvatarId, labelVoiceUsers } from '../utils/serverCallPresence';
 import { rememberUserName, rememberUserAvatarId, rememberUserBannerId } from '../utils/peerIdentityCache';
 import { primeProfile } from '../utils/profileCache';
-import { invalidateRoster, invalidateAllRosters, dropRoster, patchRosterUser, refreshRoster } from '../utils/serverRosterCache';
-import { invalidateServerChannelViewers, invalidateAllChannelViewers, dropServerChannelViewers } from '../utils/channelViewerCache';
+import { invalidateRoster, invalidateAllRosters, dropRoster, patchRosterUser, refreshRoster, peekRoster, isRosterFresh } from '../utils/serverRosterCache';
+import { invalidateServerChannelViewers, invalidateAllChannelViewers, dropServerChannelViewers, peekChannelViewers, isChannelViewersFresh, refreshChannelViewers } from '../utils/channelViewerCache';
+import { judgeKeyDistributor, resolveRefreshVerdict, distributorRefreshKey, isHistoricalEpoch, type DistributorVerdict } from '../utils/channelKeyDistributorCheck';
 import { resolveNotification, decideChannelMessage, type NotifDecision } from '../utils/notificationDecision';
 import { ChannelMentionRecovery, recoverChannelMentions, scanReconcilePage, shouldAlertForReplay } from '../utils/channelMentionRecovery';
 import { fetchWithRetry } from '../utils/fetchWithRetry';
@@ -246,6 +284,10 @@ import { recordFirstSeen, getStoredPub } from '../utils/keyVerification';
 import { deriveContactTrust, type ContactTrust } from '../utils/contactTrust';
 import { TrustBadge } from './TrustBadge';
 import { evaluateSender, actionFor, isWarnable, hasUnverifiedDeviceWarning, type SenderVerdict } from '../utils/senderTrust';
+import { evaluateSelfSender, selfContentRefused } from '../utils/selfSenderTrust';
+import { CallKeyStore } from '../utils/callKeyStore';
+import { useCallKeySharing } from '../hooks/useCallKeySharing';
+import { CALL_KEY_ID_SHARE } from '../utils/callKeyShare';
 import { loadWarnings, raiseWarning, resolveWarning, snapshotWarnings } from '../utils/senderWarningStore';
 import * as directoryKeyWatch from '../utils/directoryKeyWatch';
 import * as ownDeviceLedger from '../utils/ownDeviceLedger';
@@ -254,6 +296,12 @@ import { contactTrustDevices } from '../utils/contactBadgeDevices';
 import { OwnDeviceAlert, type OwnDeviceName } from './OwnDeviceAlert';
 import * as deviceDirectory from '../utils/deviceDirectory';
 import { record as recordDelivery } from '../utils/deliveryDiagnostics';
+import { reportBeta } from '../utils/betaDiagnostics/reporter';
+import { noteBetaKeyAsked, noteBetaCallKeyGate } from '../utils/betaDiagnostics/detectors';
+import { httpStatusOf } from '../utils/betaDiagnostics/sanitize';
+import { ensureNetworkReady, isLikelyOnline } from '../utils/networkReady';
+import { failureCauseOf } from '../utils/networkError';
+import { createPullGate, createWakeResync, runPaced, type PullGate } from '../utils/resumeSequencing';
 import { ackMessageEnvelopes } from '../utils/messageAck';
 import { encryptAndAddress } from '../utils/encryptAndAddress';
 import { isSelfDm, labelSelfConversations, selfConversationTitle, selfMatchesQuery, isSilentIncoming } from '../utils/selfConversation';
@@ -262,14 +310,16 @@ import { canOfferFriendGatedAction, type FriendRelationship } from '../utils/fri
 /** Forget an unpinned message's timestamp after this long. Long enough that
  *  a device offline for a fortnight can't resurrect a pin with a stale op. */
 const PIN_LEDGER_TTL_MS = 30 * 24 * 60 * 60 * 1000;
-import { applyIncomingDmMessages, commitPulledBatch, decryptFailureOutcome, deletedDmTargets, persistIncomingDms, placeholderText, undecryptablePlaceholder, UNDECRYPTABLE_KIND, type PulledForStore } from '../utils/dmInbound';
-import { contentProblem } from '../utils/contentValidation';
+import { applyIncomingDmMessages, bindSenderDeviceId, commitPulledBatch, decryptFailureOutcome, deletedDmTargets, persistIncomingDms, placeholderText, undecryptablePlaceholder, UNDECRYPTABLE_KIND, type PulledForStore } from '../utils/dmInbound';
+import { contentProblem, sanitizeStoredThreads } from '../utils/contentValidation';
 import { buildGroupMemberList, canAddGroupMembers, mergeAddedGroupMembers } from '../utils/groupAddMembers';
 
 import { Minus, Square, X, MoreVertical, Info, Volume2, Folder as FolderIcon, FolderInput, FolderMinus, FolderX, Palette, Pencil } from 'lucide-react';
 import cipherlineMark from '../assets/cipherline-mark.svg';
 import { ReportModal } from './ReportModal';
 import { SharedContentModal, type SharedTab } from './SharedContentModal';
+import { APP_SUSPENDED_EVENT } from '../utils/clientControl';
+import { emitKeysBeat } from '../utils/keysBeats';
 
 /** How many `channel:decrypt-message` invokes may be in flight at once from
  *  one history read. See decryptChannelRows for why this is bounded. */
@@ -705,7 +755,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
     const { bundleReady } = useKeyBundleSync();
     // Hydration bookkeeping: markSettled feeds the first-paint gate,
     // bumpGeneration is what makes previously-failed avatar loads retry.
-    const { markSettled, bumpGeneration } = useHydration();
+    const { markSettled, bumpGeneration, ready: appHydrated } = useHydration();
     const toast = useToast();
     const [activeTab, setActiveTab] = useState<'home' | 'dms' | 'groups' | 'servers' | 'files' | 'calendar' | 'friends'>('home');
     const [activeChat, setActiveChat] = useState<{ id: string, title?: string, type?: string, other_user_id?: string, avatar_url?: string } | null>(null);
@@ -1021,8 +1071,80 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
         return (res.data ?? []) as deviceDirectory.DirectoryEntry[];
     }, [token]);
 
+    /** F1: judge an envelope that claims to come from this account against
+     *  this install's own-device ledger (utils/selfSenderTrust.ts). */
+    const judgeSelfSender = useCallback((sp: string, sd?: string | null) => {
+        if (!userId) return { verdict: 'unattributed' as SenderVerdict, known: true };
+        const pub = localIdentityPubRef.current;
+        return evaluateSelfSender({
+            senderPub: sp,
+            senderDeviceId: sd ?? null,
+            self: deviceId && pub ? { deviceId, pub } : null,
+            ledger: ownDeviceLedger.loadOwnLedger(userId),
+            directory: deviceDirectory.status(userId, sp, sd ?? undefined),
+        });
+    }, [userId, deviceId]);
+
+    /** A genuinely new own device is listed before this install has folded a
+     *  listing that includes it into the ledger. When a self claim names a
+     *  device the ledger does not know, re-read the own listing (the directory
+     *  capture feeds the ledger) — at most once per 30 s — so legitimate
+     *  self-fan-out from a just-added device is judged on current data. The
+     *  request is for this user's OWN devices, so it reveals nothing about
+     *  any correspondent. */
+    const ownListingRefreshRef = useRef<{ at: number; inFlight: Promise<void> | null }>({ at: 0, inFlight: null });
+    const refreshOwnDevicesIfUnknown = useCallback(async (su?: string | null, sp?: string | null, sd?: string | null): Promise<void> => {
+        if (!userId || su !== userId || !sp) return;
+        if (judgeSelfSender(sp, sd).known) return;
+        const state = ownListingRefreshRef.current;
+        if (state.inFlight) { await state.inFlight; return; }
+        if (Date.now() - state.at < 30_000) return;
+        state.at = Date.now();
+        state.inFlight = (async () => {
+            try { await fetchIdentityKeys(userId); } catch { /* stays unknown → refused */ }
+        })();
+        try { await state.inFlight; } finally { state.inFlight = null; }
+    }, [userId, judgeSelfSender, fetchIdentityKeys]);
+
+    /** This account's device ids as this client knows them: this device, the
+     *  own-device ledger, and the directory's snapshot for this user. */
+    const ownDeviceIdSet = useCallback((): Set<string> => {
+        const ids = new Set<string>();
+        if (deviceId) ids.add(deviceId);
+        if (userId) {
+            const ledger = ownDeviceLedger.loadOwnLedger(userId);
+            if (ledger) for (const id of Object.keys(ledger.devices)) ids.add(id);
+        }
+        return ids;
+    }, [userId, deviceId]);
+
+    /** F4: one plain `GET /conversations/:id/devices` per conversation per
+     *  session (no prekey claim), so the directory can bind senders' device ids.
+     *  The server already routes envelopes per conversation and sees the ACK,
+     *  so this reveals nothing it does not already have. */
+    const warmedConversationsRef = useRef<Map<string, Promise<void>>>(new Map());
+    const warmConversationDevices = useCallback(async (conversationId: string): Promise<void> => {
+        if (!conversationId || !token || !deviceId) return;
+        let p = warmedConversationsRef.current.get(conversationId);
+        if (!p) {
+            p = (async () => {
+                try {
+                    await axios.get(apiUrl`/conversations/${conversationId}/devices`, {
+                        headers: { Authorization: `Bearer ${token}`, 'x-device-id': deviceId },
+                    });
+                } catch { /* binding falls back to what is known */ }
+            })();
+            warmedConversationsRef.current.set(conversationId, p);
+        }
+        await p;
+    }, [token, deviceId]);
+
     const pinAndDetect = useCallback((su?: string | null, sp?: string | null, sd?: string | null): SenderVerdict | null => {
-        if (!userId || !su || !sp || su === userId) return null;
+        if (!userId || !su || !sp) return null;
+        // F1: a self claim is judged too — never a blanket exemption. No
+        // contact warning is raised for it: the own-device ledger's banner is
+        // the user-facing alarm for an unconfirmed own device.
+        if (su === userId) return judgeSelfSender(sp, sd).verdict;
 
         const verdict = evaluateSender({
             myUserId: userId,
@@ -1046,7 +1168,19 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
             recordFirstSeen(userId, su, sp, sd ?? undefined);
         }
         return verdict;
-    }, [userId]);
+    }, [userId, judgeSelfSender]);
+
+    /** F1, channel rows: the server labels a channel row with the posting
+     *  device, so a row labelled as this account is refused only on POSITIVE
+     *  contradiction by the own-device ledger (a known device id with another
+     *  key, a rejected or removed device, or my key under another id) — the
+     *  same "reject on a pinned mismatch, never on unknown" rule other
+     *  senders' rows get just below. */
+    const selfChannelRowContradicted = useCallback((su?: string | null, sp?: string | null, sd?: string | null): boolean => {
+        if (!userId || su !== userId || !sp) return false;
+        const { verdict, known } = judgeSelfSender(sp, sd);
+        return verdict === 'key_changed' || (verdict === 'unattributed' && known);
+    }, [userId, judgeSelfSender]);
     const [pinnedMessagesState, setPinnedMessagesState] = useState<Record<string, string[]>>({});
     const [hiddenConversations, setHiddenConversations] = useState<string[]>([]);
     const [pinnedHomeItems, setPinnedHomeItems] = useState<PinnedHomeItem[]>(() => {
@@ -1117,6 +1251,14 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
     // A rotation (member removed / demoted) advances the epoch, this re-derives,
     // and CallPane swaps the key on the live room without reconnecting.
     const activeCallsChannelId = activeCall?.callsChannelId ?? null;
+    // ── Guest of a call (moved into a call whose channel we cannot see) ──
+    // Set by the force_move effect from a `guest: true` move; only ever counts
+    // while it IS the active call (activeGuestCall). The room key comes from a
+    // key holder (utils/guestCallKey) instead of our own derivation, which has
+    // no Sender Key to start from.
+    const [guestCall, setGuestCall] = useState<GuestCall | null>(null);
+    const [guestRoomKeys, setGuestRoomKeys] = useState<Record<string, GuestRoomKey>>({});
+    const activeGuestCall = guestCall && activeCall?.id === guestCall.callId ? guestCall : null;
     // Instant join: the Calls channel a join in flight is headed for. Deriving
     // its key used to start only AFTER the join request returned (the hook was
     // keyed on activeCall alone), so the two ran back to back; now they
@@ -1125,7 +1267,15 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
     // activeCall's own channel, so nothing connects any sooner than a key for
     // the right room is in hand. Cleared when the join settles either way.
     const [pendingKeyChannelId, setPendingKeyChannelId] = useState<string | null>(null);
-    const callsChannelKey = useCallsChannelKey(activeCallsChannelId ?? pendingKeyChannelId);
+    const derivedCallsChannelKey = useCallsChannelKey(activeCallsChannelId ?? pendingKeyChannelId);
+    // Our own derived key when we have one for this channel, else a guest key
+    // received for exactly this call + channel (bound to both — pickCallsRoomKey).
+    const callsChannelKey = pickCallsRoomKey(
+        derivedCallsChannelKey,
+        activeCall?.id ? guestRoomKeys[activeCall.id] : null,
+        activeCall?.id,
+        activeCallsChannelId,
+    );
 
     // The freshly derived room key, but ONLY when it belongs to the channel the
     // call is actually in. React state lags its input by one render, so on the
@@ -1188,7 +1338,12 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
     // i.e. connects a DM call in PLAINTEXT while every peer that did receive
     // the key is publishing GCM. (A Calls-channel call cannot land in that
     // state: its key is derived, not delivered, and the mount is gated on it.)
-    const callKeyStoreRef = useRef<Record<string, string>>({});
+    //
+    // F11: per (conversation, call), epochs only move forward; the first key
+    // comes from any trusted member (so whoever holds it can hand it to a
+    // joiner — utils/callKeyShare.ts) and a higher epoch from any member —
+    // see utils/callKeyStore.ts.
+    const callKeyStoreRef = useRef(new CallKeyStore());
     /**
      * Bumped on every write to `callKeyStoreRef`, purely to force a re-render.
      *
@@ -1202,14 +1357,44 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
      * up. Always write through `recordCallKey`, never to the ref directly.
      */
     const [callKeyEpoch, setCallKeyEpoch] = useState(0);
-    const recordCallKey = useCallback((callId: string, keyB64: string) => {
-        if (!callId || !keyB64) return;
-        if (callKeyStoreRef.current[callId] === keyB64) return;
-        callKeyStoreRef.current[callId] = keyB64;
-        setCallKeyEpoch(n => n + 1);
-    }, []);
+    /** A key known on THIS device: `generated` when this device created it
+     *  (started the call / rotated it / minted it alone), at `epoch` when
+     *  given, else an adoption. */
+    const recordCallKey = useCallback((conversationId: string | null | undefined, callId: string, keyB64: string, generated: boolean, epoch?: number) => {
+        if (!callId || !keyB64 || !userId) return 'refused_invalid' as const;
+        const d = callKeyStoreRef.current.recordLocal({ conversationId, callId, keyB64, selfUserId: userId, generated, epoch });
+        if (d === 'stored') setCallKeyEpoch(n => n + 1);
+        return d;
+    }, [userId]);
+    /**
+     * Membership, where this client knows it: a DM has exactly two members.
+     * (Group rosters are not held client-side; the epoch rules, the
+     * sender-trust gate and the server's device list still apply there.)
+     * false = known non-member, true = known member, undefined = unknown.
+     */
+    const isConversationMember = useCallback((conversationId: string, memberUserId: string): boolean | undefined => {
+        const conv = conversationsRef.current.find((c: { conversation_id?: string; id?: string }) => c.conversation_id === conversationId || c.id === conversationId);
+        return conv?.type === 'dm' && conv.other_user_id
+            ? (memberUserId === userId || memberUserId === conv.other_user_id)
+            : undefined;
+    }, [userId]);
+    /** A key from a `call_key` message that passed the sender-trust gate. */
+    const acceptRemoteCallKey = useCallback((input: { conversationId: string; callId: string; keyB64: unknown; epoch?: unknown; senderUserId: string; keyId?: unknown; rotatesAt?: unknown }) => {
+        const senderIsMember = isConversationMember(input.conversationId, input.senderUserId);
+        const d = callKeyStoreRef.current.recordRemote({ ...input, senderIsMember });
+        if (d === 'stored') setCallKeyEpoch(n => n + 1);
+        else if (d !== 'duplicate') console.warn(`[E2EE] call_key not adopted (${d})`);
+        return d;
+    }, [isConversationMember]);
     const recordCallKeyRef = useRef(recordCallKey);
     useEffect(() => { recordCallKeyRef.current = recordCallKey; }, [recordCallKey]);
+    /** For ChatPane's merged-start path (F11): only an accepted key. */
+    const getAcceptedCallKey = useCallback(
+        (conversationId: string, callId: string) => callKeyStoreRef.current.get(conversationId, callId),
+        [],
+    );
+    const acceptRemoteCallKeyRef = useRef(acceptRemoteCallKey);
+    useEffect(() => { acceptRemoteCallKeyRef.current = acceptRemoteCallKey; }, [acceptRemoteCallKey]);
 
     /**
      * The key the `call_key` flow delivered for a DM/group call, or '' while
@@ -1217,8 +1402,11 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
      * lands AFTER the call object was built still reaches this render — that
      * is the whole point of the epoch counter, see recordCallKey.
      */
+    // F11: the store's current key first — it follows the initiator's
+    // rotation (a higher epoch from the call's owner), which the key the call
+    // object was built with does not.
     const deliveredCallKeyB64 = activeCall && !activeCall.callsChannelId
-        ? (activeCall.e2ee_key_b64 || callKeyStoreRef.current[activeCall.id] || '')
+        ? (callKeyStoreRef.current.get(activeCall.conversation_id, activeCall.id) || activeCall.e2ee_key_b64 || '')
         : '';
     // Referenced so the epoch is a real dependency of this render rather than
     // an incidental one — the ref read above is what it exists to refresh.
@@ -1360,6 +1548,25 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
     // Bound to the live call (render-time adjust, so a stale "connected" is
     // never painted for a new call — same pattern as rejoinOffer below).
     if (roomConnectedCallId !== null && roomConnectedCallId !== (activeCall?.id ?? null)) setRoomConnectedCallId(null);
+    // Anyone who holds the call's media key can hand it to a joiner; the
+    // rotation duty moves to a connected participant when the initiator leaves
+    // (utils/callKeyShare.ts). Needs the connected-call id above.
+    const callKeySharing = useCallKeySharing({
+        token, deviceId, userId, bundleReady,
+        activeCall,
+        roomConnectedCallId,
+        storeRef: callKeyStoreRef,
+        keyEpoch: callKeyEpoch,
+        readKeyState: (conversationId, callId) => ({
+            accepted: !!callKeyStoreRef.current.accepted(conversationId, callId),
+            any: !!callKeyStoreRef.current.get(conversationId, callId),
+        }),
+        recordGeneratedKey: (conversationId, callId, keyB64, epoch) => recordCallKey(conversationId, callId, keyB64, true, epoch),
+        isConversationMember,
+    });
+    // The pull loop below has an empty dep array, so it reads the handler by ref.
+    const handleCallKeyRequestRef = useRef(callKeySharing.handleKeyRequest);
+    useEffect(() => { handleCallKeyRequestRef.current = callKeySharing.handleKeyRequest; }, [callKeySharing.handleKeyRequest]);
     const joinPhase = deriveCallJoinPhase({
         isStartingCall,
         activeCallId: activeCall?.id ?? null,
@@ -1375,6 +1582,8 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
     useEffect(() => {
         if (activeCall?.id && callsChannelGate.kind === 'connect') markCallJoinTrace('key');
     }, [activeCall?.id, callsChannelGate.kind]);
+    // Beta diagnostics: how long a call sat without its room key (call_keyless_wait).
+    useEffect(() => { noteBetaCallKeyGate(activeCall?.id ?? null, callsChannelGate.kind !== 'connect'); }, [activeCall?.id, callsChannelGate.kind]);
     /** The mic device the call will open — read by the click-time warm-up. */
     const micDeviceIdRef = useRef<string | null>(null);
     const echoCancellationRef = useRef<boolean>(DEFAULT_ECHO_CANCELLATION);
@@ -1436,6 +1645,8 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
         const live = joinTracker.pending() === attempt;
         joinTracker.fail(attempt);
         if (!live) return false;
+        const failStatus = httpStatusOf(err);
+        reportBeta('call_join_failed', { stage: 'token', join: kind, ...(failStatus !== undefined ? { status: failStatus } : {}) });
         setIsStartingCall(false);
         setPendingKeyChannelId(null);
         setJoinView(null);
@@ -1495,6 +1706,8 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
     // when (in-app checkout success, or a free → paid status this device observes;
     // see utils/proCelebration.ts) and records it before it shows.
     const { proCelebration, dismissProCelebration } = useSubscription();
+    // Keys on Home wears a tiny crown for Pro (utils/keysMirror).
+    const { isPaid } = useSubscription();
     const showProWelcome = proCelebration && !!userId;
 
     const [referralWelcomeDismissed, setReferralWelcomeDismissed] = useState(false);
@@ -1540,13 +1753,13 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
             // the server response, which no longer carries the key.
             const joined = !!initRes.data.joined;
             const sessionKey = joined
-                ? (callKeyStoreRef.current[initRes.data.session_id] || '')
+                ? callKeyStoreRef.current.get(convId, initRes.data.session_id)
                 : callKey;
             // Record OUR OWN key for this session: nothing else can. The device
             // list this key is broadcast to excludes this device, so the store
             // would otherwise never learn it and every later local join of this
             // session would mount keyless (see callKeyStoreRef's note).
-            if (sessionKey) recordCallKeyRef.current(initRes.data.session_id, sessionKey);
+            if (sessionKey) recordCallKeyRef.current(convId, initRes.data.session_id, sessionKey, !joined);
 
             if (!joined) {
                 // claim_otp=1: consume a one-time prekey per recipient device (per-message forward secrecy)
@@ -1659,6 +1872,14 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
         if (sawServersLoadingRef.current) markSettled('servers');
     }, [serversLoading, token, markSettled]);
 
+    // Saved composer drafts for conversations this account no longer has
+    // (removed DM, left server, deleted channel) are dropped once the lists
+    // are known. See hooks/useComposerDraftPrune.ts for the conservative rules.
+    useComposerDraftPrune(userId, {
+        conversations, servers, serverChannels,
+        serversLoaded: sawServersLoadingRef.current && !serversLoading,
+    });
+
     // ── Server rail layout: order + folders (per-account, client-owned) ───────
     // See rail/useServerRailLayout.ts (persistence) and rail/serverFolders.ts
     // (the pure model). `serverIds` is memoized so the reconcile in the hook
@@ -1750,6 +1971,10 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
     // FriendsPane no longer keeps a private copy. See utils/friendsSync.ts.
     const [globalFriends, setGlobalFriends] = useState<FriendsPayload | null>(null);
     const [friendsLoadStatus, setFriendsLoadStatus] = useState<FriendsLoadStatus>('loading');
+    // Accepted-friend ids for the DM pull loop (a friend's personal-emoji status
+    // image is only filed when it comes from one). A ref: the loop is a stable callback.
+    const acceptedFriendIdsRef = useRef<Set<string>>(new Set());
+    useEffect(() => { acceptedFriendIdsRef.current = new Set((globalFriends?.accepted ?? []).map(f => f.user_id)); }, [globalFriends]);
 
     /**
      * Create an invite for `serverId` and send it as a `server_invite` E2EE message
@@ -2052,6 +2277,12 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
     }, []);
     const [showMemberOptionsModal, setShowMemberOptionsModal] = useState(false);
     const [showInviteModal, setShowInviteModal] = useState(false);
+    // Which server the invite dialog is for when it wasn't opened from the open
+    // server's own menu (null = the open server).
+    const [inviteServerId, setInviteServerId] = useState<string | null>(null);
+    // A moment's "Invite friends" button (the @everyone-into-an-empty-server
+    // echo) opens this same dialog for the server the @everyone was sent in.
+    useMomentInviteRequest(sid => { setInviteServerId(sid); setShowInviteModal(true); });
     const [deepLinkInviteCode, setDeepLinkInviteCode] = useState<string | null>(initialDeepLinkInviteCode ?? null);
     // The useState initializer above only covers cold start (Dashboard mounts
     // AFTER the code already arrived). The common case — app already running
@@ -2521,7 +2752,9 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
         //
         // playLoopingSound returns a no-op stopper when the cue is suppressed,
         // so the cleanup path below stays unconditional and identical.
-        const stopRing = playLoopingSound('call', notifGlobalPrefsRef.current);
+        // About one call in a thousand rings with the alternate tune
+        // (utils/rareRingtone.ts); same settings gates, same volume.
+        const stopRing = playLoopingSound('call', notifGlobalPrefsRef.current, { alternate: rareRingtoneAlternate() });
 
         const timeout = setTimeout(() => {
             setGlobalIncomingCall(null); // 15s ring timeout
@@ -2533,6 +2766,9 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
         };
     }, [globalIncomingCall]);
 
+    // Night dive: the title-bar overlay is painted by the OS, not CSS, so it needs
+    // the matching abyss shade passed in explicitly.
+    const nightDive = useNightDiveActive();
     useEffect(() => {
         if (globalIncomingCall && !activeCall) {
             // eslint-disable-next-line @typescript-eslint/no-explicit-any -- window.electronAPI members are optional/version-dependent and not all declared on the typed bridge
@@ -2540,9 +2776,9 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
         } else {
             // Match the app's top drag bar (bg-cl-abyss) so the window controls blend in.
             // eslint-disable-next-line @typescript-eslint/no-explicit-any -- window.electronAPI members are optional/version-dependent and not all declared on the typed bridge
-            (window as any).electronAPI?.setTitleBarColor?.('#0B0F1E');
+            (window as any).electronAPI?.setTitleBarColor?.(titleBarColor(nightDive));
         }
-    }, [globalIncomingCall, activeCall]);
+    }, [globalIncomingCall, activeCall, nightDive]);
 
     const acceptGlobalCall = async () => {
         if (!globalIncomingCall || !token) return;
@@ -2687,7 +2923,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
             // broadcast it to every device EXCEPT this one, so this is the only
             // chance to record it. Covers the rotation path too (a rotated key
             // supersedes the one it replaces for any later join).
-            if (callData.e2ee_key_b64) recordCallKeyRef.current(callData.id, callData.e2ee_key_b64);
+            if (callData.e2ee_key_b64) recordCallKeyRef.current(callData.conversation_id, callData.id, callData.e2ee_key_b64, callData.isInitiator !== false);
             // A ChatPane start this device is still waiting on (instant join):
             // if the user left, or started another call, while it was being
             // set up, don't connect it — and end a session we created so it
@@ -3081,7 +3317,14 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                         // inbound DM that used none of our one-time prekeys
                         // (or a draining pool) triggers a top-up check.
                         notePrekeyUsage(decryptResult.usedOneTimePrekey);
-                        const content = JSON.parse(contentJson);
+                        // A friend's `profile_update` may carry the image of their
+                        // personal-emoji status: filed (verified) in the received
+                        // cache and stripped here, so the bytes go no further.
+                        const content = ingestInboundStatusEmoji(ingestInboundContent(JSON.parse(contentJson)), {
+                            senderUserId: envelopeSenderUserId,
+                            myUserId: userId!,
+                            isFriend: id => acceptedFriendIdsRef.current.has(id),
+                        });
                         // The content boundary (utils/contentValidation.ts): the
                         // sender chose these bytes, so a variant a renderer would
                         // throw on (a numeric safety-number code crashed the app)
@@ -3101,13 +3344,34 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                         // server the sender of every sealed-sender envelope. `call_key`
                         // distributors are already known to the server, which routed
                         // the call, so nothing is given up here.
-                        if (content?.type === 'call_key' && envelopeSenderUserId && envelopeSenderUserId !== userId) {
+                        // A key REQUEST is the same: answering it hands key material to
+                        // the requester's devices, so its sender gets the same fresh look.
+                        if ((content?.type === 'call_key' || content?.type === 'call_key_request') && envelopeSenderUserId && envelopeSenderUserId !== userId) {
                             await deviceDirectory.ensureUser(envelopeSenderUserId, fetchIdentityKeys);
+                        }
+                        // F1: a claim to be one of MY devices that the ledger does
+                        // not know yet gets one fresh look at my own listing.
+                        await refreshOwnDevicesIfUnknown(envelopeSenderUserId, envelopeSenderPub, envelopeSenderDeviceId);
+                        // F4: binding another sender's claimed device id needs the
+                        // conversation's device list; load it once per conversation
+                        // per session if no snapshot knows that device yet.
+                        if (envelopeSenderUserId && envelopeSenderUserId !== userId && envelopeSenderDeviceId
+                            && !deviceDirectory.deviceOwner(envelopeSenderDeviceId)) {
+                            await warmConversationDevices(env.conversation_id);
                         }
 
                         // C2 + F1: pin the sender's identity key (TOFU) / flag a change /
                         // detect an identity that no attribution source vouches for.
                         const senderVerdict = pinAndDetect(envelopeSenderUserId, envelopeSenderPub, envelopeSenderDeviceId);
+
+                        // F1: an envelope claiming to be from this account but not
+                        // from one of its known devices is never shown as the
+                        // user's own message (nor applied as an own edit/delete).
+                        if (envelopeSenderUserId === userId && senderVerdict && selfContentRefused(senderVerdict)) {
+                            recordDelivery('message_process', new Error(`[E2EE:SELF_SENDER_UNVERIFIED] ${senderVerdict}`), { envelope_id: env.envelope_id, conversation_id: env.conversation_id });
+                            keepPlaceholder(env, 'unverified_own_device');
+                            continue;
+                        }
 
                         // Sealed sender: resolve who sent this from inside the decrypted envelope (v:3).
                         // v:3 always carries the sender user id; own messages resolve to userId.
@@ -3122,7 +3386,16 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                             // pull response stopped returning one with sealed
                             // sender, which left every other sender as '' and
                             // merged their reactions and message headers.
-                            sender_device_id: envelopeSenderUserId === userId ? deviceId : (envelopeSenderDeviceId ?? env.sender_device_id ?? ''),
+                            // F4: another sender's claimed device is kept only if
+                            // nothing this client knows contradicts it belonging
+                            // to that sender (bindSenderDeviceId).
+                            sender_device_id: envelopeSenderUserId === userId ? deviceId : bindSenderDeviceId({
+                                senderUserId: envelopeSenderUserId ?? '',
+                                senderDeviceId: envelopeSenderDeviceId ?? env.sender_device_id ?? '',
+                                myDeviceIds: ownDeviceIdSet(),
+                                deviceOwner: deviceDirectory.deviceOwner,
+                                isKnownUserId: deviceDirectory.isKnownUserId,
+                            }),
                             sender_user_id: resolvedSenderUserId,
                             // The SERVER's time for the message, which is also its
                             // ordering key (server_ts — utils/messageOrder.ts): the
@@ -3156,13 +3429,21 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                         // silently. First contact still passes — that is the TOFU bootstrap
                         // every conversation needs, and its protection is the Safety Number.
                         if (content.type === 'call_key' && content.call_id && content.e2ee_key_b64) {
-                            const su = envelopeSenderUserId;
-                            const isOwn = !su || su === userId;
-                            const action = isOwn || !senderVerdict
-                                ? 'accept'
-                                : actionFor(senderVerdict, 'key_material');
-                            if (action === 'accept') {
-                                recordCallKeyRef.current(content.call_id, content.e2ee_key_b64);
+                            // F1: no self exemption. A call key "from me" must come
+                            // from one of my known devices like any other sender's.
+                            const action = senderVerdict
+                                ? actionFor(senderVerdict, 'key_material')
+                                : 'reject';
+                            if (action === 'accept' && envelopeSenderUserId) {
+                                acceptRemoteCallKeyRef.current({
+                                    conversationId: env.conversation_id,
+                                    callId: content.call_id,
+                                    keyB64: content.e2ee_key_b64,
+                                    epoch: content.epoch,
+                                    senderUserId: envelopeSenderUserId,
+                                    keyId: content.key_id,
+                                    rotatesAt: content.rotates_at,
+                                });
                             } else {
                                 // No sender/device identifiers in the log line — a rejected
                                 // call key is exactly the moment not to start writing down
@@ -3171,8 +3452,31 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                             }
                         }
 
-                        // Global Calling Intercept — fetch caller profile for banner
-                        if (content.type === 'call_key' && resolvedSenderUserId && resolvedSenderUserId !== userId) {
+                        // A joiner without the call's media key is asking for it. Answered
+                        // only by a device that is connected to that call and holds an
+                        // accepted key, and only to the requester's own devices
+                        // (hooks/useCallKeySharing.ts). Never a row, a preview, an unread
+                        // count or a notification: applyIncomingDmMessages drops it from
+                        // the thread and the unread loop below only counts content types
+                        // it lists. Logged by reason only — never who asked whom.
+                        if (content.type === 'call_key_request' && content.call_id && envelopeSenderUserId) {
+                            const trusted = !!senderVerdict && actionFor(senderVerdict, 'key_material') === 'accept';
+                            const outcome = handleCallKeyRequestRef.current({
+                                conversationId: env.conversation_id,
+                                callId: content.call_id,
+                                senderUserId: envelopeSenderUserId,
+                                senderDeviceId: envelopeSenderDeviceId,
+                                senderTrusted: trusted,
+                            });
+                            if (outcome !== 'scheduled') console.debug(`[CallKeyShare] key request not answered (${outcome})`);
+                        }
+
+                        // Global Calling Intercept — fetch caller profile for banner.
+                        // Only the call's START rings: a key handed to a joiner
+                        // ('share'), a rotation or a lone joiner's fresh key
+                        // (epoch > 1) is about a call that is already running.
+                        if (content.type === 'call_key' && resolvedSenderUserId && resolvedSenderUserId !== userId
+                            && content.key_id !== CALL_KEY_ID_SHARE && !(typeof content.epoch === 'number' && content.epoch > 1)) {
                             if (new Date(content.rotates_at).getTime() > Date.now()) {
                                 let callerName = content.sender_username || 'Someone';
                                 let callerAvatarId: string | null = null;
@@ -3229,7 +3533,10 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                                     firedCallToast = true;
                                     return {
                                         session_id: content.call_id,
-                                        e2ee_key_b64: content.e2ee_key_b64,
+                                        // F11: only a key the store ACCEPTED (gate +
+                                        // owner/epoch rules) — never the envelope's
+                                        // own field, which a refused key also carries.
+                                        e2ee_key_b64: callKeyStoreRef.current.get(env.conversation_id, content.call_id),
                                         sender: callerName,
                                         conversation_id: env.conversation_id,
                                         callerName,
@@ -3427,6 +3734,10 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                             decision: cand.decision,
                         });
                     }
+                    // Keys on Home: a paper plane for a message that is allowed
+                    // to alert (not yours, not muted, not swallowed by DND). The
+                    // beat is a bare kind: no content, no sender, no conversation.
+                    if (Object.values(notifCandidates).some(c => c.decision.playsSound)) emitKeysBeat('message');
 
                     if (newUnreadsForAudio) {
                         setUnreadCounts(oldUnread => {
@@ -3565,6 +3876,23 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
             }
         } catch (err) {
             console.error('Polling error:', err);
+            const pullStatus = httpStatusOf(err);
+            // `cause` says WHY the pull failed, which `online` alone could not:
+            //   network - the GET never got an HTTP answer (a Wi-Fi blip, a wake
+            //             into a still-reconnecting network). Nothing is lost: the
+            //             server deletes an envelope only on ACK, so every envelope
+            //             is still waiting and the next poll fetches it.
+            //   http    - the server answered with an error status; same - the
+            //             envelopes were not consumed.
+            //   local   - OUR code threw after the GET (the only case that can
+            //             matter for a message). Everything stored/ACKed before the
+            //             throw is on disk; an un-ACKed envelope is redelivered.
+            // A network failure while the OS says offline is expected, not a gap.
+            const online = isLikelyOnline();
+            const cause = failureCauseOf(err);
+            if (online || cause !== 'network') {
+                reportBeta('msg_fetch_gap', { stage: 'pull', online, cause, ...(pullStatus !== undefined ? { status: pullStatus } : {}) });
+            }
         }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- fetchIdentityKeys, notify and pinAndDetect are per-render closures; adding them would rebuild this poll callback (and its dependents) on every render
     }), [token, deviceId, notifPrefs, userId]);
@@ -3573,7 +3901,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
      *  See pullInFlightRef above for why concurrent pulls are not merely
      *  wasteful but actively destructive. */
     const pullMessagesRef = React.useRef<(() => Promise<void>) | null>(null);
-    const pullMessages = React.useCallback(async () => {
+    const pullSerialised = React.useCallback(async () => {
         if (pullInFlightRef.current) { pullAgainRef.current = true; return; }
         pullInFlightRef.current = true;
         try {
@@ -3585,6 +3913,24 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
             pullInFlightRef.current = false;
         }
     }, [pullMessagesOnce]);
+    // Offline gate in front of the serialised pull (utils/resumeSequencing.ts
+    // createPullGate): while the OS reports no network the pull is SKIPPED and
+    // remembered, then run the instant the `online` event fires - so a wake into
+    // a still-reconnecting network neither fires a doomed GET nor leaves a gap.
+    // The gate lives in a ref (its "owed" flag must survive pullSerialised being
+    // re-created when token / prefs change); it calls the latest pull via a ref.
+    const pullSerialisedRef = React.useRef(pullSerialised);
+    pullSerialisedRef.current = pullSerialised;
+    const pullGateRef = React.useRef<PullGate | null>(null);
+    if (!pullGateRef.current) {
+        pullGateRef.current = createPullGate({ isOnline: isLikelyOnline, pull: () => pullSerialisedRef.current() });
+    }
+    const pullMessages = React.useCallback(() => pullGateRef.current!.request(), [pullSerialised]); // eslint-disable-line react-hooks/exhaustive-deps -- identity must track pullSerialised (it restarts the 5 s poll effect exactly as before)
+    useEffect(() => {
+        const onOnline = () => { void pullGateRef.current?.onOnline().catch(() => {}); };
+        window.addEventListener('online', onOnline);
+        return () => window.removeEventListener('online', onOnline);
+    }, []);
     // For the history-restore effect, which must not take pullMessages as a
     // dependency (it re-runs per account, not per notification-pref change).
     useEffect(() => { pullMessagesRef.current = pullMessages; }, [pullMessages]);
@@ -3690,8 +4036,23 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
     // After the launch publish has landed — see useKeyRotation's `enabled`.
     useKeyRotation(bundleReady);
 
-    // Voice & audio processing settings
-    const voice = useVoiceSettings();
+    // Voice & audio processing settings (remembered per microphone / speaker
+    // for this account — useAudioDeviceProfiles).
+    const voice = useVoiceSettings(userId);
+    // Output volume drives the call's master gain for the whole session, not
+    // only while Settings is open: the call's right-click "Output Volume" and a
+    // headset's remembered volume coming back on plug-in must both be heard.
+    useEffect(() => { setMasterVolume(voice.settings.speakerVolume); }, [voice.settings.speakerVolume]);
+    // "Voice & Video settings…" from the call's right-click mic / speaker menus.
+    useEffect(() => {
+        const onOpen = (e: Event) => {
+            const pane = (e as CustomEvent<OpenSettingsDetail>).detail?.pane;
+            setSettingsInitialTab(pane);
+            setSettingsOpen(true);
+        };
+        window.addEventListener(OPEN_SETTINGS_EVENT, onOpen);
+        return () => window.removeEventListener(OPEN_SETTINGS_EVENT, onOpen);
+    }, []);
     // A rejected speaker switch is toasted once, in or out of a call.
     useOutputDeviceNotices();
     // The click-time mic warm-up (beginCallJoin) opens the same device the call will.
@@ -4036,7 +4397,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                 { icon: <Pencil />, label: 'Rename', onSelect: () => setOpenRailFolder({ id: folderId, rename: true }) },
                 {
                     icon: <Palette />,
-                    label: 'Change colour',
+                    label: 'Change color',
                     onSelect: () => {},
                     submenu: [
                         { label: 'Default', checked: color === null, onSelect: () => { railLayout.setColor(folderId, null); } },
@@ -4180,6 +4541,8 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
     // device the current snapshot does not address (useGifLibrarySync's
     // anti-entropy check). An idle run is one metadata probe.
     const { syncNow: syncGifsNow } = useGifLibrarySync({ userId, deviceId, token });
+    // My Emojis library: pull at start/focus, publish after local edits.
+    usePersonalEmojiSync({ userId, deviceId, token });
     const gifSyncAtRef = useRef(0);
     useEffect(() => {
         if (!savesRestored) return;
@@ -4490,6 +4853,48 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
     // for lack of a key, and is being re-run now that the key is held
     // (utils/channelMentionRecovery.ts). Everything is decided exactly as for
     // a fresh arrival; only the sound/toast is skipped when it is old.
+    /**
+     * F3: a delete of someone else's channel message is applied only when the
+     * server confirms it tombstoned the target. The server tombstones a delete's
+     * target only after validating it (author, or MANAGE_MESSAGES), and before
+     * fanning the marker out, so the check is race-free. A deleted SYSTEM row
+     * (member event) is removed outright, so its absence also confirms.
+     * Returns the confirmed target ids (empty when not confirmed or not needed).
+     */
+    const confirmModeratorDelete = useCallback(async (channelId: string, thread: ChannelRow[], actions: ChannelRow[]): Promise<Set<string>> => {
+        const targets = new Map<string, ChannelRow>();
+        for (const action of actions) {
+            const c = action.content as { type?: unknown; target_id?: unknown } | undefined;
+            if (c?.type !== 'delete' || typeof c.target_id !== 'string') continue;
+            const idx = findChannelActionTarget(thread, c.target_id, action);
+            if (idx === -1 || sameChannelAuthor(thread[idx], action)) continue;
+            const target = thread[idx];
+            if (/^[0-9a-f-]{36}$/i.test(target.id)) targets.set(target.id, target);
+        }
+        if (!targets.size || !token) return new Set();
+        const ids = [...targets.keys()].slice(0, 100);
+        try {
+            const res = await axios.get(apiUrl`/channels/${channelId}/messages`, {
+                params: { ids: ids.join(','), include_system: '1', limit: ids.length },
+                headers: { Authorization: `Bearer ${token}` },
+            });
+            const rows = Array.isArray(res.data) ? res.data as Array<{ id?: string; deleted?: boolean }> : [];
+            const byId = new Map(rows.filter(r => typeof r?.id === 'string').map(r => [r.id as string, r]));
+            const confirmed = new Set<string>();
+            for (const id of ids) {
+                const row = byId.get(id);
+                if (row ? row.deleted === true : isMemberEventContent(targets.get(id)!.content)) confirmed.add(id);
+            }
+            return confirmed;
+        } catch {
+            return new Set();
+        }
+    }, [token]);
+    // Read through a ref: handleChannelMessage is deliberately not rebuilt per
+    // render, and a token captured at its creation would go stale on refresh.
+    const confirmModeratorDeleteRef = useRef(confirmModeratorDelete);
+    useEffect(() => { confirmModeratorDeleteRef.current = confirmModeratorDelete; }, [confirmModeratorDelete]);
+
     const handleChannelMessage = useCallback(async (evt: ChannelMessageEvent, opts?: { replay?: boolean }) => {
         try {
             // Reject before decryption if the wire sender key doesn't match
@@ -4506,6 +4911,9 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                     throw new Error(`[E2EE] Channel message rejected: sender key mismatch for ${evt.sender_user_id}`);
                 }
             }
+            if (selfChannelRowContradicted(evt.sender_user_id, evt.sender_identity_pub_b64, evt.sender_device_id)) {
+                throw new Error('[E2EE] Channel message rejected: not from a known device of this account');
+            }
             const contentJson = await window.electronAPI!.decryptChannelMessage({
                 channel_id: evt.channel_id,
                 epoch: evt.epoch,
@@ -4521,7 +4929,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
             });
             // C2: pin the channel sender's identity key (TOFU) / flag a change.
             pinAndDetect(evt.sender_user_id, evt.sender_identity_pub_b64, evt.sender_device_id);
-            const parsedContent = JSON.parse(contentJson);
+            const parsedContent = ingestInboundContent(JSON.parse(contentJson));
             // Same content boundary as the DM pull (utils/contentValidation.ts):
             // a variant a renderer would throw on becomes a placeholder row.
             const content = contentProblem(parsedContent)
@@ -4543,11 +4951,23 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
             // outer variable can still be null when read. The updater below
             // stays pure.
             const channelPurgedIds = userId ? getPurgedMessageIds(userId, evt.channel_id) : new Set<string>();
+            // F3: edits and deletes are authorized HERE as well as by the
+            // server (which only sees the declared action type). A delete of
+            // someone else's message applies only once the server confirms it
+            // tombstoned that target — i.e. it validated MANAGE_MESSAGES.
+            const liveAction: ChannelRow = {
+                id: evt.message_id, timestamp: evt.created_at, content,
+                sender_user_id: evt.sender_user_id, sender_device_id: evt.sender_device_id,
+            };
+            const moderatorDeleteTargets = content?.type === 'delete'
+                ? await confirmModeratorDeleteRef.current(evt.channel_id, channelMessagesRef.current[evt.channel_id] ?? [], [liveAction])
+                : new Set<string>();
             const deletedRowId = content?.type === 'delete'
                 ? deletedChannelTargetIds(
                     channelMessagesRef.current[evt.channel_id] ?? [],
-                    [{ id: evt.message_id, timestamp: evt.created_at, content }],
+                    [liveAction],
                     channelPurgedIds,
+                    { moderatorDeleteTargets },
                 )[0] ?? null
                 : null;
 
@@ -4572,17 +4992,12 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                 let thread = [...existing];
 
                 // ── Action types (edit / delete / reaction) ──────────────
-                // Server has already validated the requester's permission
-                // (self-edit only, MANAGE_MESSAGES for delete-others, etc.).
-                if (content?.type === 'edit') {
-                    const idx = thread.findIndex(t => t.id === content.target_id || t.content?.client_msg_id === content.target_id);
-                    if (idx !== -1) {
-                        thread[idx] = { ...thread[idx], content: editedContent(thread[idx].content, content.text, content.channel_refs), edited: true };
-                    }
-                    return { ...prev, [evt.channel_id]: thread };
-                }
-                if (content?.type === 'delete') {
-                    thread = thread.filter(t => t.id !== content.target_id && t.content?.client_msg_id !== content.target_id);
+                // F3: the server validated only the DECLARED action type, which
+                // the sender chooses; the encrypted body is authorized here.
+                // Edit: author only. Delete: author, or a server-confirmed
+                // moderator delete (moderatorDeleteTargets, above).
+                if (content?.type === 'edit' || content?.type === 'delete') {
+                    thread = applyChannelEditDelete(thread, liveAction, { moderatorDeleteTargets });
                     return { ...prev, [evt.channel_id]: thread };
                 }
                 if (content?.type === 'reaction') {
@@ -4738,6 +5153,8 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                         ctx: notifCtxRef.current,
                         decision,
                     });
+                    // Keys on Home: same rule as the DM path (a bare kind, nothing else).
+                    if (alertable && decision.playsSound) emitKeysBeat('message');
                 }
             }
         } catch (err) {
@@ -4761,7 +5178,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
             // Classified (utils/channelDecryptFailure.ts): an unverifiable
             // sender or a key withheld by permission is not "waiting on a key",
             // and must not file a request that can never be answered.
-            const reason = classifyChannelDecryptFailure(err, channelFailureContext(evt.channel_id, evt.epoch));
+            const reason = classifyChannelDecryptFailure(err, { ...channelFailureContext(evt.channel_id, evt.epoch), messageId: evt.message_id });
             setChannelMessages(prev => {
                 const existing = prev[evt.channel_id] ?? [];
                 if (existing.some(m => m.id === evt.message_id)) return prev;
@@ -4780,7 +5197,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
             });
             if (reason === 'key_missing') {
                 undecryptableChannelsRef.current.add(evt.channel_id);
-                void channelKeyOpsRef.current.maybeFileKeyRequest(evt.server_id, evt.channel_id);
+                void channelKeyOpsRef.current.askForRowEpochs(evt.server_id, evt.channel_id, typeof evt.epoch === 'number' ? [evt.epoch] : undefined);
                 // Nothing was counted for this message — not unread, not a
                 // mention, no notification — because nobody can know what it
                 // says yet. Keep it, and run it through this handler again the
@@ -4866,7 +5283,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
         });
     }, []);
 
-    const { typingUsers, sendTypingEvent, clearTypingUsers, readReceipts, sendReadReceipt, selfReadEvents, setSelfReadEvents, historyRequest, setHistoryRequest, historyDelivered, clearHistoryDelivered, historyDeclined, setHistoryDeclined, deviceLinkedEvent, friendRemovedEvent, friendAcceptedEvent, friendRequestEvent, statusChangedEvent, sendPresenceIdle, callEndedEvent, soloKickEvent, answeredElsewhereEvent, groupMemberAddedEvent, groupUpdatedEvent, avatarUpdatedEvent, usernameUpdatedEvent, voiceStateEvent, huddleSpawnEvent, huddleDestroyEvent, huddleRenameEvent, huddleParticipantEvent, huddleForceMoveEvent, huddleForceDisconnectEvent, serverRemovedEvent, serverMemberJoinedEvents, setServerMemberJoinedEvents, permissionsChangedEvent, channelsChangedEvent, serverUpdatedEvent, serverMembersChangedEvent, channelPinsChangedEvent, emojisChangedEvent, serverGraceStatusEvent, channelKeyEnvelopesReadyEvents, setChannelKeyEnvelopesReadyEvents, channelReadEvents, setChannelReadEvents, keyRequestedEvents, setKeyRequestedEvents, channelKeyRotationEvents, setChannelKeyRotationEvents, wsConnectCount, sendCallMediaReport } = useRealtime(token, pullMessages, handleChannelMessage, deviceId, userId, handleChannelSystemMessage, handleLegacySystemEvent);
+    const { typingUsers, sendTypingEvent, clearTypingUsers, readReceipts, sendReadReceipt, selfReadEvents, setSelfReadEvents, historyRequest, setHistoryRequest, historyDelivered, clearHistoryDelivered, historyDeclined, setHistoryDeclined, deviceLinkedEvent, friendRemovedEvent, friendAcceptedEvent, friendRequestEvent, statusChangedEvent, sendPresenceIdle, sendPresenceGame, callEndedEvent, soloKickEvent, answeredElsewhereEvent, groupMemberAddedEvent, groupUpdatedEvent, avatarUpdatedEvent, usernameUpdatedEvent, voiceStateEvent, huddleSpawnEvent, huddleDestroyEvent, huddleRenameEvent, huddleParticipantEvent, huddleForceMoveEvent, guestKeyEvents, setGuestKeyEvents, guestKeyRequestEvents, setGuestKeyRequestEvents, huddleForceDisconnectEvent, serverRemovedEvent, serverMemberJoinedEvents, setServerMemberJoinedEvents, permissionsChangedEvent, channelsChangedEvent, serverUpdatedEvent, serverMembersChangedEvent, channelPinsChangedEvent, emojisChangedEvent, serverGraceStatusEvent, channelKeyEnvelopesReadyEvents, setChannelKeyEnvelopesReadyEvents, channelReadEvents, setChannelReadEvents, keyRequestedEvents, setKeyRequestedEvents, channelKeyRotationEvents, setChannelKeyRotationEvents, wsConnectCount, sendCallMediaReport } = useRealtime(token, pullMessages, handleChannelMessage, deviceId, userId, handleChannelSystemMessage, handleLegacySystemEvent);
 
     // ── Ghost-device fix: own-device alarm (docs/ghost-device.md §2.5) ───────
     // A COMPLETE listing of this account's devices at boot and on every
@@ -5114,7 +5531,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
         // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
         const patch = (c: any) => {
             const next = { ...c };
-            if (title !== undefined)             next.title = title;
+            if (title !== undefined)             next.title = typeof title === 'string' ? stripBidiControls(title) : title;
             if (avatar_attachment !== undefined) next.avatar_url = avatar_attachment;
             return next;
         };
@@ -5189,13 +5606,40 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
     const privacy = usePrivacySettings();
     const gif = useGifSettings();
 
-    const { myStatus, myCurrentGame, myCurrentGameProcess, setStatus, clearGame, friendStatuses, presenceAuthoritative } = useUserStatus({
+    const { myStatus, myCustomText, myCustomEmoji, myCustomExpiresAt, myCurrentGame, myCurrentGameProcess, setStatus, clearGame, friendStatuses, presenceAuthoritative } = useUserStatus({
         token,
         userId,
         acceptedFriends: acceptedFriendsForStatus,
         showGameActivity: gameSettings.settings.showGameActivity,
         wsConnectCount,
         sendPresenceIdle,
+        sendPresenceGame,
+    });
+    // "Listening to ..." - friends' seed + your own (opt-in) media-session publisher.
+    useListeningShare({ token, userId, wsConnectCount });
+
+    // A personal-emoji status is DEVICE-ONLY (the server keeps just the `cl:p_…`
+    // reference): hand its image to accepted friends, E2EE, once each
+    // (hooks/useStatusEmojiShare.ts). Friends only, and only those with a DM.
+    const statusEmojiFriendIds = React.useMemo(() => (globalFriends?.accepted ?? []).map(f => f.user_id), [globalFriends]);
+    const statusEmojiDms = React.useMemo(
+        () => conversations.filter(c => c.type === 'dm').map(c => ({ conversationId: c.conversation_id as string, otherUserId: c.other_user_id as string | undefined })),
+        [conversations],
+    );
+    useStatusEmojiShare({ token, deviceId, userId, emoji: myCustomEmoji, friendIds: statusEmojiFriendIds, dms: statusEmojiDms });
+    // The keepsake-rain effect can rain one of your My Emojis: also device-only,
+    // so it travels to friends the same way (utils/profileCosmetics.keepsakeRainEmojiRef).
+    const rainEmojiRef = React.useMemo(() => keepsakeRainEmojiRef(user?.profile_effect, user?.cosmetic_options), [user?.profile_effect, user?.cosmetic_options]);
+    useStatusEmojiShare({ token, deviceId, userId, emoji: rainEmojiRef, friendIds: statusEmojiFriendIds, dms: statusEmojiDms });
+
+    // Achievements / Most played: call time and the detected game feed the
+    // on-device tracker (hooks/useAchievementSignals.ts). Nothing is sent from here.
+    useAchievementSignals({
+        callId: activeCall?.id ?? null,
+        connected: !!activeCall && roomConnectedCallId === activeCall.id,
+        people: callParticipantCount,
+        isHost: !!activeCall?.isInitiator && !activeCall?.isVoiceChannel,
+        game: myCurrentGame,
     });
 
     // The DM-partner presence bits from the 30 s REST poll, reconciled with
@@ -5241,6 +5685,14 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
         };
     }, [myStatus, activeCall, myCurrentGame]);
 
+    // Friend-anniversary toast + incoming high-fives (count always, toast/animation never under DND).
+    useProfileMoments({
+        userId,
+        accepted: globalFriends?.accepted ?? null,
+        isDnd: () => myStatusRef.current === 'dnd' || computeNotifDnd(notifGlobalPrefsRef.current, notifCtxRef.current).active,
+        pushToast: t => toast.push(t),
+    });
+
     // ── Unread badge + tray state push ──────────────────────────────────────────
     // Compute the cross-conversation unread total per the user's badge prefs and
     // push it to the main process (dock badge / taskbar overlay / tray tooltip).
@@ -5263,9 +5715,14 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
         });
 
         const dndActive = computeNotifDnd(p, notifCtxRef.current).active;
-        window.electronAPI.notifSetBadge?.(count);
+        // The Windows taskbar shows an "@" glyph while any @mention is unread
+        // (it outranks the deafened / muted glyph). Same maps the in-app
+        // mention badges clear, so it disappears when they do.
+        const hasMention = hasUnreadMention(mentionCounts, channelMentionCounts, p.show_badge_count);
+        window.electronAPI.notifSetBadge?.(count, hasMention);
         window.electronAPI.trayUpdateState?.({
             unreadCount: count,
+            hasMention,
             dndActive,
             dndManual: p.dnd_manual,
             status: myStatusRef.current,
@@ -5503,15 +5960,24 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
         // between the clear and the response.
         void seedVoicePresenceRef.current();
 
-        await Promise.allSettled([
-            fetchConversationsRef.current?.() ?? Promise.resolve(),
-            fetchFriendsRef.current?.() ?? Promise.resolve(),
+        // PACED, not concurrent. These four loads used to start together, so
+        // their responses landed back to back and each one re-rendered the
+        // whole dashboard inside ONE long frame - the 1-2 s `resume:rehydrate`
+        // freeze beta diagnostics reported on wake. One at a time with a yield
+        // between (utils/resumeSequencing.runPaced), every response is its own
+        // short task and input / paint run in between. Same four loads, same
+        // allSettled semantics (a failing one never stops the rest); the user
+        // already has the previous data on screen, so the few extra round
+        // trips are invisible. Visible list first.
+        await runPaced([
+            () => fetchConversationsRef.current?.() ?? Promise.resolve(),
+            () => fetchFriendsRef.current?.() ?? Promise.resolve(),
             // Own avatar/name: a lost /auth/me at boot is otherwise permanent.
-            refreshProfile(),
+            () => refreshProfile(),
             // loadServers swallows its own errors, so awaiting it always
             // settles — which is what the gate wants (settled, not succeeded).
-            loadServers().finally(() => markSettled('servers')),
-        ]);
+            () => loadServers().finally(() => markSettled('servers')),
+        ], yieldMainThread);
 
         // Huddle calls are a separate subsystem (Redis-backed, per-huddle-
         // channel) with no batched read, so they stay scoped to the active
@@ -5558,10 +6024,28 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
     // this backstop is specifically for "was the call ever un-ended while we
     // had literally no connection to find out" — sleep is the case that
     // actually produces that gap.
+    //
+    // GATED ON CONNECTIVITY. The wake signal arrives while Wi-Fi is still
+    // reconnecting; firing the resync then made every request fail (and the
+    // `resume:rehydrate` activity span - which also covers fetchWithRetry's
+    // backoff - stay open for seconds, so unrelated long frames were blamed on
+    // it). It now waits for navigator.onLine AND a /health/live answer
+    // (utils/networkReady.ts, shared with the prekey top-up) before running. If
+    // the network never comes back inside the window nothing is forced: the
+    // WebSocket reconnect after the same wake runs the full resync itself
+    // (wsConnectCount effect below), and a confirmed socket is a stronger signal
+    // than any probe.
+    const rehydrateAllRef = useRef(rehydrateAll);
+    useEffect(() => { rehydrateAllRef.current = rehydrateAll; }, [rehydrateAll]);
+    const [wakeResync] = useState(() => createWakeResync({
+        ready: () => ensureNetworkReady(),
+        run: (opts?: { checkCallStaleness?: boolean }) => rehydrateAllRef.current(opts),
+        onError: (e) => console.warn('[hydrate] wake resync failed', e),
+    }));
     useEffect(() => {
-        const unsub = window.electronAPI?.onAppResumed?.(() => { void rehydrateAll({ checkCallStaleness: true }); });
+        const unsub = window.electronAPI?.onAppResumed?.(() => { void wakeResync({ checkCallStaleness: true }); });
         return () => { try { unsub?.(); } catch { /* ignore */ } };
-    }, [rehydrateAll]);
+    }, [wakeResync]);
 
     // Re-fetch data on WebSocket reconnect (e.g. coming back online after
     // being offline). wsConnectCount increments on every successful
@@ -5927,10 +6411,21 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
         // The sound is not gated on reduced motion — that preference is about
         // motion, not audio, and `celebration` has its own mute like every
         // other cue. The confetti below is.
+        recordEggFound('first-friend');
         playSound('celebration', notifGlobalPrefsRef.current);
         if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return;
         setFirstFriendCelebration(true);
     }, [globalFriends, userId]);
+
+    // Moments: reaching 100 friends / 10 servers — SEEN crossing, once ever
+    // (useCountMilestone). Only the two counts reach the moment machinery.
+    useCountMilestone(globalFriends ? globalFriends.accepted.length : null, 100, 'friends-100');
+    useCountMilestone(serversLoading ? null : servers.length, 10, 'servers-10');
+    // Moment: left a server and came back inside a minute (any join path).
+    useEffect(() => {
+        if (serversLoading) return;
+        if (serverRejoined(servers.map(sv => sv.server_id))) requestMoment('revolving-door');
+    }, [servers, serversLoading]);
 
     // Fetch friends on mount + any time a friend-relationship WS event fires.
     // Live-updating the globalFriends set is what unblocks avatar rendering
@@ -6171,7 +6666,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                 // already in memory.
                 await secureLocalStore.hydrateMessages();
 
-                setMessagesState(settleInterruptedSends(await trackActivity('startup:history-load', () => messageStore.loadAll('dm', userId))));
+                setMessagesState(sanitizeStoredThreads(settleInterruptedSends(await trackActivity('startup:history-load', () => messageStore.loadAll('dm', userId)))));
                 // The stored history is now queued into state ahead of any
                 // pull's update, so pulls may merge on top of it. Pull once
                 // right away rather than waiting up to 5 s for the poll. Not
@@ -6190,7 +6685,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                 // sibling localStorage key. Phase Q' brings server channels to
                 // full DM parity: local cache is the source of truth, the API
                 // is consulted on channel entry only as a catch-up.
-                setChannelMessages(settleInterruptedSends(await trackActivity('startup:history-load', () => messageStore.loadAll('channel', userId))));
+                setChannelMessages(sanitizeStoredThreads(settleInterruptedSends(await trackActivity('startup:history-load', () => messageStore.loadAll('channel', userId)))));
 
                 const hiddenCached = secureLocalStore.getItem(`cipherline_hidden_convs_${userId}`);
                 if (hiddenCached) setHiddenConversations(JSON.parse(hiddenCached));
@@ -6492,18 +6987,29 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                 const live = messagesStateRef.current;
                 const apply = unchangedSince(dmPruned.keys(), live, current);
                 if (apply.length > 0) {
-                    const next: messageStore.ThreadMap = { ...live };
-                    for (const id of apply) {
-                        const r = dmPruned.get(id)!;
-                        next[id] = r.msgs;
-                        allAttachmentsToDelete.push(...r.atd);
-                    }
+                    for (const id of apply) allAttachmentsToDelete.push(...dmPruned.get(id)!.atd);
                     setMessagesState(prev => applyPruned(prev, current, dmPruned, apply));
-                    // Sync localStorage immediately rather than waiting for the persist
-                    // useEffect to fire on the next render commit. Guards against data
-                    // loss if the user force-quits between sweep and commit.
+                    // Write to disk now rather than waiting for the persist useEffect
+                    // to fire on the next render commit. Guards against data loss if
+                    // the user force-quits between sweep and commit. TIME-SLICED:
+                    // after a wake, every thread whose window lapsed while the
+                    // machine slept is in `apply`, and stringifying them all in one
+                    // task was the 1 s+ `retention:sweep` freeze. A thread that moved
+                    // on while we yielded is skipped (the persist effect has its
+                    // newer copy), never overwritten with the stale pruned one.
                     try {
-                        messageStore.saveAll('dm', userId, next);
+                        await messageStore.saveThreadsSliced(
+                            'dm', userId,
+                            apply.map(id => [id, dmPruned.get(id)!.msgs] as const),
+                            {
+                                yieldIfDue: sliceYield,
+                                isCurrent: (id, m) => {
+                                    if (cancelled) return false;
+                                    const cur = messagesStateRef.current[id];
+                                    return cur === m || cur === current[id];
+                                },
+                            },
+                        );
                     } catch { /* quota or serialization — non-fatal, persist effect will retry */ }
                 }
             }
@@ -6568,10 +7074,8 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                     const live = channelMessagesRef.current;
                     const apply = unchangedSince(chPruned.keys(), live, chMsgs);
                     if (apply.length > 0) {
-                        const next: messageStore.ThreadMap = { ...live };
                         for (const id of apply) {
                             const r = chPruned.get(id)!;
-                            next[id] = r.msgs;
                             allAttachmentsToDelete.push(...r.atd);
                             // The channel_messages row survives this purge on the
                             // server, so remember the ids or the next history fetch
@@ -6579,9 +7083,20 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                             markMessagesPurged(userId, id, r.purged);
                         }
                         setChannelMessages(prev => applyPruned(prev, chMsgs, chPruned, apply));
-                        // Same sync-write rationale as DM/group sweep above.
+                        // Same write-now + time-slicing rationale as DM/group sweep above.
                         try {
-                            messageStore.saveAll('channel', userId, next);
+                            await messageStore.saveThreadsSliced(
+                                'channel', userId,
+                                apply.map(id => [id, chPruned.get(id)!.msgs] as const),
+                                {
+                                    yieldIfDue: sliceYield,
+                                    isCurrent: (id, m) => {
+                                        if (cancelled) return false;
+                                        const cur = channelMessagesRef.current[id];
+                                        return cur === m || cur === chMsgs[id];
+                                    },
+                                },
+                            );
                         } catch { /* non-fatal */ }
                     }
                 }
@@ -6597,7 +7112,8 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                 // Local only: see the note on the other retention purge paths. The
                 // server copy is not this device's to remove on a timer.
                 const { deleteEncryptedAttachment } = await import('../utils/attachmentCache');
-                await Promise.allSettled(allAttachmentsToDelete.map(id => deleteEncryptedAttachment(id)));
+                // Chunked: a few hundred IndexedDB deletes started at once land as one burst.
+                await removeInChunks(allAttachmentsToDelete, deleteEncryptedAttachment);
             }
             // P2-REND-16: prune stale avatar/icon/banner blobs every sweep cycle.
             const { pruneAvatarCache } = await import('../utils/attachmentCache');
@@ -7606,6 +8122,9 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                     throw new Error(`[E2EE] Channel message rejected: sender key mismatch for ${m.sender_user_id}`);
                 }
             }
+            if (selfChannelRowContradicted(m.sender_user_id, wirePub, m.sender_device_id)) {
+                throw new Error('[E2EE] Channel message rejected: not from a known device of this account');
+            }
             const contentJson = await window.electronAPI!.decryptChannelMessage({
                 channel_id: channelId,
                 epoch: m.epoch,
@@ -7619,7 +8138,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                 sender_device_id: m.sender_device_id,
             });
             pinAndDetect(m.sender_user_id, m.sender_identity_pub_b64, m.sender_device_id);
-            const parsedContent = JSON.parse(contentJson);
+            const parsedContent = ingestInboundContent(JSON.parse(contentJson));
             return {
                 id: m.id,
                 // Content boundary — see the live channel path above.
@@ -7643,7 +8162,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
             return {
                 id: m.id,
                 content: channelPlaceholderContent(
-                    classifyChannelDecryptFailure(err, channelFailureContext(channelId, m.epoch)),
+                    classifyChannelDecryptFailure(err, { ...channelFailureContext(channelId, m.epoch), messageId: m.id }),
                     m.epoch,
                 ),
                 sender_device_id: m.sender_device_id,
@@ -7652,7 +8171,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                 conversation_id: channelId,
             };
         }
-    }, [userId, pinAndDetect, channelFailureContext]);
+    }, [userId, pinAndDetect, selfChannelRowContradicted, channelFailureContext]);
 
     /**
      * Decrypt a page of channel rows: OLDEST FIRST (so a re-post can never
@@ -7894,7 +8413,11 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
             );
             const purgedIds = userId ? getPurgedMessageIds(userId, channelId) : new Set<string>();
             const snapshot: ChannelRow[] = channelMessagesRef.current[channelId] ?? [];
-            for (const id of deletedChannelTargetIds(snapshot, sorted, purgedIds)) {
+            // F3: a delete marker for someone else's row applies only once the
+            // server confirms it (tombstoned, or a removed system row). The
+            // usual case — no such marker — costs nothing.
+            const moderatorDeleteTargets = await confirmModeratorDeleteRef.current(channelId, [...snapshot, ...sorted], sorted);
+            for (const id of deletedChannelTargetIds(snapshot, sorted, purgedIds, { moderatorDeleteTargets })) {
                 if (localChannelPinsRef.current[channelId]?.includes(id)) {
                     handlePersonalChannelSaveRef.current(channelId, id, 'remove');
                 }
@@ -7905,7 +8428,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
             channelOrphansRef.current = { ...channelOrphansRef.current, [channelId]: waiting };
             setChannelMessages(prev => {
                 const folded = applyOrphans(
-                    foldChannelHistory(prev[channelId] ?? [], sorted, purgedIds, opts.window ?? undefined),
+                    foldChannelHistory(prev[channelId] ?? [], sorted, purgedIds, opts.window ?? undefined, { moderatorDeleteTargets }),
                     ready,
                 );
                 const unTombstoned = tombstoned.size ? folded.filter(m => !tombstoned.has(m.id)) : folded;
@@ -8148,7 +8671,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
             // decrypt it.
             if (pageNeedsKeyRequest(sorted, purgedIds)) {
                 undecryptableChannelsRef.current.add(channelId);
-                void channelKeyOpsRef.current.maybeFileKeyRequest(serverId, channelId);
+                void channelKeyOpsRef.current.askForRowEpochs(serverId, channelId, placeholderEpochsWantingKey(sorted, purgedIds));
             } else {
                 // Everything in the newest page decrypted — this channel has
                 // recovered. Clearing the flag matters: the 75s retry timer
@@ -8386,7 +8909,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                 // everyone else and hears nothing. Every call-join path runs
                 // through here with a FRESH latest_epoch.
                 if (existingEpoch != null && latestEpoch !== undefined && existingEpoch < latestEpoch) {
-                    void channelKeyOpsRef.current.maybeFileKeyRequest(channel.server_id, channel.channel_id);
+                    void channelKeyOpsRef.current.maybeFileKeyRequest(channel.server_id, channel.channel_id, askableEpochRange(existingEpoch, latestEpoch));
                 }
             }
         } catch (err) {
@@ -8450,13 +8973,24 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
         // Body lives in ensureChannelKeyBootstrap above so the Calls-channel
         // call-join paths can drive the exact same mint-vs-request decision —
         // they never pass through here. See its doc comment.
-        await ensureChannelKeyBootstrap(channel);
+        //
+        // Key-loading view (hooks/useChannelKeyWait.ts): while this open pulls
+        // waiting keys and re-reads the newest page, cached placeholders may be
+        // about to heal — the pane holds them back instead of flashing the key
+        // animation for keys that are already installed. Noted before the
+        // first await, so the pane's first render already sees it.
+        const endOpen = beginChannelOpen(channel.channel_id);
+        try {
+            await ensureChannelKeyBootstrap(channel);
 
-        // Catch-up fetch: pull recent server-channel history and MERGE with the
-        // local cache. See refreshChannelHistory — the body moved there so the
-        // envelopes-ready handler can re-read history without re-running this
-        // whole function.
-        await refreshChannelHistory(channel.server_id, channel.channel_id);
+            // Catch-up fetch: pull recent server-channel history and MERGE with the
+            // local cache. See refreshChannelHistory — the body moved there so the
+            // envelopes-ready handler can re-read history without re-running this
+            // whole function.
+            await refreshChannelHistory(channel.server_id, channel.channel_id);
+        } finally {
+            endOpen();
+        }
         // Settle the loading flag regardless of outcome (success, failure, or
         // skipped because there's no token) — an indefinite spinner would be
         // worse than falling through to render whatever's in the local cache.
@@ -8653,6 +9187,11 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
         const ev = huddleForceMoveEvent;
         if (moveHandledNonceRef.current === ev.nonce) return; // StrictMode / dep churn
         moveHandledNonceRef.current = ev.nonce;
+        // Moved into a call whose channel we cannot see: remember it as a guest
+        // call BEFORE entering, so the header and the key gate know not to look
+        // for the channel (it is not in our list) and to wait for a holder's key.
+        // Only on the device that is actually being moved (set in `beginJoin`,
+        // which runs only there); it counts only once that call is active.
         runForceMove(ev, {
             activeCallId: () => activeCallRef.current?.id ?? null,
             // The move is addressed to every device of the account; only the one
@@ -8662,9 +9201,14 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                 const cur = activeCallRef.current?.id ?? null;
                 return e.from_call_id ? cur === e.from_call_id : activeHuddleCallId !== null;
             },
-            beginJoin: e => beginCallJoin('huddle-join', `huddle-call:${e.call_id}`, e.huddle_id, {
-                kind: 'huddle', huddleId: e.huddle_id, callId: e.call_id, renderKey: e.call_id, spawnedAt: '',
-            }),
+            beginJoin: e => {
+                setGuestCall(ev.guest
+                    ? { callId: e.call_id, huddleId: e.huddle_id, serverId: ev.server_id ?? null, callName: e.call_name }
+                    : null);
+                return beginCallJoin('huddle-join', `huddle-call:${e.call_id}`, e.huddle_id, {
+                    kind: 'huddle', huddleId: e.huddle_id, callId: e.call_id, renderKey: e.call_id, spawnedAt: '',
+                });
+            },
             settleJoin: attempt => settleCallJoin(attempt),
             enter: sel => applyHuddleSelection(sel),
             // Cue + toast, once per move and never for a move we made ourselves.
@@ -8681,6 +9225,87 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
     // toast is a stable context value; re-running on it would re-fire the move.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [huddleForceMoveEvent]);
+
+    // ── Guest call room keys (utils/guestCallKey) ───────────────────────────
+    // A holder (us) hands a moved-in guest the CURRENT room key of a call: as
+    // the moderator who just moved them (onGuestMove), or as a participant of
+    // that call when the guest asks (huddle:guest_key_request).
+    const deliverGuestKey = useCallback(async (m: GuestMove) => {
+        if (!token || !userId || !deviceId || !window.electronAPI) return;
+        try {
+            const outcome = await deliverGuestCallKey(m, {
+                keySource: window.electronAPI,
+                getMemberDevices: async (sid, uid) => {
+                    const r = await axios.get(apiUrl`/servers/${sid}/members/${uid}/devices`, { headers: { Authorization: `Bearer ${token}` } });
+                    return (r.data ?? []) as unknown[];
+                },
+                encrypt: async (json, devices) => (await window.electronAPI!.encryptMessageV2(
+                    json, userId, devices as Parameters<NonNullable<typeof window.electronAPI>['encryptMessageV2']>[2], deviceId,
+                )).envelope_b64,
+                post: (cid, body) => axios.post(apiUrl`/huddles/calls/${cid}/guest-key`, body, { headers: { Authorization: `Bearer ${token}` }, timeout: 15000 }),
+            });
+            if (outcome !== 'sent') console.warn(`[GuestKey] could not hand a guest the room key: ${outcome}`);
+        } catch (e) {
+            console.warn('[GuestKey] delivering a guest room key failed:', (e as Error)?.message ?? e);
+        }
+    }, [token, userId, deviceId]);
+    useEffect(() => onGuestMove(m => { void deliverGuestKey(m); }), [deliverGuestKey]);
+    useEffect(() => {
+        if (guestKeyRequestEvents.length === 0) return;
+        const batch = guestKeyRequestEvents;
+        setGuestKeyRequestEvents([]);
+        const seen = new Set<string>();
+        for (const r of batch) {
+            const k = `${r.call_id}|${r.guest_user_id}`;
+            if (seen.has(k)) continue;
+            seen.add(k);
+            if (!shouldServeGuestKeyRequest({ callId: r.call_id, guestUserId: r.guest_user_id, selfUserId: userId, activeCallId: activeCallRef.current?.id ?? null })) continue;
+            void deliverGuestKey({ callId: r.call_id, huddleId: r.huddle_id, serverId: r.server_id, guestUserId: r.guest_user_id });
+        }
+    }, [guestKeyRequestEvents, setGuestKeyRequestEvents, deliverGuestKey, userId]);
+
+    // The guest side: open a holder's envelope (same distributor checks as any
+    // key material) and keep the room key for THIS call only.
+    useEffect(() => {
+        // A holder's key can beat our own force_move handling: keep it queued
+        // until we are in the guest call (this re-runs when we are).
+        if (guestKeyEvents.length === 0 || !activeGuestCall || !deviceId || !window.electronAPI) return;
+        const batch = guestKeyEvents;
+        setGuestKeyEvents([]);
+        const guestOf = { callId: activeGuestCall.callId, channelId: activeGuestCall.huddleId };
+        void (async () => {
+            for (const ev of batch) {
+                const key = await acceptGuestCallKey(ev, guestOf, {
+                    decrypt: env => window.electronAPI!.decryptMessage(env, deviceId),
+                    trustSender: async (d) => {
+                        const dd = d as { senderUserId?: string; senderPub?: string; senderDeviceId?: string };
+                        if (dd.senderUserId && dd.senderUserId !== userId) {
+                            await deviceDirectory.ensureUser(dd.senderUserId, fetchIdentityKeys);
+                        }
+                        await refreshOwnDevicesIfUnknown(dd.senderUserId, dd.senderPub, dd.senderDeviceId);
+                        const verdict = pinAndDetect(dd.senderUserId, dd.senderPub, dd.senderDeviceId);
+                        return !!verdict && actionFor(verdict, 'key_material') === 'accept';
+                    },
+                });
+                if (key) {
+                    setGuestRoomKeys(prev => (prev[key.callId]?.keyB64 === key.keyB64 ? prev : { [key.callId]: key }));
+                    return;
+                }
+            }
+        })();
+    }, [guestKeyEvents, setGuestKeyEvents, activeGuestCall, deviceId, userId, fetchIdentityKeys, refreshOwnDevicesIfUnknown, pinAndDetect]);
+
+    // No key yet: ask the call's holders, a few times, spaced out.
+    const activeGuestCallId = activeGuestCall?.callId ?? null;
+    const haveGuestKey = !!(activeGuestCallId && guestRoomKeys[activeGuestCallId]);
+    useEffect(() => {
+        if (!activeGuestCallId || haveGuestKey || !token) return;
+        const timers = GUEST_KEY_REQUEST_DELAYS_MS.map(ms => window.setTimeout(() => {
+            axios.post(apiUrl`/huddles/calls/${activeGuestCallId}/guest-key-request`, {}, { headers: { Authorization: `Bearer ${token}` }, timeout: 15000 })
+                .catch(e => console.warn('[GuestKey] key request failed:', (e as Error)?.message ?? e));
+        }, ms));
+        return () => { for (const t of timers) window.clearTimeout(t); };
+    }, [activeGuestCallId, haveGuestKey, token]);
 
     // ── Force-disconnect: a moderator with MANAGE_CALL_MEMBERS disconnected us ──
     // Leave the ordinary way (local teardown + idempotent server leave; CallPane
@@ -8750,9 +9375,66 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                 return arbitrated.get(`${channelId}:${epoch}`) ?? null;
             };
 
-            for (const env of envelopes) {
+            // F6: the server's registered latest epoch per channel, read at most
+            // once per pull and only for an epoch above the cached channel list.
+            const registeredLatest = new Map<string, number | null>();
+            const registeredLatestEpoch = async (channelId: string): Promise<number | null> => {
+                if (!registeredLatest.has(channelId)) {
+                    try {
+                        const r = await axios.get(apiUrl`/channels/${channelId}/epoch`, {
+                            headers: { Authorization: `Bearer ${token}` },
+                        });
+                        const n = Number(r.data?.epoch ?? 0);
+                        registeredLatest.set(channelId, Number.isSafeInteger(n) && n >= 0 ? n : null);
+                    } catch {
+                        registeredLatest.set(channelId, null);
+                    }
+                }
+                return registeredLatest.get(channelId) ?? null;
+            };
+
+            // Distributor authorization (utils/channelKeyDistributorCheck.ts):
+            // defence in depth on top of the API's own sender check, from
+            // cached data only. The roster's member set is built once per pull.
+            let rosterIds: { memberIds: Set<string>; fresh: boolean } | null | undefined;
+            const rosterFacts = () => {
+                if (rosterIds === undefined) {
+                    const r = peekRoster(serverId);
+                    rosterIds = r ? { memberIds: new Set(r.members.map(m => m.user_id)), fresh: isRosterFresh(serverId) } : null;
+                }
+                return rosterIds;
+            };
+            let refreshRosterAfter = false;
+            const refreshViewersAfter = new Set<string>();
+
+            // Epochs this device holds, per channel, looked up lazily and only for a REPLAY.
+            const heldEpochsByChannel = new Map<string, Set<number>>();
+            // Channels that gained a NEW key in this pull (see the serve re-run below).
+            const installedChannels = new Set<string>();
+            const postAcks = (batch: string[]) => axios.post(
+                apiUrl`/servers/${serverId}/channel-keys/ack`,
+                { envelope_ids: batch },
+                { headers: { Authorization: `Bearer ${token}` } }
+            );
+            // Every channel's newest epoch first, acked before any history, so
+            // each request closes as soon as the channel is usable and the
+            // holders that have not answered it yet stand down
+            // (orderEnvelopesForInstall).
+            const { ordered, newestCount } = orderEnvelopesForInstall(envelopes);
+            let ackedEarly = false;
+            for (let envIdx = 0; envIdx < ordered.length; envIdx++) {
+                const env = ordered[envIdx];
+                if (envIdx === newestCount && ackIds.length) {
+                    await ackInBatches(ackIds.splice(0, ackIds.length), postAcks);
+                    ackedEarly = true;
+                }
                 try {
-                    const { contentJson: ckContentJson, senderUserId: ckSenderUserId, senderPub: ckSenderPub, senderDeviceId: ckSenderDeviceId } = await window.electronAPI!.decryptMessage(env.ciphertext_b64, deviceId);
+                    // An envelope held back by an earlier pass was ALREADY decrypted (which
+                    // spent its ephemeral key), so decrypting it again would be a REPLAY.
+                    // Reuse that result — only for this exact ciphertext, once.
+                    const heldDecrypt = heldBackKeysRef.current.take(env.envelope_id, env.ciphertext_b64, Date.now());
+                    const decrypted = heldDecrypt ?? await window.electronAPI!.decryptMessage(env.ciphertext_b64, deviceId);
+                    const { contentJson: ckContentJson, senderUserId: ckSenderUserId, senderPub: ckSenderPub, senderDeviceId: ckSenderDeviceId } = decrypted;
                     // F1: channel_key is key material — warm the directory before
                     // judging it, for the same reason as call_key above. The
                     // distributor is already known to the server here (it routed the
@@ -8760,10 +9442,16 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                     if (ckSenderUserId && ckSenderUserId !== userId) {
                         await deviceDirectory.ensureUser(ckSenderUserId, fetchIdentityKeys);
                     }
+                    await refreshOwnDevicesIfUnknown(ckSenderUserId, ckSenderPub, ckSenderDeviceId);
                     // C2 + F1: pin the key distributor's identity (TOFU) / flag a change.
                     const ckVerdict = pinAndDetect(ckSenderUserId, ckSenderPub, ckSenderDeviceId);
                     const content = JSON.parse(ckContentJson);
                     if (content?.type === 'channel_key' && content.key_b64) {
+                        // The key is filed under the envelope's (server-supplied)
+                        // channel/epoch; the encrypted content must say the same.
+                        if (!channelKeyContentMatchesEnvelope(content, env)) {
+                            throw new Error('[E2EE:KEY_ENVELOPE_MISMATCH] channel key content does not match its envelope');
+                        }
                         // R3 / RC-7: refuse an epoch key from a distributor whose identity
                         // doesn't match the pinned TOFU record for THAT DEVICE — a swapped
                         // distributor key lets the server poison the channel's symmetric key
@@ -8782,9 +9470,57 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                         // which hands a forger the channel's symmetric key and with it
                         // the ability to READ and FORGE every message in that epoch.
                         // Fail closed on any verdict that is not 'ok'/'first_contact'.
-                        if (ckSenderUserId && ckSenderUserId !== userId && ckVerdict
-                            && actionFor(ckVerdict, 'key_material') !== 'accept') {
+                        // F1: this includes keys "from myself" — they must come from
+                        // one of my known devices (utils/selfSenderTrust.ts).
+                        if (!ckVerdict || actionFor(ckVerdict, 'key_material') !== 'accept') {
                             throw new Error(`[E2EE:KEY_DISTRIBUTOR_REJECTED] epoch key rejected: distributor identity not attributable (${ckVerdict})`);
+                        }
+                        // The distributor must be a current member who can see
+                        // this channel. Missing data installs (the server already
+                        // checked); a negative from possibly-stale data refreshes
+                        // and re-pulls WITHOUT counting a failure; only a negative
+                        // from fresh data rejects, through the bounded-failure
+                        // path below, which also re-asks the channel's holders.
+                        const ckChannel = (serverChannelsRef.current[serverId] ?? []).find(c => c.channel_id === env.channel_id) ?? null;
+                        let verdict: DistributorVerdict = judgeKeyDistributor({
+                            distributorUserId: ckSenderUserId,
+                            selfUserId: userId,
+                            channel: ckChannel,
+                            historicalEpoch: isHistoricalEpoch(env.epoch, ckChannel?.latest_epoch),
+                            roster: rosterFacts(),
+                            viewers: (() => {
+                                const e = peekChannelViewers(env.channel_id);
+                                return e && e.serverId === serverId
+                                    ? { viewers: e.viewers, fresh: isChannelViewersFresh(env.channel_id) }
+                                    : null;
+                            })(),
+                        });
+                        const refreshKey = ckSenderUserId ? distributorRefreshKey(env.channel_id, env.epoch, ckSenderUserId) : '';
+                        if (verdict === 'refresh') {
+                            const n = distributorRefreshCountRef.current.get(refreshKey) ?? 0;
+                            verdict = resolveRefreshVerdict(n);
+                            if (verdict === 'refresh') {
+                                distributorRefreshCountRef.current.set(refreshKey, n + 1);
+                                refreshRosterAfter = true;
+                                refreshViewersAfter.add(env.channel_id);
+                                heldBackKeysRef.current.hold(env.envelope_id, env.ciphertext_b64, decrypted, Date.now());
+                                continue;
+                            }
+                        }
+                        if (verdict === 'reject') {
+                            throw new Error('[E2EE:KEY_DISTRIBUTOR_NOT_AUTHORIZED] epoch key rejected: distributor is not a current viewer of this channel');
+                        }
+                        if (refreshKey) distributorRefreshCountRef.current.delete(refreshKey);
+                        // F6: shape (channel id, epoch range, 32-byte key), then an
+                        // epoch above the cached registry is checked against a fresh
+                        // read of it. A refusal takes the bounded-failure path below.
+                        const installProblem = channelKeyInstallProblem(content, env);
+                        if (installProblem) throw new Error(`[E2EE:KEY_MALFORMED] channel key refused: ${installProblem}`);
+                        if (needsRegistryEpochCheck(env.epoch, ckChannel?.latest_epoch)) {
+                            const registered = await registeredLatestEpoch(env.channel_id);
+                            if (registered === null || !epochWithinRegistry(env.epoch, registered)) {
+                                throw new Error(`[E2EE:EPOCH_IMPLAUSIBLE] epoch ${env.epoch} is ahead of the server's registered latest (${registered ?? 'unknown'})`);
+                            }
                         }
                         const rotatesAt = content.rotates_at
                             ? content.rotates_at
@@ -8830,11 +9566,22 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                                 envelopeFailureCountRef.current.delete(key);
                                 const until = computeCoolOffUntil(Date.now());
                                 setChannelKeyCoolOff(prev => ({ ...prev, [env.channel_id]: until }));
+                            } else {
+                                // Left for a later pull — which must not have to decrypt it again.
+                                heldBackKeysRef.current.hold(env.envelope_id, env.ciphertext_b64, decrypted, Date.now());
                             }
                             continue;
                         }
                         console.log(`[Channels] Received epoch ${env.epoch} key for channel ${env.channel_id} (${stored})`);
-                        noteChannelKeyReceived(env.channel_id);
+                        // Only a NEW key is progress. A 'duplicate' (a copy of
+                        // a key already held — several holders answer one ask)
+                        // changes nothing on screen, and noting it flipped the
+                        // key-wait banner off and on again for every copy
+                        // (2026-10-20: "kept appearing over and over").
+                        if (stored === 'stored') {
+                            noteChannelKeyReceived(env.channel_id);
+                            installedChannels.add(env.channel_id);
+                        }
                     }
                     ackIds.push(env.envelope_id);
                     envelopeFailureCountRef.current.delete(channelEpochKey(env.channel_id, env.epoch));
@@ -8848,6 +9595,29 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                         return next;
                     });
                 } catch (e) {
+                    // REPLAY: this very envelope was decrypted before (its ephemeral key is
+                    // spent), so no number of retries can open it. Ack it now — acking only
+                    // stops the server serving dead ciphertext, it accepts no key — instead of
+                    // burning three pulls and a fresh key request on it. If the epoch is NOT
+                    // held after all (the first install never happened), that is a real
+                    // loss: report it and ask the holders again.
+                    if (isEnvelopeReplay(e)) {
+                        let heldEpochs = heldEpochsByChannel.get(env.channel_id);
+                        if (!heldEpochs) {
+                            heldEpochs = new Set<number>((await window.electronAPI?.listChannelEpochs?.(env.channel_id).catch(() => [] as number[])) ?? []);
+                            heldEpochsByChannel.set(env.channel_id, heldEpochs);
+                        }
+                        const replay = decideReplayEnvelope(heldEpochs.has(env.epoch));
+                        ackIds.push(env.envelope_id);
+                        heldBackKeysRef.current.drop(env.envelope_id);
+                        envelopeFailureCountRef.current.delete(channelEpochKey(env.channel_id, env.epoch));
+                        if (replay.report) {
+                            recordDelivery('channel_key_decrypt', e, { envelope_id: env.envelope_id, channel_id: env.channel_id, epoch: env.epoch });
+                            console.warn('[Channels] Key envelope replayed but the epoch is not held:', env.channel_id, env.epoch);
+                        }
+                        if (replay.reask) void channelKeyOpsRef.current.maybeFileKeyRequest(serverId, env.channel_id, [env.epoch]);
+                        continue;
+                    }
                     recordDelivery('channel_key_decrypt', e, { envelope_id: env.envelope_id, channel_id: env.channel_id, epoch: env.epoch });
                     console.warn('[Channels] Failed to process key envelope:', e);
                     // Poison-envelope bound: ACKing on the FIRST failure (the old
@@ -8876,22 +9646,44 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                         // device that could not decrypt its call channel's newest
                         // epoch and did not ask again is how participants ended up
                         // on different epochs (2026-10-09: no audio, no video).
-                        void channelKeyOpsRef.current.maybeFileKeyRequest(serverId, env.channel_id);
+                        void channelKeyOpsRef.current.maybeFileKeyRequest(serverId, env.channel_id, [env.epoch]);
                     }
                 }
             }
 
-            if (ackIds.length) {
-                await axios.post(
-                    apiUrl`/servers/${serverId}/channel-keys/ack`,
-                    { envelope_ids: ackIds },
-                    { headers: { Authorization: `Bearer ${token}` } }
-                ).catch(() => { /* non-fatal */ });
+            if (refreshRosterAfter || refreshViewersAfter.size) {
+                // Some envelope was held back on possibly-stale data: refresh
+                // exactly that data, then pull again (bounded per channel,
+                // epoch and distributor by MAX_DISTRIBUTOR_REFRESHES).
+                const sid = serverId;
+                const tok = token;
+                void Promise.allSettled([
+                    refreshRosterAfter ? refreshRoster(sid, tok, { force: true }) : Promise.resolve(null),
+                    ...[...refreshViewersAfter].map(cid => refreshChannelViewers(sid, cid, tok, { force: true })),
+                ]).then(() => pullChannelKeys(serverId));
+            }
+
+            if (ackIds.length || ackedEarly) {
+                // In batches the API accepts (200). One POST of the whole list 400'd as
+                // soon as a pull held more than 200 envelopes, acked NOTHING, and the
+                // entire backlog came back on every following pull. A failed batch stays
+                // unacked and is retried by the next pull; the others still land.
+                await ackInBatches(ackIds, postAcks);
                 // Keys were just installed: count / notify whatever was waiting
                 // on them — a background channel's @mention above all
                 // (utils/channelMentionRecovery.ts). Not awaited: callers wait
                 // for the KEYS, not for this.
                 void recoverChannelMentionsRef.current(serverId).catch(() => {});
+            }
+
+            // A request this device answered with what it held is still open,
+            // and we just installed a newer key for its channel (we were still
+            // receiving a rotation, or our own keys): serve again — the pass
+            // re-checks it (keyServePass answeredHeldMax), the ledger skips
+            // what already went out, and first-responder-wins still applies.
+            const waitingOnUs = answeredOpenChannelsRef.current.get(serverId);
+            if (waitingOnUs && [...installedChannels].some(cid => waitingOnUs.has(cid))) {
+                keyResumeTimers.schedule(`serve:${serverId}`, pickServeJitterMs(), () => { void serveKeyRequestsRef.current(serverId); });
             }
         } catch (e) {
             // Non-fatal — new members will get keys on next pullChannelKeys call
@@ -8962,10 +9754,36 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
         },
     }));
     const [keyReaskBudget] = useState(() => new ReaskBudget());
+    // Proactive acquisition for EVERY viewable channel, opened or not
+    // (utils/channelKeyPrefetch.ts). The limiter is the one account-wide view of
+    // the API's 60/min key-request bucket (every path that POSTs a request
+    // records in it); the queue sends planned asks paced under it and puts a
+    // throttled one BACK; the ledger remembers what was last asked per channel.
+    // send / stillWanted are set further down, once fileKeyRequest exists.
+    const [keyAskLimiter] = useState(() => new KeyAskLimiter());
+    const [keyPrefetchLedger] = useState(() => new PrefetchLedger());
+    const keyAskSendRef = useRef<(ask: QueuedAsk) => Promise<KeyAskOutcome>>(async () => 'skipped');
+    const keyAskWantedRef = useRef<(ask: QueuedAsk) => Promise<boolean>>(async () => true);
+    const keyAskSendManyRef = useRef<(asks: QueuedAsk[]) => Promise<KeyAskOutcome[] | null>>(async () => null);
+    const [keyAskQueue] = useState(() => new KeyAskQueue({
+        limiter: keyAskLimiter,
+        send: (ask) => keyAskSendRef.current(ask),
+        // A server's queued asks in one POST /key-requests (fileKeyRequests).
+        sendMany: (asks) => keyAskSendManyRef.current(asks),
+        stillWanted: (ask) => keyAskWantedRef.current(ask),
+    }));
     useEffect(() => () => keyReaskScheduler.disarmAll(), [keyReaskScheduler]);
     // Per-(channel,epoch) failed-install attempt counter — see
     // channelEpochKey / CHANNEL_KEY_RETRY_LIMIT in channelKeyDistribution.ts.
     const envelopeFailureCountRef = useRef<Map<string, number>>(new Map());
+    // Per-(channel,epoch,distributor) count of refresh-and-re-pull rounds a
+    // key envelope was held back for (utils/channelKeyDistributorCheck.ts).
+    const distributorRefreshCountRef = useRef<Map<string, number>>(new Map());
+    // Envelopes decrypted but not yet installed (distributor data stale, epoch
+    // conflict unresolved). A decrypt consumes the envelope's one-time
+    // ephemeral key, so the follow-up pull would otherwise hit REPLAY and the
+    // key would be lost. See utils/channelKeyEnvelopes.ts. Memory only.
+    const heldBackKeysRef = useRef(new HeldBackEnvelopes<{ contentJson: string; senderPub?: string; senderUserId?: string; senderDeviceId?: string }>());
     // channel_ids with at least one undecryptable message (live or history)
     // — read by the retry timer below so history gets periodic recovery
     // attempts too, not just a one-shot request at the moment of failure.
@@ -9030,12 +9848,20 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
     const [handshakePacer] = useState(() => new Pacer());
     const [deliveryLedger] = useState(() => new DeliveryLedger());
     const [distributionMutex] = useState(() => new KeyedMutex());
+    // Set once the API answers POST key-handshake/batch with 404 (older API).
+    const [handshakeBatchSupport] = useState(() => ({ unsupported: false }));
     const [keyServeFlight] = useState(() => new SingleFlight());
     const [keyResumeTimers] = useState(() => new ResumeTimers());
     // Request versions (request_id@created_at) this device has finished
     // answering — or found nothing to wrap for — so a pass does not GET the
     // requester's devices again for the same, unchanged ask.
     const answeredKeyRequestVersionsRef = useRef<Set<string>>(new Set());
+    // …and the newest epoch of its channel held when it was marked answered:
+    // installing a newer one makes it worth a look again (keyServePass).
+    const answeredHeldMaxRef = useRef<Map<string, number>>(new Map());
+    // serverId → channels with an OPEN request this device answered with what
+    // it held. A key installed for one of them re-runs the serve pass.
+    const answeredOpenChannelsRef = useRef<Map<string, Set<string>>>(new Map());
     // Request version → when this device first saw it in a pending list (see
     // DeliveryLedger.decide: an ask seen before our delivery was answered by it).
     const keyRequestSeenAtRef = useRef<Map<string, number>>(new Map());
@@ -9046,6 +9872,8 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
     // account's deliveries may suppress the next one's.
     useEffect(() => {
         answeredKeyRequestVersionsRef.current.clear();
+        answeredHeldMaxRef.current.clear();
+        answeredOpenChannelsRef.current.clear();
         keyRequestSeenAtRef.current.clear();
         owedKeyServesRef.current.clear();
         deliveryLedger.prune();
@@ -9053,7 +9881,10 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
     // The key-wait layer's signals (request acked / key received) belong to
     // the signed-in account — keyed on the user, not the token, which rotates
     // on every refresh mid-wait.
-    useEffect(() => { resetKeyWaitSignals(); keyReaskScheduler.disarmAll(); keyReaskTargets.clear(); gapAskRef.current.clear(); }, [userId, keyReaskScheduler, keyReaskTargets]);
+    useEffect(() => { resetKeyWaitSignals(); keyReaskScheduler.disarmAll(); keyReaskTargets.clear(); gapAskRef.current.clear(); distributorRefreshCountRef.current.clear(); keyAskQueue.clear(); keyPrefetchLedger.clear(); }, [userId, keyReaskScheduler, keyReaskTargets, keyAskQueue, keyPrefetchLedger]);
+    // Decrypted-but-deferred key envelopes and the once-per-message failure report
+    // belong to the signed-in account too.
+    useEffect(() => { heldBackKeysRef.current.clear(); resetReportedChannelFailures(); }, [userId]);
 
     /**
      * Encrypt the given epochs of a channel's Sender Keys to each recipient
@@ -9119,6 +9950,14 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                 // distribution of this account for ~100 s (Cloudflare's 524).
                 { headers: { Authorization: `Bearer ${token}` }, timeout: KEY_HANDSHAKE_POST_TIMEOUT_MS },
             ),
+            // Several epochs of one channel for one recipient per call (an API
+            // without the route 404s once and this session posts per epoch).
+            postBatch: (sid, body) => axios.post(
+                apiUrl`/servers/${sid}/key-handshake/batch`,
+                body,
+                { headers: { Authorization: `Bearer ${token}` }, timeout: KEY_HANDSHAKE_POST_TIMEOUT_MS },
+            ),
+            batchSupport: handshakeBatchSupport,
             onPostError: (e, ctx) => {
                 console.warn('[Channels] key-handshake failed for', channelId, 'epoch', ctx.epoch, e);
                 recordDelivery('channel_key_distribute', e, {
@@ -9141,9 +9980,49 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
             }
         }
         return outcome;
-    }, [token, userId, deviceId, handshakeBackoff, handshakePacer, deliveryLedger, distributionMutex, keyResumeTimers]);
+    }, [token, userId, deviceId, handshakeBackoff, handshakePacer, deliveryLedger, distributionMutex, keyResumeTimers, handshakeBatchSupport]);
     const distributeChannelKeysRef = useRef(distributeChannelKeys);
     useEffect(() => { distributeChannelKeysRef.current = distributeChannelKeys; }, [distributeChannelKeys]);
+
+    /** One device's key requests for several channels in as few calls as the
+     *  API takes (utils/keyDistributionThrottle.ts runKeyDistributionMany) —
+     *  same flow control, ledger and crypto as distributeChannelKeys. */
+    const distributeChannelKeysMany = useCallback(async (
+        serverId: string,
+        recipient: ChannelKeyRecipient[],
+        entries: { channelId: string; epochs: number[]; requestVersion?: string; requestSeenAt?: number }[],
+        opts: { budget?: { remaining: number } } = {},
+    ): Promise<DistributionOutcome> => {
+        if (!token || !userId || !entries.length || !recipient.length) return { status: 'done', posted: 0 };
+        return runKeyDistributionMany({
+            backoff: handshakeBackoff,
+            pacer: handshakePacer,
+            ledger: deliveryLedger,
+            mutex: distributionMutex,
+            getChannelKey: (cid, epoch) => window.electronAPI!.getChannelKey(cid, epoch),
+            wrap: async ({ channelId, epoch, keyB64, device: dev }) => {
+                const content = buildChannelKeyContent({ channelId, epoch, keyB64, deviceId: dev.device_id, rotationReason: 'backfill' });
+                return window.electronAPI!.encryptMessage(JSON.stringify(content), userId, [dev], deviceId ?? undefined);
+            },
+            onWrapError: (e, ctx) => {
+                console.warn('[Channels] Failed to wrap channel key for device', ctx.deviceId, e);
+                recordDelivery('channel_key_distribute', e, { server_id: serverId, epoch: ctx.epoch, recipient_user_id: ctx.recipientUserId, device_id: ctx.deviceId });
+            },
+            post: (sid, body) => axios.post(
+                apiUrl`/servers/${sid}/key-handshake`, body,
+                { headers: { Authorization: `Bearer ${token}` }, timeout: KEY_HANDSHAKE_POST_TIMEOUT_MS },
+            ),
+            postBatch: (sid, body) => axios.post(
+                apiUrl`/servers/${sid}/key-handshake/batch`, body,
+                { headers: { Authorization: `Bearer ${token}` }, timeout: KEY_HANDSHAKE_POST_TIMEOUT_MS },
+            ),
+            batchSupport: handshakeBatchSupport,
+            onPostError: (e, ctx) => {
+                console.warn('[Channels] key-handshake batch failed, epoch', ctx.epoch, e);
+                recordDelivery('channel_key_distribute', e, { server_id: serverId, epoch: ctx.epoch, recipient_user_id: ctx.recipientUserId, envelopes: ctx.envelopes });
+            },
+        }, { serverId, recipient, entries, budget: opts.budget });
+    }, [token, userId, deviceId, handshakeBackoff, handshakePacer, deliveryLedger, distributionMutex, handshakeBatchSupport]);
 
     /** Can this member record an epoch for the channel (see canMintChannelKey)?
      *  Reads the live channel list, so a permission change takes effect on the
@@ -9258,9 +10137,17 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
     /** POST a key request for one channel (bypasses the 60s dedup). If the
      *  response says the channel has never been minted anywhere
      *  (latest_epoch === 0), this request can never be answered by anyone —
-     *  mint locally instead of leaving the composer waiting on it forever. */
-    const fileKeyRequest = useCallback(async (serverId: string, channelId: string) => {
-        if (!token || !deviceId) return;
+     *  mint locally instead of leaving the composer waiting on it forever.
+     *  `epochs` names exactly what is missing (a stale channel's newer epochs,
+     *  a repair gap); absent = "every epoch you hold" (a keyless channel, a
+     *  failed install, opening a channel). Holders send only the named epochs
+     *  they hold, and the API keeps the request open until each is acked. */
+    /** fileKeyRequest's work before the POST: the cool-off, what is still
+     *  missing of a precise ask, the 429 back-off (queued, not dropped), and
+     *  the bookkeeping of "asked now". Shared with fileKeyRequests. */
+    const prepareKeyAsk = useCallback(async (serverId: string, channelId: string, epochs?: number[]): Promise<
+        { skip: KeyAskOutcome } | { askEpochs: number[] | undefined; keyless: boolean }
+    > => {
         // Phase 4c: a channel that just gave up after CHANNEL_KEY_RETRY_LIMIT
         // failed install attempts doesn't need a fresh request fired on the
         // very next sweep tick — that's how a genuinely broken channel key
@@ -9268,7 +10155,26 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
         // different outcome. Let the cool-off window pass first; an
         // unrelated redistribution (someone else coming online) still
         // reaches this device via the normal push/pull paths regardless.
-        if (isCoolingOff(channelKeyCoolOff[channelId], Date.now())) return;
+        if (isCoolingOff(channelKeyCoolOff[channelId], Date.now())) return { skip: 'skipped' };
+        // A precise ask names only what is STILL missing when it is sent — a
+        // queued ask can wait behind the bucket while some of it arrives.
+        let askEpochs = requestEpochList(epochs);
+        if (askEpochs) {
+            try {
+                const held = new Set(await window.electronAPI!.listChannelEpochs(channelId));
+                askEpochs = requestEpochList(askEpochs.filter(e => !held.has(e)));
+                if (!askEpochs) return { skip: 'skipped' }; // everything it named arrived meanwhile
+            } catch { /* ask as planned */ }
+        }
+        // The API is throttling this account's key requests (a 429 whose
+        // back-off has not ended): posting now can only be refused. Hand the ask
+        // to the queue (forced = first out the moment the back-off ends) rather
+        // than dropping it - a dropped ask is a channel that stays keyless until
+        // somebody opens it.
+        if (keyAskLimiter.isBlocked()) {
+            keyAskQueue.enqueue({ serverId, channelId, priority: 'forced', ...(askEpochs ? { epochs: askEpochs } : {}) });
+            return { skip: 'throttled' };
+        }
         keyRequestDedupRef.current.set(channelId, Date.now());
         keyChannelServerRef.current.set(channelId, serverId);
         if (!firstKeyRequestTimeRef.current.has(channelId)) {
@@ -9279,39 +10185,160 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
         // epoch held) never becomes one: that loop was the 2026-10-07 storm.
         let keyless = false;
         try { keyless = (await window.electronAPI!.getLatestChannelEpoch(channelId)) === null; } catch { /* not a target */ }
-        let latestEpoch: number | undefined;
-        try {
-            const res = await axios.post(
-                apiUrl`/servers/${serverId}/channels/${channelId}/key-request`,
-                {},
-                { headers: { Authorization: `Bearer ${token}`, 'x-device-id': deviceId } }
-            );
-            latestEpoch = res.data?.latest_epoch;
+        return { askEpochs, keyless };
+    }, [channelKeyCoolOff, keyAskLimiter, keyAskQueue]);
+
+    /** fileKeyRequest's work after the POST, for one channel: the API's answer
+     *  (`latestEpoch`, or the error) applied. Shared with fileKeyRequests. */
+    const finishKeyAsk = useCallback((serverId: string, channelId: string, ask: { askEpochs: number[] | undefined; keyless: boolean },
+        answer: { ok: true; latestEpoch: number | undefined } | { ok: false; error: unknown }): KeyAskOutcome => {
+        let outcome: KeyAskOutcome = 'sent';
+        const latestEpoch = answer.ok ? answer.latestEpoch : undefined;
+        if (answer.ok) {
+            keyPrefetchLedger.noteSent(channelId, typeof latestEpoch === 'number' ? latestEpoch : 1, Date.now());
             noteKeyRequestAcked(channelId);
-            if (shouldMintAfterKeyRequest(res.data?.latest_epoch)) {
+            noteBetaKeyAsked(channelId, { targetEpoch: latestEpoch, heldEpoch: ask.keyless ? null : undefined }); // beta: key_request_unanswered after 2 min
+            if (shouldMintAfterKeyRequest(latestEpoch)) {
                 void channelKeyOpsRef.current.bootstrapAndDistributeChannelKey(serverId, channelId);
             }
-        } catch (e) {
-            console.warn('[Channels] key-request failed for', channelId, e);
-            recordDelivery('channel_key_request', e, { server_id: serverId, channel_id: channelId });
+        } else {
+            console.warn('[Channels] key-request failed for', channelId, answer.error);
+            recordDelivery('channel_key_request', answer.error, { server_id: serverId, channel_id: channelId });
+            if (classifyHandshakeError(answer.error) === 'throttled') {
+                // Refused, so NOT asked: forget the dedup stamp (it would otherwise
+                // suppress the retry for 60 s) and queue it behind the 429 back-off.
+                outcome = 'throttled';
+                keyRequestDedupRef.current.delete(channelId);
+                keyAskQueue.enqueue({ serverId, channelId, priority: 'forced', ...(ask.askEpochs ? { epochs: ask.askEpochs } : {}) });
+            } else {
+                outcome = 'failed';
+                // A history ask that did not get through was not asked: forget
+                // the gap's back-off so the next sweep asks again, instead of
+                // waiting out GAP_REASK_BASE_MS (5 min) on an ask nobody filed.
+                if (ask.askEpochs) gapAskRef.current.delete(channelId);
+            }
         }
-        if (keyless && latestEpoch !== 0) {
+        if (ask.keyless && latestEpoch !== 0) {
             // A failed POST names no epoch: any key then satisfies it — the
             // point is to ask again soon, not to wait for the 75 s timer.
             keyReaskTargets.add(serverId, channelId, typeof latestEpoch === 'number' ? latestEpoch : 1);
             noteNewestKeyPending(channelId, true);
             keyReaskScheduler.arm(serverId); // no-op while this server's schedule runs
         }
-    }, [token, deviceId, channelKeyCoolOff, keyReaskScheduler, keyReaskTargets]);
+        return outcome;
+    }, [keyReaskScheduler, keyReaskTargets, keyAskQueue, keyPrefetchLedger]);
+
+    /** POST a key request for one channel (bypasses the 60s dedup). If the
+     *  response says the channel has never been minted anywhere
+     *  (latest_epoch === 0), this request can never be answered by anyone —
+     *  mint locally instead of leaving the composer waiting on it forever.
+     *  `epochs` names exactly what is missing (a stale channel's newer epochs,
+     *  a repair gap); absent = "every epoch you hold" (a keyless channel, a
+     *  failed install, opening a channel). Holders send only the named epochs
+     *  they hold, and the API keeps the request open until each is acked. */
+    const fileKeyRequest = useCallback(async (serverId: string, channelId: string, epochs?: number[]): Promise<KeyAskOutcome> => {
+        if (!token || !deviceId) return 'skipped';
+        const ask = await prepareKeyAsk(serverId, channelId, epochs);
+        if ('skip' in ask) return ask.skip;
+        keyAskLimiter.record();
+        try {
+            const res = await axios.post(
+                apiUrl`/servers/${serverId}/channels/${channelId}/key-request`,
+                ask.askEpochs ? { epochs: ask.askEpochs } : {},
+                { headers: { Authorization: `Bearer ${token}`, 'x-device-id': deviceId } }
+            );
+            keyAskLimiter.onAccepted();
+            return finishKeyAsk(serverId, channelId, ask, { ok: true, latestEpoch: res.data?.latest_epoch });
+        } catch (e) {
+            noteKeyRequestError(keyAskLimiter, e);
+            return finishKeyAsk(serverId, channelId, ask, { ok: false, error: e });
+        }
+    }, [token, deviceId, prepareKeyAsk, finishKeyAsk, keyAskLimiter]);
+
+    /** fileKeyRequest for several channels of ONE server in one POST
+     *  (/servers/:sid/key-requests): the per-channel work before and after is
+     *  the same; the API files, gates and routes them together. null = this
+     *  API has no batch route (404/405) — the queue then sends one at a time. */
+    const fileKeyRequests = useCallback(async (serverId: string, asks: { channelId: string; epochs?: number[] }[]): Promise<KeyAskOutcome[] | null> => {
+        if (!token || !deviceId) return asks.map(() => 'skipped');
+        const prepared = await Promise.all(asks.map(a => prepareKeyAsk(serverId, a.channelId, a.epochs)));
+        const live = asks.flatMap((a, i) => {
+            const p = prepared[i];
+            return 'skip' in p ? [] : [{ i, channelId: a.channelId, ask: p }];
+        });
+        const outcomes: KeyAskOutcome[] = prepared.map(p => ('skip' in p ? p.skip : 'sent'));
+        if (!live.length) return outcomes;
+        keyAskLimiter.record();
+        try {
+            const res = await axios.post(
+                apiUrl`/servers/${serverId}/key-requests`,
+                { requests: live.map(l => ({ channel_id: l.channelId, ...(l.ask.askEpochs ? { epochs: l.ask.askEpochs } : {}) })) },
+                { headers: { Authorization: `Bearer ${token}`, 'x-device-id': deviceId } }
+            );
+            keyAskLimiter.onAccepted();
+            const byChannel = new Map<string, { latest_epoch?: number; refused?: boolean }>(
+                (Array.isArray(res.data?.results) ? res.data.results : []).map((r: { channel_id: string }) => [r.channel_id, r]));
+            for (const l of live) {
+                const r = byChannel.get(l.channelId);
+                outcomes[l.i] = r && !r.refused
+                    ? finishKeyAsk(serverId, l.channelId, l.ask, { ok: true, latestEpoch: r.latest_epoch })
+                    : finishKeyAsk(serverId, l.channelId, l.ask, { ok: false, error: new Error('key request refused') });
+            }
+            return outcomes;
+        } catch (e) {
+            const status = (e as { response?: { status?: number } })?.response?.status;
+            if (status === 404 || status === 405) {
+                // An API without the route: nothing was filed. Undo "asked now"
+                // so the one-by-one resend is not suppressed as a duplicate.
+                for (const l of live) keyRequestDedupRef.current.delete(l.channelId);
+                return null;
+            }
+            noteKeyRequestError(keyAskLimiter, e);
+            for (const l of live) outcomes[l.i] = finishKeyAsk(serverId, l.channelId, l.ask, { ok: false, error: e });
+            return outcomes;
+        }
+    }, [token, deviceId, prepareKeyAsk, finishKeyAsk, keyAskLimiter]);
+
+    const fileKeyRequestsRef = useRef(fileKeyRequests);
+    useEffect(() => { fileKeyRequestsRef.current = fileKeyRequests; });
 
     /** fileKeyRequest, but respecting the 60s per-channel dedup instead of
      *  always bypassing it. Safe to call from any decrypt-failure path
      *  without needing to duplicate the dedup check at every call site. */
-    const maybeFileKeyRequest = useCallback(async (serverId: string, channelId: string) => {
+    const maybeFileKeyRequest = useCallback(async (serverId: string, channelId: string, epochs?: number[]) => {
         const last = keyRequestDedupRef.current.get(channelId) ?? 0;
         if (Date.now() - last < 60_000) return;
-        await fileKeyRequest(serverId, channelId);
+        await fileKeyRequest(serverId, channelId, epochs);
     }, [fileKeyRequest]);
+
+    /**
+     * Rows on screen (or a live message) are waiting on keys for `epochs`: ask
+     * for exactly those (utils/channelHistoryRetention placeholderEpochsWantingKey),
+     * never "everything" — an ask that names nothing makes every holder that
+     * answers it re-send every epoch (2026-10-20: 98% of 24 h of relayed key
+     * envelopes were epochs the device already held). An epoch NEWER than the
+     * newest held is asked at once (60 s dedup: it is what sending and the
+     * live feed need); older ones are a history gap and share the repair
+     * sweep's back-off (decideGapReask, 5 min doubling to 2 h), so an epoch
+     * nobody holds any more is not re-asked on every open of the channel.
+     * `undefined` epochs (a row without its epoch) → the old ask.
+     */
+    const askForRowEpochs = useCallback(async (serverId: string, channelId: string, epochs: number[] | undefined) => {
+        if (!epochs) { await maybeFileKeyRequest(serverId, channelId); return; }
+        let held: number[] = [];
+        try { held = await window.electronAPI!.listChannelEpochs(channelId); } catch { /* ask as planned */ }
+        const heldSet = new Set(held);
+        const missing = requestEpochList(epochs.filter(e => !heldSet.has(e)));
+        if (!missing) return;
+        const newestHeld = held.length ? Math.max(...held) : 0;
+        if (missing.some(e => e > newestHeld)) {
+            await maybeFileKeyRequest(serverId, channelId, missing);
+            return;
+        }
+        const gap = decideGapReask(missing, gapAskRef.current.get(channelId), Date.now());
+        if (gap.next) gapAskRef.current.set(channelId, gap.next); else gapAskRef.current.delete(channelId);
+        if (gap.ask) keyAskQueue.enqueue({ serverId, channelId, priority: 'gap', epochs: missing });
+    }, [maybeFileKeyRequest, keyAskQueue]);
 
     /**
      * Pull any waiting envelopes, then compare the server's per-channel
@@ -9320,14 +10347,14 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
      * decrypt. Also refreshes the composer's awaiting-keys gate. Safe to
      * call often — 60s per-channel dedup.
      */
-    const requestMissingChannelKeys = useCallback(async (serverId: string) => {
+    const requestMissingChannelKeys = useCallback(async (serverId: string, opts?: { background?: boolean }) => {
         if (!token || !deviceId) return;
         try {
             await pullChannelKeys(serverId);
             const res = await axios.get(apiUrl`/servers/${serverId}/channels`, {
                 headers: { Authorization: `Bearer ${token}` },
             });
-            const channels: { channel_id: string; kind: string; latest_epoch?: number }[] = res.data ?? [];
+            const channels: { channel_id: string; kind: string; latest_epoch?: number; my_permissions?: string }[] = res.data ?? [];
             const localLatest: Record<string, number | null> = {};
             for (const c of channels) {
                 // Calls channels carry Sender Keys too — their room key is
@@ -9336,7 +10363,6 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                 keyChannelServerRef.current.set(c.channel_id, serverId);
                 localLatest[c.channel_id] = await window.electronAPI!.getLatestChannelEpoch(c.channel_id);
             }
-            const missing = computeMissingKeyChannels(channels, localLatest);
             // Only "holds no key at all" gates the composer; "holds an older
             // epoch" is background repair (see splitMissingKeyChannels).
             const { noKey, stale } = splitMissingKeyChannels(channels, localLatest);
@@ -9379,15 +10405,27 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                     void channelKeyOpsRef.current.bootstrapAndDistributeChannelKey(serverId, activeUnminted);
                 }, pickJitterMs());
             }
-            const now = Date.now();
-            for (const cid of missing) {
-                const last = keyRequestDedupRef.current.get(cid) ?? 0;
-                if (now - last < 60_000) continue;
-                await fileKeyRequest(serverId, cid);
-                // Space requests out — a rejoin or reconnect can hit dozens of
-                // channels in this loop, and firing them all back to back
-                // would burn through the 60/min throttle in under a second.
-                await new Promise(r => setTimeout(r, 150));
+            // Ask for the newest epoch of EVERY channel the API lists for this
+            // member (it lists only what they can VIEW) that this device does not
+            // hold - opened or not, whatever window or server is on screen. The
+            // plan decides WHICH; the queue sends them paced under the API's
+            // 60/min bucket and puts a throttled one back (a request that was
+            // refused and forgotten is a channel that stays keyless until it is
+            // opened). Not awaited: the next server's sweep must not wait behind
+            // this server's drain. See utils/channelKeyPrefetch.ts.
+            const plan = planKeyPrefetch({
+                serverId,
+                channels,
+                held: localLatest,
+                ledger: keyPrefetchLedger,
+                lastAskedAt: (cid) => keyRequestDedupRef.current.get(cid),
+                isQueued: (cid) => keyAskQueue.has(cid),
+                now: Date.now(),
+                mode: opts?.background ? 'tick' : 'event',
+            });
+            for (const cid of plan.satisfied) keyPrefetchLedger.delete(cid);
+            for (const a of plan.asks) {
+                keyAskQueue.enqueue({ serverId, channelId: a.channelId, priority: a.keyless ? 'keyless' : 'stale', targetEpoch: a.targetEpoch, ...(a.epochs ? { epochs: a.epochs } : {}) });
             }
 
             // ── Split-brain repair + full-epoch-set backfill sweep ──────────
@@ -9452,8 +10490,16 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                     if (gap.next) gapAskRef.current.set(c.channel_id, gap.next);
                     else gapAskRef.current.delete(c.channel_id);
                     if (gap.ask) {
-                        const last = keyRequestDedupRef.current.get(c.channel_id) ?? 0;
-                        if (Date.now() - last >= 60_000) await fileKeyRequest(serverId, c.channel_id);
+                        // No targetEpoch: the newest epoch may be held already (it is the
+                        // intermediate ones that are missing), which must not read as "moot".
+                        // The ask names the gap: holders send only those epochs, not
+                        // every epoch they hold (2026-10-19: one missing history epoch
+                        // nobody online had cost 20-40 envelopes per holder per re-ask).
+                        // No 60 s dedup here: decideGapReask is this ask's limit (first
+                        // ask at once, then 5 min doubling), and a precise ask is judged
+                        // on what it names (refineQueuedAsk). The dedup used to swallow
+                        // the FIRST gap ask of a joiner whose keyless asks were seconds old.
+                        keyAskQueue.enqueue({ serverId, channelId: c.channel_id, priority: 'gap', epochs: [...missingEpochs] });
                     }
                 }
             } catch (e) {
@@ -9462,7 +10508,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
         } catch (e) {
             console.warn('[Channels] requestMissingChannelKeys failed:', e);
         }
-    }, [token, deviceId, pullChannelKeys, fileKeyRequest, mayMintChannelKey, markStaleLatest]);
+    }, [token, deviceId, pullChannelKeys, mayMintChannelKey, markStaleLatest, keyPrefetchLedger, keyAskQueue]);
 
     /**
      * RC-10 / Phase 6: fetch this server's pinned-epoch set and tell the main
@@ -9513,6 +10559,11 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
             listPending: async (sid) => {
                 const res = await axios.get(apiUrl`/servers/${sid}/key-requests/pending`, {
                     headers: { Authorization: `Bearer ${token}`, 'x-device-id': deviceId },
+                    // We honour each request's `epochs` (keyServePass.epochsToServe),
+                    // so list precise requests for as long as they are open.
+                    // `routed`: only the requests the API routed to this device
+                    // (or escalated) — one holder answers each, not every holder.
+                    params: { epochs: 1, routed: 1 },
                 });
                 return (res.data ?? []) as PendingKeyRequest[];
             },
@@ -9533,6 +10584,11 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                 keyResumeTimers.schedule(`serve:${sid}`, delayMs, () => { void serveKeyRequestsRef.current(sid); });
             },
             answered: answeredKeyRequestVersionsRef.current,
+            answeredHeldMax: answeredHeldMaxRef.current,
+            batched: () => !handshakeBatchSupport.unsupported,
+            // One device's requests for several channels in one call.
+            distributeMany: distributeChannelKeysMany,
+            onAnsweredOpen: (channelIds) => { answeredOpenChannelsRef.current.set(serverId, channelIds); },
             seenAt: keyRequestSeenAtRef.current,
             owed: owedKeyServesRef.current,
             now: Date.now,
@@ -9562,16 +10618,59 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                 console.error(`[Channels] Pinned epoch(s) ${epochs.join(',')} for channel ${channelId} not held by this device — cannot serve them; another holder may still cover it`);
             },
         }, serverId);
-    }, [token, deviceId, distributeChannelKeys, refreshProtectedEpochs, keyServeFlight, keyResumeTimers, handshakeBackoff, deliveryLedger]);
+    }, [token, deviceId, distributeChannelKeys, distributeChannelKeysMany, refreshProtectedEpochs, keyServeFlight, keyResumeTimers, handshakeBackoff, deliveryLedger, handshakeBatchSupport]);
     const serveKeyRequestsRef = useRef(serveKeyRequests);
     useEffect(() => { serveKeyRequestsRef.current = serveKeyRequests; }, [serveKeyRequests]);
 
     // Always-current ref so the earlier-defined handleSelectChannel can call
     // into the protocol without dependency churn (serverChannelsRef pattern).
-    const channelKeyOpsRef = useRef({ bootstrapAndDistributeChannelKey, fileKeyRequest, pullChannelKeys, maybeFileKeyRequest });
+    const channelKeyOpsRef = useRef({ bootstrapAndDistributeChannelKey, fileKeyRequest, pullChannelKeys, maybeFileKeyRequest, askForRowEpochs });
     useEffect(() => {
-        channelKeyOpsRef.current = { bootstrapAndDistributeChannelKey, fileKeyRequest, pullChannelKeys, maybeFileKeyRequest };
+        channelKeyOpsRef.current = { bootstrapAndDistributeChannelKey, fileKeyRequest, pullChannelKeys, maybeFileKeyRequest, askForRowEpochs };
     });
+
+    // The ask queue's two effects (see keyAskQueue). The re-check before each
+    // send matters: a planned ask can wait behind the API's 60/min bucket for a
+    // while, and the key may have arrived (a holder's push) in the meantime.
+    const requestMissingRef = useRef(requestMissingChannelKeys);
+    useEffect(() => { requestMissingRef.current = requestMissingChannelKeys; });
+    useEffect(() => {
+        keyAskSendRef.current = (ask) => channelKeyOpsRef.current.fileKeyRequest(ask.serverId, ask.channelId, ask.epochs);
+        keyAskSendManyRef.current = (asks) => fileKeyRequestsRef.current(asks[0].serverId, asks.map(a => ({ channelId: a.channelId, epochs: a.epochs })));
+        keyAskWantedRef.current = async (ask) => {
+            if (!serversRef.current.some(s => s.server_id === ask.serverId)) return false; // left / removed
+            let heldEpochs: number[];
+            try { heldEpochs = await window.electronAPI!.listChannelEpochs(ask.channelId); } catch { return true; }
+            // Still wanted, and naming exactly what is still missing — an
+            // "everything" ask whose newest epoch arrived meanwhile becomes the
+            // history-gap ask the repair sweep found (utils/channelKeyPrefetch.ts).
+            const r = refineQueuedAsk(ask, {
+                heldEpochs,
+                knownGap: gapAskRef.current.get(ask.channelId)?.epochs,
+                lastAskedAt: keyRequestDedupRef.current.get(ask.channelId),
+                now: Date.now(),
+            });
+            if (r.send && r.epochs) ask.epochs = r.epochs;
+            return r.send;
+        };
+    });
+
+    // Safety net behind the event triggers (connect, reconnect, join, permission
+    // and channel-list changes): every PREFETCH_TICK_MS re-evaluate EVERY joined
+    // server - opened or not, window focused or not - against a fresh channel
+    // list and ask for any channel still short of its newest epoch. A stale
+    // (older-epoch) channel is re-asked only on the exponential back-off, never
+    // on this cadence (2026-10-07 storm); a keyless one on the plain 60 s dedup.
+    // Via a ref so a re-created requestMissingChannelKeys does not reset the clock.
+    useEffect(() => {
+        if (!token || !deviceId) return;
+        const id = setInterval(() => {
+            void (async () => {
+                for (const srv of serversRef.current) await requestMissingRef.current(srv.server_id, { background: true });
+            })().catch(() => { /* non-fatal */ });
+        }, PREFETCH_TICK_MS);
+        return () => clearInterval(id);
+    }, [token, deviceId]);
 
     // One re-check of a server with channels this device asked for while
     // keyless (see keyReask.ts): pull, drop what now holds its newest epoch,
@@ -9720,7 +10819,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
             if (outcome === 'lost') {
                 console.warn(`[Channels] Fallback rotation lost arbitration for channel ${channelId} — a holder answered first`);
                 await window.electronAPI?.discardChannelKey(channelId, epoch);
-                await fileKeyRequest(serverId, channelId);
+                await fileKeyRequest(serverId, channelId, [epoch]);
                 return;
             }
 
@@ -9772,6 +10871,10 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
     /** At most one queued trailing rotation per channel — see
      *  decideRotationScheduling's 'queue_followup'. */
     const rotationFollowupRef = useRef<Map<string, { serverId: string; reason: string }>>(new Map());
+    // channelId → the newest `epoch_at_signal` among the rotation signals not
+    // yet acted on (undefined = an older API that does not send it). Taken by
+    // the rotation that runs next — see rotationAlreadyDone.
+    const rotationSignalEpochRef = useRef<Map<string, number | undefined>>(new Map());
     const rotationOpsRef = useRef<{
         rotate: (serverId: string, channelId: string, reason: string) => Promise<void>;
         schedule: (serverId: string, channelId: string, reason: string) => void;
@@ -9808,6 +10911,10 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
             }
         }
         const kind = loaded?.kind;
+        // The access change(s) this run answers (taken, so a signal that lands
+        // while it runs is the follow-up's, not ours).
+        const epochAtSignal = rotationSignalEpochRef.current.get(channelId);
+        rotationSignalEpochRef.current.delete(channelId);
         let localLatest: number | null = null;
         try {
             localLatest = await window.electronAPI!.getLatestChannelEpoch(channelId);
@@ -9831,7 +10938,31 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
             const epochRes = await axios.get(apiUrl`/channels/${channelId}/epoch`, {
                 headers: { Authorization: `Bearer ${token}` },
             });
-            const target = computeRotationEpoch(epochRes.data?.epoch ?? 0, localLatest);
+            const serverLatest: number = epochRes.data?.epoch ?? 0;
+            if (rotationAlreadyDone(serverLatest, epochAtSignal)) {
+                // Another holder already rotated past the access change; its
+                // epoch excludes whoever lost access. Minting on top of it is
+                // what made one member_left cost up to three epochs.
+                console.log(`[Channels] Rotation for ${channelId} already done by another holder (epoch ${serverLatest} > ${epochAtSignal}) — standing down`);
+                // …but only if that rotation actually REACHES us. A holder that
+                // registered its epoch and then never distributed it (crashed,
+                // went offline) would otherwise leave every remaining member
+                // on the pre-removal key. If we still do not hold it after
+                // ROTATION_STAND_DOWN_VERIFY_MS, rotate after all — answering
+                // a signal "as of" that epoch, so the others stand down again
+                // for whichever of us registers first.
+                setTimeout(() => {
+                    void (async () => {
+                        const held = await window.electronAPI?.getLatestChannelEpoch(channelId).catch(() => null);
+                        if (held != null && held >= serverLatest) return;
+                        const pending = rotationSignalEpochRef.current;
+                        pending.set(channelId, pending.has(channelId) ? mergeEpochAtSignal(pending.get(channelId), serverLatest) : serverLatest);
+                        rotationOpsRef.current.schedule(serverId, channelId, reason);
+                    })();
+                }, ROTATION_STAND_DOWN_VERIFY_MS);
+                return;
+            }
+            const target = computeRotationEpoch(serverLatest, localLatest);
             if (target == null) return; // never bootstrapped anywhere — not rotation's job
 
             const { epoch } = await window.electronAPI!.rotateChannelKey(channelId, target);
@@ -9874,7 +11005,9 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                     // real one; ask for it. We keep decrypting under the old
                     // epoch until it lands, so nothing is gated meanwhile.
                     console.log(`[Channels] Lost rotation race for ${channelId} epoch ${epoch} — requesting the winner's key`);
-                    await fileKeyRequest(serverId, channelId);
+                    // Only the winner's epoch is missing: name it (an ask that
+                    // names nothing gets every epoch from every holder).
+                    await fileKeyRequest(serverId, channelId, [epoch]);
                 } else {
                     console.warn(`[Channels] Could not register rotated epoch ${epoch} for ${channelId} — discarded; previous key stays in use`);
                 }
@@ -9948,6 +11081,10 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
     useEffect(() => {
         if (channelKeyRotationEvents.length === 0) return;
         for (const evt of coalesceRotationEvents(channelKeyRotationEvents)) {
+            const pending = rotationSignalEpochRef.current;
+            pending.set(evt.channel_id, pending.has(evt.channel_id)
+                ? mergeEpochAtSignal(pending.get(evt.channel_id), evt.epoch_at_signal)
+                : evt.epoch_at_signal);
             scheduleCallsChannelRotation(evt.server_id, evt.channel_id, evt.reason);
         }
         setChannelKeyRotationEvents([]);
@@ -9960,6 +11097,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
         for (const t of rotationTimersRef.current.values()) clearTimeout(t);
         rotationTimersRef.current.clear();
         rotationFollowupRef.current.clear();
+        rotationSignalEpochRef.current.clear();
     }, []);
 
     // Periodic retry while any channel is gated or has undecryptable history.
@@ -10286,13 +11424,34 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
         // (runMemberJoinDistribution); this only supplies its effects.
         void runMemberJoinDistribution({
             sleep: (ms) => new Promise(r => setTimeout(r, ms)),
-            listPending: async (sid) => {
+            listPending: async (sid, requester) => {
                 const res = await axios.get(apiUrl`/servers/${sid}/key-requests/pending`, {
                     headers: { Authorization: `Bearer ${token}`, 'x-device-id': deviceId },
+                    // We honour each request's `epochs` (keyServePass.epochsToServe),
+                    // so list precise requests for as long as they are open.
+                    // `all`: this only asks "did the joiner file requests?" —
+                    // including ones the API routed to another holder; without
+                    // it a holder that was not picked would read "nothing asked"
+                    // and push every epoch of every channel on its own. (An API
+                    // without routing ignores it.) `requester`: only the joiner's
+                    // (an API without it ignores it; runMemberJoinDistribution
+                    // still checks who asked). `summary`: just whether the joiner
+                    // asked and whether any of it is ours to serve now — one
+                    // query on the API instead of a listing (joinCheckRows reads
+                    // either answer).
+                    params: { epochs: 1, all: 1, requester, summary: 1 },
                 });
-                return (res.data ?? []) as PendingKeyRequest[];
+                return joinCheckRows(res.data, requester);
             },
             serve: (sid) => serveKeyRequestsRef.current(sid),
+            // The server's keyed channels as requestMissingChannelKeys last saw
+            // them; none known → "cannot tell" (run the hand-off).
+            holdsNoKeys: async (sid) => {
+                const mine = [...keyChannelServerRef.current].filter(([, s]) => s === sid).map(([c]) => c);
+                if (!mine.length) return false;
+                for (const c of mine) if ((await window.electronAPI!.listChannelEpochs(c)).length) return false;
+                return true;
+            },
             getMemberDevices: async (sid, uid) => {
                 const devRes = await axios.get(
                     apiUrl`/servers/${sid}/members/${uid}/devices`,
@@ -10313,6 +11472,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
             refreshProtectedEpochs,
             listHeldEpochs: (cid) => window.electronAPI!.listChannelEpochs(cid),
             distribute: distributeChannelKeys,
+            batched: () => !handshakeBatchSupport.unsupported,
             onNoRecipientBundle: () => {
                 // If the joiner's device has no published key bundle yet,
                 // nothing is distributed from here and only the joiner's own
@@ -10613,6 +11773,10 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                     isVoiceChannel: true,
                     voiceChannelName: channel.name,
                 });
+                // Moment: 11:11 (make a wish) / nobody else online (snacks for
+                // no one). The clock and the roster's presence — nothing else.
+                const joinMo = voiceJoinMoment(new Date(), peekRoster(channel.server_id)?.members ?? null, userId);
+                if (joinMo) requestMoment(joinMo);
             } catch (err) {
                 console.error('[Dashboard] Failed to join voice channel:', err);
                 // Roll the optimism back — we're in no channel now (the old
@@ -10636,6 +11800,33 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
     // ── Huddle call lifecycle handlers ─────────────────────────────────────
     /** Call session id of the Huddle call the local user is currently in. */
     const [activeHuddleCallId, setActiveHuddleCallId] = useState<string | null>(null);
+
+    // Admin kill switch (utils/clientControl.ts) — declared here, after all
+    // three call-state pieces exist (TDZ). The app is being shut down
+    // under a blocking screen, so a call in progress is ended cleanly — the
+    // same local teardown as pressing Leave (LiveKit room disconnect, mic
+    // released). The server-side leave may be refused while shut down; the
+    // gateway closing our socket runs the server's own call cleanup anyway.
+    const inAnyCallRef = useRef(false);
+    inAnyCallRef.current = !!activeCall || !!activeVoiceChannelId || !!activeHuddleCallId;
+    // The easter-egg Firewall game: ONE open-state / ONE overlay (mounted below)
+    // for both ways in: Home's Keys spam (HomePanel) and the rail Keys'
+    // right-click spam (Mascot -> handleRailGameSpam), from whatever view this is.
+    const firewall = useFirewallGame(!!activeCall || !!activeVoiceChannelId || !!activeHuddleCallId);
+    const { tryOpen: tryOpenFirewall } = firewall;
+    const handleRailGameSpam = useCallback(() => {
+        const msg = railGameRefusal(tryOpenFirewall());
+        if (msg) toast.push({ kind: 'info', message: msg });
+    }, [tryOpenFirewall, toast]);
+    useEffect(() => {
+        const onSuspended = () => {
+            if (!inAnyCallRef.current) return;
+            console.log('[Dashboard] app suspended — leaving the active call');
+            void handleDisconnectCallRef.current(false, false);
+        };
+        window.addEventListener(APP_SUSPENDED_EVENT, onSuspended);
+        return () => window.removeEventListener(APP_SUSPENDED_EVENT, onSuspended);
+    }, []);
 
     // Sync activeCallRegistry from whichever of the three call-state pieces
     // is set. Deliberately a single effect keyed on the derived boolean
@@ -11108,7 +12299,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                 // exactly as it did before the reload.
                 const key = d.callKeyB64 ?? '';
                 if (!key) { dismissRejoin(); return; }
-                recordCallKey(d.sessionId, key);
+                recordCallKey(d.conversationId, d.sessionId, key, false);
                 const attempt = beginCallJoin('dm-join', `call:${d.sessionId}`, null, { kind: 'dm', peers: [], ringing: null });
                 try {
                     const res = await axios.post(
@@ -11482,7 +12673,9 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
         } else if (activeHuddleChannelId) {
             ch = allChs.find(c => c.channel_id === activeHuddleChannelId);
         }
-        if (!ch) return null;
+        // A guest's call is in a channel we cannot see (it is not in the list):
+        // name the server and the call, and say the channel is private.
+        if (!ch) return activeGuestCall ? guestCallServerInfo(activeGuestCall, servers) : null;
         const srv = servers.find(s => s.server_id === ch!.server_id);
         return {
             serverId: ch.server_id,
@@ -11492,7 +12685,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
             iconEmoji: ch.icon_emoji ?? null,
             maxCalls: ch.max_calls ?? null,
         };
-    }, [activeCall, activeVoiceChannelId, activeHuddleChannelId, serverChannels, servers]);
+    }, [activeCall, activeVoiceChannelId, activeHuddleChannelId, serverChannels, servers, activeGuestCall]);
 
     /** Resolved channel permissions for the channel of the *currently active* call —
      *  voice channel or huddle. Used by CallPane → SidebarConference to pre-disable
@@ -11745,7 +12938,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                         {/* pb-24 only while the floating call pill exists (see below): out of a call it
                             put 96px of nothing under the last row, which both showed a scrollbar on a
                             panel that already fit and read as dead space. */}
-                        <div className={`flex-1 min-h-0 overflow-y-auto custom-scrollbar flex flex-col bg-cl-deep${callPaneActive ? ' pb-24' : ''}`}>
+                        <div data-call-scroll-zone className={`flex-1 min-h-0 overflow-y-auto custom-scrollbar flex flex-col isolate bg-cl-deep${callPaneActive ? ' pb-24' : ''}`}>
 
                         {/* ── Call section — video tiles, floating call card, participant
                             rows. Lives inside the unified scroll so scrolling down moves
@@ -12016,9 +13209,12 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                                                     <div className="flex-1 min-w-0 pr-2 cursor-pointer" onClick={(e) => openProfileAt(f.user_id, { x: e.clientX, y: e.clientY })}>
                                                         <p className="font-semibold text-[13px] text-white truncate leading-tight group-hover:text-cl-lume transition-colors">{f.username}</p>
                                                         <p className="text-[11px] truncate leading-tight" style={{ color: 'var(--cl-faint)' }}>
-                                                            {friendStatuses[f.user_id]?.current_game
-                                                                ? friendStatuses[f.user_id].current_game
-                                                                : STATUS_CONFIG[resolveActiveStatus(f.user_id, friendStatuses, displayPresence)].label}
+                                                            <StatusLine
+                                                                entry={friendStatuses[f.user_id]}
+                                                                userId={f.user_id}
+                                                                renderGame={g => g}
+                                                                fallback={STATUS_CONFIG[resolveActiveStatus(f.user_id, friendStatuses, displayPresence)].label}
+                                                            />
                                                         </p>
                                                     </div>
 
@@ -12094,6 +13290,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                                     presenceAuthoritative={presenceAuthoritative}
                                     myStatus={myStatus}
                                     myCurrentGame={myCurrentGame}
+                                    myCustom={{ text: myCustomText, emoji: myCustomEmoji, expiresAt: myCustomExpiresAt }}
                                     globalFriends={globalFriends}
                                     conversations={conversations}
                                     sentFriendRequests={sentFriendRequests}
@@ -12214,18 +13411,29 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                                                                 {activeChat.title || 'Unknown'}
                                                             </div>
                                                             <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--cl-faint)', marginTop: 3 }}>{statusLabel}</div>
+                                                            {liveStatus !== 'offline' && (
+                                                                <StatusLine
+                                                                    entry={{ ...fs!, status: liveStatus }}
+                                                                    userId={activeChat.other_user_id}
+                                                                    renderGame={() => null}
+                                                                    className="justify-center text-[12px] max-w-full"
+                                                                    style={{ color: 'var(--cl-muted)', marginTop: 4 }}
+                                                                />
+                                                            )}
                                                         </div>
                                                     </div>
                                                 </div>
                                             );
                                         })() : (
                                             <div className="px-2 pt-1 shrink-0">
-                                                <div className="mb-3.5 text-center" style={{ background: 'var(--cl-surface)', border: '1px solid var(--cl-border)', borderRadius: 14, padding: 16 }}>
-                                                    <div className="font-display" style={{ fontWeight: 600, fontSize: 17, color: 'var(--cl-text)' }}>{activeChat.title || 'Unknown'}</div>
-                                                    <div className="inline-flex items-center justify-center gap-1.5" style={{ marginTop: 6, color: 'var(--cl-muted)', fontSize: 11.5, fontWeight: 700 }}>
-                                                        <Users size={12} /> {groupMembers.length} members
-                                                    </div>
-                                                </div>
+                                                {/* Group card: name + member count over the group picture
+                                                    (blurred + darkened); plain card without one. */}
+                                                <GroupContextHeader
+                                                    title={activeChat.title || 'Unknown'}
+                                                    memberCount={groupMembers.length}
+                                                    avatarUrl={activeChat.avatar_url ?? null}
+                                                    token={token ?? null}
+                                                />
                                             </div>
                                         )}
 
@@ -12373,7 +13581,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                                                                 conversation_id: status.conversation_id || activeChat?.id,
                                                                 livekit_url: res.data.livekit_url,
                                                                 livekit_token: res.data.livekit_token || '',
-                                                                e2ee_key_b64: callKeyStoreRef.current[status.session_id] || '',
+                                                                e2ee_key_b64: callKeyStoreRef.current.get(status.conversation_id || activeChat?.id, status.session_id),
                                                                 mode: res.data.mode || 'sfu'
                                                             });
                                                         // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
@@ -12555,9 +13763,17 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                                                                 <span className="text-sm font-medium truncate" style={{ color: 'var(--cl-text)' }}>{m.username}</span>
                                                                 {(() => {
                                                                     const _status = isMe ? myStatus : (friendStatuses[m.user_id]?.status ?? 'offline');
-                                                                    const g = isMe ? myCurrentGame : (friendStatuses[m.user_id]?.current_game ?? null);
-                                                                    return g && _status !== 'offline' ? (
-                                                                        <span className="text-[11px] truncate mt-0.5" style={{ color: 'var(--cl-faint)' }}>{g}</span>
+                                                                    const _entry = isMe
+                                                                        ? { status: myStatus, custom_status_text: myCustomText, custom_status_emoji: myCustomEmoji, custom_status_expires_at: myCustomExpiresAt, current_game: myCurrentGame }
+                                                                        : friendStatuses[m.user_id];
+                                                                    return _status !== 'offline' ? (
+                                                                        <StatusLine
+                                                                            entry={_entry ? { ..._entry, status: _status } : null}
+                                                                            userId={m.user_id}
+                                                                            renderGame={g => g}
+                                                                            className="text-[11px] mt-0.5"
+                                                                            style={{ color: 'var(--cl-faint)' }}
+                                                                        />
                                                                     ) : null;
                                                                 })()}
                                                             </div>
@@ -12803,6 +14019,11 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                 panel; the WS connection and notifications keep running behind it. */}
             {screenLock.isLocked && <ScreenLockOverlay screenLock={screenLock} />}
 
+            {/* Easter-egg game (useFirewallGame): the one instance, over the content
+                area (not the rail or titlebar) whichever view is open. A call
+                starting closes it (the hook). */}
+            {firewall.open && <FirewallOverlay key={userId} userId={userId || ''} placement="shell" onClose={firewall.closeGame} />}
+
             {/* Focus suspender — Friends AND Home: both render a full-width pane with no
                 #call-focus-root, so both must collapse a focused stream back
                 into the context panel and restore it on the way out. */}
@@ -12837,7 +14058,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                 style={{ width: 72, flex: 'none', background: 'var(--cl-abyss)', borderRight: '1px solid var(--cl-border)', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 'var(--cl-rail-gap, 16px)', minHeight: 0 }}
             >
                 {/* App Logo — cipherline mascot */}
-                <Mascot onClick={() => { setActiveTab('home'); setActiveChat(null); setActiveChannel(null); }} />
+                <Mascot onClick={() => { emitKeysBeat('home'); setActiveTab('home'); setActiveChat(null); setActiveChannel(null); }} onGameSpam={handleRailGameSpam} />
 
                 {/* Top track — DMs, Groups, joined servers, add-server in one sunk
                     deck with the sliding lume pill. Verbatim structure from the
@@ -13089,7 +14310,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                                         <div
                                             role="img"
                                             aria-label={`${srvCall.userIds.length} in call`}
-                                            className="absolute -bottom-1 -right-1 z-10 pointer-events-none flex items-center justify-center rounded-full bg-cl-lume text-cl-on-lume ring-2 ring-cl-abyss"
+                                            className="absolute -bottom-1 -right-1 z-10 pointer-events-none flex items-center justify-center rounded-full bg-cl-lume text-cl-on-lume ring-2 ring-[color:var(--cl-abyss)]"
                                             style={{ width: 16, height: 16 }}
                                         >
                                             <Volume2 size={9} strokeWidth={2.75} aria-hidden />
@@ -13272,10 +14493,15 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                 <StatusPicker
                         myStatus={myStatus}
                         onSetStatus={setStatus}
+                        customText={myCustomText}
+                        customEmoji={myCustomEmoji}
+                        customExpiresAt={myCustomExpiresAt}
+                        onSetCustomStatus={p => setStatus(myStatus, p.text, p.emoji, p.expiresAt)}
                         username={userId || 'me'}
                         currentGame={myCurrentGame}
                         onDismissGame={clearGame}
                         avatarAttachmentId={user?.avatar_url ?? null}
+                        avatarDecoration={user?.avatar_decoration ?? null}
                         userId={userId}
                         token={token}
                         onEditProfile={() => setSettingsOpen(true)}
@@ -13285,6 +14511,12 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
             {/* Main Content Area */}
             <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, height: '100%', overflow: 'hidden' }}>
 
+                {/* Top-of-app notices. Every banner below renders through ClBanner and
+                    registers with this stack, which orders them by priority (danger
+                    first), shows the top two and folds the rest behind "+N more".
+                    Each one self-gates and renders nothing when it has nothing to
+                    say, so an empty stack takes no space. */}
+                <ClBannerStack>
                 {/* Admin-authored announcement banners — server-resolved
                     eligibility/scheduling, client only filters what THIS user
                     has already dismissed. Sits above the billing banners:
@@ -13299,10 +14531,6 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                     call record exists. */}
                 <CallRejoinBanner offer={rejoinOffer} busy={rejoinBusy} onRejoin={acceptRejoin} onDismiss={dismissRejoin} />
 
-                {/* "Video stopped after a graphics driver reset — Restart
-                    Cipherline to fix" (utils/gpuRecovery.ts). Renders nothing
-                    unless the call's video recovery could not be confirmed. */}
-                <GpuRestartPrompt inCall={!!activeCall} onBeforeRelaunch={prepareGpuRelaunch} />
 
                 {/* Billing status banners — trial ending (last 3 days) and
                     payment-failed. Both self-gate and are dismissible; they
@@ -13341,6 +14569,12 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                     Self-gating; renders nothing on a protected device. */}
                 <KeyProtectionNotice />
                 <EncryptionAtRestNotice />
+                </ClBannerStack>
+
+                {/* "Video stopped after a graphics driver reset — Restart
+                    Cipherline to fix" (utils/gpuRecovery.ts). Renders nothing
+                    unless the call's video recovery could not be confirmed. */}
+                <GpuRestartPrompt inCall={!!activeCall} onBeforeRelaunch={prepareGpuRelaunch} />
 
                 {/* First-run "storage on this device" prompt — see
                     useDeviceStorageSetup. HistorySyncBanner waits for it so a
@@ -13408,6 +14642,12 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                             friends={globalFriends}
                             friendStatuses={friendStatuses}
                             localCallSession={localCallSession}
+                            inAnyCall={!!activeCall || !!activeVoiceChannelId || !!activeHuddleCallId}
+                            canPlayGame={firewall.canPlay}
+                            onPlayGame={firewall.openGame}
+                            myStatus={myStatus}
+                            gaming={!!myCurrentGame}
+                            isPro={isPaid}
                             onSelectConversation={(conv) => { setActiveTab('dms'); handleStartChat({ id: conv.id, title: conv.title, type: conv.type, other_user_id: conv.other_user_id, avatar_url: conv.avatar_url }); }}
                             onJoinVoiceChannel={handleJoinVoiceChannel}
                             onJoinHuddleCall={handleJoinExistingHuddleCall}
@@ -13608,7 +14848,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                                                 // of, so the token grammar isn't duplicated.
                                                 if (lastMsg.content.type === 'text') {
                                                     prevText = mentionsToPlainText(
-                                                        lastMsg.content.text,
+                                                        clipForPreview(lastMsg.content.text),
                                                         (uid) => friendNameMap[uid]?.username,
                                                     );
                                                 }
@@ -13634,9 +14874,12 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                                                 : null;
                                             return (
                                                 <React.Fragment key={conv.conversation_id}>
+                                                {/* One bad row (content another user chose) costs that row, not the app. */}
+                                                <RowErrorBoundary resetKeys={[lastMsg, conv]} label="conversation row">
                                                 {dividerLabel && (
                                                     <div style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: '.08em', textTransform: 'uppercase', color: 'var(--cl-faint)', padding: '10px 6px 4px', userSelect: 'none' }}>
                                                         {dividerLabel}
+                                                        {bucket === 'ancient' && <EggSeen id="ancient-chats" />}
                                                     </div>
                                                 )}
                                                 <div
@@ -13815,6 +15058,15 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                                                                 <div className="flex-1 min-w-0 pr-1" style={{ lineHeight: 1.25 }}>
                                                                     <h4 className="flex items-center gap-1 text-[14px]" style={{ fontFamily: 'var(--cl-font-body)', fontWeight: 800, color: activeChat?.id === conv.conversation_id ? 'var(--cl-text)' : 'var(--cl-muted)' }}>
                                                                         <span className="truncate min-w-0">{conv.title}</span>
+                                                                        {conv.type === 'dm' && conv.other_user_id && !conv.is_self && (
+                                                                            <StatusLine
+                                                                                entry={friendStatuses[conv.other_user_id]}
+                                                                                userId={conv.other_user_id}
+                                                                                renderGame={() => null}
+                                                                                className="text-[11px] min-w-0 shrink max-w-[55%]"
+                                                                                style={{ fontWeight: 600, color: 'var(--cl-faint)' }}
+                                                                            />
+                                                                        )}
                                                                         {showUnverifiedMarker && (
                                                                             <span
                                                                                 className="inline-flex items-center shrink-0"
@@ -13832,7 +15084,14 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                                                                     <p className="text-[12px] truncate" style={{ fontWeight: 600, color: (hasUnread && cMode !== 'none') || hasMention ? 'var(--cl-muted)' : 'var(--cl-faint)' }}>
                                                                         {typingUsers[conv.conversation_id]?.size > 0 ? (
                                                                             <span className="text-cl-lume italic animate-pulse font-medium">Typing...</span>
-                                                                        ) : prevText}
+                                                                        ) : (
+                                                                            <ConversationPreviewLine
+                                                                                userId={userId}
+                                                                                conversationId={conv.conversation_id}
+                                                                                isActive={activeChat?.id === conv.conversation_id}
+                                                                                fallback={prevText}
+                                                                            />
+                                                                        )}
                                                                     </p>
                                                                 </div>
 
@@ -13863,6 +15122,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                                                         );
                                                     })()}
                                                 </div>
+                                                </RowErrorBoundary>
                                                 </React.Fragment>
                                             );
                                         })}
@@ -14004,6 +15264,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                                                 showReadReceipts={privacy.settings.showReadReceipts}
                                                 activeCall={activeCall}
                                                 onCallChange={handleConvCallChange}
+                                                getCallKey={getAcceptedCallKey}
                                                 onStartingCallChange={handleChatPaneStartingCall}
                                                 chatSearch={pinnedSidebarExpanded ? '' : chatSearch}
                                                 friendRemovedEvent={friendRemovedEvent}
@@ -14135,6 +15396,21 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                                                     setAwaitingChannelKeys(prev => ({ ...prev, [channelId]: true }));
                                                     void channelKeyOpsRef.current.maybeFileKeyRequest(serverId, channelId);
                                                 }}
+                                                onRetryChannelKeys={(serverId, channelId) => {
+                                                    // The key-wait banner's "Ask again": a fresh request
+                                                    // (past the 60 s dedup, still behind the account's
+                                                    // request bucket and any install cool-off), a pull for
+                                                    // anything already waiting, then a re-read so rows a
+                                                    // key now covers heal in place.
+                                                    void (async () => {
+                                                        await channelKeyOpsRef.current.fileKeyRequest(serverId, channelId);
+                                                        await channelKeyOpsRef.current.pullChannelKeys(serverId);
+                                                        if (activeChannelRef.current?.channel_id === channelId
+                                                            && (channelMessagesRef.current[channelId] ?? []).some(isUndecryptablePlaceholder)) {
+                                                            await refreshChannelHistoryRef.current(serverId, channelId);
+                                                        }
+                                                    })().catch(e => console.warn('[Channels] key retry failed:', e));
+                                                }}
                                                 onReport={(id, username, snippet) => setReportTarget({ id, username, snippet })}
                                             />
                                         ) : (
@@ -14225,6 +15501,15 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
             {/* Device approval (DEVICE_APPROVAL_REQUIRED): this device as an
                 approver — the prompt for a new device waiting to join. */}
             <DeviceApprovalHost wsConnectCount={wsConnectCount} />
+            {/* Stale-device policy: "Still using these devices?" for this
+                user's OTHER devices unseen 30+ / 180+ days. Once per tier. */}
+            <StaleDevicesHost />
+            {/* `?` (when not typing) and Settings -> Keybinds: the shortcuts cheat sheet. */}
+            <ShortcutsSheetHost keybinds={keybinds} pushToTalkKey={pushToTalkKey} />
+            {/* First launch after an update: "What's new in <version>" (CHANGELOG
+                `### What's new`, read at build time). Waits for the loading screen
+                to lift and for a calm moment: not locked, not in or answering a call. */}
+            <WhatsNewHost enabled={appHydrated && !screenLock.isLocked && !activeCall && !globalIncomingCall} />
             {/* First-week nudges + the "want a ping?" ask: at most one small in-app
                 card at a time, only while you're actively here. Renders nothing
                 almost always — see FirstWeekNudges.tsx. */}
@@ -14333,10 +15618,21 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                 <StartDMModal
                     onClose={() => setShowStartDMModal(false)}
                     existingConversations={conversations}
+                    friendStatuses={friendStatuses}
+                    presence={displayPresence}
+                    lastActivityAt={lastActivityAt}
                     onDMStarted={(chat) => {
                         setShowStartDMModal(false);
                         fetchConversations();
                         handleStartChat(chat);
+                    }}
+                    // The footer's "Start a group chat" link → the existing
+                    // group-creation step (name + photo), pre-filled with the
+                    // picked friend or empty; nothing is created here.
+                    onStartGroup={(people) => {
+                        setShowStartDMModal(false);
+                        setCreateGroupPreselected(people);
+                        setShowCreateGroupModal(true);
                     }}
                 />
             )}
@@ -14389,6 +15685,14 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                 <CreateGroupModal
                     onClose={() => { setShowCreateGroupModal(false); setCreateGroupPreselected([]); }}
                     preSelectedUsers={createGroupPreselected}
+                    // The "group of two" egg's Open DM: exactly what New Message does
+                    // when it opens a 1:1 (see StartDMModal's onDMStarted above).
+                    onOpenDm={(chat) => {
+                        setShowCreateGroupModal(false);
+                        setCreateGroupPreselected([]);
+                        fetchConversations();
+                        handleStartChat(chat);
+                    }}
                     onGroupCreated={(group) => {
                         setShowCreateGroupModal(false);
                         setCreateGroupPreselected([]);
@@ -14458,8 +15762,12 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                 <CreateServerModal
                     onClose={() => setShowCreateServerModal(false)}
                     onCreateServer={async (name) => {
+                        // Moment: your first server. Counted BEFORE the create, from the
+                        // loaded list's owner ids (null while it loads): ownership, nothing more.
+                        const ownedBefore = serversLoading || serversError ? null : servers.filter(sv => sv.owner_user_id === userId).length;
                         const srv = await createServer(name);
                         if (srv) {
+                            noteServerCreated(ownedBefore);
                             // The server itself is already fully created and
                             // in the list at this point — createServer()
                             // already awaited both the POST and a
@@ -14567,14 +15875,15 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                 })()}
             </AnimatePresence>
 
-            {showInviteModal && activeServerView && (() => {
-                const srv = servers.find(s => s.server_id === activeServerView.serverId);
+            {showInviteModal && (inviteServerId ?? activeServerView?.serverId) && (() => {
+                const sid = inviteServerId ?? activeServerView?.serverId;
+                const srv = servers.find(s => s.server_id === sid);
                 if (!srv) return null;
                 return (
                     <ServerInviteModal
                         server={srv}
                         token={token}
-                        onClose={() => setShowInviteModal(false)}
+                        onClose={() => { setShowInviteModal(false); setInviteServerId(null); }}
                     />
                 );
             })()}
@@ -14782,6 +16091,8 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                                 inactivityWarningSessionRef.current = active ? call.id : null;
                             }}
                             onParticipantCount={setCallParticipantCount}
+                            onParticipantIdentities={callKeySharing.reportParticipants}
+                            onDecryptKeyFailure={callKeySharing.requestKeyAfterDecryptFailure}
                             onVideoActive={() => {}}
                             videoByDefault={!!call.videoByDefault}
                             isCallInitiator={call.isInitiator}
@@ -14902,12 +16213,12 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                         {/* flex:1 goes on wrapper divs, not ClButton's `style` — see
                             the fullWidth comment on the sidebarBlockConfirm buttons
                             above for why. */}
-                        {/* ClConfirm's canonical button row: right-aligned,
+                        {/* Centered under the text (owner: right-aligned in this narrow popup read as off-center),
                             intrinsic-width sm buttons (never stretched 50/50 —
                             fullWidth halves made the pair look mismatched and
                             oversized for a 256px popup). Same layout as every
                             other confirm in the app. */}
-                        <div className="flex items-center justify-end" style={{ gap: 12 }}>
+                        <div className="flex items-center justify-center" style={{ gap: 12 }}>
                             <ClButton size="sm" variant="ghost" onClick={() => setPendingServerJoin(null)}>
                                 Cancel
                             </ClButton>
@@ -14934,6 +16245,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                             );
                             dropRoster(leaveServerTarget.server_id);
                             dropServerChannelViewers(leaveServerTarget.server_id);
+                            noteServerLeft(leaveServerTarget.server_id); // the revolving-door moment (memory only)
                             // Out of its rail folder too (which may dissolve it),
                             // persisted now — so a later re-join lands at the end
                             // like any new server instead of back in the folder.
@@ -14990,6 +16302,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                     friendStatuses={friendStatuses}
                     myStatus={myStatus}
                     myGame={myCurrentGame}
+                    myCustom={{ text: myCustomText, emoji: myCustomEmoji, expiresAt: myCustomExpiresAt }}
                     isFriend={!!globalFriends?.accepted.some(f => f.user_id === profileModalUserId)}
                     onClose={() => { setProfileModalUserId(null); setProfileModalAnchor(null); setProfileModalRoleCtx(null); }}
                     onMessage={(uid) => {
@@ -15071,6 +16384,16 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                             ? buildInviteToServerItems(profileModalUserId)
                             : undefined
                     }
+                    onOpenServer={(sid) => {
+                        const srv = serverById.get(sid);
+                        if (!srv) return;
+                        setProfileModalUserId(null);
+                        openRailServer(srv);
+                    }}
+                    renderServerIcon={(sid, name) => {
+                        const srv = serverById.get(sid);
+                        return srv ? <ServerIcon serverId={srv.server_id} name={name} attachmentId={srv.icon_attachment} keyB64={srv.icon_key_b64} nonceB64={srv.icon_nonce_b64} token={token} className="object-cover" /> : null;
+                    }}
                 />
             )}
         </div >

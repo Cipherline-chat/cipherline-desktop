@@ -306,6 +306,9 @@ export const HistoryRequestModal: React.FC<Props> = ({ request, onClose }) => {
             // whole defect.
             const wrappedTransferKeyB64 = await wrapHistoryTransferKey(
                 transferKeyB64, bundle, user.user_id, deviceId,
+                // F2: bind the transfer to the request it answers — the
+                // requester's signed timestamp, verified above.
+                request.capability_ts,
             );
 
             await axios.post(

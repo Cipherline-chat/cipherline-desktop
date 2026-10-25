@@ -17,9 +17,11 @@
  *    here made means someone holds the password or a session token.
  */
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Monitor, Smartphone, ShieldAlert, ShieldCheck, Clock } from 'lucide-react';
+import { Monitor, Smartphone, ShieldAlert, ShieldCheck, Clock, AlertTriangle } from 'lucide-react';
 import { ClButton } from './ClButton';
 import { ClModal } from './cl';
+import { DialogHeader, DialogBody, DialogFooter, DialogError } from './dialog/DialogFrame';
+import { DialogForm, DialogStack, DialogNote, DialogCopy } from './dialog/DialogExtras';
 import SlottedCodeInput from './SlottedCodeInput';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
@@ -42,7 +44,7 @@ interface Props {
 
 function PlatformIcon({ platform }: { platform: string }) {
     const p = (platform || '').toLowerCase();
-    return p === 'ios' || p === 'android' ? <Smartphone size={22} /> : <Monitor size={22} />;
+    return p === 'ios' || p === 'android' ? <Smartphone size={19} strokeWidth={2.2} /> : <Monitor size={19} strokeWidth={2.2} />;
 }
 
 type Busy = null | 'approve' | 'deny' | 'notme';
@@ -126,78 +128,66 @@ export const DeviceApprovalModal: React.FC<Props> = ({ request, onClose, onResol
     };
 
     return (
-        <ClModal open onClose={busy ? () => undefined : onClose} width={460} label="Approve new device" closeOnOverlay={false}>
-            <div className="flex items-start gap-3 mb-4">
-                <span className="sd-tile" style={{ flexShrink: 0 }}><PlatformIcon platform={request.platform} /></span>
-                <div className="min-w-0 flex-1">
-                    <h4 className="m-0 mb-0.5">A new device wants to join your account</h4>
-                    <p className="m-0 text-sm" style={{ color: 'var(--cl-faint)' }}>
-                        Only approve it if you started this sign-in just now.
-                    </p>
-                </div>
-            </div>
+        <ClModal open onClose={busy ? () => undefined : onClose} width={520} label="Approve new device" closeOnOverlay={false} cardClassName="dlg-card">
+            <DialogHeader
+                icon={<PlatformIcon platform={request.platform} />}
+                title="A new device wants to join"
+                subtitle="Only approve it if you started this sign-in just now."
+            />
+            <DialogForm onSubmit={() => { void handleApprove(); }}>
+                <DialogBody className="dlg-body--scroll">
+                    <DialogStack>
+                        <dl className="dlg-kv">
+                            <dt>Device</dt>
+                            <dd>{request.device_name}</dd>
+                            <dt>Platform</dt>
+                            <dd>{platformLabel(request.platform)}</dd>
+                            {net && (<>
+                                <dt>Network</dt>
+                                <dd>{net}</dd>
+                            </>)}
+                            <dt>Expires</dt>
+                            <dd style={expired ? { color: 'var(--cl-flash)' } : undefined}>
+                                <Clock size={12} style={{ display: 'inline', marginRight: 4, verticalAlign: '-1px' }} />
+                                {resetScheduled ? 'in about a day (reset requested)' : expired ? 'expired' : formatCountdown(remaining ?? 0)}
+                            </dd>
+                        </dl>
 
-            <dl
-                className="rounded-xl px-4 py-3 mb-4 text-sm"
-                style={{ background: 'var(--cl-surface)', border: '1px solid var(--cl-border)', display: 'grid', gridTemplateColumns: 'auto 1fr', columnGap: 16, rowGap: 6 }}
-            >
-                <dt style={{ color: 'var(--cl-faint)' }}>Device</dt>
-                <dd className="m-0 font-semibold text-right break-all" style={{ color: 'var(--cl-text)' }}>{request.device_name}</dd>
-                <dt style={{ color: 'var(--cl-faint)' }}>Platform</dt>
-                <dd className="m-0 text-right" style={{ color: 'var(--cl-text)' }}>{platformLabel(request.platform)}</dd>
-                {net && (<>
-                    <dt style={{ color: 'var(--cl-faint)' }}>Network</dt>
-                    <dd className="m-0 text-right" style={{ color: 'var(--cl-text)' }}>{net}</dd>
-                </>)}
-                <dt style={{ color: 'var(--cl-faint)' }}>Expires</dt>
-                <dd className="m-0 text-right" style={{ color: expired ? 'var(--cl-flash)' : 'var(--cl-text)' }}>
-                    <Clock size={12} style={{ display: 'inline', marginRight: 4, verticalAlign: '-1px' }} />
-                    {resetScheduled ? 'in about a day (reset requested)' : expired ? 'expired' : formatCountdown(remaining ?? 0)}
-                </dd>
-            </dl>
+                        {resetScheduled && (
+                            <DialogNote tone="warn" icon={<AlertTriangle size={15} aria-hidden />}>
+                                This device asked to <b>reset your devices</b> — it says it can't reach any of them. If you can read this, you can
+                                simply deny it, or approve it below. Doing nothing and leaving every device unused for a day would sign them all out.
+                            </DialogNote>
+                        )}
 
-            {resetScheduled && (
-                <p className="text-sm mb-3" style={{ color: 'var(--cl-glow)' }}>
-                    This device asked to <b>reset your devices</b> — it says it can't reach any of them. If you can read this, you can
-                    simply deny it, or approve it below. Doing nothing and leaving every device unused for a day would sign them all out.
-                </p>
-            )}
-
-            {!expired && (
-                <>
-                    <p className="text-sm mb-2" style={{ color: 'var(--cl-text)' }}>
-                        Enter the 6-digit code shown on the new device:
-                    </p>
-                    <div className="mb-3" style={{ display: 'flex', justifyContent: 'center' }}>
-                        <SlottedCodeInput
-                            value={typed} onChange={setTyped} disabled={!!busy} error={codeError} noAutoPaste
-                        />
-                    </div>
-                </>
-            )}
-
-            {error && (
-                <div className="mb-3 px-3 py-2 rounded-xl text-sm text-center" role="alert"
-                    style={{ background: 'rgba(248,113,113,.08)', border: '1px solid rgba(248,113,113,.25)', color: 'rgb(248,113,113)' }}>
-                    {error}
-                </div>
-            )}
-
-            <div className="mrow" style={{ flexWrap: 'wrap', gap: 8 }}>
-                <ClButton variant="danger" size="sm" disabled={!!busy || !ctx} loading={busy === 'notme'} onClick={() => handleDeny(true)}>
-                    <ShieldAlert size={14} /> This wasn't me
-                </ClButton>
-                <span style={{ flex: 1 }} />
-                <ClButton variant="ghost" size="sm" disabled={!!busy} onClick={onClose}>Not now</ClButton>
-                <ClButton variant="ghost" size="sm" disabled={!!busy || !ctx} loading={busy === 'deny'} onClick={() => handleDeny(false)}>Deny</ClButton>
-                <ClButton
-                    variant="primary" size="sm" loading={busy === 'approve'}
-                    disabled={!!busy || !ctx || expired || typed.length !== 6}
-                    onClick={handleApprove}
-                >
-                    <ShieldCheck size={14} /> Approve
-                </ClButton>
-            </div>
+                        {!expired && (
+                            <DialogStack tight>
+                                <DialogCopy>Enter the 6-digit code shown on the new device:</DialogCopy>
+                                <div style={{ display: 'flex', justifyContent: 'center' }}>
+                                    <SlottedCodeInput
+                                        value={typed} onChange={setTyped} disabled={!!busy} error={codeError} noAutoPaste
+                                    />
+                                </div>
+                            </DialogStack>
+                        )}
+                    </DialogStack>
+                </DialogBody>
+                {error && <DialogError>{error}</DialogError>}
+                <DialogFooter hint={
+                    <ClButton variant="danger" size="sm" disabled={!!busy || !ctx} loading={busy === 'notme'} onClick={() => handleDeny(true)}>
+                        <ShieldAlert size={14} /> This wasn't me
+                    </ClButton>
+                }>
+                    <ClButton variant="ghost" size="sm" disabled={!!busy} onClick={onClose}>Not now</ClButton>
+                    <ClButton variant="ghost" size="sm" disabled={!!busy || !ctx} loading={busy === 'deny'} onClick={() => handleDeny(false)}>Deny</ClButton>
+                    <ClButton
+                        type="submit" variant="primary" size="sm" loading={busy === 'approve'}
+                        disabled={!!busy || !ctx || expired || typed.length !== 6}
+                    >
+                        <ShieldCheck size={14} /> Approve
+                    </ClButton>
+                </DialogFooter>
+            </DialogForm>
         </ClModal>
     );
 };
@@ -211,19 +201,22 @@ export const DeviceApprovalModal: React.FC<Props> = ({ request, onClose, onResol
 export const DeviceRemovedNotice: React.FC<{
     deviceName: string; onChangePassword: () => void; onLater: () => void;
 }> = ({ deviceName, onChangePassword, onLater }) => (
-    <ClModal open onClose={onLater} width={440} label="Device removed" closeOnOverlay={false}>
-        <div className="flex items-center gap-3 mb-3">
-            <span className="sd-tile"><ShieldAlert size={18} /></span>
-            <h4 className="m-0">We removed that device</h4>
-        </div>
-        <p>
-            <b>{deviceName}</b> was signed out and never saw any of your messages. Because it got as far as asking,
-            someone may know your password — change it now. That also removes any other device still waiting for approval.
-        </p>
-        <div className="mrow">
+    <ClModal open onClose={onLater} width={460} label="Device removed" closeOnOverlay={false} cardClassName="dlg-card dlg-tone-danger">
+        <DialogHeader
+            icon={<ShieldAlert size={19} strokeWidth={2.2} />}
+            title="We removed that device"
+            subtitle="It was signed out and never saw your messages."
+        />
+        <DialogBody>
+            <DialogCopy>
+                <b>{deviceName}</b> was signed out and never saw any of your messages. Because it got as far as asking,
+                someone may know your password — change it now. That also removes any other device still waiting for approval.
+            </DialogCopy>
+        </DialogBody>
+        <DialogFooter hint={<>Recommended: change your password now</>}>
             <ClButton variant="ghost" size="sm" onClick={onLater}>Later</ClButton>
             <ClButton variant="primary" size="sm" onClick={onChangePassword}>Change password</ClButton>
-        </div>
+        </DialogFooter>
     </ClModal>
 );
 

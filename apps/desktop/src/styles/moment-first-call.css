@@ -1,0 +1,61 @@
+/* "Your first call. You’re connected. Say something." — components/moments/views/FirstCallMoment.tsx.
+   8.1 s, transform/opacity only. Phases: notice 0–0.5, main 0.5–3.3,
+   read 3.3–6.5, hold 6.5–7.5, exit 7.5–8.1.
+   Layout (from the centre): Keys + his can on the left, the far can on the
+   right, a 300 px string between the cans, all ~110 px above the middle. */
+.mo-fc .mo-notice { left: 150px; top: -138px; }
+.mo-fc-scene { position: absolute; left: 0; top: -110px; width: 0; height: 0; }
+.mo-fc-keys { position: absolute; left: -290px; top: -44px; animation: mo-fc-in .5s cubic-bezier(.2, .8, .3, 1) .2s both; }
+@keyframes mo-fc-in { from { transform: translateY(18px) scale(.9); opacity: 0; } to { transform: none; opacity: 1; } }
+.mo-fc-can-near { position: absolute; left: -175px; top: -38px; animation: mo-fc-in .5s cubic-bezier(.2, .8, .3, 1) .3s both; }
+/* The string: slack first, then taut. It runs from the near can (x -150) to the far one (x 150). */
+.mo-fc-line { position: absolute; left: -150px; top: -30px; overflow: visible; }
+.mo-fc-slack {
+  opacity: 0;
+  animation: mo-fc-slack 1.0s ease-out .9s both, mo-fc-slack-out .25s ease-in 1.7s forwards;
+}
+@keyframes mo-fc-slack { from { transform: translateY(-14px) scaleY(.4); opacity: 0; } to { transform: none; opacity: 1; } }
+@keyframes mo-fc-slack-out { to { opacity: 0; } }
+.mo-fc-taut { position: absolute; left: 0; top: 0; opacity: 0; animation: mo-fc-taut-in .2s ease-out 1.7s forwards; }
+@keyframes mo-fc-taut-in { to { opacity: 1; } }
+/* It trembles as it comes taut (damped, ends level). */
+.mo-fc-taut .mo-fc-line { transform-origin: 0 4px; animation: mo-fc-tremble .72s ease-out 1.75s 1 both; }
+@keyframes mo-fc-tremble { 0% { transform: rotate(0); } 12% { transform: rotate(-.9deg); } 25% { transform: rotate(.8deg); } 38% { transform: rotate(-.6deg); } 50% { transform: rotate(.45deg); } 62% { transform: rotate(-.3deg); } 75% { transform: rotate(.2deg); } 100% { transform: rotate(0); } }
+/* Voice dots: there and back along the taut string. */
+.mo-fc-voice {
+  position: absolute; left: -150px; top: -32px; width: 12px; height: 12px; border-radius: 50%;
+  background: var(--cl-lume, #25E0C8); opacity: 0;
+  animation: mo-fc-voice 1.5s ease-in-out both;
+}
+.mo-fc-voice-0 { animation-delay: 2.1s; }
+.mo-fc-voice-1 { animation-delay: 2.3s; }
+.mo-fc-voice-2 { animation-delay: 2.5s; }
+@keyframes mo-fc-voice {
+  0%   { transform: translateX(0) scale(.5); opacity: 0; }
+  12%  { opacity: 1; }
+  50%  { transform: translateX(300px) scale(1); opacity: 1; }
+  88%  { opacity: 1; }
+  100% { transform: translateX(0) scale(.5); opacity: 0; }
+}
+/* The far can: pops up, then is tugged toward Keys when the string tightens. */
+.mo-fc-far { position: absolute; left: 125px; top: -38px; animation: mo-fc-pop .55s cubic-bezier(.2, .8, .3, 1.3) .5s both; }
+.mo-fc-far .mo-fc-can { animation: mo-fc-tug .5s cubic-bezier(.2, .8, .3, 1.2) 1.7s both; }
+@keyframes mo-fc-pop { from { transform: scale(.3); opacity: 0; } to { transform: none; opacity: 1; } }
+@keyframes mo-fc-tug { 0% { transform: none; } 45% { transform: translateX(-16px); } 100% { transform: translateX(-8px); } }
+.mo-fc-ping {
+  position: absolute; left: 122px; top: -66px; width: 56px; height: 56px; border-radius: 50%;
+  border: 2px solid var(--cl-lume, #25E0C8); opacity: 0;
+  animation: mo-fc-ping .8s ease-out .6s both;
+}
+@keyframes mo-fc-ping { 0% { transform: scale(.4); opacity: 0; } 25% { opacity: .85; } 100% { transform: scale(1.7); opacity: 0; } }
+.mo-fc-cap {
+  position: absolute; left: 0; top: -214px; transform: translateX(-50%);
+  font: 700 14px var(--cl-font-sans, 'Nunito', sans-serif); letter-spacing: .08em; text-transform: uppercase;
+  color: var(--cl-muted, #9AA6C8); white-space: nowrap;
+  animation: mo-fc-cap .6s ease-out 2.3s both;
+}
+@keyframes mo-fc-cap { from { opacity: 0; } to { opacity: 1; } }
+.mo-fc .mo-fc-pill {
+  top: -20px; font-size: 21px; padding: 10px 24px;
+  animation: mo-pill-in .5s cubic-bezier(.2, .8, .3, 1) 2.7s both;
+}

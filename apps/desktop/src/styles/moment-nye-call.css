@@ -1,0 +1,58 @@
+/* "Midnight, mid-call. Happy New Year!" — components/moments/views/NyeCallMoment.tsx.
+   8.5 s, transform/opacity only. Phases: notice 0–0.5, main 0.5–3.5,
+   read 3.5–6.8, hold 6.8–7.8, exit 7.8–8.5.
+   Everything stays in the upper part of the screen (above the middle line)
+   so a call's controls are never covered, and nothing flashes more than a
+   soft, small glow. */
+.mo-nye-fw { position: absolute; width: 0; height: 0; }
+/* The rocket: a short bright streak climbing 22vh to the burst point. */
+.mo-nye-rocket {
+  position: absolute; left: -2px; top: -18px; width: 4px; height: 36px; border-radius: 2px; opacity: 0;
+  background: linear-gradient(to top, rgba(255, 255, 255, 0), var(--c));
+  animation: mo-nye-rocket .8s cubic-bezier(.3, .5, .5, 1) both;
+}
+@keyframes mo-nye-rocket {
+  0%   { transform: translateY(22vh) scaleY(.6); opacity: 0; }
+  15%  { opacity: 1; }
+  92%  { transform: translateY(1vh) scaleY(1); opacity: 1; }
+  100% { transform: translateY(0) scaleY(.4); opacity: 0; }
+}
+/* The burst drifts down a touch as it fades (no snap), so it reads as light, not confetti. */
+.mo-nye-fall { position: absolute; left: 0; top: 0; width: 0; height: 0; animation: mo-nye-fall 2.4s cubic-bezier(.3, .2, .6, 1) both; }
+@keyframes mo-nye-fall { from { transform: translateY(0); } to { transform: translateY(46px); } }
+.mo-nye-ray {
+  position: absolute; left: -9px; top: -1.5px; width: 18px; height: 3px; border-radius: 2px; background: var(--c); opacity: 0;
+  animation: mo-nye-ray 2.2s cubic-bezier(.12, .7, .3, 1) both;
+}
+@keyframes mo-nye-ray {
+  0%   { transform: rotate(var(--a)) translateX(4px) scaleX(.4); opacity: 0; }
+  6%   { opacity: 1; }
+  40%  { transform: rotate(var(--a)) translateX(120px) scaleX(1.2); opacity: 1; }
+  100% { transform: rotate(var(--a)) translateX(158px) scaleX(.3); opacity: 0; }
+}
+.mo-nye-glit {
+  position: absolute; left: -2px; top: -2px; width: 4px; height: 4px; border-radius: 50%; background: #F4F7FF; opacity: 0;
+  animation: mo-nye-glit 2.3s cubic-bezier(.15, .7, .3, 1) both;
+}
+@keyframes mo-nye-glit {
+  0%   { transform: rotate(var(--a)) translateX(20px) scale(.6); opacity: 0; }
+  10%  { opacity: 1; }
+  100% { transform: rotate(var(--a)) translateX(100px) scale(.2); opacity: 0; }
+}
+/* A soft glow at the burst, small and short (never a flash of the whole screen). */
+.mo-nye-flash {
+  position: absolute; left: -45px; top: -45px; width: 90px; height: 90px; border-radius: 50%; opacity: 0;
+  background: radial-gradient(circle, var(--c), rgba(0, 0, 0, 0) 68%);
+  animation: mo-nye-flash .9s ease-out both;
+}
+@keyframes mo-nye-flash { 0% { transform: scale(.3); opacity: 0; } 18% { opacity: .5; } 100% { transform: scale(2); opacity: 0; } }
+.mo-nye .mo-nye-year {
+  position: absolute; left: 0; top: -92px; font-size: 76px; line-height: 1; color: var(--cl-glow, #FFC94D);
+  animation: mo-nye-year .8s cubic-bezier(.2, .8, .3, 1.2) 1.4s both;
+}
+@keyframes mo-nye-year { from { transform: translate(-50%, 24px) scale(.7); opacity: 0; } to { transform: translateX(-50%); opacity: 1; } }
+.mo-nye .mo-nye-pill {
+  top: 0; font-size: 21px; padding: 10px 24px;
+  animation: mo-pill-in .5s cubic-bezier(.2, .8, .3, 1) 2.55s both;
+}
+.mo-nye-pill b { color: var(--cl-glow, #FFC94D); }

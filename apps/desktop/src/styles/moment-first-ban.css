@@ -1,0 +1,60 @@
+/* "Justice has been served." — components/moments/views/FirstBanMoment.tsx.
+   7.4 s, transform/opacity only. Phases: notice 0–0.5, main 0.5–3.1,
+   read 3.1–5.8, hold 5.8–6.8, exit 6.8–7.4. */
+.mo-fb-block { position: absolute; left: -80px; top: 120px; animation: mo-fb-in .5s ease-out both; }
+@keyframes mo-fb-in { from { transform: translateY(16px); opacity: 0; } to { transform: none; opacity: 1; } }
+
+/* The gavel pivots on the end of its handle. Raised in the notice beat,
+   wound back slowly, then down on the block — the slam is the one fast move,
+   and it comes after 0.75 s of wind-up you can see coming. */
+.mo-fb-gavel {
+  position: absolute; left: -40px; top: 50px; transform-origin: 260px 35px;
+  animation: mo-fb-gavel 1.45s both;
+}
+@keyframes mo-fb-gavel {
+  0%   { transform: rotate(30deg); opacity: 0; animation-timing-function: ease-out; }
+  34%  { transform: rotate(30deg); opacity: 1; animation-timing-function: cubic-bezier(.45, 0, .55, 1); }
+  86%  { transform: rotate(48deg); opacity: 1; animation-timing-function: cubic-bezier(.6, 0, 1, .7); }
+  100% { transform: none; opacity: 1; }
+}
+/* Impact at 1.45 s: two shockwave rings off the block, and a bubble burst. */
+.mo-fb-ring {
+  position: absolute; left: -60px; top: 90px; width: 120px; height: 60px; border-radius: 50%;
+  border: 3px solid var(--cl-glow, #FFC94D); opacity: 0;
+  animation: mo-fb-ring 1s ease-out both;
+}
+.mo-fb-ring-1 { animation-delay: 1.45s; }
+.mo-fb-ring-2 { animation-delay: 1.65s; border-color: var(--cl-lume, #25E0C8); }
+@keyframes mo-fb-ring { 0% { transform: scale(.4); opacity: 0; } 10% { opacity: 1; } 100% { transform: scale(2.6); opacity: 0; } }
+.mo-fb-bit {
+  position: absolute; left: -6px; top: 112px; width: 12px; height: 12px; border-radius: 50%;
+  border: 2px solid rgba(37, 224, 200, .8); opacity: 0;
+  animation: mo-fb-bit .9s ease-out 1.45s both;
+}
+@keyframes mo-fb-bit {
+  0% { transform: rotate(var(--a)) translateX(0) scale(.6); opacity: 0; } 10% { opacity: 1; }
+  100% { transform: rotate(var(--a)) translateX(90px) scale(1.1); opacity: 0; }
+}
+
+/* The (generic) member: a bubble closes round it and it drifts up and away. */
+.mo-fb-member { position: absolute; left: -270px; top: 40px; animation: mo-fb-in .5s ease-out both; }
+.mo-fb-float { position: relative; animation: mo-fb-float 2.1s cubic-bezier(.45, 0, .55, 1) 1.5s both; }
+@keyframes mo-fb-float {
+  0%   { transform: none; opacity: 1; }
+  15%  { transform: translateY(6px) scale(.96); opacity: 1; }
+  55%  { transform: translate(-30px, -160px) rotate(-8deg); opacity: 1; }
+  100% { transform: translate(-90px, -52vh) rotate(6deg); opacity: 0; }
+}
+.mo-fb-bubble {
+  position: absolute; left: -12px; top: -12px; width: 104px; height: 104px; border-radius: 50%;
+  border: 3px solid rgba(37, 224, 200, .75); background: rgba(37, 224, 200, .1); opacity: 0;
+  animation: mo-fb-bubble .4s cubic-bezier(.2, .8, .3, 1.2) 1.5s both;
+}
+@keyframes mo-fb-bubble { from { transform: scale(.3); opacity: 0; } to { transform: none; opacity: 1; } }
+
+/* The courtroom at a readable size, centred on the anchor. */
+.mo-fb-scene { position: absolute; left: 0; top: 0; transform: translate(34px, -60px) scale(1.35); transform-origin: 0 0; }
+.mo-fb .mo-fb-pill {
+  top: -150px; font-size: 26px; padding: 12px 28px;
+  animation: mo-pill-in .5s cubic-bezier(.2, .8, .3, 1) 2.6s both;
+}

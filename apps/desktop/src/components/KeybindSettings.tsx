@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { RotateCcw, Trash2 } from 'lucide-react';
+import { RotateCcw, Trash2, PenLine, Keyboard } from 'lucide-react';
 import {
     ACTIONS, ACTION_CATEGORIES,
     eventToCombo, formatCombo,
@@ -7,6 +7,8 @@ import {
 } from '../hooks/useKeybinds';
 import { ClButton } from './cl';
 import { useEscape } from '../hooks/useEscape';
+import { SettingsDisclosure } from './settings/SettingsDisclosure';
+import { OPEN_SHORTCUTS_EVENT } from '../utils/shortcutsSheet';
 
 /**
  * Twilight · Keybinds — Descent redesign (phase 2).
@@ -106,55 +108,74 @@ export const KeybindSettings: React.FC<KeybindSettingsProps> = ({ keybinds }) =>
             {ACTION_CATEGORIES.map(cat => {
                 const items = ACTIONS.filter(a => a.category === cat.id);
                 if (items.length === 0) return null;
+                const rows = items.map(action => {
+                    // '' is an explicit "cleared" (persisted so it
+                    // survives a restart) and reads as unbound here.
+                    const combo = binds[action.id] || null;
+                    const isCapturing = capturing === action.id;
+                    const isDefault = combo === (defaults[action.id] || null);
+
+                    return (
+                        <div key={action.id} className="sd-row">
+                            <div className="sd-rl">
+                                <b>{action.label}</b>
+                                <span>{action.description}</span>
+                            </div>
+                            <div className="sd-rc">
+                                {!isDefault && !isCapturing && (
+                                    <ClButton
+                                        icon
+                                        size="sm"
+                                        variant="ghost"
+                                        onClick={() => resetOne(action.id)}
+                                        tooltip="Reset to default"
+                                    >
+                                        <RotateCcw size={12} />
+                                    </ClButton>
+                                )}
+                                {combo && !isCapturing && (
+                                    <ClButton
+                                        icon
+                                        size="sm"
+                                        variant="ghost"
+                                        onClick={() => clearBind(action.id)}
+                                        tooltip="Remove shortcut"
+                                    >
+                                        <Trash2 size={12} />
+                                    </ClButton>
+                                )}
+                                <KeyCaps
+                                    combo={combo}
+                                    capturing={isCapturing}
+                                    onClick={() => startCapture(action.id)}
+                                />
+                            </div>
+                        </div>
+                    );
+                });
+                // Drawing-request keys only matter while someone is asking to
+                // draw on your share, so that group folds away; the everyday
+                // call controls and navigation keys stay in view.
+                if (cat.id === 'annotation') {
+                    return (
+                        <SettingsDisclosure
+                            key={cat.id}
+                            id="keybinds.annotation"
+                            variant="card"
+                            title={cat.label}
+                            summary={cat.hint}
+                            icon={<PenLine size={15} />}
+                            labels={['Drawing request keybinds']}
+                        >
+                            {rows}
+                        </SettingsDisclosure>
+                    );
+                }
                 return (
                     <div key={cat.id} className="sd-card">
                         <h3>{cat.label}</h3>
                         <p className="sd-sub">{cat.hint}</p>
-                        {items.map(action => {
-                            // '' is an explicit "cleared" (persisted so it
-                            // survives a restart) and reads as unbound here.
-                            const combo = binds[action.id] || null;
-                            const isCapturing = capturing === action.id;
-                            const isDefault = combo === (defaults[action.id] || null);
-
-                            return (
-                                <div key={action.id} className="sd-row">
-                                    <div className="sd-rl">
-                                        <b>{action.label}</b>
-                                        <span>{action.description}</span>
-                                    </div>
-                                    <div className="sd-rc">
-                                        {!isDefault && !isCapturing && (
-                                            <ClButton
-                                                icon
-                                                size="sm"
-                                                variant="ghost"
-                                                onClick={() => resetOne(action.id)}
-                                                tooltip="Reset to default"
-                                            >
-                                                <RotateCcw size={12} />
-                                            </ClButton>
-                                        )}
-                                        {combo && !isCapturing && (
-                                            <ClButton
-                                                icon
-                                                size="sm"
-                                                variant="ghost"
-                                                onClick={() => clearBind(action.id)}
-                                                tooltip="Remove shortcut"
-                                            >
-                                                <Trash2 size={12} />
-                                            </ClButton>
-                                        )}
-                                        <KeyCaps
-                                            combo={combo}
-                                            capturing={isCapturing}
-                                            onClick={() => startCapture(action.id)}
-                                        />
-                                    </div>
-                                </div>
-                            );
-                        })}
+                        {rows}
                     </div>
                 );
             })}
@@ -165,10 +186,13 @@ export const KeybindSettings: React.FC<KeybindSettingsProps> = ({ keybinds }) =>
                         <b>Defaults not feeling right?</b>
                         <span>
                             Call controls work system-wide, even while another app is focused. Navigation
-                            shortcuts only fire when Cipherline is in the foreground. Esc cancels a capture.
+                            shortcuts only fire when Cipherline is in the foreground. Esc cancels a capture. Press ? anywhere you are not typing to see them all.
                         </span>
                     </div>
                     <div className="sd-rc">
+                        <ClButton size="sm" variant="ghost" onClick={() => window.dispatchEvent(new Event(OPEN_SHORTCUTS_EVENT))}>
+                            <Keyboard size={13} /> Cheat sheet
+                        </ClButton>
                         <ClButton size="sm" variant="ghost" onClick={resetAll}>
                             <RotateCcw size={13} /> Reset all
                         </ClButton>

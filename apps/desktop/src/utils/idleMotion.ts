@@ -66,6 +66,28 @@ export function applyMotionState(active: boolean, doc: Document = document): voi
 
 const motionListeners = new Set<(active: boolean) => void>();
 
+/** `data-cl-window` while the window is focused and visible (input idleness does NOT count). */
+export const WINDOW_ACTIVE = 'active';
+/** `data-cl-window` while the window is blurred, hidden, minimised or in the tray. */
+export const WINDOW_INACTIVE = 'inactive';
+
+/**
+ * A second, narrower bit: is the window in front of someone. Unlike
+ * `data-cl-motion` it does NOT go idle after INPUT_IDLE_MS without input.
+ *
+ * Owner rule (2026-10-24): a profile's animation (effect, decoration, an
+ * animated banner) is the profile's whole point while you look at it - it
+ * must keep playing however long you read the card without touching the
+ * mouse, and stop only when Cipherline is not in front (styles/profile-motion.css).
+ * Everything else decorative keeps resting on `data-cl-motion`.
+ */
+export function applyWindowState(active: boolean, doc: Document = document): void {
+    const root = doc.documentElement;
+    if (!root) return;
+    const next = active ? WINDOW_ACTIVE : WINDOW_INACTIVE;
+    if (root.getAttribute('data-cl-window') !== next) root.setAttribute('data-cl-window', next);
+}
+
 /**
  * The gate's current answer, for JS-driven decoration (rAF canvases) that a
  * stylesheet cannot stop. Defaults to active before the gate is installed.
@@ -162,7 +184,11 @@ export function installIdleMotionGate(win: Window = window): () => void {
     let inputIdle = false;
     let lastInput = Date.now();
     let inputTimer: ReturnType<typeof setTimeout> | null = null;
-    const sync = () => applyMotionState(!backgrounded && !inputIdle && isWindowActive(doc), doc);
+    const sync = () => {
+        const front = !backgrounded && isWindowActive(doc);
+        applyWindowState(front, doc);
+        applyMotionState(front && !inputIdle, doc);
+    };
     const armInputTimer = (ms: number) => {
         inputTimer = setTimeout(() => {
             inputTimer = null;

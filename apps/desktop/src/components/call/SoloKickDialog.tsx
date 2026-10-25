@@ -1,5 +1,6 @@
 import { PhoneOff } from 'lucide-react';
 import { ClButton, ClModal } from '../cl';
+import { DialogHeader, DialogBody, DialogFooter, DialogText } from '../dialog/DialogFrame';
 import { useModalExit } from '../../hooks/useModalExit';
 
 interface SoloKickDialogProps {
@@ -13,21 +14,18 @@ export const SoloKickDialog = ({ onClose }: SoloKickDialogProps) => {
         <ClModal
             open={!closing}
             onClose={handleClose}
-            width={384}
-            label="Call Ended"
+            width={420}
+            label="Call ended"
             overlayStyle={{ zIndex: 10000 }}
-            cardClassName="text-center"
+            cardClassName="dlg-card dlg-card--confirm"
         >
-            <div className="mx-auto w-12 h-12 rounded-full bg-cl-flash/20 flex items-center justify-center mb-4">
-                <PhoneOff className="w-6 h-6 text-cl-flash" />
-            </div>
-            <h3 className="text-cl-text font-bold text-lg mb-2">Call Ended</h3>
-            <p className="text-cl-faint text-sm mb-6">
-                You were removed from the call because you were alone for 15 minutes.
-            </p>
-            <ClButton variant="primary" fullWidth onClick={handleClose}>
-                OK
-            </ClButton>
+            <DialogHeader tone="danger" icon={<PhoneOff size={18} strokeWidth={2.2} />} title="Call ended" />
+            <DialogBody>
+                <DialogText>You were removed from the call because you were alone for 15 minutes.</DialogText>
+            </DialogBody>
+            <DialogFooter>
+                <ClButton variant="primary" size="sm" onClick={handleClose}>Got it</ClButton>
+            </DialogFooter>
         </ClModal>
     );
 };

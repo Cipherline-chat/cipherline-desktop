@@ -55,3 +55,27 @@ export function makeSliceYield(sliceMs: number, now: () => number = () => perfor
         start = now();
     };
 }
+
+/**
+ * Run `remove` over `ids` in chunks, yielding to the event loop between chunks.
+ *
+ * The retention sweep deletes every expired attachment blob from the local
+ * cache. Started all at once (`Promise.allSettled(ids.map(remove))`) a few
+ * hundred IndexedDB deletes queue in one task and their completions land as a
+ * burst; chunked, each burst is small and input/paint run in between. Failures
+ * are swallowed per id (allSettled semantics) - a blob that will not delete is
+ * retried by the next sweep. Resolves with the count attempted.
+ */
+export async function removeInChunks(
+    ids: readonly string[],
+    remove: (id: string) => Promise<unknown>,
+    chunkSize = 25,
+    yieldFn: () => Promise<void> = yieldMainThread,
+): Promise<number> {
+    const size = Math.max(1, chunkSize);
+    for (let i = 0; i < ids.length; i += size) {
+        await Promise.allSettled(ids.slice(i, i + size).map(async id => remove(id)));
+        if (i + size < ids.length) await yieldFn();
+    }
+    return ids.length;
+}

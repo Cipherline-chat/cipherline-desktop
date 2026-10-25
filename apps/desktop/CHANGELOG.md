@@ -9,11 +9,139 @@ run by `scripts/release/promote-stable.sh`) if the section for the version being
 contains a `TODO`, or has no such Security statement. The release workflow publishes this section as the body of the
 GitHub Release. How to fill it in: `docs/stable-release-pipeline.md`, "Release notes".
 
+Every stable release also has a `### What's new` subsection: 3 to 8 short, plain-English bullets for the user. The app
+bakes it in at build time and shows it as the "What's new in X.Y.Z" dialog on the first launch after updating
+(`apps/desktop/src/utils/changelogParse.ts` reads it). The release is refused without it. Format and preview:
+`docs/stable-release-pipeline.md`, "What's new notes".
+
 ## [Unreleased]
+
+### What's new
 
 ### Changes
 
 ### Security
+
+## [1.0.23] - 2026-10-25
+
+### What's new
+
+- **Redesigned profiles.** Click a name for a quick preview, or open the full profile with tabs for mutual friends and mutual servers, a showcase, achievements and your level.
+- **Make it yours.** Pick a profile theme, avatar decorations and effects (including seasonal Halloween ones), send a high-five, keep private notes about people, and share your profile as a card with a QR code.
+- **Steam and Spotify.** Link Steam to show your games, and friends can see what you are listening to if you turn that on.
+- **My Emojis.** Add your own emojis, animated ones too, and use them anywhere, including in your custom status.
+- **Custom status.** Set a status with an emoji and have it clear itself after a time you choose.
+- **Better screen sharing.** A lighter copy for slower viewers with automatic fallback, hardware encoding on NVIDIA, audio that stays in step with the video, and zoom that fills the view.
+- **Call personalization.** Choose your speaking ring color and an entrance sound, including one of your own.
+- **Faster channel keys.** New members and returning devices get their channel keys sooner, so messages unlock faster.
+
+### Changes
+
+#### Profiles
+
+- Redesigned profile card: a quick preview when you hover a name, and a full profile with tabs for Profile, Mutual friends and Mutual servers, each shown only when it has something in it.
+- Profile themes, avatar decorations and effects, including 8 new decorations and 7 new effects with their own options (color, intensity, speed), and seasonal Halloween items; items you have not unlocked can be tried on first.
+- Showcase, favorite games, interests and links on your profile; display name, local time and who can see what (including friends-only).
+- High-five someone from their profile, see how long you have been friends, and keep private notes that sync across your devices.
+- Achievements and a level, earned on your device, with an optional "Most played this week".
+- Share card for your profile with a QR code.
+- Animated avatars and banners, a verified mark, badges that do something, and an easter-egg count on profile badges.
+- Settings, Profile is reorganized into Basics, Style, Showcase and Privacy; changes save as you go, with no Save button.
+- A new color picker with a saturation area, hue slider, hex field, presets and recent colors, plus "Match my banner" colors picked on your device.
+
+#### Connections
+
+- Settings, Connections: link a verified Steam account to show your level, library size and recent games.
+- Spotify showcase: up to three public playlist or album links on your profile.
+- "Listening to" status for friends, off by default; it reads what your computer is playing and shows it where a game would appear (a game still wins).
+
+#### Emoji and status
+
+- My Emojis: add personal emojis (animated too), manage them in Settings, Personalize, and use them in chat, reactions and the emoji picker; save one from a message with a click. They sync across your devices and are included in backups.
+- Custom status: set, edit or clear it from the status picker, choose when it clears, and see it in the status line everywhere; a My Emojis emoji can be your status emoji.
+- The emoji picker has Server emojis and My Emojis tabs.
+
+#### Calls
+
+- Speaking ring color, including a custom color from the in-app picker, with a preview that shows your avatar.
+- Entrance sounds in calls, including your own custom sound, processed on your device and sent encrypted inside the call.
+- Moderators can move a member into a private call, as long as the moderator can join it; the member joins that one call as a guest.
+- Light noise suppression now actually starts, and Strong switches to Light by itself if your computer falls behind.
+- Voice can no longer fall seconds behind in a call.
+- Calls remember audio settings per microphone and speaker, with "Voice & Video settings" from the call's mic and speaker menus.
+- Echo cancellation is off by default, and every input and output volume control is capped at 200%.
+- Level call volume: a faster sender-side leveler and a listener-side "Normalize voice volume".
+- A fullscreen strip shows cameras and active speakers first.
+- Your camera on/off sound plays when you press, not after the camera opens.
+- A call key can be handed to a joiner by anyone who holds it, so joining is quicker.
+
+#### Screen sharing
+
+- A lighter copy of your share is on by default, used from the first viewer on heavy shares; viewers fall back to it automatically when the full picture is choppy, and go back when it recovers.
+- Hardware encoding on NVIDIA machines: a share never sits on a software encoder, and software encoding at a high frame rate switches or caps itself.
+- Screen-share audio stays in step with the video, and is never run through voice processing.
+- Zoom on a focused share fills the stage, and the focused picture extends behind the strip and call controls.
+- The screen-share bitrate ceiling is capped and scales sensibly with frame rate.
+- Quick screen share shares the window that was in front when you pressed the key; the Screen Share shortcut moved off Ctrl+Shift+S.
+- HDR screens can be shared with correct colors; HDR native capture is off by default.
+- Crash reports now keep the last moments of a call.
+
+#### Channel keys
+
+- Channel keys arrive faster: one request covers many channels, a rotation hands the new key to every member at once, and keys are installed newest first so recent messages unlock first.
+- Re-asks name only the keys that are missing, and "waiting for channel keys" no longer flaps or appears for messages a key cannot fix.
+
+#### Messaging and servers
+
+- Long messages (over 5,000 characters) collapse behind Expand and Open full screen.
+- Unsent DM and group drafts survive switching conversations and restarts, and show as "Draft:" in the conversation list.
+- Kick and ban confirmations were redesigned, and Shift-click skips the delete confirmation (the hint is shown in the dialog).
+- Reply is hidden in channels where you cannot send messages.
+- New message dialog is single-select with a quiet "Start a group chat" link.
+- Hovering the Pro badge shows how long someone has been Pro.
+- A reaction chip bursts once when it piles up to ten.
+- Transparent images keep their transparency, and editing a message puts the caret at the end.
+
+#### Settings and polish
+
+- Settings are calmer and easier to scan: Voice & Video, Notifications, Storage, Advanced, Activity, Keybinds, Privacy and Appearance have fewer, clearer cards, and sections stay open until you close them.
+- Double-click any slider that has a default to reset it.
+- "Still using these devices?" prompts and stale-device badges.
+- Per-destination progress bars for Back up now, and backup failures name the step that failed.
+- A single glyph on the taskbar overlay: mention, deafened, muted or unread.
+- Safety numbers: a one-time hint and a first-verification moment, and a re-check is only suggested after a year.
+- Full-screen "Update required" and "App shut down" screens, and account, security and update dialogs on the shared dialog frame.
+- Rotating tips and dry lines on the loading screen.
+- Playful touches: Keys on Home reacts to what you are doing, plus moments for first message, first call, milestones and the calendar, a rare alternate ringtone, and a few hidden surprises.
+
+#### Fixes
+
+- "Playing" shows only while the game is actually running.
+- A Windows log-off, sleep or flaky connection is no longer reported as a crash or a freeze.
+- Resuming from sleep waits for the network, then retries.
+- The Settings camera preview follows the camera you pick, and "click to copy" for the version and commit works.
+- DM and group drafts were being cleared whenever the conversation list loaded.
+- Referral bonuses no longer turn a paying or comped account into a trial.
+- No focus box around whole panes after Alt-Tab.
+
+### Security
+
+- GHSA-g7r4-m6w7-qqqr (esbuild, fixed in 0.28.2; renderer build tooling)
+- GHSA-rj75-hqrm-r3gf, GHSA-w9m9-85wc-3x92 (postcss-selector-parser, fixed in 7.1.6; renderer build tooling)
+- GHSA-hp3w-g68c-fv3c (sprintf-js, removed from the shipped app's document-preview dependency chain)
+- Messages that claim to come from one of your own devices are now checked against the devices you have confirmed. A newly added device can't hand out encryption keys until you confirm it.
+- Syncing history to a new device now only accepts the transfer this device asked for, and asks before importing it.
+- In server channels, an edit is only applied when it comes from the message's author, and a delete when it comes from the author or a moderator.
+- A call's encryption key is checked against the conversation and the call it belongs to before it is used.
+- Choosing a new backup passphrase now requires a strong one. Passphrases you already saved keep working.
+- Google Drive access now runs entirely in the app's core and is limited to Cipherline's own backup folder; the app window never sees the Drive sign-in token.
+- Screen and app-audio capture now need either a choice made in Cipherline's own share picker or your approval in a system dialog.
+- Release builds now refuse to run as a plain Node.js process, ignore debugging switches, check their packaged code for tampering on start, and encrypt stored cookies. On macOS, two permissions that let other programs load code into Cipherline were removed.
+- Stricter checks on incoming message keys, channel keys and links, and safer handling of received documents and file names.
+- Moving a member into a call they could not otherwise join uses a single-use, 60-second grant that lets them into that one call only, and the call's encryption key is handed to them end to end encrypted, bound to that call. They cannot re-enter later with an old token.
+- Custom status images (My Emojis) and your custom entrance sound are never stored on the server: status images stay on your devices, and the sound travels encrypted inside the call.
+- Steam on your profile is marked verified only after you prove the account through Steam's own sign-in; Steam and Spotify artwork loads through Cipherline's servers so those services do not see your address, and the "Listening to" status is friends-only, off by default and left out of backups.
+- HDR native screen capture is off by default.
 
 ## [1.0.22] - 2026-10-14
 

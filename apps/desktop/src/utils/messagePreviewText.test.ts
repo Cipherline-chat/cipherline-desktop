@@ -93,13 +93,13 @@ describe('call sites use the display transform', () => {
         const at = src.indexOf('Reply quote preview');
         expect(at).toBeGreaterThan(-1);
         const block = src.slice(at, at + 900);
-        expect(block).toMatch(/displayTextOf\(/);
+        expect(block).toMatch(/displayPreviewOf\(/);
         expect(block).not.toMatch(/\)\?\.content\?\.text \|\|/);
     });
 
     it('ChatPane: the "Replying to" bar over the composer', () => {
         const src = read('components/ChatPane.tsx');
-        expect(src).toMatch(/const replyText\s*=\s*displayTextOf\(replyTarget\?\.content\)/);
+        expect(src).toMatch(/const replyText\s*=\s*previewSnippet\(displayPreviewOf\(replyTarget\?\.content\)/);
     });
 
     it('ChatPane: in-chat search matches the display text', () => {
@@ -117,10 +117,10 @@ describe('call sites use the display transform', () => {
     it('PinnedMessagesPanel: search matches the display text (rows already render it)', () => {
         const src = read('components/PinnedMessagesPanel.tsx');
         expect(src).toMatch(/messageTextMatches\(text, searchQuery\)/);
-        expect(src).toMatch(/mentionsToDisplayText\(msg\.content\.text/);
+        expect(src).toMatch(/mentionsToDisplayText\(clipForPreview\(msg\.content\.text/);
     });
 
     it('notifications already render the display text', () => {
-        expect(read('hooks/useNotificationDispatch.ts')).toMatch(/mentionsToDisplayText\(text\)/);
+        expect(read('hooks/useNotificationDispatch.ts')).toMatch(/mentionsToDisplayText\(clipForPreview\(text\)\)/);
     });
 });

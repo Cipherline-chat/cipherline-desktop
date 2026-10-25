@@ -1,10 +1,8 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
-import { MessageSquare, Pencil, MoreVertical, PhoneCall, Server, UserPlus, UserMinus, Ban, AtSign, Check, X, Flag } from 'lucide-react';
+import { MessageSquare, Pencil, MoreVertical, PhoneCall, Server, UserPlus, UserMinus, Ban, AtSign, Check, X, Flag, Share2 } from 'lucide-react';
 import { apiUrl } from '../utils/apiPath';
-import { EncryptedAvatar } from './EncryptedAvatar';
 import { ImageLightbox } from './ImageLightbox';
-import { GameControllerIcon } from './GameControllerIcon';
 import { MobileStatusGlyph } from './MobileStatusGlyph';
 import { STATUS_CONFIG } from '../hooks/useUserStatus';
 import type { FriendStatusEntry, UserStatus } from '../hooks/useUserStatus';
@@ -13,17 +11,31 @@ import { useModalExit } from '../hooks/useModalExit';
 import { useContextMenu } from '../hooks/useContextMenu';
 import { useEscape } from '../hooks/useEscape';
 import { formatLastSeen } from '../utils/formatLastSeen';
+import { isFriendsOnly } from '../utils/profileVisibility';
+import { sanitizeLinks } from '../utils/profileLinks';
+import { readTheme } from '../utils/profileTheme';
+import { getVerificationState } from '../utils/keyVerification';
 import { fetchProfile as fetchProfileCached, peekProfile, __profilePrefetchTuning, type PublicProfile } from '../utils/profileCache';
 import { lookupUserAvatarId, lookupUserBannerId } from '../utils/peerIdentityCache';
 import { roleColorHexFromInt } from '../utils/roleColor';
 import { ClButton, ClInput } from './cl';
-// The card's markup is shared with the onboarding profile preview (so the two
-// cannot drift) — see ProfileCardParts.tsx.
-import {
-    PROFILE_CARD_FRAME_CLASS, PROFILE_CARD_IDENTITY_CLASS, PROFILE_CARD_INFO_CLASS, PROFILE_CARD_WIDTH,
-    ProfileCardAbout, ProfileCardAvatar, ProfileCardBanner, ProfileCardEyebrow as Eyebrow, ProfileCardFooter,
-    ProfileCardHairline, ProfileCardNameRow, ProfileCardStatusDot, ProfileCardStatusLabel, ProfileCardStatusLine,
-} from './ProfileCardParts';
+import { ProfileCardSection } from './ProfileCardParts';
+import { ProfilePopoutCard, OpenProfileButton } from './profile/ProfilePopoutCard';
+import { ProfileFullView } from './profile/ProfileFullView';
+import { ProfileShareDialog } from './profile/ProfileShareDialog';
+import type { ProfileCardData, ProfileFullTab } from './profile/profileCardData';
+import { useProfileActivity } from '../hooks/useProfileActivity';
+import { useProfileConnections } from '../hooks/useProfileConnections';
+import { placePopover, type Placement } from '../utils/popoverPlacement';
+import { StatusLine } from './StatusLine';
+import { useMostPlayed } from '../hooks/useMostPlayed';
+import { ProfileNoteField } from './profile/ProfileNoteField';
+import { HighFiveButton } from './profile/HighFiveButton';
+import { cleanInterests, showcaseBlocksOf } from '../utils/profileExtras';
+import { anniversaryYearsFor } from '../utils/profileMoments';
+import { readItemOptions } from '../utils/profileCosmetics';
+import { useMutuals, useSteamCard } from '../hooks/useProfileRelations';
+import { useOpenProfile } from '../contexts/ProfileOpenContext';
 
 export interface ProfileModalProps {
     userId: string;
@@ -35,6 +47,8 @@ export interface ProfileModalProps {
     /** Own status when viewing own profile */
     myStatus?: UserStatus;
     myGame?: string | null;
+    /** Own custom status when viewing own profile (the cached profile can be stale after an edit). */
+    myCustom?: { text: string; emoji: string; expiresAt: string | null };
     onMessage?: (userId: string) => void;
     /** Opens Settings > My Profile tab — only shown when viewing own profile */
     onOpenSettings?: () => void;
@@ -83,32 +97,15 @@ export interface ProfileModalProps {
      *  otherwise after this component's own lazy fetch resolves. No-op
      *  unless `canSetNickname` is also true. */
     autoEditNickname?: boolean;
+    /** A mutual server's row pressed: go to that server (the popover closes). */
+    onOpenServer?: (serverId: string) => void;
+    /** The viewer's icon for a server they are in (mutual-server rows). */
+    renderServerIcon?: (serverId: string, name: string) => React.ReactNode;
 }
 
-const CARD_WIDTH = PROFILE_CARD_WIDTH;
-// Conservative estimate used for viewport-edge clamping. A taller card just
-// gets `max-height: calc(100vh - 16px)` and scrolls internally.
-const ESTIMATED_CARD_HEIGHT = 500;
-const MARGIN = 8;
-
-function clampAnchor(anchor: { x: number; y: number } | null): { left: number; top: number } {
-    if (typeof window === 'undefined' || !anchor) {
-        // Default: top-center fallback (used when no click anchor available).
-        return {
-            left: Math.max(MARGIN, Math.floor(((typeof window !== 'undefined' ? window.innerWidth : 1024) - CARD_WIDTH) / 2)),
-            top: 80,
-        };
-    }
-    const vw = window.innerWidth;
-    const vh = window.innerHeight;
-    // Center the card horizontally on the cursor, drop it ~8px below.
-    const desiredLeft = anchor.x - CARD_WIDTH / 2;
-    const desiredTop = anchor.y + 8;
-    return {
-        left: Math.max(MARGIN, Math.min(vw - CARD_WIDTH - MARGIN, desiredLeft)),
-        top: Math.max(MARGIN, Math.min(vh - ESTIMATED_CARD_HEIGHT - MARGIN, desiredTop)),
-    };
-}
+/** The preview popover's width. Sized so the card fits an 800x600 window beside a member list. */
+export const POPOUT_WIDTH = 320;
+const MARGIN = 12;
 
 export const ProfileModal: React.FC<ProfileModalProps> = ({
     userId,
@@ -118,6 +115,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
     friendStatuses,
     myStatus,
     myGame,
+    myCustom,
     onMessage,
     onSendFriendRequest,
     onOpenSettings,
@@ -136,34 +134,49 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
     canSetNickname = false,
     onSetNickname,
     autoEditNickname = false,
+    onOpenServer,
+    renderServerIcon,
 }) => {
-    // Clamped position computed once per anchor — recomputed only if anchor
-    // changes (effectively never during the popover's lifetime).
-    const { left, top } = React.useMemo(() => clampAnchor(anchor), [anchor]);
+    // Preview (the anchored popover) or the full profile (a large modal).
+    const [view, setView] = useState<{ mode: 'preview' | 'full'; tab: ProfileFullTab }>({ mode: 'preview', tab: 'overview' });
+    // Opening another person from inside (a mutual friend) starts on their Overview, in the same mode.
+    const [seenUser, setSeenUser] = useState(userId);
+    if (seenUser !== userId) { setSeenUser(userId); setView((v) => ({ mode: v.mode, tab: 'overview' })); }
+    const openFull = useCallback((tab: ProfileFullTab = 'overview') => setView({ mode: 'full', tab }), []);
 
-    // The anchor clamp works off ESTIMATED_CARD_HEIGHT; real profiles vary
-    // (roles, long bios, load states). Watch the card's actual height and
-    // raise it off the bottom edge so it FITS instead of growing a scrollbar —
-    // scrolling remains only for cards genuinely taller than the viewport.
+    // Focus goes back to whatever opened the profile (the avatar, the name, the menu row) when it closes.
+    const openerRef = React.useRef<Element | null>(typeof document !== 'undefined' ? document.activeElement : null);
+    useEffect(() => () => {
+        const el = openerRef.current as HTMLElement | null;
+        if (el && el.isConnected && typeof el.focus === 'function' && el !== document.body) el.focus({ preventScroll: true });
+    }, []);
+
+    // Where the popover goes (utils/popoverPlacement): beside the click, never
+    // under the titlebar, the whole card on screen. Placed from the MEASURED
+    // card before paint, and again whenever the card or the window resizes.
     const cardRef = React.useRef<HTMLDivElement>(null);
-    const [topAdj, setTopAdj] = React.useState(top);
-    React.useLayoutEffect(() => { setTopAdj(top); }, [top]);
-    React.useEffect(() => {
-        const el = cardRef.current;
-        if (!el) return;
+    const place = useCallback((h: number) => placePopover({
+        anchor, size: { w: POPOUT_WIDTH, h }, viewport: { w: window.innerWidth, h: window.innerHeight }, margin: MARGIN,
+    }), [anchor]);
+    const [pos, setPos] = useState<Placement>(() => (typeof window === 'undefined'
+        ? { left: 0, top: 0, maxHeight: null, side: 'center' }
+        : placePopover({ anchor, size: { w: POPOUT_WIDTH, h: 460 }, viewport: { w: window.innerWidth, h: window.innerHeight }, margin: MARGIN })));
+    const inPreview = view.mode === 'preview';
+    React.useLayoutEffect(() => {
+        if (!inPreview) return;
+        const frame = cardRef.current;
+        const card = frame?.firstElementChild as HTMLElement | null | undefined;
+        if (!frame || !card) return;
         const fit = () => {
-            const h = el.offsetHeight;
-            const maxTop = Math.max(MARGIN, window.innerHeight - h - MARGIN);
-            setTopAdj(prev => {
-                const next = Math.min(top, maxTop);
-                return Math.abs(next - prev) < 1 ? prev : next;
-            });
+            const next = place(card.offsetHeight);
+            setPos((prev) => (prev.left === next.left && prev.top === next.top && prev.maxHeight === next.maxHeight && prev.side === next.side ? prev : next));
         };
-        const ro = new ResizeObserver(fit);
-        ro.observe(el);
+        fit();
+        const ro = typeof ResizeObserver === 'function' ? new ResizeObserver(fit) : null;
+        ro?.observe(card);
         window.addEventListener('resize', fit);
-        return () => { ro.disconnect(); window.removeEventListener('resize', fit); };
-    }, [top]);
+        return () => { ro?.disconnect(); window.removeEventListener('resize', fit); };
+    }, [place, inPreview]);
 
     const isOwnProfile = userId === currentUserId;
 
@@ -172,6 +185,13 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
     const [profile, setProfile] = useState<PublicProfile | null>(() => peekProfile(userId));
     const [loading, setLoading] = useState(() => !peekProfile(userId));
     const [error, setError] = useState<string | null>(null);
+
+    // Most played: the server answers a stranger with the same empty list as a
+    // user with nothing, so a stranger's card never fetches it (and never shows it).
+    const mayReadActivity = userId === currentUserId || isFriend;
+    const mostPlayed = useMostPlayed(mayReadActivity ? userId : null, userId === currentUserId);
+    // Your own interests, to highlight the ones you share (others' cards only).
+    const [myInterests, setMyInterests] = useState<string[] | null>(() => (peekProfile(currentUserId)?.interests ? cleanInterests(peekProfile(currentUserId)?.interests) : null));
 
     // Which images to show. The profile response is the authority once it is
     // here; before that, the ids this device already knows — the friends list,
@@ -313,6 +333,17 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
         void fetchProfile();
     }, [fetchProfile]);
 
+    // Only when this card shows interests: read OUR OWN (cached) profile once to find the shared ones.
+    const theirInterestCount = profile?.interests?.length ?? 0;
+    useEffect(() => {
+        if (isOwnProfile || theirInterestCount === 0 || !token || !currentUserId) return;
+        let cancelled = false;
+        fetchProfileCached(currentUserId, token, { maxAgeMs: __profilePrefetchTuning.FRESH_MS })
+            .then((me) => { if (!cancelled) setMyInterests(cleanInterests(me.interests)); })
+            .catch(() => { /* no highlighting */ });
+        return () => { cancelled = true; };
+    }, [isOwnProfile, theirInterestCount, token, currentUserId]);
+
     // Esc dismisses the popover through the shared stack. ImageLightbox and
     // the More menu (ContextMenu, via useContextMenu) each push their own
     // layer only while THEY are open, and — being opened on top of this one
@@ -326,14 +357,16 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
     const liveEntry: FriendStatusEntry = isOwnProfile
         ? {
               status: myStatus ?? (profile?.status ?? 'offline'),
-              custom_status_text: profile?.custom_status_text ?? null,
-              custom_status_emoji: profile?.custom_status_emoji ?? null,
+              custom_status_text: myCustom ? (myCustom.text || null) : (profile?.custom_status_text ?? null),
+              custom_status_emoji: myCustom ? (myCustom.emoji || null) : (profile?.custom_status_emoji ?? null),
+              custom_status_expires_at: myCustom ? myCustom.expiresAt : (profile?.custom_status_expires_at ?? null),
               current_game: myGame ?? null,
           }
         : (friendStatuses[userId] ?? {
               status: profile?.status ?? 'offline',
               custom_status_text: profile?.custom_status_text ?? null,
               custom_status_emoji: profile?.custom_status_emoji ?? null,
+              custom_status_expires_at: profile?.custom_status_expires_at ?? null,
               current_game: null,
               on_mobile: profile?.on_mobile ?? false,
           });
@@ -348,8 +381,54 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
         return effectiveServerRoles.filter(r => effectiveMemberRoleIds.includes(r.role_id));
     }, [effectiveServerRoles, effectiveMemberRoleIds]);
 
-    // Details below the divider — bio, server nickname, roles.
-    const hasDetails = !!(profile?.bio || serverId || assignedRoles.length > 0);
+    // "You verified their safety number": this device's own pinned-key state,
+    // read locally. Nothing about it is sent to or known by the server.
+    const verifiedByMe = !isOwnProfile && !!currentUserId && getVerificationState(currentUserId, userId) === 'verified';
+    const playingNow = !!liveEntry.current_game && liveEntry.status !== 'offline' && !onMobile;
+    // The celebration is for friends, on the day (local), and is skipped under reduced motion.
+    const anniversary = !isOwnProfile && isFriend ? anniversaryYearsFor(userId) : 0;
+    const lastSeen = liveEntry.status === 'offline' ? formatLastSeen(profile?.last_seen_at ?? null) : null;
+    // Mutual friends / servers (others' cards only) and the verified Steam block (when there is one to see).
+    const mutuals = useMutuals(isOwnProfile ? null : userId, token);
+    const steamCard = useSteamCard(profile?.steam?.steam_id ? userId : null, token);
+    const openProfile = useOpenProfile();
+
+    // Everything the card draws, from the profile response (the server already
+    // withheld whatever this viewer may not see).
+    const cardData: ProfileCardData | null = profile ? {
+        name: displayName,
+        discriminator: profile.discriminator,
+        theme: readTheme(profile.profile_theme),
+        decoration: profile.avatar_decoration ?? null,
+        effect: profile.profile_effect ?? null,
+        decorationOptions: readItemOptions(profile.cosmetic_options?.d, 'decoration', profile.avatar_decoration),
+        effectOptions: readItemOptions(profile.cosmetic_options?.e, 'effect', profile.profile_effect),
+        // Card hover animation: removed on owner request 2026-10-23; the server field users.hover_animation is now unused by the desktop.
+        isPro: profile.is_pro,
+        proSince: profile.pro_since,
+        badges: profile.badges,
+        level: profile.level,
+        bio: profile.bio,
+        bioFriendsOnly: isFriendsOnly(profile.friends_only_fields, 'bio'),
+        timeZone: profile.time_zone ?? null,
+        localTimeFriendsOnly: isFriendsOnly(profile.friends_only_fields, 'local_time'),
+        friendsSince: profile.friends_since ?? null,
+        anniversaryYears: anniversary,
+        highFiveCount: profile.high_five_count ?? 0,
+        blocks: showcaseBlocksOf(profile.showcase).blocks,
+        topAchievements: showcaseBlocksOf(profile.showcase).top_achievements,
+        games: profile.widgets?.games ?? [],
+        gamesFriendsOnly: isFriendsOnly(profile.friends_only_fields, 'widgets'),
+        links: sanitizeLinks(profile.links),
+        linksFriendsOnly: isFriendsOnly(profile.friends_only_fields, 'links'),
+        interests: cleanInterests(profile.interests),
+        myInterests: isOwnProfile ? null : (myInterests ?? []),
+        interestsFriendsOnly: isFriendsOnly(profile.friends_only_fields, 'widgets'),
+        achievementCount: profile.achievement_count ?? null,
+        mostPlayed: mostPlayed.games,
+        verified: verifiedByMe,
+        steam: profile.steam?.steam_id ? { steamId: profile.steam.steam_id, personaName: steamCard?.persona_name ?? null, avatar: steamCard?.avatar ?? null } : null,
+    } : null;
 
     const handleAddToGroup = () => {
         if (!profile) return;
@@ -372,339 +451,291 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
         onReport?.(profile.user_id, profile.username);
     };
 
-    return (
+    const openMenu = (e: React.MouseEvent<HTMLButtonElement>) => {
+        e.stopPropagation();
+        // Items built fresh per click so isFriend / canSetNickname stay current.
+        const menuItems = [
+            ...(isFriend && onMessage ? [{ icon: <MessageSquare />, label: 'Message', onSelect: () => onMessage(userId) }] : []),
+            ...(isFriend && onCall ? [{ icon: <PhoneCall />, label: 'Call', onSelect: () => onCall(userId) }] : []),
+            ...(isFriend && onAddToGroup ? [{ icon: <UserPlus />, label: 'Add to Group Chat', onSelect: handleAddToGroup }] : []),
+            ...(isFriend && inviteToServerItems?.length ? [{
+                icon: <Server />, label: 'Invite to Server', onSelect: () => {},
+                submenu: inviteToServerItems.map(it => ({ label: it.label, onSelect: it.onSelect })),
+            }] : []),
+            // Nickname change — viewer has MANAGE_NICKNAMES for this server member
+            ...(serverId && canSetNickname && onSetNickname ? [{ icon: <AtSign />, label: 'Change Nickname', onSelect: openNicknameEdit }] : []),
+            ...(isFriend ? [{ divider: true as const }] : []),
+            ...(isFriend ? [{ icon: <UserMinus />, label: 'Remove Friend', danger: true, onSelect: handleRemoveFriend }] : []),
+            { icon: <Ban />, label: 'Block', danger: true, onSelect: handleBlock },
+            ...(onReport ? [{ icon: <Flag />, label: 'Report User', danger: true, onSelect: handleReport }] : []),
+        ];
+        if (menuItems.length > 0) profileMenu.open(e, menuItems, displayName);
+    };
+
+    // What they are doing right now, and their connected accounts (integration seams: INTEGRATION_SLOTS.md).
+    const activities = useProfileActivity({ userId, isSelf: isOwnProfile, profile, liveGame: playingNow ? liveEntry.current_game ?? null : null, status: liveEntry.status });
+    const connections = useProfileConnections({ userId, isSelf: isOwnProfile, profile, steamPersona: steamCard?.persona_name ?? null });
+    const [shareOpen, setShareOpen] = useState(false);
+
+    // Presence + custom status (the game is the activity row below it).
+    const presenceNode = profile ? (
         <>
-            {/* Transparent click-catcher — captures outside clicks, no dim/blur.
-                Stacked above the fullscreen call overlay (z-[9999]) so the
-                profile popover is visible when opened from a fullscreen tile. */}
-            <div
-                className="fixed inset-0 z-[10000]"
-                onClick={handleClose}
-                style={{ background: 'transparent' }}
-            />
+            <span className="pcd-status-line">
+                {lastSeen ? <span>{lastSeen}</span> : (
+                    <>
+                        <span className="pcd-status-dot" style={{ backgroundColor: statusCfg.color }} aria-hidden="true" />
+                        <b style={{ color: statusCfg.color }}>{statusCfg.label}</b>
+                        {onMobile && <span>· on mobile</span>}
+                    </>
+                )}
+            </span>
+            {/* Custom status (offline = none; expired = none). */}
+            {liveEntry.status !== 'offline' && (
+                <StatusLine entry={{ ...liveEntry, current_game: null }} userId={userId} animate className="pcd-custom" />
+            )}
+        </>
+    ) : null;
 
-            {/* Popover card — positioned near the cursor click, clamped to the viewport.
-                On close, plays a short reverse fade/scale via animate-out classes. */}
-            <div
-                ref={cardRef}
-                className={`custom-scrollbar fixed z-[10001] ${PROFILE_CARD_FRAME_CLASS} ${closing ? 'fade-pop-exit' : 'profile-popover-anim'}`}
-                style={{
-                    left,
-                    top: topAdj,
-                    width: CARD_WIDTH,
-                    // The fit effect above raises the card off the bottom edge, so
-                    // this cap only bites when the card is taller than the window.
-                    maxHeight: 'calc(100vh - 16px)',
-                    overflowY: 'auto',
-                    // Setting overflow-y alone computes overflow-x to auto too —
-                    // any absolutely-positioned child poking past the edge (e.g.
-                    // a button tooltip) would grow a horizontal scrollbar.
-                    overflowX: 'hidden',
-                    overscrollBehavior: 'contain',
-                }}
-                onClick={(e) => {
-                    // Click inside the card just stops propagation —
-                    // useContextMenu owns its own outside-click dismissal.
-                    e.stopPropagation();
-                }}
-            >
-                {/* Banner — rounded top corners (matching the card's 20px), fades into card bg at the bottom */}
-                <ProfileCardBanner
-                    attachmentId={bannerId}
-                    fallbackAvatarAttachmentId={avatarId}
-                    userId={userId}
-                    token={token}
-                />
-
-                {/* 3-dots menu — top-right over banner, only for other users' profiles.
-                    Items built fresh per click so isFriend / canSetNickname stays current. Portals to body
-                    via useContextMenu, never clipped by the modal's overflow.
-                    Native title, not the kit tooltip: the tooltip pill is a no-wrap
-                    absolute child that pokes past the card's right edge (the button sits
-                    12px from it) — the overflow source behind the horizontal scrollbar,
-                    and it would clip badly under the card's overflow-x:hidden anyway. */}
-                {!isOwnProfile && (
-                    <div className="absolute top-3 right-3 z-20" title="More actions">
-                        <ClButton
-                            icon
-                            variant="ghost"
-                            size="sm"
-                            onClick={(e) => {
-                                e.stopPropagation();
-                                const menuItems = [
-                                    ...(isFriend && onMessage ? [{
-                                        icon: <MessageSquare />, label: 'Message',
-                                        onSelect: () => onMessage(userId),
-                                    }] : []),
-                                    ...(isFriend && onCall ? [{
-                                        icon: <PhoneCall />, label: 'Call',
-                                        onSelect: () => onCall(userId),
-                                    }] : []),
-                                    ...(isFriend && onAddToGroup ? [{
-                                        icon: <UserPlus />, label: 'Add to Group Chat',
-                                        onSelect: handleAddToGroup,
-                                    }] : []),
-                                    ...(isFriend && inviteToServerItems?.length ? [{
-                                        icon: <Server />, label: 'Invite to Server',
-                                        onSelect: () => {},
-                                        submenu: inviteToServerItems.map(it => ({
-                                            label: it.label,
-                                            onSelect: it.onSelect,
-                                        })),
-                                    }] : []),
-                                    // Nickname change — viewer has MANAGE_NICKNAMES for this server member
-                                    ...(serverId && canSetNickname && onSetNickname ? [{
-                                        icon: <AtSign />, label: 'Change Nickname',
-                                        onSelect: openNicknameEdit,
-                                    }] : []),
-                                    ...(isFriend ? [{ divider: true as const }] : []),
-                                    ...(isFriend ? [{ icon: <UserMinus />, label: 'Remove Friend', danger: true, onSelect: handleRemoveFriend }] : []),
-                                    { icon: <Ban />, label: 'Block', danger: true, onSelect: handleBlock },
-                                    ...(onReport ? [{ icon: <Flag />, label: 'Report User', danger: true, onSelect: handleReport }] : []),
-                                ];
-                                if (menuItems.length > 0) {
-                                    profileMenu.open(e, menuItems, displayName);
-                                }
+    const nicknameSection = profile && serverId ? (
+        <ProfileCardSection title="Server nickname" testId="profile-nickname">
+            {nicknameEditOpen ? (
+                <div className="flex flex-col gap-1.5">
+                    <div className="flex items-center gap-1.5">
+                        <ClInput
+                            autoFocus
+                            value={nicknameInput}
+                            onChange={e => setNicknameInput(e.target.value)}
+                            onKeyDown={e => {
+                                if (e.key === 'Enter') { e.preventDefault(); saveNickname(); }
                             }}
-                        >
-                            <MoreVertical size={16} />
+                            maxLength={32}
+                            placeholder={profile?.username ?? 'Nickname (leave blank to reset)'}
+                            aria-label="Server nickname"
+                            onClick={e => e.stopPropagation()}
+                        />
+                        <ClButton icon variant="ok" size="sm" onClick={(e) => { e.stopPropagation(); saveNickname(); }} disabled={nicknameSaving} tooltip="Save">
+                            <Check size={13} strokeWidth={2.5} />
+                        </ClButton>
+                        <ClButton icon variant="ghost" size="sm" onClick={(e) => { e.stopPropagation(); closeNicknameEdit(); }} disabled={nicknameSaving} tooltip="Cancel">
+                            <X size={13} />
                         </ClButton>
                     </div>
-                )}
+                    {nicknameError && <p className="text-[11px] text-cl-flash m-0" role="alert">{nicknameError}</p>}
+                    <p className="text-[11px] text-cl-faint m-0">Leave blank to use their username.</p>
+                </div>
+            ) : (
+                <div className="flex items-center gap-2">
+                    <span className="text-[13px] text-cl-muted">
+                        {effectiveNickname ?? <span className="text-cl-faint">None</span>}
+                    </span>
+                    {canSetNickname && onSetNickname && (
+                        <ClButton icon variant="ghost" className="clb--icon-xs" onClick={(e) => { e.stopPropagation(); openNicknameEdit(); }} tooltip="Edit nickname">
+                            <Pencil size={10} />
+                        </ClButton>
+                    )}
+                </div>
+            )}
+        </ProfileCardSection>
+    ) : null;
 
-                {/* Avatar — overlaps banner, horizontally centered, clickable to enlarge,
-                    status badge in the corner (ringed to separate it from the avatar face). */}
-                <ProfileCardAvatar
-                    ariaLabel="View avatar"
-                    title={avatarBlobUrl ? 'View avatar' : undefined}
-                    onClick={(e) => {
-                        e.stopPropagation();
-                        if (avatarBlobUrl) setLightboxOpen(true);
-                    }}
-                    interactionClassName={avatarBlobUrl ? 'cursor-zoom-in hover:scale-[1.04]' : 'cursor-default'}
-                    badge={!loading && (onMobile ? (
-                        <span
-                            className="absolute flex items-center justify-center rounded-[6px] ring-[3px] ring-[#131A30] bg-[#131A30]"
-                            style={{ right: 4, bottom: 0 }}
+    const rolesSection = assignedRoles.length > 0 ? (
+        <ProfileCardSection title={`Roles · ${assignedRoles.length}`} testId="profile-roles">
+            <ul className="pcd-chips">
+                {assignedRoles.map(r => {
+                    const hex = roleColorHexFromInt(r.color);
+                    return (
+                        <li
+                            key={r.role_id}
+                            className="pcd-role"
+                            style={{
+                                color: hex ?? 'rgba(244,247,255,0.8)',
+                                backgroundColor: hex ? `${hex}1f` : 'rgba(255,255,255,0.06)',
+                            }}
                         >
-                            <MobileStatusGlyph status={liveEntry.status} size={16} />
-                        </span>
-                    ) : (
-                        <ProfileCardStatusDot color={statusCfg.color} title={statusCfg.label} />
-                    ))}
-                >
-                    {/* Skeleton only while there is genuinely nothing to show:
-                        no profile yet AND no avatar id known for this user. */}
-                    {loading && !avatarId ? (
-                        <div className="w-full h-full bg-white/5 animate-pulse" />
-                    ) : (
-                        <EncryptedAvatar
-                            attachmentId={avatarId}
+                            <i style={{ backgroundColor: hex ?? 'rgba(255,255,255,0.35)' }} aria-hidden="true" />
+                            {r.name}
+                        </li>
+                    );
+                })}
+            </ul>
+        </ProfileCardSection>
+    ) : null;
+
+    // The preview shows server context only while it matters there: the roles, and the nickname while it is being edited.
+    const previewExtras = profile && (rolesSection || nicknameEditOpen) ? <>{nicknameEditOpen && nicknameSection}{rolesSection}</> : null;
+    const fullExtras = profile && (nicknameSection || rolesSection) ? (
+        <section className="pfp-panel-card pfp-server">{nicknameSection}{rolesSection}</section>
+    ) : null;
+
+    const messageOrAdd = (fullWidth: boolean) => profile && !isOwnProfile ? (
+        isFriend && onMessage ? (
+            <ClButton variant="primary" fullWidth={fullWidth} onClick={() => onMessage(userId)}>
+                <MessageSquare size={14} />
+                Message
+            </ClButton>
+        ) : !isFriend && onSendFriendRequest ? (
+            <ClButton variant="primary" fullWidth={fullWidth} onClick={() => onSendFriendRequest(userId, profile.username, profile.discriminator ?? null)}>
+                <UserPlus size={14} />
+                Add friend
+            </ClButton>
+        ) : null
+    ) : null;
+
+    const previewActions = profile ? (
+        isOwnProfile ? (
+            <>
+                <ClButton variant="ghost" fullWidth onClick={() => { handleClose(); onOpenSettings?.(); }}>
+                    <Pencil size={14} />
+                    Edit profile
+                </ClButton>
+                <button type="button" className="ppo-icon-btn" onClick={(e) => { e.stopPropagation(); setShareOpen(true); }} aria-label="Share your profile" title="Share your profile" data-testid="share-profile">
+                    <Share2 size={15} aria-hidden="true" />
+                </button>
+                <OpenProfileButton onClick={() => openFull('overview')} />
+            </>
+        ) : (
+            <>
+                {messageOrAdd(true) ?? <span />}
+                <HighFiveButton userId={userId} token={token} count={profile.high_five_count ?? 0} />
+                <OpenProfileButton onClick={() => openFull('overview')} />
+            </>
+        )
+    ) : null;
+
+    const fullActions = profile ? (
+        isOwnProfile ? (
+            <>
+                <ClButton variant="ghost" onClick={() => { handleClose(); onOpenSettings?.(); }}>
+                    <Pencil size={14} />
+                    Edit profile
+                </ClButton>
+                <ClButton variant="primary" onClick={() => setShareOpen(true)}>
+                    <Share2 size={14} />
+                    Share
+                </ClButton>
+            </>
+        ) : (
+            <>
+                {messageOrAdd(false)}
+                <HighFiveButton userId={userId} token={token} count={profile.high_five_count ?? 0} />
+            </>
+        )
+    ) : null;
+
+    const menuButton = !isOwnProfile && profile ? (
+        <button type="button" className="pcd-menu-btn" aria-label="More actions" title="More actions" onClick={openMenu} data-testid="profile-more">
+            <MoreVertical size={16} aria-hidden="true" />
+        </button>
+    ) : undefined;
+
+    const avatarBadge = !loading && (onMobile ? (
+        <span className="pcd-mobile" title={`${statusCfg.label} · on mobile`}>
+            <MobileStatusGlyph status={liveEntry.status} size={16} />
+        </span>
+    ) : (
+        <span className="pcd-dot" style={{ backgroundColor: statusCfg.color }} title={statusCfg.label} />
+    ));
+
+    return (
+        <>
+            {view.mode === 'preview' ? (
+                <>
+                    {/* Transparent click-catcher: outside clicks close, no dim. Stacked above the
+                        fullscreen call overlay (z-[9999]) so a profile opened from a tile shows. */}
+                    <div className="fixed inset-0 z-[10000]" onClick={handleClose} style={{ background: 'transparent' }} />
+                    <div
+                        ref={cardRef}
+                        role="dialog"
+                        aria-label={displayName ? `${displayName}'s profile` : 'Profile'}
+                        className="custom-scrollbar fixed z-[10001] ppo-pop"
+                        data-closing={closing ? 'true' : undefined}
+                        data-side={pos.side}
+                        data-testid="profile-popover"
+                        style={{
+                            left: pos.left,
+                            top: pos.top,
+                            width: POPOUT_WIDTH,
+                            ...(pos.maxHeight !== null ? {
+                                maxHeight: pos.maxHeight, overflowY: 'auto', overflowX: 'hidden', overscrollBehavior: 'contain',
+                            } as const : null),
+                        }}
+                        onClick={(e) => { e.stopPropagation(); }}
+                    >
+                        <ProfilePopoutCard
                             userId={userId}
                             token={token}
-                            className="w-full h-full"
-                            fallbackSize={40}
-                            disableClickProfile
-                            bypassFriendGate
+                            isSelf={isOwnProfile}
+                            className="ppo--float"
+                            data={cardData}
+                            avatarId={avatarId}
+                            bannerId={bannerId}
+                            bannerFriendsOnly={isFriendsOnly(profile?.friends_only_fields, 'banner')}
+                            loading={loading}
+                            error={error}
+                            onRetry={() => void fetchProfile()}
+                            presence={presenceNode}
+                            activities={activities}
+                            avatarBadge={avatarBadge}
+                            menu={menuButton}
+                            extras={previewExtras}
+                            actions={previewActions}
+                            mutuals={mutuals.data}
+                            onOpenFull={openFull}
                         />
-                    )}
-                </ProfileCardAvatar>
-
-                {/* Info block — left-aligned */}
-                <div className={PROFILE_CARD_INFO_CLASS}>
-                    {loading ? (
-                        <div className="space-y-2 animate-pulse">
-                            <div className="h-5 bg-white/10 rounded-lg w-3/4" />
-                            <div className="h-3.5 bg-white/5 rounded-lg w-1/2" />
-                            <div className="h-3 bg-white/5 rounded-lg w-2/3 mt-2" />
-                        </div>
-                    ) : error ? (
-                        <p className="text-sm text-cl-flash">{error}</p>
-                    ) : profile ? (
-                        <>
-                            {/* Identity — centered under the centered avatar so the card
-                                reads as one column instead of two competing alignments. */}
-                            <div className={PROFILE_CARD_IDENTITY_CLASS}>
-                                <ProfileCardNameRow
-                                    name={displayName}
-                                    discriminator={profile.discriminator}
-                                    isPro={profile.is_pro}
-                                    badges={profile.badges}
-                                />
-
-                                {/* Status label / last seen */}
-                                <ProfileCardStatusLine>
-                                    {liveEntry.status === 'offline' && formatLastSeen(profile.last_seen_at)
-                                        ? <span className="text-[12px] text-cl-faint">{formatLastSeen(profile.last_seen_at)}</span>
-                                        : <ProfileCardStatusLabel color={statusCfg.color} label={onMobile ? `${statusCfg.label} · on mobile` : statusCfg.label} />
-                                    }
-                                </ProfileCardStatusLine>
-
-                                {/* Game activity — hidden when offline so the "playing"
-                                    signal isn't leaked. */}
-                                {liveEntry.current_game && liveEntry.status !== 'offline' && !onMobile && (
-                                    <div className="flex items-center gap-2 mt-2 text-[13px] text-cl-muted max-w-full">
-                                        <GameControllerIcon size={18} className="text-cl-ok shrink-0" />
-                                        <span className="truncate">Playing {liveEntry.current_game}</span>
-                                    </div>
-                                )}
-
-                                {/* Custom status */}
-                                {(liveEntry.custom_status_emoji || liveEntry.custom_status_text) && (
-                                    <p className="text-[12.5px] text-cl-muted mt-1.5 truncate max-w-full m-0">
-                                        {liveEntry.custom_status_emoji && (
-                                            <span className="mr-1">{liveEntry.custom_status_emoji}</span>
-                                        )}
-                                        {liveEntry.custom_status_text}
-                                    </p>
-                                )}
-                            </div>
-
-                            {/* Hairline between identity and the detail sections */}
-                            {hasDetails && <ProfileCardHairline />}
-
-                            {/* Bio */}
-                            {profile.bio && <ProfileCardAbout bio={profile.bio} />}
-
-                            {/* Server nickname — shown when in server context */}
-                            {serverId && (
-                                <div className={profile.bio ? 'mt-3.5' : undefined}>
-                                    <Eyebrow>Server Nickname</Eyebrow>
-                                    {nicknameEditOpen ? (
-                                        <div className="flex flex-col gap-1.5">
-                                            <div className="flex items-center gap-1.5">
-                                                <ClInput
-                                                    autoFocus
-                                                    value={nicknameInput}
-                                                    onChange={e => setNicknameInput(e.target.value)}
-                                                    onKeyDown={e => {
-                                                        if (e.key === 'Enter') { e.preventDefault(); saveNickname(); }
-                                                    }}
-                                                    maxLength={32}
-                                                    placeholder={profile?.username ?? 'Nickname (leave blank to reset)'}
-                                                    onClick={e => e.stopPropagation()}
-                                                />
-                                                <ClButton
-                                                    icon
-                                                    variant="ok"
-                                                    size="sm"
-                                                    onClick={(e) => { e.stopPropagation(); saveNickname(); }}
-                                                    disabled={nicknameSaving}
-                                                    tooltip="Save"
-                                                >
-                                                    <Check size={13} strokeWidth={2.5} />
-                                                </ClButton>
-                                                <ClButton
-                                                    icon
-                                                    variant="ghost"
-                                                    size="sm"
-                                                    onClick={(e) => { e.stopPropagation(); closeNicknameEdit(); }}
-                                                    disabled={nicknameSaving}
-                                                    tooltip="Cancel"
-                                                >
-                                                    <X size={13} />
-                                                </ClButton>
-                                            </div>
-                                            {nicknameError && (
-                                                <p className="text-[11px] text-cl-flash">{nicknameError}</p>
-                                            )}
-                                            <p className="text-[11px] text-white/25">Leave blank to reset to account username</p>
-                                        </div>
-                                    ) : (
-                                        <div className="flex items-center gap-2">
-                                            <span className="text-[13px] text-cl-muted">
-                                                {effectiveNickname ?? <span className="text-white/30 italic">None</span>}
-                                            </span>
-                                            {canSetNickname && onSetNickname && (
-                                                <ClButton
-                                                    icon
-                                                    variant="ghost"
-                                                    className="clb--icon-xs"
-                                                    onClick={(e) => { e.stopPropagation(); openNicknameEdit(); }}
-                                                    tooltip="Edit nickname"
-                                                >
-                                                    <Pencil size={10} />
-                                                </ClButton>
-                                            )}
-                                        </div>
-                                    )}
-                                </div>
-                            )}
-
-                            {/* Server roles — only rendered when profile opened from server context */}
-                            {assignedRoles.length > 0 && (
-                                <div className="mt-4">
-                                    <Eyebrow>Roles — {assignedRoles.length}</Eyebrow>
-                                    <div className="flex flex-wrap gap-1.5 mt-0.5">
-                                        {assignedRoles.map(r => {
-                                            const hex = roleColorHexFromInt(r.color);
-                                            return (
-                                                <span
-                                                    key={r.role_id}
-                                                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[12px] font-semibold border"
-                                                    style={{
-                                                        color: hex ?? 'rgba(255,255,255,0.75)',
-                                                        borderColor: hex ? `${hex}40` : 'rgba(255,255,255,0.10)',
-                                                        backgroundColor: hex ? `${hex}18` : 'rgba(255,255,255,0.05)',
-                                                    }}
-                                                >
-                                                    <span
-                                                        className="w-2 h-2 rounded-full shrink-0"
-                                                        style={{ backgroundColor: hex ?? 'rgba(255,255,255,0.35)' }}
-                                                    />
-                                                    {r.name}
-                                                </span>
-                                            );
-                                        })}
-                                    </div>
-                                </div>
-                            )}
-                        </>
-                    ) : null}
+                    </div>
+                </>
+            ) : (
+                <div className="pfp-layer" data-testid="profile-full-layer">
+                    <ProfileFullView
+                        key={`${userId}:${view.tab}`}
+                        userId={userId}
+                        token={token}
+                        isSelf={isOwnProfile}
+                        data={cardData}
+                        profile={profile}
+                        avatarId={avatarId}
+                        bannerId={bannerId}
+                        bannerFriendsOnly={isFriendsOnly(profile?.friends_only_fields, 'banner')}
+                        loading={loading}
+                        error={error}
+                        onRetry={() => void fetchProfile()}
+                        presence={presenceNode}
+                        activities={activities}
+                        connections={connections}
+                        avatarBadge={avatarBadge}
+                        onAvatarClick={avatarBlobUrl ? () => setLightboxOpen(true) : undefined}
+                        actions={fullActions}
+                        menu={menuButton}
+                        extras={fullExtras}
+                        note={!isOwnProfile && profile ? <ProfileNoteField userId={userId} /> : null}
+                        mutuals={isOwnProfile ? null : mutuals.data}
+                        initialTab={view.tab}
+                        onClose={handleClose}
+                        closing={closing}
+                        onOpenUser={openProfile ? (uid, at) => openProfile(uid, at) : undefined}
+                        onOpenServer={onOpenServer ? (sid) => { onOpenServer(sid); handleClose(); } : undefined}
+                        renderServerIcon={renderServerIcon}
+                    />
                 </div>
+            )}
 
-                {/* Bottom action — full-width */}
-                {profile && (
-                    <ProfileCardFooter>
-                        {isOwnProfile ? (
-                            <ClButton
-                                variant="ghost"
-                                fullWidth
-                                onClick={() => { handleClose(); onOpenSettings?.(); }}
-                            >
-                                <Pencil size={14} />
-                                Edit Profile
-                            </ClButton>
-                        ) : isFriend && onMessage ? (
-                            <ClButton
-                                variant="primary"
-                                fullWidth
-                                onClick={() => onMessage(userId)}
-                            >
-                                <MessageSquare size={14} />
-                                Message
-                            </ClButton>
-                        ) : !isFriend && onSendFriendRequest && profile ? (
-                            <ClButton
-                                variant="primary"
-                                fullWidth
-                                onClick={() => onSendFriendRequest(userId, profile.username, profile.discriminator ?? null)}
-                            >
-                                <UserPlus size={14} />
-                                Add Friend
-                            </ClButton>
-                        ) : null}
-
-                    </ProfileCardFooter>
-                )}
-            </div>
-
-            {/* Avatar lightbox — rendered as a sibling so the popover stays mounted underneath */}
+            {/* Avatar lightbox: a sibling, so the profile stays mounted underneath */}
             {lightboxOpen && avatarBlobUrl && (
                 <ImageLightbox
                     src={avatarBlobUrl}
                     alt={displayName}
                     onClose={() => setLightboxOpen(false)}
+                />
+            )}
+
+            {shareOpen && profile && isOwnProfile && (
+                <ProfileShareDialog
+                    token={token}
+                    userId={userId}
+                    data={cardData}
+                    avatarId={avatarId}
+                    bannerId={bannerId}
+                    onClose={() => setShareOpen(false)}
                 />
             )}
 

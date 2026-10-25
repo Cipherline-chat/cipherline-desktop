@@ -11,35 +11,35 @@
    3. No filter, no box-shadow, no will-change (a layer rasterised once and
       then scaled would go soft; without it Chromium rasterises the running
       animation at its largest scale, so he stays crisp at any DPI).
-   4. Pointer and glance moves are transitions/one-shots: they cost nothing
-      while nobody is pointing.
+   4. The pointer parallax runs one rAF per frame only while it is easing
+      (keysParallax), and glances are one-shots: nothing runs while nobody
+      is pointing.
    ============================================================================ */
 
 .hk {
   position: relative;
-  --hk-x: 0;
-  --hk-y: 0;
   /* A hit zone a little larger than him, without moving the layout. */
   margin: -14px;
   padding: 14px;
 }
 
-/* Lean toward the pointer: a few px toward it and a few degrees, pivoting
-   near his feet so the dome swings and the legs stay put. Upright when the
-   pointer leaves. */
-.hk-lean {
-  transform-origin: 50% 88%;
-  transition: transform .5s var(--cl-spring, cubic-bezier(.2, .8, .2, 1));
+/* ── The 3D hover parallax (utils/keysParallax.ts) ──────────────────────────
+   HomeKeys eases the pointer's position over his hit zone and writes inline
+   transforms on five layers while it moves (none at rest, so no 3D layer is
+   left promoted): .hk-par tilts the whole scene toward the pointer in 3D,
+   the back stage (TV / safe / sign) shifts least, the front stage (floor,
+   bubbles) more, .hk-lean (his body) most, and his eyes (.k2-eyes) follow
+   on top. Depths: keysParallax DEPTH. The easing is in JS (a spring-like
+   approach), so no CSS transition here: one would lag the pointer twice.
+   Inline transforms rather than CSS variables on .hk: a custom property
+   invalidates style for his whole subtree on every frame. */
+.hk-par {
+  position: relative;
+  isolation: isolate;
+  transform-origin: 50% 60%;
 }
-.hk.is-look .hk-lean {
-  transform: translate(calc(var(--hk-x) * 3px), calc(var(--hk-y) * 2px)) rotate(calc(var(--hk-x) * 6deg));
-}
+.hk-lean { transform-origin: 50% 88%; }
 
-/* His eyes follow the pointer (the rig's k2-eyes group, in svg units). */
-.hk .k2-eyes { transition: transform .22s ease-out; }
-.hk.is-look .k2-eyes {
-  transform: translate(calc(var(--hk-x) * 2.6px), calc(var(--hk-y) * 1.8px));
-}
 /* ...and now and then glance aside on their own. */
 .hk.hk-glance-l .k2-eyes { animation: hk-glance-l 1.8s ease-in-out; }
 .hk.hk-glance-r .k2-eyes { animation: hk-glance-r 1.8s ease-in-out; }
@@ -70,9 +70,7 @@
 
 @media (prefers-reduced-motion: reduce) {
   .hk[data-swim] .hk-swim { animation: none; }
-  .hk.is-look .hk-lean, .hk.is-look .k2-eyes { transform: none; }
   .hk.hk-glance-l .k2-eyes, .hk.hk-glance-r .k2-eyes { animation: none; }
-  .hk-lean, .hk .k2-eyes { transition: none; }
 }
 
 /* The idle-motion gate and the occlusion gate (utils/idleMotion.ts): same
@@ -90,7 +88,7 @@
    padding is the room he has (the pane clips at its edges), so the shows'
    biggest moves are sized for it and fade out before they could reach it. */
 .hk-react { position: relative; transform-origin: 50% 86%; }
-.hk-react > [role="img"] { position: relative; z-index: 1; }
+.hk-react > .k2-root { position: relative; z-index: 1; }
 
 /* His face layer, in his own viewBox's proportions (110 x 92). */
 .hk-face {
@@ -182,7 +180,141 @@
 }
 .hk-note--b { left: 12%; top: 8%; color: var(--cl-glow); }
 
-/* dodge: his eyes look anywhere but at the pointer */
-.hk.hk-avoid.is-look .k2-eyes {
-  transform: translate(calc(var(--hk-x) * -2.6px), calc(var(--hk-y) * -1.8px));
+/* dodge: his eyes look anywhere but at the pointer (HomeKeys inverts the
+   parallax's eye offset while .hk-avoid is on) */
+
+/* ── The payoffs (utils/keysSpam.ts `payoff()`) ──────────────────────────────
+   What a show ends on when the game cannot open (a call is live). Every prop
+   here rests at opacity 0 and appears only while its Web Animation runs, so
+   nothing is left on screen if the animation never starts (reduced motion, a
+   resting window): he and his line are the whole payoff then. Transform /
+   opacity only, no filter, no shadow, nothing loops. Colour comes from the
+   design tokens. Flashes are slow washes (a colour change every ~0.7 s at
+   most), never a strobe. */
+
+/* dance: a disco. Behind him, a teal wash and amber light rays swell in turn. */
+.hk-disco {
+  position: absolute;
+  left: -16%;
+  top: -22%;
+  width: 132%;
+  aspect-ratio: 1.15;
+  pointer-events: none;
+}
+.hk-disco > span { position: absolute; inset: 0; opacity: 0; }
+.hk-disco-a {
+  background: radial-gradient(closest-side, color-mix(in srgb, var(--cl-lume) 62%, transparent), transparent 100%);
+}
+.hk-disco-b {
+  background: repeating-conic-gradient(from 0deg at 50% 50%, color-mix(in srgb, var(--cl-glow) 46%, transparent) 0deg 9deg, transparent 9deg 30deg);
+  -webkit-mask-image: radial-gradient(closest-side, #000 35%, transparent 100%);
+  mask-image: radial-gradient(closest-side, #000 35%, transparent 100%);
+}
+/* the glitter ball: a faceted sphere on a thread above his dome */
+.hk-ball {
+  position: absolute;
+  left: 50%;
+  top: -21%;
+  width: 15%;
+  aspect-ratio: 1;
+  margin-left: -7.5%;
+  transform-origin: 50% -90%;
+  opacity: 0;
+}
+.hk-ball::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: 100%;
+  width: 1.5px;
+  height: 90%;
+  margin-left: -.75px;
+  background: color-mix(in srgb, var(--cl-text) 50%, transparent);
+}
+.hk-ball > i {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 34% 28%, #fff 0 9%, transparent 11%),
+    repeating-linear-gradient(40deg, rgba(255, 255, 255, .42) 0 1px, transparent 1px 4px),
+    repeating-linear-gradient(-40deg, rgba(255, 255, 255, .34) 0 1px, transparent 1px 4px),
+    radial-gradient(circle at 34% 28%, var(--cl-lume-hi), var(--cl-lume-deep) 85%);
+}
+
+/* dance, charge: four-point twinkles */
+.hk-spark {
+  position: absolute;
+  width: 9%;
+  aspect-ratio: 1;
+  background: #fff;
+  clip-path: polygon(50% 0, 62% 38%, 100% 50%, 62% 62%, 50% 100%, 38% 62%, 0 50%, 38% 38%);
+  opacity: 0;
+  transform: scale(0);
+}
+.hk-spark--0 { left: 2%; top: 4%; }
+.hk-spark--1 { right: 0; top: 24%; }
+.hk-spark--2 { right: 24%; top: -9%; }
+.hk[data-spam="dance"] .hk-spark--0 { background: var(--cl-glow); }
+.hk[data-spam="dance"] .hk-spark--2 { background: var(--cl-lume-hi); }
+.hk[data-spam="charge"] .hk-spark { background: var(--cl-glow); }
+
+/* glitch: the boot scan line sweeping down him */
+.hk-scan {
+  position: absolute;
+  left: 6%;
+  top: 6%;
+  width: 88%;
+  height: 8%;
+  background: linear-gradient(to bottom, transparent, color-mix(in srgb, var(--cl-lume) 75%, transparent), transparent);
+  opacity: 0;
+}
+
+/* dodge: speed lines trailing him, and the skid's dust */
+.hk-streak {
+  position: absolute;
+  top: 30%;
+  width: 26%;
+  height: 22%;
+  background: repeating-linear-gradient(to bottom, color-mix(in srgb, var(--cl-lume) 85%, transparent) 0 2px, transparent 2px 7px);
+  opacity: 0;
+}
+.hk-streak--r { left: 96%; -webkit-mask-image: linear-gradient(to right, #000, transparent); mask-image: linear-gradient(to right, #000, transparent); }
+.hk-streak--l { right: 96%; -webkit-mask-image: linear-gradient(to left, #000, transparent); mask-image: linear-gradient(to left, #000, transparent); }
+.hk-dust {
+  position: absolute;
+  left: 8%;
+  right: 8%;
+  top: 74%;
+  height: 14%;
+  background:
+    radial-gradient(closest-side, color-mix(in srgb, var(--cl-text) 55%, transparent), transparent) 0 50% / 26% 100% no-repeat,
+    radial-gradient(closest-side, color-mix(in srgb, var(--cl-text) 55%, transparent), transparent) 100% 50% / 26% 100% no-repeat;
+  opacity: 0;
+}
+
+/* camo: a sheen sweeping his dome (clipped to the dome's shape) */
+.hk-sheen-clip {
+  position: absolute;
+  left: 19.1%;
+  top: 15.2%;
+  width: 61.8%;
+  height: 42.4%;
+  border-radius: 50% 50% 0 0 / 100% 100% 0 0;
+  overflow: hidden;
+}
+.hk-sheen {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 28%;
+  background: linear-gradient(105deg, transparent 0%, rgba(255, 255, 255, .6) 50%, transparent 100%);
+  opacity: 0;
+}
+
+/* Payoffs are decoration: under reduced motion the props are not even laid
+   out (HomeKeys also skips starting them), so he and his line are the payoff. */
+@media (prefers-reduced-motion: reduce) {
+  .hk-disco, .hk-ball, .hk-spark, .hk-scan, .hk-streak, .hk-dust, .hk-sheen-clip { display: none; }
 }

@@ -6,9 +6,12 @@ import {
     pickServeJitterMs,
     pickJoinHandoffDelayMs,
     runMemberJoinDistribution,
+    joinCheckRows,
     serveKeyRequestsPass,
     JOIN_HANDOFF_MIN_MS,
     JOIN_HANDOFF_RECHECK_MS,
+    JOIN_HANDOFF_LAST_CHECK_MS,
+    JOIN_HANDOFF_FINAL_CHECK_MS,
     type MemberJoinDeps,
     type PendingKeyRequest,
     type ServePassDeps,
@@ -95,6 +98,47 @@ function joinDeps(pendingSeq: (PendingKeyRequest[] | Error)[]): { deps: MemberJo
 }
 
 describe('runMemberJoinDistribution — hand off to the request path', () => {
+    it('the joiner asked but the API routed it all to another holder (serve_now false): no empty pass', async () => {
+        const { deps, calls } = joinDeps([[{ ...req('c1'), serve_now: false }, { ...req('c2'), serve_now: false }]]);
+        expect(await runMemberJoinDistribution(deps, 's', 'joiner')).toBe('handoff');
+        expect(calls.serve).toBe(0);
+        expect(calls.distribute).toEqual([]);
+    });
+
+    it('any of them ours to answer now (or an API that does not say) → the pass runs', async () => {
+        const mixed = joinDeps([[{ ...req('c1'), serve_now: false }, { ...req('c2'), serve_now: true }]]);
+        expect(await runMemberJoinDistribution(mixed.deps, 's', 'joiner')).toBe('handoff');
+        expect(mixed.calls.serve).toBe(1);
+    });
+
+    it('a device that holds no key of the server (it just joined too) does nothing at all', async () => {
+        const { deps, calls } = joinDeps([[req('c1')]]);
+        let listed = 0;
+        const list = deps.listPending;
+        deps.listPending = async (sid, r) => { listed++; return list(sid, r); };
+        deps.holdsNoKeys = async () => true;
+        expect(await runMemberJoinDistribution(deps, 's', 'joiner')).toBe('nothing_held');
+        expect([listed, calls.serve, calls.distribute.length, calls.sleeps.length]).toEqual([0, 0, 0, 0]);
+    });
+
+    it('holds keys (or cannot tell) → the hand-off runs as before', async () => {
+        for (const holdsNoKeys of [async () => false, async () => { throw new Error('ipc'); }]) {
+            const { deps, calls } = joinDeps([[req('c1')]]);
+            deps.holdsNoKeys = holdsNoKeys;
+            expect(await runMemberJoinDistribution(deps, 's', 'joiner')).toBe('handoff');
+            expect(calls.serve).toBe(1);
+        }
+    });
+
+    it('asks the API about the JOINER\'s requests only (it may narrow the listing to them)', async () => {
+        const { deps } = joinDeps([[req('c1')]]);
+        const asked: string[] = [];
+        const list = deps.listPending;
+        deps.listPending = async (sid, requester) => { asked.push(`${sid}:${requester}`); return list(sid, requester); };
+        await runMemberJoinDistribution(deps, 's', 'joiner');
+        expect(asked).toEqual(['s:joiner']);
+    });
+
     it('the joiner has asked → ONE serve pass, no blind push of every epoch', async () => {
         const { deps, calls } = joinDeps([[req('c1')]]);
         expect(await runMemberJoinDistribution(deps, 's', 'joiner')).toBe('handoff');
@@ -117,10 +161,31 @@ describe('runMemberJoinDistribution — hand off to the request path', () => {
         expect(calls.serve).toBe(0);
     });
 
-    it('nothing asked (or the list failed) → the old one-shot distribution, every channel\'s newest epoch first', async () => {
+    it('nothing asked (one listing failed, the others empty) → the old one-shot distribution, every channel\'s newest epoch first', async () => {
         const { deps, calls } = joinDeps([new Error('500'), []]);
         expect(await runMemberJoinDistribution(deps, 's', 'joiner')).toBe('distributed');
         expect(calls.distribute).toEqual(['c1:2', 'c2:2', 'c1:1', 'c2:1']);
+    });
+
+    it('asked only after ~5 s (a busy joiner) → still a hand-off, found on the LAST check', async () => {
+        const { deps, calls } = joinDeps([[], [], [req('c1')]]);
+        expect(await runMemberJoinDistribution(deps, 's', 'joiner')).toBe('handoff');
+        expect(calls.sleeps).toEqual([JOIN_HANDOFF_MIN_MS, JOIN_HANDOFF_RECHECK_MS, JOIN_HANDOFF_LAST_CHECK_MS]);
+    });
+
+    it('asked only after ~15 s (a very busy machine) → still a hand-off on the FINAL check', async () => {
+        const { deps, calls } = joinDeps([[], [], [], [req('c1')]]);
+        expect(await runMemberJoinDistribution(deps, 's', 'joiner')).toBe('handoff');
+        expect(calls.sleeps).toEqual([JOIN_HANDOFF_MIN_MS, JOIN_HANDOFF_RECHECK_MS, JOIN_HANDOFF_LAST_CHECK_MS, JOIN_HANDOFF_FINAL_CHECK_MS]);
+        expect(calls.distribute).toEqual([]);
+        expect(calls.distribute).toEqual([]);
+    });
+
+    it('every listing failed → nothing pushed blind (unknown), the request path covers it', async () => {
+        const { deps, calls } = joinDeps([new Error('500')]);
+        expect(await runMemberJoinDistribution(deps, 's', 'joiner')).toBe('unknown');
+        expect(calls.distribute).toEqual([]);
+        expect(calls.serve).toBe(0);
     });
 
     it('no device bundle → reported, nothing sent', async () => {
@@ -195,5 +260,24 @@ describe('serveKeyRequestsPass — re-list drops what another holder answered', 
         deps.listPending = async (sid) => { calls += 1; if (calls > 1) throw new Error('503'); return first(sid); };
         await serveKeyRequestsPass(deps, 's');
         expect(sent).toEqual(['a:2', 'b:2', 'a:1', 'b:1']);
+    });
+});
+
+describe('joinCheckRows — member_join reads either API\'s answer', () => {
+    it('a row list (an API without summary) passes through', () => {
+        const rows = [req('c1')];
+        expect(joinCheckRows(rows, 'joiner')).toBe(rows);
+    });
+    it('{ asked: false } is "nothing asked"', () => {
+        expect(joinCheckRows({ asked: false, serve_now: false }, 'joiner')).toEqual([]);
+        expect(joinCheckRows(null, 'joiner')).toEqual([]);
+    });
+    it('{ asked, serve_now } is one stand-in row for the joiner', async () => {
+        const rows = joinCheckRows({ asked: true, serve_now: false }, 'joiner');
+        expect(rows).toHaveLength(1);
+        expect(rows[0]).toMatchObject({ requester_user_id: 'joiner', serve_now: false });
+        const { deps, calls } = joinDeps([rows]);
+        expect(await runMemberJoinDistribution(deps, 's', 'joiner')).toBe('handoff');
+        expect(calls.serve).toBe(0);
     });
 });

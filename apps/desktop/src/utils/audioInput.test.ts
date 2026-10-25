@@ -109,9 +109,9 @@ describe('MIC_CAPTURE_BASE_CONSTRAINTS', () => {
 });
 
 describe('micCaptureConstraints (echo cancellation)', () => {
-    it('defaults to ON', () => {
-        expect(DEFAULT_ECHO_CANCELLATION).toBe(true);
-        expect(micCaptureConstraints().echoCancellation).toBe(true);
+    it('defaults to OFF', () => {
+        expect(DEFAULT_ECHO_CANCELLATION).toBe(false);
+        expect(micCaptureConstraints().echoCancellation).toBe(false);
     });
 
     it('ON asks for the boolean true — the form that cancels HTMLMediaElement AND Web Audio playback', () => {
@@ -156,8 +156,8 @@ describe('resolveEchoCancellation', () => {
         expect(resolveEchoCancellation(false)).toBe(false);
     });
 
-    it('a missing or non-boolean saved value gets the default (ON), never silently OFF', () => {
-        for (const v of [undefined, null, 'false', 0, 1, {}, []]) expect(resolveEchoCancellation(v)).toBe(true);
+    it('a missing or non-boolean saved value gets the default (OFF), never a truthy accident', () => {
+        for (const v of [undefined, null, 'false', 'true', 0, 1, {}, []]) expect(resolveEchoCancellation(v)).toBe(false);
     });
 });
 

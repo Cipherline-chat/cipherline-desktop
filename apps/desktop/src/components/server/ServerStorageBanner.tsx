@@ -15,8 +15,9 @@
  * services/backupRegistry.ts.
  */
 import React, { useMemo, useState } from 'react';
-import { AlertTriangle, CheckCircle2, Clock, HardDrive, Info, X } from 'lucide-react';
-import { ClButton } from '../ClButton';
+import { AlertTriangle, CheckCircle2, Clock, HardDrive, Info } from 'lucide-react';
+import { ClBanner } from '../ClBanner';
+import type { ClBannerTone } from '../bannerStack';
 import { useAuth } from '../../contexts/AuthContext';
 import { useSubscription } from '../../contexts/SubscriptionContext';
 import { useToast } from '../../contexts/ToastContext';
@@ -31,17 +32,21 @@ import {
 import { createStorageActionHandler, STORAGE_ACTION_LABELS, type StorageSettingsTarget } from './storageGraceActions';
 import { StorageGraceExplainer } from './StorageGraceExplainer';
 
-const TONE_STYLE: Record<StorageBannerTone, { bg: string; border: string; icon: string }> = {
-    calm:    { bg: 'rgba(37,224,200,0.07)',  border: 'rgba(37,224,200,0.24)',  icon: 'var(--cl-lume)' },
-    amber:   { bg: 'rgba(255,201,77,0.10)',  border: 'rgba(255,201,77,0.34)',  icon: 'var(--cl-glow)' },
-    red:     { bg: 'rgba(255,107,94,0.13)',  border: 'rgba(255,107,94,0.42)',  icon: 'var(--cl-flash)' },
-    neutral: { bg: 'var(--cl-deep)',         border: 'var(--cl-border)',       icon: 'var(--cl-muted)' },
-    ok:      { bg: 'rgba(74,222,128,0.08)',  border: 'rgba(74,222,128,0.26)',  icon: 'var(--cl-ok)' },
+/** The storage model's five tones onto the shared banner tones. */
+const BANNER_TONE: Record<StorageBannerTone, ClBannerTone> = {
+    calm: 'info',
+    amber: 'warning',
+    red: 'danger',
+    neutral: 'neutral',
+    ok: 'success',
+};
+/** Red outranks everything routine; a calm countdown yields to anything else. */
+const BANNER_PRIORITY: Record<StorageBannerTone, number> = {
+    red: 82, amber: 66, ok: 36, calm: 34, neutral: 25,
 };
 
-function ToneIcon({ tone }: { tone: StorageBannerTone }) {
-    const color = TONE_STYLE[tone].icon;
-    const p = { size: 15, className: 'shrink-0', style: { color } } as const;
+function toneIcon(tone: StorageBannerTone): React.ReactNode {
+    const p = { size: 15 } as const;
     if (tone === 'red' || tone === 'amber') return <AlertTriangle {...p} />;
     if (tone === 'calm') return <Clock {...p} />;
     if (tone === 'ok') return <CheckCircle2 {...p} />;
@@ -62,62 +67,37 @@ export interface ServerStorageBannerViewProps {
 }
 
 /** Presentational — no data fetching, so it renders in tests and the screenshot harness. */
-export const ServerStorageBannerView: React.FC<ServerStorageBannerViewProps> = ({ model, onAction, onDismiss }) => {
-    const tone = TONE_STYLE[model.tone];
-    return (
-        <div className="w-full shrink-0 py-2" role="region" aria-label="Server storage">
-            <div
-                role="status"
-                data-storage-banner={model.noticeId}
-                data-tone={model.tone}
-                className="w-full px-4 py-2.5 rounded-xl flex items-center gap-2.5 text-[13px] animate-in fade-in slide-in-from-top-2 duration-200"
-                style={{ background: tone.bg, border: `1px solid ${tone.border}`, color: 'var(--cl-text)' }}
-            >
-                <ToneIcon tone={model.tone} />
-                <div className="flex-1 min-w-0 leading-snug">
-                    {model.lead && <span className="font-semibold">{model.lead}</span>}
-                    {model.lead && ' '}
-                    <span className="opacity-90">{model.text}</span>
-                </div>
-                <div className="flex flex-wrap items-center justify-end gap-1.5 shrink-0">
-                    {model.actions.map((a, i) => {
-                        if (a === 'transfer' && model.noProMembers) {
-                            return (
-                                <span
-                                    key={a}
-                                    data-action="no-pro-members"
-                                    className="inline-flex items-center gap-1 text-[12px] text-cl-muted px-2"
-                                >
-                                    <Info size={12} className="shrink-0" />
-                                    No members have Pro yet
-                                </span>
-                            );
-                        }
-                        return (
-                            <span key={a} data-action={a} className="contents">
-                                <ClButton
-                                    type="button"
-                                    size="sm"
-                                    variant={actionVariant(model, a, i)}
-                                    onClick={() => onAction(a)}
-                                >
-                                    {STORAGE_ACTION_LABELS[a]}
-                                </ClButton>
-                            </span>
-                        );
-                    })}
-                    {model.dismissible && (
-                        <span data-action="dismiss" className="contents">
-                            <ClButton type="button" icon variant="ghost" size="sm" tooltip="Dismiss" onClick={onDismiss}>
-                                <X size={13} />
-                            </ClButton>
+export const ServerStorageBannerView: React.FC<ServerStorageBannerViewProps> = ({ model, onAction, onDismiss }) => (
+    <ClBanner
+        id="server-storage"
+        tone={BANNER_TONE[model.tone]}
+        priority={BANNER_PRIORITY[model.tone]}
+        ariaLabel="Server storage"
+        icon={toneIcon(model.tone)}
+        data={{ 'storage-banner': model.noticeId, tone: model.tone }}
+        title={model.lead || undefined}
+        description={model.text}
+        actions={model.actions.map((a, i) => (
+            a === 'transfer' && model.noProMembers
+                ? {
+                    key: 'no-pro-members',
+                    node: (
+                        <span className="inline-flex items-center gap-1 text-[12px] text-cl-muted px-2">
+                            <Info size={12} className="shrink-0" />
+                            No members have Pro yet
                         </span>
-                    )}
-                </div>
-            </div>
-        </div>
-    );
-};
+                    ),
+                }
+                : {
+                    key: a,
+                    label: STORAGE_ACTION_LABELS[a],
+                    variant: actionVariant(model, a, i),
+                    onClick: () => onAction(a),
+                }
+        ))}
+        onDismiss={model.dismissible ? onDismiss : undefined}
+    />
+);
 
 interface Props {
     serverId: string | null;

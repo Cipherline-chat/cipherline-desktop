@@ -255,6 +255,15 @@ export const WINDOWS_NO_DXGI_FEATURE = 'DirectXCapturer';
 //   • HDR, protected (DRM) video, the secure desktop (UAC/lock): WGC has the
 //     same class of limits (8-bit SDR capture, black protected regions,
 //     access lost on the secure desktop) — no reason to prefer either.
+//     HDR specifically (re-read 2026-10-23): neither capturer can be told to
+//     do better. WGC's frame pool is B8G8R8A8UIntNormalized
+//     (wgc_capture_session.cc:52), DXGI uses the legacy IDXGIOutput1::
+//     DuplicateOutput (dxgi_output_duplicator.cc:114), which always converts
+//     to 32-bit BGRA, and webrtc_features.cc has no HDR feature. Both get the
+//     scRGB desktop clipped at 1.0 = 80 nits, so with the SDR-brightness
+//     slider above 80 nits a share is blown out. Screen shares of a display
+//     in HDR mode therefore bypass both: electron/hdr-share.ts +
+//     src-native/hdr_capture.cc (DuplicateOutput1 in FP16 + a tone map).
 //   • Chromium used DXGI for every Windows screen share before 24H2, on
 //     every laptop and desktop, for years — it is the well-trodden path.
 // That reasoning made DXGI the 24H2+ default on 2026-09-29. On 2026-10-07 the

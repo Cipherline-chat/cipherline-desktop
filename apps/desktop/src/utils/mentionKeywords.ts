@@ -17,7 +17,7 @@ function escapeRegex(s: string): string {
  * Returns the first matched keyword string, or null.
  */
 export function matchesKeyword(text: string, keywords: string[]): string | null {
-    if (!keywords.length || !text) return null;
+    if (!keywords.length || !text || typeof text !== 'string') return null;
     const lower = text.toLowerCase();
     for (const kw of keywords) {
         if (!kw.trim()) continue;

@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { User, Users } from 'lucide-react';
-import { useEncryptedAvatar , evictAvatar } from '../hooks/useEncryptedAvatar';
+import { useEncryptedAvatar, evictAvatar, avatarUrlMime } from '../hooks/useEncryptedAvatar';
+import { isAnimatedCandidateMime, useStillGate } from '../utils/animatedImage';
 import { safeImageSrc } from '../utils/safeMediaUrl';
 import { userColor } from '../utils/avatarColor';
 import { useOpenProfile } from '../contexts/ProfileOpenContext';
@@ -28,6 +29,10 @@ interface EncryptedAvatarProps {
      *  no privacy and just looks broken). The deterministic color + silhouette
      *  fallback still applies when there's truly no attachment id. */
     bypassFriendGate?: boolean;
+    /** Animated avatars (GIF / animated WebP) play here. Default false: lists
+     *  show the first frame and play on hover. The profile card and the
+     *  settings preview pass true. Static images ignore it. */
+    animate?: boolean;
 }
 
 export const EncryptedAvatar: React.FC<EncryptedAvatarProps> = ({
@@ -40,6 +45,7 @@ export const EncryptedAvatar: React.FC<EncryptedAvatarProps> = ({
     isGroup = false,
     disableClickProfile = false,
     bypassFriendGate = false,
+    animate = false,
 }) => {
     const isFriendOrSelf = useIsFriendOrSelf();
     // Privacy gate: don't fetch / display a user's profile picture to strangers
@@ -51,7 +57,12 @@ export const EncryptedAvatar: React.FC<EncryptedAvatarProps> = ({
     // already sharing audio/video — hiding the avatar adds nothing.
     const allowImage = bypassFriendGate || isGroup || !userId || isFriendOrSelf(userId);
     // Only a validated image URL (blob:, data:image/*, trusted https) ever reaches <img src>.
-    const avatarUrl = safeImageSrc(useEncryptedAvatar(allowImage ? attachmentId : null, token)) ?? null;
+    const fullUrl = safeImageSrc(useEncryptedAvatar(allowImage ? attachmentId : null, token)) ?? null;
+    // Animated images: first frame unless `animate` or hovered (free for all).
+    const fullMime = avatarUrlMime(fullUrl);
+    const canMove = isAnimatedCandidateMime(fullMime);
+    const [hovered, setHovered] = useState(false);
+    const avatarUrl = useStillGate(fullUrl, fullMime, animate || hovered);
     const openProfile = useOpenProfile();
 
     // Fade the image in ONLY when it resolved asynchronously (download+decrypt).
@@ -128,6 +139,17 @@ export const EncryptedAvatar: React.FC<EncryptedAvatarProps> = ({
           }
         : undefined;
 
+    const hoverHandlers = canMove && !animate
+        ? { onMouseEnter: () => setHovered(true), onMouseLeave: () => setHovered(false) }
+        : undefined;
+    const merged = hoverHandlers
+        ? {
+              ...prefetchHandlers,
+              onMouseEnter: (e: React.MouseEvent<HTMLImageElement>) => { hoverHandlers.onMouseEnter(); prefetchHandlers?.onMouseEnter?.(); void e; },
+              onMouseLeave: (e: React.MouseEvent<HTMLImageElement>) => { hoverHandlers.onMouseLeave(); prefetchHandlers?.onMouseLeave?.(); void e; },
+          }
+        : prefetchHandlers;
+
     if (avatarUrl && broken !== attachmentId) {
         return (
             <img
@@ -156,7 +178,7 @@ export const EncryptedAvatar: React.FC<EncryptedAvatarProps> = ({
                     setBroken(attachmentId ?? null);
                 }}
                 onClick={handleClick}
-                {...prefetchHandlers}
+                {...merged}
             />
         );
     }

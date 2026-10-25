@@ -1,13 +1,19 @@
 import React, { useRef, useEffect, useState, useCallback, useSyncExternalStore } from 'react';
-import { Mic, Volume2, Headphones, Radio, VideoOff } from 'lucide-react';
+import { Volume2, Headphones, Video, VideoOff, SlidersHorizontal, AudioLines } from 'lucide-react';
 import { eventToCombo, formatCombo } from '../hooks/useKeybinds';
 import {
+    DEFAULT_VOICE_SETTINGS,
+    MIC_VOLUME_MAX,
+    SPEAKER_VOLUME_MAX,
     type VoiceSettings,
     type VoiceSettingsHook,
 } from '../hooks/useVoiceSettings';
+import { MAX_VOLUME_PERCENT } from '../utils/volumeLimits';
+import { VolumeCeilingWatch } from './moments/VolumeCeilingWatch';
 import { useMediaDevices, deviceLabel } from '../hooks/useMediaDevices';
 import { CipherlineVoiceProcessor } from '../utils/voiceProcessor';
 import { ClSlider } from './ClSlider';
+import { useSliderResetHint } from './sliderReset';
 import {
     DEFAULT_AUDIO_INPUT_ID,
     hasRealDeviceInfo,
@@ -24,10 +30,12 @@ import { testSpeakers, DEFAULT_SOUNDS } from '../utils/notificationSounds';
 import { describeSpeakerTest } from '../utils/speakerTestSummary';
 import { subscribe as subscribeAudioHealth, getSnapshot as getAudioHealthSnapshot } from '../utils/audioHealth';
 import { ClToggle, ClButton, ClSelect } from './cl';
+import { NoiseSuppressionEngine, NoiseSuppressionInfo } from './NoiseSuppressionEngine';
 import type { ClSelectOption } from './cl';
 import { useCameraQualityTier, setCameraQualityTier, useIncomingVideoMode, setIncomingVideoMode } from '../utils/cameraQualityPrefs';
 import type { IncomingVideoMode } from '../utils/remoteVideoQuality';
 import { CAMERA_QUALITY_TIERS, tierLabel, type CameraQualityTier } from '../utils/cameraQuality';
+import { openCameraPreview, describeCameraPreviewError, shouldReopenPreview } from '../utils/cameraPreview';
 
 const CAMERA_TIER_OPTIONS: ClSelectOption<CameraQualityTier>[] = CAMERA_QUALITY_TIERS.map(t => ({ value: t, label: tierLabel(t) }));
 const INCOMING_MODE_OPTIONS: ClSelectOption<IncomingVideoMode>[] = [
@@ -42,40 +50,51 @@ const INCOMING_MODE_HELP: Record<IncomingVideoMode, string> = {
 };
 import { useEscape } from '../hooks/useEscape';
 import { GamingVideoSetting } from './settings/GamingVideoSetting';
+import { SettingsDisclosure } from './settings/SettingsDisclosure';
+import { VvRow as Row } from './settings/VvRow';
+import { AudioDeviceList } from './settings/AudioDeviceList';
+import { requestAudioDeviceResync, type ActiveAudioDevice } from '../hooks/useAudioDeviceProfiles';
 
 /**
- * Twilight · Voice & Video — Descent redesign (phase 2): sd-card sections,
- * a live VU bar instead of the 5-dot meter, keycap-chip push-to-talk, and
- * the Picture sliders folded into the Camera card. All audio plumbing
- * (monitor loop, processor, gate) unchanged.
+ * Twilight · Voice & Video. The two device cards first (Input, Output — where
+ * they were before the redesign), then Voice processing, the remembered audio
+ * devices, Video. Every setting is one row of the same shape: the name (and an
+ * "i" with the longer explanation) on the left, the control on the right,
+ * switches always on the far right. Only expert tuning folds away (mic EQ +
+ * audio health, picture adjustments). The Input, Voice processing and Output
+ * cards say which device their settings are being saved for — they are
+ * remembered per device (hooks/useAudioDeviceProfiles.ts).
  */
 interface VoiceVideoSettingsProps {
     voice: VoiceSettingsHook;
 }
 
-const rowCls = 'flex items-center justify-between gap-3';
+/** Shown under Echo cancellation, not only behind its "i". */
+const ECHO_NOTE = 'Only recommended when using speakers — leave it off with headphones.';
 
-// ── Volume Slider (0-300%) ────────────────────────────────────────────────────
+// ── Volume Slider (0-200%) ────────────────────────────────────────────────────
 
 const VolumeSlider: React.FC<{
     value: number;
     onChange: (v: number) => void;
-}> = ({ value, onChange }) => (
-    <div className="flex items-center gap-2.5">
-        <ClSlider
-            min={0}
-            max={300}
-            step={1}
-            value={value}
-            onChange={onChange}
-            resetValue={100}
-            formatLabel={v => `${v}%`}
-            style={{ flex: 1 }}
-        />
-        <span className="text-xs font-mono w-9 text-right flex-shrink-0" style={{ color: 'var(--cl-faint)' }}>
-            {value}%
-        </span>
-    </div>
+    resetValue: number;
+    max?: number;
+}> = ({ value, onChange, resetValue, max = MAX_VOLUME_PERCENT }) => (
+    <>
+        <VolumeCeilingWatch>
+            <ClSlider
+                min={0}
+                max={max}
+                step={1}
+                value={value}
+                onChange={onChange}
+                resetValue={resetValue}
+                formatLabel={v => `${v}%`}
+                style={{ flex: 1, minWidth: 0 }}
+            />
+        </VolumeCeilingWatch>
+        <span className="vv-val">{value}%</span>
+    </>
 );
 
 // ── Live VU bar — lume fill that warms toward glow when you get loud ─────────
@@ -91,7 +110,8 @@ const VuMeter: React.FC<{ level: number }> = ({ level }) => {
 
 // ── Gate Slider — live level bar built into slider track ──────────────────────
 
-const GATE_DEFAULT_THRESHOLD = -45; // dBFS
+const GATE_DEFAULT_THRESHOLD = DEFAULT_VOICE_SETTINGS.voiceGateThreshold; // dBFS
+const GATE_MIN = -60, GATE_MAX = -20;
 
 /**
  * `level` is the gate's OWN detector — the loudest 128-sample block of each
@@ -100,6 +120,10 @@ const GATE_DEFAULT_THRESHOLD = -45; // dBFS
  * to be the end-of-chain level instead: shifted by AGC and mic volume, and
  * blank whenever the gate was closed, so with noise suppression off the room
  * noise could sit visibly under the thumb while the gate let it through.
+ *
+ * Inline in the Voice gate row: the track, then the threshold (lume while the
+ * gate is open = you are transmitting). Arrow keys move it 1 dB, Home/End jump
+ * to the ends; double-click resets.
  */
 const GateSlider: React.FC<{
     threshold: number;
@@ -108,9 +132,15 @@ const GateSlider: React.FC<{
     onChange: (v: number) => void;
     disabled?: boolean;
 }> = ({ threshold, level, open, onChange, disabled }) => {
-    const trackRef = useRef<HTMLDivElement>(null);
+    const trackRef = useRef<HTMLDivElement | null>(null);
     const dragging = useRef(false);
     const [grabbing, setGrabbing] = useState(false);
+    const hint = useSliderResetHint(!disabled);
+    const { anchorRef: hintAnchorRef } = hint;
+    const setTrack = useCallback((node: HTMLDivElement | null) => {
+        trackRef.current = node;
+        hintAnchorRef(node);
+    }, [hintAnchorRef]);
 
     const clamp = (v: number, lo: number, hi: number) => Math.min(Math.max(v, lo), hi);
     const dbToPercent = (db: number) => clamp((db + 60) / 40 * 100, 0, 100);
@@ -136,6 +166,7 @@ const GateSlider: React.FC<{
     }, [threshold]);
 
     const onPointerDown = (e: React.PointerEvent) => {
+        hint.closeHint();
         if (disabled) return;
         dragging.current = true;
         setGrabbing(true);
@@ -147,38 +178,46 @@ const GateSlider: React.FC<{
         onChange(getDbFromEvent(e));
     };
     const onPointerUp = () => { dragging.current = false; setGrabbing(false); };
+    const onKeyDown = (e: React.KeyboardEvent) => {
+        if (disabled) return;
+        const step = e.key === 'ArrowRight' || e.key === 'ArrowUp' ? 1
+            : e.key === 'ArrowLeft' || e.key === 'ArrowDown' ? -1 : 0;
+        if (step) { onChange(clamp(threshold + step, GATE_MIN, GATE_MAX)); e.preventDefault(); return; }
+        if (e.key === 'Home') { onChange(GATE_MIN); e.preventDefault(); }
+        if (e.key === 'End') { onChange(GATE_MAX); e.preventDefault(); }
+    };
 
     return (
-        <div className={`mt-2.5 ${disabled ? 'opacity-35 pointer-events-none' : ''}`}>
-            <div className="flex items-center justify-between mb-1.5">
-                <span className="text-[11px]" style={{ color: 'var(--cl-faint)' }}>
-                    Activity Threshold
-                    {!disabled && (
-                        <span className="sd-mono" style={{ marginLeft: 8, color: open ? 'var(--cl-ok)' : 'var(--cl-faint)' }}>
-                            {open ? '● transmitting' : '○ gated'}
-                        </span>
-                    )}
-                </span>
-                <span className="text-[11px] font-mono" style={{ color: 'var(--cl-muted)' }}>{threshold} dBFS</span>
-            </div>
+        <>
             {/* Kit slider chrome (.cls/.strk/.sfill/.sthw) — the fill is the LIVE
                 mic level rather than the value, so the meter stays built into the
-                track; the thumb marks the threshold. Interaction unchanged. */}
+                track; the thumb marks the threshold. */}
             <span className="cl-kit" style={{ display: 'contents' }}>
                 <div
-                    ref={trackRef}
-                    className={`cls${grabbing ? ' grab' : ''} select-none`}
+                    ref={setTrack}
+                    {...hint.handlers}
+                    aria-describedby={hint.describedBy}
+                    className={`cls vv-gate${grabbing ? ' grab' : ''}${disabled ? ' vv-off' : ''} select-none`}
+                    role="slider"
+                    tabIndex={disabled ? -1 : 0}
+                    aria-label="Activity threshold"
+                    aria-valuemin={GATE_MIN}
+                    aria-valuemax={GATE_MAX}
+                    aria-valuenow={threshold}
+                    aria-valuetext={`${threshold} dBFS${disabled ? '' : open ? ', transmitting' : ', gated'}`}
+                    aria-disabled={disabled || undefined}
                     onPointerDown={onPointerDown}
                     onPointerMove={onPointerMove}
                     onPointerUp={onPointerUp}
                     onPointerCancel={onPointerUp}
-                    onDoubleClick={() => onChange(GATE_DEFAULT_THRESHOLD)}
+                    onKeyDown={onKeyDown}
+                    onDoubleClick={() => { if (!disabled) onChange(GATE_DEFAULT_THRESHOLD); }}
                 >
                     <span className="sbody">
                         <span className="strk" />
                         <span
                             className="sfill"
-                            style={{ width: `${levelPct}%`, background: levelColor, transition: 'width 75ms linear, background .2s' }}
+                            style={{ width: `${levelPct}%`, background: levelColor, transition: 'width 75ms linear, background-color .2s' }}
                         />
                         <span className="sthw" style={{ left: `${thumbPct}%` }}>
                             <span className="ssh" />
@@ -187,12 +226,17 @@ const GateSlider: React.FC<{
                         <span className="sbub" style={{ left: `${thumbPct}%` }}>{threshold} dBFS</span>
                     </span>
                 </div>
+                {hint.tip}
             </span>
-            <div className="flex justify-between text-[9px] mt-0.5 px-0.5" style={{ color: 'var(--cl-faint)' }}>
-                <span>Sensitive</span>
-                <span>Loud only</span>
-            </div>
-        </div>
+            {/* the dot is the gate's live state: green while you are transmitting */}
+            <span
+                className={`vv-val vv-gateval${!disabled && open ? ' vv-live' : ''}`}
+                title={disabled ? undefined : open ? 'Transmitting' : 'Gated'}
+            >
+                {!disabled && <i className="vv-dot" aria-hidden="true" />}
+                {threshold} dB
+            </span>
+        </>
     );
 };
 
@@ -228,7 +272,7 @@ const PttKeybind: React.FC<{
     useEscape(() => setRecording(false), recording);
 
     return (
-        <div className="mt-2 flex items-center justify-end gap-2">
+        <div className="flex items-center gap-1.5">
             {value && !recording && (
                 <ClButton
                     icon
@@ -241,17 +285,19 @@ const PttKeybind: React.FC<{
                 </ClButton>
             )}
             <button
+                type="button"
                 onClick={() => setRecording(r => !r)}
-                className={`sd-kbd${recording ? ' sd-rec' : ''}`}
+                className={`sd-kbd vv-kbd${recording ? ' sd-rec' : ''}`}
                 style={{ border: 'none', background: 'none', cursor: 'pointer', padding: 0 }}
                 title={recording ? 'Press a key combo — Esc cancels' : 'Click to rebind'}
+                aria-label={recording ? 'Recording push to talk key, press a key combo, Escape cancels' : value ? `Push to talk key: ${formatCombo(value)}. Click to change` : 'Set push to talk key'}
             >
                 {recording ? (
                     <i>Press keys…</i>
                 ) : value ? (
                     formatCombo(value).split(' + ').map((k, i) => <i key={i}>{k}</i>)
                 ) : (
-                    <i style={{ color: 'var(--cl-faint)' }}>Set keybind</i>
+                    <i className="vv-kbd-empty">Set keybind</i>
                 )}
             </button>
         </div>
@@ -271,10 +317,21 @@ const CameraPreview: React.FC<CameraPreviewProps> = ({ deviceId, brightness, con
     const videoRef  = useRef<HTMLVideoElement>(null);
     const streamRef = useRef<MediaStream | null>(null);
     const [err, setErr] = useState<string | null>(null);
+    // The stored pick is not plugged in, so the default camera is showing.
+    const [fellBack, setFellBack] = useState(false);
+    // Bumped to reopen the preview when the hardware changed under it.
+    const [reopenTick, setReopenTick] = useState(0);
     // Camera does NOT auto-start. The user has to opt in explicitly so opening
     // the settings tab never silently flips the webcam on.
     const [active, setActive] = useState(false);
+    const fellBackRef = useRef(false);
+    // The devicechange listener reads the CURRENT pick without resubscribing.
+    const deviceIdRef = useRef(deviceId);
+    useEffect(() => { deviceIdRef.current = deviceId; }, [deviceId]);
 
+    // (Re)open the preview whenever the picked camera changes: stop the old
+    // tracks FIRST, then open the new one with `{ exact }` (utils/cameraPreview.ts
+    // — a bare id was only an `ideal`, and Chromium kept the first camera).
     useEffect(() => {
         if (!active) return;
 
@@ -289,22 +346,44 @@ const CameraPreview: React.FC<CameraPreviewProps> = ({ deviceId, brightness, con
         stop();
         setErr(null);
 
-        navigator.mediaDevices.getUserMedia({
-            video: {
-                deviceId: deviceId || undefined,
-                width: { ideal: 1280 },
-                height: { ideal: 720 },
-            },
-        }).then(stream => {
+        openCameraPreview(deviceId, c => navigator.mediaDevices.getUserMedia(c)).then(({ stream, fellBackFrom }) => {
             if (cancelled) { stream.getTracks().forEach(t => t.stop()); return; }
             streamRef.current = stream;
+            fellBackRef.current = fellBackFrom !== null;
+            setFellBack(fellBackFrom !== null);
             if (videoRef.current) videoRef.current.srcObject = stream;
+            // The camera was unplugged / taken away under a running preview:
+            // reopen, which lands on the default camera (or a clear error).
+            stream.getVideoTracks().forEach(t => t.addEventListener('ended', () => {
+                if (!cancelled && streamRef.current === stream) setReopenTick(n => n + 1);
+            }));
         }).catch(e => {
-            if (!cancelled) setErr(e?.name === 'NotFoundError' ? 'No camera found' : 'Camera access denied');
+            if (!cancelled) setErr(describeCameraPreviewError(e));
         });
 
         return () => { cancelled = true; stop(); };
-    }, [deviceId, active]);
+    }, [deviceId, active, reopenTick]);
+
+    // A camera was plugged in or removed.
+    useEffect(() => {
+        if (!active) return;
+        const onDeviceChange = async () => {
+            try {
+                const stream = streamRef.current;
+                const track = stream?.getVideoTracks()[0];
+                const available = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'videoinput');
+                if (shouldReopenPreview({
+                    stored: deviceIdRef.current,
+                    openedId: track?.getSettings().deviceId ?? null,
+                    trackLive: !!track && track.readyState === 'live',
+                    fellBack: fellBackRef.current,
+                    available,
+                })) setReopenTick(n => n + 1);
+            } catch { /* enumeration can fail pre-permission; the next change retries */ }
+        };
+        navigator.mediaDevices.addEventListener('devicechange', onDeviceChange);
+        return () => navigator.mediaDevices.removeEventListener('devicechange', onDeviceChange);
+    }, [active]);
 
     useEffect(() => () => {
         streamRef.current?.getTracks().forEach(t => t.stop());
@@ -313,30 +392,30 @@ const CameraPreview: React.FC<CameraPreviewProps> = ({ deviceId, brightness, con
 
     const cssFilter = `brightness(${brightness}%) contrast(${contrast}%) saturate(${saturation}%)`;
 
+    // One fixed 16:9 tile beside the camera rows, in every state, so turning
+    // the preview on never reflows the pane. Off = no stream is open at all.
     if (!active) {
         return (
-            <div className="w-full aspect-video rounded-lg flex flex-col items-center justify-center gap-3 mt-3" style={{ background: 'rgba(0,0,0,.4)', border: '1px solid var(--cl-border)' }}>
-                <VideoOff className="w-7 h-7" style={{ color: 'var(--cl-faint)' }} />
-                <p className="text-xs max-w-[220px] text-center leading-relaxed" style={{ color: 'var(--cl-faint)' }}>
-                    Preview is off. Turn it on to test your camera.
-                </p>
-                <ClButton size="sm" onClick={() => setActive(true)}>Enable Camera</ClButton>
+            <div className="vv-cam vv-cam--off">
+                <VideoOff className="w-5 h-5" aria-hidden="true" />
+                <ClButton size="sm" onClick={() => setActive(true)}>
+                    <Video className="w-3.5 h-3.5" /> Preview
+                </ClButton>
             </div>
         );
     }
 
     if (err) {
         return (
-            <div className="w-full aspect-video rounded-lg flex flex-col items-center justify-center gap-2 mt-3" style={{ background: 'rgba(0,0,0,.4)', border: '1px solid var(--cl-border)' }}>
-                <VideoOff className="w-6 h-6" style={{ color: 'var(--cl-faint)' }} />
-                <span className="text-xs" style={{ color: 'var(--cl-faint)' }}>{err}</span>
+            <div className="vv-cam vv-cam--off">
+                <span className="vv-cam-err" role="status">{err}</span>
                 <ClButton variant="ghost" size="sm" onClick={() => { setErr(null); setActive(false); }}>Try again</ClButton>
             </div>
         );
     }
 
     return (
-        <div className="relative w-full aspect-video rounded-lg overflow-hidden bg-black mt-3">
+        <div className="vv-cam">
             <video
                 ref={videoRef}
                 autoPlay
@@ -345,7 +424,11 @@ const CameraPreview: React.FC<CameraPreviewProps> = ({ deviceId, brightness, con
                 className="w-full h-full object-cover scale-x-[-1]"
                 style={{ filter: cssFilter }}
             />
-            <div className="absolute inset-0 rounded-lg ring-1 ring-inset ring-white/[0.06] pointer-events-none" />
+            {fellBack && (
+                <span role="status" className="vv-cam-note">
+                    Selected camera isn’t connected — showing the default
+                </span>
+            )}
             {/* Plain <button>, not ClButton — ClButton's `style` prop lands on
                 the outer wrapper span, not the inner .cap that actually
                 renders, so shrinking below the kit's default 46px (even with
@@ -372,10 +455,9 @@ const PictureSlider: React.FC<{
     onChange: (v: number) => void;
     min?: number;
     max?: number;
-    resetValue?: number;
-}> = ({ label, value, onChange, min = 0, max = 200, resetValue = 100 }) => (
-    <div className="flex items-center gap-3">
-        <span className="text-xs w-20 flex-shrink-0" style={{ color: 'var(--cl-muted)' }}>{label}</span>
+    resetValue: number;
+}> = ({ label, value, onChange, min = 0, max = 200, resetValue }) => (
+    <Row label={label}>
         <ClSlider
             min={min}
             max={max}
@@ -384,10 +466,10 @@ const PictureSlider: React.FC<{
             onChange={onChange}
             resetValue={resetValue}
             formatLabel={v => `${v}%`}
-            style={{ flex: 1 }}
+            style={{ flex: 1, minWidth: 0 }}
         />
-        <span className="text-xs font-mono w-9 text-right flex-shrink-0" style={{ color: 'var(--cl-faint)' }}>{value}%</span>
-    </div>
+        <span className="vv-val">{value}%</span>
+    </Row>
 );
 
 // ── EQ Band Slider (vertical) ─────────────────────────────────────────────────
@@ -401,6 +483,7 @@ const EQ_BAND_DEFS = [
 ] as const;
 
 const EQ_MIN = -12, EQ_MAX = 12, EQ_TRACK_H = 96;
+const EQ_BAND_DEFAULT_GAIN = DEFAULT_VOICE_SETTINGS.eqBands[0]; // every band defaults to 0 dB
 
 /** One vertical band: inset rail, lume fill growing from the 0 dB midline,
  *  kit-style thumb that scales+glows while grabbed. Drag anywhere on the
@@ -410,8 +493,14 @@ const EqBand: React.FC<{
     gain: number;
     onChange: (v: number) => void;
 }> = ({ def, gain, onChange }) => {
-    const trackRef = useRef<HTMLDivElement>(null);
+    const trackRef = useRef<HTMLDivElement | null>(null);
     const [grabbing, setGrabbing] = useState(false);
+    const hint = useSliderResetHint(true);
+    const { anchorRef: hintAnchorRef } = hint;
+    const setTrack = useCallback((node: HTMLDivElement | null) => {
+        trackRef.current = node;
+        hintAnchorRef(node);
+    }, [hintAnchorRef]);
 
     const gainToY = (g: number) => (1 - (g - EQ_MIN) / (EQ_MAX - EQ_MIN)) * EQ_TRACK_H;
     const fromEvent = (e: React.PointerEvent) => {
@@ -432,7 +521,9 @@ const EqBand: React.FC<{
         <div className={`sd-eq-band${gain !== 0 ? ' sd-active' : ''}`}>
             <span className="sd-eq-val">{label}</span>
             <div
-                ref={trackRef}
+                ref={setTrack}
+                {...hint.handlers}
+                aria-describedby={hint.describedBy}
                 className={`sd-eq-track${grabbing ? ' sd-grab' : ''}`}
                 role="slider"
                 aria-label={`${def.label} Hz band`}
@@ -440,11 +531,11 @@ const EqBand: React.FC<{
                 aria-valuemax={EQ_MAX}
                 aria-valuenow={gain}
                 tabIndex={0}
-                onPointerDown={e => { setGrabbing(true); (e.target as Element).setPointerCapture(e.pointerId); fromEvent(e); }}
+                onPointerDown={e => { hint.closeHint(); setGrabbing(true); (e.target as Element).setPointerCapture(e.pointerId); fromEvent(e); }}
                 onPointerMove={e => { if (grabbing) fromEvent(e); }}
                 onPointerUp={() => setGrabbing(false)}
                 onPointerCancel={() => setGrabbing(false)}
-                onDoubleClick={() => onChange(0)}
+                onDoubleClick={() => onChange(EQ_BAND_DEFAULT_GAIN)}
                 onKeyDown={e => {
                     if (e.key === 'ArrowUp') { onChange(Math.min(EQ_MAX, gain + 0.5)); e.preventDefault(); }
                     if (e.key === 'ArrowDown') { onChange(Math.max(EQ_MIN, gain - 0.5)); e.preventDefault(); }
@@ -455,6 +546,7 @@ const EqBand: React.FC<{
                 {fillH > 0 && <span className="sd-eq-fill" style={{ top: fillTop, height: fillH }} />}
                 <span className="sd-eq-thumb" style={{ top: thumbY }} />
             </div>
+            {hint.tip}
             <span className="sd-eq-freq">{def.label}</span>
         </div>
     );
@@ -466,16 +558,13 @@ const EqBands: React.FC<{
     onReset: () => void;
     disabled?: boolean;
 }> = ({ bands, onChange, onReset, disabled }) => (
-    <div className={`sd-eq-wrap mt-1${disabled ? ' sd-disabled' : ''}`}>
+    <div className={`sd-eq-wrap vv-eq${disabled ? ' sd-disabled' : ''}`}>
         <div className="sd-eq">
             {EQ_BAND_DEFS.map((def, i) => (
                 <EqBand key={def.freq} def={def} gain={bands[i] ?? 0} onChange={v => onChange(i, v)} />
             ))}
         </div>
-        <div className="flex items-center justify-between mt-2">
-            <span className="sd-mono" style={{ fontSize: 9.5 }}>double-click a band to zero it</span>
-            <ClButton variant="ghost" size="sm" onClick={onReset}>Reset</ClButton>
-        </div>
+        <ClButton variant="ghost" size="sm" onClick={onReset}>Reset</ClButton>
     </div>
 );
 
@@ -486,43 +575,48 @@ const EqBands: React.FC<{
 // inferable from "someone said it sounded bad." Reflects the most recent
 // call this session (audioHealth resets its counters at the start of every
 // CallPane mount — see CallPane.tsx); shows "no data yet" before any call.
-// Collapsed by default — it's a debug surface, not a primary control.
+// It lives in the folded "Mic EQ & audio health" group, so it no longer has a
+// Show/Hide of its own (a fold inside a fold).
 const AudioHealthPanel: React.FC = () => {
-    const [expanded, setExpanded] = useState(false);
     const health = useSyncExternalStore(subscribeAudioHealth, getAudioHealthSnapshot);
 
     return (
-        <div className="sd-row" style={{ display: 'block' }}>
-            <div className={rowCls}>
-                <div className="sd-rl">
-                    <b>Audio health</b>
-                    <span>Live diagnostics for this call's noise suppression &amp; AGC.</span>
-                </div>
-                <div className="sd-rc">
-                    <ClButton variant="ghost" size="sm" onClick={() => setExpanded(v => !v)}>
-                        {expanded ? 'Hide' : 'Show'}
-                    </ClButton>
-                </div>
+        <Row label="Audio health" info="Live diagnostics for the last call's noise suppression and auto gain, for when someone says you sound off.">
+            <div className="vv-health sd-mono">
+                {health.lastUpdatedAt === null ? (
+                    <div>No data yet — join a call to see live numbers.</div>
+                ) : (
+                    <>
+                        <div>Noise suppression: {health.nsState}{health.nsAutoBypassActive ? ' (paused — high CPU)' : ''}</div>
+                        <div>Underruns this call: {health.nsUnderruns}</div>
+                        <div>Auto-bypass trips: {health.nsAutoBypassCount}</div>
+                        {health.nsUnavailable && <div>NS pipeline unavailable this call</div>}
+                        <div>
+                            AGC gain: {health.agcGainDb === null ? 'n/a' : `${health.agcGainDb >= 0 ? '+' : ''}${health.agcGainDb.toFixed(1)} dB`}
+                            {' '}({health.agcVoiceActive ? 'speech detected' : 'idle'})
+                        </div>
+                    </>
+                )}
             </div>
-            {expanded && (
-                <div className="sd-mono" style={{ fontSize: 11, lineHeight: 1.7, opacity: 0.85, marginTop: 4 }}>
-                    {health.lastUpdatedAt === null ? (
-                        <div>No data yet — join a call to see live numbers.</div>
-                    ) : (
-                        <>
-                            <div>Noise suppression: {health.nsState}{health.nsAutoBypassActive ? ' (paused — high CPU)' : ''}</div>
-                            <div>Underruns this call: {health.nsUnderruns}</div>
-                            <div>Auto-bypass trips: {health.nsAutoBypassCount}</div>
-                            {health.nsUnavailable && <div>NS pipeline unavailable this call</div>}
-                            <div>
-                                AGC gain: {health.agcGainDb === null ? 'n/a' : `${health.agcGainDb >= 0 ? '+' : ''}${health.agcGainDb.toFixed(1)} dB`}
-                                {' '}({health.agcVoiceActive ? 'speech detected' : 'idle'})
-                            </div>
-                        </>
-                    )}
-                </div>
-            )}
-        </div>
+        </Row>
+    );
+};
+
+// ── "Saving for" — which device a card's settings are remembered for ────────
+
+const SavingFor: React.FC<{ device: ActiveAudioDevice | null | undefined; kind: 'mic' | 'output' }> = ({ device, kind }) => {
+    if (!device) return null;
+    const what = kind === 'mic' ? 'microphone' : 'speaker or headset';
+    return (
+        <span
+            className="vv-for"
+            data-testid={`saving-for-${kind}`}
+            title={`Changes here are remembered for this ${what}${device.viaDefault ? ' (your system default right now)' : ''}.`}
+        >
+            <span className="vv-for-k">Saving for</span>
+            <b>{device.label}</b>
+            {device.viaDefault && <span className="vv-for-d">default</span>}
+        </span>
     );
 };
 
@@ -548,7 +642,7 @@ async function resolvePreviewMic(stored: string, s: VoiceSettings): Promise<stri
 // ── Main Component ────────────────────────────────────────────────────────────
 
 export const VoiceVideoSettings: React.FC<VoiceVideoSettingsProps> = ({ voice }) => {
-    const { settings } = voice;
+    const { settings, deviceProfiles } = voice;
     const cameraTier = useCameraQualityTier();
     const incomingMode = useIncomingVideoMode();
 
@@ -676,6 +770,9 @@ export const VoiceVideoSettings: React.FC<VoiceVideoSettingsProps> = ({ voice })
             }
 
             enumerateDevices();
+            // Labels are readable now (if they were not before): let the
+            // per-device settings recognise the mic and speakers.
+            requestAudioDeviceResync();
         } catch (err) {
             if (!token.cancelled) console.warn('[VoiceSettings] Mic access failed:', err);
             // Re-enumerate on the failure path too. The first enumerate happens
@@ -821,29 +918,37 @@ export const VoiceVideoSettings: React.FC<VoiceVideoSettingsProps> = ({ voice })
             set(id, device);
         };
 
+    const inDev = deviceProfiles?.activeInput ?? null;
+    const outDev = deviceProfiles?.activeOutput ?? null;
+
     return (
-        <>
+        <div className="vv">
             {/* ── Input ────────────────────────────────────────────────── */}
-            <div className="sd-card">
-                <h3>Input</h3>
-                <p className="sd-sub">Your voice is encrypted per frame on the way out — tune it here first.</p>
-                <ClSelect<string>
-                    value={settings.micDeviceId}
-                    onChange={pickFrom(inputDevices, settings.micDeviceId, voice.setMicDeviceId)}
-                    options={makeDeviceOptions(inputDevices, 'Default Microphone', settings.micDeviceId, settings.micDeviceLabel)}
-                    style={{ width: '100%' }}
-                />
-                <div className="flex items-center gap-2.5 mt-3">
-                    <Mic className="w-3.5 h-3.5 flex-shrink-0" style={{ color: 'var(--cl-faint)' }} />
-                    <div className="flex-1">
-                        <VolumeSlider value={settings.micVolume} onChange={voice.setMicVolume} />
-                    </div>
+            <div className="sd-card vv-card">
+                <div className="vv-head">
+                    <h3>Input</h3>
+                    <SavingFor device={inDev} kind="mic" />
                 </div>
-                {/* live level — say something and watch it glow */}
-                <div className="mt-3">
-                    <VuMeter level={localLevel} />
-                </div>
-                <div className="flex items-center justify-between mt-2.5">
+                <Row label="Microphone">
+                    <ClSelect<string>
+                        value={settings.micDeviceId}
+                        onChange={pickFrom(inputDevices, settings.micDeviceId, voice.setMicDeviceId)}
+                        options={makeDeviceOptions(inputDevices, 'Default Microphone', settings.micDeviceId, settings.micDeviceLabel)}
+                        ariaLabel="Microphone"
+                        style={{ flex: 1, minWidth: 0 }}
+                    />
+                </Row>
+                <Row label="Input volume" labels={['Microphone level']} info="How loud your mic is sent. Remembered per microphone.">
+                    <VolumeSlider value={settings.micVolume} onChange={voice.setMicVolume} resetValue={DEFAULT_VOICE_SETTINGS.micVolume} max={MIC_VOLUME_MAX} />
+                </Row>
+                <Row
+                    label="Mic test"
+                    labels={['Listen to mic']}
+                    info="Talk and watch the bar. Listen plays your mic back to you with the same processing a call uses, so you hear what others hear."
+                >
+                    {/* live level — say something and watch it glow */}
+                    <div className="vv-meter"><VuMeter level={localLevel} /></div>
+                    <span className="vv-val vv-val--wide">{isFinite(localLevel) ? `${Math.round(localLevel)} dB` : 'quiet'}</span>
                     <ClButton
                         size="sm"
                         variant={monitorOn ? 'ok' : 'ghost'}
@@ -853,157 +958,68 @@ export const VoiceVideoSettings: React.FC<VoiceVideoSettingsProps> = ({ voice })
                         <Headphones className="w-3 h-3" />
                         <span>{monitorOn ? 'Listening…' : 'Listen to mic'}</span>
                     </ClButton>
-                    <span className="sd-mono">{isFinite(localLevel) ? `${Math.round(localLevel)} dBFS` : 'quiet'}</span>
-                </div>
+                </Row>
             </div>
 
-            {/* ── Output ───────────────────────────────────────────────── */}
-            <div className="sd-card">
-                <h3>Output</h3>
-                <ClSelect<string>
-                    value={settings.speakerDeviceId}
-                    onChange={pickFrom(outputDevices, settings.speakerDeviceId, voice.setSpeakerDeviceId)}
-                    options={makeDeviceOptions(outputDevices, 'Default Speakers', settings.speakerDeviceId, settings.speakerDeviceLabel)}
-                    style={{ width: '100%' }}
-                />
-                <div className="flex items-center gap-2.5 mt-3">
-                    <Volume2 className="w-3.5 h-3.5 flex-shrink-0" style={{ color: 'var(--cl-faint)' }} />
-                    <div className="flex-1">
-                        <VolumeSlider value={settings.speakerVolume} onChange={voice.setSpeakerVolume} />
-                    </div>
+            {/* ── Output (beside Input, where it always was) ───────────── */}
+            <div className="sd-card vv-card">
+                <div className="vv-head">
+                    <h3>Output</h3>
+                    <SavingFor device={outDev} kind="output" />
                 </div>
-                <div className="flex items-center gap-2.5 mt-3">
+                <Row label="Speakers">
+                    <ClSelect<string>
+                        value={settings.speakerDeviceId}
+                        onChange={pickFrom(outputDevices, settings.speakerDeviceId, voice.setSpeakerDeviceId)}
+                        options={makeDeviceOptions(outputDevices, 'Default Speakers', settings.speakerDeviceId, settings.speakerDeviceLabel)}
+                        ariaLabel="Speakers"
+                        style={{ flex: 1, minWidth: 0 }}
+                    />
+                </Row>
+                <Row label="Output volume" labels={['Test speakers']} info="How loud calls play. Remembered per speaker or headset. Test speakers plays a sound on the device picked above.">
+                    <VolumeSlider value={settings.speakerVolume} onChange={voice.setSpeakerVolume} resetValue={DEFAULT_VOICE_SETTINGS.speakerVolume} max={SPEAKER_VOLUME_MAX} />
                     <ClButton variant="ghost" size="sm" onClick={runSpeakerTest} disabled={speakerTest?.running}>
                         <Volume2 className="w-3.5 h-3.5" /> Test speakers
                     </ClButton>
-                    {speakerTest && (
-                        <span
-                            role="status"
-                            aria-live="polite"
-                            style={{ fontSize: 12.5, fontWeight: 600, color: speakerTest.tone === 'bad' ? 'var(--cl-danger, #e5484d)' : 'var(--cl-faint)' }}
-                        >
-                            {speakerTest.text}
-                        </span>
-                    )}
-                </div>
+                </Row>
+                {speakerTest && (
+                    <p
+                        className="vv-note"
+                        role="status"
+                        aria-live="polite"
+                        style={{ color: speakerTest.tone === 'bad' ? 'var(--cl-danger, #e5484d)' : undefined }}
+                    >
+                        {speakerTest.text}
+                    </p>
+                )}
+                <Row
+                    label="Normalize voice volume"
+                    kind="switch"
+                    info="Evens out how loud each person sounds to you, so the loud ones stop blasting and the quiet ones stop disappearing. Your per-person sliders still work, and screen-share audio is left alone. Remembered per speaker or headset."
+                >
+                    <ClToggle checked={settings.normalizeIncomingVolume !== false} onChange={voice.setNormalizeIncomingVolume} aria-label="Normalize voice volume" />
+                </Row>
             </div>
 
-            {/* ── Camera (device + preview + picture) ──────────────────── */}
-            <div className="sd-card">
-                <div className="flex items-center justify-between">
-                    <h3>Camera</h3>
-                    <ClButton variant="ghost" size="sm" onClick={voice.resetCameraPicture}>Reset picture</ClButton>
+            {/* ── Voice processing (input → what is sent) ──────────────── */}
+            <div className="sd-card vv-card">
+                <div className="vv-head">
+                    <h3>Voice processing</h3>
+                    <SavingFor device={inDev} kind="mic" />
                 </div>
-                <p className="sd-sub">Preview never auto-starts — the camera is yours to switch on.</p>
-                <ClSelect<string>
-                    value={settings.cameraDeviceId}
-                    onChange={voice.setCameraDeviceId}
-                    options={makeDeviceOptions(videoDevices, 'Default Camera', '', undefined)}
-                    style={{ width: '100%' }}
-                />
-                <div className="sd-row">
-                    <div className="sd-rl">
-                        <b>Camera quality</b>
-                        <span>Auto sends the best your camera does at 30 fps — up to 1440p when your GPU can encode it, 1080p otherwise. Pick a lower one if your PC struggles in calls.</span>
-                    </div>
-                    <ClSelect<CameraQualityTier>
-                        value={cameraTier}
-                        onChange={setCameraQualityTier}
-                        options={CAMERA_TIER_OPTIONS}
-                        style={{ width: 200 }}
+                <Row label="Noise suppression" kind="block" labels={['Noise suppression engine']} info={<NoiseSuppressionInfo />}>
+                    <NoiseSuppressionEngine
+                        enabled={settings.noiseSuppression}
+                        mode={settings.noiseSuppressionMode}
+                        onEnabledChange={voice.setNoiseSuppression}
+                        onModeChange={voice.setNoiseSuppressionMode}
                     />
-                </div>
-                <div className="sd-row">
-                    <div className="sd-rl">
-                        <b>Incoming video quality</b>
-                        <span>{INCOMING_MODE_HELP[incomingMode]}</span>
-                    </div>
-                    <ClSelect<IncomingVideoMode>
-                        value={incomingMode}
-                        onChange={setIncomingVideoMode}
-                        options={INCOMING_MODE_OPTIONS}
-                        style={{ width: 200 }}
-                    />
-                </div>
-                <CameraPreview
-                    deviceId={settings.cameraDeviceId}
-                    brightness={settings.cameraBrightness}
-                    contrast={settings.cameraContrast}
-                    saturation={settings.cameraSaturation}
-                />
-                <div className="space-y-2.5 mt-4">
-                    <PictureSlider label="Brightness" value={settings.cameraBrightness} onChange={voice.setCameraBrightness} min={0} max={200} />
-                    <PictureSlider label="Contrast"   value={settings.cameraContrast}   onChange={voice.setCameraContrast}   min={0} max={200} />
-                    <PictureSlider label="Saturation" value={settings.cameraSaturation} onChange={voice.setCameraSaturation} min={0} max={200} />
-                </div>
-            </div>
-
-            {/* ── While gaming (camera / screen-share freezes) ─────────── */}
-            <GamingVideoSetting />
-
-            {/* ── Voice Processing ─────────────────────────────────────── */}
-            <div className="sd-card">
-                <h3>Voice processing</h3>
-                <p className="sd-sub">All of this runs on your device — the unfiltered signal never leaves.</p>
-
-                <div className="sd-row" style={{ borderTop: 'none' }}>
-                    <div className="sd-rl">
-                        <b>Noise suppression</b>
-                        <span>Fans, keyboards, the dishwasher — gone.</span>
-                    </div>
-                    <div className="sd-rc">
-                        <ClToggle checked={settings.noiseSuppression} onChange={voice.setNoiseSuppression} />
-                    </div>
-                </div>
-
-                <div className="sd-row">
-                    <div className="sd-rl">
-                        <b>Echo cancellation</b>
-                        <span>Stops others from hearing themselves when you use speakers. Turn off if you use headphones and want the most natural sound.</span>
-                    </div>
-                    <div className="sd-rc">
-                        <ClToggle checked={echoCancellationSetting} onChange={voice.setEchoCancellation} />
-                    </div>
-                </div>
-
-                <div className="sd-row" style={{ display: 'block' }}>
-                    <div className={rowCls}>
-                        <div className="sd-rl">
-                            <b>Mic EQ</b>
-                            <span>Five bands, your voice, your call.</span>
-                        </div>
-                        <div className="sd-rc">
-                            <ClToggle checked={settings.eqEnabled} onChange={voice.setEqEnabled} />
-                        </div>
-                    </div>
-                    <EqBands
-                        bands={settings.eqBands}
-                        onChange={voice.setEqBand}
-                        onReset={voice.resetEqBands}
-                        disabled={!settings.eqEnabled}
-                    />
-                </div>
-
-                <div className="sd-row">
-                    <div className="sd-rl">
-                        <b>Auto gain control</b>
-                        <span>Evens out whisper-to-shout swings.</span>
-                    </div>
-                    <div className="sd-rc">
-                        <ClToggle checked={settings.volumeNormalization} onChange={voice.setVolumeNormalization} />
-                    </div>
-                </div>
-
-                <div className="sd-row" style={{ display: 'block' }}>
-                    <div className={rowCls}>
-                        <div className="sd-rl">
-                            <b>Voice gate</b>
-                            <span>Only transmit above the threshold — drag it against your live level.</span>
-                        </div>
-                        <div className="sd-rc">
-                            <ClToggle checked={settings.voiceGate} onChange={voice.setVoiceGate} />
-                        </div>
-                    </div>
+                </Row>
+                <Row
+                    label="Voice gate"
+                    labels={['Activity threshold']}
+                    info="Only sends your mic when it is louder than the marker. Drag the marker against your live level: left is more sensitive (quieter speech gets through), right sends only loud speech. The dot lights up green while you are transmitting. Double-click the track to reset it. Remembered per microphone."
+                >
                     <GateSlider
                         threshold={settings.voiceGateThreshold}
                         level={gateLevel.db}
@@ -1011,28 +1027,132 @@ export const VoiceVideoSettings: React.FC<VoiceVideoSettingsProps> = ({ voice })
                         onChange={voice.setVoiceGateThreshold}
                         disabled={!settings.voiceGate}
                     />
-                </div>
-
-                <div className="sd-row" style={{ display: 'block' }}>
-                    <div className={rowCls}>
-                        <div className="sd-rl">
-                            <b className="flex items-center gap-2"><Radio size={14} style={{ color: 'var(--cl-faint)' }} /> Push to talk</b>
-                            <span>Hold a key to transmit; silence otherwise.</span>
-                        </div>
-                        <div className="sd-rc">
-                            <ClToggle checked={settings.pushToTalk} onChange={voice.setPushToTalk} />
-                        </div>
-                    </div>
+                    <ClToggle checked={settings.voiceGate} onChange={voice.setVoiceGate} aria-label="Voice gate" />
+                </Row>
+                <Row label="Push to talk" info="Hold a key to transmit; you are silent otherwise. Click the key to change it. The same on every microphone.">
                     {settings.pushToTalk && (
                         <PttKeybind
                             value={settings.pushToTalkKey}
                             onSet={voice.setPushToTalkKey}
                         />
                     )}
+                    <ClToggle checked={settings.pushToTalk} onChange={voice.setPushToTalk} aria-label="Push to talk" />
+                </Row>
+                <Row
+                    label="Echo cancellation"
+                    kind="switch"
+                    note={ECHO_NOTE}
+                    info={`Stops people hearing themselves when your mic picks up your speakers. ${ECHO_NOTE} Off by default. Remembered per microphone, so it can be on for a laptop mic and off for your headset.`}
+                >
+                    <ClToggle checked={echoCancellationSetting} onChange={voice.setEchoCancellation} aria-label="Echo cancellation" />
+                </Row>
+                <Row
+                    label="Auto gain control"
+                    kind="switch"
+                    labels={['Volume normalization']}
+                    info="Evens out whisper-to-shout swings in your own voice before it is sent. Remembered per microphone."
+                >
+                    <ClToggle checked={settings.volumeNormalization} onChange={voice.setVolumeNormalization} aria-label="Auto gain control" />
+                </Row>
+
+                <SettingsDisclosure
+                    id="voice.mic-eq"
+                    title="Mic EQ & audio health"
+                    summary="Five-band equalizer and live call diagnostics."
+                    icon={<AudioLines size={15} />}
+                >
+                    <Row
+                        label="Mic EQ"
+                        kind="switch"
+                        info="Five bands to shape your voice. Drag a band up or down; double-click it to zero it. Remembered per microphone."
+                    >
+                        <ClToggle checked={settings.eqEnabled} onChange={voice.setEqEnabled} aria-label="Mic EQ" />
+                    </Row>
+                    <EqBands
+                        bands={settings.eqBands}
+                        onChange={voice.setEqBand}
+                        onReset={voice.resetEqBands}
+                        disabled={!settings.eqEnabled}
+                    />
+                    <AudioHealthPanel />
+                </SettingsDisclosure>
+            </div>
+
+            {/* ── Remembered microphones / speakers, each with its own settings ── */}
+            {deviceProfiles && <AudioDeviceList api={deviceProfiles} />}
+
+            {/* ── Video ────────────────────────────────────────────────── */}
+            <div className="sd-card vv-card">
+                <h3>Video</h3>
+                <div className="vv-video">
+                    <CameraPreview
+                        deviceId={settings.cameraDeviceId}
+                        brightness={settings.cameraBrightness}
+                        contrast={settings.cameraContrast}
+                        saturation={settings.cameraSaturation}
+                    />
+                    <div className="vv-stack">
+                        <Row label="Camera" info="The preview never starts on its own. Your camera is only on while the preview is showing.">
+                            <ClSelect<string>
+                                value={settings.cameraDeviceId}
+                                onChange={voice.setCameraDeviceId}
+                                options={makeDeviceOptions(videoDevices, 'Default Camera', settings.cameraDeviceId, undefined)}
+                                ariaLabel="Camera"
+                                style={{ flex: 1, minWidth: 0 }}
+                            />
+                        </Row>
+                        <Row
+                            label="Camera quality"
+                            info="Auto sends the best your camera does at 30 fps — up to 1440p when your GPU can encode it, 1080p otherwise. Pick a lower one if your PC struggles in calls."
+                        >
+                            <ClSelect<CameraQualityTier>
+                                value={cameraTier}
+                                onChange={setCameraQualityTier}
+                                options={CAMERA_TIER_OPTIONS}
+                                ariaLabel="Camera quality"
+                                style={{ flex: 1, minWidth: 0 }}
+                            />
+                        </Row>
+                        <Row
+                            label="Incoming video quality"
+                            info={
+                                <>
+                                    <p>How other people’s cameras are shown to you.</p>
+                                    {INCOMING_MODE_OPTIONS.map(o => (
+                                        <p key={o.value}><b>{o.label}</b>: {INCOMING_MODE_HELP[o.value]}</p>
+                                    ))}
+                                </>
+                            }
+                        >
+                            <ClSelect<IncomingVideoMode>
+                                value={incomingMode}
+                                onChange={setIncomingVideoMode}
+                                options={INCOMING_MODE_OPTIONS}
+                                ariaLabel="Incoming video quality"
+                                style={{ flex: 1, minWidth: 0 }}
+                            />
+                        </Row>
+                    </div>
                 </div>
 
-                <AudioHealthPanel />
+                {/* ── While gaming (camera / screen-share freezes) ───── */}
+                <GamingVideoSetting />
+
+                <SettingsDisclosure
+                    id="voice.picture"
+                    title="Picture adjustments"
+                    summary="Brightness, contrast and saturation of the video you send."
+                    icon={<SlidersHorizontal size={15} />}
+                    labels={['Camera adjustments']}
+                >
+                    <PictureSlider label="Brightness" value={settings.cameraBrightness} onChange={voice.setCameraBrightness} min={0} max={200} resetValue={DEFAULT_VOICE_SETTINGS.cameraBrightness} />
+                    <PictureSlider label="Contrast"   value={settings.cameraContrast}   onChange={voice.setCameraContrast}   min={0} max={200} resetValue={DEFAULT_VOICE_SETTINGS.cameraContrast} />
+                    <PictureSlider label="Saturation" value={settings.cameraSaturation} onChange={voice.setCameraSaturation} min={0} max={200} resetValue={DEFAULT_VOICE_SETTINGS.cameraSaturation} />
+                    <div className="vv-actions">
+                        <ClButton variant="ghost" size="sm" onClick={voice.resetCameraPicture}>Reset picture</ClButton>
+                    </div>
+                </SettingsDisclosure>
             </div>
-        </>
+        </div>
     );
 };

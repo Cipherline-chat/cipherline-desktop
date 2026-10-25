@@ -49,3 +49,35 @@ export function decideReactionAnim(
     if (next.count > prev.count) return 'bump';
     return null;
 }
+
+/** A single reaction chip reaching this many is a pile-up: it gets a small burst. */
+export const PILE_UP_AT = 10;
+
+/**
+ * Whether a count change is the live crossing of the pile-up line: from below
+ * it to at-or-above it, in one step. `prevCount === null` (a chip that has only
+ * just mounted: a channel switch, a scroll, a history load) never counts, which
+ * is what keeps the burst from replaying on a message that already has ten.
+ */
+export function crossedPileUp(prevCount: number | null, nextCount: number, at: number = PILE_UP_AT): boolean {
+    return prevCount !== null && prevCount < at && nextCount >= at;
+}
+
+/**
+ * Remembers which chips have burst this session, so a chip that wobbles 9, 10,
+ * 9, 10 (people un-reacting and re-reacting) bursts once, not each time.
+ * Keyed by the chip's `${messageId}:${emoji}`.
+ */
+export function createPileUpGate(limit = 500) {
+    const burst = new Set<string>();
+    return {
+        /** True the first time `key` is claimed; false afterwards. */
+        claim(key: string): boolean {
+            if (burst.has(key)) return false;
+            if (burst.size >= limit) burst.delete(burst.values().next().value as string);
+            burst.add(key);
+            return true;
+        },
+        has: (key: string) => burst.has(key),
+    };
+}

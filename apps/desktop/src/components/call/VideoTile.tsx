@@ -37,6 +37,9 @@ import {
 } from '../../utils/remoteVideoQuality';
 import { useIncomingVideoMode } from '../../utils/cameraQualityPrefs';
 import { logCallEvent, trackPlaceholder } from '../../utils/callEventLog';
+import { clampPerUserVolume } from '../../utils/volumeLimits';
+import { useCallPersonalization } from '../../utils/callPersonalizationStore';
+import { speakingShadow } from '../../utils/callPersonalizationStyle';
 import { shouldPlayShareAudio } from '../../utils/screenShareAudioWatch';
 // vtMeta is derived inline from useParticipantMetadata (the reactive source)
 // so we don't need the string-input parser here.
@@ -48,7 +51,7 @@ function usePersistentVolume(identity: string, type: 'mic' | 'screen' = 'mic'): 
             const saved = secureLocalStore.getItem(key);
             if (saved !== null) {
                 const parsed = parseFloat(saved);
-                return isNaN(parsed) ? 1.0 : parsed;
+                return isNaN(parsed) ? 1.0 : clampPerUserVolume(parsed);
             }
             return 1.0;
         } catch { return 1.0; }
@@ -56,8 +59,9 @@ function usePersistentVolume(identity: string, type: 'mic' | 'screen' = 'mic'): 
 
     const setVolumeAndSave = React.useCallback((newVol: number | ((prev: number) => number)) => {
         setVol(prev => {
-            const nextVol = typeof newVol === 'function' ? newVol(prev) : newVol;
-            if (isNaN(nextVol)) return prev;
+            const requested = typeof newVol === 'function' ? newVol(prev) : newVol;
+            if (isNaN(requested)) return prev;
+            const nextVol = clampPerUserVolume(requested);
             try { secureLocalStore.setItem(key, nextVol.toString()); } catch { /* persisting a UI preference is best-effort; a failed write must not break the UI */ }
             window.dispatchEvent(new CustomEvent('cipherline-volume-change', { detail: { identity, type, volume: nextVol }}));
             return nextVol;
@@ -379,6 +383,12 @@ export interface VideoTileProps {
      */
     focusToggleDisabled?: boolean;
     /**
+     * Px of this tile's bottom edge that something floats over (the
+     * fullscreen participant strip). Bottom-anchored corner chrome is lifted
+     * above it so the picture can extend underneath without hiding the readout.
+     */
+    overlayBottomPx?: number;
+    /**
      * Hard override of the simulcast layer this tile asks for. Normally
      * omitted: the tile picks its own layer from its rendered size × DPR,
      * its role (focused / grid / sidebar) and `videoCount`
@@ -403,6 +413,10 @@ export interface VideoTileProps {
 /** Resting the pointer this long on a focusable tile pre-warms its top layer. */
 const HOVER_PREWARM_DWELL_MS = 150;
 
+/** Radius of the picture's rounded clip and ring. MUST match the `rounded-xl`
+ *  class on the border overlay; see the long note above `fitClipPath`. */
+const FIT_BORDER_RADIUS_PX = 20; // tailwind.config.js: theme.extend.borderRadius.xl
+
 export const VideoTile = ({
     p,
     source,
@@ -424,6 +438,7 @@ export const VideoTile = ({
     isGridView,
     annotationSurface,
     focusToggleDisabled,
+    overlayBottomPx = 0,
     quality,
     videoCount,
     canServerMute,
@@ -455,6 +470,8 @@ export const VideoTile = ({
         serverDeafened:         meta?.server_deafened === true,
     };
     const isSpeaking = useFastIsSpeaking(p);
+    // Their speaking-ring colour and profile theme (call personalization).
+    const { ring_color: ringColor } = useCallPersonalization(p.identity);
     // Reactively tracks whether the participant currently has live Camera /
     // ScreenShare tracks — used to suppress the hidden-track badges below
     // when the underlying track has gone away (publisher turned it off).
@@ -547,9 +564,19 @@ export const VideoTile = ({
     // wraps BOTH the <video> and the annotation canvas (see the render), so
     // strokes stay welded to the content with no annotation-side maths.
     const zoomLayerRef = React.useRef<HTMLDivElement>(null);
+    // The clip window around the layer. The hook owns its clip-path so the
+    // visible picture can grow past the fitted box as you zoom (zoom works on
+    // the stage, not on the letterboxed picture) — see useVideoZoomPan.ts.
+    const zoomClipRef = React.useRef<HTMLDivElement>(null);
+    // The visible picture rect once a zoom has settled (null at fit); corner
+    // chrome and the hairline ring ride it instead of the fitted rect.
+    const [zoomView, setZoomView] = React.useState<ContentRect | null>(null);
     useVideoZoomPan({
         rootRef: wrapperRef,
         layerRef: zoomLayerRef,
+        clipRef: zoomClipRef,
+        clipRadiusPx: FIT_BORDER_RADIUS_PX,
+        onViewChange: setZoomView,
         videoRef,
         fit: annotFit,
         enabled: usesZoomPan,
@@ -1018,7 +1045,6 @@ export const VideoTile = ({
     // simply wrong for this codebase. Named here rather than left as an
     // unexplained magic number so a future change to that config value has
     // somewhere obvious to also update.
-    const FIT_BORDER_RADIUS_PX = 20; // tailwind.config.js: theme.extend.borderRadius.xl
     const fitClipPath = usesContainFit && fitRect && fitBox
         ? `inset(${fitRect.y}px ${Math.max(0, fitBox.width - fitRect.x - fitRect.width)}px ${Math.max(0, fitBox.height - fitRect.y - fitRect.height)}px ${fitRect.x}px round ${FIT_BORDER_RADIUS_PX}px)`
         : undefined;
@@ -1046,7 +1072,13 @@ export const VideoTile = ({
     // its intrinsic size intact, so the effect would not re-run, and the stale
     // rect would keep the badges parked over a picture that is no longer drawn.
     const hasActiveSource = isScreenShare ? hasActiveScreenShare : hasActiveCamera;
-    const chrome = videoRectInsets(fitBox, hasActiveSource ? fitRect : null, CHROME_GUTTER_PX);
+    // `zoomView` is the visible picture while zoomed (it can be larger than
+    // fitRect once the bars are zoomed away); otherwise the fitted rect.
+    const pictureRect = zoomView ?? fitRect;
+    const baseChrome = videoRectInsets(fitBox, hasActiveSource ? pictureRect : null, CHROME_GUTTER_PX);
+    const chrome = overlayBottomPx > 0
+        ? { ...baseChrome, bottom: Math.max(baseChrome.bottom, overlayBottomPx + CHROME_GUTTER_PX) }
+        : baseChrome;
     // A tall picture inside a wide tile can be narrower than the name pill, so
     // the pill is capped to whatever it is riding. That cap is no longer
     // computed here: `TileNamePill` derives it from these same insets via
@@ -1092,7 +1124,7 @@ export const VideoTile = ({
             // React state — nothing this component renders depends on hover,
             // and running a pointerenter/leave through setState would re-render
             // a live video tile on every pass of the cursor.
-            className={`cl-tile-hover relative overflow-hidden bg-transparent ${focusToggleDisabled ? 'cursor-default' : 'cursor-pointer'} select-none transition-shadow duration-300
+            className={`cl-tile-hover relative isolate overflow-hidden bg-transparent ${focusToggleDisabled ? 'cursor-default' : 'cursor-pointer'} select-none transition-shadow duration-300
                 ${/* Rounding lives on the wrapper's full box UNLESS we know the precise
                       rect the picture actually occupies (hasPreciseFitBorder) — in that
                       case it moves to the <video> element and the fitRect border overlay
@@ -1146,14 +1178,14 @@ export const VideoTile = ({
                 around it. z-[5], same layer as the speaking/focus overlays below, for
                 the same reason: it must sit above the opaque <video> to be visible at
                 all, and below interactive overlays. */}
-            {hasPreciseFitBorder && fitRect && (
+            {hasPreciseFitBorder && pictureRect && (
                 <div
                     className="absolute rounded-xl pointer-events-none z-[5]"
                     style={{
-                        left: fitRect.x,
-                        top: fitRect.y,
-                        width: fitRect.width,
-                        height: fitRect.height,
+                        left: pictureRect.x,
+                        top: pictureRect.y,
+                        width: pictureRect.width,
+                        height: pictureRect.height,
                         boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.05)',
                     }}
                 />
@@ -1170,7 +1202,7 @@ export const VideoTile = ({
                 <div
                     className="absolute inset-0 rounded-xl pointer-events-none z-[5]"
                     style={{
-                        boxShadow: 'inset 0 0 0 2px rgb(34, 197, 94), 0 0 18px rgba(34,197,94,0.35)',
+                        boxShadow: speakingShadow(ringColor, { inset: true, glow: 18, alpha: 0.35 }),
                     }}
                 />
             )}
@@ -1214,13 +1246,14 @@ export const VideoTile = ({
                 return (
                     <div className="absolute inset-0 z-[3] flex items-center justify-center pointer-events-none">
                         <div
-                            className={`rounded-full overflow-hidden ring-2 transition-all ${
+                            className={`relative rounded-full overflow-hidden transition-all ${
                                 isFocusedView ? 'w-28 h-28 sm:w-32 sm:h-32' : 'w-14 h-14'
                             } ${
                                 showAvatarSpeaking
-                                    ? 'ring-green-500 shadow-[0_0_24px_rgba(34,197,94,0.5)]'
-                                    : 'ring-white/10 shadow-2xl'
+                                    ? ''
+                                    : 'ring-2 ring-white/10 shadow-2xl'
                             }`}
+                            style={showAvatarSpeaking ? { boxShadow: speakingShadow(ringColor, { glow: 24, alpha: 0.5 }) } : undefined}
                         >
                             <EncryptedAvatar
                                 attachmentId={actualAvatarAttachmentId}
@@ -1352,9 +1385,13 @@ export const VideoTile = ({
                     // inner layer deliberately has none: it is the transformed one,
                     // so it opens its own stacking context regardless, and a second
                     // z-index there is inert at best and misleading at worst.
+                    // clip-path is NOT set here: useVideoZoomPan owns it (clipRef)
+                    // so the clip follows the zoom instead of staying the fitted
+                    // rect. At fit it writes the same fit-shaped rounded inset.
                     <div
+                        ref={zoomClipRef}
                         className="absolute inset-0"
-                        style={{ zIndex: annotLayerZ, ...(fitClipPath ? { clipPath: fitClipPath } : null) }}
+                        style={{ zIndex: annotLayerZ }}
                     >
                         <div
                             ref={zoomLayerRef}
@@ -1457,7 +1494,7 @@ export const VideoTile = ({
                 letterboxing work settled for good. */}
             {!chromeHidden && (
             <TileNamePill insets={chrome} corner={slots.name} large={!!isFocusedView}>
-                <div className={`relative ${isFocusedView ? 'w-7 h-7' : 'w-5 h-5'} rounded-full overflow-hidden shrink-0 ${showAvatarSpeaking ? 'ring-2 ring-green-500 shadow-[0_0_12px_rgba(34,197,94,0.5)]' : ''}`}>
+                <div className={`relative ${isFocusedView ? 'w-7 h-7' : 'w-5 h-5'} rounded-full overflow-hidden shrink-0`} style={showAvatarSpeaking ? { boxShadow: speakingShadow(ringColor, { glow: 12, alpha: 0.5 }) } : undefined}>
                     <EncryptedAvatar
                         attachmentId={actualAvatarAttachmentId}
                         userId={p.identity}

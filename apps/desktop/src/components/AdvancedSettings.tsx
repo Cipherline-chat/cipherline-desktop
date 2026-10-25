@@ -1,16 +1,23 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
     FlaskConical, AlertTriangle, ClipboardList, Copy, Trash2,
-    RefreshCw, CheckCircle2, AlertCircle, Download, MonitorUp, Activity, LockOpen,
+    RefreshCw, CheckCircle2, AlertCircle, Download, MonitorUp, Activity, LockOpen, Stethoscope,
 } from 'lucide-react';
 import { APP_VERSION, BUILD_COMMIT } from '../constants';
+import { OPEN_WHATS_NEW_EVENT, notesForVersion } from '../utils/whatsNew';
+import { writeToClipboard } from '../utils/clipboard';
+import { buildVersionText } from '../utils/buildInfo';
 import { counts as diagnosticCounts, clear as clearDiagnostics, formatReport } from '../utils/deliveryDiagnostics';
 import { fetchFreezeLog, clearFreezeLog, formatFreezeReport, isStall, LONG_TASK_MS, type FreezeEntry } from '../utils/freezeLog';
 import { rendererMemoryLine } from '../utils/memoryReport';
 import { useUpdate } from '../contexts/UpdateContext';
 import { ClButton, ClToggle, ClModal, ClConfirm } from './cl';
+import { ClBanner } from './ClBanner';
 import { StagingPasswordForm } from './StagingPasswordForm';
 import { ReportProblemCard } from './diagnostics/ReportProblemCard';
+import { SettingsDisclosure } from './settings/SettingsDisclosure';
+import { VersionTapEgg } from './settings/VersionTapEgg';
+import { OptionCard } from './settings/OptionCard';
 import { isStagingLockedError, type StagingLockStatusLike } from '../utils/stagingLock';
 import {
     useStreamStatsHudEnabled, setStreamStatsHudEnabled,
@@ -172,15 +179,15 @@ export const AdvancedSettings: React.FC = () => {
                     </div>
                 </div>
 
-                <div className="sd-opts mt-4">
-                    <ChannelCard
+                <div className="sd-opts mt-4" role="radiogroup" aria-label="Update channel">
+                    <OptionCard
                         active={channel === 'latest'}
                         disabled={saving}
                         onClick={() => change('latest')}
                         title="Stable"
                         description="Default. What real users see. Updated on every push to main."
                     />
-                    <ChannelCard
+                    <OptionCard
                         active={channel === 'staging'}
                         disabled={saving}
                         onClick={() => change('staging')}
@@ -248,12 +255,7 @@ export const AdvancedSettings: React.FC = () => {
 
             <ReportProblemCard />
 
-            <StreamDiagnosticsCard />
-
-            <DeliveryDiagnosticsCard />
-            <PerformanceLogCard />
-
-            <div className="sd-card">
+            <div className="sd-card" data-labels="Build info">
                 <h3>This build</h3>
                 <div className="sd-row" style={{ borderTop: 'none' }}>
                     <div className="sd-rl">
@@ -261,7 +263,7 @@ export const AdvancedSettings: React.FC = () => {
                         <span>Auto-updates in the background; installs on next quit.</span>
                     </div>
                     <div className="sd-rc">
-                        <span className="sd-mono" style={{ fontSize: 12.5, color: 'var(--cl-muted)' }}>v{APP_VERSION}</span>
+                        <BuildVersion />
                     </div>
                 </div>
                 {/* The commit the running bundle was actually compiled from.
@@ -280,8 +282,24 @@ export const AdvancedSettings: React.FC = () => {
                         <BuildCommit />
                     </div>
                 </div>
+                <WhatsNewRow />
                 <CheckForUpdatesRow />
             </div>
+
+            {/* Expert and diagnostic tools: folded, but one click (or a search) away. */}
+            <StreamDiagnosticsCard />
+
+            <SettingsDisclosure
+                id="advanced.troubleshooting"
+                variant="card"
+                title="Troubleshooting logs"
+                summary="Message delivery failures and app freezes recorded this session, ready to copy into a report."
+                icon={<Stethoscope size={15} />}
+                labels={['Delivery diagnostics', 'Performance log']}
+            >
+                <DeliveryDiagnosticsCard />
+                <PerformanceLogCard />
+            </SettingsDisclosure>
         </>
     );
 };
@@ -312,16 +330,16 @@ const StreamDiagnosticsCard: React.FC = () => {
     const allowHevc = useAllowHevc();
     const shareLow = useShareLowLayerEnabled();
     return (
-        <div className="sd-card">
-            <div className="flex items-center gap-3">
-                <span className="sd-tile"><MonitorUp size={16} /></span>
-                <div>
-                    <h3 style={{ margin: 0 }}>Screen share &amp; stream stats</h3>
-                    <p className="sd-sub" style={{ margin: 0 }}>For testing call video quality on this device. Not included in backups.</p>
-                </div>
-            </div>
+        <SettingsDisclosure
+            id="advanced.stream"
+            variant="card"
+            title="Screen share & stream stats"
+            summary="For testing call video quality on this device: encoders, H.265 and a live stats overlay. Not included in backups."
+            icon={<MonitorUp size={15} />}
+            labels={['Show stream stats', 'Screen share encoder', 'Camera encoder']}
+        >
+            <div className="sd-row">
 
-            <div className="sd-row mt-3" style={{ borderTop: 'none' }}>
                 <div className="sd-rl">
                     <b>Show stream stats</b>
                     <span>
@@ -342,7 +360,7 @@ const StreamDiagnosticsCard: React.FC = () => {
             </div>
             <div className="sd-opts mt-2" role="radiogroup" aria-label="Screen share encoder">
                 {CODEC_OPTIONS.map(o => (
-                    <ChannelCard
+                    <OptionCard
                         key={o.value}
                         active={codec === o.value}
                         disabled={false}
@@ -363,7 +381,7 @@ const StreamDiagnosticsCard: React.FC = () => {
             <div className="sd-row">
                 <div className="sd-rl">
                     <b>Lighter copy for viewers (saves bandwidth)</b>
-                    <span>When 3 or more people watch your screen share, also send a 720p copy for those watching it small. Only with a hardware encoder, and it switches itself off for the rest of the share if it costs your game anything. Off by default.</span>
+                    <span>Also send a 720p copy of your screen share, for viewers watching it small or on a slower connection (so their picture keeps moving instead of freezing). For a 60 fps or 1440p share it runs from the first viewer, otherwise from 2. Only with a hardware encoder, and it switches itself off for the rest of the share if it costs your game anything. On by default.</span>
                 </div>
                 <ClToggle checked={shareLow} onChange={setShareLowLayerEnabled} />
             </div>
@@ -375,7 +393,7 @@ const StreamDiagnosticsCard: React.FC = () => {
             </div>
             <div className="sd-opts mt-2" role="radiogroup" aria-label="Camera encoder">
                 {CAMERA_CODEC_OPTIONS.map(o => (
-                    <ChannelCard
+                    <OptionCard
                         key={o.value}
                         active={cameraCodec === o.value}
                         disabled={false}
@@ -387,7 +405,7 @@ const StreamDiagnosticsCard: React.FC = () => {
             </div>
 
             <CaptureStartupSettings />
-        </div>
+        </SettingsDisclosure>
     );
 };
 
@@ -477,7 +495,7 @@ const CaptureStartupSettings: React.FC = () => {
                     </div>
                     <div className="sd-opts mt-2" role="radiogroup" aria-label="Screen capture method">
                         {CAPTURER_OPTIONS.map(o => (
-                            <ChannelCard
+                            <OptionCard
                                 key={o.value}
                                 active={state.saved.screenCapturer === o.value}
                                 disabled={saving}
@@ -514,14 +532,14 @@ const CaptureStartupSettings: React.FC = () => {
             </div>
 
             {pending && (
-                <div className="mt-3 flex items-center gap-2.5 px-3 py-2.5 rounded-xl" role="status" style={{ background: 'rgba(255,201,77,.08)', border: '1px solid rgba(255,201,77,.2)' }}>
-                    <RefreshCw size={14} className="shrink-0" style={{ color: 'var(--cl-glow)' }} aria-hidden />
-                    <p className="text-xs leading-relaxed" style={{ color: 'var(--cl-glow)', flex: 1, margin: 0 }}>
-                        Restart Cipherline to apply.
-                    </p>
-                    <ClButton size="sm" variant="primary" loading={restarting} disabled={restarting} onClick={restart}>
-                        Restart
-                    </ClButton>
+                <div className="mt-3">
+                    <ClBanner
+                        inline
+                        tone="warning"
+                        icon={<RefreshCw size={15} />}
+                        title="Restart Cipherline to apply."
+                        actions={[{ key: 'restart', label: 'Restart', variant: 'primary', loading: restarting, disabled: restarting, onClick: restart }]}
+                    />
                 </div>
             )}
 
@@ -656,6 +674,58 @@ const CheckForUpdatesRow: React.FC = () => {
 };
 
 /**
+ * A value that copies itself on click / Enter / Space (it is a real <button>).
+ *
+ * Copies through writeToClipboard -> the preload's main-process clipboard
+ * (window.electronAPI.writeClipboard), the same path every other copy button
+ * uses. The renderer's navigator.clipboard.writeText is not reliable in
+ * Electron: it rejects unless the document is focused and the permission
+ * handler allows it, and this used to call it directly, swallow the
+ * rejection, and look dead. Feedback is always shown, including on failure.
+ */
+const CopyChip: React.FC<{ text: string; shown: string; title: string; enabled?: boolean }> = ({ text, shown, title, enabled = true }) => {
+    const [state, setState] = useState<'idle' | 'copied' | 'failed'>('idle');
+    const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+    useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
+
+    const copy = async () => {
+        if (!enabled) return;
+        let next: 'copied' | 'failed' = 'copied';
+        try { await writeToClipboard(text); } catch { next = 'failed'; }
+        setState(next);
+        if (timer.current) clearTimeout(timer.current);
+        timer.current = setTimeout(() => setState('idle'), 2000);
+    };
+
+    return (
+        <button
+            type="button"
+            onClick={copy}
+            title={enabled ? title : 'This build was compiled without source-control info'}
+            aria-label={enabled ? title : undefined}
+            className="sd-mono"
+            style={{
+                fontSize: 12.5,
+                color: state === 'failed' ? 'var(--cl-danger, #e5484d)' : 'var(--cl-muted)',
+                background: 'none',
+                border: 'none',
+                padding: 0,
+                cursor: enabled ? 'pointer' : 'default',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
+            }}
+        >
+            {state === 'copied' ? 'Copied' : state === 'failed' ? 'Copy failed' : shown}
+            {enabled && state === 'idle' && <Copy size={12} aria-hidden />}
+            <span role="status" aria-live="polite" className="sr-only">
+                {state === 'copied' ? 'Copied to clipboard' : state === 'failed' ? 'Could not copy' : ''}
+            </span>
+        </button>
+    );
+};
+
+/**
  * The build's source commit, click-to-copy.
  *
  * Rendered even when it's 'unknown' (a build made without git available)
@@ -663,44 +733,39 @@ const CheckForUpdatesRow: React.FC = () => {
  * this?", and a row that silently disappears would just recreate the guessing
  * this is meant to end.
  */
-const BuildCommit: React.FC = () => {
-    const [copied, setCopied] = useState(false);
-    const known = BUILD_COMMIT !== 'unknown';
+const BuildCommit: React.FC = () => (
+    <CopyChip text={BUILD_COMMIT} shown={BUILD_COMMIT} title="Copy commit" enabled={BUILD_COMMIT !== 'unknown'} />
+);
 
-    const copy = async () => {
-        if (!known) return;
-        try {
-            await navigator.clipboard.writeText(BUILD_COMMIT);
-            setCopied(true);
-            setTimeout(() => setCopied(false), 2000);
-        } catch {
-            // Clipboard access denied — the value is on screen either way.
-        }
-    };
-
+/** Reopen the "What's new" notes for this version (they show by themselves once, after an update). */
+const WhatsNewRow: React.FC = () => {
+    const has = notesForVersion(APP_VERSION) !== null;
     return (
-        <button
-            type="button"
-            onClick={copy}
-            title={known ? 'Copy commit' : 'This build was compiled without git metadata'}
-            className="sd-mono"
-            style={{
-                fontSize: 12.5,
-                color: 'var(--cl-muted)',
-                background: 'none',
-                border: 'none',
-                padding: 0,
-                cursor: known ? 'pointer' : 'default',
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: 6,
-            }}
-        >
-            {copied ? 'Copied' : BUILD_COMMIT}
-            {known && !copied && <Copy size={12} aria-hidden />}
-        </button>
+        <div className="sd-row">
+            <div className="sd-rl">
+                <b>What’s new</b>
+                <span>{has ? `The notes for v${APP_VERSION}, the ones shown after an update.` : `There are no notes for v${APP_VERSION}.`}</span>
+            </div>
+            <div className="sd-rc">
+                <ClButton
+                    size="sm"
+                    variant="ghost"
+                    disabled={!has}
+                    onClick={() => window.dispatchEvent(new CustomEvent(OPEN_WHATS_NEW_EVENT, { detail: { version: APP_VERSION } }))}
+                >
+                    Show
+                </ClButton>
+            </div>
+        </div>
     );
 };
+
+/** The app version, click-to-copy as "Cipherline v1.0.22 (88a0183)": what a bug report wants. */
+const BuildVersion: React.FC = () => (
+    <VersionTapEgg>
+        <CopyChip text={buildVersionText(APP_VERSION, BUILD_COMMIT)} shown={`v${APP_VERSION}`} title="Copy version" />
+    </VersionTapEgg>
+);
 
 /**
  * Delivery diagnostics — a session-local, non-persisted record of message and
@@ -724,7 +789,7 @@ const DeliveryDiagnosticsCard: React.FC = () => {
 
     const copy = async () => {
         try {
-            await navigator.clipboard.writeText(formatReport());
+            await writeToClipboard(formatReport());
             setCopied(true);
             setTimeout(() => setCopied(false), 2000);
         } catch {
@@ -815,7 +880,7 @@ const PerformanceLogCard: React.FC = () => {
             // never cost the copy itself: a failure just leaves the line out.
             let memory: string | undefined;
             try { memory = rendererMemoryLine(); } catch { memory = undefined; }
-            await navigator.clipboard.writeText(formatFreezeReport(rows, { version: APP_VERSION, platform, commit: BUILD_COMMIT, memory }));
+            await writeToClipboard(formatFreezeReport(rows, { version: APP_VERSION, platform, commit: BUILD_COMMIT, memory }));
             setCopied(true);
             setTimeout(() => setCopied(false), 2000);
         } catch {
@@ -878,27 +943,4 @@ const PerformanceLogCard: React.FC = () => {
 };
 
 /** Selectable option card — kit-radio face on a card, springs on select. */
-const ChannelCard: React.FC<{
-    active: boolean;
-    disabled: boolean;
-    title: string;
-    description: string;
-    onClick: () => void;
-}> = ({ active, disabled, title, description, onClick }) => (
-    <button
-        type="button"
-        role="radio"
-        aria-checked={active}
-        className={`sd-opt${active ? ' sd-on' : ''}`}
-        disabled={disabled}
-        onClick={onClick}
-    >
-        <span className="sd-opt-head">
-            <span className="sd-opt-dot" />
-            <b>{title}</b>
-        </span>
-        <p>{description}</p>
-    </button>
-);
-
 export default AdvancedSettings;

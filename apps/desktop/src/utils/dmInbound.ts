@@ -94,6 +94,9 @@ const NOT_SHOWABLE_REASONS = new Set(['malformed', 'unprocessable']);
 
 /** The words a placeholder row (and its notification) shows for `reason`. */
 export function placeholderText(reason: unknown): string {
+    // F1: decrypted, but claimed to come from this account and not from any
+    // device this install knows as the user's own (utils/selfSenderTrust.ts).
+    if (reason === 'unverified_own_device') return 'A message from a device not confirmed as yours wasn’t shown';
     return typeof reason === 'string' && NOT_SHOWABLE_REASONS.has(reason)
         ? 'A message couldn’t be shown'
         : 'A message couldn’t be decrypted on this device';
@@ -147,12 +150,61 @@ export function isSameAuthor(
     target: { sender_user_id?: string | null; sender_device_id?: string | null },
     action: { sender_user_id?: string | null; sender_device_id?: string | null },
 ): boolean {
-    // A NON-EMPTY device match: how my own rows match my own actions (both
-    // carry this device's id, whichever of my devices sent them — rows I sent
-    // from here have no sender_user_id at all), and how a legacy row matches.
-    if (target.sender_device_id && target.sender_device_id === action.sender_device_id) return true;
+    // F4: when both sides carry the (signed, sender-trust-checked) user id it
+    // decides, and a device match can never override it. The device id is the
+    // sender's own choice, so it used to be enough for another member to
+    // name the victim's device id to edit or delete the victim's messages.
     if (target.sender_user_id && action.sender_user_id) return target.sender_user_id === action.sender_user_id;
+    // One side has no user id: my own rows written on this device carry none
+    // (they match my own actions, which carry this device's id whichever of my
+    // devices sent them), and so do some legacy rows. A NON-EMPTY device match
+    // decides those; the ingest path never lets another user's envelope carry
+    // one of my device ids (bindSenderDeviceId).
+    if (target.sender_device_id && target.sender_device_id === action.sender_device_id) return true;
     return false;
+}
+
+/**
+ * The sender device id to store on an inbound row from ANOTHER user, or ''
+ * when the claimed `sd` is contradicted by what this client knows:
+ *   • it is one of MY devices (this device, or an own device the ledger or
+ *     directory lists) — another user can never be sending from it;
+ *   • the directory lists it under a different user;
+ *   • it is a user id, not a device id.
+ * '' is the pre-existing "device unknown" value: rows match by user id, and
+ * the UI names the sender from the user id. Absent contradicting evidence the
+ * claim is kept — an unknown device of a contact is normal (new devices).
+ */
+export function bindSenderDeviceId(input: {
+    senderUserId: string;
+    senderDeviceId: string | null | undefined;
+    myDeviceIds: ReadonlySet<string>;
+    deviceOwner: (deviceId: string) => string | null;
+    isKnownUserId: (id: string) => boolean;
+}): string {
+    const sd = input.senderDeviceId;
+    if (!sd || typeof sd !== 'string') return '';
+    if (input.myDeviceIds.has(sd)) return '';
+    const owner = input.deviceOwner(sd);
+    if (owner && owner !== input.senderUserId) return '';
+    if (sd === input.senderUserId || input.isKnownUserId(sd)) return '';
+    return sd;
+}
+
+/**
+ * A `call_key` that is about a call already running, not the start of one: a
+ * key handed to a joiner (`share`), a rotation (`rotate-<n>`) or a key a lone
+ * joiner minted (`mint`). The key itself is consumed by the pull loop; these
+ * must not also become call bars in the thread (one per holder that answers, one
+ * per rotation) or keep key material in the thread for the retention window.
+ * The call's own start (`initial`, or anything an older client sends) is the
+ * one bar a call gets.
+ */
+export function isCallKeyControl(content: unknown): boolean {
+    if (typeof content !== 'object' || content === null) return false;
+    const c = content as { type?: unknown; key_id?: unknown };
+    if (c.type !== 'call_key' || typeof c.key_id !== 'string') return false;
+    return c.key_id === 'share' || c.key_id === 'mint' || c.key_id.startsWith('rotate-');
 }
 
 /**
@@ -165,8 +217,9 @@ export function isSameAuthor(
  * on threads that already hold the merged messages, safe:
  *  - edit / delete: only by the original sender (isSameAuthor), by target id;
  *  - reaction add/remove: set semantics per device;
- *  - pin, profile_update, group_update: no thread row (their side effects run
- *    in the pull loop, outside any reducer);
+ *  - pin, profile_update, group_update, call_key_request, and a call_key that
+ *    is not a call's start ({@link isCallKeyControl}): no thread row (their side
+ *    effects run in the pull loop, outside any reducer);
  *  - everything else is a row, appended once per id.
  */
 export function applyIncomingDmMessages(threads: ThreadMap, incoming: ThreadMap): ThreadMap {
@@ -205,7 +258,7 @@ export function applyIncomingDmMessages(threads: ThreadMap, incoming: ThreadMap)
                     else reactions[rKey] = rList;
                     currentThread[i] = { ...msg, reactions };
                 }
-            } else if (type === 'pin' || type === 'profile_update' || type === 'group_update') {
+            } else if (type === 'pin' || type === 'profile_update' || type === 'group_update' || type === 'call_key_request' || isCallKeyControl(m.content)) {
                 // Not a row. Handled by the pull loop; the branch exists so these
                 // don't reach the final append and show up as messages.
             } else if (!currentThread.find(t => t.id === m.id)) {

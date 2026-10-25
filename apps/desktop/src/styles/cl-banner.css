@@ -1,0 +1,207 @@
+/* ClBanner: the one notice-strip primitive (components/ClBanner.tsx).
+ *
+ * A slim, rounded, INSET card, not an edge-to-edge slab: dark surface, a thin
+ * tone-coloured accent on the left, a tone-coloured glyph in a soft circle,
+ * normal-foreground title, muted secondary text. Tokens only (--cl-*); each
+ * tone just sets --b, the one accent colour everything else is mixed from.
+ * Warning is amber on the glyph and accent only, never a khaki fill.
+ */
+
+.cl-banner-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 12px 4px;
+  flex-shrink: 0;
+  min-width: 0;
+}
+/* No live banner: take no space at all. */
+.cl-banner-stack:empty { display: none; }
+
+.cl-banner {
+  --b: var(--cl-lume);
+  container-type: inline-size;
+  min-width: 0;
+  animation: cl-banner-in 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.cl-banner[data-banner-tone='info']    { --b: var(--cl-lume); }
+.cl-banner[data-banner-tone='warning'] { --b: var(--cl-glow); }
+.cl-banner[data-banner-tone='danger']  { --b: var(--cl-flash); }
+.cl-banner[data-banner-tone='success'] { --b: var(--cl-ok); }
+.cl-banner[data-banner-tone='neutral'] { --b: var(--cl-muted); }
+
+/* Only the starting frame is written: the resting rule is the final state, so
+   "reduce motion" (animation: none) lands on the right pixels. */
+@keyframes cl-banner-in {
+  from { opacity: 0; transform: translateY(-6px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cl-banner { animation: none; }
+}
+
+
+.cl-banner__card {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  grid-template-areas:
+    'icon text actions dismiss'
+    'extra extra extra extra';
+  align-items: center;
+  min-height: 44px;
+  padding: 6px 8px 6px 16px;
+  box-sizing: border-box;
+  border-radius: 14px;
+  border: 1px solid color-mix(in srgb, var(--b) 20%, var(--cl-border));
+  background:
+    radial-gradient(160px 70px at 0 50%, color-mix(in srgb, var(--b) 11%, transparent), transparent),
+    color-mix(in srgb, var(--b) 4%, var(--cl-deep));
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28);
+  color: var(--cl-text);
+  font-family: var(--cl-font-body, 'Nunito', sans-serif);
+  overflow: hidden;
+}
+/* The thin left accent, inset from the card's rounded corners. */
+.cl-banner__card::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 9px;
+  bottom: 9px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--b);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--b) 55%, transparent);
+}
+
+.cl-banner__icon {
+  grid-area: icon;
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  margin-right: 10px;
+  border-radius: 50%;
+  color: var(--b);
+  background: color-mix(in srgb, var(--b) 14%, transparent);
+  flex-shrink: 0;
+}
+.cl-banner__icon svg { display: block; }
+
+.cl-banner__text {
+  grid-area: text;
+  margin: 0;
+  min-width: 0;
+  font-size: 13px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.cl-banner__title { font-weight: 800; color: var(--cl-text); }
+.cl-banner__title + .cl-banner__desc { margin-left: 4px; }
+.cl-banner__desc  { font-weight: 600; color: var(--cl-muted); font-size: 12.5px; }
+.cl-banner__desc--solo { color: var(--cl-text); font-size: 13px; }
+
+.cl-banner__actions {
+  grid-area: actions;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 12px;
+  min-width: 0;
+}
+.cl-banner__meta {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--cl-faint);
+  white-space: nowrap;
+  margin-right: 2px;
+}
+
+.cl-banner__dismiss { grid-area: dismiss; margin-left: 4px; display: inline-flex; }
+.cl-banner__x {
+  display: inline-grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--cl-faint);
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+.cl-banner__x:hover:not(:disabled) { background: rgba(255, 255, 255, 0.07); color: var(--cl-text); }
+.cl-banner__x:focus-visible { outline: 2px solid var(--cl-lume); outline-offset: 1px; color: var(--cl-text); }
+.cl-banner__x:disabled { opacity: 0.4; cursor: default; }
+
+.cl-banner__extra {
+  grid-area: extra;
+  min-width: 0;
+  margin: 6px 0 2px 38px;
+  padding-top: 6px;
+  border-top: 1px solid color-mix(in srgb, var(--b) 14%, transparent);
+  font-size: 12.5px;
+  color: var(--cl-muted);
+}
+
+/* Buttons inside a banner are compact and flat: the kit's 2-4px depth sheets
+   would peek out of a 44px strip. */
+.cl-banner .clb { transform: none; }
+.cl-banner .clb .l { display: none; }
+.cl-banner .clb--sm .cap { padding: 7px 14px; font-size: 12.5px; }
+
+/* Narrow: the actions drop under the text (indented to align with it), the
+   dismiss stays top-right. Container query, so it follows the pane the banner
+   sits in, not the window. */
+@container (max-width: 720px) {
+  .cl-banner__card {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-areas:
+      'icon text dismiss'
+      '. actions actions'
+      'extra extra extra';
+    align-items: start;
+    padding-top: 8px;
+    padding-bottom: 8px;
+  }
+  .cl-banner__icon { margin-top: 0; }
+  .cl-banner__actions {
+    margin: 8px 0 0;
+    flex-wrap: wrap;
+  }
+  .cl-banner__dismiss { margin-top: 1px; }
+}
+
+/* "+N more" */
+.cl-banner-more {
+  align-self: center;
+  order: 999;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  border: 0;
+  border-radius: 99px;
+  background: transparent;
+  color: var(--cl-muted);
+  font: 700 11.5px var(--cl-font-body, 'Nunito', sans-serif);
+  cursor: pointer;
+}
+.cl-banner-more:hover { color: var(--cl-text); background: rgba(255, 255, 255, 0.06); }
+.cl-banner-more:focus-visible { outline: 2px solid var(--cl-lume); outline-offset: 1px; }
+
+/* Banners that must sit above whatever pane is open (renderer hang, device reset). */
+.cl-banner-overlay {
+  position: fixed;
+  top: 40px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 9998;
+  width: min(760px, calc(100vw - 24px));
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+}
+.cl-banner-overlay > * { pointer-events: auto; }

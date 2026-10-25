@@ -1,0 +1,168 @@
+/* ============================================================================
+   Dialog layout pattern (components/dialog/DialogFrame.tsx).
+
+   Header / body / footer for a ClModal card. UNSCOPED on purpose — the kit's
+   rules live in @scope(.cl-kit), and an unscoped rule LOSES to a scoped one of
+   equal specificity (no scoping root = infinite proximity), so every selector
+   here that competes with a kit rule carries one more class than it does
+   (`.mcard.dlg-card` beats `.mcard`). cl/ primitives are untouched.
+
+   Motion: none of its own. The card's entrance is ClModal's; under
+   prefers-reduced-motion the kit drops it and the card rests fully visible.
+   ============================================================================ */
+
+.mcard.dlg-card{
+  padding:0;
+  display:flex;flex-direction:column;
+  max-height:min(680px, calc(100vh - 48px));
+  overflow:hidden;
+  box-shadow:0 24px 64px rgba(0,0,0,.55), 0 0 0 1px rgba(255,255,255,.02);
+}
+
+/* ── header ── */
+.dlg-head{display:flex;align-items:flex-start;gap:14px;padding:22px 24px 0;flex:none}
+.dlg-head-icon{
+  flex:none;width:40px;height:40px;border-radius:12px;
+  display:flex;align-items:center;justify-content:center;
+  background:var(--cl-lume-tint, rgba(37,224,200,.12));
+  color:var(--cl-lume, #25E0C8);
+  box-shadow:inset 0 0 0 1px rgba(37,224,200,.22);
+}
+.dlg-head-text{flex:1;min-width:0;padding-top:1px}
+.dlg-head .dlg-title{
+  margin:0;font-family:var(--cl-font-display, 'Fredoka', sans-serif);
+  font-weight:600;font-size:19px;line-height:1.25;letter-spacing:-.1px;
+  color:var(--cl-text, #F4F7FF);
+}
+.dlg-subtitle{margin-top:3px;font-size:13px;line-height:1.45;font-weight:600;color:var(--cl-muted, #A7B3D4)}
+.dlg-head-trailing{flex:none;margin:-4px -6px 0 0}
+
+/* ── body ── */
+.dlg-body{padding:16px 24px 0;min-height:0;display:flex;flex-direction:column;flex:1;overflow-y:auto;overscroll-behavior:contain}
+.dlg-body--flush{padding-left:0;padding-right:0}
+
+/* ── inline error ── */
+.dlg-error{
+  margin:12px 24px 0;padding:9px 12px;border-radius:11px;flex:none;
+  font-size:13px;font-weight:700;line-height:1.4;
+  color:var(--cl-flash, #FF6B5E);
+  background:var(--cl-flash-tint, rgba(255,107,94,.12));
+  box-shadow:inset 0 0 0 1px rgba(255,107,94,.22);
+}
+
+/* ── footer ── */
+.dlg-foot{
+  display:flex;align-items:center;gap:14px;flex:none;
+  margin-top:14px;padding:14px 20px 16px 24px;
+  border-top:1px solid var(--cl-border, #2A3558);
+  background:rgba(10,17,32,.45);
+}
+.dlg-foot-hint{
+  flex:1;min-width:0;display:flex;align-items:center;gap:7px;
+  font-size:12.5px;font-weight:700;color:var(--cl-faint, #5E6B8F);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.dlg-foot-hint svg{flex:none}
+.dlg-foot-hint .dlg-hint-strong{color:var(--cl-text, #F4F7FF)}
+/* A keyboard keycap for shortcut hints (e.g. the Shift glyph). */
+.dlg-kbd{
+  display:inline-flex;align-items:center;justify-content:center;
+  min-width:20px;height:18px;padding:0 4px;border-radius:5px;
+  border:1px solid var(--cl-border, rgba(140,160,210,.28));
+  border-bottom-width:2px;color:var(--cl-muted, #A9B4D6);
+  background:rgba(255,255,255,.04);
+}
+.dlg-foot-actions{display:flex;align-items:center;gap:10px;flex:none}
+/* A quiet text-style action on the footer's left (e.g. "Start a group chat"):
+   reads as a link, not a button, so it never competes with the primary. */
+.dlg-foot-link{
+  display:inline-flex;align-items:center;gap:7px;min-width:0;
+  padding:5px 8px;margin-left:-8px;border:0;border-radius:8px;background:none;
+  font:inherit;font-size:12.5px;font-weight:700;color:var(--cl-faint, #5E6B8F);
+  white-space:nowrap;cursor:pointer;
+  transition:color .12s ease, background-color .12s ease;
+}
+.dlg-foot-link:hover:not(:disabled){color:var(--cl-lume, #25E0C8);background:rgba(37,224,200,.08)}
+.dlg-foot-link:focus-visible{outline:2px solid var(--cl-lume, #25E0C8);outline-offset:1px;color:var(--cl-lume, #25E0C8)}
+.dlg-foot-link:disabled{opacity:.5;cursor:default}
+@media (prefers-reduced-motion:reduce){.dlg-foot-link{transition:none}}
+
+/* ============================================================================
+   Wave 1 additions — confirm / notice dialogs and form fields.
+   ============================================================================ */
+
+/* Icon tile tones (default = lume). Destructive confirms use --danger. */
+.dlg-head-icon--danger{
+  background:var(--cl-flash-tint, rgba(255,107,94,.12));color:var(--cl-flash, #FF6B5E);
+  box-shadow:inset 0 0 0 1px rgba(255,107,94,.26);
+}
+.dlg-head-icon--warn{
+  background:rgba(245,158,11,.12);color:var(--cl-glow, #F5B84B);
+  box-shadow:inset 0 0 0 1px rgba(245,158,11,.26);
+}
+.dlg-head-icon--ok{
+  background:rgba(52,211,153,.12);color:var(--cl-ok, #34D399);
+  box-shadow:inset 0 0 0 1px rgba(52,211,153,.26);
+}
+
+/* Confirm-sized card: narrower than a picker dialog. */
+.mcard.dlg-card.dlg-card--confirm{max-width:420px}
+/* A confirm's footer hint may be a whole sentence ("Hold Shift to skip this next time."): let it wrap. */
+.dlg-card--confirm .dlg-foot-hint{white-space:normal;line-height:1.3;text-overflow:clip}
+
+/* Plain explanatory text inside a body (a div, never <p>: see the note up top). */
+.dlg-text{font-size:13.5px;line-height:1.55;font-weight:600;color:var(--cl-muted, #A7B3D4)}
+.dlg-text strong,.dlg-text b{color:var(--cl-text, #F4F7FF);font-weight:800}
+.dlg-text + .dlg-text{margin-top:10px}
+.dlg-body--scroll{overflow-y:auto;overscroll-behavior:contain}
+
+/* Callout: a quiet boxed note (what a destructive action will also do). */
+.dlg-callout{
+  display:flex;align-items:flex-start;gap:9px;margin-top:12px;padding:10px 12px;border-radius:11px;
+  font-size:12.5px;line-height:1.45;font-weight:700;
+  color:var(--cl-glow, #F5B84B);background:rgba(245,158,11,.08);
+  box-shadow:inset 0 0 0 1px rgba(245,158,11,.22);
+}
+.dlg-callout svg{flex:none;margin-top:1px}
+.dlg-callout--danger{color:var(--cl-flash, #FF6B5E);background:var(--cl-flash-tint, rgba(255,107,94,.1));box-shadow:inset 0 0 0 1px rgba(255,107,94,.22)}
+.dlg-callout--ok{color:var(--cl-ok, #34D399);background:rgba(52,211,153,.09);box-shadow:inset 0 0 0 1px rgba(52,211,153,.22)}
+
+/* Form field: label above control. */
+.dlg-field{display:flex;flex-direction:column;gap:7px}
+.dlg-field + .dlg-field{margin-top:14px}
+.dlg-label{font-size:11.5px;font-weight:800;letter-spacing:.07em;text-transform:uppercase;color:var(--cl-faint, #5E6B8F)}
+.dlg-help{font-size:12.5px;line-height:1.45;font-weight:600;color:var(--cl-faint, #5E6B8F)}
+
+/* Inline success strip (twin of .dlg-error). */
+.dlg-ok{
+  margin:12px 24px 0;padding:9px 12px;border-radius:11px;flex:none;
+  font-size:13px;font-weight:700;line-height:1.4;
+  color:var(--cl-ok, #34D399);background:rgba(52,211,153,.1);
+  box-shadow:inset 0 0 0 1px rgba(52,211,153,.24);
+}
+
+/* Simple action list (rows with a trailing button), e.g. "Add to group". */
+.dlg-list{
+  margin:12px -12px 0;padding:0 12px 6px;
+  max-height:min(264px, calc(100vh - 360px));min-height:120px;
+  overflow-y:auto;overscroll-behavior:contain;
+}
+.dlg-row{
+  display:flex;align-items:center;gap:12px;min-height:54px;padding:7px 10px;border-radius:12px;
+  transition:background-color .12s ease;
+}
+.dlg-row:hover{background:var(--cl-surface, #1C2542)}
+.dlg-row-av{width:38px;height:38px;border-radius:50%;overflow:hidden;flex:none;box-shadow:0 0 0 1px rgba(255,255,255,.06)}
+.dlg-row-title{flex:1;min-width:0;font-size:14.5px;font-weight:800;color:var(--cl-text, #F4F7FF);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dlg-row-err{padding:0 10px 6px 60px;font-size:12px;font-weight:700;color:var(--cl-flash, #FF6B5E)}
+.dlg-empty{min-height:150px;height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;text-align:center;color:var(--cl-faint, #5E6B8F);font-size:13.5px;font-weight:700}
+
+/* Photo tile + name field on one row (create group). */
+.dlg-identity{display:flex;align-items:flex-end;gap:14px}
+.dlg-identity .cl-newgroup-avatar-picker{width:64px;height:64px}
+
+/* A <form> that wraps header/body/footer so Enter submits from any field. */
+.dlg-form{display:flex;flex-direction:column;min-height:0;flex:1}
+
+/* A wrapper used only to find a footer button for initial focus; no layout effect. */
+.dlg-focus-slot{display:contents}

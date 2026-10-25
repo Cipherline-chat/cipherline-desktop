@@ -1,0 +1,48 @@
+/* ============================================================================
+   Stale-device prompt (components/StaleDevicesDialog.tsx) and the matching
+   badge in Settings → Devices. Unscoped like dialog-frame.css; selectors are
+   all `stale-*`, so nothing in the kit competes with them.
+   ============================================================================ */
+
+.stale-list{
+  margin:14px -10px 0;padding:0 10px 4px;
+  max-height:min(300px, calc(100vh - 360px));
+  overflow-y:auto;overscroll-behavior:contain;
+  display:flex;flex-direction:column;gap:2px;
+}
+.stale-row{
+  display:flex;align-items:center;gap:12px;min-height:58px;padding:8px 10px;border-radius:12px;
+  transition:background-color .12s ease;
+}
+.stale-row:hover{background:var(--cl-surface, #1C2542)}
+.stale-tile{
+  flex:none;width:36px;height:36px;border-radius:10px;
+  display:flex;align-items:center;justify-content:center;
+  background:rgba(255,255,255,.05);color:var(--cl-muted, #A7B3D4);
+  box-shadow:inset 0 0 0 1px rgba(255,255,255,.06);
+}
+.stale-meta{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}
+.stale-name{display:flex;align-items:center;gap:8px;min-width:0}
+.stale-name-text{
+  min-width:0;font-size:14.5px;font-weight:800;color:var(--cl-text, #F4F7FF);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.stale-sub{font-size:12.5px;font-weight:700;color:var(--cl-faint, #5E6B8F);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.stale-err{font-size:12px;font-weight:700;color:var(--cl-flash, #FF6B5E)}
+.stale-actions{flex:none;display:flex;gap:8px}
+.stale-when{color:var(--cl-glow, #F5B84B)}
+.stale-when--old{color:#FF9F6E}
+/* Remove is a quiet ghost button with a danger-coloured label; the house
+   ConfirmDialog that follows is the loud, destructive step. Extra classes so
+   this unscoped rule beats the kit's scoped ghost colour. */
+.stale-row .stale-actions .clb--ghost.stale-remove .cap{color:var(--cl-flash, #FF6B5E)}
+.stale-row .stale-actions .clb--ghost.stale-remove .cap:hover{color:var(--cl-flash, #FF6B5E);box-shadow:inset 0 0 0 1.5px var(--cl-flash, #FF6B5E)}
+
+/* The badge — quiet amber at 30 days, a touch warmer at 6 months. Shared
+   with Settings → Devices so both read the same. */
+.stale-badge{
+  flex:none;display:inline-flex;align-items:center;height:18px;padding:0 7px;border-radius:6px;
+  font-size:10.5px;font-weight:800;letter-spacing:.2px;white-space:nowrap;
+  background:rgba(245,184,75,.12);color:var(--cl-glow, #F5B84B);
+}
+.stale-badge--old{background:rgba(255,140,90,.14);color:#FF9F6E}

@@ -37,7 +37,7 @@
  *
  *   getForegroundInfo()
  *       -> { notificationState, fgExe, fgCoversMonitor, fgIsCipherline,
- *            fgMonitor: {x,y,width,height} | null } | null
+ *            fgMonitor: {x,y,width,height} | null, fgWindow: string } | null
  *     What owns the screen right now, for the "is a fullscreen game bypassing
  *     DWM composition" question. notificationState is
  *     SHQueryUserNotificationState() as the enum's name (QUNS_RUNNING_D3D_FULL_SCREEN,
@@ -46,8 +46,15 @@
  *     path). fgCoversMonitor is "the foreground window's rectangle EQUALS the
  *     rectangle of the monitor it is on" (the desktop / shell windows are
  *     excluded). fgIsCipherline is "that window belongs to this process".
- *     NO window titles, no handles: nothing here can say what a person is
- *     doing inside a window, only which program has the screen.
+ *     fgWindow is the foreground window's ROOT window (GetAncestor GA_ROOT) as
+ *     a decimal HWND string - the form that appears in `window:<hwnd>:0` - or
+ *     "" when there is no foreground window or it is the desktop / shell. It
+ *     is consumed ONLY by the main process (quick screen share,
+ *     electron/quick-share-foreground.ts), which maps it onto a desktopCapturer
+ *     window source; main.ts never forwards it to the renderer. An addon built
+ *     before this field existed simply lacks it and the JS side falls back.
+ *     NO window titles: nothing here can say what a person is doing inside a
+ *     window, only which program has the screen.
  *
  *   getWindowExe(hwnd: string) -> string | null
  *     The same basename for one window (a decimal HWND string, as it appears
@@ -492,7 +499,16 @@ napi_value GetForegroundInfo(napi_env env, napi_callback_info info) {
             }
         }
     }
+    // The foreground window's ROOT as a decimal string ("" = none / desktop /
+    // shell). A decimal string, not a number: an HWND is pointer-sized.
+    std::string fgWindow;
+    if (fg && !IsShellWindow(fg)) {
+        HWND root = GetAncestor(fg, GA_ROOT);
+        if (!root) root = fg;
+        if (!IsShellWindow(root)) fgWindow = std::to_string(static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(root)));
+    }
     SetString(env, obj, "fgExe", exe);
+    SetString(env, obj, "fgWindow", fgWindow);
     SetBool(env, obj, "fgCoversMonitor", covers);
     SetBool(env, obj, "fgIsCipherline", isCipherline);
     if (haveMonitor && monitor.right > monitor.left && monitor.bottom > monitor.top) {

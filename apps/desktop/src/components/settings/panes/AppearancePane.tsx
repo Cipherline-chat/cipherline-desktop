@@ -82,7 +82,7 @@ export const AppearancePane: React.FC<AppearancePaneProps> = ({ gif }) => {
         <>
             {window.electronAPI && (
                 <div className="sd-card">
-                    <h3>Around your OS</h3>
+                    <h3>Startup &amp; window</h3>
                     <p className="sd-sub">How the window behaves at startup and close.</p>
                     {rows.map((row, i) => (
                         <div key={row.label} className="sd-row" style={i === 0 ? { borderTop: 'none' } : undefined}>
@@ -99,17 +99,27 @@ export const AppearancePane: React.FC<AppearancePaneProps> = ({ gif }) => {
                 </div>
             )}
 
-            {/* Seasonal ambience */}
-            <div className="sd-card">
-                <h3>Seasonal ambience</h3>
+            {/* Motion: GIFs, home ambience and the seasonal snow were three
+                cards; they are one question — how much moves on screen. */}
+            <div className="sd-card" data-labels="Seasonal ambience|GIF playback">
+                <div className="flex items-start justify-between gap-4">
+                    <div>
+                        <h3>Motion</h3>
+                        <p className="sd-sub">How much moves on screen. Your system’s reduced-motion setting always wins.</p>
+                    </div>
+                    {/* A live thumbnail of Home ambience: motes rise while it is on. */}
+                    <span className="sx-motes" data-on={ambientMotion ? 'true' : 'false'} aria-hidden="true">
+                        <i /><i /><i /><i /><i />
+                    </span>
+                </div>
                 <div className="sd-row" style={{ borderTop: 'none' }}>
-                    <span className={`sd-tile${seasonalEffects ? '' : ' sd-tile--dim'}`}><Snowflake size={16} /></span>
+                    <span className={`sd-tile${gif.settings.autoPlayGifs ? '' : ' sd-tile--dim'}`}><ImageIcon size={16} /></span>
                     <div className="sd-rl">
-                        <b>Marine snow</b>
-                        <span>Through December and the first week of January, the detritus that always drifts down here becomes visible. Off has no effect the rest of the year, and it never shows if your system asks for reduced motion.</span>
+                        <b>Automatically play GIFs</b>
+                        <span>When off, GIFs freeze until you hover them — a play icon marks a paused GIF. They always pause when Cipherline loses focus.</span>
                     </div>
                     <div className="sd-rc">
-                        <ClToggle checked={seasonalEffects} onChange={setSeasonalEffects} />
+                        <ClToggle checked={gif.settings.autoPlayGifs} onChange={v => gif.setAutoPlayGifs(v)} />
                     </div>
                 </div>
                 <div className="sd-row">
@@ -122,19 +132,14 @@ export const AppearancePane: React.FC<AppearancePaneProps> = ({ gif }) => {
                         <ClToggle checked={ambientMotion} onChange={setAmbientMotion} />
                     </div>
                 </div>
-            </div>
-
-            {/* GIF Playback */}
-            <div className="sd-card">
-                <h3>GIF playback</h3>
-                <div className="sd-row" style={{ borderTop: 'none' }}>
-                    <span className={`sd-tile${gif.settings.autoPlayGifs ? '' : ' sd-tile--dim'}`}><ImageIcon size={16} /></span>
+                <div className="sd-row">
+                    <span className={`sd-tile${seasonalEffects ? '' : ' sd-tile--dim'}`}><Snowflake size={16} /></span>
                     <div className="sd-rl">
-                        <b>Automatically play GIFs</b>
-                        <span>When off, GIFs freeze until you hover them — a play icon marks a paused GIF. They always pause when Cipherline loses focus.</span>
+                        <b>Marine snow</b>
+                        <span>Through December and the first week of January, the detritus that always drifts down here becomes visible. Off has no effect the rest of the year, and it never shows if your system asks for reduced motion.</span>
                     </div>
                     <div className="sd-rc">
-                        <ClToggle checked={gif.settings.autoPlayGifs} onChange={v => gif.setAutoPlayGifs(v)} />
+                        <ClToggle checked={seasonalEffects} onChange={setSeasonalEffects} />
                     </div>
                 </div>
             </div>

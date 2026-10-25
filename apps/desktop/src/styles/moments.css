@@ -1,0 +1,120 @@
+/* ============================================================================
+   Full-screen moments — the host layer (components/moments/MomentHost.tsx).
+   Each moment's own art lives in styles/moment-<id>.css.
+   Transform + opacity ONLY (doctrine rule 11 applies to anything this big):
+   no filter, no animated box-shadow, no will-change. The layer exists for
+   ≤ 9 s and is unmounted afterwards — nothing here outlives a moment.
+
+   PACING (utils/moments.ts MomentTimeline). The host sets the phase start
+   times on .mo-root as custom properties — --mo-main (end of the notice
+   beat), --mo-read (punchline fully up), --mo-hold (everything settled),
+   --mo-exit / --mo-exit-dur — so a view's exit hangs off the same numbers as
+   the host's timer. House easing: arrivals ease OUT (cubic-bezier(.2,.8,.3,1),
+   a soft overshoot at most), travel eases IN-OUT (.45,0,.55,1), exits are a
+   gentle ease-in-out drift + fade, never a fling.
+   ============================================================================ */
+.mo-root {
+  position: fixed; inset: 0;
+  /* Above every app layer (modals top out ~10020) but below the system
+     surfaces: screen-share picker 99999, update prompt 100000, screen lock
+     999999, client block 2147483000. */
+  z-index: 50000;
+  overflow: hidden; contain: strict;
+  outline: none;
+}
+.mo-passive { pointer-events: none; }
+.mo-stage { pointer-events: auto; cursor: pointer; }
+
+/* Every view's root: the whole scene drifts down a touch and fades on the way
+   out (each view may add its own character exit on top). */
+.mo-view {
+  position: absolute; inset: 0;
+  animation: mo-view-out var(--mo-exit-dur, .6s) cubic-bezier(.45, 0, .55, 1) var(--mo-exit, 8s) forwards;
+}
+@keyframes mo-view-out { from { opacity: 1; transform: none; } to { opacity: 0; transform: translateY(12px); } }
+
+/* The stage backdrop: it dims during the notice beat. */
+.mo-dim {
+  position: absolute; inset: 0;
+  background: rgba(5, 8, 20, .66);
+  opacity: 0;
+  animation: mo-dim-in var(--mo-main, .5s) ease-out both;
+}
+@keyframes mo-dim-in { from { opacity: 0; } to { opacity: 1; } }
+
+/* The notice beat's default cue: a soft Lume ripple where the action is about
+   to happen ("look here"), over before anything travels. */
+.mo-notice {
+  position: absolute; width: 64px; height: 64px; margin: -32px 0 0 -32px; border-radius: 50%;
+  border: 2px solid var(--cl-lume, #25E0C8); opacity: 0;
+  animation: mo-notice calc(var(--mo-main, .5s) + .25s) ease-out both;
+}
+@keyframes mo-notice {
+  0% { transform: scale(.3); opacity: 0; } 30% { opacity: .85; } 100% { transform: scale(1.7); opacity: 0; }
+}
+
+/* The read pill's arrival/departure, shared: it rises 10px and fades in. */
+@keyframes mo-pill-in { from { transform: translate(-50%, 10px); opacity: 0; } to { transform: translate(-50%, 0); opacity: 1; } }
+
+/* The centre point a moment composes around. */
+.mo-anchor { position: absolute; left: 50%; top: 50%; width: 0; height: 0; }
+
+/* Shared type: the big punchline. */
+.mo-punch {
+  font-family: var(--cl-font-display, 'Fredoka', sans-serif);
+  font-weight: 600; color: var(--cl-text, #F4F7FF);
+  white-space: nowrap; text-align: center;
+}
+.mo-pill {
+  position: absolute; left: 50%; transform: translateX(-50%);
+  background: var(--cl-deep, #131A30); border: 1px solid var(--cl-border, #2A3558);
+  border-radius: 999px; padding: 8px 18px;
+  font-family: var(--cl-font-display, 'Fredoka', sans-serif); font-weight: 500;
+  font-size: 15px; color: var(--cl-text, #F4F7FF); white-space: nowrap;
+}
+
+/* ── Reduced motion: the still card. No animation at all. ── */
+.mo-still-wrap { position: absolute; inset: 0; background: rgba(5, 8, 20, .5); }
+.mo-passive .mo-still-wrap { background: none; }
+.mo-still {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  display: flex; align-items: center; gap: 16px;
+  max-width: min(460px, calc(100vw - 32px));
+  background: var(--cl-deep, #131A30); border: 1px solid var(--cl-border, #2A3558);
+  border-radius: 18px; padding: 18px 24px;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, .45);
+}
+.mo-still-headline { font-size: 13px; font-weight: 700; color: var(--cl-muted, #9AA6C8); }
+.mo-still-line {
+  margin-top: 2px; font-family: var(--cl-font-display, 'Fredoka', sans-serif);
+  font-weight: 600; font-size: 22px; color: var(--cl-lume, #25E0C8);
+}
+/* A moment's one real button (MomentDef.action). Hidden — not just
+   transparent — until it appears, so an early click can't hit it blind. */
+.mo-action {
+  position: absolute; left: 50%; bottom: 18%; transform: translateX(-50%);
+  pointer-events: auto; cursor: pointer;
+  font: 700 15px var(--cl-font-sans, 'Nunito', sans-serif);
+  color: var(--cl-abyss, #0B0F1E); background: var(--cl-lume, #25E0C8);
+  border: 0; border-radius: 999px; padding: 11px 24px;
+  /* Up with the punchline; out with the scene (never, for a button that stays). */
+  animation:
+    mo-action-in .5s cubic-bezier(.2, .8, .3, 1) var(--mo-read, 0s) both,
+    mo-action-out var(--mo-exit-dur, .6s) ease-in-out var(--mo-exit, 86400s) forwards;
+}
+.mo-action:focus-visible { outline: 3px solid var(--cl-text, #F4F7FF); outline-offset: 3px; }
+@keyframes mo-action-in {
+  from { transform: translate(-50%, 16px) scale(.8); opacity: 0; visibility: hidden; }
+  to   { transform: translate(-50%, 0); opacity: 1; visibility: visible; }
+}
+@keyframes mo-action-out {
+  from { transform: translate(-50%, 0); opacity: 1; }
+  to   { transform: translate(-50%, 8px); opacity: 0; visibility: hidden; }
+}
+.mo-reduced .mo-action { bottom: calc(50% - 110px); animation: none; }
+
+/* The OS "reduce motion" setting: the host already swaps in the still card;
+   this is the belt to that braces (and keeps the action button in place). */
+@media (prefers-reduced-motion: reduce) {
+  .mo-root, .mo-root * { animation: none !important; }
+}

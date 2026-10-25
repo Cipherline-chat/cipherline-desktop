@@ -44,7 +44,12 @@ describe('channel history paging — Dashboard', () => {
             'await refreshChannelHistory(channel.server_id, channel.channel_id);',   // handleSelectChannel
             'void refreshChannelHistoryRef.current(sid, cid)',                       // key re-ask check installed the key: open channel only
             "await refreshChannelHistory(serverOf.get(channel_id) ?? '', channel_id);", // envelopes-ready: active channel only
+            'await refreshChannelHistoryRef.current(serverId, channelId);',          // key-wait banner "Ask again": open channel only
         ]);
+        // the banner retry's re-read is gated on the active channel too
+        const retry = dash.slice(dash.indexOf('await refreshChannelHistoryRef.current(serverId, channelId);') - 300,
+            dash.indexOf('await refreshChannelHistoryRef.current(serverId, channelId);'));
+        expect(retry).toContain('if (activeChannelRef.current?.channel_id === channelId');
         // the re-ask check's re-read is gated on the active channel too
         const reask = dash.slice(dash.indexOf('void refreshChannelHistoryRef.current(sid, cid)') - 300,
             dash.indexOf('void refreshChannelHistoryRef.current(sid, cid)'));
@@ -61,8 +66,11 @@ describe('channel history paging — Dashboard', () => {
 
     it('every channel-history GET is bounded to 100 rows', () => {
         const gets = [...dash.matchAll(/axios\.get\(apiUrl`\/channels\/\$\{channelId\}\/messages`/g)];
-        // getChannelRows + the mention reconcile (min(unread, 100))
-        expect(gets).toHaveLength(2);
+        // getChannelRows + the mention reconcile (min(unread, 100)) + the F3
+        // moderator-delete confirmation (one row by id, limit 1)
+        expect(gets).toHaveLength(3);
+        expect(dash).toContain("params: { ids: ids.join(','), include_system: '1', limit: ids.length },");
+        expect(dash).toContain('const ids = [...targets.keys()].slice(0, 100);');
         expect(dash).toContain('params: { limit: Math.min(unreadCount, 100), include_system: 1 }');
         // ...and getChannelRows (every other history read) opts in to system rows too
         expect(dash).toContain('params: { include_system: 1, ...params },');
@@ -144,11 +152,11 @@ describe('honest placeholders, tombstones, stale-epoch sends (owner report 2026-
     it('neither decrypt path hard-codes "key_missing" any more — both classify the failure', () => {
         expect(dash).not.toMatch(/reason: 'key_missing'/);
         const hist = body(dash, 'const decryptChannelRow = useCallback', 'const decryptChannelRows = useCallback');
-        expect(hist).toContain('classifyChannelDecryptFailure(err, channelFailureContext(channelId, m.epoch))');
+        expect(hist).toContain('classifyChannelDecryptFailure(err, { ...channelFailureContext(channelId, m.epoch), messageId: m.id })');
         const live = body(dash, 'const handleChannelMessage = useCallback', '}, [userId, notify, channelFailureContext]);');
-        expect(live).toContain('classifyChannelDecryptFailure(err, channelFailureContext(evt.channel_id, evt.epoch))');
+        expect(live).toContain('classifyChannelDecryptFailure(err, { ...channelFailureContext(evt.channel_id, evt.epoch), messageId: evt.message_id })');
         // only a genuinely missing key files a request from the live path
-        expect(live).toMatch(/if \(reason === 'key_missing'\) \{\s*undecryptableChannelsRef\.current\.add\(evt\.channel_id\);\s*void channelKeyOpsRef\.current\.maybeFileKeyRequest/);
+        expect(live).toMatch(/if \(reason === 'key_missing'\) \{\s*undecryptableChannelsRef\.current\.add\(evt\.channel_id\);\s*void channelKeyOpsRef\.current\.askForRowEpochs\(evt\.server_id, evt\.channel_id, /);
     });
 
     it('every history read drops tombstones before decrypting and removes them from the thread', () => {
@@ -159,7 +167,10 @@ describe('honest placeholders, tombstones, stale-epoch sends (owner report 2026-
 
     it('edits use editedContent on every path (a pill target becomes the edited text)', () => {
         // Third argument: the edit's own #channel refs (utils/channelRefs.ts).
-        expect(dash.split('editedContent(thread[idx].content, content.text, content.channel_refs)').length - 1).toBe(2);
+        // The own-send path inline; the live receive path goes through
+        // applyChannelEditDelete (F3), which applies editedContent itself.
+        expect(dash.split('editedContent(thread[idx].content, content.text, content.channel_refs)').length - 1).toBe(1);
+        expect(dash).toContain('applyChannelEditDelete(thread, liveAction, { moderatorDeleteTargets })');
         expect(dash).not.toContain('content: { ...thread[idx].content, text: content.text }');
     });
 
@@ -169,7 +180,8 @@ describe('honest placeholders, tombstones, stale-epoch sends (owner report 2026-
     });
 
     it('ChatPane: the pill text comes from the reason; a 409 STALE_EPOCH starts the key fetch on every channel send path', () => {
-        expect(pane).toContain('<span>{placeholderLabel(placeholderReason(msg))}</span>');
+        // (a run of key_missing rows collapses to one counted row — keyMissingRuns)
+        expect(pane).toContain('<span>{keyRun ? keyMissingRunLabel(keyRun) : placeholderLabel(placeholderReason(msg))}</span>');
         expect(pane).not.toContain("<span>Couldn't decrypt — waiting on this channel's key</span>");
         expect(pane.split('isStaleEpochError(err)').length - 1).toBe(4); // delivery queue, composer send, dispatchAction, reaction send
     });

@@ -65,16 +65,16 @@ describe('holder side: serving key requests', () => {
         expect(fn).not.toMatch(/REDELIVERY_COOLDOWN|cooldown|satisfied_epochs|respace/i);
     });
 
-    it('sends every request\'s newest epoch before any history', () => {
-        expect(pass()).toContain('const phases = latestFirstPhases(walk);');
+    it('sends every request\'s newest epoch before any history (unless the batch route serves each request whole)', () => {
+        expect(pass()).toMatch(/const phases = whole\s*\?\s*\(many \? groupPhasesByRequester\(wholeRequestPhases\(walk\)\) : wholeRequestPhases\(walk\)\)\s*:\s*latestFirstPhases\(walk\);/);
     });
 
     it('a request that threw is NOT marked answered (the next trigger retries it)', () => {
         const fn = pass();
-        const loop = fn.slice(fn.indexOf('const phases = latestFirstPhases(walk);'));
-        const branch = loop.slice(loop.indexOf('} catch (e) {'));
-        expect(branch.slice(0, 600)).toContain('unfinished.add(version);');
-        expect(fn).toContain('if (!unfinished.has(version)) answered.add(version);');
+        const loop = fn.slice(fn.indexOf('for (let i = 0; i < phases.length; i++) {'), fn.indexOf('// The rest — this item included'));
+        expect(loop).toContain('unfinished.add(version);');                       // per request
+        expect(loop).toContain('for (const en of entries) unfinished.add(en.requestVersion);'); // per device (distributeMany)
+        expect(fn).toMatch(/if \(unfinished\.has\(version\)\) continue;\s*answered\.add\(version\);/);
     });
 
     it('a pass that stops part-way OWES the rest to its resume — even once the request closes server-side', () => {
@@ -120,7 +120,7 @@ describe('holder side: server:member_joined', () => {
         expect(fn).toContain('void runMemberJoinDistribution({');
         expect(fn).toContain('distribute: distributeChannelKeys,');
         const join = joinDecision();
-        expect(join).toContain('for (const { item, epochs } of latestFirstPhases(plan)) {');
+        expect(join).toContain('for (const { item, epochs } of (deps.batched?.() === true ? wholeRequestPhases(plan) : latestFirstPhases(plan))) {');
         expect(join).toContain("await deps.distribute(serverId, item.channelId, epochs, recipients, 'member_join');");
     });
 });
@@ -160,14 +160,14 @@ describe('keyless / stale side: say "that did not work" (2026-10-09 call inciden
         const fn = pull();
         const fail = fn.slice(fn.indexOf('const failCount = (envelopeFailureCountRef.current.get(key) ?? 0) + 1;'));
         const notGivingUp = fail.slice(fail.indexOf('} else {'), fail.indexOf('} else {') + 1200);
-        expect(notGivingUp).toContain('void channelKeyOpsRef.current.maybeFileKeyRequest(serverId, env.channel_id);');
+        expect(notGivingUp).toContain('void channelKeyOpsRef.current.maybeFileKeyRequest(serverId, env.channel_id, [env.epoch]);');
     });
 
     it('opening / joining a channel that holds an OLDER epoch than the server\'s newest re-asks for it', () => {
         const fn = body(src, 'const ensureChannelKeyBootstrap = useCallback', 'const handleSelectChannel = useCallback');
         expect(fn).toContain('if (existingEpoch != null && latestEpoch !== undefined && existingEpoch < latestEpoch) {');
         const branch = fn.slice(fn.indexOf('existingEpoch < latestEpoch) {'));
-        expect(branch.slice(0, 200)).toContain('maybeFileKeyRequest(channel.server_id, channel.channel_id)');
+        expect(branch.slice(0, 260)).toContain('maybeFileKeyRequest(channel.server_id, channel.channel_id, askableEpochRange(existingEpoch, latestEpoch))');
     });
 });
 
@@ -185,17 +185,21 @@ describe('idle holder: rotation for a server never opened this session', () => {
 });
 
 describe('2026-10-11 key-delivery latency ("had to wait 5 mins for the keys")', () => {
-    const fileReq = () => body(src, 'const fileKeyRequest = useCallback', 'const maybeFileKeyRequest = useCallback');
+    // The ask path (per-server batch): prepareKeyAsk reads whether the channel is keyless,
+    // finishKeyAsk arms the re-ask from the answer — shared by the single and batch POSTs.
+    const fileReq = () => body(src, 'const prepareKeyAsk = useCallback', 'const maybeFileKeyRequest = useCallback');
     const reaskTick = () => body(src, 'reaskTickRef.current = (sid) => runReaskTick({', '}, sid);');
 
     it('a key request filed while holding NO key arms the fast re-ask (never a stale channel — 2026-10-07 storm)', () => {
         const fn = fileReq();
         expect(fn).toContain('keyless = (await window.electronAPI!.getLatestChannelEpoch(channelId)) === null;');
-        const arm = fn.slice(fn.indexOf('if (keyless && latestEpoch !== 0) {'));
+        const arm = fn.slice(fn.indexOf('if (ask.keyless && latestEpoch !== 0) {'));
         expect(arm.slice(0, 400)).toContain('keyReaskTargets.add(serverId, channelId,');
         expect(arm.slice(0, 400)).toContain('keyReaskScheduler.arm(serverId);');
         // Arming happens only inside that branch.
         expect(fn.match(/keyReaskScheduler\.arm\(/g)).toHaveLength(1);
+        // Both POST paths go through finishKeyAsk, so single and batch asks arm alike.
+        expect(fn.match(/finishKeyAsk\(serverId, (channelId|l\.channelId), (ask|l\.ask), /g)!.length).toBeGreaterThanOrEqual(5);
     });
 
     it('the re-ask check works on those targets and is satisfied only by the NEWEST epoch the API named', () => {

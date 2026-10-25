@@ -1,0 +1,60 @@
+/* "You pinged yourself." — components/moments/views/SelfPingMoment.tsx.
+   7.5 s, transform/opacity only. Phases: notice 0–0.5, main 0.5–3.4,
+   read 3.4–5.9, hold 5.9–6.9, exit 6.9–7.5. */
+.mo-sp-dot, .mo-sp-trail {
+  position: absolute; left: -38px; top: 236px; width: 76px; height: 76px; border-radius: 50%;
+}
+.mo-sp-dot {
+  background: var(--cl-lume, #25E0C8); color: var(--cl-abyss, #0B0F1E);
+  display: flex; align-items: center; justify-content: center;
+  font: 700 42px var(--cl-font-display, 'Fredoka', sans-serif);
+  /* Later animations win while they run, so the later ones fill FORWARDS
+     only — a backwards fill would override the earlier phase. */
+  animation:
+    mo-sp-appear .5s cubic-bezier(.2, .8, .3, 1.2) both,
+    mo-sp-fly 2.4s cubic-bezier(.45, 0, .55, 1) .5s forwards,
+    mo-sp-land .35s ease-out 2.9s forwards;
+}
+/* Notice: it pops up and crouches, winding up for the throw. */
+@keyframes mo-sp-appear {
+  0% { transform: scale(.3); opacity: 0; } 60% { transform: scale(1.05); opacity: 1; } 100% { transform: translateY(8px) scale(1.08, .9); opacity: 1; }
+}
+.mo-sp-trail {
+  background: rgba(37, 224, 200, .35); opacity: 0;
+  animation: mo-sp-trail 2.4s cubic-bezier(.45, 0, .55, 1) .5s both;
+}
+.mo-sp-trail-1 { animation-delay: .6s; }
+.mo-sp-trail-2 { animation-delay: .7s; background: rgba(37, 224, 200, .18); }
+@keyframes mo-sp-fly {
+  0%   { transform: translateY(8px) scale(1.08, .9); opacity: 1; }
+  40%  { transform: translate(-40px, -470px) scale(1.15) rotate(-20deg); }
+  50%  { transform: translate(40px, -520px) scale(1.2) rotate(160deg); }
+  60%  { transform: translate(120px, -470px) scale(1.15) rotate(340deg); }
+  100% { transform: translate(0, 0) scale(1) rotate(720deg); opacity: 1; }
+}
+@keyframes mo-sp-trail {
+  0%   { transform: none; opacity: 0; }
+  8%   { opacity: 1; }
+  40%  { transform: translate(-40px, -470px) scale(1.1) rotate(-20deg); }
+  50%  { transform: translate(40px, -520px) scale(1.15) rotate(160deg); }
+  60%  { transform: translate(120px, -470px) scale(1.1) rotate(340deg); }
+  92%  { opacity: 1; }
+  100% { transform: translate(0, 0) scale(.9) rotate(720deg); opacity: 0; }
+}
+/* Lands with a squash and STAYS (the settled frame keeps it). */
+@keyframes mo-sp-land {
+  0% { transform: rotate(720deg) scale(1); } 40% { transform: rotate(720deg) scale(1.3, .75); } 100% { transform: rotate(720deg) scale(1); }
+}
+.mo-sp-ring {
+  position: absolute; left: -40px; top: 238px; width: 80px; height: 80px; border-radius: 50%;
+  border: 3px solid var(--cl-lume, #25E0C8); opacity: 0;
+  animation: mo-sp-ring 1.1s ease-out both;
+}
+.mo-sp-ring-1 { animation-delay: 2.92s; }
+.mo-sp-ring-2 { animation-delay: 3.2s; }
+@keyframes mo-sp-ring { 0% { transform: scale(.3); opacity: 0; } 10% { opacity: 1; } 100% { transform: scale(3.2); opacity: 0; } }
+.mo-sp .mo-sp-pill {
+  top: 130px; font-size: 22px; padding: 10px 22px;
+  animation: mo-pill-in .45s cubic-bezier(.2, .8, .3, 1) 2.95s both;
+}
+.mo-sp-pill b { color: var(--cl-lume, #25E0C8); }

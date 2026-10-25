@@ -5,7 +5,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { ChannelKeyWait } from './ChannelKeyWait';
 import { useChannelKeyWait, KEY_WAIT_EXIT_MS } from '../hooks/useChannelKeyWait';
 import {
-    KEY_WAIT_COPY, KEY_WAIT_STALL_MS, KEY_RECEIVED_GRACE_MS, beginChannelPageDecrypt, noteChannelKeyReceived,
+    KEY_WAIT_COPY, KEY_WAIT_STALL_MS, KEY_WAIT_STALLED_DWELL_MS, KEY_RECEIVED_GRACE_MS, beginChannelPageDecrypt, noteChannelKeyReceived,
     noteKeyRequestAcked, noteNewestKeyPending, resetKeyWaitSignals, needsKeyWaitState,
 } from '../utils/channelKeyWait';
 import { channelPlaceholderContent } from '../utils/channelDecryptFailure';
@@ -47,7 +47,8 @@ const Pane: React.FC<{ initial: Row[] }> = ({ initial }) => {
     const kw = useChannelKeyWait({ enabled: true, channelId: CH, messages: rows });
     return React.createElement('div', null,
         kw.holdList ? null : React.createElement('div', { className: 'list' }, rows.map(r => React.createElement('div', { key: r.id, className: 'row' }))),
-        kw.phase !== 'hidden' ? React.createElement(ChannelKeyWait, { phase: kw.phase, stage: kw.stage, reduced: false }) : null,
+        kw.phase === 'shown' || kw.phase === 'exiting' ? React.createElement(ChannelKeyWait, { phase: kw.phase, stage: kw.stage, reduced: false }) : null,
+        kw.banner ? React.createElement('div', { className: 'banner' }) : null,
     );
 };
 
@@ -193,22 +194,29 @@ describe('fresh joiner: the key-wait layer through the re-ask flow', () => {
         j.scheduler.disarmAll();
     });
 
-    it('stalled copy at ~18 s while re-asks keep going: no flicker back to "asking", and it still leaves when the key lands', async () => {
+    it('stalled copy at ~18 s, then (2026-10-20) the feed + ONE banner — re-asks keep going, and the key still heals the feed', async () => {
         const j = makeJoiner({ rereadOnSatisfied: true });
         act(() => { root!.render(React.createElement(Pane, { initial: j.thread() })); });
         await act(async () => { await j.fileKeyRequest(); });
         await advance(KEY_WAIT_STALL_MS + 500);
         expect(title()).toBe(KEY_WAIT_COPY.stalled.title);
         expect(KEY_WAIT_COPY.stalled.detail).toMatch(/keeps asking/);
-        // The 30 s re-ask: still the stalled copy, still up.
-        const before = j.server.requests;
-        await advance(30_000 - KEY_WAIT_STALL_MS);
-        expect(j.server.requests).toBeGreaterThan(before);
-        expect(title()).toBe(KEY_WAIT_COPY.stalled.title);
-        // Key arrives (missed push) → next check installs + re-reads → gone.
-        j.server.envelopeWaiting = true;
-        await advance(30_000 + KEY_WAIT_EXIT_MS + 500);
+        expect(host.querySelector('.banner')).toBeNull();
+        // The stalled copy stays readable for the dwell, then hands over.
+        await advance(KEY_WAIT_STALLED_DWELL_MS + KEY_WAIT_EXIT_MS + 500);
         expect(layer()).toBeNull();
+        expect(host.querySelector('.banner')).not.toBeNull();
+        expect(pillsPainted()).toBe(100); // the feed (ChatPane collapses these runs)
+        // The 30 s re-ask still goes out behind the banner.
+        const before = j.server.requests;
+        await advance(30_000 - KEY_WAIT_STALL_MS - KEY_WAIT_STALLED_DWELL_MS);
+        expect(j.server.requests).toBeGreaterThan(before);
+        // Key arrives (missed push) → next check installs + re-reads → rows heal, banner gone, no layer.
+        j.server.envelopeWaiting = true;
+        await advance(30_000 + 500);
+        expect(layer()).toBeNull();
+        expect(host.querySelector('.banner')).toBeNull();
+        expect(j.thread().some(isUndecryptablePlaceholder)).toBe(false);
         j.scheduler.disarmAll();
     });
 
@@ -222,11 +230,15 @@ describe('fresh joiner: the key-wait layer through the re-ask flow', () => {
 
 describe('the newest-page rule for joiners', () => {
     it('partial delivery (newest epoch refused, history landed): a readable minority no longer cancels the wait while the newest key is pending', () => {
+        // 2026-10-20: the newest rows waiting is enough on its own now…
         const rows = [...many(40, text), ...many(60, pill)];
-        expect(needsKeyWaitState(rows)).toBe(false); // control: the strict rule
+        expect(needsKeyWaitState(rows)).toBe(true);
         expect(needsKeyWaitState(rows, undefined, { newestKeyPending: true })).toBe(true);
-        // …but not when readable rows are the majority
-        expect(needsKeyWaitState([...many(60, text), ...many(40, pill)], undefined, { newestKeyPending: true })).toBe(false);
+        expect(needsKeyWaitState([...many(60, text), ...many(40, pill)])).toBe(true);
+        // …and the pending flag still covers a mostly-waiting page whose newest screen reads
+        const older = [...many(70, pill), ...many(30, text)];
+        expect(needsKeyWaitState(older)).toBe(false);
+        expect(needsKeyWaitState(older, undefined, { newestKeyPending: true })).toBe(true);
     });
 
     it('the joiner\'s own pending send and "X joined" lines do not cancel it', () => {

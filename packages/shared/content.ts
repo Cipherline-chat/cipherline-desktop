@@ -46,8 +46,48 @@ export interface ChannelRef {
     name: string;
 }
 
+/**
+ * A personal ("My Emojis") emoji carried INSIDE a message.
+ *
+ * The text names it with the same inline token server emojis use, `<:name:ID>`,
+ * where ID is `p_` + the first 32 hex chars of SHA-256(bytes). Unlike a server
+ * emoji there is nothing on the server to fetch it from, so the image rides in
+ * the encrypted content itself, once per distinct emoji the message uses:
+ *
+ *   text:            "gg <:pepe:p_0f3a...>"
+ *   personal_emojis: [{ id: "p_0f3a...", name: "pepe", mime: "image/webp",
+ *                       animated: false, bytes_b64: "UklGR..." }]
+ *
+ * Content-addressed on purpose: a reader MUST recompute the hash from
+ * `bytes_b64` and drop the entry if it does not match `id`, so a sender can
+ * never plant different pixels under an id another sender's token resolves
+ * to. Readers also re-check mime (PNG/JPEG/WebP/GIF magic), size
+ * (<= PERSONAL_EMOJI_MAX_BYTES) and count (<= PERSONAL_EMOJI_MAX_PER_MESSAGE)
+ * - the sender is untrusted. Reactions and edits carry the field the same way.
+ *
+ * Backward compatibility, exactly as `channel_refs`: optional and additive. A
+ * client that predates it (desktop <= 1.0.22) ignores the field and renders the
+ * unresolvable token as its usual "emoji unavailable" glyph (the `:name:` stays
+ * in the tooltip); it is NOT an unsupported-message row. Never parsed by the
+ * server: it lives inside the encrypted content.
+ */
+export interface PersonalEmojiPayload {
+    /** `p_` + first 32 hex of SHA-256(bytes). */
+    id: string;
+    /** The sender's name for it, `[a-z0-9_]{2,32}` - same as the token's name. */
+    name: string;
+    /** image/png | image/jpeg | image/webp | image/gif */
+    mime: string;
+    animated: boolean;
+    bytes_b64: string;
+}
+
+/** Hard ceilings readers enforce on a `personal_emojis` array. */
+export const PERSONAL_EMOJI_MAX_BYTES = 256 * 1024;
+export const PERSONAL_EMOJI_MAX_PER_MESSAGE = 6;
+
 export type ClientContent =
-    | { client_msg_id?: string; type: 'text'; text: string; reply_to_id?: string; mentions?: MentionEntry[]; channel_refs?: ChannelRef[] }
+    | { client_msg_id?: string; type: 'text'; text: string; reply_to_id?: string; mentions?: MentionEntry[]; channel_refs?: ChannelRef[]; personal_emojis?: PersonalEmojiPayload[] }
     | {
         client_msg_id?: string;
         type: 'attachment';
@@ -69,6 +109,18 @@ export type ClientContent =
         key_id: string;
         rotates_at: string;
     }
+    /**
+     * A device that joined a DM/group call WITHOUT the call's media key asks
+     * for it. Any participant that is connected to the call and holds the key
+     * answers with an ordinary `call_key` (same key, current epoch, `key_id:
+     * 'share'`) addressed only to the requester's devices.
+     *
+     * Control message, never a chat row: it must not render, preview, count as
+     * unread or notify. A client that predates it has no such rule and shows an
+     * "Unsupported message variant" row (desktop <= 1.0.22).
+     * See apps/desktop/src/utils/callKeyShare.ts.
+     */
+    | { client_msg_id?: string; type: 'call_key_request'; call_id: string }
     | {
         client_msg_id?: string;
         type: 'call_event';
@@ -78,9 +130,9 @@ export type ClientContent =
     }
     /** An edit carries the complete new text AND its complete `channel_refs`
      *  (absent = the edited text names no channel). See ChannelRef. */
-    | { client_msg_id?: string; type: 'edit'; target_id: string; text: string; channel_refs?: ChannelRef[] }
+    | { client_msg_id?: string; type: 'edit'; target_id: string; text: string; channel_refs?: ChannelRef[]; personal_emojis?: PersonalEmojiPayload[] }
     | { client_msg_id?: string; type: 'delete'; target_id: string }
-    | { client_msg_id?: string; type: 'reaction'; target_id: string; emoji: string; action: 'add' | 'remove' }
+    | { client_msg_id?: string; type: 'reaction'; target_id: string; emoji: string; action: 'add' | 'remove'; personal_emojis?: PersonalEmojiPayload[] }
     /**
      * A personal pin, synced between the SENDER'S OWN DEVICES ONLY.
      *
@@ -97,10 +149,23 @@ export type ClientContent =
      * See apps/desktop/src/utils/pinSync.ts.
      */
     | { client_msg_id?: string; type: 'pin'; conversation_id: string; target_id: string; action: 'add' | 'remove'; at: number }
+    /**
+     * `status_emoji` (additive, optional): the image behind the sender's
+     * personal-emoji custom status (`cl:p_<id>`), delivered friend to friend
+     * because the server stores only the reference, never the image. A
+     * `profile_update` carrying it names no avatar or banner. Readers MUST
+     * recompute sha256(bytes)[:32] == id, check WebP/PNG/GIF magic bytes and the
+     * size cap (PERSONAL_EMOJI_MAX_BYTES), and only file it from an accepted
+     * friend. Old clients (desktop <= 1.0.22) apply `profile_update` without a
+     * chat row and ignore the unknown field, so this is invisible to them - which
+     * a new content type would not be (it renders "Unsupported message variant").
+     * See apps/desktop/src/utils/personalEmoji/statusEmoji.ts.
+     */
     | {
         client_msg_id?: string;
         type: 'profile_update';
         user_id: string;
+        status_emoji?: { id: string; mime: string; animated: boolean; bytes_b64: string };
         avatar_attachment_id?: string;
         avatar_file_key_b64?: string;
         avatar_file_nonce_b64?: string;

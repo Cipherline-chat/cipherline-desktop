@@ -11,7 +11,8 @@ import { UNGUARDED_IPC_CHANNELS } from './ipc-guard';
  * a policy nobody calls protects nothing.
  */
 const MAIN = fs.readFileSync(path.resolve(__dirname, 'main.ts'), 'utf8');
-const PRELOAD = fs.readFileSync(path.resolve(__dirname, 'preload.ts'), 'utf8');
+const UPDATE_CHECK = fs.readFileSync(path.resolve(__dirname, 'update-check.ts'), 'utf8');
+const PRELOAD =fs.readFileSync(path.resolve(__dirname, 'preload.ts'), 'utf8');
 
 /** Balanced-bracket slice starting at the first `open` after `marker`. */
 function block(marker: string, open = '{', close = '}', from = 0): string {
@@ -60,9 +61,11 @@ describe('in-app update wiring in main.ts', () => {
     it('every update check handles the auto-download promise (no unhandledRejection "crash" per failed download)', () => {
         const bare = MAIN.match(/autoUpdater\.checkForUpdates\(\)/g) ?? [];
         expect(bare).toHaveLength(1); // only inside the helper
-        const helper = block('const checkForUpdatesHandled = async');
-        expect(helper).toContain('autoUpdater.checkForUpdates()');
-        expect(helper).toMatch(/result\?\.downloadPromise\?\.catch\(/);
+        const helper = block('const checkForUpdatesHandled = createHandledUpdateCheck', '(', ')');
+        expect(helper).toContain('check: () => autoUpdater.checkForUpdates()');
+        expect(helper).toContain('onDownloadRejected:');
+        // the .catch on the downloadPromise lives in update-check.ts (behaviour: update-check.test.ts)
+        expect(UPDATE_CHECK).toMatch(/result\?\.downloadPromise\?\.catch\(/);
         // every other caller (startup, hourly, wake, network, manual, channel) goes through the scheduler's run()
         expect((MAIN.match(/checkForUpdatesHandled\(\)/g) ?? []).length).toBeGreaterThanOrEqual(2);
     });
@@ -100,11 +103,12 @@ describe('in-app update wiring in main.ts', () => {
     });
 
     it('a REQUIRED signature with no verifier installed refuses to check (fail closed)', () => {
-        const helper = block('const checkForUpdatesHandled = async');
-        const guard = helper.indexOf('!manifestCheckInstalled && isManifestSignatureRequired(');
-        expect(guard).toBeGreaterThan(-1);
-        expect(guard).toBeLessThan(helper.indexOf('autoUpdater.checkForUpdates()'));
+        const helper = block('const checkForUpdatesHandled = createHandledUpdateCheck', '(', ')');
+        expect(helper).toContain('blocked: () => (!manifestCheckInstalled && isManifestSignatureRequired(');
         expect(helper).toContain("new ManifestVerificationError('verifier-unavailable'");
+        // …and the helper consults it BEFORE it ever asks electron-updater
+        expect(UPDATE_CHECK.indexOf('deps.blocked()')).toBeGreaterThan(-1);
+        expect(UPDATE_CHECK.indexOf('deps.blocked()')).toBeLessThan(UPDATE_CHECK.indexOf('deps.check()'));
     });
 
     it('every channel switch re-pins allowDowngrade (electron-updater\'s channel setter turns it back on)', () => {

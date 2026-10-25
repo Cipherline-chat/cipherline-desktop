@@ -15,9 +15,14 @@ import { API_BASE } from '../constants';
 import { importLocalHistory } from '../utils/crypto';
 import { Monitor, Smartphone, Download, Loader2, CheckCircle2, AlertTriangle, ChevronLeft } from 'lucide-react';
 import { ClButton, ClModal, ClSkeleton } from './cl';
-import { unwrapHistoryTransferKey } from '../utils/historyTransferKey';
+import { unwrapHistoryTransferKey, judgeHistoryTransfer, type OutstandingHistoryRequest, type HistoryTransferRefusal } from '../utils/historyTransferKey';
+import { evaluateSelfSender } from '../utils/selfSenderTrust';
+import * as ownDeviceLedger from '../utils/ownDeviceLedger';
+import * as deviceDirectory from '../utils/deviceDirectory';
 import { HISTORY_REFUSED_LEGACY_REQUESTER, HISTORY_REFUSED_MOBILE_TO_DESKTOP } from '../utils/historyRequestProof';
 import { HistoryPayloadRefusedError } from '../utils/historyPayloadFormat';
+import { reportBeta } from '../utils/betaDiagnostics/reporter';
+import { httpStatusOf } from '../utils/betaDiagnostics/sanitize';
 
 interface Props {
     userId: string | null;
@@ -43,7 +48,21 @@ interface DeviceInfo {
     last_seen_at: string | null;
 }
 
-type ModalState = 'idle' | 'picking_device' | 'requesting' | 'timed_out' | 'declined' | 'importing' | 'done' | 'blocked';
+type ModalState = 'idle' | 'picking_device' | 'requesting' | 'timed_out' | 'declined' | 'confirm_import' | 'importing' | 'done' | 'blocked';
+
+/** F2: user-facing copy for a refused delivery. Nothing was imported. */
+function refusalText(reason: HistoryTransferRefusal): string {
+    switch (reason) {
+        case 'not_own_device':
+        case 'wrong_device':
+            return 'History arrived, but not from a device this one recognises as yours, so it wasn’t imported. '
+                + 'Nothing on this device was changed. Check Settings → Devices, then try again.';
+        case 'request_mismatch':
+            return 'History arrived for a different request than the one this device made, so it wasn’t imported. Try again.';
+        default:
+            return 'History arrived after this request expired, so it wasn’t imported. Try again.';
+    }
+}
 
 const TIMEOUT_SECS = 60;
 
@@ -92,6 +111,14 @@ export const HistorySyncBanner: React.FC<Props> = ({
      *  than a spinner or a generic failure. Set by whichever C-2b refusal
      *  fired; see the three call sites. */
     const [blockedText, setBlockedText] = useState('');
+
+    /** F2: the one request this device has outstanding. A delivery is only
+     *  ever considered while this is set (utils/historyTransferKey.ts). */
+    const outstandingRef = useRef<OutstandingHistoryRequest | null>(null);
+    /** F2: the transfer key, unwrapped and its sender verified, held only
+     *  while the user decides on the confirmation step. */
+    const pendingKeyRef = useRef<string | null>(null);
+    const [pendingFrom, setPendingFrom] = useState<string | null>(null);
 
     /** Name of the device we asked, for the blocked-state copy. A broadcast
      *  request (no device picked) can't name the responder, so fall back to
@@ -146,6 +173,8 @@ export const HistorySyncBanner: React.FC<Props> = ({
 
     const dismiss = useCallback(() => {
         if (countdownRef.current) clearInterval(countdownRef.current);
+        outstandingRef.current = null;
+        pendingKeyRef.current = null;
         if (userId) secureLocalStore.setItem(`cipherline_sync_dismissed_${userId}`, '1');
         clearHistoryDelivered();
         setOpen(false);
@@ -158,6 +187,7 @@ export const HistorySyncBanner: React.FC<Props> = ({
             setCountdown(n => {
                 if (n <= 1) {
                     clearInterval(countdownRef.current!);
+                    reportBeta('history_sync_failed', { stage: 'timeout' });
                     setState('timed_out');
                     return 0;
                 }
@@ -206,6 +236,7 @@ export const HistorySyncBanner: React.FC<Props> = ({
             console.warn('[HistorySyncModal] capability proof failed:', err);
         }
         if (!proof?.sig) {
+            reportBeta('history_sync_failed', { stage: 'proof' });
             // Never send an unsigned request as a "best effort". An unsigned
             // request is exactly what a current approver refuses, so this would
             // buy a confusing decline instead of a clear message — and on an
@@ -220,6 +251,10 @@ export const HistorySyncBanner: React.FC<Props> = ({
 
         setState('requesting');
         startCountdown();
+        // F2: recorded BEFORE the request goes out, so a fast answer is not
+        // refused as unsolicited. A new request replaces any older one.
+        outstandingRef.current = { capabilityTs, targetDeviceId, createdAt: Date.now() };
+        pendingKeyRef.current = null;
         try {
             await axios.post(
                 `${API_BASE}/devices/history-request`,
@@ -236,13 +271,24 @@ export const HistorySyncBanner: React.FC<Props> = ({
             );
         // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (err: any) {
+            const reqStatus = httpStatusOf(err);
+            reportBeta('history_sync_failed', { stage: 'request', ...(reqStatus !== undefined ? { status: reqStatus } : {}) });
             console.warn('[HistorySyncModal] request failed:', err?.response?.data?.message ?? err?.message);
         }
     }, [token, deviceId, userId, startCountdown]);
 
     // Handle incoming history delivery (device:approved with transfer_key_b64).
     useEffect(() => {
-        if (!historyDelivered || state === 'importing' || state === 'done') return;
+        if (!historyDelivered || state === 'importing' || state === 'done' || state === 'confirm_import') return;
+        // F2: only a delivery this device ASKED for, while the dialog that
+        // asked is open and waiting (or has just timed out waiting) — never a
+        // silent import into a device that already has its history.
+        if (!open || (state !== 'requesting' && state !== 'timed_out') || !outstandingRef.current) {
+            console.warn('[HistorySyncModal] ignoring a history delivery this device did not request');
+            reportBeta('history_sync_failed', { stage: 'unsolicited' });
+            clearHistoryDelivered();
+            return;
+        }
         if (countdownRef.current) clearInterval(countdownRef.current);
 
         // C-2b — the requester half of the refusal. A delivery carrying only
@@ -258,6 +304,7 @@ export const HistorySyncBanner: React.FC<Props> = ({
         // user never sees a progress label for a transfer that will not happen.
         if (!historyDelivered.wrapped_transfer_key_b64 && historyDelivered.transfer_key_b64) {
             console.warn('[HistorySyncModal] refusing plaintext transfer key from a legacy approver');
+            reportBeta('history_sync_failed', { stage: 'legacy_refused' });
             setBlockedText(
                 `${peerName ?? 'Your other device'} sent your history using an old, less private method — `
                 + 'the encryption key would have passed through our servers. We didn’t import it. '
@@ -267,6 +314,66 @@ export const HistorySyncBanner: React.FC<Props> = ({
             clearHistoryDelivered();
             return;
         }
+
+        // F2: unwrap and verify first; import only after the user confirms.
+        const prepare = async () => {
+            try {
+                // C-2 / C-2b: the ECIES envelope is the ONLY accepted form.
+                const unwrapped = await unwrapHistoryTransferKey(
+                    historyDelivered.wrapped_transfer_key_b64!, deviceId!,
+                );
+                if (!unwrapped.keyB64) throw new Error('history delivery carried no transfer key');
+                const localPub = (await window.electronAPI?.getLocalIdentity?.().catch(() => null)) ?? null;
+                const senderPub = unwrapped.senderPub ?? '';
+                const { verdict } = evaluateSelfSender({
+                    senderPub,
+                    senderDeviceId: unwrapped.senderDeviceId ?? null,
+                    self: deviceId && localPub ? { deviceId, pub: localPub } : null,
+                    ledger: ownDeviceLedger.loadOwnLedger(userId!),
+                    directory: deviceDirectory.status(userId!, senderPub, unwrapped.senderDeviceId ?? undefined),
+                });
+                const judged = judgeHistoryTransfer({
+                    outstanding: outstandingRef.current,
+                    now: Date.now(),
+                    myUserId: userId!,
+                    unwrapped,
+                    senderVerdict: verdict,
+                });
+                if (!judged.ok) {
+                    console.warn(`[HistorySyncModal] refusing history delivery: ${judged.reason}`);
+                    reportBeta('history_sync_failed', { stage: `refused_${judged.reason}` });
+                    outstandingRef.current = null;
+                    clearHistoryDelivered();
+                    setBlockedText(refusalText(judged.reason));
+                    setState('blocked');
+                    return;
+                }
+                pendingKeyRef.current = unwrapped.keyB64;
+                setPendingFrom(devices.find(d => d.device_id === unwrapped.senderDeviceId)?.device_name ?? peerName);
+                setState('confirm_import');
+            } catch (err) {
+                console.warn('[HistorySyncModal] could not open the history delivery:', err);
+                reportBeta('history_sync_failed', { stage: 'unwrap' });
+                clearHistoryDelivered();
+                setState('timed_out');
+                setStatusText('The history transfer couldn’t be opened — you can try again or start fresh.');
+            }
+        };
+
+        prepare();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [historyDelivered]);
+
+    /** F2: runs only from the confirmation step's Import button. */
+    const confirmImport = useCallback(() => {
+        const keyB64 = pendingKeyRef.current;
+        pendingKeyRef.current = null;
+        if (!keyB64 || !historyDelivered || !userId || !token) {
+            clearHistoryDelivered();
+            setState('timed_out');
+            return;
+        }
+        outstandingRef.current = null;
 
         const doImport = async () => {
             setState('importing');
@@ -282,17 +389,9 @@ export const HistorySyncBanner: React.FC<Props> = ({
                 });
                 const encryptedData = b64ToBytes(backup.data_b64);
 
-                // C-2 / C-2b: the ECIES envelope is the ONLY accepted form.
-                // This used to read `?: historyDelivered.transfer_key_b64` — a
-                // silent fallback to the legacy plaintext key, which is the key
-                // the server got handed in the clear. The guard above already
-                // returns before reaching here in that case; the fallback is
-                // removed as well so there is no expression left that could
-                // consume a plaintext key if that guard were ever edited out.
-                const keyB64 = await unwrapHistoryTransferKey(
-                    historyDelivered.wrapped_transfer_key_b64!, deviceId!,
-                );
-                if (!keyB64) throw new Error('history delivery carried no transfer key');
+                // The key was unwrapped from the ECIES envelope — the ONLY
+                // accepted form (C-2 / C-2b; there is no plaintext fallback) —
+                // and its sender verified, before the user was asked.
                 const rawKey = b64ToBytes(keyB64);
                 const aesKey = await window.crypto.subtle.importKey(
                     'raw', rawKey, { name: 'AES-GCM' }, true, ['decrypt'],
@@ -310,6 +409,11 @@ export const HistorySyncBanner: React.FC<Props> = ({
                 setTimeout(dismiss, 2500);
             } catch (err) {
                 console.warn('[HistorySyncModal] import failed:', err);
+                const impStatus = httpStatusOf(err);
+                reportBeta('history_sync_failed', {
+                    stage: err instanceof HistoryPayloadRefusedError ? 'payload_refused' : 'import',
+                    ...(impStatus !== undefined ? { status: impStatus } : {}),
+                });
                 clearHistoryDelivered();
                 // A refused payload (a phone's history, another account's,
                 // a damaged file) is refused BEFORE anything is written — see
@@ -327,7 +431,14 @@ export const HistorySyncBanner: React.FC<Props> = ({
 
         doImport();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [historyDelivered]);
+    }, [historyDelivered, userId, token, clearHistoryDelivered]);
+
+    const cancelImport = useCallback(() => {
+        pendingKeyRef.current = null;
+        outstandingRef.current = null;
+        clearHistoryDelivered();
+        setState('idle');
+    }, [clearHistoryDelivered]);
 
     useEffect(() => {
         if (!historyDeclined || state !== 'requesting') return;
@@ -570,6 +681,22 @@ export const HistorySyncBanner: React.FC<Props> = ({
                         <div style={{ display: 'flex', gap: 10, width: '100%' }}>
                             <ClButton fullWidth variant="ghost" style={{ flex: 1 }} onClick={dismiss}>Start fresh</ClButton>
                             <ClButton fullWidth style={{ flex: 1 }} onClick={goPickDevice}>Try again</ClButton>
+                        </div>
+                    </>
+                )}
+
+                {/* confirm_import — F2: nothing is replaced without a yes */}
+                {state === 'confirm_import' && (
+                    <>
+                        <div>
+                            <h2 style={{ margin: '0 0 6px', fontSize: 17, fontWeight: 700, color: 'var(--cl-text)' }}>Import your history?</h2>
+                            <p style={{ margin: 0, fontSize: 13, color: 'var(--cl-muted)', lineHeight: 1.5 }}>
+                                {pendingFrom ?? 'Your other device'} sent your message history. Importing replaces the messages on this device with it.
+                            </p>
+                        </div>
+                        <div style={{ display: 'flex', gap: 10, width: '100%' }}>
+                            <ClButton fullWidth variant="ghost" style={{ flex: 1 }} onClick={cancelImport}>Cancel</ClButton>
+                            <ClButton fullWidth style={{ flex: 1 }} onClick={confirmImport}>Import</ClButton>
                         </div>
                     </>
                 )}

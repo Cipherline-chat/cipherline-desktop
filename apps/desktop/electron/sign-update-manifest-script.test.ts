@@ -125,7 +125,7 @@ describe('scripts/sign-update-manifest.mjs', () => {
     it('refuses a manifest of the other channel and a non-Ed25519 key', () => {
         const k = keypair();
         expect(run(['sign', '--channel', 'staging', '--manifest', manifest], { UPDATE_MANIFEST_SIGNING_KEY: k.pkcs8b64 }).code).toBe(1);
-        const rsa = crypto.generateKeyPairSync('rsa', { modulusLength: 1024 }).privateKey.export({ format: 'der', type: 'pkcs8' }).toString('base64');
+        const rsa = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ format: 'der', type: 'pkcs8' }).toString('base64');
         expect(run(['sign', '--channel', 'latest', '--manifest', manifest], { UPDATE_MANIFEST_SIGNING_KEY: rsa }).code).toBe(1);
     });
 
@@ -135,6 +135,10 @@ describe('scripts/sign-update-manifest.mjs', () => {
         const embedded = keypair();
         const populated = withKeys([embedded.pub]);
         expect(script.allowlistedKeys('latest', populated)).toEqual([embedded.pub]);
+        expect(script.allowlistedKeys('staging', populated)).toEqual([]);
+        // The channel picks one of two fixed patterns; it is never compiled into a RegExp.
+        expect(() => script.allowlistedKeys('latest|staging', populated)).toThrow(/unknown channel/);
+        expect(() => script.allowlistedKeys('.*', populated)).toThrow(/unknown channel/);
         // the CLI path reads the real file; exercise the decision with a temp copy of the script tree
         const tree = fs.mkdtempSync(path.join(os.tmpdir(), 'cl-signtree-'));
         try {

@@ -75,7 +75,7 @@ describe('publisher side', () => {
 
 describe('settings', () => {
     it('Voice & Video has Camera quality; Advanced has Camera encoder', () => {
-        expect(vv).toMatch(/<b>Camera quality<\/b>/);
+        expect(vv).toMatch(/label="Camera quality"/);
         expect(vv).toMatch(/onChange=\{setCameraQualityTier\}/);
         expect(adv).toMatch(/<b>Camera encoder<\/b>/);
         expect(adv).toMatch(/setCameraCodecPref\(o\.value\)/);
@@ -101,7 +101,7 @@ describe('receive-side load + incoming video quality', () => {
         expect(fullscreen).toMatch(/!budgetHiddenVideoIds\?\.has\(p\.identity\)/);
     });
     it('Voice & Video has Incoming video quality', () => {
-        expect(vv).toMatch(/<b>Incoming video quality<\/b>/);
+        expect(vv).toMatch(/label="Incoming video quality"/);
         expect(vv).toMatch(/onChange=\{setIncomingVideoMode\}/);
     });
 });

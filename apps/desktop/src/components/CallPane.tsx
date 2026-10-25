@@ -10,6 +10,7 @@ import { ExternalE2EEKeyProvider, VideoPresets, VideoPreset, Track, RoomEvent, D
 import { annotationStore } from '../utils/annotationStore';
 import { useAnnotationTransport } from '../hooks/useAnnotationTransport';
 import { AnnotationRequestsDock } from './call/AnnotationRequestsDock';
+import { EntranceSoundTransport } from './call/EntranceSoundTransport';
 import type { RoomOptions, RoomConnectOptions, LocalTrackPublication } from 'livekit-client';
 // LiveKit's E2EE worker + the Annex-B canonicalizer in front of each sender
 // stream (a 3-byte start code otherwise fails GCM on every receiver — see
@@ -18,10 +19,12 @@ import e2eeWorkerUrl from '../workers/e2eeWorker?worker&url';
 import ReactDOM from 'react-dom';
 import { SidebarConference } from './SidebarConference';
 import { RemoteE2EEWatcher } from './RemoteE2EEWatcher';
+import { isDecryptKeyFailure } from '../utils/callKeyShare';
 import { EMPTY_REMOTE_ENCRYPTION, type RemoteEncryptionSnapshot } from '../utils/remoteE2EEWatch';
 import type { CallEncryptionIndicatorMode } from './server/CallEncryptionIndicator';
 import { useCallContextSafe } from '../contexts/CallContext';
 import { useNotificationPrefs } from '../contexts/NotificationContext';
+import { useEntranceSounds } from './call/useEntranceSounds';
 import { useToast } from '../contexts/ToastContext';
 import { playSound, playLoopingSound } from '../utils/notificationSounds';
 import { micCaptureConstraints, resolveEchoCancellation, resolveMicDeviceId } from '../utils/audioInput';
@@ -34,7 +37,7 @@ import { shouldPublishMicAtConnect } from '../utils/selfCallIntent';
 import { beginActivity, trackActivity } from '../utils/freezeLog';
 import { CallDiagnosticsRecorder } from './diagnostics/CallDiagnosticsRecorder';
 import { stableE2EEOptions } from '../utils/e2eeRoomOptions';
-import { attachAnnexBStatsLog, attachDataPacketErrorLog } from '../utils/e2eeWorkerStats';
+import { attachAnnexBStatsLog, attachDataPacketErrorLog, attachAudioLagLog } from '../utils/e2eeWorkerStats';
 import { installE2EESenderCodecPin, e2eeWorkerOf, type CodecPinRoom } from '../utils/e2eeSenderCodec';
 import { describeE2EEActivationFailure, type E2EEActivationFailure } from '../utils/e2eeActivation';
 import { E2EEActivator } from './E2EEActivator';
@@ -44,12 +47,20 @@ import { noteRemoteVideoSubscribed } from '../utils/remoteVideoDemand';
 import { GamingVideoGuard } from './call/GamingVideoGuard';
 import { ShareBoostGuard } from './call/ShareBoostGuard';
 import { CallPerformanceGuard } from './call/CallPerformanceGuard';
+import { CallMilestones } from './call/CallMilestones';
 import { CallEventMonitor } from './call/CallEventMonitor';
 import { GpuRecoveryController } from './call/GpuRecoveryController';
 import { publishGrants } from '../utils/livekitPublishGrants';
 import { markCallJoinTrace, finishCallJoinTrace } from '../utils/callJoinTrace';
 import { releaseMicPrewarm } from '../utils/micPrewarm';
 import { ringbackWanted, createRingbackDriver } from '../utils/ringback';
+import { BetaCallMonitor } from './call/BetaCallMonitor';
+import { ShareAvSync } from './call/ShareAvSync';
+import { beginBetaCall, endBetaCall, noteBetaCallEnd } from '../utils/betaDiagnostics/callSession';
+import { reportBeta } from '../utils/betaDiagnostics/reporter';
+import { logCallEvent } from '../utils/callEventLog';
+import { errorNameOf } from '../utils/betaDiagnostics/sanitize';
+import { announceCallConnected } from '../utils/milestones';
 
 /**
  * Bridge: attaches the CipherlineVoiceProcessor to the mic track as soon as
@@ -82,6 +93,7 @@ function makeE2EEWorker(): Worker {
     const w = new Worker(e2eeWorkerUrl, { type: 'module' });
     attachAnnexBStatsLog(w);
     attachDataPacketErrorLog(w);
+    attachAudioLagLog(w);
     return w;
 }
 
@@ -189,9 +201,11 @@ const MicProcessorBridge = ({ token, voice }: { token: string; voice?: VoiceSett
 const CallSpeakingReporter = ({
     onChange,
     onParticipantCount,
+    onParticipantIdentities,
 }: {
     onChange: (map: Record<string, boolean>) => void;
     onParticipantCount: (count: number) => void;
+    onParticipantIdentities?: (identities: string[]) => void;
 }) => {
     const participants = useParticipants();
     const { localParticipant } = useLocalParticipant();
@@ -212,6 +226,15 @@ const CallSpeakingReporter = ({
         onParticipantCount(participants.length);
     }, [participants.length, onParticipantCount]);
 
+    // Who is in the room (identity = user id), for the call-key rotation duty
+    // (utils/callKeyShare.ts chooseRotator). Keyed on the sorted list so it
+    // fires on joins and leaves only, not on every speaking-state render.
+    const identitiesKey = participants.map(p => p.identity).sort().join('\n');
+    useEffect(() => {
+        onParticipantIdentities?.(identitiesKey ? identitiesKey.split('\n') : []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the joined list; the callback is a stable ref-setter
+    }, [identitiesKey]);
+
     return null;
 };
 
@@ -230,6 +253,10 @@ interface CallPaneProps {
     isCallInitiator?: boolean;
     onSpeakingChange?: (map: Record<string, boolean>) => void;
     onParticipantCount?: (count: number) => void;
+    /** The room's participant identities (user ids), whenever someone joins or leaves. */
+    onParticipantIdentities?: (identities: string[]) => void;
+    /** The room cannot decrypt a remote participant's media (wrong or missing key). */
+    onDecryptKeyFailure?: () => void;
     localAvatarUrl?: string;
     activeChatAvatarUrl?: string;
     activeChatUserId?: string;
@@ -356,6 +383,16 @@ const CallAudioEffects = ({ isInitiator, noRinging, roomConnected }: { isInitiat
         prevCountRef.current = participants.length;
     }, [participants.length]);
 
+    // Other people's entrance sounds as they join (listener rules, per-user
+    // mute and the global switch live in utils/entranceSoundGate.ts and
+    // utils/entrancePrefs.ts). Same 2 s settle window as the join cue above:
+    // people already in the call when we arrive are not "joining".
+    useEntranceSounds(
+        participants.filter(p => !p.isLocal).map(p => p.identity),
+        () => soundReadyRef.current,
+        soundsPrefs,
+    );
+
     // ── Screenshare + camera start/stop cues ────────────────────────────────
     // Bilateral by construction: every listener below is registered so the
     // SAME handler fires once for whoever performed the action AND once for
@@ -458,14 +495,24 @@ const CallAudioEffects = ({ isInitiator, noRinging, roomConnected }: { isInitiat
             clearTimer: t => clearTimeout(t as ReturnType<typeof setTimeout>),
             sources: { camera: Track.Source.Camera, screenShare: Track.Source.ScreenShare },
         });
-        const onTrackPublished = (pub: CuePublication, participant: CueParticipant) => cues.trackPublished(pub, participant);
+        // Your own camera cue is played on the press (SidebarConference's
+        // toggleCamera), so the Room events skip the LOCAL camera; everyone
+        // else's camera, and your own screen share, still cue from here.
+        const isLocalCamera = (pub: CuePublication): boolean =>
+            pub.source === Track.Source.Camera
+            && !!room.localParticipant
+            && room.localParticipant.getTrackPublication(Track.Source.Camera) === (pub as unknown);
+        const onTrackPublished = (pub: CuePublication, participant: CueParticipant) => {
+            if (isLocalCamera(pub)) return;
+            cues.trackPublished(pub, participant);
+        };
         const onTrackUnpublished = (pub: CuePublication, participant: CueParticipant) => cues.trackUnpublished(pub, participant);
         // RoomEvent.TrackMuted/TrackUnmuted fire for BOTH local and remote
         // participants through the same registration (no Local* variant to
         // add); the controller filters to Camera, which keeps a microphone
         // mute local-only (see SidebarConference's toggleMic).
-        const onTrackMuted = (pub: CuePublication) => cues.trackMuted(pub);
-        const onTrackUnmuted = (pub: CuePublication) => cues.trackUnmuted(pub);
+        const onTrackMuted = (pub: CuePublication) => { if (!isLocalCamera(pub)) cues.trackMuted(pub); };
+        const onTrackUnmuted = (pub: CuePublication) => { if (!isLocalCamera(pub)) cues.trackUnmuted(pub); };
         const onParticipantDisconnected = (participant: { identity: string }) => cues.participantDisconnected(participant);
 
         // Re-arm the ready gate around a full LiveKit reconnect. On a full
@@ -560,6 +607,8 @@ export const CallPane = ({
     isCallInitiator,
     onSpeakingChange,
     onParticipantCount,
+    onParticipantIdentities,
+    onDecryptKeyFailure,
     localAvatarUrl,
     activeChatAvatarUrl,
     activeChatUserId,
@@ -633,6 +682,7 @@ export const CallPane = ({
     // every call made from this file (a LiveKit disconnect, a failed connect)
     // passes none, so those can never read as the user choosing to leave.
     const stableOnLeave = useCallback((wasLastPerson?: boolean, deliberate?: boolean) => {
+        if (deliberate) noteBetaCallEnd('user');
         latestCallbacksRef.current.onDisconnect(wasLastPerson, deliberate);
     }, []);
     const stableOnInactivityWarning = useCallback((active: boolean) => {
@@ -651,6 +701,16 @@ export const CallPane = ({
     // any tile dies with the call. CallPane mounts/unmounts in lockstep with
     // activeCall (see Dashboard), so its unmount is "the call ended".
     useEffect(() => () => { annotationStore.reset(); }, []);
+    // Closed-beta call summary: one per CallPane (= one per call). The end is
+    // deferred a tick so React StrictMode's dev-only mount→unmount→mount probe
+    // ends nothing (the remount begins a newer call, and the stale token is
+    // ignored).
+    const [betaCallType] = useState<'dm' | 'group' | 'channel'>(() => (noRinging ? 'channel' : isGroup ? 'group' : 'dm'));
+    const [betaE2ee] = useState(() => !!e2eeKeyB64);
+    useEffect(() => {
+        const t = beginBetaCall({ callType: betaCallType, e2ee: betaE2ee });
+        return () => { window.setTimeout(() => endBetaCall(t), 0); };
+    }, [betaCallType, betaE2ee]);
     // Performance log (Settings → Advanced): label UI stalls that happen
     // while this call is joining / live, so a capture from a user's machine
     // says "during call join" or "in a call" instead of nothing.
@@ -709,9 +769,13 @@ export const CallPane = ({
     // mount-time timer whose closure would otherwise see the first render's prop.
     const failureTitleRef = useRef(failureTitle);
     useLayoutEffect(() => { failureTitleRef.current = failureTitle; });
-    const failConnection = (message: string) => {
+    const failConnection = (message: string, stage: 'ice' | 'connect' = 'connect', err?: unknown) => {
         if (hasFailedRef.current || hasConnectedRef.current) return;
         hasFailedRef.current = true;
+        // Beta diagnostics: the stage and the error's NAME only, never its message.
+        noteBetaCallEnd('error');
+        const errName = errorNameOf(err);
+        reportBeta('call_join_failed', { stage: errName === 'NotAllowedError' ? 'permission' : stage, ...(errName ? { name: errName } : {}) });
         toast.push({ kind: 'error', title: failureTitleRef.current ?? 'Call connection failed', message });
         // stableOnLeave, not onDisconnect: this runs from a mount-time timer,
         // and the render-time closure it would capture is the FIRST render's.
@@ -728,6 +792,9 @@ export const CallPane = ({
     const failEncryption = (failure: E2EEActivationFailure) => {
         if (hasFailedRef.current) return;
         hasFailedRef.current = true;
+        noteBetaCallEnd('error');
+        if (hasConnectedRef.current) reportBeta('call_e2ee_error', { stage: 'activation', reason: failure.kind });
+        else reportBeta('call_join_failed', { stage: 'e2ee_key', reason: failure.kind });
         console.error('[CallPane] E2EE activation failed — leaving the call rather than continuing unencrypted:', failure);
         toast.push({ kind: 'error', title: 'Call not encrypted', message: describeE2EEActivationFailure(failure) });
         stableOnLeave();
@@ -742,7 +809,7 @@ export const CallPane = ({
             // outright, which no amount of retrying fixes client-side (see
             // livekit.prod.yaml's `turn:` block for the server-side TURN
             // fallback this hints at, when the server has it configured).
-            failConnection("Couldn't connect — check your network and try again. If you're on a restrictive network (corporate/hotel Wi-Fi, some VPNs), it may be blocking the call's connection.");
+            failConnection("Couldn't connect — check your network and try again. If you're on a restrictive network (corporate/hotel Wi-Fi, some VPNs), it may be blocking the call's connection.", 'ice');
         }, CONNECT_TIMEOUT_MS);
         return () => window.clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -784,6 +851,20 @@ export const CallPane = ({
                     title: 'Noise suppression unavailable',
                     message: "Couldn't start noise suppression for this call — your voice is still being sent, just unprocessed.",
                 });
+            },
+            onNsLoadFallback: ({ underrunMs, underrunEvents }) => {
+                audioHealth.recordNsLoadFallback();
+                logCallEvent('ns_load_fallback', { from: 'strong', to: 'light', underrun_ms: underrunMs, underrun_events: underrunEvents });
+                reportBeta('call_audio_overload', { action: 'ns_light', ns: 'strong', underrun_ms: underrunMs });
+                toast.push({
+                    kind: 'info',
+                    title: 'Switched to Light noise suppression',
+                    message: 'Your PC is too busy to run Strong noise suppression smoothly, so Light is on for the rest of this call. Pick a mode in Settings to change it.',
+                });
+            },
+            onAudioRender: ({ underrunMs, underrunEvents, windowS, ns }) => {
+                audioHealth.recordRenderUnderrun(underrunMs);
+                logCallEvent('audio_render', { underrun_ms: underrunMs, underrun_events: underrunEvents, window_s: windowS, ns });
             },
             onNsStats: (stats) => audioHealth.recordNsStats(stats),
             onAgcStats: (stats) => audioHealth.recordAgcStats(stats),
@@ -1067,6 +1148,7 @@ export const CallPane = ({
                         h.connected = true;
                         setRtcConnected(true);
                         markCallJoinTrace('connected');
+                        announceCallConnected(); // moments: counts the call (first call / 100th) — carries nothing about it
                         if (!joinWithMic) {
                             // No mic coming (listen-only token, or a muted /
                             // deafened join): the join is complete now.
@@ -1103,11 +1185,12 @@ export const CallPane = ({
                         const { title, message, kind } = handling.toast;
                         toast.push({ kind, title, message });
                     }
+                    if (handling.teardown) noteBetaDisconnect(reason); // beta diagnostics: why the call ended (enum)
                     if (handling.teardown) onDisconnect();
                 }}
                 onError={(err) => {
                     console.error('[CallPane] LiveKit connection error:', err);
-                    failConnection(err.message || "Couldn't connect to the call.");
+                    failConnection(err.message || "Couldn't connect to the call.", 'connect', err);
                 }}
                 // Observability, not policy: the SDK raises these for a peer we
                 // can't decrypt (wrong key / mid-rotation window), a missing
@@ -1117,6 +1200,9 @@ export const CallPane = ({
                 // safe; a toast would false-alarm on every key rotation.
                 onEncryptionError={(err) => {
                     console.error('[CallPane] LiveKit encryption error:', err.message);
+                    // A wrong or missing key for someone's media: ask the call for
+                    // the key again (throttled by the caller; utils/callKeyShare.ts).
+                    if (isDecryptKeyFailure(err)) onDecryptKeyFailure?.();
                 }}
             >
                     <E2EEActivator
@@ -1124,6 +1210,10 @@ export const CallPane = ({
                         keyB64={e2eeKeyB64}
                         onFailure={failEncryption}
                     />
+
+                    {/* Custom entrance sounds, device to device: sealed under a key
+                        derived from this same room key, never sent without one. */}
+                    <EntranceSoundTransport keyB64={e2eeKeyB64} />
 
                     {/* Issue reporter: a 2-minute ring of WebRTC stats for
                         "Report a problem" (no SIDs / identities — see
@@ -1182,6 +1272,7 @@ export const CallPane = ({
                     <CallSpeakingReporter
                         onChange={onSpeakingChange ?? (() => {})}
                         onParticipantCount={onParticipantCount ?? (() => {})}
+                        onParticipantIdentities={onParticipantIdentities}
                     />
                     <CallAudioEffects isInitiator={isCallInitiator} noRinging={noRinging} roomConnected={rtcConnected} />
 
@@ -1195,8 +1286,22 @@ export const CallPane = ({
                         starvation → a once-per-call offer to lower the camera. */}
                     <CallPerformanceGuard />
 
+                    {/* Passive in-call moment: "Three hours in. Maybe stretch?" card
+                        (once per call). Client clock only. */}
+                    <CallMilestones />
+
                     {/* Privacy-safe call event log feed (utils/callEventLog.ts). */}
                     <CallEventMonitor />
+
+                    {/* Closed-beta diagnostics: first-audio time, one-way audio
+                        (inbound), device failures. Idle unless beta
+                        diagnostics is on (utils/betaDiagnostics). */}
+                    <BetaCallMonitor />
+
+                    {/* Screen shares only: delay a watched share's VIDEO so it
+                        meets the share's audio (utils/shareAvSync.ts). Never
+                        touches a microphone or camera receiver. */}
+                    <ShareAvSync />
 
                     {/* GPU process restart ("graphics driver reset") → recover
                         this call's video (utils/gpuRecovery.ts). */}
@@ -1205,6 +1310,16 @@ export const CallPane = ({
         </div>
     );
 };
+
+/** Beta diagnostics: a LiveKit disconnect reason → the call's end reason (+ call_dropped). Enums only. */
+function noteBetaDisconnect(reason: DisconnectReason | undefined): void {
+    const why = reason === DisconnectReason.CLIENT_INITIATED ? 'user'
+        : reason === DisconnectReason.PARTICIPANT_REMOVED ? 'kicked'
+        : reason === DisconnectReason.ROOM_DELETED || reason === DisconnectReason.DUPLICATE_IDENTITY ? 'remote'
+        : 'dropped';
+    noteBetaCallEnd(why);
+    if (why === 'dropped') reportBeta('call_dropped', { reason: reason !== undefined ? DisconnectReason[reason] : 'unknown' });
+}
 
 const EMPTY_MEMBER_MAP: Record<string, string | null> = Object.freeze({}) as Record<string, string | null>;
 

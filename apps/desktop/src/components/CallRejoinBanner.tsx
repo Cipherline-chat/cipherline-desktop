@@ -10,8 +10,8 @@
  * on every tab without covering the call/chat panes.
  */
 import React from 'react';
-import { PhoneCall, X } from 'lucide-react';
-import { ClButton } from './ClButton';
+import { PhoneCall } from 'lucide-react';
+import { ClBanner } from './ClBanner';
 import { describeRejoinTarget, type CallRejoinDescriptor } from '../utils/callRejoinPolicy';
 
 interface Props {
@@ -24,26 +24,18 @@ interface Props {
 export const CallRejoinBanner: React.FC<Props> = ({ offer, busy, onRejoin, onDismiss }) => {
     if (!offer) return null;
     return (
-        <div className="w-full shrink-0 py-2" role="region" aria-label="Rejoin call">
-            <div
-                role="status"
-                className="w-full px-4 py-2 rounded-xl flex items-center gap-2.5 text-[13px] animate-in fade-in slide-in-from-top-2 duration-200"
-                // Same green wash as the in-chat "Active Call" card, so the two read as one family.
-                style={{ background: 'linear-gradient(135deg, rgba(74,222,128,0.10), rgba(74,222,128,0.04))', border: '1px solid rgba(74,222,128,0.22)', color: 'var(--cl-text)' }}
-            >
-                <PhoneCall size={15} className="shrink-0" style={{ color: 'var(--cl-ok)' }} />
-                <div className="flex-1 min-w-0 truncate">
-                    <span className="font-semibold">Cipherline restarted while you were in {describeRejoinTarget(offer)}.</span>{' '}
-                    <span className="opacity-80">It&apos;s still going — rejoin?</span>
-                </div>
-                <ClButton type="button" variant="ok" size="sm" loading={busy} onClick={onRejoin}>
-                    Rejoin
-                </ClButton>
-                <ClButton type="button" icon variant="ghost" size="sm" tooltip="Dismiss" disabled={busy} onClick={onDismiss}>
-                    <X size={13} />
-                </ClButton>
-            </div>
-        </div>
+        <ClBanner
+            id="call-rejoin"
+            tone="success"
+            priority={88}
+            ariaLabel="Rejoin call"
+            icon={<PhoneCall size={15} />}
+            title={`Cipherline restarted while you were in ${describeRejoinTarget(offer)}.`}
+            description="It's still going — rejoin?"
+            actions={[{ key: 'rejoin', label: 'Rejoin', variant: 'ok', loading: busy, onClick: onRejoin }]}
+            dismissDisabled={busy}
+            onDismiss={onDismiss}
+        />
     );
 };
 

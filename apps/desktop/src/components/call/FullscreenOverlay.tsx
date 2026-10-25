@@ -1,3 +1,5 @@
+import { useSpeakerPromotion } from '../../hooks/useSpeakerPromotion';
+import { prioritizeForOverflow } from '../../utils/overflowPriority';
 import React, { useEffect } from 'react';
 import ReactDOM from 'react-dom';
 import { useParticipants, useLocalParticipant } from '@livekit/components-react';
@@ -355,7 +357,24 @@ export const FullscreenOverlay = ({
         return () => window.removeEventListener('resize', onResize);
     }, []);
 
-    const stripItems = layout.mode === 'solo' || layout.mode === 'focus' ? layout.strip : [];
+    const stripItemsBase = layout.mode === 'solo' || layout.mode === 'focus' ? layout.strip : [];
+    // When the strip cannot show everyone, the visible slots go to the
+    // pictures (shares, cameras on) first, then recent/active speakers, then
+    // the rest — the SAME rules and the same promote-after-2s / demote-after-5s
+    // hysteresis as the sidebar (utils/overflowPriority.ts). The focused tile
+    // is already excluded from `layout.strip`. Whether the strip overflows is
+    // measured from the row (below) and is independent of the order, so
+    // reordering cannot flip it back and forth.
+    const { promotedIds } = useSpeakerPromotion(participants);
+    const [stripOverflowing, setStripOverflowing] = React.useState(false);
+    const [stripHiddenCount, setStripHiddenCount] = React.useState(0);
+    const stripItems = prioritizeForOverflow(stripItemsBase, {
+        overflowing: stripOverflowing,
+        promotedIds,
+        describe: item => item.kind === 'tile'
+            ? { identity: item.tile.identity, hasVideo: !item.tile.gated, gated: item.tile.gated }
+            : { identity: item.identity, hasVideo: false },
+    });
     // Size the participant strip against the height actually left to the
     // STAGE/STRIP column, not the raw window — the title strip above it
     // (0 or 34px) is real space taken out of flow now, not padding, so
@@ -532,6 +551,30 @@ export const FullscreenOverlay = ({
     //
     // Hiding it makes these two handlers load-bearing rather than polish:
     const stripRowRef = React.useRef<HTMLDivElement>(null);
+    // Overflow = the row's content is wider than its box. Pure measurement of
+    // the TOTAL width, so it does not depend on item order. `hidden` counts the
+    // cards whose right edge is past the row's right edge, for the "+N" chip.
+    const stripKey = stripItemsBase
+        .map(it => it.kind === 'tile' ? `${it.tile.identity}:${it.tile.source}` : `a:${it.identity}`)
+        .join('|');
+    React.useEffect(() => {
+        const el = stripRowRef.current;
+        if (!el) { setStripOverflowing(false); setStripHiddenCount(0); return; }
+        const measure = () => {
+            setStripOverflowing(el.scrollWidth > el.clientWidth + 1);
+            const edge = el.getBoundingClientRect().right + 1;
+            let hidden = 0;
+            for (const c of Array.from(el.children)) if (c.getBoundingClientRect().right > edge) hidden++;
+            setStripHiddenCount(hidden);
+        };
+        measure();
+        const ro = new ResizeObserver(measure);
+        ro.observe(el);
+        el.addEventListener('scroll', measure, { passive: true });
+        return () => { ro.disconnect(); el.removeEventListener('scroll', measure); };
+    // stripKey: the set of cards; density/lane change the card width and the
+    // row's width. `stripItemsBase.length` guards the row mounting/unmounting.
+    }, [stripKey, stripItemsBase.length, strip.density, stripLaneReservationPx]);
     // WHEEL. Chromium does map a vertical wheel onto horizontal scroll for a
     // container that only scrolls horizontally — but that is an implementation
     // detail of one engine, and it is the single most likely gesture here. Map
@@ -800,6 +843,10 @@ export const FullscreenOverlay = ({
                 <VideoTile
                     {...tileProps(tile.identity, tile.source)}
                     isFocusedView={true}
+                    // The strip floats over the stage's bottom edge; keep the tile's
+                    // bottom corner chrome (stats readout) above it. The stage has
+                    // 8px (p-2) of padding of its own.
+                    overlayBottomPx={Math.max(0, strip.height - 8)}
                     // Solo mode: the click that used to cycle between two identical
                     // renderings is disabled at the source, not merely ignored.
                     focusToggleDisabled={!canToggleFocus}
@@ -810,7 +857,7 @@ export const FullscreenOverlay = ({
 
     /** A fixed-size strip thumbnail. Never shrinks — see stripMetrics. */
     const stripBox = (key: string, children: React.ReactNode) => (
-        <div key={key} className="shrink-0 h-full aspect-video rounded-xl overflow-hidden relative">
+        <div key={key} className="shrink-0 h-full aspect-video rounded-xl overflow-hidden relative pointer-events-auto">
             {children}
         </div>
     );
@@ -855,7 +902,13 @@ export const FullscreenOverlay = ({
                 needed here. */}
             <div className="relative flex-1 min-h-0 flex flex-col">
                 {/* ── STAGE ───────────────────────────────────────────────────── */}
-                <div className="flex-1 min-h-0 overflow-hidden p-2">
+                {/* With a strip, the stage fills the WHOLE column and the strip
+                    floats over its bottom edge: the video (and the zoom's
+                    fit/fill area) extends under the strip and the console
+                    instead of stopping at a solid band. */}
+                <div className={stripItems.length > 0
+                    ? 'absolute inset-0 overflow-hidden p-2'
+                    : 'flex-1 min-h-0 overflow-hidden p-2'}>
                     {(layout.mode === 'solo' || layout.mode === 'focus') && renderStage(layout.stage)}
 
                     {layout.mode === 'grid' && (
@@ -917,7 +970,11 @@ export const FullscreenOverlay = ({
                     as a rendered plate. Glass is for the floating console only. */}
                 {stripItems.length > 0 && (
                     <div
-                        className="shrink-0 w-full overflow-hidden relative"
+                        // Floats over the stage's bottom edge, no background of
+                        // its own. The container ignores the pointer so the
+                        // video (wheel zoom, drag pan, annotation) stays live
+                        // around the cards; the cards and the handle opt back in.
+                        className="absolute inset-x-0 bottom-0 z-10 w-full overflow-hidden pointer-events-none"
                         style={{ height: strip.height }}
                     >
                         {/* The handle IS the strip's top border — a 7px grab band
@@ -942,7 +999,7 @@ export const FullscreenOverlay = ({
                             onPointerUp={onDragEnd}
                             onPointerCancel={onDragEnd}
                             onKeyDown={onDragKey}
-                            className={`cl-fs-strip-handle absolute inset-x-0 top-0 h-[7px] z-30 ${dragging ? 'is-dragging' : ''}`}
+                            className={`cl-fs-strip-handle absolute inset-x-0 top-0 h-[7px] z-30 pointer-events-auto ${dragging ? 'is-dragging' : ''}`}
                         >
                             <span className="cl-fs-strip-grip" aria-hidden="true" />
                         </div>
@@ -962,7 +1019,7 @@ export const FullscreenOverlay = ({
                             aria-label="Call participants"
                             onKeyDown={onStripKey}
                             onWheel={onStripWheel}
-                            className="cl-fs-strip-row h-full flex items-center gap-3 px-4 py-2 overflow-x-auto overflow-y-hidden"
+                            className="cl-fs-strip-row h-full flex items-center gap-3 px-4 py-2 overflow-x-auto overflow-y-hidden pointer-events-none"
                             style={{
                                 // LEFT-ALIGNED, at every width and every item
                                 // count — see STRIP_JUSTIFY_CONTENT's section
@@ -1013,7 +1070,7 @@ export const FullscreenOverlay = ({
                                     // (`stripBox`'s `aspect-video rounded-xl`) and do
                                     // carry the corner pill.
                                     return (
-                                        <div key={`audio-${item.identity}`} className="shrink-0 h-full flex items-center justify-center px-2">
+                                        <div key={`audio-${item.identity}`} className="shrink-0 h-full flex items-center justify-center px-2 pointer-events-auto">
                                             <ParticipantCard {...cardProps(item.identity)} sizeMode={stripCardSize(strip.density)} />
                                         </div>
                                     );
@@ -1041,6 +1098,22 @@ export const FullscreenOverlay = ({
                                     ));
                             })}
                         </div>
+                        {/* "+N" — how many cards are past the right edge. Only when
+                            the strip actually overflows; a click pages the row. */}
+                        {stripHiddenCount > 0 && (
+                            <button
+                                type="button"
+                                aria-label={`${stripHiddenCount} more participant${stripHiddenCount === 1 ? '' : 's'} — show`}
+                                onClick={() => {
+                                    const el = stripRowRef.current;
+                                    el?.scrollBy({ left: Math.round(el.clientWidth * 0.8), behavior: 'smooth' });
+                                }}
+                                className="absolute top-1/2 -translate-y-1/2 z-20 pointer-events-auto rounded-full bg-black/55 backdrop-blur-sm px-2.5 py-1 text-xs font-medium text-white/90 hover:bg-black/70 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cl-lume"
+                                style={{ right: (stripLaneReservationPx ?? 0) + 8 }}
+                            >
+                                +{stripHiddenCount}
+                            </button>
+                        )}
                     </div>
                 )}
 

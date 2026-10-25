@@ -298,25 +298,31 @@ describe('SafetyVerificationModal source guard', () => {
     });
 });
 
-// ── Safety-number v2 migration (G1) ─────────────────────────────────────────
-// A `verified: true` written before v2 cannot say whether it rested on the
-// collision-weak v1 digits or on the always-sound contact code, so it reads as
-// LEGACY. It must keep every protective role (it is still a trust anchor), and
-// only a fresh current-strength check clears the flag.
+// ── Re-check nudge (owner decision 2026-10-23) ──────────────────────────────
+// A verification is LEGACY ("Re-check suggested") only once it is a year old on
+// devices that have not changed. Age (`verified_at`) decides; the safety-number
+// generation (`sv`) does not. Legacy keeps every protective role (it is still a
+// trust anchor), and only a fresh comparison clears the flag.
 const { getDeviceVerification } = await import('./keyVerification');
+const { RECHECK_AFTER_MS } = await import('./verificationStrength');
+
+const YEAR_OLD = () => Date.now() - RECHECK_AFTER_MS - 60_000;
 
 const legacyStore = (extra: Record<string, unknown> = {}) => JSON.stringify({
-    v: 2, devices: { [DEV_A]: { pub: PUB_A, verified: true, first_seen: 42, last_seen: 42, ...extra } },
+    v: 2, devices: { [DEV_A]: { pub: PUB_A, verified: true, first_seen: 42, last_seen: 42, sv: 2, verified_at: YEAR_OLD(), ...extra } },
 });
 
-describe('G1 migration: verification provenance (`sv`)', () => {
-    it('a verification made today is stamped sv:2 and is not legacy', () => {
+describe('re-check nudge: verification age (`verified_at`)', () => {
+    it('a verification made today is stamped sv:2 + verified_at and is not legacy', () => {
+        const before = Date.now();
         markVerified(ME, THEM, PUB_A, DEV_A);
-        expect(getKnownDevices(ME, THEM)[DEV_A].sv).toBe(2);
+        const rec = getKnownDevices(ME, THEM)[DEV_A];
+        expect(rec.sv).toBe(2);
+        expect(rec.verified_at).toBeGreaterThanOrEqual(before);
         expect(getDeviceVerification(ME, THEM, PUB_A, DEV_A)).toEqual({ state: 'verified', legacy: false });
     });
 
-    it('a pre-v2 verified record (no sv) is still VERIFIED, but flagged legacy', () => {
+    it('a verified record older than a year is still VERIFIED, but flagged legacy', () => {
         mem.set(`kv_verify_v2_${ME}_${THEM}`, legacyStore());
         expect(getVerificationState(ME, THEM, PUB_A, DEV_A)).toBe('verified');
         expect(getDeviceVerification(ME, THEM, PUB_A, DEV_A)).toEqual({ state: 'verified', legacy: true });
@@ -331,25 +337,54 @@ describe('G1 migration: verification provenance (`sv`)', () => {
         expect(mem.get(`kv_verify_v2_${ME}_${THEM}`)).toBe(raw);
     });
 
-    it('an older sv value is legacy too', () => {
+    it('a recent verified_at is plain verified, even with sv absent or old', () => {
+        mem.set(`kv_verify_v2_${ME}_${THEM}`, legacyStore({ verified_at: Date.now() - 1000, sv: undefined }));
+        expect(getDeviceVerification(ME, THEM, PUB_A, DEV_A).legacy).toBe(false);
+        mem.set(`kv_verify_v2_${ME}_${THEM}`, legacyStore({ verified_at: Date.now() - 1000, sv: 1 }));
+        expect(getDeviceVerification(ME, THEM, PUB_A, DEV_A).legacy).toBe(false);
+    });
+
+    it('an old sv value on a year-old record is legacy because of its AGE', () => {
         mem.set(`kv_verify_v2_${ME}_${THEM}`, legacyStore({ sv: 1 }));
         expect(getDeviceVerification(ME, THEM, PUB_A, DEV_A).legacy).toBe(true);
     });
 
-    it('re-verifying a legacy device refreshes it, keeping first_seen', () => {
+    it('a record with no verified_at (written before the clock existed) is not nagged', () => {
+        mem.set(`kv_verify_v2_${ME}_${THEM}`, legacyStore({ verified_at: undefined, sv: undefined }));
+        expect(getVerificationState(ME, THEM, PUB_A, DEV_A)).toBe('verified');
+        expect(getDeviceVerification(ME, THEM, PUB_A, DEV_A)).toEqual({ state: 'verified', legacy: false });
+    });
+
+    it('the one-year boundary: just under is verified, exactly a year is re-check', () => {
+        vi.useFakeTimers();
+        try {
+            const now = new Date('2027-06-01T00:00:00Z').getTime();
+            vi.setSystemTime(now);
+            mem.set(`kv_verify_v2_${ME}_${THEM}`, legacyStore({ verified_at: now - RECHECK_AFTER_MS + 1 }));
+            expect(getDeviceVerification(ME, THEM, PUB_A, DEV_A).legacy).toBe(false);
+            mem.set(`kv_verify_v2_${ME}_${THEM}`, legacyStore({ verified_at: now - RECHECK_AFTER_MS }));
+            expect(getDeviceVerification(ME, THEM, PUB_A, DEV_A).legacy).toBe(true);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('re-verifying a legacy device refreshes verified_at, keeping first_seen', () => {
         mem.set(`kv_verify_v2_${ME}_${THEM}`, legacyStore());
+        const old = getKnownDevices(ME, THEM)[DEV_A].verified_at!;
         markVerified(ME, THEM, PUB_A, DEV_A);
         const rec = getKnownDevices(ME, THEM)[DEV_A];
         expect(rec.sv).toBe(2);
+        expect(rec.verified_at!).toBeGreaterThan(old);
         expect(rec.first_seen).toBe(42);
         expect(getDeviceVerification(ME, THEM, PUB_A, DEV_A).legacy).toBe(false);
     });
 
-    it('a v1 (pre-Phase-5) verified record migrates as LEGACY, and stays legacy through sd adoption', () => {
+    it('a v1 (pre-Phase-5) verified record carries no date, so it is not nagged, through sd adoption', () => {
         mem.set(`kv_verify_${ME}_${THEM}`, JSON.stringify({ pub: PUB_A, verified: true }));
-        expect(getDeviceVerification(ME, THEM)).toEqual({ state: 'verified', legacy: true });
+        expect(getDeviceVerification(ME, THEM)).toEqual({ state: 'verified', legacy: false });
         recordFirstSeen(ME, THEM, PUB_A, DEV_A);
-        expect(getDeviceVerification(ME, THEM, PUB_A, DEV_A)).toEqual({ state: 'verified', legacy: true });
+        expect(getDeviceVerification(ME, THEM, PUB_A, DEV_A)).toEqual({ state: 'verified', legacy: false });
     });
 
     it('legacy keeps its protective role: an unvouched key for that contact still raises the alarm', () => {
@@ -367,6 +402,7 @@ describe('G1 migration: verification provenance (`sv`)', () => {
         const rec = getKnownDevices(ME, THEM)[DEV_A];
         expect(rec.verified).toBe(false);
         expect(rec.sv).toBeUndefined();
+        expect(rec.verified_at).toBeUndefined();
         expect(getDeviceVerification(ME, THEM, PUB_B, DEV_A)).toEqual({ state: 'unverified', legacy: false });
     });
 });

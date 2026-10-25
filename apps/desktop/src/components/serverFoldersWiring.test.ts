@@ -52,7 +52,7 @@ describe('server folders — Dashboard wiring', () => {
     it('folder context menu offers rename, colour and remove (ungroup)', () => {
         const fn = dash.slice(dash.indexOf('const openFolderRailMenu'), dash.indexOf('const openFolderRailMenu') + 3000);
         expect(fn).toContain("label: 'Rename'");
-        expect(fn).toContain("label: 'Change colour'");
+        expect(fn).toContain("label: 'Change color'");
         expect(fn).toContain('railLayout.ungroup(folderId)');
     });
 

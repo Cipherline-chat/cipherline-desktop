@@ -31,6 +31,8 @@
  * it in place) keeps working; only `data.reason` is new.
  */
 
+import { reportBeta } from './betaDiagnostics/reporter';
+
 export type ChannelPlaceholderReason = 'key_missing' | 'key_mismatch' | 'unverified' | 'history_restricted';
 
 export interface FailureContext {
@@ -40,6 +42,34 @@ export interface FailureContext {
     latestKnownEpoch?: number;
     /** Whether this member holds READ_MESSAGE_HISTORY in the channel. */
     canReadHistory?: boolean;
+    /**
+     * The row's id. Only used to report each undecryptable message to beta
+     * diagnostics ONCE per session: the same cached placeholder is re-decrypted
+     * every time a page is re-read, a key arrives, or a reconcile runs, and
+     * each attempt used to be counted as a new failure (2026-10-17: a member
+     * with ~220 messages in reach reported 723 failures in one 10-minute
+     * window, 5,436 in a morning).
+     */
+    messageId?: string;
+}
+
+/** (messageId:reason) pairs already reported this session. Bounded: past the cap
+ *  the set restarts, which at worst re-reports a message once more. */
+const REPORTED_CAP = 5_000;
+const reportedFailures = new Set<string>();
+
+/** Test hook / sign-out: forget what was reported. */
+export function resetReportedChannelFailures(): void {
+    reportedFailures.clear();
+}
+
+function shouldReportFailure(reason: ChannelPlaceholderReason, messageId: string | undefined): boolean {
+    if (!messageId) return true;
+    const k = `${messageId}:${reason}`;
+    if (reportedFailures.has(k)) return false;
+    if (reportedFailures.size >= REPORTED_CAP) reportedFailures.clear();
+    reportedFailures.add(k);
+    return true;
 }
 
 const msgOf = (err: unknown): string =>
@@ -47,6 +77,16 @@ const msgOf = (err: unknown): string =>
         ? (err as { message: string }).message : '';
 
 export function classifyChannelDecryptFailure(err: unknown, ctx: FailureContext = {}): ChannelPlaceholderReason {
+    const reason = classifyChannelDecryptFailureInner(err, ctx);
+    // Beta diagnostics: a channel message this device could not decrypt (the
+    // reason enum only). history_restricted is by design, not a failure.
+    if (reason !== 'history_restricted' && shouldReportFailure(reason, ctx.messageId)) {
+        reportBeta('key_decrypt_failed', { scope: 'channel', reason });
+    }
+    return reason;
+}
+
+function classifyChannelDecryptFailureInner(err: unknown, ctx: FailureContext): ChannelPlaceholderReason {
     const msg = msgOf(err);
     const code = (err && typeof err === 'object') ? (err as { code?: unknown }).code : undefined;
     if (/signature verification failed|sender key mismatch|Invalid JWK|ERR_CRYPTO_INVALID_JWK/i.test(msg) || code === 'ERR_CRYPTO_INVALID_JWK') {

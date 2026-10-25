@@ -1,0 +1,55 @@
+/* "Bonus day. Try not to waste it." — components/moments/views/LeapDayMoment.tsx.
+   8.3 s, transform/opacity only. Phases: notice 0–0.5, main 0.5–3.5,
+   read 3.5–6.6, hold 6.6–7.6, exit 7.6–8.3.
+   Layout (from the centre): a 200 x 230 calendar centred 40 px above the
+   middle; the frog lands on its top edge. */
+.mo-ld .mo-notice { left: 0; top: -40px; }
+.mo-ld-scene { position: absolute; left: 0; top: -40px; width: 0; height: 0; }
+.mo-ld-cal {
+  position: absolute; left: -100px; top: -115px; width: 200px; height: 230px; perspective: 800px;
+  animation: mo-ld-in .5s cubic-bezier(.2, .8, .3, 1.15) .1s both;
+}
+@keyframes mo-ld-in { from { transform: translateY(18px) scale(.85); opacity: 0; } to { transform: none; opacity: 1; } }
+.mo-ld-page {
+  position: absolute; inset: 0; border-radius: 16px; overflow: hidden;
+  background: #F4F7FF; border: 1px solid #C9D2EA;
+}
+.mo-ld-month {
+  height: 56px; background: #FF6B5E; color: #fff; text-align: center; line-height: 58px; padding-top: 6px; box-sizing: border-box;
+  font: 700 18px var(--cl-font-sans, 'Nunito', sans-serif); letter-spacing: .14em;
+}
+.mo-ld-num {
+  height: 170px; text-align: center; line-height: 160px; color: #1C2542;
+  font: 600 112px/170px var(--cl-font-display, 'Fredoka', sans-serif);
+}
+.mo-ld-num-29 { color: #0E9C8B; }
+.mo-ld-rings { position: absolute; left: 0; right: 0; top: -12px; z-index: 3; display: flex; justify-content: space-around; padding: 0 30px; }
+.mo-ld-rings i { width: 8px; height: 22px; border-radius: 4px; background: #5B6788; }
+/* The top page hinges at its top edge and swings up and over, away from the viewer. */
+.mo-ld-flipper { position: absolute; inset: 0; z-index: 2; backface-visibility: hidden; transform-origin: 50% 0; animation: mo-ld-flip .7s cubic-bezier(.5, 0, .3, 1) 1.5s both; }
+@keyframes mo-ld-flip { 0% { transform: rotateX(0); opacity: 1; } 99% { transform: rotateX(-150deg); opacity: 1; } 100% { transform: rotateX(-150deg); opacity: 0; } }
+.mo-ld-over { backface-visibility: hidden; }
+.mo-ld-under { animation: mo-ld-under .7s ease-out 1.5s both; }
+@keyframes mo-ld-under { from { transform: scale(.97); } to { transform: none; } }
+.mo-ld-spark { position: absolute; margin: -10px 0 0 -10px; z-index: 4; opacity: 0; animation: mo-ld-spark 1s ease-out both; }
+@keyframes mo-ld-spark {
+  0% { transform: scale(.2) rotate(0); opacity: 0; } 30% { transform: scale(1.2) rotate(40deg); opacity: 1; }
+  100% { transform: scale(.4) rotate(90deg); opacity: 0; }
+}
+/* The frog: a long leap in from the left, landing on the calendar's top edge. */
+.mo-ld-frog { position: absolute; left: 22px; top: -172px; width: 84px; height: 60px; animation: mo-ld-leap .9s linear 2.2s both; }
+@keyframes mo-ld-leap {
+  0%   { transform: translate(-36vw, 22vh) rotate(-24deg) scale(.8); opacity: 0; }
+  8%   { opacity: 1; }
+  22%  { transform: translate(-27vw, 2vh) rotate(-30deg) scale(.88); }
+  45%  { transform: translate(-13vw, -17vh) rotate(-14deg) scale(.95); }
+  70%  { transform: translate(-4vw, -10vh) rotate(8deg) scale(1); }
+  88%  { transform: translate(-1vw, -2.5vh) rotate(14deg) scale(1); }
+  100% { transform: translate(0, 0) rotate(0) scale(1); opacity: 1; }
+}
+.mo-ld-land { transform-origin: 50% 100%; animation: mo-ld-squash .5s cubic-bezier(.2, .8, .3, 1.3) 3.05s both; }
+@keyframes mo-ld-squash { 0% { transform: scale(1, 1); } 30% { transform: scale(1.18, .78); } 100% { transform: none; } }
+.mo-ld .mo-ld-pill {
+  top: 100px; font-size: 21px; padding: 10px 24px;
+  animation: mo-pill-in .5s cubic-bezier(.2, .8, .3, 1) 2.75s both;
+}

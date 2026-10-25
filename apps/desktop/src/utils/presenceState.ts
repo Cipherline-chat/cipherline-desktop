@@ -25,12 +25,14 @@
  */
 
 import type { UserStatus, FriendStatusEntry } from './userStatusModel';
+import { activeCustom } from './customStatus';
 
 export interface WirePresence {
     user_id: string;
     status: string;
     custom_status_text?: string | null;
     custom_status_emoji?: string | null;
+    custom_status_expires_at?: string | null;
     game_name?: string | null;
     /** Only ever true while visibly present on phones alone. Absent from
      *  older servers → false. */
@@ -55,10 +57,17 @@ export function toEntry(w: WirePresence): FriendStatusEntry {
     const status = normalizeStatus(w.status);
     const visible = status !== 'offline';
     const onMobile = visible && w.on_mobile === true;
+    // Only a custom status that is still active: a frame that arrives after its
+    // expiry (a slow seed, a replayed snapshot) must not show it.
+    const custom = visible
+        ? activeCustom(w.custom_status_text, w.custom_status_emoji, w.custom_status_expires_at)
+        : null;
     return {
         status,
-        custom_status_text: visible ? (w.custom_status_text ?? null) : null,
-        custom_status_emoji: visible ? (w.custom_status_emoji ?? null) : null,
+        custom_status_text: custom ? custom.text : null,
+        custom_status_emoji: custom ? custom.emoji : null,
+        // Only present while there is an expiry to track.
+        ...(custom && custom.expiresAt ? { custom_status_expires_at: custom.expiresAt } : {}),
         // The game is live-only. It is whatever THIS frame says — never a
         // carry-over from the entry it replaces — and it is not shown for
         // someone who is offline or only on a phone (games are detected on
@@ -83,6 +92,7 @@ function sameEntry(a: FriendStatusEntry | undefined, b: FriendStatusEntry): bool
         && a.status === b.status
         && a.custom_status_text === b.custom_status_text
         && a.custom_status_emoji === b.custom_status_emoji
+        && (a.custom_status_expires_at ?? null) === (b.custom_status_expires_at ?? null)
         && a.current_game === b.current_game
         && (a.on_mobile ?? false) === (b.on_mobile ?? false);
 }

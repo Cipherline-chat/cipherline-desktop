@@ -102,6 +102,22 @@ export function resolveAnnouncementColor(color: string | null | undefined): Anno
     return ANNOUNCEMENT_COLOR_TOKENS[DEFAULT_ANNOUNCEMENT_COLOR];
 }
 
+/** The ClBanner tone an announcement colour preset renders as. Same allowlist
+ *  as ANNOUNCEMENT_COLOR_TOKENS; anything off-list is `neutral`. */
+export type AnnouncementTone = 'neutral' | 'info' | 'warning' | 'danger';
+
+const ANNOUNCEMENT_TONES: Record<string, AnnouncementTone> = {
+    neutral: 'neutral',
+    info: 'info',
+    warn: 'warning',
+    danger: 'danger',
+};
+
+export function resolveAnnouncementTone(color: string | null | undefined): AnnouncementTone {
+    if (color && Object.prototype.hasOwnProperty.call(ANNOUNCEMENT_TONES, color)) return ANNOUNCEMENT_TONES[color];
+    return 'neutral';
+}
+
 // ── Icon preset mapping ───────────────────────────────────────────────────
 
 /**

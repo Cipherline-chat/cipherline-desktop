@@ -52,6 +52,11 @@ function httpStatusOf(error: unknown): number | undefined {
     return typeof status === 'number' ? status : undefined;
 }
 
+/** One observer of every recorded failure (beta diagnostics). Must not throw (isolated anyway). */
+type DeliveryTap = (entry: DiagnosticEntry, error: unknown) => void;
+let tap: DeliveryTap | null = null;
+export function setDeliveryTap(fn: DeliveryTap | null): void { tap = fn; }
+
 export function record(kind: DiagnosticKind, error: unknown, ctx: DiagnosticEntry['ctx'] = {}): DiagnosticEntry {
     const message = error instanceof Error ? error.message : String(error);
     // A failed REST hop carries no [E2EE:…] prefix; its status is the whole
@@ -66,6 +71,7 @@ export function record(kind: DiagnosticKind, error: unknown, ctx: DiagnosticEntr
     };
     entries.push(entry);
     if (entries.length > MAX_ENTRIES) entries.shift();
+    if (tap) { try { tap(entry, error); } catch { /* isolate */ } }
     return entry;
 }
 

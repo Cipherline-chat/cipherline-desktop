@@ -12,6 +12,15 @@
  *   - dynacast_layers: which of our simulcast encodings are running;
  *   - freeze_start / freeze_end: a remote video that is subscribed, enabled
  *     and was decoding stops decoding (and later resumes, with the duration);
+ *   - rx_layer: a remote video's DECODED size changed (a layer switch — ours
+ *     or the SFU's congestion control — or the sender scaling), with the
+ *     quality we were asking for;
+ *   - rx_video_health: per remote video, every 10 s window that lost packets
+ *     or sent keyframe requests (PLI/FIR): loss %, PLIs, keyframes decoded,
+ *     NACKs — nothing for a healthy track;
+ *   - share_rx_fallback: a remote SCREEN SHARE's full layer was losing
+ *     packets / stuck, so we hold it at its lower layer (or lifted that) —
+ *     utils/shareLossFallback.ts;
  *   - e2ee_decrypt_error: LiveKit's frame cryptor failed to decrypt a peer's
  *     frame (reason enum only — the SDK's message can carry an identity).
  *     Already throttled by the SDK (≤ 1/s, ≤ 5/min per cryptor) and coalesced
@@ -23,11 +32,16 @@
  */
 import { useEffect } from 'react';
 import { useRoomContext } from '@livekit/components-react';
-import { RoomEvent, Track, RemoteVideoTrack, type Room } from 'livekit-client';
+import { RoomEvent, Track, RemoteVideoTrack, type Room, type RemoteTrackPublication } from 'livekit-client';
 import { logCallEvent, markCallStart, markCallEnd, trackPlaceholder } from '../../utils/callEventLog';
 import { resetAvSyncMonitor } from '../../utils/avSyncMonitor';
 import { iceRouteFromStats, layerStateString, type StatsLike } from '../../utils/callEventStats';
 import { decryptErrorReason } from '../../utils/e2eeWorkerStats';
+import { ShareLossFallback, readInboundVideo, lossPctBetween, shareRxFallbackDetail, type InboundVideoCounters } from '../../utils/shareLossFallback';
+import { appliedQuality, claimedQuality, normaliseLayers, setQualityCeiling } from '../../utils/remoteVideoQuality';
+
+/** rx_video_health window: one line per remote video per window, only when it lost packets or asked for keyframes. */
+const RX_HEALTH_WINDOW_MS = 10_000;
 
 interface PcLike { getStats(): Promise<StatsLike> }
 
@@ -62,6 +76,7 @@ export const CallEventMonitor: React.FC = () => {
         const qlr = new Map<string, { reason: string; since: number }>();
         const layers = new Map<string, string>();
         const decode = new Map<string, { frames: number; frozenSince: number | null }>();
+        const rx = new Map<string, { pub: RemoteTrackPublication; prev: InboundVideoCounters; win: InboundVideoCounters; winAt: number; size: string; fb: ShareLossFallback | null }>();
         let busy = false;
 
         const sample = async () => {
@@ -112,24 +127,80 @@ export const CallEventMonitor: React.FC = () => {
                         const track = pub?.track;
                         if (!pub?.isSubscribed || !pub.isEnabled || pub.isMuted || !(track instanceof RemoteVideoTrack)) continue;
                         seen.add(pub.trackSid);
-                        let frames = 0;
-                        (await track.getRTCStatsReport())?.forEach((s: Record<string, unknown>) => {
-                            if (s.type === 'inbound-rtp' && s.kind === 'video' && typeof s.framesDecoded === 'number') frames = s.framesDecoded;
-                        });
+                        const cur = readInboundVideo(await track.getRTCStatsReport() as StatsLike | undefined);
+                        const frames = cur?.framesDecoded ?? 0;
                         const st = decode.get(pub.trackSid);
                         const name = trackPlaceholder(pub.trackSid, source === Track.Source.Camera ? 'remote-video' : 'remote-screen');
-                        if (!st) { decode.set(pub.trackSid, { frames, frozenSince: null }); continue; }
-                        if (frames === st.frames && frames > 0 && st.frozenSince === null) {
-                            st.frozenSince = now;
-                            logCallEvent('freeze_start', { track: name });
-                        } else if (frames !== st.frames && st.frozenSince !== null) {
-                            logCallEvent('freeze_end', { track: name, ms: Math.round(now - st.frozenSince) });
-                            st.frozenSince = null;
+                        if (!st) { decode.set(pub.trackSid, { frames, frozenSince: null }); }
+                        else {
+                            if (frames === st.frames && frames > 0 && st.frozenSince === null) {
+                                st.frozenSince = now;
+                                logCallEvent('freeze_start', { track: name });
+                            } else if (frames !== st.frames && st.frozenSince !== null) {
+                                logCallEvent('freeze_end', { track: name, ms: Math.round(now - st.frozenSince) });
+                                st.frozenSince = null;
+                            }
+                            st.frames = frames;
                         }
-                        st.frames = frames;
+                        if (!cur) continue;
+                        // Receive-side health: layer changes, loss / keyframe requests,
+                        // and (screen shares) the fall-back to the lower layer.
+                        const size = cur.frameWidth > 0 && cur.frameHeight > 0 ? `${cur.frameWidth}x${cur.frameHeight}` : '';
+                        const r = rx.get(pub.trackSid);
+                        if (!r) {
+                            // First reading: a baseline only (no deltas yet).
+                            rx.set(pub.trackSid, { pub, prev: cur, win: cur, winAt: now, size, fb: source === Track.Source.ScreenShare ? new ShareLossFallback() : null });
+                            continue;
+                        }
+                        if (size && size !== r.size) {
+                            if (r.size) logCallEvent('rx_layer', { track: name, size, from: r.size, quality: appliedQuality(pub) ?? -1 });
+                            r.size = size;
+                        }
+                        const loss = lossPctBetween(r.prev, cur);
+                        if (r.fb) {
+                            const layers = normaliseLayers(pub.trackInfo?.layers);
+                            const claimed = claimedQuality(pub);
+                            const d = r.fb.observe({
+                                now,
+                                lossPct: loss,
+                                frozen: frames > 0 && frames === r.prev.framesDecoded,
+                                keyframeAsked: cur.pliCount + cur.firCount > r.prev.pliCount + r.prev.firCount,
+                                wantsTop: layers.length > 1 && claimed !== undefined && claimed >= layers[layers.length - 1].quality,
+                                layers: layers.length,
+                                packets: Math.max(0, cur.packetsReceived - r.prev.packetsReceived),
+                                frameShort: cur.frameWidth > 0 && cur.frameHeight > 0 ? Math.min(cur.frameWidth, cur.frameHeight) : undefined,
+                            });
+                            if (d.changed) {
+                                setQualityCeiling(pub, d.cap ? layers[0]?.quality ?? null : null);
+                                logCallEvent('share_rx_fallback', shareRxFallbackDetail(name, d, loss));
+                            }
+                        }
+                        r.prev = cur;
+                        if (now - r.winAt >= RX_HEALTH_WINDOW_MS) {
+                            const wLoss = lossPctBetween(r.win, cur) ?? 0;
+                            const pli = Math.max(0, cur.pliCount - r.win.pliCount) + Math.max(0, cur.firCount - r.win.firCount);
+                            if (wLoss >= 1 || pli > 0) {
+                                logCallEvent('rx_video_health', {
+                                    track: name, loss_pct: wLoss, pli,
+                                    kf: Math.max(0, cur.keyFramesDecoded - r.win.keyFramesDecoded),
+                                    nack: Math.max(0, cur.nackCount - r.win.nackCount),
+                                    window_s: Math.round((now - r.winAt) / 1000),
+                                    capped: !!r.fb?.capped,
+                                });
+                            }
+                            r.win = cur;
+                            r.winAt = now;
+                        }
                     }
                 }
                 for (const sid of [...decode.keys()]) if (!seen.has(sid)) decode.delete(sid);
+                for (const [sid, r] of [...rx.entries()]) {
+                    if (seen.has(sid)) continue;
+                    // Unsubscribed / paused / muted: never leave a fallback cap behind
+                    // on a publication that may be watched again.
+                    if (r.fb?.capped) setQualityCeiling(r.pub, null);
+                    rx.delete(sid);
+                }
             } finally {
                 busy = false;
             }
@@ -137,6 +208,7 @@ export const CallEventMonitor: React.FC = () => {
         const iv = setInterval(() => { void sample().catch(() => {}); }, 2000);
         return () => {
             clearInterval(iv);
+            for (const r of rx.values()) if (r.fb?.capped) setQualityCeiling(r.pub, null);
             room.off(RoomEvent.ParticipantConnected, onCount);
             room.off(RoomEvent.ParticipantDisconnected, onCount);
             room.off(RoomEvent.Reconnecting, onReconnecting);

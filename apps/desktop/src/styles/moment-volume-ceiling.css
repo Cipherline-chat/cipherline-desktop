@@ -1,0 +1,35 @@
+/* "200% is the ceiling." — components/moments/views/VolumeCeilingMoment.tsx.
+   5.9 s, transform/opacity only. Phases: notice 0–0.5, main 0.5–1.8,
+   read 1.8–4.3, hold 4.3–5.3, exit 5.3–5.9. */
+.mo-vc-keys {
+  position: absolute; left: -75px; top: 120px;
+  animation:
+    mo-vc-up .95s both,
+    mo-vc-down var(--mo-exit-dur, .6s) cubic-bezier(.45, 0, .55, 1) var(--mo-exit, 5.3s) forwards;
+}
+/* 0–0.5 the top of his head peeks over the bottom edge; 0.5–0.95 the rest of him. */
+@keyframes mo-vc-up {
+  0%   { transform: translateY(60vh); animation-timing-function: cubic-bezier(.2, .8, .3, 1); }
+  53%  { transform: translateY(calc(50vh - 170px)); animation-timing-function: cubic-bezier(.2, .8, .3, 1.15); }
+  100% { transform: none; }
+}
+@keyframes mo-vc-down { from { transform: none; } to { transform: translateY(60vh); } }
+/* Trembles while the waves hit (0.9–3.0), then holds still, ears clamped. */
+.mo-vc-tremble { animation: mo-vc-tremble .1s linear .9s 21 alternate both; }
+@keyframes mo-vc-tremble { from { transform: translateX(-2px) rotate(-1.5deg); } to { transform: none; } }
+.mo-vc-wave { position: absolute; top: 140px; opacity: 0; animation: mo-vc-wave .9s ease-out both; }
+.mo-vc-wave-l { left: -140px; --dx: 30px; }
+.mo-vc-wave-r { left: 110px; --dx: -30px; }
+.mo-vc-w0 { animation-delay: .8s; }
+.mo-vc-w1 { animation-delay: 1.15s; animation-iteration-count: 2; }
+.mo-vc-w2 { animation-delay: 1.5s; animation-iteration-count: 2; }
+@keyframes mo-vc-wave {
+  0% { transform: translateX(calc(var(--dx) * -2)) scale(1.4); opacity: 0; }
+  30% { opacity: 1; }
+  100% { transform: translateX(var(--dx)) scale(.7); opacity: 0; }
+}
+.mo-vc .mo-vc-pill {
+  top: 40px; font-size: 22px; padding: 10px 24px;
+  animation: mo-pill-in .5s cubic-bezier(.2, .8, .3, 1) 1.3s both;
+}
+.mo-vc-pill b { color: var(--cl-glow, #FFC94D); }

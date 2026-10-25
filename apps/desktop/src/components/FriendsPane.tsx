@@ -17,8 +17,13 @@ import { useToast } from '../contexts/ToastContext';
 import { API_BASE } from '../constants';
 import { apiUrl } from '../utils/apiPath';
 import { EncryptedAvatar } from './EncryptedAvatar';
+import { AvatarDecoration } from './ProfileCosmetics';
 import { formatRailBadgeCount } from '../utils/unreadBadges';
 import { MascotEmpty } from './MascotEmpty';
+import { usePlayfulLine } from '../hooks/useEasterEggs';
+import { FRIENDS_NO_MATCH_POOL } from '../utils/eggPools';
+import { hashSeed } from '../utils/easterEggs';
+import { StatusLine } from './StatusLine';
 import { EMPTY_FRIENDS, type FriendsPayload, type FriendsLoadStatus } from '../utils/friendsSync';
 
 interface FriendsPaneProps {
@@ -74,6 +79,8 @@ const FriendsPane: React.FC<FriendsPaneProps> = ({
     const [subTab, setSubTab] = useState<SubTab>('all');
     const [refreshing, setRefreshing] = useState(false);
     const [search, setSearch] = useState('');
+    // Egg: a second, playful line under "No friends match" (always shown, rotating per query).
+    const noFriendLine = usePlayfulLine('', FRIENDS_NO_MATCH_POOL, hashSeed(search));
     const [showAddFriendModal, setShowAddFriendModal] = useState(false);
     const friendMenu = useContextMenu();
     const [confirmDialog, setConfirmDialog] = useState<{
@@ -228,7 +235,7 @@ const FriendsPane: React.FC<FriendsPaneProps> = ({
     ];
 
     return (
-        <div className="flex flex-col h-full bg-cl-abyss overflow-hidden">
+        <div className="friends-pane-root flex flex-col h-full bg-cl-abyss overflow-hidden">
 
             {/* Header */}
             <div className="shrink-0 px-10 pt-8 pb-0 border-b border-cl-border/40">
@@ -375,9 +382,10 @@ const FriendsPane: React.FC<FriendsPaneProps> = ({
                                 </ClButton>
                             </MascotEmpty>
                         ) : filteredFriends.length === 0 ? (
-                            <p className="text-cl-faint text-sm text-center py-12">
-                                No friends match &ldquo;{search}&rdquo;
-                            </p>
+                            <div className="text-cl-faint text-sm text-center py-12">
+                                <p className="m-0">No friends match &ldquo;{search}&rdquo;</p>
+                                {noFriendLine && <p className="m-0 mt-1.5 text-xs opacity-80">{noFriendLine}</p>}
+                            </div>
                         ) : (
                             <div className="grid grid-cols-1 gap-2 max-w-3xl">
                                 {/* eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt */}
@@ -393,9 +401,11 @@ const FriendsPane: React.FC<FriendsPaneProps> = ({
                                         }}
                                     >
                                         <div className="w-10 h-10 rounded-full shrink-0 relative">
-                                            <div className="w-full h-full rounded-full overflow-hidden border border-cl-lume/20">
-                                                <EncryptedAvatar attachmentId={f.avatar_url} userId={f.user_id} token={token} className="w-full h-full" fallbackSize={16} />
-                                            </div>
+                                            <AvatarDecoration decoration={f.avatar_decoration} block className="w-full h-full">
+                                                <div className="w-full h-full rounded-full overflow-hidden border border-cl-lume/20">
+                                                    <EncryptedAvatar attachmentId={f.avatar_url} userId={f.user_id} token={token} className="w-full h-full" fallbackSize={16} />
+                                                </div>
+                                            </AvatarDecoration>
                                             {(() => {
                                                 const fs = friendStatuses?.[f.user_id];
                                                 const status = fs?.status ?? 'offline';
@@ -430,18 +440,11 @@ const FriendsPane: React.FC<FriendsPaneProps> = ({
                                                 )}
                                                 <ProfileBadgeRow badges={f.badges} size="sm" className="ml-1.5 align-middle" />
                                             </p>
-                                            {(() => {
-                                                const fs = friendStatuses?.[f.user_id];
-                                                if (!fs || fs.status === 'offline') return null;
-                                                const line = fs.current_game
-                                                    ? `Playing ${fs.current_game}`
-                                                    : fs.custom_status_text
-                                                        ? `${fs.custom_status_emoji ? fs.custom_status_emoji + ' ' : ''}${fs.custom_status_text}`
-                                                        : null;
-                                                return line
-                                                    ? <p className="text-[11px] text-cl-muted truncate mt-0.5 m-0">{line}</p>
-                                                    : null;
-                                            })()}
+                                            <StatusLine
+                                                entry={friendStatuses?.[f.user_id]}
+                                                userId={f.user_id}
+                                                className="block text-[11px] text-cl-muted truncate mt-0.5 m-0"
+                                            />
                                         </div>
                                         <div data-friend-dropdown={f.user_id} className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
                                             <ClButton

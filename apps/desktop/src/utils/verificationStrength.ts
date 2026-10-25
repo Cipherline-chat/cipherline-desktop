@@ -11,14 +11,10 @@
  *     key-directory MITM could defeat with a ~2^50 collision search (G1, see
  *     `safetyNumber.ts`).
  *
- * A record cannot say which route produced it, so every `verified: true`
- * written before this field existed is treated as `legacy`. Every write from
- * now on stamps `sv: VERIFICATION_STRENGTH`. The field is additive and
- * per-record. The store's own layout version (`v: 2`) is unchanged, and older
- * builds and the mobile port simply ignore it. A record they rewrite comes
- * back without `sv`, and so reads as legacy again. That is the correct,
- * conservative answer for a verification made by a client that still showed
- * v1 digits.
+ * Owner decision 2026-10-23: the "Re-check suggested" nudge no longer depends
+ * on that generation (`sv`). It depends on AGE: a verification (`verified_at`,
+ * stamped by every `markVerified`) that is a year old, on devices that have
+ * not changed, reads as `legacy`. `sv` is still recorded but decides nothing.
  *
  * What `legacy` changes, and what it deliberately does not:
  *
@@ -28,7 +24,7 @@
  *     have switched those alarms OFF for every verified contact.
  *   - It DOES stop the contact reading as a full green "Verified". The trust
  *     level becomes `verified_legacy` ("Re-check suggested"), a calm state,
- *     not a warning, until the user compares once more with a v2 check.
+ *     not a warning, until the user compares once more.
  *
  * Pure and import-free on purpose: the writer (`keyVerification`) and the
  * readers (`contactTrust`, the embed, the modal) must agree on the rule, and
@@ -38,14 +34,34 @@
 /** The strength generation a verification made today carries. */
 export const VERIFICATION_STRENGTH = 2;
 
+/** A verification this old reads as "Re-check suggested" (owner decision 2026-10-23). */
+export const RECHECK_AFTER_MS = 365 * 24 * 60 * 60 * 1000;
+
 export interface VerificationRecordLike {
     verified: boolean;
-    /** Absent on every record written before safety-number v2. */
+    /** Absent on every record written before safety-number v2. Kept for the record; no longer decides the level. */
     sv?: number;
+    /** When the user last compared codes for this key (ms). Absent on records written before 2026-10-23. */
+    verified_at?: number;
 }
 
-/** Vouched for, but on a comparison older than the current strength. */
-export function isLegacyVerified(rec: VerificationRecordLike | null | undefined): boolean {
+/**
+ * Vouched for, but long enough ago that a fresh comparison is worth suggesting.
+ *
+ * Owner decision 2026-10-23: the re-check nudge is about AGE, not about which
+ * safety-number generation produced the pin. A verification is suggested for a
+ * re-check once it is a year old; before that it is a plain green "Verified".
+ * Unknown age (no `verified_at`) = no nag.
+ * A changed or added device never reaches this state: it is a key-change /
+ * unvouched-device / partly-verified verdict instead (contactTrust.ts), so this
+ * only ever means "same devices, compared a while ago".
+ */
+export function isLegacyVerified(rec: VerificationRecordLike | null | undefined, now: number = Date.now()): boolean {
     if (!rec || !rec.verified) return false;
-    return typeof rec.sv !== 'number' || rec.sv < VERIFICATION_STRENGTH;
+    // Records from before `verified_at` existed carry no comparison date
+    // (`first_seen` is when the KEY was pinned, not when codes were compared),
+    // so they are not nagged; their next re-verification stamps the clock.
+    const at = rec.verified_at;
+    if (typeof at !== 'number' || !Number.isFinite(at)) return false;
+    return now - at >= RECHECK_AFTER_MS;
 }

@@ -332,3 +332,50 @@ describe('ReactionPill animation actually fires', () => {
         expect(animate).not.toHaveBeenCalled();
     });
 });
+
+describe('pile-up burst at ten', () => {
+    // The wrapper span owns the burst; throwaway specks are its extra children.
+    const burstChildren = () => host.querySelector('span')!.querySelectorAll(':scope > span[aria-hidden="true"]').length;
+    const uniq = (() => { let n = 0; return () => `burst-${++n}`; })();
+    const renderKey = (animKey: string, count: number) => act(() => {
+        root!.render(React.createElement(ReactionPill, { ...BASE, animKey, msgId: animKey, count, hasMine: false }));
+    });
+
+    it('bursts once when the count crosses 9 -> 10 live', () => {
+        const k = uniq();
+        renderKey(k, 9);
+        expect(burstChildren()).toBe(0);
+        renderKey(k, 10);
+        // a ring plus eight specks
+        expect(burstChildren()).toBe(9);
+    });
+
+    it('does not burst for a chip that mounts already at ten, or above', () => {
+        renderKey(uniq(), 10);
+        expect(burstChildren()).toBe(0);
+        renderKey(uniq(), 14);
+        expect(burstChildren()).toBe(0);
+    });
+
+    it('does not burst on 10 -> 11, nor on counts below ten', () => {
+        const k = uniq();
+        renderKey(k, 8);
+        renderKey(k, 9);
+        expect(burstChildren()).toBe(0);
+        renderKey(k, 10);
+        const after = burstChildren();
+        renderKey(k, 11);
+        expect(burstChildren()).toBe(after);
+    });
+
+    it('bursts only once per chip even if it dips below ten and crosses again', () => {
+        const k = uniq();
+        renderKey(k, 9);
+        renderKey(k, 10);
+        // clear the debris, as the finish handler would
+        host.querySelectorAll('span > span[aria-hidden="true"]').forEach(e => e.remove());
+        renderKey(k, 9);
+        renderKey(k, 10);
+        expect(burstChildren()).toBe(0);
+    });
+});

@@ -1,0 +1,78 @@
+/* Title-bar mark (components/TitleBarWordmark.tsx): clickable, and the hidden lap.
+
+   The word is normally pointer-events:none inside the drag region (index.css).
+   To count clicks it must receive them, so it opts out of dragging and rises
+   above the app's full-width drag strip (z-index 9999 in App.tsx). Only the
+   word itself: the rest of the bar still drags the window. */
+.cl-titlebar-wordmark.is-clickable {
+  pointer-events: auto;
+  -webkit-app-region: no-drag;
+  position: relative;
+  z-index: 10000;
+  cursor: default;
+}
+
+/* The lap. A fixed strip the height of the title bar, never catching a click.
+   Keys crosses it and comes back; transform and opacity only. */
+.tb-lap {
+  position: fixed;
+  left: 0;
+  top: 0;
+  width: 100vw;
+  height: 34px;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 10002;
+}
+.tb-lap-keys {
+  position: absolute;
+  left: 0;
+  top: 5px;
+  width: 23px;
+  height: 22px;
+  transform: translateX(-60px);
+  animation: tb-lap 6.2s cubic-bezier(.45, .05, .55, .95) forwards;
+}
+.tb-lap--from-right .tb-lap-keys {
+  left: auto;
+  right: 0;
+  animation-name: tb-lap-rtl;
+}
+.tb-lap-bob { animation: tb-bob .72s ease-in-out infinite; transform-origin: 50% 60%; }
+
+@keyframes tb-lap {
+  0%   { transform: translateX(-60px) scaleX(1); }
+  48%  { transform: translateX(calc(100vw + 20px)) scaleX(1); }
+  50%  { transform: translateX(calc(100vw + 20px)) scaleX(-1); }
+  100% { transform: translateX(-60px) scaleX(-1); }
+}
+@keyframes tb-lap-rtl {
+  0%   { transform: translateX(60px) scaleX(-1); }
+  48%  { transform: translateX(calc(-100vw - 20px)) scaleX(-1); }
+  50%  { transform: translateX(calc(-100vw - 20px)) scaleX(1); }
+  100% { transform: translateX(60px) scaleX(1); }
+}
+@keyframes tb-bob {
+  0%, 100% { transform: translateY(0) rotate(-3deg); }
+  50%      { transform: translateY(3px) rotate(3deg); }
+}
+
+/* Reduced motion: Keys does not swim. He appears beside the word, still, and fades. */
+.tb-lap--still .tb-lap-keys {
+  left: 92px;
+  top: 6px;
+  transform: none;
+  animation: tb-still 2.2s ease-in-out forwards;
+}
+.tb-lap--still.tb-lap--from-right .tb-lap-keys { left: auto; right: 92px; }
+.tb-lap--still .tb-lap-bob { animation: none; }
+@keyframes tb-still {
+  0%   { opacity: 0; }
+  20%  { opacity: 1; }
+  80%  { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tb-lap-bob { animation: none; }
+}

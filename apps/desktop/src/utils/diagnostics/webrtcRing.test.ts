@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { WebrtcRing, WEBRTC_RING_SIZE, type TrackStatsInput } from './webrtcRing';
+import { WebrtcRing, WEBRTC_RING_SIZE, jitterBufferMs, type TrackStatsInput } from './webrtcRing';
 import { gatherTrackStats, type RoomLike } from './webrtcRoomAdapter';
 import type { StatsEntry } from '../streamStatsHud';
 
@@ -169,5 +169,15 @@ describe('gatherTrackStats (LiveKit room adapter)', () => {
 
     it('an empty / absent room yields nothing', async () => {
         expect(await gatherTrackStats({})).toEqual([]);
+    });
+});
+
+describe('jitterBufferMs (inbound audio jitter-buffer delay, ms)', () => {
+    it('is the interval average from the cumulative counters', () => {
+        // jitterBufferDelay is summed per emitted SAMPLE: 48000 samples each waiting 60 ms.
+        expect(jitterBufferMs({ jbDelay: 10, jbEmitted: 48_000 }, 10 + 48_000 * 0.06, 96_000)).toBeCloseTo(60);
+        expect(jitterBufferMs(undefined, 120, 2000)).toBeCloseTo(60);
+        expect(jitterBufferMs(undefined, undefined, 10)).toBeUndefined();
+        expect(jitterBufferMs({ jbDelay: 5, jbEmitted: 100 }, 5, 100)).toBeCloseTo(50);
     });
 });

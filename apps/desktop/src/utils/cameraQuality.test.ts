@@ -148,7 +148,8 @@ describe('decideCameraCodec — decision table', () => {
         // pref, hw, gpus, hwFailed, codec, profile
         ['auto', allHw, intel, false, 'h264', 'cb'],
         ['auto', allHw, nvidia, false, 'h264', 'high'],       // MF skips NVIDIA for CB
-        ['auto', allHw, nvPlusIntel, false, 'h264', 'cb'],    // Intel's encoder takes CB
+        ['auto', allHw, nvPlusIntel, false, 'h264', 'high'],  // NVIDIA primary: MF skips it for CB, nothing else takes over
+        ['auto', allHw, [{ vendor: 'Intel' }, { vendor: 'NVIDIA' }], false, 'h264', 'cb'], // Optimus: Intel primary encodes CB
         ['auto', highOnly, nvidia, false, 'h264', 'high'],    // the owner's RTX 2080 Ti
         ['auto', highOnly, intel, false, 'h264', 'high'],     // CB not HW, High is
         ['auto', none, intel, false, 'vp8', undefined],
@@ -282,9 +283,9 @@ describe('AMD (and mixed-vendor) machines get a sane camera encoder', () => {
         const d = decideCameraCodec('auto', { h264: false, h264High: true, vp8: false }, [{ vendor: 'NVIDIA' }, { vendor: 'AMD' }]);
         expect(d).toMatchObject({ codec: 'h264', h264Profile: 'high', hardware: true });
     });
-    it('NVIDIA + AMD where CB IS hardware (AMD\'s encoder) → CB, not the High-only route', () => {
+    it('NVIDIA + AMD where CB PROBES hardware → High: on the owner\'s box that CB ran on OpenH264 (staging.174)', () => {
         const d = decideCameraCodec('auto', HW_CB, [{ vendor: 'NVIDIA' }, { vendor: 'AMD' }]);
-        expect(d).toMatchObject({ h264Profile: 'cb', hardware: true });
+        expect(d).toMatchObject({ codec: 'h264', h264Profile: 'high', hardware: true });
     });
     it('an AMD card with no usable hardware H.264 → VP8, exactly what every camera did before', () => {
         expect(decideCameraCodec('auto', { h264: false, h264High: false, vp8: false }, AMD)).toMatchObject({ codec: 'vp8' });

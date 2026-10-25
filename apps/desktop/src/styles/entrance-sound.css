@@ -1,0 +1,44 @@
+/* Settings > Personalize > Calls > Entrance sound > Custom (CustomEntranceSound.tsx).
+   Same family as settings-ui.css: deep panel, hairline border, lume focus, 4px scale. */
+
+.ces-panel {
+  display: flex; flex-direction: column; gap: 12px;
+  margin: 0 0 12px; padding: 12px 16px;
+  border-radius: 14px; background: var(--cl-deep); border: 1px solid rgba(255, 255, 255, .08);
+}
+.ces-panel--status { gap: 8px; }
+.ces-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; min-width: 0; }
+.ces-title {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 13px; font-weight: 700; color: var(--cl-text);
+}
+.ces-meta { flex: none; font: 600 11px/1.2 var(--cl-font-mono); color: var(--cl-faint); font-variant-numeric: tabular-nums; }
+.ces-hint { margin: 0; font-size: 12px; line-height: 1.4; color: var(--cl-faint); }
+.ces-hint--strong { color: var(--cl-muted); }
+.ces-error { margin: 0; font-size: 12px; line-height: 1.4; color: var(--cl-flash); }
+.ces-empty { display: flex; flex-direction: column; gap: 8px; }
+.ces-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+
+/* waveform strip: bars + the chosen window */
+.ces-strip {
+  position: relative; height: 56px; border-radius: 10px; overflow: hidden; cursor: pointer;
+  background: var(--cl-raise); border: 1px solid rgba(255, 255, 255, .08);
+}
+.ces-panel[aria-busy="true"] .ces-strip { cursor: progress; }
+.ces-wave { position: absolute; inset: 4px 0; width: 100%; height: calc(100% - 8px); }
+.ces-bar { fill: var(--cl-faint); opacity: .45; }
+.ces-bar--on { fill: var(--cl-lume); opacity: 1; }
+.ces-sel {
+  position: absolute; top: 0; bottom: 0; border-radius: 8px; pointer-events: none;
+  background: rgba(37, 224, 200, .1); box-shadow: inset 0 0 0 1.5px var(--cl-lume);
+  transition: left 120ms ease-out, width 120ms ease-out;
+}
+
+.ces-sliders { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px 24px; }
+.ces-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.ces-field-label { font-size: 12px; color: var(--cl-faint); }
+.ces-field-label b { margin-left: 4px; font-weight: 700; color: var(--cl-text); font-variant-numeric: tabular-nums; }
+
+@media (prefers-reduced-motion: reduce) {
+  .ces-sel { transition: none; }
+}

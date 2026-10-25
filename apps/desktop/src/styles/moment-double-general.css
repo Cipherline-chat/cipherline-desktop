@@ -1,0 +1,49 @@
+/* "#general, meet #general." — components/moments/views/DoubleGeneralMoment.tsx.
+   6.9 s, transform/opacity only. Phases: notice 0–0.5, main 0.5–2.6,
+   read 2.6–5.3, hold 5.3–6.3, exit 6.3–6.9. */
+.mo-dg-l, .mo-dg-r { position: absolute; top: -40px; }
+.mo-dg-l {
+  left: -185px;
+  animation: mo-dg-in-l 1.3s .5s both, mo-dg-out-l var(--mo-exit-dur, .6s) cubic-bezier(.45, 0, .55, 1) var(--mo-exit, 6.3s) forwards;
+}
+.mo-dg-r {
+  left: 15px;
+  animation: mo-dg-in-r 1.3s .5s both, mo-dg-out-r var(--mo-exit-dur, .6s) cubic-bezier(.45, 0, .55, 1) var(--mo-exit, 6.3s) forwards;
+}
+/* Travel in (ease-in-out), bump at ~1.15 s, spring apart, settle by 1.8 s. */
+@keyframes mo-dg-in-l {
+  0%   { transform: translateX(-50vw); animation-timing-function: cubic-bezier(.45, 0, .7, 1); }
+  50%  { transform: translateX(14px); animation-timing-function: cubic-bezier(.2, .8, .3, 1); }
+  68%  { transform: translateX(-26px); animation-timing-function: ease-in-out; }
+  100% { transform: none; }
+}
+@keyframes mo-dg-in-r {
+  0%   { transform: translateX(50vw); animation-timing-function: cubic-bezier(.45, 0, .7, 1); }
+  50%  { transform: translateX(-14px); animation-timing-function: cubic-bezier(.2, .8, .3, 1); }
+  68%  { transform: translateX(26px); animation-timing-function: ease-in-out; }
+  100% { transform: none; }
+}
+@keyframes mo-dg-out-l { from { transform: none; } to { transform: translateX(-40px); } }
+@keyframes mo-dg-out-r { from { transform: none; } to { transform: translateX(40px); } }
+/* 1.9–3.9: sizing each other up, then the shrug (a squash and a pop). */
+.mo-dg-tilt { transform-origin: 50% 100%; animation: mo-dg-look 2s ease-in-out 1.9s both; }
+.mo-dg-tilt-r { animation-name: mo-dg-look-r; }
+@keyframes mo-dg-look {
+  0% { transform: none; } 20% { transform: rotate(-7deg); } 40% { transform: rotate(5deg); }
+  60% { transform: none; } 72% { transform: scale(1.04, .92); } 84% { transform: translateY(-14px) scale(.98, 1.04); } 100% { transform: none; }
+}
+@keyframes mo-dg-look-r {
+  0% { transform: none; } 20% { transform: rotate(7deg); } 40% { transform: rotate(-5deg); }
+  60% { transform: none; } 72% { transform: scale(1.04, .92); } 84% { transform: translateY(-14px) scale(.98, 1.04); } 100% { transform: none; }
+}
+.mo-dg-bonk {
+  position: absolute; left: -10px; top: -96px; font: 700 40px var(--cl-font-display, 'Fredoka', sans-serif);
+  color: var(--cl-glow, #FFC94D); opacity: 0;
+  animation: mo-dg-bonk .9s ease-out 1.1s both;
+}
+@keyframes mo-dg-bonk { 0% { transform: scale(.3); opacity: 0; } 25% { transform: scale(1.3); opacity: 1; } 60% { transform: scale(1); opacity: 1; } 100% { transform: translateY(-20px); opacity: 0; } }
+.mo-dg .mo-dg-pill {
+  top: 140px; font-size: 22px; padding: 10px 24px;
+  animation: mo-pill-in .5s cubic-bezier(.2, .8, .3, 1) 2.1s both;
+}
+.mo-dg-pill b { color: var(--cl-lume, #25E0C8); }

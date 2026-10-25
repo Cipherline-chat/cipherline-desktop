@@ -326,6 +326,55 @@ export function saveAll(kind: MessageKind, userId: string, map: ThreadMap): void
 }
 
 /**
+ * Persist ONLY the named threads, yielding to the event loop between them.
+ *
+ * For the retention sweep's commit, which can have hundreds of pruned threads
+ * to write after a wake (everything that crossed its window while the machine
+ * slept): saveAll wrote them all in ONE task - a JSON.stringify per thread, a
+ * 1 s+ freeze (`retention:sweep` in beta diagnostics). Same write per thread as
+ * saveAll, but `yieldIfDue` is awaited between threads so a time-sliced caller
+ * (sweepCommit.makeSliceYield) hands the thread back every few ms.
+ *
+ * Two differences from saveAll, both deliberate:
+ *   - it never deletes anything (the caller names what changed; threads that
+ *     vanished are the persist effect's business);
+ *   - because state can move on while it yields, `isCurrent` is asked before
+ *     each write, and a thread that has changed since is SKIPPED - writing the
+ *     stale pruned copy would clobber a newer message the persist effect
+ *     already stored. The skipped thread is picked up by the persist effect and
+ *     the next sweep, never lost.
+ */
+export async function saveThreadsSliced(
+    kind: MessageKind,
+    userId: string,
+    entries: ReadonlyArray<readonly [string, ThreadMap[string]]>,
+    opts: {
+        yieldIfDue?: () => Promise<void>;
+        isCurrent?: (id: string, msgs: ThreadMap[string]) => boolean;
+    } = {},
+): Promise<{ written: number; skipped: number }> {
+    const prefix = threadPrefix(kind, userId);
+    let written = 0;
+    let skipped = 0;
+    for (const [id, msgs] of entries) {
+        if (opts.yieldIfDue) await opts.yieldIfDue();
+        if (opts.isCurrent && !opts.isCurrent(id, msgs)) { skipped++; continue; }
+        const key = prefix + id;
+        if (lastWritten.get(key) === msgs) continue;   // referentially unchanged
+        try {
+            secureLocalStore.setItem(key, JSON.stringify(msgs));
+            lastWritten.set(key, msgs);
+            noteWrite(key);
+            markDetachable(key);
+            written++;
+        } catch (e) {
+            console.error(`[messageStore] failed to persist thread ${id}`, e);
+        }
+    }
+    return { written, skipped };
+}
+
+/**
  * Merge `incoming` messages into this account's ON-DISK threads, one thread
  * record per conversation it touches, and return the storage keys written.
  *

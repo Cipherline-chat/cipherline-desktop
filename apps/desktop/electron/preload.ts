@@ -1,7 +1,8 @@
-import { contextBridge, ipcRenderer } from 'electron';
+import { contextBridge, ipcRenderer, sharedTexture } from 'electron';
 import type { UpdateState } from './updater-state';
 import type { LinkGrantPayload } from './link-grant';
 import type { StagingLockStatus, StagingUnlockResult } from './staging-lock';
+import type { DriveManifestFile as DriveBackupFile, DriveBackupTarget } from './drive-api';
 // webUtils was added in Electron 32 but is absent from the bundled .d.ts in
 // this version of the electron package. Access it via require with a manual
 // type annotation so tsc doesn't reject the import.
@@ -33,6 +34,30 @@ const MACOS_MAJOR: number | null = (() => {
         return Number.isFinite(major) && major > 0 ? major : null;
     } catch { return null; }
 })();
+
+// ── HDR screen-share frames (electron/hdr-share.ts) ─────────────────────────
+// Main hands each tone-mapped frame over as an imported shared texture. The
+// receiver is registered once, here, so a frame that arrives after the
+// renderer stopped listening is still released (main's send would otherwise
+// time out and the native slot stay busy). The VideoFrame passed to the page
+// is the SAME blink object (contextBridge hands VideoFrame references across
+// worlds), so ownership moves with it: the page closes it (writing it into a
+// MediaStreamTrackGenerator does), never this side.
+let hdrFrameReceiver: ((frame: VideoFrame, session: number) => void) | null = null;
+try {
+    sharedTexture?.setSharedTextureReceiver(async (data, ...args) => {
+        const imported = data.importedSharedTexture;
+        try {
+            const cb = hdrFrameReceiver;
+            if (cb) {
+                const frame = imported.getVideoFrame();
+                try { cb(frame, Number(args[0])); } catch { try { frame.close(); } catch { /* closed */ } }
+            }
+        } finally {
+            imported.release();
+        }
+    });
+} catch { /* an Electron without sharedTexture: the HDR path reports no frames and falls back */ }
 
 // ── File-path cache ─────────────────────────────────────────────────────────
 // Problem: when the renderer passes a File through contextBridge.exposeInMainWorld,
@@ -256,8 +281,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
         /** Sender avatar as a small PNG data URL — validated in main (electron/notificationIcon.ts). */
         iconDataUrl?: string;
     }): Promise<void> => ipcRenderer.invoke('notif:show', payload),
-    notifSetBadge: (count: number): Promise<void> =>
-        ipcRenderer.invoke('notif:set-badge', count),
+    notifSetBadge: (count: number, hasMention?: boolean): Promise<void> =>
+        ipcRenderer.invoke('notif:set-badge', count, hasMention),
     notifFlashTaskbar: (): Promise<void> =>
         ipcRenderer.invoke('notif:flash-taskbar'),
     notifCloseAll: (): Promise<void> =>
@@ -290,7 +315,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     notifReplyReady: (): Promise<{ pending: number }> =>
         ipcRenderer.invoke('notif:reply-ready'),
     /** Push the current unread count + DND + status to main so the tray menu + badge stay in sync. */
-    trayUpdateState: (state: { unreadCount: number; dndActive: boolean; dndManual: boolean; status: string; screenLockAvailable?: boolean }): Promise<void> =>
+    trayUpdateState: (state: { unreadCount: number; hasMention?: boolean; dndActive: boolean; dndManual: boolean; status: string; screenLockAvailable?: boolean }): Promise<void> =>
         ipcRenderer.invoke('tray:update-state', state),
     /** Push call + voice state (speaking/muted/deafened) so the tray icon shows the right indicator. */
     traySetCallSpeaking: (inCall: boolean, isSpeaking: boolean, isMuted: boolean, isDeafened: boolean): Promise<void> =>
@@ -325,13 +350,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
         ipcRenderer.invoke('gdrive:auth-status'),
     gdriveDisconnect: (): Promise<void> =>
         ipcRenderer.invoke('gdrive:disconnect'),
-    gdriveGetToken: (): Promise<string | null> =>
-        ipcRenderer.invoke('gdrive:get-token'),
 
     // Screenshare overrides
     getDesktopSources: (types?: Array<'window' | 'screen'>, opts?: { thumbnails?: boolean }) =>
         ipcRenderer.invoke('desktop-capturer-get-sources', types, opts),
-    resolveDesktopSource: (sourceId: string | null, withAudio?: boolean) => ipcRenderer.invoke('desktop-capturer-resolve', sourceId, withAudio),
+    // Screen / window / app-audio capture needs a main-process-minted grant
+    // (electron/capture-consent.ts): the picker asks for one when the user
+    // chooses a source, and the capture that follows presents the token.
+    // Without a valid one main asks the user in a native dialog.
+    captureMintGrant: (sourceId: string, audio: boolean): Promise<{ token: string }> =>
+        ipcRenderer.invoke('capture:mint-grant', sourceId, audio),
+    resolveDesktopSource: (sourceId: string | null, withAudio?: boolean, grantToken?: string) =>
+        ipcRenderer.invoke('desktop-capturer-resolve', sourceId, withAudio, grantToken),
     onShowScreensharePicker: (callback: () => void): (() => void) => {
         ipcRenderer.on('show-screenshare-picker', callback);
         return () => ipcRenderer.removeListener('show-screenshare-picker', callback);
@@ -361,8 +391,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
         ipcRenderer.invoke('audio:get-own-pid'),
     isAudioCaptureSupported: (): Promise<boolean> =>
         ipcRenderer.invoke('audio:is-capture-supported'),
-    startWindowAudioCapture: (pid: number, mode: 'include' | 'exclude' = 'include'): Promise<boolean> =>
-        ipcRenderer.invoke('audio:start-window-capture', pid, mode),
+    startWindowAudioCapture: (pid: number, mode: 'include' | 'exclude' = 'include', grantToken?: string): Promise<boolean> =>
+        ipcRenderer.invoke('audio:start-window-capture', pid, mode, grantToken),
     stopWindowAudioCapture: (): Promise<void> =>
         ipcRenderer.invoke('audio:stop-window-capture'),
     onWindowAudioChunk: (
@@ -406,6 +436,25 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // capture timing. Both read-only. Shapes: src/env.d.ts.
     getScreenShareDiagnostics: (sourceId: string): Promise<unknown> =>
         ipcRenderer.invoke('screenshare:get-diagnostics', sourceId),
+    // HDR screen shares (Windows): our own tone-mapped capture of a screen in
+    // HDR mode (electron/hdr-share.ts, src/utils/hdrSharePipeline.ts).
+    hdrShare: {
+        probe: (sourceId: string): Promise<unknown> => ipcRenderer.invoke('share:hdr-probe', sourceId),
+        start: (sourceId: string, grantToken: string | undefined, opts: { width: number; height: number; maxFps: number }): Promise<unknown> =>
+            ipcRenderer.invoke('share:hdr-start', sourceId, grantToken, opts),
+        stop: (session?: number): Promise<void> => ipcRenderer.invoke('share:hdr-stop', session),
+        stats: (): Promise<unknown> => ipcRenderer.invoke('share:hdr-stats'),
+        /** One receiver at a time; null stops delivering (frames are then released unseen). */
+        setFrameReceiver: (cb: ((frame: VideoFrame, session: number) => void) | null): void => {
+            hdrFrameReceiver = typeof cb === 'function' ? cb : null;
+        },
+        onEnded: (cb: ((session: number, reason: string) => void) | null): void => {
+            ipcRenderer.removeAllListeners('share:hdr-ended');
+            if (typeof cb === 'function') {
+                ipcRenderer.on('share:hdr-ended', (_e, session: unknown, reason: unknown) => cb(Number(session), String(reason ?? 'ended')));
+            }
+        },
+    },
     // `frames` (optional): summarise only the newest N polls (10–300).
     getScreenCaptureTiming: (frames?: number): Promise<unknown> =>
         ipcRenderer.invoke('screenshare:get-capture-timing', frames),
@@ -438,6 +487,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // it); returns no titles and no handles (electron/share-foreground.ts).
     getShareForegroundInfo: (sourceId?: string): Promise<unknown> =>
         ipcRenderer.invoke('share:get-foreground-info', sourceId),
+    // Quick Screen Share: the capture source id of the window that was in front
+    // when the global shortcut was pressed (captured by main at that moment),
+    // or null = use the fallback. Takes no arguments by design.
+    getQuickShareForegroundSource: (): Promise<string | null> =>
+        ipcRenderer.invoke('share:quick-share-foreground'),
     // Which of these `window:` sources is the running program `exe`? Resolved
     // natively in main; only the winning source id comes back.
     findWindowSourceByExe: (exe: string, windowSourceIds: string[]): Promise<string | null> =>
@@ -483,6 +537,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     perfGetLog: (): Promise<Array<{ at: number; source: 'main' | 'renderer'; ms: number; activity: string }>> =>
         ipcRenderer.invoke('perf:get-log'),
     perfClear: (): Promise<void> => ipcRenderer.invoke('perf:clear'),
+    /** A call-engine breadcrumb kept by MAIN, so it survives a renderer
+     *  crash (src/utils/crashBreadcrumbs.ts). Static kind + scalar detail. */
+    perfBreadcrumb: (name: string, detail: string): void => {
+        ipcRenderer.send('perf:breadcrumb', String(name).slice(0, 48), String(detail).slice(0, 240));
+    },
     /** "Run a 60-second freeze capture": main lowers its stall threshold to
      *  100 ms and samples process CPU/memory every 2 s for `ms`. */
     perfStartCapture: (ms?: number): Promise<void> => ipcRenderer.invoke('perf:start-capture', ms),
@@ -569,6 +628,26 @@ contextBridge.exposeInMainWorld('electronAPI', {
         ipcRenderer.invoke('backup:staging-dir'),
     // Drive transfers run in the main process (resumable, streamed from
     // disk, checksum-verified) — see electron/driveTransfer.ts.
+    // Drive REST access also lives in the main process: the renderer never
+    // holds a Drive token. These are the only Drive lookups it can ask for
+    // (electron/drive-api.ts validates every argument).
+    gdriveResolveFolder: (storedFolderId: string | null | undefined, create: boolean): Promise<{ folderId: string | null; recovered: boolean }> =>
+        ipcRenderer.invoke('gdrive:resolve-folder', storedFolderId, create),
+    gdriveEnsureFolder: (): Promise<{ folderId: string }> =>
+        ipcRenderer.invoke('gdrive:ensure-folder'),
+    gdriveResolveBackupTarget: (storedFolderId: string | null | undefined, fileName: string): Promise<DriveBackupTarget> =>
+        ipcRenderer.invoke('gdrive:resolve-backup-target', storedFolderId, fileName),
+    gdriveLocateBackup: (storedFolderId: string | null | undefined, fileBase: string | null | undefined): Promise<{
+        file: DriveBackupFile | null; folderId: string | null; recovered: boolean; inFolder: boolean;
+    }> => ipcRenderer.invoke('gdrive:locate-backup', storedFolderId, fileBase),
+    gdriveStatFile: (fileId: string): Promise<{ size: number; modifiedTime?: string } | null> =>
+        ipcRenderer.invoke('gdrive:stat-file', fileId),
+    gdriveFindFile: (folderId: string, fileName: string): Promise<DriveBackupFile | null> =>
+        ipcRenderer.invoke('gdrive:find-file', folderId, fileName),
+    gdriveListFolder: (folderId: string): Promise<DriveBackupFile[]> =>
+        ipcRenderer.invoke('gdrive:list-folder', folderId),
+    gdriveDeleteFolderFiles: (folderId: string, names: string[]): Promise<{ deleted: number; failed: number }> =>
+        ipcRenderer.invoke('gdrive:delete-folder-files', folderId, names),
     gdriveUploadFile: (folderId: string, fileName: string, filePath: string, existingFileId?: string): Promise<{ id: string; size: number; md5Checksum: string }> =>
         ipcRenderer.invoke('gdrive:upload-file', folderId, fileName, filePath, existingFileId),
     gdriveDownloadFile: (fileId: string, fileName: string): Promise<{ path: string; size: number }> =>
@@ -632,6 +711,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
         return () => ipcRenderer.removeListener('game:stopped', listener);
     },
     getCurrentGame: (): Promise<{ name: string; processName: string } | null> => ipcRenderer.invoke('game:get-current'),
+
+    // "Listening to ..." — what music this machine is playing, from the OS
+    // media session (electron/media-session.ts). Asked only while the user has
+    // switched sharing on; `mediaStop` ends the Windows helper at once.
+    getNowPlaying: (opts: { includeBrowser: boolean }): Promise<unknown> =>
+        ipcRenderer.invoke('media:now-playing', { includeBrowser: opts?.includeBrowser === true }),
+    mediaStop: () => ipcRenderer.send('media:stop'),
 
     // Game settings — custom games, ignored processes, and running process list
     getRunningProcesses: (): Promise<string[]> => ipcRenderer.invoke('game:get-processes'),

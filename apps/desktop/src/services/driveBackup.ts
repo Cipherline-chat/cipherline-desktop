@@ -28,7 +28,10 @@
  * ends up holding exactly one backup file.
  */
 
+import { beginKeysActivity } from '../utils/keysBeats';
 import secureLocalStore from '../utils/secureLocalStore';
+import { backupFailureReason } from '../utils/backupFailureReason';
+import { reportBeta } from '../utils/betaDiagnostics/reporter';
 import { importLocalHistory, decryptBackup } from '../utils/crypto';
 import {
     recoverBackupKey, decryptChunk, reassembleVault, isIncrementalManifest,
@@ -48,11 +51,7 @@ import {
 
 export type { BackupStaleWarning } from './backupGenerationFloor';
 
-import {
-    DRIVE_FILES, FOLDER_MIME, APP_BACKUP_FOLDER, escapeDriveQuery,
-    isFolderAccessible, ensureAppFolder, resolveDriveFolder,
-    type DriveFolderResolution,
-} from '../utils/driveFolders';
+import { APP_BACKUP_FOLDER, resolveDriveFolder, type DriveFolderResolution } from '../utils/driveFolders';
 
 export { resolveDriveFolder };
 export type { DriveFolderResolution };
@@ -91,6 +90,9 @@ export type BackupPhase =
 export interface DriveBackupProgress {
     phase: BackupPhase;
     message?: string;
+    /** Which destination a `local` / `upload` / `verify` event is about, so the UI
+     *  can show one progress bar per destination. Absent on whole-run events. */
+    destination?: DestinationLabel;
     attachments?: { done: number; total: number };
     /** Bytes moved so far for a Drive upload/download. */
     transfer?: { done: number; total: number };
@@ -212,77 +214,26 @@ export function isLegacyChunkedFile(name: string, basePattern: string): boolean 
         || /^chunk-[0-9a-f]{64}\.enc$/.test(name);
 }
 
-// ── Drive REST helpers (renderer-side; Drive API supports CORS) ──────────────
+// ── Drive access ────────────────────────────────────────────────────────────
+// The renderer holds no Drive token and makes no Drive REST call. Every lookup
+// (find/create the app folder, locate a backup, stat/list/delete backup files)
+// is a purpose-specific operation in the main process (electron/drive-api.ts)
+// reached through window.electronAPI.gdrive*; transfers go through
+// gdriveUploadFile / gdriveDownloadFile (electron/driveTransfer.ts).
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped Drive REST JSON
-async function driveGet(token: string, query: string): Promise<any> {
-    const res = await fetch(`${DRIVE_FILES}?${query}&spaces=drive`, { headers: { Authorization: `Bearer ${token}` } });
-    if (!res.ok) throw new Error(`Drive query failed: ${res.status}`);
-    return res.json();
-}
-export interface DriveManifestFile {
-    id: string;
-    name: string;
-    createdTime?: string;
-    modifiedTime?: string;
-    size?: string;
-    /** Folder(s) the file sits in. Only requested by the anywhere-in-Drive
-     *  lookups, which is where the parent isn't already known. */
-    parents?: string[];
-    /** Whether this app may write the file; undefined = not asked. */
-    canEdit?: boolean;
-}
-async function findFile(token: string, parentId: string, name: string): Promise<DriveManifestFile | null> {
-    const q = encodeURIComponent(`name='${escapeDriveQuery(name)}' and '${escapeDriveQuery(parentId)}' in parents and trashed=false`);
-    const data = await driveGet(token, `q=${q}&fields=files(id,name,modifiedTime,createdTime,size)`);
-    const f = data.files?.[0];
-    return f ? { id: f.id, name: f.name, modifiedTime: f.modifiedTime, createdTime: f.createdTime, size: f.size } : null;
-}
+/** A Drive backup file as the main process reports it. */
+export type DriveManifestFile = DriveBackupFile;
 
-const ANYWHERE_FIELDS = encodeURIComponent('files(id,name,modifiedTime,createdTime,size,parents,capabilities/canEdit)');
-const NEWEST_FIRST = encodeURIComponent('modifiedTime desc');
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped Drive REST file resource
-const toManifestFile = (f: any): DriveManifestFile => ({
-    id: f.id, name: f.name, modifiedTime: f.modifiedTime, createdTime: f.createdTime, size: f.size,
-    parents: Array.isArray(f.parents) ? f.parents : undefined,
-    canEdit: typeof f.capabilities?.canEdit === 'boolean' ? f.capabilities.canEdit : undefined,
-});
-
-/**
- * The backup file named exactly `name`, wherever in Drive it sits (newest
- * first if several). Under `drive.file` this can only match files THIS app
- * created, which is precisely the point: a backup written into a folder the
- * user chose back when the app could browse is still the app's own file, so it
- * is still found even though its folder is no longer visible.
- */
-async function findFileAnywhere(token: string, name: string): Promise<DriveManifestFile | null> {
-    const q = encodeURIComponent(`name='${escapeDriveQuery(name)}' and mimeType!='${FOLDER_MIME}' and trashed=false`);
-    const data = await driveGet(token, `q=${q}&orderBy=${NEWEST_FIRST}&fields=${ANYWHERE_FIELDS}&pageSize=10`);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped Drive REST JSON
-    const f = (data.files as any[] | undefined)?.find(x => x?.name === name);
-    return f ? toManifestFile(f) : null;
+const BRIDGE_MISSING = 'Desktop bridge not loaded. Fully quit and re-run the app.';
+function driveBridge() {
+    const a = window.electronAPI;
+    if (!a?.gdriveLocateBackup || !a.gdriveResolveBackupTarget || !a.gdriveEnsureFolder) throw new Error(BRIDGE_MISSING);
+    return a;
 }
-
-/** Anywhere-in-Drive twin of findDriveBackup: the exact `<base>.enc`, else the
- *  newest legacy dated manifest. Restore's last resort when the folder lookup
- *  came up empty. */
-async function findBackupAnywhere(token: string, fileBase?: string | null): Promise<DriveManifestFile | null> {
-    const exact = await findFileAnywhere(token, backupFileName(fileBase));
-    if (exact) return exact;
-    const q = encodeURIComponent(`name contains '${escapeDriveQuery(manifestBasePattern(fileBase))}' and mimeType!='${FOLDER_MIME}' and trashed=false`);
-    const data = await driveGet(token, `q=${q}&orderBy=${NEWEST_FIRST}&fields=${ANYWHERE_FIELDS}&pageSize=100`);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped Drive REST JSON
-    return selectLatestManifest(((data.files || []) as any[]).map(toManifestFile), manifestBasePattern(fileBase));
-}
-async function listDriveFiles(token: string, folderId: string): Promise<DriveManifestFile[]> {
-    const q = encodeURIComponent(`'${escapeDriveQuery(folderId)}' in parents and trashed=false`);
-    const data = await driveGet(token, `q=${q}&fields=files(id,name,createdTime,modifiedTime,size)&pageSize=1000`);
-    return data.files || [];
-}
-async function downloadDriveFileById(token: string, fileId: string): Promise<Uint8Array | null> {
-    const res = await fetch(`${DRIVE_FILES}/${fileId}?alt=media`, { headers: { Authorization: `Bearer ${token}` } });
-    if (!res.ok) return null;
-    return new Uint8Array(await res.arrayBuffer());
+/** Throws the user-facing "not connected" error unless a Google account is linked. */
+async function requireDriveLinked(): Promise<void> {
+    const status = await window.electronAPI?.gdriveAuthStatus?.();
+    if (!status?.linked) throw new Error('Google Drive is not connected.');
 }
 
 /**
@@ -303,45 +254,27 @@ export type DriveBackupTarget =
     | { kind: 'file'; folderId: string; file: DriveManifestFile };
 
 export async function resolveDriveBackupTarget(
-    token: string, storedFolderId: string | null | undefined, fileName: string,
+    storedFolderId: string | null | undefined, fileName: string,
 ): Promise<DriveBackupTarget> {
-    if (storedFolderId) {
-        if (await isFolderAccessible(token, storedFolderId)) return { kind: 'folder', folderId: storedFolderId, recovered: false };
-        // Stored folder is out of reach. Keep writing the backup file the app
-        // already owns, if there is one it may still edit; `folderId` stays the
-        // stored id so fingerprints and the generation floor keep their key.
-        const file = await findFileAnywhere(token, fileName);
-        if (file && file.canEdit !== false) return { kind: 'file', folderId: storedFolderId, file };
-    }
-    return { kind: 'folder', folderId: await ensureAppFolder(token), recovered: !!storedFolderId };
+    return driveBridge().gdriveResolveBackupTarget(storedFolderId ?? null, fileName);
 }
 
 /**
- * Pick the newest chunked-era manifest out of a Drive file listing — the
- * restore fallback when no `<base>.enc` exists yet. `name contains` is a
- * substring match server-side, so re-filter on a real prefix here; also
- * drops chunk files (`chunk-<hash>.enc`) defensively.
+ * Pull a Drive file into the staging dir (main process) and read it whole —
+ * legacy chunk fetches and the like need the bytes in memory. null when the
+ * file is gone or no longer ours (404/403).
  */
-export function selectLatestManifest(
-    files: DriveManifestFile[], basePattern: string,
-): DriveManifestFile | null {
-    const manifests = (files || []).filter(f =>
-        f && typeof f.name === 'string' &&
-        f.name.startsWith(basePattern) &&
-        f.name.endsWith('.enc') &&
-        !f.name.startsWith('chunk-'),
-    );
-    if (!manifests.length) return null;
-    const stamp = (f: DriveManifestFile) => Date.parse(f.modifiedTime || f.createdTime || '') || 0;
-    return manifests.reduce((best, f) => (stamp(f) > stamp(best) ? f : best));
-}
-
-/** The backup file to restore from: the single `<base>.enc` if present,
- *  otherwise the newest legacy dated manifest. */
-async function findDriveBackup(token: string, folderId: string, fileBase?: string | null): Promise<DriveManifestFile | null> {
-    const exact = await findFile(token, folderId, backupFileName(fileBase));
-    if (exact) return exact;
-    return selectLatestManifest(await listDriveFiles(token, folderId), manifestBasePattern(fileBase));
+async function downloadDriveFileById(file: { id: string; name: string }): Promise<Uint8Array | null> {
+    const api = window.electronAPI;
+    if (!api?.gdriveDownloadFile) throw new Error(BRIDGE_MISSING);
+    let stagedPath: string;
+    try { stagedPath = (await api.gdriveDownloadFile(file.id, file.name)).path; }
+    catch (err) {
+        if (/HTTP (403|404)\b/.test(errorMessage(err) || '')) return null;
+        throw err;
+    }
+    try { return await readWholeLocalFile(stagedPath); }
+    finally { api.deleteFile(stagedPath).catch(() => {}); }
 }
 
 // ── Destinations ────────────────────────────────────────────────────────────
@@ -471,7 +404,7 @@ function localDestination(dir: string): SingleFileDestination {
  * ID, new revision), which is what keeps it ONE file.
  */
 function driveDestination(
-    token: string, folderId: string,
+    folderId: string,
     onTransfer?: (p: { done: number; total: number }) => void,
     /** An existing backup file to keep updating in place instead of looking in
      *  `folderId` (see DriveBackupTarget). */
@@ -479,7 +412,7 @@ function driveDestination(
 ): SingleFileDestination & { fellBackToFolderId?: string } {
     const api = () => {
         const a = window.electronAPI;
-        if (!a?.backupStagingDir || !a.gdriveUploadFile) throw new Error('Desktop bridge not loaded. Fully quit and re-run the app.');
+        if (!a?.backupStagingDir || !a.gdriveUploadFile || !a.gdriveStatFile || !a.gdriveFindFile) throw new Error(BRIDGE_MISSING);
         return a;
     };
     let pin = pinnedFile ?? null;
@@ -489,21 +422,13 @@ function driveDestination(
         label: 'drive',
         supportsUpdate: false,
         stat: async (fileName) => {
+            const a = api();
             if (pin && isPinned(fileName)) {
-                const res = await fetch(`${DRIVE_FILES}/${pin.id}?fields=${encodeURIComponent('id,size,modifiedTime,trashed')}`, {
-                    headers: { Authorization: `Bearer ${token}` },
-                });
-                if (res.ok) {
-                    const f = await res.json();
-                    if (f.trashed === true) return null;
-                    return { size: f.size ? parseInt(f.size, 10) : 0, modifiedTime: f.modifiedTime };
-                }
-                // Gone or no longer ours: report absent; the write below then
-                // takes the fallback path rather than failing the run.
-                if (res.status === 403 || res.status === 404) return null;
-                throw new Error(`Drive query failed: ${res.status}`);
+                // null = gone or no longer ours: report absent; the write below
+                // then takes the fallback path rather than failing the run.
+                return a.gdriveStatFile(pin.id);
             }
-            const f = await findFile(token, folder, fileName);
+            const f = await a.gdriveFindFile(folder, fileName);
             return f ? { size: f.size ? parseInt(f.size, 10) : 0, modifiedTime: f.modifiedTime } : null;
         },
         openSink: async (fileName) => {
@@ -534,7 +459,7 @@ function driveDestination(
                                 // one case where the backup moves to the app folder.
                                 // Anything else (network, 5xx) is a real failure.
                                 if (!/HTTP (403|404)\b/.test(errorMessage(err) || '')) throw err;
-                                folder = await ensureAppFolder(token);
+                                folder = (await a.gdriveEnsureFolder()).folderId;
                                 pin = null;
                                 dest.fellBackToFolderId = folder;
                             }
@@ -557,27 +482,23 @@ function driveDestination(
         // just verified locally (or would have been) — nothing to re-download.
         verify: async () => {},
         openSource: async (fileName) => {
-            const f = pin && isPinned(fileName) ? pin : await findFile(token, folder, fileName);
+            const f = pin && isPinned(fileName) ? pin : (folder ? await api().gdriveFindFile(folder, fileName) : null);
             if (!f) return null;
-            const bytes = await downloadDriveFileById(token, f.id);
+            const bytes = await downloadDriveFileById(f);
             return bytes ? memorySource(bytes) : null;
         },
         // Legacy chunked-era leftovers are cleaned up only inside a folder the
         // app can see; a pinned file's (invisible) folder is left alone.
         listFiles: async () => {
-            if (pin) return [];
-            try { return (await listDriveFiles(token, folder)).map(f => f.name); } catch { return []; }
+            if (pin || !folder) return [];
+            try { return (await api().gdriveListFolder(folder)).map(f => f.name); } catch { return []; }
         },
         deleteFiles: async (names) => {
-            if (pin) return;
-            const want = new Set(names);
-            let files: DriveManifestFile[] = [];
-            try { files = await listDriveFiles(token, folder); } catch { return; }
-            const results = await Promise.allSettled(files.filter(f => want.has(f.name)).map(f =>
-                fetch(`${DRIVE_FILES}/${f.id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } })
-            ));
-            const failed = results.filter(r => r.status === 'rejected').length;
-            if (failed > 0) console.warn(`[backup] ${failed}/${results.length} old Drive backup file deletions failed`);
+            if (pin || !folder || names.length === 0) return;
+            try {
+                const { failed, deleted } = await api().gdriveDeleteFolderFiles(folder, names);
+                if (failed > 0) console.warn(`[backup] ${failed}/${failed + deleted} old Drive backup file deletions failed`);
+            } catch { /* best-effort cleanup */ }
         },
     };
     return dest;
@@ -599,6 +520,21 @@ export interface SingleFileRunOpts {
     /** Dead-space fraction above which an in-place update gives way to a
      *  compaction (fresh rewrite). Default 0.3. */
     compactAbove?: number;
+}
+
+/**
+ * runSingleFileBackup's rejection when every destination failed ON ITS OWN
+ * (stat / commit / verify) — as opposed to the shared encrypt-and-write pass
+ * failing. The message is unchanged (the joined per-destination messages);
+ * the map lets beta diagnostics classify each destination's own failure.
+ */
+export class AllDestinationsFailedError extends Error {
+    readonly destinationErrors: Partial<Record<DestinationLabel, string>>;
+    constructor(message: string, destinationErrors: Partial<Record<DestinationLabel, string>>) {
+        super(message);
+        this.name = 'AllDestinationsFailedError';
+        this.destinationErrors = destinationErrors;
+    }
 }
 
 /**
@@ -651,7 +587,7 @@ export async function runSingleFileBackup(opts: SingleFileRunOpts): Promise<{
     const finish = (attachments?: WriteRecordsResult) => {
         const errorEntries = Object.entries(errors);
         if (Object.keys(results).length === 0 && errorEntries.length > 0) {
-            throw new Error(errorEntries.map(([, msg]) => msg).join(' '));
+            throw new AllDestinationsFailedError(errorEntries.map(([, msg]) => msg).join(' '), { ...errors });
         }
         return { results, attachments, errors: errorEntries.length ? errors : undefined };
     };
@@ -736,10 +672,10 @@ export async function runSingleFileBackup(opts: SingleFileRunOpts): Promise<{
         // any other destination in this loop, before or after it.
         let committed: { size: number; path?: string } | undefined;
         try {
-            onProgress?.({ phase: d.label === 'local' ? 'local' : 'upload', message: d.label === 'local' ? 'Writing local backup…' : 'Uploading to Google Drive…' });
+            onProgress?.({ phase: d.label === 'local' ? 'local' : 'upload', destination: d.label, message: d.label === 'local' ? 'Writing local backup…' : 'Uploading to Google Drive…' });
             committed = await o.sink!.commit();
 
-            onProgress?.({ phase: 'verify', message: 'Verifying…' });
+            onProgress?.({ phase: 'verify', destination: d.label, message: 'Verifying…' });
             await d.verify(fileName, { password, fingerprint: plan.fingerprint });
 
             // The new file is confirmed good — retire the chunked-era files.
@@ -775,6 +711,9 @@ export async function runSingleFileBackup(opts: SingleFileRunOpts): Promise<{
  * once, and writes only to destinations whose file isn't already current.
  * At least one destination must be set.
  */
+/** A failure message → a reason CODE for beta diagnostics (the message itself never leaves). See utils/backupFailureReason.ts. */
+export { backupFailureReason };
+
 export async function runBackup(opts: {
     userId: string;
     token: string;
@@ -804,9 +743,14 @@ export async function runBackup(opts: {
     const setupErrors: Partial<Record<DestinationLabel, string>> = {};
 
     notifyBackupStateChanged(); // run started
+    // Keys on Home files papers into a little safe while this runs (a flag:
+    // nothing about the backup leaves this function). Ended in `finally`.
+    const endKeysFiling = beginKeysActivity('backup');
+    let betaStage = 'export';
     try {
         onProgress?.({ phase: 'export', message: 'Gathering your data…' });
         const plan = await buildBackupPlan(userId, { includeAttachments, token, maxAttachmentBytes });
+        betaStage = 'setup';
 
         const dests: SingleFileDestination[] = [];
         const targets: Partial<Record<SingleFileDestination['label'], string>> = {};
@@ -819,8 +763,7 @@ export async function runBackup(opts: {
         }
         if (wantDrive) {
             try {
-                const driveToken = await window.electronAPI?.gdriveGetToken?.() ?? null;
-                if (!driveToken) throw new Error('Google Drive is not connected.');
+                await requireDriveLinked();
                 // The app only holds `drive.file`, so the backup lives in the one
                 // folder it created itself. A stored folder id is tried first (the
                 // app keeps access to a folder it created even after the user
@@ -832,13 +775,13 @@ export async function runBackup(opts: {
                 // throwing), while a genuine Drive failure — no token, network
                 // down, 401, 5xx — still throws and is caught below as a
                 // per-destination setup error, so it can't take local down.
-                const target = await resolveDriveBackupTarget(driveToken, destinations.driveFolderId, fileName);
+                const target = await resolveDriveBackupTarget(destinations.driveFolderId, fileName);
                 if (target.kind === 'folder') {
                     if (target.recovered) driveFolderRecovered = { folderId: target.folderId, folderName: driveFolderName };
                     if (target.folderId !== destinations.driveFolderId) driveFolder = { folderId: target.folderId, folderName: driveFolderName };
                 }
                 driveDest = driveDestination(
-                    driveToken, target.folderId, (transfer) => onProgress?.({ phase: 'upload', transfer }),
+                    target.folderId, (transfer) => onProgress?.({ phase: 'upload', destination: 'drive', transfer }),
                     target.kind === 'file' ? target.file : null,
                 );
                 dests.push(driveDest);
@@ -854,6 +797,7 @@ export async function runBackup(opts: {
             throw new Error(setupErrors.drive || setupErrors.local || 'No backup destination could be reached.');
         }
 
+        betaStage = 'write';
         const known = readFingerprints(userId);
         const lastFingerprints: SingleFileRunOpts['lastFingerprints'] = {};
         for (const label of ['local', 'drive'] as const) {
@@ -869,6 +813,14 @@ export async function runBackup(opts: {
             }),
         });
         const errors: Partial<Record<DestinationLabel, string>> = { ...setupErrors, ...writeErrors };
+        // Beta diagnostics: one event per destination that failed (stage + reason enum).
+        for (const [label, msg] of Object.entries(errors) as Array<[DestinationLabel, string]>) {
+            // part: 'dest' = this destination's own step (stat / commit / verify) —
+            // the other destination's outcome is independent of it.
+            reportBeta('backup_failed', setupErrors[label]
+                ? { dest: label, stage: 'setup', reason: backupFailureReason(msg) }
+                : { dest: label, stage: 'write', part: 'dest', reason: backupFailureReason(msg) });
+        }
 
         // The file being updated in place stopped accepting writes mid-run and
         // the backup landed in the app folder instead (see driveDestination):
@@ -916,7 +868,31 @@ export async function runBackup(opts: {
     } catch (err: unknown) {
         onProgress?.({ phase: 'error', message: errorMessage(err) || 'Backup failed.' });
         notifyBackupStateChanged(); // run failed — nothing was stamped, so subscribers keep their nudge
+        // Beta diagnostics: the whole run failed. Per-destination setup errors
+        // were already reported above only if the run got that far, so report
+        // each wanted destination here (the dedupe folds repeats).
+        // part: 'shared' = the once-encrypted pass every destination writes
+        // from (open sinks -> records -> finish), so one cause fails them all.
+        // (If every destination failed on its own step instead, each is
+        // classified from its own message, as part 'dest'.)
+        const perDest = err instanceof AllDestinationsFailedError ? err.destinationErrors : null;
+        const reason = backupFailureReason(errorMessage(err));
+        const report = (dest: DestinationLabel) => {
+            if (perDest) {
+                const own = perDest[dest];
+                if (own !== undefined) reportBeta('backup_failed', { dest, stage: betaStage, part: 'dest', reason: backupFailureReason(own) });
+                else if (setupErrors[dest] !== undefined) reportBeta('backup_failed', { dest, stage: 'setup', reason: backupFailureReason(setupErrors[dest]) });
+                return;
+            }
+            reportBeta('backup_failed', betaStage === 'write'
+                ? { dest, stage: betaStage, part: 'shared', reason }
+                : { dest, stage: betaStage, reason });
+        };
+        if (wantLocal) report('local');
+        if (wantDrive) report('drive');
         throw err;
+    } finally {
+        endKeysFiling();
     }
 }
 
@@ -1024,15 +1000,15 @@ export async function getDriveBackupInfo(
     folderIdOverride?: string | null,
     fileBase?: string | null,
 ): Promise<{ exists: boolean; modifiedTime?: string; sizeBytes?: number; folderRecovered?: { folderId: string; folderName: string } } | null> {
-    const token = await window.electronAPI?.gdriveGetToken?.();
-    if (!token) return null;
+    const api = window.electronAPI;
+    if (!api?.gdriveLocateBackup) return null;
     try {
-        const { folderId, recovered } = await resolveDriveFolder(token, folderIdOverride, DEFAULT_DRIVE_FOLDER, { create: false });
+        if (!(await api.gdriveAuthStatus?.())?.linked) return null;
+        // Looks in the stored/app folder first, then anywhere the app can see.
+        const { file, folderId, recovered, inFolder } = await api.gdriveLocateBackup(folderIdOverride ?? null, fileBase ?? null);
         const folderRecovered = recovered && folderId ? { folderId, folderName: DEFAULT_DRIVE_FOLDER } : undefined;
-        const inFolder = folderId ? await findDriveBackup(token, folderId, fileBase) : null;
         // Found somewhere else: report it, but do NOT repoint the stored folder
         // at the (empty) fallback — the real backup is where it already is.
-        const file = inFolder ?? await findBackupAnywhere(token, fileBase);
         if (!file) return { exists: false, folderRecovered };
         return {
             exists: true, modifiedTime: file.modifiedTime, sizeBytes: file.size ? parseInt(file.size, 10) : undefined,
@@ -1057,33 +1033,25 @@ export async function restoreFromDrive(opts: {
 }): Promise<{ restored: boolean; staleWarning?: BackupStaleWarning; folderRecovered?: { folderId: string; folderName: string } }> {
     const { userId, password, folderId: folderIdOverride, fileBase, onProgress, onStaleBackup } = opts;
     try {
-        const token = await window.electronAPI?.gdriveGetToken?.();
-        if (!token) throw new Error('Google Drive is not connected.');
+        await requireDriveLinked();
         onProgress?.({ phase: 'download', message: 'Downloading from Google Drive…' });
-        // A stale stored folder (403/404) falls back to the app folder
-        // instead of permanently failing restore — see resolveDriveFolder.
-        const { folderId: appFolderId, recovered } = await resolveDriveFolder(token, folderIdOverride, DEFAULT_DRIVE_FOLDER, { create: false });
-        const inFolder = appFolderId ? await findDriveBackup(token, appFolderId, fileBase) : null;
-        // Nothing in the folder (or no folder at all, e.g. a backup an older
-        // build wrote into a folder the user picked, which the narrow grant can
-        // no longer see): look for the app's own backup file anywhere in Drive.
+        // A stale stored folder (403/404) falls back to the app folder instead
+        // of permanently failing restore. Nothing in the folder (or no folder
+        // at all, e.g. a backup an older build wrote into a folder the user
+        // picked, which the narrow grant can no longer see): the main process
+        // then looks for the app's own backup file anywhere in Drive —
         // `drive.file` limits that search to files this app created.
-        const file = inFolder ?? await findBackupAnywhere(token, fileBase);
+        const { file, folderId: appFolderId, recovered, inFolder } = await driveBridge().gdriveLocateBackup(folderIdOverride ?? null, fileBase ?? null);
         if (!file) throw new Error('No backup found in Google Drive.');
         // Only repoint the stored folder when the backup really was in it.
         const folderRecovered = inFolder && recovered && appFolderId ? { folderId: appFolderId, folderName: DEFAULT_DRIVE_FOLDER } : undefined;
         const folderId = inFolder ? appFolderId! : (folderIdOverride || file.parents?.[0] || '');
-        const dest = driveDestination(token, inFolder ? folderId : (file.parents?.[0] || folderId));
+        const dest = driveDestination(inFolder ? folderId : (file.parents?.[0] || folderId));
         // Same string the backup side recorded the floor under, built by the
         // same helper so the two can't drift; a mismatch just means no floor.
         const site: FloorSite = { label: 'drive', target: backupTarget(folderId, file.name) };
         const api = window.electronAPI;
-        if (!api?.gdriveDownloadFile || !api.backupStat || !api.backupReadRange) {
-            // Non-streaming fallback (older main process): whole file in memory.
-            const bytes = await downloadDriveFileById(token, file.id);
-            if (!bytes) throw new Error('No backup found in Google Drive.');
-            return { ...(await applyBackupBytes(userId, bytes, password, dest, onProgress, site, onStaleBackup)), folderRecovered };
-        }
+        if (!api?.gdriveDownloadFile || !api.backupStat || !api.backupReadRange) throw new Error(BRIDGE_MISSING);
         // Stream to a staging file in the main process, then read it by range
         // like a local backup — a large vault never sits in renderer memory.
         const unsub = api.onGdriveTransferProgress?.(p => { if (p.kind === 'download') onProgress?.({ phase: 'download', transfer: p }); });

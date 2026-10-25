@@ -86,7 +86,10 @@
 /* Keys scales with the pane: the slot width steps per container tier and the
    <Keys fluid> rig fills it — no JS sizing. */
 /* No hover lift here any more: HomeKeys leans toward the pointer instead. */
-.hd-mascotslot { width: 76px; flex-shrink: 0; }
+/* margin-right: his props (the call lamp, gear) and the swim overhang the slot
+   to the right, which kissed the pane edge when the right-hand context panel
+   narrows Home. Scales with the pane so a wide Home doesn't get a dead gutter. */
+.hd-mascotslot { width: 76px; flex-shrink: 0; margin-right: clamp(14px, 3cqi, 28px); }
 @container (min-width: 560px)  { .hd-mascotslot { width: 88px; } }
 @container (min-width: 880px)  { .hd-mascotslot { width: 96px; } }
 @container (min-width: 1200px) { .hd-mascotslot { width: 112px; } }

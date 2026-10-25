@@ -10,6 +10,8 @@ export interface FriendStatusEntry {
     status: UserStatus;
     custom_status_text: string | null;
     custom_status_emoji: string | null;
+    /** ISO instant the custom status clears (server-enforced); absent/null = never. */
+    custom_status_expires_at?: string | null;
     current_game: string | null;
     /** Visibly present on phones only — render the phone glyph instead of
      *  the dot. Always false while offline. */

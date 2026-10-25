@@ -108,7 +108,7 @@ describe('foldChannelHistory', () => {
     it('applies an edit to its target and drops the edit envelope', () => {
         const existing = [msg('a', 1, 'before')];
         const out = foldChannelHistory(existing, [
-            { id: 'e1', timestamp: new Date(5 * 60_000).toISOString(), content: { type: 'edit', target_id: 'a', text: 'after' } },
+            { id: 'e1', timestamp: new Date(5 * 60_000).toISOString(), sender_user_id: 'u1', content: { type: 'edit', target_id: 'a', text: 'after' } },
         ]);
         expect(ids(out)).toEqual(['a']);
         expect(textOf(out, 'a')).toBe('after');
@@ -118,7 +118,7 @@ describe('foldChannelHistory', () => {
     it('applies a delete and drops the delete envelope', () => {
         const existing = [msg('a', 1), msg('b', 2)];
         const out = foldChannelHistory(existing, [
-            { id: 'd1', timestamp: new Date(5 * 60_000).toISOString(), content: { type: 'delete', target_id: 'a' } },
+            { id: 'd1', timestamp: new Date(5 * 60_000).toISOString(), sender_user_id: 'u1', content: { type: 'delete', target_id: 'a' } },
         ]);
         expect(ids(out)).toEqual(['b']);
     });
@@ -155,10 +155,11 @@ describe('foldChannelHistory', () => {
         const existing: ChannelRow[] = [{
             id: 'server-id-1',
             timestamp: new Date(60_000).toISOString(),
+            sender_user_id: 'u1',
             content: { type: 'text', text: 'before', client_msg_id: 'client-1' },
         }];
         const out = foldChannelHistory(existing, [
-            { id: 'e1', timestamp: new Date(5 * 60_000).toISOString(), content: { type: 'edit', target_id: 'client-1', text: 'after' } },
+            { id: 'e1', timestamp: new Date(5 * 60_000).toISOString(), sender_user_id: 'u1', content: { type: 'edit', target_id: 'client-1', text: 'after' } },
         ]);
         expect(textOf(out, 'server-id-1')).toBe('after');
     });
@@ -238,7 +239,7 @@ describe('foldChannelHistory — retention purge ledger', () => {
         const out = foldChannelHistory(
             existing,
             [
-                { id: 'e1', timestamp: new Date(2 * 60_000).toISOString(), content: { type: 'edit', target_id: 'a', text: 'after' } },
+                { id: 'e1', timestamp: new Date(2 * 60_000).toISOString(), sender_user_id: 'u1', content: { type: 'edit', target_id: 'a', text: 'after' } },
                 msg('gone', 3),
             ],
             new Set(['gone']),
@@ -436,7 +437,7 @@ describe('deletedChannelTargetIds', () => {
     it('reports the id of a row a delete envelope actually removes', () => {
         const existing = [msg('a', 1), msg('b', 2)];
         const incoming = [
-            { id: 'd1', timestamp: new Date(5 * 60_000).toISOString(), content: { type: 'delete', target_id: 'a' } },
+            { id: 'd1', timestamp: new Date(5 * 60_000).toISOString(), sender_user_id: 'u1', content: { type: 'delete', target_id: 'a' } },
         ];
         expect(deletedChannelTargetIds(existing, incoming)).toEqual(['a']);
     });
@@ -444,7 +445,7 @@ describe('deletedChannelTargetIds', () => {
     it('agrees with foldChannelHistory on which id actually gets removed', () => {
         const existing = [msg('a', 1), msg('b', 2)];
         const incoming = [
-            { id: 'd1', timestamp: new Date(5 * 60_000).toISOString(), content: { type: 'delete', target_id: 'a' } },
+            { id: 'd1', timestamp: new Date(5 * 60_000).toISOString(), sender_user_id: 'u1', content: { type: 'delete', target_id: 'a' } },
         ];
         const removedByFold = existing.filter(m => !foldChannelHistory(existing, incoming).some(r => r.id === m.id));
         expect(deletedChannelTargetIds(existing, incoming)).toEqual(ids(removedByFold));
@@ -453,7 +454,7 @@ describe('deletedChannelTargetIds', () => {
     it('is empty when the delete targets a message that is not cached', () => {
         const existing = [msg('a', 1)];
         const incoming = [
-            { id: 'd1', timestamp: new Date(5 * 60_000).toISOString(), content: { type: 'delete', target_id: 'nonexistent' } },
+            { id: 'd1', timestamp: new Date(5 * 60_000).toISOString(), sender_user_id: 'u1', content: { type: 'delete', target_id: 'nonexistent' } },
         ];
         expect(deletedChannelTargetIds(existing, incoming)).toEqual([]);
     });
@@ -462,10 +463,11 @@ describe('deletedChannelTargetIds', () => {
         const existing: ChannelRow[] = [{
             id: 'server-id-1',
             timestamp: new Date(60_000).toISOString(),
+            sender_user_id: 'u1',
             content: { type: 'text', text: 'hi', client_msg_id: 'client-1' },
         }];
         const incoming = [
-            { id: 'd1', timestamp: new Date(5 * 60_000).toISOString(), content: { type: 'delete', target_id: 'client-1' } },
+            { id: 'd1', timestamp: new Date(5 * 60_000).toISOString(), sender_user_id: 'u1', content: { type: 'delete', target_id: 'client-1' } },
         ];
         expect(deletedChannelTargetIds(existing, incoming)).toEqual(['server-id-1']);
     });
@@ -473,7 +475,7 @@ describe('deletedChannelTargetIds', () => {
     it('ignores edits, reactions and plain messages — only deletes ever remove a row', () => {
         const existing = [msg('a', 1)];
         const incoming = [
-            { id: 'e1', timestamp: new Date(2 * 60_000).toISOString(), content: { type: 'edit', target_id: 'a', text: 'edited' } },
+            { id: 'e1', timestamp: new Date(2 * 60_000).toISOString(), sender_user_id: 'u1', content: { type: 'edit', target_id: 'a', text: 'edited' } },
             { id: 'r1', timestamp: new Date(3 * 60_000).toISOString(), sender_user_id: 'u2', content: { type: 'reaction', target_id: 'a', emoji: '👍', action: 'add' } },
             msg('b', 4),
         ];
@@ -485,7 +487,7 @@ describe('deletedChannelTargetIds', () => {
         // The delete envelope's own id ('a') is in purgedIds — same skip
         // foldChannelHistory applies before any other branch.
         const incoming = [
-            { id: 'a', timestamp: new Date(5 * 60_000).toISOString(), content: { type: 'delete', target_id: 'a' } },
+            { id: 'a', timestamp: new Date(5 * 60_000).toISOString(), sender_user_id: 'u1', content: { type: 'delete', target_id: 'a' } },
         ];
         expect(deletedChannelTargetIds(existing, incoming, new Set(['a']))).toEqual([]);
     });
@@ -493,7 +495,7 @@ describe('deletedChannelTargetIds', () => {
     it('never mutates its inputs', () => {
         const existing = [msg('a', 1)];
         const incoming = [
-            { id: 'd1', timestamp: new Date(5 * 60_000).toISOString(), content: { type: 'delete', target_id: 'a' } },
+            { id: 'd1', timestamp: new Date(5 * 60_000).toISOString(), sender_user_id: 'u1', content: { type: 'delete', target_id: 'a' } },
         ];
         const existingSnapshot = JSON.stringify(existing);
         const incomingSnapshot = JSON.stringify(incoming);
@@ -505,8 +507,8 @@ describe('deletedChannelTargetIds', () => {
     it('handles multiple deletes in one batch', () => {
         const existing = [msg('a', 1), msg('b', 2), msg('c', 3)];
         const incoming = [
-            { id: 'd1', timestamp: new Date(5 * 60_000).toISOString(), content: { type: 'delete', target_id: 'a' } },
-            { id: 'd2', timestamp: new Date(6 * 60_000).toISOString(), content: { type: 'delete', target_id: 'c' } },
+            { id: 'd1', timestamp: new Date(5 * 60_000).toISOString(), sender_user_id: 'u1', content: { type: 'delete', target_id: 'a' } },
+            { id: 'd2', timestamp: new Date(6 * 60_000).toISOString(), sender_user_id: 'u1', content: { type: 'delete', target_id: 'c' } },
         ];
         expect(deletedChannelTargetIds(existing, incoming).sort()).toEqual(['a', 'c']);
     });
@@ -593,8 +595,9 @@ describe('channel history reads (catch-up fetch, gap fills, jump, by id) unpin a
 
     it('computes deletedChannelTargetIds against the pre-merge snapshot, BEFORE folding, and unpins via the ref', () => {
         const snapAt = fn.indexOf('const snapshot: ChannelRow[] = channelMessagesRef.current[channelId] ?? [];');
-        const unpinAt = fn.indexOf('deletedChannelTargetIds(snapshot, sorted, purgedIds)');
-        const foldAt = fn.indexOf('foldChannelHistory(prev[channelId] ?? [], sorted, purgedIds, opts.window ?? undefined)');
+        // F3: both carry the server-confirmed moderator-delete targets.
+        const unpinAt = fn.indexOf('deletedChannelTargetIds(snapshot, sorted, purgedIds, { moderatorDeleteTargets })');
+        const foldAt = fn.indexOf('foldChannelHistory(prev[channelId] ?? [], sorted, purgedIds, opts.window ?? undefined, { moderatorDeleteTargets })');
         expect(snapAt).toBeGreaterThan(0);
         expect(snapAt).toBeLessThan(unpinAt);
         expect(unpinAt).toBeLessThan(foldAt);

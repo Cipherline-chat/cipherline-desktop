@@ -54,7 +54,7 @@ describe('one applier for every live-share quality change', () => {
         expect(ap).toContain('shareParamsCtxRef.current = { options: next, codec };');
         expect(ap).toContain("logCallEvent('share_codec', ev.codec);");
         expect(ap).toContain("logCallEvent('share_clamp', ev.clamp);");
-        expect(ap).toContain('cropActive: () => !!cropPipelineRef.current,');
+        expect(ap).toContain('cropActive: () => !!cropPipelineRef.current || !!hdrPipelineRef.current,');
     });
 
     it('republishes that must stay republishes are not intercepted: they pass the share\'s own options (no quality difference)', () => {

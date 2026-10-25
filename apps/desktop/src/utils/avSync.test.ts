@@ -31,6 +31,12 @@ describe('choosePlaybackPath', () => {
         // 2.0 × 0.5 = 1.0 → the element can reproduce it exactly.
         expect(choosePlaybackPath({ ...base, perUserGain: 2, masterGain: 0.5 })).toBe('element');
     });
+    it('a latched leveler boost needs Web Audio; absent / false does not change the old rules', () => {
+        expect(choosePlaybackPath({ ...base, levelBoost: true })).toBe('webaudio');
+        expect(choosePlaybackPath({ ...base, levelBoost: true, perUserGain: 0.3 })).toBe('webaudio');
+        expect(choosePlaybackPath({ ...base, levelBoost: false })).toBe('element');
+        expect(choosePlaybackPath({ ...base, levelBoost: undefined })).toBe('element');
+    });
     it('non-finite gain falls back to Web Audio (the path that can represent anything)', () => {
         expect(choosePlaybackPath({ ...base, perUserGain: Number.NaN })).toBe('webaudio');
         expect(choosePlaybackPath({ ...base, perUserGain: Number.POSITIVE_INFINITY })).toBe('webaudio');

@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { API_BASE } from '../constants';
+import type { SenderVerdict } from './senderTrust';
 
 /**
  * C-2 — ECIES wrapping of the one-time history transfer key.
@@ -65,6 +66,12 @@ export interface HistoryTransferKeyPayload {
     /** Device this key was wrapped FOR — checked on unwrap. */
     device_id: string;
     issued_at: string;
+    /**
+     * F2: the requester's signed `capability_ts`, echoed by the approver so
+     * the transfer is bound to the one request it answers. Absent from
+     * approvers that predate it; the requester enforces it when present.
+     */
+    request_ts?: number;
 }
 
 export interface PrekeyBundleEntry {
@@ -129,6 +136,7 @@ export async function wrapHistoryTransferKey(
     target: PrekeyBundleEntry,
     userId: string,
     senderDeviceId: string | null,
+    requestTs?: number,
 ): Promise<string> {
     if (!window.electronAPI) throw new Error('[HistoryTransfer] electronAPI unavailable');
 
@@ -139,6 +147,7 @@ export async function wrapHistoryTransferKey(
         key_b64: keyB64,
         device_id: targetDeviceId,
         issued_at: new Date().toISOString(),
+        ...(typeof requestTs === 'number' && Number.isSafeInteger(requestTs) ? { request_ts: requestTs } : {}),
     };
 
     // Exactly one recipient. Passing the full device list here would wrap the
@@ -178,13 +187,23 @@ export async function wrapHistoryTransferKey(
  *        key in the envelope's recipient map, which is what makes a transfer
  *        addressed elsewhere undecryptable here rather than merely ignored.
  */
+export interface UnwrappedTransferKey {
+    keyB64: string;
+    /** `request_ts` from the payload, or null from an older approver. */
+    requestTs: number | null;
+    /** The sender as named inside the envelope — judged by the caller. */
+    senderUserId?: string;
+    senderPub?: string;
+    senderDeviceId?: string;
+}
+
 export async function unwrapHistoryTransferKey(
     envelopeB64: string,
     myDeviceId: string,
-): Promise<string> {
+): Promise<UnwrappedTransferKey> {
     if (!window.electronAPI) throw new Error('[HistoryTransfer] electronAPI unavailable');
 
-    const { contentJson } = await window.electronAPI.decryptMessage(envelopeB64, myDeviceId);
+    const { contentJson, senderUserId, senderPub, senderDeviceId } = await window.electronAPI.decryptMessage(envelopeB64, myDeviceId);
     const payload = JSON.parse(contentJson) as HistoryTransferKeyPayload;
 
     if (payload?.type !== 'history_transfer_key' || !payload.key_b64) {
@@ -196,6 +215,53 @@ export async function unwrapHistoryTransferKey(
     if (payload.device_id !== myDeviceId) {
         throw new Error('[HistoryTransfer] transfer key was addressed to a different device');
     }
-    return payload.key_b64;
+    const requestTs = typeof payload.request_ts === 'number' && Number.isSafeInteger(payload.request_ts) ? payload.request_ts : null;
+    return { keyB64: payload.key_b64, requestTs, senderUserId, senderPub, senderDeviceId };
+}
+
+// ── F2: is this delivery one this device asked for, from one of its own? ────
+//
+// `device:approved` used to start an import whenever it arrived: no request
+// had to be outstanding, the modal did not have to be open, and the envelope's
+// sender was never looked at — anyone able to address an envelope to this
+// device's published prekey could replace its history. A delivery is now
+// accepted only when:
+//   • this device has an outstanding request it created, not too old;
+//   • the approver echoed that request's signed timestamp (when it is new
+//     enough to — older approvers omit it and are judged on the rest);
+//   • the envelope is from this account and one of its known own devices
+//     (utils/selfSenderTrust.ts verdict 'ok' / 'first_contact');
+//   • and, when the user picked a device, from THAT device.
+// The import itself additionally waits for an explicit confirmation.
+
+export interface OutstandingHistoryRequest {
+    capabilityTs: number;
+    targetDeviceId: string | null;
+    createdAt: number;
+}
+
+/** How long an unanswered request stays acceptable. The approver has to
+ *  notice and confirm on another device, so this is well past the 60 s UI
+ *  countdown — but bounded, so a request forgotten yesterday is not open. */
+export const HISTORY_REQUEST_TTL_MS = 15 * 60 * 1000;
+
+export type HistoryTransferRefusal = 'no_request' | 'stale_request' | 'request_mismatch' | 'not_own_device' | 'wrong_device';
+
+export function judgeHistoryTransfer(input: {
+    outstanding: OutstandingHistoryRequest | null;
+    now: number;
+    myUserId: string;
+    unwrapped: Pick<UnwrappedTransferKey, 'requestTs' | 'senderUserId' | 'senderDeviceId'>;
+    /** evaluateSelfSender(...).verdict for the envelope's sender. */
+    senderVerdict: SenderVerdict;
+}): { ok: true } | { ok: false; reason: HistoryTransferRefusal } {
+    const { outstanding, now, myUserId, unwrapped, senderVerdict } = input;
+    if (!outstanding) return { ok: false, reason: 'no_request' };
+    if (now - outstanding.createdAt > HISTORY_REQUEST_TTL_MS || now < outstanding.createdAt) return { ok: false, reason: 'stale_request' };
+    if (unwrapped.requestTs !== null && unwrapped.requestTs !== outstanding.capabilityTs) return { ok: false, reason: 'request_mismatch' };
+    if (unwrapped.senderUserId !== myUserId) return { ok: false, reason: 'not_own_device' };
+    if (senderVerdict !== 'ok' && senderVerdict !== 'first_contact') return { ok: false, reason: 'not_own_device' };
+    if (outstanding.targetDeviceId && unwrapped.senderDeviceId !== outstanding.targetDeviceId) return { ok: false, reason: 'wrong_device' };
+    return { ok: true };
 }
 

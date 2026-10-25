@@ -129,7 +129,22 @@ function topOutboundVideo(entries: Map<string, StatsEntry>): StatsEntry | undefi
     return top;
 }
 
-interface AudioSnap { at: number; bytes: number; lost: number; recv: number }
+interface AudioSnap { at: number; bytes: number; lost: number; recv: number; jbDelay?: number; jbEmitted?: number }
+
+/**
+ * Average audio jitter-buffer delay over the last interval, ms: the delta of
+ * inbound-rtp jitterBufferDelay (seconds, summed per emitted sample) over the
+ * delta of jitterBufferEmittedCount. This is how long received audio waited
+ * before playout — the number a "the audio is seconds late" report needs and
+ * the 2026-10-24 reports did not have. undefined when not measurable.
+ */
+export function jitterBufferMs(prev: { jbDelay?: number; jbEmitted?: number } | undefined, delay: number | undefined, emitted: number | undefined): number | undefined {
+    if (delay === undefined || emitted === undefined) return undefined;
+    if (prev?.jbDelay !== undefined && prev.jbEmitted !== undefined && emitted > prev.jbEmitted && delay >= prev.jbDelay) {
+        return ((delay - prev.jbDelay) / (emitted - prev.jbEmitted)) * 1000;
+    }
+    return emitted > 0 ? (delay / emitted) * 1000 : undefined;
+}
 
 const PLACEHOLDER_PREFIX: Record<string, string> = {
     'outbound:screen_share': 'screen',
@@ -280,6 +295,9 @@ export class WebrtcRing {
                     jitter_ms: num(rtp?.jitter) !== undefined ? r1(num(rtp?.jitter)! * 1000) : undefined,
                     frames_dropped: r0(s.framesDropped),
                     freeze_count: r0(s.freezes),
+                    pli_count: num(rtp?.pliCount) !== undefined || num(rtp?.firCount) !== undefined ? r0((num(rtp?.pliCount) ?? 0) + (num(rtp?.firCount) ?? 0)) : undefined,
+                    nack_count: r0(num(rtp?.nackCount)),
+                    key_frames: r0(num(rtp?.keyFramesDecoded)),
                 }));
             } else {
                 const rtp = [...entries.values()].find(e => e.type === 'inbound-rtp' && e.kind === 'audio');
@@ -287,7 +305,10 @@ export class WebrtcRing {
                 const lost = num(rtp?.packetsLost) ?? 0;
                 const recv = num(rtp?.packetsReceived) ?? 0;
                 const prev = this.prevAudio.get(t.ref);
-                this.prevAudio.set(t.ref, { at, bytes, lost, recv });
+                const jbDelay = num(rtp?.jitterBufferDelay);
+                const jbEmitted = num(rtp?.jitterBufferEmittedCount);
+                this.prevAudio.set(t.ref, { at, bytes, lost, recv, jbDelay, jbEmitted });
+                const jb = jitterBufferMs(prev, jbDelay, jbEmitted);
                 const dt = prev ? (at - prev.at) / 1000 : 0;
                 const dl = prev ? Math.max(0, lost - prev.lost) : 0;
                 const dr = prev ? Math.max(0, recv - prev.recv) : 0;
@@ -301,6 +322,7 @@ export class WebrtcRing {
                     bitrate_kbps: prev && dt > 0 && bytes >= prev.bytes ? r0(((bytes - prev.bytes) * 8) / dt / 1000) : undefined,
                     packets_lost_pct: prev && dl + dr > 0 ? r1((dl / (dl + dr)) * 100) : undefined,
                     jitter_ms: num(rtp?.jitter) !== undefined ? r1(num(rtp?.jitter)! * 1000) : undefined,
+                    jb_ms: jb !== undefined ? r0(jb) : undefined,
                 }));
             }
         }
@@ -310,9 +332,15 @@ export class WebrtcRing {
             available_outgoing_kbps: r0(availKbps),
             packet_loss_pct: lostDelta + recvDelta > 0 ? r1((lostDelta / (lostDelta + recvDelta)) * 100) : undefined,
         });
-        this.samples.push({ at, outbound, inbound, ...(Object.keys(transport).length ? { transport } : {}) });
+        const sample: StoredSample = { at, outbound, inbound, ...(Object.keys(transport).length ? { transport } : {}) };
+        this.samples.push(sample);
         if (this.samples.length > this.size) this.samples.splice(0, this.samples.length - this.size);
+        if (this.tap) { try { this.tap(sample, at); } catch { /* isolate */ } }
     }
+
+    /** One observer of every recorded sample (beta diagnostics' whole-call summary — the ring itself keeps 2 minutes). */
+    private tap: ((sample: Omit<WebrtcSample, 't_s'>, at: number) => void) | null = null;
+    setTap(fn: ((sample: Omit<WebrtcSample, 't_s'>, at: number) => void) | null): void { this.tap = fn; }
 
     // framesSent delta per second — "sent fps" (what left the encoder for the wire).
     private sentFps(ref: object, top: StatsEntry | undefined, at: number): number | undefined {

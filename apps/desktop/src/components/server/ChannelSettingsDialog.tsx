@@ -49,6 +49,7 @@ import {
     type CallNamingSettings,
 } from '../../utils/callNaming';
 import '../../styles/server-dock.css';
+import { isSecondGeneral, requestMoment } from '../../utils/moments';
 
 type Tab = 'overview' | 'permissions';
 
@@ -357,6 +358,8 @@ export const ChannelSettingsDialog: React.FC<Props> = ({
         }
         const res = await axios.post(apiUrl`/servers/${serverId}/channels`, body, auth);
         const saved: ChannelInfo = res.data;
+        // Moment: a second #general. Names of this server's channels only.
+        if (isSecondGeneral(saved, channels)) requestMoment('double-general');
 
         const result = await saveOverrideDiff({
             http: { patch: (u, b) => axios.patch(u, b, auth), delete: u => axios.delete(u, auth) },

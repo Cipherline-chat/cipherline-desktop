@@ -76,13 +76,15 @@ describe('shouldConfirmMessageDelete', () => {
 });
 
 describe('buildDeleteConfirmCopy', () => {
-    it('is a bare yes/no — a title and a Delete label, no body text or hint', () => {
-        // Owner request (2026-09-16): "just delete, yes or no". If a paragraph
-        // or the Shift hint creeps back into the dialog, this fails.
+    it('is a bare yes/no with only a footer hint — no body text', () => {
+        // Owner request (2026-09-16): "just delete, yes or no" — no paragraph.
+        // Owner request (2026-10-19): the Shift tip returns as the footer hint.
         const copy = buildDeleteConfirmCopy({ isOwnMessage: true });
-        expect(Object.keys(copy).sort()).toEqual(['confirmLabel', 'title']);
+        expect(Object.keys(copy).sort()).toEqual(['confirmLabel', 'hint', 'title']);
         expect(copy.title).toBe('Delete this message?');
         expect(copy.confirmLabel).toBe('Delete');
+        expect(copy.hint).toMatch(/shift/i);
+        expect(copy.hint.length).toBeLessThanOrEqual(24);
     });
 
     it('labels a moderator deletion as one', () => {

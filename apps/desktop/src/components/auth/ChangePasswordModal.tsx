@@ -16,6 +16,8 @@ import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
 import { ClModal, ClButton, ClInput, ClCheckbox } from '../cl';
 import SlottedCodeInput from '../SlottedCodeInput';
+import { DialogHeader, DialogBody, DialogFooter, DialogError } from '../dialog/DialogFrame';
+import { DialogForm, DialogStack, DialogField, DialogCopy, DialogLinkButton, DialogSteps } from '../dialog/DialogExtras';
 
 interface Props {
     open: boolean;
@@ -204,23 +206,23 @@ export const ChangePasswordModal: React.FC<Props> = ({ open, onClose }) => {
     const renderVerify = () => {
         if (totpEnabled === null) {
             return (
-                <div style={{ height: 56, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <div style={{ height: 76, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                     <div className="w-4 h-4 rounded-full border-2 animate-spin" style={{ borderColor: 'rgba(255,255,255,.2)', borderTopColor: 'var(--cl-lume)' }} />
                 </div>
             );
         }
         return (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <DialogStack center>
                 {verifyLabel && (
-                    <p style={{ fontSize: 13, color: 'var(--cl-muted)', textAlign: 'center', margin: 0 }}>{verifyLabel}</p>
+                    <DialogCopy>{verifyLabel}</DialogCopy>
                 )}
 
                 {mode === 'email' && (
-                    <p style={{ fontSize: 13, color: 'var(--cl-muted)', textAlign: 'center', margin: 0 }}>
+                    <DialogCopy>
                         {emailSent
-                            ? <>We sent a 6-digit code to <strong style={{ color: 'var(--cl-text)' }}>{user?.email ?? 'your email'}</strong>.</>
+                            ? <>We sent a 6-digit code to <strong>{user?.email ?? 'your email'}</strong>.</>
                             : 'Sending a verification code to your email…'}
-                    </p>
+                    </DialogCopy>
                 )}
 
                 {mode === 'backup' ? (
@@ -243,143 +245,146 @@ export const ChangePasswordModal: React.FC<Props> = ({ open, onClose }) => {
                 )}
 
                 {/* Method switching + email resend */}
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 14, flexWrap: 'wrap' }}>
+                <div className="dlg-linkrow">
                     {mode === 'email' && (
-                        <button type="button" disabled={emailSending || emailCooldown > 0} onClick={sendEmailCode} style={linkStyle(emailSending || emailCooldown > 0)}>
+                        <DialogLinkButton disabled={emailSending || emailCooldown > 0} onClick={sendEmailCode}>
                             <RefreshCw size={12} />
                             {emailCooldown > 0 ? `Resend in ${emailCooldown}s` : emailSending ? 'Sending…' : 'Resend code'}
-                        </button>
+                        </DialogLinkButton>
                     )}
                     {totpEnabled && mode !== 'totp' && (
-                        <button type="button" onClick={() => switchMode('totp')} style={linkStyle(false)}>
+                        <DialogLinkButton onClick={() => switchMode('totp')}>
                             <Smartphone size={12} /> Use authenticator app
-                        </button>
+                        </DialogLinkButton>
                     )}
                     {totpEnabled && mode !== 'backup' && (
-                        <button type="button" onClick={() => switchMode('backup')} style={linkStyle(false)}>
+                        <DialogLinkButton onClick={() => switchMode('backup')}>
                             <KeyRound size={12} /> Use a backup code
-                        </button>
+                        </DialogLinkButton>
                     )}
                     {mode !== 'email' && (
-                        <button type="button" onClick={() => switchMode('email')} style={linkStyle(false)}>
+                        <DialogLinkButton onClick={() => switchMode('email')}>
                             <Mail size={12} /> Email me a code instead
-                        </button>
+                        </DialogLinkButton>
                     )}
                 </div>
-
-                <div className="flex flex-col gap-2 pt-1">
-                    <ClButton fullWidth disabled={!codeReady || verifying || (mode === 'email' && !emailSent)} loading={verifying} onClick={verifyCode}>
-                        {verifying ? 'Verifying…' : 'Verify'}
-                    </ClButton>
-                    <ClButton variant="ghost" fullWidth onClick={onClose}>Cancel</ClButton>
-                </div>
-            </div>
+            </DialogStack>
         );
     };
 
     // ── Render: step 2 (new password) ────────────────────────────────────────
 
     const renderPassword = () => (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-            <div style={{ position: 'relative' }}>
-                <span style={{ position: 'absolute', left: 14, top: '50%', transform: 'translateY(-50%)', color: 'var(--cl-faint)', display: 'flex', pointerEvents: 'none' }}><Lock size={14} /></span>
-                <ClInput
-                    type="password"
-                    value={currentPw}
-                    onChange={e => setCurrentPw(e.target.value)}
-                    placeholder="Current password"
-                    autoComplete="current-password"
-                    style={{ width: '100%', paddingLeft: 40 }}
-                />
-            </div>
-
-            <div style={{ position: 'relative' }}>
-                <span style={{ position: 'absolute', left: 14, top: '50%', transform: 'translateY(-50%)', color: 'var(--cl-faint)', display: 'flex', pointerEvents: 'none' }}><KeyRound size={14} /></span>
-                <ClInput
-                    type={showNew ? 'text' : 'password'}
-                    value={newPw}
-                    onChange={e => setNewPw(e.target.value)}
-                    placeholder="New password"
-                    autoComplete="new-password"
-                    style={{ width: '100%', paddingLeft: 40, paddingRight: 40 }}
-                />
-                <button
-                    type="button"
-                    onClick={() => setShowNew(v => !v)}
-                    style={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', padding: 4, color: 'var(--cl-faint)', display: 'flex', alignItems: 'center' }}
-                >
-                    {showNew ? <EyeOff size={15} /> : <Eye size={15} />}
-                </button>
-            </div>
-
-            {newPw && (
-                <div>
-                    <div className="h-[3px] rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,.08)' }}>
-                        <div className={`h-full rounded-full transition-all duration-300 ${STRENGTH_BAR[pwScore]}`} style={{ width: `${(pwScore + 1) * 20}%` }} />
-                    </div>
-                    <p className="text-[11px] text-right mt-1" style={{ color: 'var(--cl-faint)' }}>{STRENGTH_LABEL[pwScore]}</p>
+        <DialogStack>
+            <DialogField label="Current password" htmlFor="cp-current">
+                <div style={{ position: 'relative' }}>
+                    <span style={{ position: 'absolute', left: 14, top: '50%', transform: 'translateY(-50%)', color: 'var(--cl-faint)', display: 'flex', pointerEvents: 'none' }}><Lock size={14} /></span>
+                    <ClInput
+                        id="cp-current"
+                        type="password"
+                        value={currentPw}
+                        onChange={e => setCurrentPw(e.target.value)}
+                        autoComplete="current-password"
+                        style={{ width: '100%', paddingLeft: 40 }}
+                    />
                 </div>
-            )}
+            </DialogField>
 
-            <ClInput
-                type={showNew ? 'text' : 'password'}
-                value={confirmPw}
-                onChange={e => setConfirmPw(e.target.value)}
-                placeholder="Confirm new password"
-                style={{ width: '100%' }}
-            />
-            {confirmPw && newPw !== confirmPw && (
-                <p className="text-xs" style={{ color: 'var(--cl-flash)' }}>Passwords do not match</p>
-            )}
+            <DialogField label="New password" htmlFor="cp-new">
+                <div style={{ position: 'relative' }}>
+                    <span style={{ position: 'absolute', left: 14, top: '50%', transform: 'translateY(-50%)', color: 'var(--cl-faint)', display: 'flex', pointerEvents: 'none' }}><KeyRound size={14} /></span>
+                    <ClInput
+                        id="cp-new"
+                        type={showNew ? 'text' : 'password'}
+                        value={newPw}
+                        onChange={e => setNewPw(e.target.value)}
+                        autoComplete="new-password"
+                        style={{ width: '100%', paddingLeft: 40, paddingRight: 40 }}
+                    />
+                    <button
+                        type="button"
+                        onClick={() => setShowNew(v => !v)}
+                        aria-label={showNew ? 'Hide password' : 'Show password'}
+                        aria-pressed={showNew}
+                        style={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', padding: 4, color: 'var(--cl-faint)', display: 'flex', alignItems: 'center' }}
+                    >
+                        {showNew ? <EyeOff size={15} /> : <Eye size={15} />}
+                    </button>
+                </div>
+                {newPw && (
+                    <div>
+                        <div className="h-[3px] rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,.08)' }}>
+                            <div className={`h-full rounded-full transition-all duration-300 ${STRENGTH_BAR[pwScore]}`} style={{ width: `${(pwScore + 1) * 20}%` }} />
+                        </div>
+                        <div className="dlg-help" style={{ textAlign: 'right', marginTop: 4 }}>{STRENGTH_LABEL[pwScore]}</div>
+                    </div>
+                )}
+            </DialogField>
+
+            <DialogField
+                label="Confirm new password"
+                htmlFor="cp-confirm"
+                error={confirmPw && newPw !== confirmPw ? 'Passwords do not match' : undefined}
+            >
+                <ClInput
+                    id="cp-confirm"
+                    type={showNew ? 'text' : 'password'}
+                    value={confirmPw}
+                    onChange={e => setConfirmPw(e.target.value)}
+                    autoComplete="new-password"
+                    style={{ width: '100%' }}
+                />
+            </DialogField>
 
             <ClCheckbox
                 checked={logoutOthers}
                 onChange={setLogoutOthers}
                 label={<span className="text-[13px] text-cl-muted">Sign out all other devices</span>}
             />
-
-            <div className="flex flex-col gap-2 pt-1">
-                <ClButton fullWidth disabled={!canSubmit} loading={saving} onClick={submitPassword}>
-                    {saving ? 'Saving…' : 'Change Password'}
-                </ClButton>
-                <ClButton variant="ghost" fullWidth onClick={() => { setChangeToken(null); setCode(''); setCurrentPw(''); }}>← Back</ClButton>
-            </div>
-        </div>
+        </DialogStack>
     );
 
     // ── Modal shell ───────────────────────────────────────────────────────────
 
     const step2 = changeToken !== null;
+    const verifyDisabled = !codeReady || verifying || (mode === 'email' && !emailSent);
 
     return (
-        <ClModal open={open} onClose={onClose} width={420}>
-            <div className="p-6">
-                <div className="flex items-center gap-2 mb-1">
-                    <Lock size={16} style={{ color: 'var(--cl-lume)' }} />
-                    <h3 className="text-base font-bold" style={{ color: 'var(--cl-text)' }}>Change Password</h3>
-                </div>
-                <p style={{ fontSize: 12, color: 'var(--cl-faint)', margin: '0 0 18px' }}>
-                    {step2
-                        ? 'Identity verified. Choose a strong new password.'
-                        : 'Verify it\'s you, then set a new password. You\'ll be signed out of all other sessions.'}
-                </p>
-
-                {error && (
-                    <div className="mb-4 px-3 py-2.5 rounded-xl text-sm text-center" style={{ background: 'rgba(248,113,113,.1)', border: '1px solid rgba(248,113,113,.25)', color: 'var(--cl-flash)' }}>{error}</div>
-                )}
-
-                {step2 ? renderPassword() : renderVerify()}
-            </div>
+        <ClModal open={open} onClose={onClose} width={440} cardClassName="dlg-card" label="Change password">
+            <DialogHeader
+                icon={<Lock size={19} strokeWidth={2.2} />}
+                title="Change password"
+                subtitle={step2
+                    ? 'Identity verified. Choose a strong new password.'
+                    : 'Verify it\'s you first. You\'ll be signed out of all other sessions.'}
+            />
+            {step2 ? (
+                <DialogForm onSubmit={() => { void submitPassword(); }}>
+                    <DialogBody className="dlg-body--scroll">{renderPassword()}</DialogBody>
+                    {error && <DialogError>{error}</DialogError>}
+                    <DialogFooter hint={<DialogSteps index={1} count={2} />}>
+                        <ClButton type="button" variant="ghost" size="sm" onClick={() => { setChangeToken(null); setCode(''); setCurrentPw(''); }}>← Back</ClButton>
+                        <ClButton type="submit" size="sm" disabled={!canSubmit} loading={saving}>
+                            {saving ? 'Saving…' : 'Change password'}
+                        </ClButton>
+                    </DialogFooter>
+                </DialogForm>
+            ) : (
+                <>
+                    {/* Not a <form>: the code input already auto-submits (and on Enter),
+                        a second submit path would double-fire verifyCode. */}
+                    <DialogBody className="dlg-body--scroll">{renderVerify()}</DialogBody>
+                    {error && <DialogError>{error}</DialogError>}
+                    <DialogFooter hint={<DialogSteps index={0} count={2} />}>
+                        <ClButton variant="ghost" size="sm" onClick={onClose}>Cancel</ClButton>
+                        <ClButton size="sm" disabled={verifyDisabled} loading={verifying} onClick={verifyCode}>
+                            {verifying ? 'Verifying…' : 'Verify'}
+                        </ClButton>
+                    </DialogFooter>
+                </>
+            )}
         </ClModal>
     );
 };
-
-function linkStyle(disabled: boolean): React.CSSProperties {
-    return {
-        background: 'none', border: 'none', cursor: disabled ? 'default' : 'pointer',
-        color: disabled ? 'var(--cl-faint)' : 'var(--cl-lume)',
-        fontSize: 12, fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 5, padding: '2px 0',
-    };
-}
 
 export default ChangePasswordModal;

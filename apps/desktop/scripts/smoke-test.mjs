@@ -1,10 +1,20 @@
 // Smoke test for the packaged Electron build.
 //
-// Runs in CI after electron-builder produces an unpacked binary. Launches
-// the binary via Playwright's _electron API, waits for the first window to
-// finish loading, asserts the renderer rendered SOMETHING (vs. a white-
-// screen-of-death from an unhandled exception in the bundle), captures a
-// screenshot, and exits.
+// Runs in CI after electron-builder produces an unpacked binary. First checks
+// that the Electron fuses in the packaged binary are the ones package.json
+// asks for (and, on macOS, that the native addon carries the app's Team ID).
+// Then launches the binary as a plain child process in smoke mode, waits for
+// the app to report that its first window painted (electron/smoke-report.ts
+// writes smoke-report.json into the throwaway profile), asserts the renderer
+// rendered SOMETHING with no console errors (vs. a white-screen-of-death from
+// an unhandled exception in the bundle), keeps the screenshot the app took,
+// and exits.
+//
+// Why not Playwright's _electron API any more: it attaches through --inspect
+// and --remote-debugging-port, which the shipped binary has switched off (the
+// EnableNodeCliInspectArguments fuse + electron/debug-switches.ts). The gate
+// must run the binary that ships, so the app reports on itself instead and no
+// debugger is attached.
 //
 // What this catches that typecheck doesn't:
 //   * Worker / WASM import paths that resolve in dev but not in the asar.
@@ -12,20 +22,33 @@
 //   * CSP violations from inline scripts injected by libs.
 //   * Auto-updater / secureStore init crashes during boot.
 //   * Anything that throws during the React mount before the first paint.
+//   * Fuses that were configured but not actually applied to the binary.
 //
 // What it doesn't catch: feature regressions, network-dependent flows
 // (auth, calls, attachments). Those are out of scope — this is a "did
 // the app even start" gate.
 //
 // Exit codes:
-//   0  — app launched, renderer painted within timeout.
-//   1  — anything else (timeout, crash, unexpected URL, no window).
+//   0  — fuses as configured, app launched, renderer painted within timeout.
+//   1  — anything else (fuse mismatch, timeout, crash, console errors, no window).
 
-import { _electron as electron } from 'playwright-core';
-import { existsSync, readdirSync, statSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import { existsSync, readdirSync, statSync, mkdtempSync, rmSync, readFileSync, copyFileSync, unlinkSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { platform } from 'node:os';
+import { platform, tmpdir } from 'node:os';
+import { verifyFusesOnDisk, checkMacAddonSignature } from './smoke-lib.mjs';
+
+// A packaged build honours CIPHERLINE_SMOKE_TEST only together with this
+// argument AND a --user-data-dir switch (electron/smoke-mode.ts), so an
+// inherited environment variable cannot put a real install into smoke mode.
+// Keep in sync with SMOKE_TEST_ARG there.
+const SMOKE_TEST_ARG = '--cipherline-smoke-test';
+
+// Keep in sync with SMOKE_REPORT_FILENAME / SMOKE_SCREENSHOT_FILENAME in
+// electron/smoke-report.ts.
+const REPORT_FILE = 'smoke-report.json';
+const SCREENSHOT_FILE = 'smoke-report.png';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = join(__dirname, '..');
@@ -104,115 +127,155 @@ function resolveBinary() {
 }
 
 const TIMEOUT_MS = 30_000;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+function killTree(child) {
+    if (!child || child.exitCode !== null || child.pid === undefined) return;
+    try {
+        if (platform() === 'win32') {
+            // Electron's helpers are children of the main process; /T takes them too.
+            spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
+        } else {
+            child.kill('SIGKILL');
+        }
+    } catch { /* already gone */ }
+}
 
 (async () => {
     const executablePath = resolveBinary();
     console.log(`[smoke] Launching: ${executablePath}`);
 
-    const t0 = Date.now();
-    let app;
+    // ── 1. The fuses in the binary we are about to run are the configured ones.
+    const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
+    const fuseConfig = pkg.build?.electronFuses;
+    if (!fuseConfig || typeof fuseConfig !== 'object') {
+        console.error("[smoke] package.json build.electronFuses is missing - the build would ship with Electron's default (open) fuses");
+        process.exit(1);
+    }
     try {
-        // Optional throwaway profile (set by the self-hosted macOS CI job so the smoke run never
-        // touches a real installed profile on a persistent machine). Unset = unchanged behaviour.
-        const smokeUserDataDir = process.env.SMOKE_USER_DATA_DIR;
-        app = await electron.launch({
-            executablePath,
-            ...(smokeUserDataDir ? { args: [`--user-data-dir=${smokeUserDataDir}`] } : {}),
-            // Block any auto-updater check from racing the smoke test —
-            // we don't want a network failure during the update probe to
-            // shake the test. Empty string opts the renderer back to dev
-            // origin handling, which it isn't really, but the env var is
-            // only checked for "is set" semantics in main.ts.
-            env: {
-                ...process.env,
-                CIPHERLINE_SMOKE_TEST: '1',
-            },
-            timeout: TIMEOUT_MS,
-        });
+        const { problems, table } = verifyFusesOnDisk(executablePath, fuseConfig);
+        console.log(`[smoke] Electron fuses in the packaged binary: ${table}`);
+        if (problems.length > 0) {
+            console.error('[smoke] Electron fuses do not match package.json build.electronFuses:');
+            for (const p of problems) console.error(`  - ${p}`);
+            process.exit(1);
+        }
+    } catch (err) {
+        console.error('[smoke] Could not read the Electron fuses:', err?.message ?? err);
+        process.exit(1);
+    }
+
+    // ── 2. macOS: the native addon is signed by the same team as the app.
+    if (platform() === 'darwin') {
+        const run = (cmd, args) => {
+            const r = spawnSync(cmd, args, { encoding: 'utf8' });
+            return { status: r.status, output: `${r.stdout ?? ''}${r.stderr ?? ''}` };
+        };
+        const res = checkMacAddonSignature(executablePath, run);
+        if (res.skipped) {
+            console.log(`[smoke] macOS addon signature check skipped: ${res.skipped}`);
+        } else if (res.problems.length > 0) {
+            console.error('[smoke] macOS native addon signature problems:');
+            for (const p of res.problems) console.error(`  - ${p}`);
+            process.exit(1);
+        } else {
+            console.log(`[smoke] macOS addon is signed by the app's team (${res.appTeam})`);
+        }
+    }
+
+    // ── 3. Launch in smoke mode and wait for the app's own report.
+    const t0 = Date.now();
+    let ownedProfileDir = null;
+    // Optional throwaway profile (set by the self-hosted macOS CI job so the smoke run never
+    // touches a real installed profile on a persistent machine). Unset = unchanged behaviour.
+    // Without one (the Linux job), use a private temp profile: smoke mode
+    // needs a --user-data-dir anyway, and this keeps the run off any real
+    // profile on the runner.
+    let smokeUserDataDir = process.env.SMOKE_USER_DATA_DIR;
+    if (!smokeUserDataDir) {
+        smokeUserDataDir = mkdtempSync(join(tmpdir(), 'cl-smoke-'));
+        ownedProfileDir = smokeUserDataDir;
+    }
+    const reportPath = join(smokeUserDataDir, REPORT_FILE);
+    const shotPath = join(smokeUserDataDir, SCREENSHOT_FILE);
+    for (const f of [reportPath, shotPath]) { try { unlinkSync(f); } catch { /* none */ } }
+
+    const launch = {
+        args: [SMOKE_TEST_ARG, `--user-data-dir=${smokeUserDataDir}`],
+        // CIPHERLINE_SMOKE_TEST selects smoke mode together with the argument above
+        // (electron/smoke-mode.ts): updater, keystore persistence and the staging lock are off.
+        env: { ...process.env, CIPHERLINE_SMOKE_TEST: '1' },
+    };
+    // Linux CI runs the unpacked tree, whose chrome-sandbox helper is not set-uid
+    // root; Playwright's Electron driver used to add this for every launch.
+    if (platform() === 'linux') launch.args.push('--no-sandbox');
+
+    let child;
+    let output = '';
+    try {
+        child = spawn(executablePath, launch.args, { env: launch.env, stdio: ['ignore', 'pipe', 'pipe'] });
     } catch (err) {
         console.error('[smoke] Failed to launch:', err?.message ?? err);
         process.exit(1);
     }
+    const keep = (chunk) => { output = (output + chunk.toString()).slice(-16_000); };
+    child.stdout.on('data', keep);
+    child.stderr.on('data', keep);
+    let exited = null;
+    child.on('exit', (code, signal) => { exited = { code, signal }; });
+    child.on('error', (e) => { exited = { code: null, signal: null, error: e }; });
 
     let exitCode = 1;
-    let window;
-    const consoleErrors = [];
     try {
-        // First window — the main BrowserWindow created by main.ts.
-        window = await app.firstWindow({ timeout: TIMEOUT_MS });
-        console.log('[smoke] First window opened');
-
-        // P2-ELEC-13: Register console error listener immediately — before any
-        // waitFor* calls — so boot-time renderer errors are captured, not just
-        // post-paint errors.
-        window.on('console', (msg) => {
-            if (msg.type() === 'error') consoleErrors.push(msg.text());
-        });
-        window.on('pageerror', (err) => consoleErrors.push(`pageerror: ${err?.message ?? err}`));
-
-        // Wait for the renderer to do something measurable. We don't
-        // assume a specific element exists (the auth flow has multiple
-        // entry screens, gating on AuthContext state) — we just wait for
-        // the document body to have any non-empty visible content.
-        await window.waitForLoadState('domcontentloaded', { timeout: TIMEOUT_MS });
-        await window.waitForFunction(
-            () => document.body && document.body.innerText.trim().length > 0,
-            { timeout: TIMEOUT_MS },
-        );
-        console.log('[smoke] Renderer painted');
-
-        // Brief settle window so any post-mount async work that's going
-        // to crash has a chance to do so before we declare success.
-        await window.waitForTimeout(2000);
-
-        // Best-effort — this has been observed to hang/timeout on the CI
-        // runner even after a confirmed-good paint (screenshot capture is
-        // unrelated to "did the app boot", just a debugging aid), so it
-        // must never fail a smoke test that already passed its real checks.
-        try {
-            const screenshotPath = join(root, 'release', `smoke-${platform()}.png`);
-            await window.screenshot({ path: screenshotPath, timeout: 10_000 });
-            console.log(`[smoke] Screenshot saved: ${screenshotPath}`);
-        } catch (e) {
-            console.warn('[smoke] Screenshot capture failed/timed out (non-fatal):', e?.message ?? e);
+        let report = null;
+        const readReport = () => {
+            if (!existsSync(reportPath)) return null;
+            try { return JSON.parse(readFileSync(reportPath, 'utf8')); } catch { return null; /* partial write: retry */ }
+        };
+        while (Date.now() - t0 < TIMEOUT_MS && !report) {
+            report = readReport();
+            if (!report && exited) { report = readReport(); break; }
+            if (!report) await sleep(200);
         }
 
-        const elapsed = Date.now() - t0;
-        if (consoleErrors.length > 0) {
-            console.error(`[smoke] ${consoleErrors.length} console error(s):`);
-            for (const e of consoleErrors) console.error(`  - ${e}`);
-            exitCode = 1; // console errors = broken state we must not ship
-        } else {
-            console.log(`[smoke] OK in ${elapsed}ms`);
-            exitCode = 0;
-        }
-    } catch (err) {
-        console.error('[smoke] Failed:', err?.message ?? err);
-        // Best-effort diagnostics — a timeout/crash here is exactly when we
-        // most need to see what was on screen and what the console said,
-        // but the failure path previously exited blind (no screenshot, no
-        // console dump), making every prior CI failure a black box.
-        if (consoleErrors.length > 0) {
-            console.error(`[smoke] ${consoleErrors.length} console error(s) before failure:`);
-            for (const e of consoleErrors) console.error(`  - ${e}`);
-        }
-        if (window) {
+        // Best-effort debugging aid; never part of the verdict.
+        if (existsSync(shotPath)) {
             try {
-                const bodyText = await window.evaluate(() => document.body?.innerText ?? '');
-                console.error(`[smoke] body innerText at failure (${bodyText.length} chars): ${JSON.stringify(bodyText.slice(0, 500))}`);
-            } catch (e2) {
-                console.error('[smoke] could not read body innerText:', e2?.message ?? e2);
+                const out = join(root, 'release', `smoke-${platform()}.png`);
+                copyFileSync(shotPath, out);
+                console.log(`[smoke] Screenshot saved: ${out}`);
+            } catch (e) {
+                console.warn('[smoke] Screenshot copy failed (non-fatal):', e?.message ?? e);
             }
-            try {
-                const screenshotPath = join(root, 'release', `smoke-failure-${platform()}.png`);
-                await window.screenshot({ path: screenshotPath, timeout: 10_000 });
-                console.error(`[smoke] Failure screenshot saved: ${screenshotPath}`);
-            } catch (e2) {
-                console.error('[smoke] could not capture failure screenshot:', e2?.message ?? e2);
+        }
+
+        if (!report) {
+            const why = exited
+                ? `the app exited before reporting (${exited.error ? exited.error.message : `code ${exited.code}, signal ${exited.signal}`})`
+                : `no first-paint report within ${TIMEOUT_MS} ms`;
+            console.error(`[smoke] Failed: ${why}`);
+            if (output.trim()) console.error(`[smoke] app output (tail):\n${output.trim().split('\n').slice(-40).join('\n')}`);
+        } else if (report.status !== 'painted') {
+            console.error(`[smoke] Failed: ${report.status}${report.detail ? ` - ${report.detail}` : ''}`);
+            for (const e of report.consoleErrors ?? []) console.error(`  - ${e}`);
+        } else {
+            console.log('[smoke] First window painted');
+            if (!report.ok || (report.consoleErrors ?? []).length > 0) {
+                console.error(`[smoke] ${(report.consoleErrors ?? []).length} console error(s):`);
+                for (const e of report.consoleErrors ?? []) console.error(`  - ${e}`);
+                exitCode = 1; // console errors = broken state we must not ship
+            } else {
+                console.log(`[smoke] OK in ${Date.now() - t0}ms`);
+                exitCode = 0;
             }
         }
     } finally {
-        try { await app.close(); } catch { /* ignore */ }
+        killTree(child);
+        if (ownedProfileDir) {
+            // Give the OS a moment to release the profile's files after the kill.
+            await sleep(500);
+            try { rmSync(ownedProfileDir, { recursive: true, force: true }); } catch { /* best-effort */ }
+        }
     }
     process.exit(exitCode);
 })();

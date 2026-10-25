@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { KeyRound, X } from 'lucide-react';
-import { ClButton } from './cl';
+import { KeyRound } from 'lucide-react';
+import { ClBanner } from './ClBanner';
 import { keyProtectionNoticeCopy, type KeyProtectionNoticeCopy } from '../utils/keyProtectionNotice';
 
 /**
@@ -32,21 +32,16 @@ export const KeyProtectionNotice: React.FC = () => {
     };
 
     return (
-        <div
-            role="status"
-            className="w-full px-4 py-2.5 bg-sky-500/10 border-b border-sky-500/25 text-sky-200 text-sm flex items-start justify-between gap-3"
-        >
-            <div className="flex items-start gap-2 min-w-0">
-                <KeyRound size={15} className="shrink-0 mt-0.5" />
-                <div className="min-w-0">
-                    <div className="font-semibold">{copy.title}</div>
-                    <div className="opacity-90">{copy.body}</div>
-                </div>
-            </div>
-            <ClButton type="button" icon variant="ghost" size="sm" tooltip="Got it" onClick={dismiss}>
-                <X size={13} />
-            </ClButton>
-        </div>
+        <ClBanner
+            id="key-protection"
+            tone="info"
+            priority={35}
+            icon={<KeyRound size={15} />}
+            title={copy.title}
+            description={copy.body}
+            dismissLabel="Got it"
+            onDismiss={dismiss}
+        />
     );
 };
 

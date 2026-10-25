@@ -120,6 +120,7 @@
 import { secureLocalStore } from './secureLocalStore';
 import { getKnownDevices } from './keyVerification';
 import { isWarnable, type SenderVerdict } from './senderTrust';
+import { reportBeta } from './betaDiagnostics/reporter';
 
 /** Key prefix. `_{uid}` suffix puts it in `secureLocalStore`'s per-account
  *  tier — encrypted under HKDF(master, userId), so account A cannot read
@@ -332,6 +333,9 @@ export function raiseWarning(
         return;
     }
     if (existing && existing.verdict === verdict && existing.pub === pub) return;
+    // Beta diagnostics: a contact's device presented a different identity key
+    // (the session-reset signal). The verdict enum only — never who.
+    reportBeta('session_reset', { verdict, repeat: !!existing });
     store.warnings[theirUserId] = {
         verdict,
         pub: pub ? clip(pub) : '',

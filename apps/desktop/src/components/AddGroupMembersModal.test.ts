@@ -56,6 +56,9 @@ const flush = async () => { for (let i = 0; i < 10; i++) await act(async () => {
 const dialog = () => document.querySelector('[role="dialog"]') as HTMLElement | null;
 const btn = (match: RegExp) =>
     [...document.querySelectorAll('button')].find(b => match.test(b.textContent?.trim() ?? '')) as HTMLButtonElement | undefined;
+/** A person's row in the picker (a role=option, not a button). */
+const row = (name: string) =>
+    [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(o => o.textContent?.includes(name));
 const click = async (el: HTMLElement | undefined) => {
     expect(el).toBeDefined();
     await act(async () => { el!.click(); });
@@ -86,14 +89,14 @@ describe('AddGroupMembersModal', () => {
 
     it('does not offer people who are already in the group', async () => {
         await mount();
-        expect(btn(/Ann/)).toBeUndefined();
-        expect(btn(/Bob/)).toBeDefined();
+        expect(row('Ann')).toBeUndefined();
+        expect(row('Bob')).toBeDefined();
     });
 
     it('adds via the invite endpoint, tells the host at once, then closes itself after the success beat', async () => {
         const { onClose, onAdded } = await mount();
-        await click(btn(/Bob/));
-        await click(btn(/^Add 1 Member$/));
+        await click(row('Bob'));
+        await click(btn(/^Add 1 member$/));
 
         expect(axiosPost).toHaveBeenCalledWith(
             `${API_BASE}/conversations/conv-9/invite`,
@@ -112,8 +115,8 @@ describe('AddGroupMembersModal', () => {
     it('NEGATIVE CONTROL: a failed add stays open (error visible) and does not auto-close', async () => {
         axiosPost.mockRejectedValue(new Error('403'));
         const { onClose, onAdded } = await mount();
-        await click(btn(/Bob/));
-        await click(btn(/^Add 1 Member$/));
+        await click(row('Bob'));
+        await click(btn(/^Add 1 member$/));
 
         expect(document.body.textContent).toContain('Failed to add 1 member.');
         await act(async () => { vi.advanceTimersByTime(ADD_MEMBERS_CLOSE_DELAY_MS + 1000); });
@@ -123,9 +126,10 @@ describe('AddGroupMembersModal', () => {
         expect(onAdded.mock.calls[0][0].added).toEqual([]);
     });
 
-    it('Done closes it', async () => {
+    it('the primary is disabled until someone is picked, and Cancel closes it', async () => {
         const { onClose } = await mount();
-        await click(btn(/^Done$/));
+        expect(btn(/^Add members$/)?.disabled).toBe(true);
+        await click(btn(/^Cancel$/));
         await act(async () => { vi.advanceTimersByTime(400); });
         expect(onClose).toHaveBeenCalledTimes(1);
     });

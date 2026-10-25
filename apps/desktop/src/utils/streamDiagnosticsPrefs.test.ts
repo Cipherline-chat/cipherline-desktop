@@ -12,6 +12,7 @@ import {
     parseCodecPref,
     getScreenShareCodecPref, setScreenShareCodecPref,
     getStreamStatsHudEnabled, setStreamStatsHudEnabled,
+    getShareLowLayerEnabled, setShareLowLayerEnabled,
 } from './streamDiagnosticsPrefs';
 
 describe('streamDiagnosticsPrefs', () => {
@@ -28,6 +29,16 @@ describe('streamDiagnosticsPrefs', () => {
     it('defaults: overlay off, codec auto', () => {
         expect(getStreamStatsHudEnabled()).toBe(false);
         expect(getScreenShareCodecPref()).toBe('auto');
+    });
+
+    it('lighter copy for viewers: ON when never set (since 2026-10-23), a stored off is honoured', () => {
+        expect(getShareLowLayerEnabled()).toBe(true);
+        store.set('cipherline_share_low_layer', '0');
+        expect(getShareLowLayerEnabled()).toBe(false);
+        setShareLowLayerEnabled(true);
+        expect(getShareLowLayerEnabled()).toBe(true);
+        setShareLowLayerEnabled(false);
+        expect(getShareLowLayerEnabled()).toBe(false);
     });
 
     it('round-trips both preferences through the store', () => {

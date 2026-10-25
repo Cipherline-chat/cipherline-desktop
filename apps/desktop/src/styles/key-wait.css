@@ -241,14 +241,76 @@
 @keyframes ckw-bob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-3px); } }
 @keyframes ckw-pulse { 0%, 100% { opacity: .5; } 50% { opacity: 1; } }
 @keyframes ckw-list-in { from { opacity: 0; transform: translateY(10px); } }
+@keyframes ckw-banner-in { from { opacity: 0; transform: translateY(-6px); } }
+
+/* ── fallback: ONE banner over the feed when nobody answered ─────────────── */
+.ckw-banner {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  z-index: 25;
+  width: min(560px, calc(100% - 32px));
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px 10px 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(37, 224, 200, .22);
+  background: var(--cl-raise, #1A2240);
+  font-family: var(--cl-font-body, 'Nunito', system-ui, sans-serif);
+  animation: ckw-banner-in 260ms cubic-bezier(.2, .8, .2, 1) backwards;
+}
+.ckw-banner-lock {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  color: var(--cl-lume, #25E0C8);
+  background: rgba(37, 224, 200, .1);
+}
+.ckw-banner-text { flex: 1; min-width: 0; }
+.ckw-banner-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.3;
+  color: var(--cl-text, #F4F7FF);
+}
+.ckw-banner-detail {
+  margin: 2px 0 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--cl-muted, #A7B3D4);
+}
+.ckw-banner-retry {
+  flex: none;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(37, 224, 200, .35);
+  background: transparent;
+  color: var(--cl-lume, #25E0C8);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: opacity 160ms ease;
+}
+.ckw-banner-retry:hover:not(:disabled) { background: rgba(37, 224, 200, .1); }
+.ckw-banner-retry:focus-visible { outline: 2px solid var(--cl-lume, #25E0C8); outline-offset: 2px; }
+.ckw-banner-retry:disabled { opacity: .55; cursor: default; }
 
 /* Reduced motion: a still picture. The lock, halo and rows are drawn at rest;
    the copy still changes (instantly); the only fades are opacity, ≤160 ms. */
 @media (prefers-reduced-motion: reduce) {
   .ckw-root,
   .ckw-root *,
+  .ckw-banner,
   .ckw-list-in { animation: none !important; }
   .ckw-root { animation: ckw-fade-in 160ms ease-out backwards !important; }
+  .ckw-banner { animation: ckw-fade-in 160ms ease-out backwards !important; }
   .ckw-list-in { animation: ckw-fade-in 160ms ease-out backwards !important; }
   .ckw-ring { opacity: .22; transform: scale(1.3); }
   .ckw-ring-2 { opacity: 0; }

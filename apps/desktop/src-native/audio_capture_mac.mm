@@ -536,6 +536,8 @@ static napi_value StopCapture(napi_env env, napi_callback_info) {
 void RegisterWindowGeometry(napi_env env, napi_value exports);
 // share_power.cc — compiled on every platform; its macOS exports are no-ops.
 void RegisterSharePower(napi_env env, napi_value exports);
+// hdr_capture.cc — Windows HDR screen capture; every export is a no-op here.
+void RegisterHdrCapture(napi_env env, napi_value exports);
 
 static napi_value Init(napi_env env, napi_value exports) {
     napi_value fn;
@@ -554,6 +556,7 @@ static napi_value Init(napi_env env, napi_value exports) {
 
     RegisterWindowGeometry(env, exports);
     RegisterSharePower(env, exports);
+    RegisterHdrCapture(env, exports);
     return exports;
 }
 

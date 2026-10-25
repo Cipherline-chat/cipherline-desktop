@@ -13,6 +13,10 @@ import { Smile, Ghost } from 'lucide-react';
 import { useServerEmojiUrl } from '../../hooks/useServerEmojiUrl';
 import { evictEmoji } from '../../utils/serverEmojiLoader';
 import { useClTooltip } from '../cl/useClTooltip';
+import { useContextMenu } from '../../hooks/useContextMenu';
+import { useToast } from '../../contexts/ToastContext';
+import { MenuHost } from '../primitives/MenuHost';
+import { saveToMyEmojisItem } from '../personalEmojiSaveItem';
 
 interface PlaceholderProps {
     className?: string;
@@ -109,21 +113,27 @@ interface Props {
     /** Inline sizing (e.g. em-relative height/width/vertical-align for an
      *  inline-message render). Merged onto the element's own object-fit style. */
     style?: React.CSSProperties;
+    /** Right-click offers "Save to My Emojis" (message text, reactions). Off
+     *  for settings lists and pickers, where the emoji is already managed. */
+    saveable?: boolean;
 }
 
 /** Ids whose cached bytes already failed to decode once this session — one
  *  eviction + refetch each, never a loop. */
 const evictedOnce = new Set<string>();
 
-export const EmojiImage: React.FC<Props> = ({ name, serverId, attachmentId, keyB64, nonceB64, token, className, style }) => {
+export const EmojiImage: React.FC<Props> = ({ name, serverId, attachmentId, keyB64, nonceB64, token, className, style, saveable }) => {
     const ref = useMemo(
         () => ({ serverId: serverId ?? null, attachmentId, keyB64, nonceB64 }),
         [serverId, attachmentId, keyB64, nonceB64],
     );
     const url = useServerEmojiUrl(ref, token);
+    const ctx = useContextMenu();
+    const { push } = useToast();
 
     if (url) {
         return (
+            <>
             <img
                 src={url}
                 alt={`:${name}:`}
@@ -132,12 +142,20 @@ export const EmojiImage: React.FC<Props> = ({ name, serverId, attachmentId, keyB
                 style={style}
                 decoding="async"
                 draggable={false}
+                onContextMenu={saveable ? (e) => {
+                    ctx.open(e, [saveToMyEmojisItem(false, async () => {
+                        // The server already stored it at <=128 px and <=256 KB.
+                        try { return new Uint8Array(await (await fetch(url)).arrayBuffer()); } catch { return null; }
+                    }, name, push)], `:${name}:`);
+                } : undefined}
                 onError={() => {
                     if (evictedOnce.has(attachmentId)) return;
                     evictedOnce.add(attachmentId);
                     evictEmoji(attachmentId);
                 }}
             />
+            <MenuHost>{ctx.menu}</MenuHost>
+            </>
         );
     }
 

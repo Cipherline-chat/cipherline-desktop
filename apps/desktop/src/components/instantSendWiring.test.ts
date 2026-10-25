@@ -11,8 +11,9 @@ const src = readFileSync(join(__dirname, 'Dashboard.tsx'), 'utf8');
 
 describe('Dashboard wiring for instant send', () => {
     it('a send interrupted by quitting comes back as failed, not as a forever-"sending" message', () => {
-        expect(src).toContain("setMessagesState(settleInterruptedSends(await trackActivity('startup:history-load', () => messageStore.loadAll('dm', userId))));");
-        expect(src).toContain("setChannelMessages(settleInterruptedSends(await trackActivity('startup:history-load', () => messageStore.loadAll('channel', userId))));");
+        // (sanitizeStoredThreads: rows a renderer would throw on become placeholders — utils/contentValidation.ts)
+        expect(src).toContain("setMessagesState(sanitizeStoredThreads(settleInterruptedSends(await trackActivity('startup:history-load', () => messageStore.loadAll('dm', userId)))));");
+        expect(src).toContain("setChannelMessages(sanitizeStoredThreads(settleInterruptedSends(await trackActivity('startup:history-load', () => messageStore.loadAll('channel', userId)))));");
     });
 
     it('the live server echo of our own channel message adopts the local row (no duplicate, real id for pins/reactions)', () => {

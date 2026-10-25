@@ -89,7 +89,7 @@ export class UpdateCheckScheduler {
         const delay = opts.startupDelayMs ?? this.cfg.STARTUP_DELAY_MS;
         this.lastTickAt = this.startedAt = this.d.now();
         this.lastOnline = this.safeOnline();
-        this.startupTimer = setTimeout(() => { this.startupTimer = null; void this.check('startup'); }, delay);
+        this.startupTimer = setTimeout(() => { this.startupTimer = null; this.fire('startup'); }, delay);
         this.tickTimer = setInterval(() => this.tick(), this.cfg.TICK_MS);
         (this.startupTimer as { unref?: () => void }).unref?.();
         (this.tickTimer as { unref?: () => void }).unref?.();
@@ -108,8 +108,18 @@ export class UpdateCheckScheduler {
         if (this.disposed) return;
         this.quietUntil = this.d.now() + this.cfg.RESUME_SETTLE_MS;
         if (this.resumeTimer) clearTimeout(this.resumeTimer);
-        this.resumeTimer = setTimeout(() => { this.resumeTimer = null; void this.check('resume'); }, this.cfg.RESUME_SETTLE_MS);
+        this.resumeTimer = setTimeout(() => { this.resumeTimer = null; this.fire('resume'); }, this.cfg.RESUME_SETTLE_MS);
         (this.resumeTimer as { unref?: () => void }).unref?.();
+    }
+
+    /**
+     * Start a check nobody awaits (timers, the tick). check() already turns a
+     * failed `run` into a logged `result=error…` outcome; the catch here only
+     * stops a throwing dependency (canCheck, log, record) from becoming a
+     * main-process unhandledRejection — i.e. a recorded "crash".
+     */
+    private fire(reason: CheckReason, silentSkips = false): void {
+        this.check(reason, silentSkips).catch(() => { /* see above */ });
     }
 
     /**
@@ -182,12 +192,12 @@ export class UpdateCheckScheduler {
             // Held off by the debounce last time: try again until a check runs
             // (or there is nothing to check for).
             if (this.d.canCheck() !== null) this.pendingOnline = false;
-            else { void this.check('online', true); return; }
+            else { this.fire('online', true); return; }
         }
         // A skipped startup check still starts the clock, so the hourly check follows.
         const since = this.lastAttemptAt ?? this.startedAt;
         if (now - since >= this.cfg.INTERVAL_MS && this.d.canCheck() === null) {
-            void this.check('interval', true);
+            this.fire('interval', true);
         }
     }
 }

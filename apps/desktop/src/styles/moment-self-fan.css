@@ -1,0 +1,32 @@
+/* "Ten reactions. All yours." — components/moments/views/SelfFanMoment.tsx.
+   7.1 s, transform/opacity only. Phases: notice 0–0.5, main 0.5–2.5,
+   read 2.5–5.5, hold 5.5–6.5, exit 6.5–7.1. */
+.mo-fan-keys {
+  position: absolute; left: -70px; top: 80px;
+  animation:
+    mo-fan-up .8s cubic-bezier(.2, .8, .3, 1.1) .5s both,
+    mo-fan-down var(--mo-exit-dur, .6s) cubic-bezier(.45, 0, .55, 1) var(--mo-exit, 6.5s) forwards;
+}
+@keyframes mo-fan-up { from { transform: translateY(50vh); } to { transform: none; } }
+@keyframes mo-fan-down { from { transform: none; } to { transform: translateY(40vh); } }
+/* The pennant: swung up 1.2–1.7, pivoting on the bottom of its stick. */
+.mo-fan-pennant {
+  position: absolute; left: 112px; top: -96px; transform-origin: 11px 146px;
+  animation: mo-fan-raise .5s cubic-bezier(.2, .8, .3, 1.2) 1.2s both;
+}
+@keyframes mo-fan-raise { from { transform: rotate(-70deg) scale(.6); opacity: 0; } to { transform: none; opacity: 1; } }
+/* Waved 1.7–4.7: three full side-to-side sweeps, ending upright. */
+.mo-fan-wave { transform-origin: 11px 146px; animation: mo-fan-wave 1s ease-in-out 1.7s 3 both; }
+@keyframes mo-fan-wave {
+  0% { transform: none; } 25% { transform: rotate(-12deg); } 75% { transform: rotate(10deg); } 100% { transform: none; }
+}
+.mo-fan-float { position: absolute; top: 230px; opacity: 0; animation: mo-fan-float 1.8s ease-out both; }
+@keyframes mo-fan-float {
+  0% { transform: translateY(0) scale(.5); opacity: 0; } 15% { opacity: 1; }
+  100% { transform: translateY(-46vh) scale(1.1) rotate(20deg); opacity: 0; }
+}
+.mo-fan .mo-fan-pill {
+  top: -70px; font-size: 22px; padding: 10px 24px;
+  animation: mo-pill-in .5s cubic-bezier(.2, .8, .3, 1) 2s both;
+}
+.mo-fan-pill b { color: var(--cl-lume, #25E0C8); }

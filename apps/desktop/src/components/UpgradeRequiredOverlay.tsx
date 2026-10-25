@@ -1,109 +1,140 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { APP_VERSION } from '../constants';
-import { ClButton, ClModal } from './cl';
+import { useUpdate } from '../contexts/UpdateContext';
+import { DEFAULT_UPDATE_URL, UPGRADE_REQUIRED_EVENT, pinUpdateUrl } from '../utils/clientControl';
+import { fetchClientStatus } from '../utils/clientStatusFetch';
+import { UpdateRequiredScreen, type CheckPhase } from './UpdateRequiredScreen';
 
-type OverlayState =
-    | { kind: 'hidden' }
-    | { kind: 'upgrade-required'; minVersion?: string };
+/** Re-check for the update this often while nothing has been found yet. */
+const RECHECK_IDLE_MS = 5 * 60_000;
 
 /**
- * Blocking overlay shown when the server tells us our build is below
- * MIN_CLIENT_VERSION (via HTTP 426 on any REST call or WS close code 4426).
- * Mounted at the root of the app so it covers the auth screen, dashboard, and
- * pairing flow uniformly. Once shown it never hides — the old build is dead
- * to the server — the user has to restart into a fresh installer.
+ * Blocking full-screen "Update required", shown when the server says this
+ * build is below the version floor: HTTP 426 on any REST call, WS close 4426,
+ * or the boot / reconnect check against GET /v1/client-status
+ * (ClientControlGate). All three arrive as the `cipherline:upgrade-required`
+ * window event, optionally with `{ minVersion }`.
  *
- * This used to ALSO cover the soft "an update finished downloading, restart
- * whenever" case (a second copy of that nudge, alongside the old
- * UpdateReadyBanner). That's now the rail tile's job exclusively — see
- * UpdateRailTile.tsx / UpdateContext.tsx — one place for the ambient nudge
- * instead of two independently listening for the same event. This overlay
- * only ever renders for the forced, non-dismissible case now.
+ * Once shown it never hides — the old build is dead to the server. The way
+ * out is the update itself, driven through the existing auto-updater bridge
+ * (UpdateContext → preload `checkForUpdatesNow` / `retryUpdate` /
+ * `quitAndInstall`; no new IPC): on show it forces a check, electron-updater
+ * downloads automatically, and the button follows the updater's state to
+ * "Restart & update". The website download is a quiet fallback link.
+ *
+ * Props/API unchanged (default export, no props) — mounted once at the App
+ * root. The visual is UpdateRequiredScreen.
  */
 export default function UpgradeRequiredOverlay() {
-    const [state, setState] = useState<OverlayState>({ kind: 'hidden' });
-    const [relaunching, setRelaunching] = useState(false);
-    const [relaunchError, setRelaunchError] = useState<string | null>(null);
+    const [shown, setShown] = useState(false);
+    const [minVersion, setMinVersion] = useState<string | null>(null);
+    const [updateUrl, setUpdateUrl] = useState(DEFAULT_UPDATE_URL);
+    const [checkPhase, setCheckPhase] = useState<CheckPhase>('idle');
+    const [installing, setInstalling] = useState(false);
+    const [installError, setInstallError] = useState<string | null>(null);
+    const { state, retry, openDownload, checkNow } = useUpdate();
+    const shownRef = useRef(false);
+
+
+    const runCheck = useCallback(async () => {
+        setCheckPhase('checking');
+        try {
+            const dispatched = await checkNow();
+            // The answer arrives on `state`; if it stays idle the feed has
+            // nothing newer for this channel (yet).
+            setCheckPhase(dispatched ? 'none-found' : 'no-updater');
+        } catch {
+            setCheckPhase('error');
+        }
+    }, [checkNow]);
+
+    // On the FIRST signal: show, learn the required version / download page if
+    // the signal didn't carry them, and start the update right away. Done in
+    // the event handler (not an effect on `shown`) so it runs exactly once,
+    // with the updater state as it is at that moment (read through a ref).
+    const firstShow = useRef<() => void>(() => undefined);
+    useEffect(() => {
+        firstShow.current = () => {
+            void fetchClientStatus().then((s) => {
+                if (!s) return;
+                setUpdateUrl(s.updateUrl);
+                setMinVersion((cur) => cur ?? (s.minVersionDesktop !== '0.0.0' ? s.minVersionDesktop : null));
+            });
+            if (state.phase === 'idle') void runCheck();
+        };
+    });
 
     useEffect(() => {
         const onUpgradeRequired = (e: Event) => {
             const detail = (e as CustomEvent).detail as { minVersion?: string } | undefined;
-            setState({ kind: 'upgrade-required', minVersion: detail?.minVersion });
+            if (detail?.minVersion) setMinVersion(detail.minVersion);
+            if (shownRef.current) return;
+            shownRef.current = true;
+            setShown(true);
+            firstShow.current();
         };
-        window.addEventListener('cipherline:upgrade-required', onUpgradeRequired);
-        return () => window.removeEventListener('cipherline:upgrade-required', onUpgradeRequired);
+        window.addEventListener(UPGRADE_REQUIRED_EVENT, onUpgradeRequired);
+        return () => window.removeEventListener(UPGRADE_REQUIRED_EVENT, onUpgradeRequired);
     }, []);
 
-    if (state.kind === 'hidden') return null;
+    // While nothing is found, keep asking (a release may still be propagating).
+    useEffect(() => {
+        if (!shown || state.phase !== 'idle' || checkPhase !== 'none-found') return;
+        const t = setTimeout(() => { void runCheck(); }, RECHECK_IDLE_MS);
+        return () => clearTimeout(t);
+    }, [shown, state.phase, checkPhase, runCheck]);
 
-    const title = 'Update required';
-    const body = `Cipherline ${APP_VERSION} is no longer supported${state.minVersion ? ` (server requires ≥ ${state.minVersion})` : ''}. A newer build is required to continue. If an update is downloading in the background it will install on relaunch; otherwise download the latest installer from updates.cipherline.chat.`;
+    const openWebsite = useCallback(() => {
+        // Pinned again at the point of use: only ever our own download page.
+        window.electronAPI?.openExternal?.(pinUpdateUrl(updateUrl))?.catch?.(() => { /* nothing else to try */ });
+    }, [updateUrl]);
 
-    const handleRelaunch = async () => {
-        // quitAndInstall normally kills the process immediately on success, so
-        // in the success case nothing after this line ever runs — the states
-        // below exist entirely for the FAILURE case, which is exactly the one
-        // this used to say nothing about. Two distinct ways it fails, both
-        // previously silent:
-        //   (a) window.electronAPI?.quitAndInstall is undefined — a dev/
-        //       unpackaged build, or the preload bridge not exposing it — the
-        //       optional chain short-circuited and nothing happened at all.
-        //   (b) the IPC call itself rejects (missing/corrupt downloaded
-        //       installer, updater in a bad state) — swallowed by a bare
-        //       `.catch(() => {})`.
-        // In FORCED mode this button is the only thing on an undismissable
-        // modal, so silently doing nothing was a genuine dead end.
+    const install = useCallback(async () => {
+        // quitAndInstall kills the process on success, so everything after it
+        // is for the FAILURE case: no bridge (dev/unpackaged) or the IPC
+        // rejecting (corrupt download, updater in a bad state). Both used to
+        // be silent on an undismissable screen — a dead end.
         if (!window.electronAPI?.quitAndInstall) {
-            setRelaunchError('Restart isn’t available in this build. Download the latest installer from updates.cipherline.chat and reinstall manually.');
+            setInstallError('Restart isn’t available in this build — download the latest version from cipherline.chat.');
             return;
         }
-        setRelaunching(true);
-        setRelaunchError(null);
+        setInstalling(true);
+        setInstallError(null);
         try {
             await window.electronAPI.quitAndInstall();
         } catch (err) {
-            setRelaunching(false);
-            setRelaunchError('Could not restart automatically. Download the latest installer from updates.cipherline.chat and reinstall manually.');
+            setInstalling(false);
+            setInstallError('Couldn’t restart automatically. Try again, or download the latest version from cipherline.chat.');
             console.warn('[UpgradeRequiredOverlay] quitAndInstall failed:', err);
         }
-    };
+    }, []);
+
+    const onPrimary = useCallback(() => {
+        switch (state.phase) {
+            case 'ready': void install(); return;
+            case 'retrying':
+            case 'failed': retry(); return;
+            case 'manual': openDownload(); return;
+            case 'available':
+            case 'downloading': return;
+            default:
+                if (checkPhase === 'no-updater') openWebsite();
+                else void runCheck();
+        }
+    }, [state.phase, checkPhase, install, retry, openDownload, openWebsite, runCheck]);
+
+    if (!shown) return null;
 
     return (
-        // ClModal instead of a hand-rolled overlay — was entirely hardcoded
-        // hex (#1b1d22/#2b2e36/#f2f3f5/#c9ccd3), no cl-* tokens anywhere,
-        // reading as a pre-design-system dialog dropped in next to everything
-        // else in the app. Never dismissible — "once shown it never hides" —
-        // so onClose is a no-op and closeOnOverlay is off, same guarantee the
-        // old pointerEvents:'auto' hand-rolled backdrop gave.
-        <ClModal
-            open
-            onClose={() => {}}
-            closeOnOverlay={false}
-            width={480}
-            overlayStyle={{ zIndex: 100000 }}
-            label={title}
-        >
-            <h2 className="m-0 mb-3 text-xl font-semibold text-cl-text">
-                {title}
-            </h2>
-            <p className="m-0 mb-6 leading-relaxed text-cl-muted text-sm">
-                {body}
-            </p>
-            {relaunchError && (
-                <p className="m-0 mb-4 leading-relaxed text-sm" style={{ color: 'var(--cl-flash)' }}>
-                    {relaunchError}
-                </p>
-            )}
-            <div className="flex gap-2 justify-end">
-                <ClButton
-                    variant="primary"
-                    onClick={handleRelaunch}
-                    loading={relaunching}
-                    disabled={relaunching}
-                >
-                    Restart &amp; install
-                </ClButton>
-            </div>
-        </ClModal>
+        <UpdateRequiredScreen
+            currentVersion={APP_VERSION}
+            requiredVersion={minVersion}
+            update={state}
+            checkPhase={checkPhase}
+            installing={installing}
+            installError={installError}
+            onPrimary={onPrimary}
+            onOpenWebsite={openWebsite}
+        />
     );
 }

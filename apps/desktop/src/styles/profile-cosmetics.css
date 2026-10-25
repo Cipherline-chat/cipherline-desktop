@@ -1,0 +1,94 @@
+/* ============================================================================
+   Avatar decorations + profile effects (components/ProfileCosmetics.tsx,
+   components/cosmetics/). Motion policy:
+     - Loops run continuously while the window is focused and visible, and
+       every loop is seamless (alternate / whole-period keyframes).
+     - [data-cl-window="inactive"] (Cipherline not in front: blurred, hidden, minimised;
+       utils/idleMotion.ts): every decoration loop is paused, so a background
+       window costs nothing. NOT input idleness: a card you are reading keeps playing.
+       The effect canvas stops its own frame loop on the same signal.
+     - prefers-reduced-motion: no animation at all; the art is a still.
+   Decoration motion is transform / opacity / stroke-dashoffset on a handful of
+   SVG groups per item; effects are one <canvas> per card.
+   ============================================================================ */
+.pc-deco-host { position: relative; isolation: isolate; display: inline-block; }
+.pc-deco-host--block { display: block; }
+.pc-deco-art {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  overflow: visible; pointer-events: none;
+}
+.pc-deco-back { z-index: -1; }
+.pc-deco-front { z-index: 2; }
+
+/* ── decoration loops (all seamless) ─────────────────────────────────────── */
+.pc-spin { transform-origin: 50px 50px; animation: pc-spin calc(24s * var(--pc-speed, 1)) linear infinite; }
+.pc-spin--rev { animation-direction: reverse; animation-duration: calc(37s * var(--pc-speed, 1)); }
+.pc-breathe { animation: pc-breathe 5.2s ease-in-out infinite alternate; }
+.pc-glint { animation: pc-glint 9s linear infinite; }
+.pc-dashflow { animation: pc-dashflow calc(var(--pc-dash, 30) * .42s * var(--pc-speed, 1)) linear infinite; }
+.pc-flicker { animation: pc-flicker 2.3s steps(1, end) infinite; }
+.pc-twinkle { animation: pc-twinkle 3.6s ease-in-out infinite alternate; }
+.pc-sway { transform-box: fill-box; transform-origin: 50% 100%; animation: pc-sway calc(6.8s * var(--pc-speed, 1)) ease-in-out infinite alternate; }
+.pc-sway--long { animation-name: pc-sway-long; animation-duration: calc(7.6s * var(--pc-speed, 1)); }
+.pc-sway--fan { transform-origin: 0% 100%; animation-name: pc-sway-fan; animation-duration: 9s; }
+.pc-stream { transform-box: view-box; transform-origin: -2px -4px; animation: pc-stream calc(5.6s * var(--pc-speed, 1)) ease-in-out infinite alternate; }
+.pc-bob { animation: pc-bob 4.6s ease-in-out infinite alternate; }
+.pc-jelly { animation: pc-jelly 2.6s cubic-bezier(.45, 0, .3, 1) infinite; }
+.pc-glide { animation: pc-glide 8s ease-in-out infinite alternate; }
+.pc-cloak { transform-box: fill-box; transform-origin: 50% 0%; animation: pc-cloak 3.8s ease-in-out infinite alternate; }
+.pc-photophore { animation: pc-breathe 2.1s ease-in-out infinite alternate; }
+
+@keyframes pc-spin { to { transform: rotate(360deg); } }
+@keyframes pc-breathe { from { opacity: .55; } to { opacity: 1; } }
+@keyframes pc-glint { from { stroke-dashoffset: 100; } to { stroke-dashoffset: 0; } }
+@keyframes pc-dashflow { to { stroke-dashoffset: calc(var(--pc-dash, 30) * -1); } }
+@keyframes pc-flicker {
+  0% { opacity: .92; } 9% { opacity: .74; } 17% { opacity: 1; } 31% { opacity: .86; }
+  44% { opacity: .97; } 58% { opacity: .78; } 66% { opacity: .95; } 83% { opacity: .84; }
+}
+@keyframes pc-twinkle { from { opacity: .25; transform: scale(.7); } to { opacity: 1; transform: scale(1.05); } }
+@keyframes pc-sway { from { transform: rotate(-2.6deg); } to { transform: rotate(2.6deg); } }
+@keyframes pc-sway-long { from { transform: rotate(-3.4deg) skewX(1.5deg); } to { transform: rotate(2.4deg) skewX(-1.5deg); } }
+@keyframes pc-sway-fan { from { transform: rotate(-1.2deg); } to { transform: rotate(1.2deg); } }
+@keyframes pc-stream { from { transform: rotate(-3deg); } to { transform: rotate(3.5deg); } }
+@keyframes pc-bob { from { transform: translateY(1.5px); } to { transform: translateY(-2.5px); } }
+@keyframes pc-jelly {
+  0%, 100% { transform: scale(1, 1); }
+  35% { transform: scale(1.07, .9); }
+  60% { transform: scale(.97, 1.04); }
+}
+@keyframes pc-glide { from { transform: translateY(1px) rotate(-2.2deg) scaleX(.97); } to { transform: translateY(-2px) rotate(2deg) scaleX(1); } }
+@keyframes pc-cloak { from { transform: scale(1, 1); } to { transform: scale(1.05, .93); } }
+
+/* ── effects: one canvas over the card ───────────────────────────────────────
+   Sits over the banner and the text but under the avatar (z 2): light is
+   added with `screen`, and every effect keeps its peak alpha low over the
+   text column (cosmetics/effects/). */
+[data-has-fx] { isolation: isolate; }
+.pc-fx {
+  position: absolute; inset: 0; z-index: 1; pointer-events: none;
+  overflow: hidden; border-radius: inherit; contain: strict;
+}
+.pc-fx > canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; mix-blend-mode: screen; }
+.pc-fx[data-blend="normal"] > canvas { mix-blend-mode: normal; }
+
+@media (prefers-reduced-motion: reduce) {
+  .pc-spin, .pc-breathe, .pc-glint, .pc-dashflow, .pc-flicker, .pc-twinkle, .pc-sway,
+  .pc-stream, .pc-bob, .pc-jelly, .pc-glide, .pc-cloak, .pc-photophore { animation: none !important; }
+}
+/* Window not in front (blurred / hidden / minimised): pause every loop. Input idleness does not. */
+:root[data-cl-window="inactive"] :is(.pc-spin, .pc-breathe, .pc-glint, .pc-dashflow, .pc-flicker, .pc-twinkle, .pc-sway,
+  .pc-stream, .pc-bob, .pc-jelly, .pc-glide, .pc-cloak, .pc-photophore) { animation-play-state: paused; }
+
+/* ── small card parts ─────────────────────────────────────────────────────── */
+.pc-chip {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 100%;
+  padding: 3px 10px 3px 6px; border-radius: 999px; font-size: 12px; font-weight: 600;
+  color: var(--cl-muted); background: rgba(255, 255, 255, .06); border: 1px solid rgba(255, 255, 255, .1);
+}
+.pc-chip--game { padding: 3px 10px; }
+.pc-chip--link { font-family: inherit; cursor: default; }
+button.pc-chip--link { cursor: pointer; }
+button.pc-chip--link:hover { background: rgba(255, 255, 255, .1); color: var(--cl-text); }
+button.pc-chip--link:focus-visible { outline: 2px solid var(--cl-lume, #25e0c8); outline-offset: 2px; }
+.pc-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

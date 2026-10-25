@@ -2,6 +2,7 @@
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
 import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
+import { isLegacyVerified } from '../utils/verificationStrength';
 
 /**
  * ── What these tests are about ──────────────────────────────────────────────
@@ -62,11 +63,11 @@ vi.mock('axios', () => ({
  */
 const markVerified = vi.fn();
 const acknowledgeKeyChange = vi.fn();
-let pinStore: Record<string, { pub: string; verified: boolean; sv?: number }> = {};
-/** A pin as written today: a verified one carries the v2 provenance stamp. */
-const pin = (pub: string, verified: boolean) => (verified ? { pub, verified, sv: 2 } : { pub, verified });
-/** A verification written before safety-number v2 (no `sv`). */
-const legacyPin = (pub: string) => ({ pub, verified: true });
+let pinStore: Record<string, { pub: string; verified: boolean; sv?: number; verified_at?: number }> = {};
+/** A pin as written today: a verified one carries the provenance stamp and a fresh date. */
+const pin = (pub: string, verified: boolean) => (verified ? { pub, verified, sv: 2, verified_at: Date.now() } : { pub, verified });
+/** A verification made over a year ago: the "Re-check suggested" case. */
+const legacyPin = (pub: string) => ({ pub, verified: true, sv: 2, verified_at: Date.now() - 366 * 24 * 60 * 60 * 1000 });
 
 vi.mock('../utils/keyVerification', () => ({
     getDeviceVerification: (_my: string, _their: string, pub?: string, deviceId?: string) => {
@@ -74,7 +75,7 @@ vi.mock('../utils/keyVerification', () => ({
         if (!rec) return { state: 'unverified', legacy: false };
         if (pub && pub !== rec.pub) return { state: 'key_changed', legacy: false };
         return rec.verified
-            ? { state: 'verified', legacy: !(typeof rec.sv === 'number' && rec.sv >= 2) }
+            ? { state: 'verified', legacy: isLegacyVerified(rec) }
             : { state: 'unverified', legacy: false };
     },
     markVerified: (...a: unknown[]) => markVerified(...a),
@@ -264,7 +265,7 @@ describe('SafetyVerificationModal — a fully verified contact is congratulated,
     }, 30_000);
 });
 
-describe('SafetyVerificationModal — G1 migration: a pre-v2 verification is refreshed, not celebrated and not alarmed', () => {
+describe('SafetyVerificationModal — re-check nudge: a year-old verification is refreshed, not celebrated and not alarmed', () => {
     /** React tracks the input's value via the prototype setter. */
     function typeCode(value: string) {
         const input = q('#cl-verify-code-input') as HTMLInputElement;
@@ -285,7 +286,7 @@ describe('SafetyVerificationModal — G1 migration: a pre-v2 verification is ref
         expect(q('.cl-allclear')).toBeNull();
         expect(text()).not.toContain('Identity verified');
         expect(quickVerifyShown()).toBe(true);
-        expect(text()).toContain('before safety numbers were strengthened');
+        expect(text()).toContain('over a year ago');
         // Calm: no alarm wording anywhere on the screen.
         expect(text()).not.toContain('Security Alert');
         expect(text()).not.toContain('Key changed');
@@ -301,7 +302,7 @@ describe('SafetyVerificationModal — G1 migration: a pre-v2 verification is ref
         await settle();
 
         expect(q('.cl-allclear')).not.toBeNull();
-        expect(text()).not.toContain('before safety numbers were strengthened');
+        expect(text()).not.toContain('over a year ago');
     }, 30_000);
 
     it('a matching code re-marks the legacy device, which is what refreshes it', async () => {
@@ -319,7 +320,7 @@ describe('SafetyVerificationModal — G1 migration: a pre-v2 verification is ref
 
         // Exactly the legacy device: the v2-verified one needs no rewrite.
         expect(markVerified).toHaveBeenCalledTimes(1);
-        expect(markVerified).toHaveBeenCalledWith(ME, ALICE, b64(1), 'dev-a1');
+        expect(markVerified).toHaveBeenCalledWith(ME, ALICE, b64(1), 'dev-a1', 'Alice');
     }, 30_000);
 
     it('the by-eye digits are labelled v2 with a pointer for contacts still on 6 groups', async () => {
@@ -344,7 +345,7 @@ describe('SafetyVerificationModal — G1 migration: a pre-v2 verification is ref
 
         expect(q('.cl-allclear')).toBeNull();
         expect(quickVerifyShown()).toBe(true);
-        expect(text()).toContain('before safety numbers were strengthened');
+        expect(text()).toContain('over a year ago');
     }, 30_000);
 });
 

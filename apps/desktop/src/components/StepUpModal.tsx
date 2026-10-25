@@ -1,7 +1,9 @@
 import React, { useEffect, useId, useRef, useState } from 'react';
-import { ShieldCheck } from 'lucide-react';
+import { ShieldCheck, Lock } from 'lucide-react';
 import { ClButton } from './ClButton';
 import { ClField, ClInput, ClModal } from './cl';
+import { DialogHeader, DialogBody, DialogFooter } from './dialog/DialogFrame';
+import { DialogForm } from './dialog/DialogExtras';
 import type { StepUpMethod } from '../services/stepUp';
 
 /**
@@ -56,51 +58,47 @@ export const StepUpModal: React.FC<StepUpModalProps> = ({
     const cancel = () => { if (!busy) onCancel(); };
 
     return (
-        <ClModal open={open} onClose={cancel} width={380} closeOnOverlay={false} label="Confirm it's you">
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
-                <div style={{ width: 36, height: 36, borderRadius: 12, background: 'rgba(37,224,200,.12)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                    <ShieldCheck size={17} style={{ color: 'var(--cl-lume)' }} />
-                </div>
-                <h4 style={{ margin: 0 }}>Confirm it's you</h4>
-            </div>
-            <p style={{ fontSize: 13, color: 'var(--cl-muted)', lineHeight: 1.6, marginBottom: 14 }}>
-                {isTotp
-                    ? <>Enter a code from your authenticator app, or one of your backup codes, to show {subject}.</>
+        <ClModal open={open} onClose={cancel} width={420} closeOnOverlay={false} label="Confirm it's you" cardClassName="dlg-card">
+            <DialogHeader
+                icon={<ShieldCheck size={19} strokeWidth={2.2} />}
+                title="Confirm it's you"
+                subtitle={isTotp
+                    ? <>Enter a code from your authenticator app, or a backup code, to show {subject}.</>
                     : <>Enter your account password to show {subject}.</>}
-            </p>
-            <form onSubmit={submit} noValidate>
-                <ClField label={isTotp ? 'Authenticator or backup code' : 'Account password'} htmlFor={id}>
-                    <ClInput
-                        ref={inputRef}
-                        id={id}
-                        type={isTotp ? 'text' : 'password'}
-                        inputMode={isTotp ? 'text' : undefined}
-                        value={value}
-                        onChange={(e) => { setValue(e.target.value); onEdit?.(); }}
-                        autoFocus
-                        autoComplete={isTotp ? 'one-time-code' : 'current-password'}
-                        spellCheck={false}
-                        maxLength={isTotp ? 32 : 256}
-                        disabled={busy}
-                        aria-invalid={error ? true : undefined}
-                        aria-describedby={`${id}-err`}
-                        style={{ width: '100%' }}
-                    />
-                </ClField>
-                {/* Always in the DOM so assistive tech announces text when it appears. */}
-                <div
-                    id={`${id}-err`}
-                    role="alert"
-                    aria-live="assertive"
-                    style={{ minHeight: 18, marginTop: 8, fontSize: 12, fontWeight: 700, color: 'var(--cl-flash)' }}
+            />
+            <DialogForm onSubmit={() => submit()}>
+                <DialogBody>
+                    <ClField label={isTotp ? 'Authenticator or backup code' : 'Account password'} htmlFor={id}>
+                        <ClInput
+                            ref={inputRef}
+                            id={id}
+                            type={isTotp ? 'text' : 'password'}
+                            inputMode={isTotp ? 'text' : undefined}
+                            value={value}
+                            onChange={(e) => { setValue(e.target.value); onEdit?.(); }}
+                            autoFocus
+                            autoComplete={isTotp ? 'one-time-code' : 'current-password'}
+                            spellCheck={false}
+                            maxLength={isTotp ? 32 : 256}
+                            disabled={busy}
+                            aria-invalid={error ? true : undefined}
+                            aria-describedby={`${id}-err`}
+                            style={{ width: '100%' }}
+                        />
+                    </ClField>
+                    {/* Always in the DOM so assistive tech announces text when it appears. */}
+                    <div id={`${id}-err`} className="dlg-field-error" role="alert" aria-live="assertive" style={{ marginTop: 8 }}>
+                        {error}
+                    </div>
+                </DialogBody>
+                <DialogFooter hint={busy
+                    ? <>Checking…</>
+                    : <><Lock size={13} aria-hidden /> Never stored or saved</>}
                 >
-                    {error}
-                </div>
-                <div className="mrow" style={{ marginTop: 10 }}>
                     <ClButton type="button" variant="ghost" size="sm" onClick={cancel} disabled={busy}>Cancel</ClButton>
                     <ClButton type="submit" size="sm" loading={busy} disabled={!canSubmit}>Confirm</ClButton>
-                </div>
-            </form>
+                </DialogFooter>
+            </DialogForm>
         </ClModal>
     );
 };

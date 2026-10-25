@@ -393,6 +393,7 @@ describe('playback-path coverage scan', () => {
         'components/SharedContentModal.tsx#muted': 'offscreen/muted poster capture',
         'utils/gpuRecoveryRoom.ts': 're-attaches remote VIDEO tracks',
         'utils/audioHealth.ts': 'probe, never connected to destination',
+        'utils/customEntranceSound/browser.ts': 'encode fallback: the clip is routed into a MediaStreamDestination for MediaRecorder, never to ctx.destination (playback is notificationSounds)',
     };
     const MAKES_SOUND = /new Audio\(|new AudioContext\(|new \(?window as any\)?\.AudioContext|new AudioCtx\(|<audio\b|<video\b[^>]*\bcontrols\b/;
 

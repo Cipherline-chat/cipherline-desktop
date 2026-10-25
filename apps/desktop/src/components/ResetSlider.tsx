@@ -3,8 +3,11 @@ import { ClSlider } from './cl';
 
 /**
  * Drop-in replacement for <input type="range"> that resets to `resetValue`
- * on double-click. All other props (className, style, min, max, step, …)
- * are forwarded unchanged.
+ * on double-click. The reset itself lives in ClSlider (so it commits through
+ * the same onChange a drag does, repaints the thumb, and shows the
+ * "Double-click to reset" hint); this wrapper only maps the old
+ * input-style props onto it. All other props (className, style, min, max,
+ * step, …) are forwarded unchanged.
  */
 interface ResetSliderProps extends Omit<React.InputHTMLAttributes<HTMLInputElement>, 'type' | 'onChange'> {
     value: number;
@@ -16,7 +19,6 @@ export const ResetSlider: React.FC<ResetSliderProps> = ({
     value,
     resetValue,
     onChangeValue,
-    onDoubleClick,
     min,
     max,
     step,
@@ -26,11 +28,6 @@ export const ResetSlider: React.FC<ResetSliderProps> = ({
     ...rest
 }) => (
     <div
-        onDoubleClick={e => {
-            onChangeValue(resetValue);
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
-            onDoubleClick?.(e as any);
-        }}
         style={style}
         className={className}
         {...rest}
@@ -41,6 +38,7 @@ export const ResetSlider: React.FC<ResetSliderProps> = ({
             min={min !== undefined ? Number(min) : 0}
             max={max !== undefined ? Number(max) : 100}
             step={step !== undefined ? Number(step) : undefined}
+            resetValue={resetValue}
             disabled={disabled}
         />
     </div>

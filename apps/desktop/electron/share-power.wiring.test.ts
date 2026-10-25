@@ -36,7 +36,7 @@ const WIN32_ONLY = [
     'timeBeginPeriod', 'timeEndPeriod', 'SHQueryUserNotificationState', 'GetForegroundWindow',
     'QueryFullProcessImageNameW', 'CreateToolhelp32Snapshot', 'Process32FirstW', 'MonitorFromWindow',
     'GetMonitorInfoW', 'GetClassNameW', 'GetWindowRect', 'GetWindowThreadProcessId', 'GetCurrentProcessId',
-    'GetLastError', 'WideCharToMultiByte', 'IsWindow', 'GetDesktopWindow', 'GetShellWindow',
+    'GetLastError', 'WideCharToMultiByte', 'IsWindow', 'GetDesktopWindow', 'GetShellWindow', 'GetAncestor', 'GA_ROOT',
     'DWORD', 'HWND', 'HANDLE', 'HMONITOR', 'HRESULT', 'QUERY_USER_NOTIFICATION_STATE', 'ERROR_INVALID_PARAMETER',
     // The D3DKMT GPU scheduling class (gdi32 thunks, resolved at run time).
     'LoadLibraryExW', 'LOAD_LIBRARY_SEARCH_SYSTEM32', 'PROCESS_SET_INFORMATION', 'ERROR_CALL_NOT_IMPLEMENTED', 'APIENTRY',

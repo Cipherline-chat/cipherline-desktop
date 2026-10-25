@@ -760,6 +760,7 @@
    device unvouched for, or a code committing to a device set this client has
    not pinned. Amber, matching `TrustBadge`'s `partially_verified`, because
    green is a claim about all of it. Never red: nothing is wrong yet. */
+.cl-sn-result--stack{flex-direction:column;gap:5px}
 .cl-sn-result--warn{color:var(--cl-glow);background:rgba(255,201,77,.08);border:1px solid rgba(255,201,77,.30)}
 .cl-sn-retry{
   background:none;border:0;padding:0;margin-left:auto;cursor:pointer;

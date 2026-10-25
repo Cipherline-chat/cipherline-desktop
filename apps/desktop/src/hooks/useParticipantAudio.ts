@@ -57,7 +57,12 @@ import { RNNOISE_SAMPLE_RATE, isUsableRnnoiseContext, RNNOISE_COMP_GAIN } from '
 import { applyOutputDevice, unregisterOutputDeviceTarget, registerOutputAudioContext } from '../utils/audioOutput';
 import { workletModuleUrl, forgetWorkletModuleUrl } from '../utils/workletModuleUrl';
 import { choosePlaybackPath, elementVolumeFor, webAudioExtraMs, type PlaybackInfo, type PlaybackPath } from '../utils/avSync';
+import { clampVolumePercent, clampPerUserVolume } from '../utils/volumeLimits';
 import { notePlaybackPath, noteWebAudioContext } from '../utils/avSyncMonitor';
+import { ReceiveLeveler, dbToLinear, stepBoostLatch } from '../audio/receiveLeveler.js';
+import {
+    LEVELER_POLL_MS, boostNeedsWebAudio, isIncomingLevelerEnabled, pickRtpLevel, subscribeIncomingLeveler,
+} from '../utils/incomingLeveler';
 
 // ── Shared AudioContext ─────────────────────────────────────────────────────
 let sharedAudioCtx: AudioContext | null = null;
@@ -142,9 +147,11 @@ export const getSharedAudioContext = (): AudioContext | null => {
 //   slider 0.5 → gain ≈ 0.354 (≈ -9 dB)
 //   slider 1.0 → gain  = 1.000 ( 0 dB, baseline unchanged)
 //   slider 2.0 → gain ≈ 2.828 (≈ +9 dB) — meaningful boost, not a tiny nudge
-//   slider 4.0 → gain ≈ 8.000 (≈ +18 dB) — rescue genuinely quiet peers
+//   (the slider stops at 2.0 / 200 % — see utils/volumeLimits.ts)
 const PER_USER_GAIN_EXPONENT = 1.5;
-const sliderToGain = (slider: number): number => Math.pow(Math.max(0, slider), PER_USER_GAIN_EXPONENT);
+// Clamped to the 200 % ceiling here too, so no caller (a stale persisted 400 %,
+// a volume-change event) can drive the gain past what the slider allows.
+const sliderToGain = (slider: number): number => Math.pow(clampPerUserVolume(slider, 0), PER_USER_GAIN_EXPONENT);
 
 // ── Master incoming-volume gain ─────────────────────────────────────────────
 // Every per-participant chain feeds into this single master gain instead of
@@ -163,7 +170,7 @@ function readPersistedMasterSlider(): number {
         const v = secureLocalStore.getItem(MASTER_GAIN_STORAGE_KEY);
         if (v === null) return 100;
         const n = parseFloat(v);
-        return Number.isFinite(n) ? Math.max(0, Math.min(300, n)) : 100;
+        return Number.isFinite(n) ? clampVolumePercent(n) : 100;
     } catch {
         return 100;
     }
@@ -172,7 +179,7 @@ function readPersistedMasterSlider(): number {
 function masterSliderToGain(slider: number): number {
     // Slider is 0..200 (matches Settings UI). Convert to 0..2.0 then apply
     // perceptual curve so 100 → 1.0 (unity), 200 → ~2.83 (≈ +9 dB).
-    return Math.pow(Math.max(0, slider) / 100, MASTER_GAIN_EXPONENT);
+    return Math.pow(clampVolumePercent(slider, 0) / 100, MASTER_GAIN_EXPONENT);
 }
 
 // The master slider is ALSO an input to every chain's playback-path choice
@@ -225,7 +232,8 @@ export function getMasterGain(ctx: AudioContext): GainNode {
 }
 
 /** Settings calls this when the speaker-volume slider moves. */
-export function setMasterVolume(slider: number): void {
+export function setMasterVolume(sliderIn: number): void {
+    const slider = clampVolumePercent(sliderIn);
     try { secureLocalStore.setItem(MASTER_GAIN_STORAGE_KEY, String(slider)); } catch { /* quota */ }
     const changed = masterSliderCache !== slider;
     masterSliderCache = slider;
@@ -273,7 +281,7 @@ function readPersistedPerUserVolume(identity: string, type: 'mic' | 'screen'): n
         const v = secureLocalStore.getItem(`cipherline_vol_${type}_${identity}`);
         if (v === null) return 1;
         const n = parseFloat(v);
-        return Number.isFinite(n) ? Math.max(0, n) : 1;
+        return Number.isFinite(n) ? clampPerUserVolume(n) : 1;
     } catch {
         return 1;
     }
@@ -305,18 +313,23 @@ interface PlaybackChainBase {
     gain?: GainNode;                    // 'webaudio' only — per-user volume/mute
     /** Linear per-user gain the callers last asked for. */
     perUserGain: number;
+    /** Linear gain from the incoming-volume leveler (1 = none). Multiplied in
+     *  BEFORE the user's own slider is applied, so manual volume keeps working
+     *  exactly as before; always 1 for screen-share audio. */
+    levelGain: number;
     /** Local mute / deafen / screen-share mute. */
     silenced: boolean;
 }
 
 /** Write the chain's current volume state to whichever path is live. */
 function applyChainVolume(chain: PlaybackChainBase): void {
+    const wanted = chain.perUserGain * chain.levelGain;
     if (chain.path === 'webaudio') {
-        if (chain.gain) chain.gain.gain.value = chain.silenced ? 0 : chain.perUserGain;
+        if (chain.gain) chain.gain.gain.value = chain.silenced ? 0 : wanted;
         chain.attachedEl.volume = 0;
     } else {
         try {
-            chain.attachedEl.volume = elementVolumeFor(chain.perUserGain, masterSliderToGain(getMasterSlider()), chain.silenced);
+            chain.attachedEl.volume = elementVolumeFor(wanted, masterSliderToGain(getMasterSlider()), chain.silenced);
         } catch { /* element detached mid-teardown */ }
     }
 }
@@ -326,8 +339,95 @@ function pathFor(identity: string, type: 'mic' | 'screen', nsEnabled: boolean): 
         nsEnabled,
         perUserGain: sliderToGain(readPersistedPerUserVolume(identity, type)),
         masterGain: masterSliderToGain(getMasterSlider()),
+        levelBoost: type === 'mic' && levelBoostLatched.has(identity),
     });
 }
+
+// ── Incoming-volume leveler (Settings → Voice & Video → "Normalize voice volume") ──
+// Per remote MICROPHONE chain: read the talker's level from the RTP
+// ssrc-audio-level header extension (RTCRtpReceiver.getSynchronizationSources,
+// ~50 ms poll), feed audio/receiveLeveler.js, and fold its small slow gain into
+// the chain's volume (applyChainVolume). Nothing sits in the audio path for it:
+// no tap, no extra node, no latency. It is a cut on the element path; only a
+// SUSTAINED boost that the element cannot play (volume tops out at 1) latches
+// the talker onto the Web Audio path (latency cost, see utils/avSync.ts).
+// See audio/receiveLeveler.js for why this cannot fight the sender's AGC.
+const levelBoostLatched = new Set<string>();
+const levelBoostListeners = new Set<() => void>();
+function subscribeLevelBoost(cb: () => void): () => void {
+    levelBoostListeners.add(cb);
+    return () => { levelBoostListeners.delete(cb); };
+}
+function notifyLevelBoost(): void {
+    levelBoostListeners.forEach(cb => { try { cb(); } catch { /* ignore */ } });
+}
+
+let levelerTimer: ReturnType<typeof setInterval> | null = null;
+
+function pollLevelers(): void {
+    const now = performance.now();
+    const masterLinear = masterSliderToGain(getMasterSlider());
+    micChains.forEach((chain, identity) => {
+        const receiver = chain.pub.track?.receiver;
+        if (!receiver || typeof receiver.getSynchronizationSources !== 'function') return;
+        const dt = chain.levelPollAtMs > 0 ? Math.min(0.5, (now - chain.levelPollAtMs) / 1000) : LEVELER_POLL_MS / 1000;
+        chain.levelPollAtMs = now;
+        const level = pickRtpLevel(receiver.getSynchronizationSources(), now);
+        if (level === undefined) return; // no fresh reading = a pause: gain holds
+        const gainDb = chain.leveler.pushLinear(level, dt);
+        const linear = dbToLinear(gainDb);
+        if (Math.abs(gainDb - chain.levelGainDb) >= 0.05) {
+            chain.levelGainDb = gainDb;
+            chain.levelGain = linear;
+            applyChainVolume(chain);
+            // Whole-dB milestones only, and no identity: this is for checking a
+            // two-person call from DevTools, not a log of who talks.
+            if (Math.abs(gainDb - chain.levelLoggedDb) >= 1) {
+                chain.levelLoggedDb = gainDb;
+                console.info(`[leveler] gain ${gainDb >= 0 ? '+' : ''}${gainDb.toFixed(1)} dB (talker active level ${chain.leveler.levelDb.toFixed(1)} dBFS, path ${chain.path})`);
+            }
+        }
+        if (chain.path === 'element' && !levelBoostLatched.has(identity)) {
+            const wants = boostNeedsWebAudio(chain.perUserGain, masterLinear, gainDb);
+            const step = stepBoostLatch(chain.boostAccumSec, wants, dt);
+            chain.boostAccumSec = step.accumSec;
+            if (step.latched) {
+                levelBoostLatched.add(identity);
+                notifyLevelBoost();
+            }
+        }
+    });
+}
+
+/** Run the poll timer exactly while the setting is on and there is a chain. */
+function syncLevelerTimer(): void {
+    const want = isIncomingLevelerEnabled() && micChains.size > 0;
+    if (want && !levelerTimer) {
+        levelerTimer = setInterval(pollLevelers, LEVELER_POLL_MS);
+    } else if (!want && levelerTimer) {
+        clearInterval(levelerTimer);
+        levelerTimer = null;
+    }
+}
+
+function resetLeveler(chain: MicChain): void {
+    chain.leveler.reset();
+    chain.levelGainDb = 0;
+    chain.levelLoggedDb = 0;
+    chain.levelGain = 1;
+    chain.boostAccumSec = 0;
+    chain.levelPollAtMs = 0;
+}
+
+// The setting flipped: off = every talker back to unity (and off the boost
+// path), on = start measuring from scratch.
+subscribeIncomingLeveler(() => {
+    if (!isIncomingLevelerEnabled()) {
+        micChains.forEach(c => { resetLeveler(c); applyChainVolume(c); });
+        if (levelBoostLatched.size) { levelBoostLatched.clear(); notifyLevelBoost(); }
+    }
+    syncLevelerTimer();
+});
 
 function playbackInfoOf(path: PlaybackPath, nsEnabled: boolean): PlaybackInfo {
     const ctx = sharedAudioCtx;
@@ -379,6 +479,12 @@ interface MicChain extends PlaybackChainBase {
     pub: RemoteTrackPublication;
     nsWorklet?: AudioWorkletNode;
     nsWorker?: Worker;
+    /** Incoming-volume leveler state (see "Incoming-volume leveler" above). */
+    leveler: ReceiveLeveler;
+    levelGainDb: number;
+    levelLoggedDb: number;
+    boostAccumSec: number;
+    levelPollAtMs: number;
 }
 const micChains = new Map<string, MicChain>();
 // Per-identity in-flight build/rebuild promises. Without this, two concurrent
@@ -603,11 +709,18 @@ async function acquireMicChain(p: RemoteParticipant, nsEnabled: boolean): Promis
                 nsEnabled,
                 pub,
                 perUserGain: sliderToGain(readPersistedPerUserVolume(p.identity, 'mic')),
+                levelGain: 1,
+                leveler: new ReceiveLeveler(),
+                levelGainDb: 0,
+                levelLoggedDb: 0,
+                boostAccumSec: 0,
+                levelPollAtMs: 0,
                 silenced: false,
                 ...internals,
             };
             applyChainVolume(newChain);
             micChains.set(p.identity, newChain);
+            syncLevelerTimer();
             logPath(p.identity, 'mic', internals.path, nsEnabled, 'join');
             return newChain;
         })();
@@ -635,6 +748,8 @@ function releaseMicChain(identity: string): void {
     if (chain.refCount <= 0) {
         teardownMicInternals(chain);
         micChains.delete(identity);
+        levelBoostLatched.delete(identity);
+        syncLevelerTimer();
     }
 }
 
@@ -696,6 +811,7 @@ function acquireSSAudioChain(p: RemoteParticipant): SSAudioChain | null {
             track,
             pub,
             perUserGain: sliderToGain(readPersistedPerUserVolume(p.identity, 'screen')),
+            levelGain: 1, // screen-share audio is never leveled
             silenced: false,
             ...internals,
         };
@@ -751,7 +867,8 @@ export function useParticipantAudio(
     // values so every acquirer of a shared chain lands on the same path.
     const masterSlider = useSyncExternalStore(subscribeMasterSlider, getMasterSlider);
     const masterLinear = masterSliderToGain(masterSlider);
-    const micPath = choosePlaybackPath({ nsEnabled, perUserGain: sliderToGain(volume), masterGain: masterLinear });
+    const levelBoost = useSyncExternalStore(subscribeLevelBoost, () => levelBoostLatched.has(p.identity));
+    const micPath = choosePlaybackPath({ nsEnabled, perUserGain: sliderToGain(volume), masterGain: masterLinear, levelBoost });
     const ssPath = choosePlaybackPath({ nsEnabled: false, perUserGain: sliderToGain(screenShareVolume ?? 1), masterGain: masterLinear });
 
     // Always-current refs for volume state so the async acquire .then() can

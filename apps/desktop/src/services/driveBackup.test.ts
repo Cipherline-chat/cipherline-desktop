@@ -19,9 +19,13 @@ vi.mock('./backupRecords', async (importOriginal) => {
     return { ...actual, buildBackupPlan: buildBackupPlanMock };
 });
 
+// Beta diagnostics: capture what a failed run reports (codes only).
+const { reportBetaMock } = vi.hoisted(() => ({ reportBetaMock: vi.fn() }));
+vi.mock('../utils/betaDiagnostics/reporter', () => ({ reportBeta: reportBetaMock }));
+
 const {
-    runSingleFileBackup, isLegacyChunkedFile, backupFileName, manifestBasePattern, selectLatestManifest,
-    runBackup, resolveDriveFolder, getDriveBackupInfo, restoreFromDrive, openBackupFile,
+    runSingleFileBackup, isLegacyChunkedFile, backupFileName, manifestBasePattern,
+    runBackup, getDriveBackupInfo, restoreFromDrive, openBackupFile, AllDestinationsFailedError,
 } = await import('./driveBackup');
 const { encryptBackup, decryptBackup } = await import('../utils/crypto');
 const { openContainer, MemoryContainer, memorySource, HEADER_LEN, CONTAINER_VERSION } = await import('../utils/backupContainer');
@@ -29,6 +33,9 @@ const { openContainer, MemoryContainer, memorySource, HEADER_LEN, CONTAINER_VERS
 const { ContainerWriterV3, MemoryContainerV3 } = await import('../utils/__fixtures__/backupContainerV3');
 const { fingerprintPlan, splitVaultForRecords, specsFromVault, writeBackupRecords, bucketByMonth, monthBucket } = await import('./backupRecords');
 import type { SingleFileDestination, DestinationSink, WriteMode, DriveManifestFile } from './driveBackup';
+// The REAL main-process Drive logic, run against the fake Drive below: these tests drive
+// renderer -> bridge -> drive-api.ts -> (faked) Google, so the whole contract is exercised.
+import { createDriveApi } from '../../electron/drive-api';
 import type { BackupPlan } from './backupRecords';
 
 /** In-memory fake destination — same contract the real local/Drive
@@ -416,6 +423,37 @@ describe('runSingleFileBackup — destination failure isolation', () => {
         const plan = await makePlan();
         await expect(run([driveDest], plan)).rejects.toThrow(/403/);
     });
+
+    it('when every destination fails on its OWN step, the rejection carries each destination\'s message (for per-destination diagnostics)', async () => {
+        const local = makeFakeDestination('local');
+        const realOpenSink = local.dest.openSink;
+        local.dest.openSink = async (name, mode) => {
+            const sink = await realOpenSink(name, mode);
+            return { ...sink, commit: async () => { throw new Error("EBUSY: resource busy or locked, rename 'a' -> 'b'"); } };
+        };
+        const drive = makeFakeDestination('drive');
+        const realDriveSink = drive.dest.openSink;
+        drive.dest.openSink = async (name, mode) => {
+            const sink = await realDriveSink(name, mode);
+            return { ...sink, commit: async () => { throw new Error('Drive upload failed: HTTP 429'); } };
+        };
+        const plan = await makePlan();
+        const err = await run([local.dest, drive.dest], plan).catch((e: unknown) => e);
+        expect(err).toBeInstanceOf(AllDestinationsFailedError);
+        expect((err as Error).message).toMatch(/EBUSY.*429/);
+        expect((err as InstanceType<typeof AllDestinationsFailedError>).destinationErrors).toEqual({
+            local: "EBUSY: resource busy or locked, rename 'a' -> 'b'",
+            drive: 'Drive upload failed: HTTP 429',
+        });
+    });
+
+    it('a failure in the SHARED encrypt-and-write pass is not an AllDestinationsFailedError', async () => {
+        const { dest } = makeFakeDestination('local');
+        const plan = await makePlan();
+        const err = await run([dest], plan, {}, { writeRecords: async () => { throw new Error('OperationError'); } }).catch((e: unknown) => e);
+        expect(err).toBeInstanceOf(Error);
+        expect(err).not.toBeInstanceOf(AllDestinationsFailedError);
+    });
 });
 
 describe('month bucketing', () => {
@@ -523,19 +561,6 @@ describe('runSingleFileBackup — a destination still holding a v3 file', () => 
     });
 });
 
-describe('selectLatestManifest (legacy restore fallback)', () => {
-    it('picks the newest by modifiedTime among matching manifests, ignoring chunks and other bases', () => {
-        const picked = selectLatestManifest([
-            { id: 'a', name: 'cipherline-backup-2026-01-01.enc', modifiedTime: '2026-01-01T00:00:00Z' },
-            { id: 'b', name: 'cipherline-backup-2026-01-03.enc', modifiedTime: '2026-01-03T00:00:00Z' },
-            { id: 'c', name: `chunk-${'f'.repeat(64)}.enc`, modifiedTime: '2026-01-09T00:00:00Z' },
-            { id: 'd', name: 'other-2026-01-09.enc', modifiedTime: '2026-01-09T00:00:00Z' },
-        ], 'cipherline-backup');
-        expect(picked?.id).toBe('b');
-        expect(selectLatestManifest([], 'cipherline-backup')).toBeNull();
-    });
-});
-
 // ── Stale Drive folder recovery ──────────────────────────────────────────
 //
 // The bug: destinations.driveFolderId (persisted once a user has ever picked
@@ -577,18 +602,26 @@ describe('stale Drive folder recovery', () => {
         anywhereFiles?: Array<DriveManifestFile & { capabilities?: { canEdit: boolean } }>;
         /** Metadata GET-by-id for a pinned file (`fields=id,size,modifiedTime,trashed`). */
         pinnedFileStat?: { status: number; body?: unknown };
+        /** Folder display names by id (default: the app's own folder name). */
+        folderNames?: Record<string, string>;
     }) {
         const {
             accessibleFolderIds, accessCheckStatus = 403, accessCheckError,
             defaultFolderExists = true, existingFileInFolder = null,
-            anywhereFiles = [], pinnedFileStat = { status: 200, body: { size: '10', modifiedTime: '2026-01-01T00:00:00Z' } },
+            anywhereFiles = [], folderNames = {},
+            pinnedFileStat = {
+                status: 200,
+                body: { name: 'cipherline-backup.enc', mimeType: 'application/octet-stream', size: '10', modifiedTime: '2026-01-01T00:00:00Z' },
+            },
         } = opts;
         return vi.fn(async (url: string, init?: { method?: string; body?: string }) => {
             const method = (init?.method || 'GET').toUpperCase();
-            const accessMatch = url.match(/^https:\/\/www\.googleapis\.com\/drive\/v3\/files\/([^/?]+)\?fields=id,trashed$/);
+            const accessMatch = url.match(/^https:\/\/www\.googleapis\.com\/drive\/v3\/files\/([^/?]+)\?fields=id,name,mimeType,trashed$/);
             if (accessMatch) {
                 const id = accessMatch[1];
-                if (accessibleFolderIds.has(id)) return jsonResponse(200, { id, trashed: false });
+                if (accessibleFolderIds.has(id)) {
+                    return jsonResponse(200, { id, name: folderNames[id] ?? DEFAULT_FOLDER_NAME, mimeType: 'application/vnd.google-apps.folder', trashed: false });
+                }
                 if (accessCheckError) throw accessCheckError;
                 return jsonResponse(accessCheckStatus, {});
             }
@@ -621,9 +654,40 @@ describe('stale Drive folder recovery', () => {
         });
     }
 
-    function makeDriveElectronApi() {
+    /**
+     * window.electronAPI's Drive half, backed by the real main-process logic.
+     * `trusted` = the folder id the main process had recorded as the app's own
+     * (survives a user renaming the folder in Drive).
+     */
+    function makeDriveBridge(opts: { trusted?: string | null } = {}) {
+        let trusted = opts.trusted ?? null;
+        const drive = createDriveApi({
+            // Read the CURRENT global fetch: each test stubs it with its own router.
+            http: async (url, o) => {
+                const f = globalThis.fetch as unknown as (u: string, i: unknown) => Promise<Response>;
+                const res = await f(decodeURIComponent(url), { method: o.method, headers: o.headers, body: o.body?.toString('utf8') });
+                return { status: res.status, headers: {}, body: Buffer.from(JSON.stringify(await res.json())) };
+            },
+            getToken: async () => 'drive-token',
+            getTrustedFolderId: () => trusted,
+            setTrustedFolderId: (id) => { trusted = id; },
+        });
         return {
-            gdriveGetToken: vi.fn(async () => 'drive-token'),
+            gdriveAuthStatus: vi.fn(async () => ({ linked: true, email: 'a@b.c' })),
+            gdriveResolveFolder: vi.fn((s: string | null | undefined, c: boolean) => drive.resolveFolder(s, c)),
+            gdriveEnsureFolder: vi.fn(async () => ({ folderId: await drive.ensureFolder() })),
+            gdriveResolveBackupTarget: vi.fn((s: string | null | undefined, n: string) => drive.resolveBackupTarget(s, n)),
+            gdriveLocateBackup: vi.fn((s: string | null | undefined, b: string | null | undefined) => drive.locateBackup(s, b)),
+            gdriveStatFile: vi.fn((id: string) => drive.statFile(id)),
+            gdriveFindFile: vi.fn((f: string, n: string) => drive.findFile(f, n)),
+            gdriveListFolder: vi.fn((f: string) => drive.listFolder(f)),
+            gdriveDeleteFolderFiles: vi.fn((f: string, n: string[]) => drive.deleteFolderFiles(f, n)),
+        };
+    }
+
+    function makeDriveElectronApi(opts: { trusted?: string | null } = {}) {
+        return {
+            ...makeDriveBridge(opts),
             backupStagingDir: vi.fn(async () => '/staging'),
             backupBeginWrite: vi.fn(async () => ({ sessionId: 'sess-1' })),
             backupAppend: vi.fn(async () => {}),
@@ -641,46 +705,6 @@ describe('stale Drive folder recovery', () => {
     afterEach(() => {
         vi.unstubAllGlobals();
         Object.assign(window, { electronAPI: undefined });
-    });
-
-    describe('resolveDriveFolder (unit)', () => {
-        it('uses an explicit folder as-is when it is still accessible', async () => {
-            vi.stubGlobal('fetch', makeDriveFetchRouter({ accessibleFolderIds: new Set(['good-id']) }));
-            const res = await resolveDriveFolder('tok', 'good-id', DEFAULT_FOLDER_NAME, { create: true });
-            expect(res).toEqual({ folderId: 'good-id', recovered: false });
-        });
-
-        it('falls back to the default folder (creating it) on a 403 for the explicit folder', async () => {
-            vi.stubGlobal('fetch', makeDriveFetchRouter({ accessibleFolderIds: new Set(), defaultFolderExists: false }));
-            const res = await resolveDriveFolder('tok', STALE_FOLDER_ID, DEFAULT_FOLDER_NAME, { create: true });
-            expect(res).toEqual({ folderId: DEFAULT_FOLDER_ID, recovered: true });
-        });
-
-        it('falls back on a 404 for the explicit folder too (deleted/moved)', async () => {
-            vi.stubGlobal('fetch', makeDriveFetchRouter({ accessibleFolderIds: new Set(), accessCheckStatus: 404 }));
-            const res = await resolveDriveFolder('tok', STALE_FOLDER_ID, DEFAULT_FOLDER_NAME, { create: true });
-            expect(res).toEqual({ folderId: DEFAULT_FOLDER_ID, recovered: true });
-        });
-
-        it('with create:false, finds (never creates) the default folder on fallback', async () => {
-            const fetchMock = makeDriveFetchRouter({ accessibleFolderIds: new Set() });
-            vi.stubGlobal('fetch', fetchMock);
-            const res = await resolveDriveFolder('tok', STALE_FOLDER_ID, DEFAULT_FOLDER_NAME, { create: false });
-            expect(res).toEqual({ folderId: DEFAULT_FOLDER_ID, recovered: true });
-            expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
-        });
-
-        it('propagates a network error unchanged — NOT treated as a stale folder', async () => {
-            vi.stubGlobal('fetch', makeDriveFetchRouter({ accessibleFolderIds: new Set(), accessCheckError: new Error('network down') }));
-            await expect(resolveDriveFolder('tok', STALE_FOLDER_ID, DEFAULT_FOLDER_NAME, { create: true }))
-                .rejects.toThrow('network down');
-        });
-
-        it('propagates a 401 (expired token) unchanged — NOT treated as a stale folder', async () => {
-            vi.stubGlobal('fetch', makeDriveFetchRouter({ accessibleFolderIds: new Set(), accessCheckStatus: 401 }));
-            await expect(resolveDriveFolder('tok', STALE_FOLDER_ID, DEFAULT_FOLDER_NAME, { create: true }))
-                .rejects.toThrow('401');
-        });
     });
 
     describe('runBackup — the actual bug (403 on every future run)', () => {
@@ -732,6 +756,38 @@ describe('stale Drive folder recovery', () => {
                 destinations: { drive: true, driveFolderId: STALE_FOLDER_ID, driveFolderName: DEFAULT_FOLDER_NAME },
             })).rejects.toThrow('network down');
             expect(api.gdriveUploadFile).not.toHaveBeenCalled();
+        });
+
+        it('beta diagnostics: a Drive-only run whose upload fails reports the destination\'s own step and a specific code', async () => {
+            vi.stubGlobal('fetch', makeDriveFetchRouter({ accessibleFolderIds: new Set([DEFAULT_FOLDER_ID]) }));
+            const api = makeDriveElectronApi();
+            api.gdriveUploadFile.mockRejectedValue(new Error("Error invoking remote method 'gdrive:upload-file': Error: Drive upload failed: HTTP 429"));
+            Object.assign(window, { electronAPI: api });
+            buildBackupPlanMock.mockResolvedValue(await makePlan());
+            reportBetaMock.mockClear();
+
+            await expect(runBackup({
+                userId: 'user-1', token: 'api-token', password: 'pw', includeAttachments: false,
+                destinations: { drive: true, driveFolderId: DEFAULT_FOLDER_ID, driveFolderName: DEFAULT_FOLDER_NAME },
+            })).rejects.toThrow('429');
+            const calls = reportBetaMock.mock.calls.filter(c => c[0] === 'backup_failed');
+            expect(calls).toEqual([['backup_failed', { dest: 'drive', stage: 'write', part: 'dest', reason: 'drive_rate_limited' }]]);
+        });
+
+        it('beta diagnostics: a failure in the shared pass is reported as part shared, with the code of its cause', async () => {
+            vi.stubGlobal('fetch', makeDriveFetchRouter({ accessibleFolderIds: new Set([DEFAULT_FOLDER_ID]) }));
+            const api = makeDriveElectronApi();
+            api.backupBeginWrite.mockRejectedValue(new Error("Error invoking remote method 'backup:begin-write': Error: No handler registered for 'backup:begin-write'"));
+            Object.assign(window, { electronAPI: api });
+            buildBackupPlanMock.mockResolvedValue(await makePlan());
+            reportBetaMock.mockClear();
+
+            await expect(runBackup({
+                userId: 'user-1', token: 'api-token', password: 'pw', includeAttachments: false,
+                destinations: { drive: true, driveFolderId: DEFAULT_FOLDER_ID, driveFolderName: DEFAULT_FOLDER_NAME },
+            })).rejects.toThrow('No handler registered');
+            const calls = reportBetaMock.mock.calls.filter(c => c[0] === 'backup_failed');
+            expect(calls).toEqual([['backup_failed', { dest: 'drive', stage: 'write', part: 'shared', reason: 'ipc_missing' }]]);
         });
 
         it('a 401 from an expired token fails the run normally — NOT treated as a stale folder', async () => {
@@ -804,9 +860,12 @@ describe('stale Drive folder recovery', () => {
         it('a folder the user moved or renamed in Drive is still used by id (the app keeps access to what it created)', async () => {
             // Whatever the folder is called or wherever it sits now, the access
             // check is by id, so nothing is searched for and nothing is created.
-            const fetchMock = makeDriveFetchRouter({ accessibleFolderIds: new Set(['renamed-and-moved-id']) });
+            const fetchMock = makeDriveFetchRouter({
+                accessibleFolderIds: new Set(['renamed-and-moved-id']), folderNames: { 'renamed-and-moved-id': 'My moved backups' },
+            });
             vi.stubGlobal('fetch', fetchMock);
-            const api = makeDriveElectronApi();
+            // The main process recorded this folder as the app's own when it made it.
+            const api = makeDriveElectronApi({ trusted: 'renamed-and-moved-id' });
             Object.assign(window, { electronAPI: api });
 
             const res = await backup({ drive: true, driveFolderId: 'renamed-and-moved-id' });
@@ -847,7 +906,22 @@ describe('stale Drive folder recovery', () => {
             expect(res.drive?.skipped).toBe(false);
         });
 
-        it('a legacy folder still visible (account on the old broad grant) is written exactly as before — no file-id path', async () => {
+        it('a legacy folder still visible but not the app\'s own (other name, never recorded) is no longer written into — the backup moves to the app folder', async () => {
+            vi.stubGlobal('fetch', makeDriveFetchRouter({
+                accessibleFolderIds: new Set(['users-own-folder']), folderNames: { 'users-own-folder': 'My Stuff' }, anywhereFiles: [LEGACY_FILE],
+            }));
+            const api = makeDriveElectronApi();
+            Object.assign(window, { electronAPI: api });
+
+            const res = await backup({ drive: true, driveFolderId: 'users-own-folder' });
+
+            // The main process only writes into the app's own backup folder. The
+            // existing file there is still editable, so it is updated in place by id.
+            expect(api.gdriveUploadFile).toHaveBeenCalledWith('users-own-folder', 'cipherline-backup.enc', expect.any(String), 'legacy-file-id');
+            expect(res.driveFolderRecovered).toBeUndefined();
+        });
+
+        it('a visible legacy folder that is the app\'s own (carries the app name) is written exactly as before — no file-id path', async () => {
             vi.stubGlobal('fetch', makeDriveFetchRouter({ accessibleFolderIds: new Set(['users-own-folder']), anywhereFiles: [LEGACY_FILE] }));
             const api = makeDriveElectronApi();
             Object.assign(window, { electronAPI: api });
@@ -934,9 +1008,9 @@ describe('stale Drive folder recovery', () => {
             id: 'legacy-file-id', name: 'cipherline-backup.enc', modifiedTime: '2026-02-02T00:00:00Z', size: '77', parents: ['users-own-folder'],
         };
         /** A desktop bridge that gets as far as the download and stops there. */
-        function restoreApiThatStopsAtDownload() {
+        function restoreApiThatStopsAtDownload(opts: { trusted?: string | null } = {}) {
             return {
-                gdriveGetToken: vi.fn(async () => 'drive-token'),
+                ...makeDriveBridge(opts),
                 gdriveDownloadFile: vi.fn(async () => { throw new Error('STOP-AFTER-LOOKUP'); }),
                 backupStat: vi.fn(),
                 backupReadRange: vi.fn(),
@@ -947,7 +1021,7 @@ describe('stale Drive folder recovery', () => {
             vi.stubGlobal('fetch', makeDriveFetchRouter({
                 accessibleFolderIds: new Set(), accessCheckStatus: 404, defaultFolderExists: false, anywhereFiles: [LEGACY_FILE],
             }));
-            Object.assign(window, { electronAPI: { gdriveGetToken: vi.fn(async () => 'drive-token') } });
+            Object.assign(window, { electronAPI: makeDriveBridge() });
 
             const info = await getDriveBackupInfo('users-own-folder', 'cipherline-backup');
 
@@ -956,7 +1030,7 @@ describe('stale Drive folder recovery', () => {
 
         it('info: a brand-new account with no app folder and no backup anywhere reports "no backup", not an error', async () => {
             vi.stubGlobal('fetch', makeDriveFetchRouter({ accessibleFolderIds: new Set(), defaultFolderExists: false }));
-            Object.assign(window, { electronAPI: { gdriveGetToken: vi.fn(async () => 'drive-token') } });
+            Object.assign(window, { electronAPI: makeDriveBridge() });
 
             expect(await getDriveBackupInfo(null, 'cipherline-backup')).toEqual({ exists: false, folderRecovered: undefined });
         });
@@ -988,10 +1062,10 @@ describe('stale Drive folder recovery', () => {
 
         it('restore: an app folder that was moved or renamed is still found by its stored id', async () => {
             vi.stubGlobal('fetch', makeDriveFetchRouter({
-                accessibleFolderIds: new Set(['renamed-and-moved-id']),
+                accessibleFolderIds: new Set(['renamed-and-moved-id']), folderNames: { 'renamed-and-moved-id': 'My moved backups' },
                 existingFileInFolder: { id: 'in-moved-folder', name: 'cipherline-backup.enc', size: '5' },
             }));
-            const api = restoreApiThatStopsAtDownload();
+            const api = restoreApiThatStopsAtDownload({ trusted: 'renamed-and-moved-id' });
             Object.assign(window, { electronAPI: api });
 
             await expect(restoreFromDrive({ userId: 'user-1', password: 'pw', folderId: 'renamed-and-moved-id', fileBase: 'cipherline-backup' }))
@@ -1030,7 +1104,7 @@ describe('stale Drive folder recovery', () => {
                 accessibleFolderIds: new Set(),
                 existingFileInFolder: { id: 'f1', name: 'cipherline-backup.enc', modifiedTime: '2026-01-01T00:00:00Z', size: '10' },
             }));
-            Object.assign(window, { electronAPI: { gdriveGetToken: vi.fn(async () => 'drive-token') } });
+            Object.assign(window, { electronAPI: makeDriveBridge() });
 
             const info = await getDriveBackupInfo(STALE_FOLDER_ID, 'cipherline-backup');
             expect(info).toEqual({
@@ -1041,7 +1115,7 @@ describe('stale Drive folder recovery', () => {
 
         it('never creates a folder on the read path — a fresh account with no default folder yet reports "no backup", not an error', async () => {
             vi.stubGlobal('fetch', makeDriveFetchRouter({ accessibleFolderIds: new Set(), defaultFolderExists: false }));
-            Object.assign(window, { electronAPI: { gdriveGetToken: vi.fn(async () => 'drive-token') } });
+            Object.assign(window, { electronAPI: makeDriveBridge() });
 
             const info = await getDriveBackupInfo(STALE_FOLDER_ID, 'cipherline-backup');
             expect(info).toEqual({ exists: false, folderRecovered: undefined });
@@ -1051,7 +1125,7 @@ describe('stale Drive folder recovery', () => {
     describe('restoreFromDrive — read path recovers, genuine failures still fail', () => {
         it('recovers from a stale explicit folder and reports "no backup found" rather than a raw 403', async () => {
             vi.stubGlobal('fetch', makeDriveFetchRouter({ accessibleFolderIds: new Set() }));
-            Object.assign(window, { electronAPI: { gdriveGetToken: vi.fn(async () => 'drive-token') } });
+            Object.assign(window, { electronAPI: makeDriveBridge() });
 
             await expect(restoreFromDrive({
                 userId: 'user-1', password: 'pw', folderName: DEFAULT_FOLDER_NAME, folderId: STALE_FOLDER_ID,
@@ -1060,7 +1134,7 @@ describe('stale Drive folder recovery', () => {
 
         it('a 401 from an expired token still fails restore normally — NOT treated as a stale folder', async () => {
             vi.stubGlobal('fetch', makeDriveFetchRouter({ accessibleFolderIds: new Set(), accessCheckStatus: 401 }));
-            Object.assign(window, { electronAPI: { gdriveGetToken: vi.fn(async () => 'drive-token') } });
+            Object.assign(window, { electronAPI: makeDriveBridge() });
 
             await expect(restoreFromDrive({
                 userId: 'user-1', password: 'pw', folderName: DEFAULT_FOLDER_NAME, folderId: STALE_FOLDER_ID,

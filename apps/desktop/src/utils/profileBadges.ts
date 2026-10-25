@@ -38,6 +38,34 @@ export interface ProfileBadge {
     color: string;
     label: string;
     sort_order: number;
+    /** Egg hunter badge only: how many easter eggs the account has found.
+     *  Optional and server-sent (older servers omit it); read it through
+     *  `eggBadgeCount`, never directly — the wire value is untrusted. */
+    count?: number;
+}
+
+// ── Egg hunter count ──────────────────────────────────────────────────────
+
+/** `badge_id` of the API-synthesized Egg hunter badge
+ *  (`EGG_BADGE_ID` in apps/api/src/profile-eggs/egg-registry.ts). */
+export const EGG_HUNTER_BADGE_ID = 'egg-hunter';
+
+/** Upper bound on a believable egg count (the registry has ~30 eggs). */
+export const MAX_BADGE_COUNT = 1000;
+
+/** Validate an untrusted badge `count`: a non-negative safe integer
+ *  ≤ MAX_BADGE_COUNT, otherwise `undefined` (the field is dropped). Strings,
+ *  floats, NaN, negatives and oversize values are all rejected, never coerced. */
+export function sanitizeBadgeCount(value: unknown): number | undefined {
+    if (typeof value !== 'number' || !Number.isSafeInteger(value)) return undefined;
+    if (value < 0 || value > MAX_BADGE_COUNT) return undefined;
+    return value;
+}
+
+/** The validated egg count to show on a badge, or `undefined` when the badge
+ *  is not the Egg hunter badge or carries no usable count. */
+export function eggBadgeCount(badge: Pick<ProfileBadge, 'badge_id' | 'count'>): number | undefined {
+    return badge.badge_id === EGG_HUNTER_BADGE_ID ? sanitizeBadgeCount(badge.count) : undefined;
 }
 
 // ── Icon mapping ──────────────────────────────────────────────────────────

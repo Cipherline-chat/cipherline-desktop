@@ -112,6 +112,45 @@ export function isCrashReason(reason: unknown): boolean {
     return typeof reason === 'string' && CRASH_REASONS.has(reason);
 }
 
+/**
+ * 0xC000026B STATUS_DLL_INIT_FAILED_LOGOFF ("the application failed to
+ * initialize because the window station is shutting down"), as Electron
+ * reports an NTSTATUS exit code: a signed 32-bit int. Windows gives it to a
+ * process that was being started — or that was still initializing — while the
+ * user was logging off or the machine was shutting down. Seen in prod as
+ * `child_process_gone` for the NetworkService and VideoCaptureService utility
+ * processes (reports b40df5f4 / 8034b4a1, 2026-10-13/14), each ~1-2 minutes
+ * before the next launch, i.e. the user logging off — not a crash of ours.
+ *
+ * It also proves the OS session is ending, and that cannot be cancelled (the
+ * code only appears once the window station is closing), so it is treated as
+ * a quit signal too — session-lifecycle.ts, main.ts.
+ */
+export const STATUS_DLL_INIT_FAILED_LOGOFF = -1073741205; // 0xC000026B
+
+/** Is this `child-process-gone` / `render-process-gone` the OS ending the user's session? */
+export function isOsSessionEndExit(details: unknown): boolean {
+    const d = (details ?? {}) as { exitCode?: unknown };
+    return d.exitCode === STATUS_DLL_INIT_FAILED_LOGOFF;
+}
+
+/**
+ * A transient network failure surfacing as an unhandled rejection in main:
+ * Chromium's own error string, and nothing else, as the whole message
+ * (`net::ERR_HTTP2_PROTOCOL_ERROR`, `net::ERR_CONNECTION_RESET`,
+ * `net::ERR_NETWORK_CHANGED`…), thrown by electron's `net` stack
+ * (SimpleURLLoaderWrapper). A flaky connection is never "Cipherline closed
+ * unexpectedly" — the process did not crash and the owner of the request has
+ * its own retry (the updater backs off and retries). Report 49e3d5ce: a failed
+ * update download on 1.0.20, before the download promise was handled.
+ */
+export function isTransientNetError(thrown: unknown): boolean {
+    const message = typeof thrown === 'string'
+        ? thrown
+        : (thrown && typeof thrown === 'object' && 'message' in thrown ? (thrown as { message?: unknown }).message : undefined);
+    return typeof message === 'string' && /^net::ERR_[A-Z0-9_]{2,60}$/.test(message);
+}
+
 /** `render-process-gone` → record, or null when the reason is not a crash. */
 export function crashFromRenderGone(details: unknown, now: number, appVersion: string): CrashInfoLike | null {
     const d = (details ?? {}) as { reason?: unknown; exitCode?: unknown };

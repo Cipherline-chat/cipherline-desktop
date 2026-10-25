@@ -79,6 +79,10 @@ const MAX_ACTIVITY_HISTORY = 400;
 
 /** What a label may look like. Static, code-chosen identifiers only. */
 export const LABEL_RE = /^[a-z][a-z0-9_.:-]{0,63}$/i;
+/** Renderer breadcrumbs (FreezeMonitor.breadcrumb): `call:<kind>` only. */
+export const BREADCRUMB_NAME_RE = /^call:[a-z][a-z0-9_]{0,39}$/;
+export const BREADCRUMB_MAX = 20;
+export const BREADCRUMB_WINDOW_MS = 10_000;
 
 /** A tracked handler whose synchronous part ran this long is named as a cause. */
 export const SLOW_SYNC_MS = 20;
@@ -269,6 +273,31 @@ export class FreezeMonitor {
         if (!Number.isFinite(ms) || ms < 0) ms = 0;
         this.events.push({ at: this.now(), source: 'event', ms: Math.round(ms), activity: detail ? `${name} ${detail}` : name });
         if (this.events.length > MAX_EVENTS) this.events.splice(0, this.events.length - MAX_EVENTS);
+    }
+
+    private crumbTimes: number[] = [];
+
+    /**
+     * A call-engine breadcrumb pushed by the RENDERER (src/utils/
+     * crashBreadcrumbs.ts) so it survives that renderer crashing: the auto
+     * crash report is built by the NEXT renderer from this log, and before
+     * this it had nothing about the call or the share the dead renderer was
+     * running (2026-10-24: a 0xC0000005 renderer crash 25 s into a share,
+     * with no call events at all). `name` must be `call:<kind>`; detail is
+     * re-validated like every event. At most BREADCRUMB_MAX per
+     * BREADCRUMB_WINDOW_MS so a chatty renderer cannot flush main's own events
+     * out of the ring. Returns whether it was stored.
+     */
+    breadcrumb(name: unknown, detail: unknown): boolean {
+        if (typeof name !== 'string' || !BREADCRUMB_NAME_RE.test(name)) return false;
+        const d = typeof detail === 'string' && detail.length > 0 ? detail : undefined;
+        if (d !== undefined && !DETAIL_RE.test(d)) return false;
+        const t = this.now();
+        this.crumbTimes = this.crumbTimes.filter(x => t - x < BREADCRUMB_WINDOW_MS);
+        if (this.crumbTimes.length >= BREADCRUMB_MAX) return false;
+        this.crumbTimes.push(t);
+        this.event(name, 0, d);
+        return true;
     }
 
     /** A per-process resource summary (built by main.ts from static fields). */

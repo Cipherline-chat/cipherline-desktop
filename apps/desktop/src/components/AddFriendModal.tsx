@@ -1,24 +1,28 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import axios from 'axios';
 import { API_BASE } from '../constants';
 import { useAuth } from '../contexts/AuthContext';
-import { UserPlus, CheckCircle2 } from 'lucide-react';
+import { UserPlus, CheckCircle2, Bell } from 'lucide-react';
 import { useModalExit } from '../hooks/useModalExit';
 import { parseUserTag } from '@cipherline/shared';
 import { ClButton, ClInput, ClModal } from './cl';
+import { DialogHeader, DialogBody, DialogFooter, DialogError, DialogOk, DialogField } from './dialog/DialogFrame';
 import { nudges } from '../utils/firstWeekNudgeStore';
+import { isOwnTag, requestMoment } from '../utils/moments';
+import { SELF_FRIEND_ERRORS, pickRotating } from '../utils/eggPools';
 
 interface AddFriendModalProps {
     onClose: () => void;
 }
 
 export const AddFriendModal: React.FC<AddFriendModalProps> = ({ onClose }) => {
-    const { token } = useAuth();
+    const { token, user } = useAuth();
     const { closing, handleClose } = useModalExit(onClose, 260);
     const [username, setUsername] = useState('');
     const [isSending, setIsSending] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [success, setSuccess] = useState<string | null>(null);
+    const selfTries = useRef(0);
 
     const handleSendRequest = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -30,6 +34,13 @@ export const AddFriendModal: React.FC<AddFriendModalProps> = ({ onClose }) => {
         const parsed = parseUserTag(input);
         if (!parsed) {
             setError('Format: Username#1234');
+            return;
+        }
+        // Your own tag: never sent (the server would only refuse it). The
+        // error slot says so plainly; the full-screen moment is the joke.
+        if (isOwnTag(parsed, user)) {
+            setError(pickRotating(SELF_FRIEND_ERRORS, selfTries.current++));
+            requestMoment('self-friend');
             return;
         }
 
@@ -57,56 +68,40 @@ export const AddFriendModal: React.FC<AddFriendModalProps> = ({ onClose }) => {
     };
 
     return (
-        <ClModal open={!closing} onClose={handleClose} width={400} cardStyle={{ padding: '32px' }}>
-                {/* Icon */}
-                <div className={`w-12 h-12 rounded-full flex items-center justify-center mb-5 ring-1 transition-all duration-300
-                    ${success
-                        ? 'bg-cl-ok/10 ring-cl-ok/20 text-cl-ok'
-                        : 'bg-cl-lume/10 ring-cl-lume/20 text-cl-lume'}`}
-                >
-                    {success ? <CheckCircle2 className="w-6 h-6" /> : <UserPlus className="w-6 h-6" />}
-                </div>
-
-                <h2 className="text-xl font-bold text-cl-text mb-2 mt-0">Add Friend</h2>
-                <p className="text-[13px] text-cl-muted mb-6">
-                    Enter their full tag, e.g. <span className="text-cl-text font-semibold">Username#1234</span>.
-                    They'll get a notification — then it's their call.
-                </p>
-
-                {error && (
-                    <div className="text-cl-flash font-medium text-[13px] mb-4 bg-cl-flash/10 border border-cl-flash/20 px-3 py-2 rounded-lg">
-                        {error}
-                    </div>
-                )}
-                {success && (
-                    <div className="text-cl-ok font-medium text-[13px] mb-4 bg-cl-ok/10 border border-cl-ok/20 px-3 py-2 rounded-lg">
-                        {success}
-                    </div>
-                )}
-
-                <form onSubmit={handleSendRequest} className="mb-0 flex flex-col">
-                    <label className="block text-[13px] font-semibold text-cl-faint mb-2 uppercase tracking-wide">
-                        Their tag
-                    </label>
-                    <ClInput
-                        type="text"
-                        value={username}
-                        onChange={e => { setUsername(e.target.value); setError(null); }}
-                        placeholder="Username#1234"
-                        autoFocus
-                        style={{ marginBottom: 24 }}
-                        disabled={isSending || !!success}
-                    />
-
-                    <div className="flex justify-end gap-2.5 shrink-0">
-                        <ClButton type="button" variant="ghost" disabled={isSending} onClick={handleClose}>
-                            Cancel
-                        </ClButton>
-                        <ClButton type="submit" disabled={isSending || !username.trim() || !!success} loading={isSending}>
-                            Send Request
-                        </ClButton>
-                    </div>
-                </form>
-            </ClModal>
+        <ClModal open={!closing} onClose={handleClose} width={440} label="Add a friend" cardClassName="dlg-card">
+            <form onSubmit={handleSendRequest} className="dlg-form" noValidate>
+                <DialogHeader
+                    tone={success ? 'ok' : 'default'}
+                    icon={success ? <CheckCircle2 size={19} strokeWidth={2.2} /> : <UserPlus size={19} strokeWidth={2.2} />}
+                    title="Add a friend"
+                    subtitle="Send a request using their full tag."
+                />
+                <DialogBody>
+                    <DialogField label="Their tag" htmlFor="add-friend-tag" help={<>Looks like <b style={{ color: 'var(--cl-text, #F4F7FF)' }}>Username#1234</b></>}>
+                        <ClInput
+                            id="add-friend-tag"
+                            type="text"
+                            value={username}
+                            onChange={e => { setUsername(e.target.value); setError(null); }}
+                            placeholder="Username#1234"
+                            autoFocus
+                            autoComplete="off"
+                            spellCheck={false}
+                            disabled={isSending || !!success}
+                        />
+                    </DialogField>
+                </DialogBody>
+                {error && <DialogError>{error}</DialogError>}
+                {success && <DialogOk>{success}</DialogOk>}
+                <DialogFooter hint={<><Bell size={13} /><span>They&rsquo;ll be notified</span></>}>
+                    <ClButton type="button" variant="ghost" size="sm" disabled={isSending} onClick={handleClose}>
+                        Cancel
+                    </ClButton>
+                    <ClButton type="submit" size="sm" disabled={isSending || !username.trim() || !!success} loading={isSending}>
+                        Send request
+                    </ClButton>
+                </DialogFooter>
+            </form>
+        </ClModal>
     );
 };

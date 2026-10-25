@@ -201,6 +201,70 @@ export function buildChannelKeyContent(params: {
 }
 
 /**
+ * Whether a decrypted `channel_key` content agrees with the envelope it came
+ * in. The receiver files the key under the envelope's channel_id/epoch, which
+ * are server-supplied routing metadata; the content's own channel_id/epoch are
+ * inside the E2EE payload, set by the distributor (buildChannelKeyContent).
+ * Requiring them to agree stops a key wrapped for one channel or epoch from
+ * being installed as another's. Every producer has always set both fields;
+ * an absent field is tolerated, a present-but-different one is not.
+ */
+export function channelKeyContentMatchesEnvelope(
+    content: { channel_id?: unknown; epoch?: unknown },
+    env: { channel_id: string; epoch: number },
+): boolean {
+    if (content.channel_id !== undefined && content.channel_id !== env.channel_id) return false;
+    if (content.epoch !== undefined && Number(content.epoch) !== env.epoch) return false;
+    return true;
+}
+
+// ── Install-time validation of a received channel key (F6) ────────────────
+//
+// The epoch, key and channel of a `channel_key` are distributor-chosen (and,
+// for the routing fields, relay-chosen). getLatestEpoch is a max over what is
+// held and posts go out under it, so ONE absurd epoch made a device post under
+// a key no other member has, permanently. Main validates the same shape at the
+// IPC boundary (electron/channel-keys.ts); this is the renderer's half plus the
+// one check main cannot do: comparing against the server's epoch registry.
+
+/** Matches the API's RecordEpochDto `@Max` and electron/channel-keys.ts. */
+export const MAX_CHANNEL_EPOCH = 1_000_000;
+const CHANNEL_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** Standard base64 of 32 bytes: 43 significant chars, pad optional. */
+const KEY32_B64_RE = /^[A-Za-z0-9+/]{43}=?$/;
+
+/** Why a received channel key must not be installed, or null when its shape is sound. */
+export function channelKeyInstallProblem(
+    content: { key_b64?: unknown },
+    env: { channel_id: unknown; epoch: unknown },
+): string | null {
+    if (typeof env.channel_id !== 'string' || !CHANNEL_ID_RE.test(env.channel_id)) return 'invalid channel id';
+    const e = env.epoch;
+    if (typeof e !== 'number' || !Number.isSafeInteger(e) || e < 1 || e > MAX_CHANNEL_EPOCH) return 'epoch out of range';
+    if (typeof content.key_b64 !== 'string' || !KEY32_B64_RE.test(content.key_b64)) return 'key is not 32 bytes';
+    return null;
+}
+
+/**
+ * Whether an incoming epoch is above what this client already knows the
+ * server has registered (the channel list's `latest_epoch`) by more than the
+ * one-ahead a fresh mint can be, so it must be checked against a fresh read
+ * of the registry before it is installed.
+ */
+export function needsRegistryEpochCheck(epoch: number, cachedLatest: number | undefined | null): boolean {
+    return epoch > (cachedLatest ?? 0) + 1;
+}
+
+/**
+ * Whether an epoch is plausible given the server's registered latest: every
+ * distributor registers an epoch before distributing it, except a bootstrap
+ * mint that is at most one ahead. Anything further ahead is refused.
+ */
+export function epochWithinRegistry(epoch: number, registeredLatest: number): boolean {
+    return epoch <= registeredLatest + 1;
+}
+
+/**
  * Jitter before answering a `server:key_requested` push (500–3500 ms). All
  * online holders receive the event; the jitter spreads their re-check of the
  * pending list so the first responder's delivery marks the request fulfilled
@@ -579,6 +643,44 @@ export interface ChannelKeyRotationEvent {
     server_id: string;
     channel_id: string;
     reason: string;
+    /** The channel's latest registered epoch when the access change happened
+     *  (API ≥ 2026-10-20; absent from older APIs). See rotationAlreadyDone. */
+    epoch_at_signal?: number;
+}
+
+/** The `epoch_at_signal` of a raw WS payload, or undefined if absent/invalid. */
+export function parseEpochAtSignal(raw: unknown): number | undefined {
+    return typeof raw === 'number' && Number.isSafeInteger(raw) && raw >= 0 ? raw : undefined;
+}
+
+/**
+ * Two rotation signals for one channel → the one rotation that answers both.
+ * The LATER access change is the one a rotation must come after, so the
+ * higher epoch wins; a signal without the field (older API) makes the result
+ * unknown, which rotates unconditionally — never the other way round.
+ */
+export function mergeEpochAtSignal(a: number | undefined, b: number | undefined): number | undefined {
+    if (a === undefined || b === undefined) return undefined;
+    return Math.max(a, b);
+}
+
+/**
+ * Another remaining holder already rotated in answer to this access change:
+ * the server's latest epoch is past the one current when the change happened.
+ * Every remaining holder receives the signal and rotates after a 0.5-3.5 s
+ * jitter, and each one that fired after another's registration used to mint
+ * on top of it (2026-10-20, member_left: up to three epochs per channel in
+ * 3 s). An epoch registered after the change was minted by a holder that read
+ * its recipient list after the change too, so it already excludes whoever
+ * lost access. Unknown (`undefined`) → false: rotate, as before.
+ */
+/** A holder that stood down (rotationAlreadyDone) checks this long later that
+ *  it actually received the other holder's new epoch, and rotates itself if
+ *  not (that holder may have registered the epoch and never distributed it). */
+export const ROTATION_STAND_DOWN_VERIFY_MS = 20_000;
+
+export function rotationAlreadyDone(serverLatest: number, epochAtSignal: number | undefined): boolean {
+    return epochAtSignal !== undefined && Number.isFinite(serverLatest) && serverLatest > epochAtSignal;
 }
 
 /** Reasons the API actually emits (signalRotationForLostAccess's default, plus
@@ -617,7 +719,15 @@ export function epochReasonForRotationSignal(reason: string | null | undefined):
  */
 export function coalesceRotationEvents<T extends ChannelKeyRotationEvent>(events: T[]): T[] {
     const byChannel = new Map<string, T>();
-    for (const e of events) byChannel.set(e.channel_id, e);
+    for (const e of events) {
+        const prev = byChannel.get(e.channel_id);
+        if (!prev) { byChannel.set(e.channel_id, e); continue; }
+        // Last-wins on everything but the epoch, which must answer BOTH changes.
+        const epoch = mergeEpochAtSignal(prev.epoch_at_signal, e.epoch_at_signal);
+        const merged = { ...e } as T;
+        if (epoch === undefined) delete merged.epoch_at_signal; else merged.epoch_at_signal = epoch;
+        byChannel.set(e.channel_id, merged);
+    }
     return [...byChannel.values()];
 }
 

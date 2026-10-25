@@ -93,6 +93,8 @@ export function shouldConfirmMessageDelete(
 export interface DeleteConfirmCopy {
     title: string;
     confirmLabel: string;
+    /** Small footer hint (bottom-left), not body text. */
+    hint: string;
 }
 
 export interface DeleteCopyContext {
@@ -101,17 +103,20 @@ export interface DeleteCopyContext {
 }
 
 /**
- * The dialog is a bare yes/no: a title and two buttons, nothing else.
+ * The dialog is a bare yes/no: a title and two buttons, with no body text.
  *
  * It used to carry a paragraph on sync semantics and relay retention plus a
- * "Hold Shift to skip" hint. The owner asked for all of that to go (2026-09-16)
- * — a confirmation exists to catch a misclick, and a paragraph in front of the
- * buttons slows down the common case to explain an edge case. The Shift bypass
- * itself still works; it is simply no longer advertised here.
+ * "Hold Shift to skip" line in the body. The owner asked for that to go
+ * (2026-09-16) — a paragraph in front of the buttons slows down the common
+ * case. On 2026-10-19 the owner asked for the Shift tip back as the small
+ * footer hint (bottom-left), which does not sit between the user and the
+ * buttons. Shift only bypasses from the trash button (the context menu
+ * carries no modifier state), so the hint names that path.
  */
 export function buildDeleteConfirmCopy(ctx: DeleteCopyContext): DeleteConfirmCopy {
     return {
         title: ctx.isOwnMessage ? 'Delete this message?' : 'Delete this message as a moderator?',
         confirmLabel: 'Delete',
+        hint: 'Shift-click to skip',
     };
 }

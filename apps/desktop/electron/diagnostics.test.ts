@@ -4,7 +4,8 @@ import {
     crashFromRendererReport, crashFromLeftoverMarker, rotateSessionMarker, clearSessionMarker,
     parsePendingCrashes, PendingCrashStore, MAX_PENDING_CRASHES, isCrashReason, mainScrubber,
     buildSystemInfo, reportChannel, validateReportFile, defaultReportFileName, MAX_REPORT_FILE_BYTES,
-    serializeMarker, parseSignatures, type CrashInfoLike, type MarkerFs, type PendingStorage,
+    serializeMarker, parseSignatures, isOsSessionEndExit, isTransientNetError,
+    type CrashInfoLike, type MarkerFs, type PendingStorage,
 } from './diagnostics';
 
 const T0 = Date.UTC(2026, 9, 7, 18, 0, 0);
@@ -251,5 +252,36 @@ describe('save to file', () => {
     it('default file name', () => {
         expect(defaultReportFileName('screen_share', new Date(2026, 9, 7, 12))).toBe('cipherline-diagnostics-screen_share-2026-10-07.json');
         expect(defaultReportFileName('../x', new Date(2026, 0, 2))).toBe('cipherline-diagnostics-other-2026-01-02.json');
+    });
+});
+
+describe('isOsSessionEndExit — the Windows log-off exit code', () => {
+    it('is exactly 0xC000026B as Electron reports an NTSTATUS (a signed 32-bit int)', () => {
+        expect(0xC000026B | 0).toBe(-1073741205);
+        expect(isOsSessionEndExit({ exitCode: -1073741205 })).toBe(true);
+    });
+    it('is not any other crash code, nor junk', () => {
+        for (const code of [-1073741819 /* AV */, -1073741795 /* illegal insn */, -1073741204, 34, 0, 1, '-1073741205', null, undefined, NaN]) {
+            expect(isOsSessionEndExit({ exitCode: code }), String(code)).toBe(false);
+        }
+        expect(isOsSessionEndExit(null)).toBe(false);
+        expect(isOsSessionEndExit('x')).toBe(false);
+    });
+});
+
+describe('isTransientNetError — a bare Chromium net error', () => {
+    it('matches the prod rejection (49e3d5ce) and its siblings', () => {
+        for (const m of ['net::ERR_HTTP2_PROTOCOL_ERROR', 'net::ERR_CONNECTION_RESET', 'net::ERR_NETWORK_CHANGED', 'net::ERR_INTERNET_DISCONNECTED']) {
+            expect(isTransientNetError(new Error(m)), m).toBe(true);
+        }
+        expect(isTransientNetError('net::ERR_FAILED')).toBe(true);
+    });
+    it('does not match anything with more in the message, or non-net errors', () => {
+        for (const m of ['Request failed: net::ERR_FAILED', 'net::ERR_', 'net::err_failed', 'ECONNRESET', 'net::ERR_X y', '']) {
+            expect(isTransientNetError(new Error(m)), m).toBe(false);
+        }
+        expect(isTransientNetError(null)).toBe(false);
+        expect(isTransientNetError(undefined)).toBe(false);
+        expect(isTransientNetError({ message: 42 })).toBe(false);
     });
 });

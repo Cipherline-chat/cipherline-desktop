@@ -80,10 +80,19 @@ const UNITY = 1 + 1e-6;
  * the low-latency default; Web Audio only when something in its graph is
  * actually needed:
  *   - per-user noise suppression (an AudioWorklet), or
- *   - a combined (per-user × master) gain above unity — an element can't boost.
+ *   - a combined (per-user × master) gain above unity — an element can't boost, or
+ *   - the incoming-volume leveler needs a boost for this talker (sustained, see
+ *     incomingLeveler.ts); a leveler CUT stays on the element path.
  */
-export function choosePlaybackPath(o: { nsEnabled: boolean; perUserGain: number; masterGain: number }): PlaybackPath {
-    if (o.nsEnabled) return 'webaudio';
+export function choosePlaybackPath(o: {
+    nsEnabled: boolean;
+    perUserGain: number;
+    masterGain: number;
+    /** The incoming-volume leveler needs a boost this element cannot play
+     *  (utils/incomingLeveler.ts boostNeedsWebAudio, latched per talker). */
+    levelBoost?: boolean;
+}): PlaybackPath {
+    if (o.nsEnabled || o.levelBoost) return 'webaudio';
     const g = o.perUserGain * o.masterGain;
     if (!Number.isFinite(g) || g > UNITY) return 'webaudio';
     return 'element';

@@ -9,7 +9,9 @@ import { API_BASE } from '../constants';
 // this one. Re-exported here too for existing/local readability.
 import { IDLE_THRESHOLD_SECONDS, IDLE_POLL_INTERVAL_MS } from '../utils/idleThreshold';
 import { applyPresenceEvent, presenceBus } from '../utils/presenceState';
+import { activeCustom, nextCustomExpiry } from '../utils/customStatus';
 import { OwnStatusSync, selfPresenceBus, type OwnChoice, type PendingLocalChange } from '../utils/ownStatusSync';
+import { GameActivityReporter } from '../utils/gameActivityReporter';
 export { IDLE_THRESHOLD_SECONDS, IDLE_POLL_INTERVAL_MS } from '../utils/idleThreshold';
 
 // The status model (types, colours, restore rule) lives in a dependency-free
@@ -25,7 +27,7 @@ const IDLE_RETURN_SECONDS = 30;
 interface UseUserStatusOptions {
     token: string | null;
     userId: string | null;
-    acceptedFriends: { user_id: string; status?: string; custom_status_text?: string | null; custom_status_emoji?: string | null }[];
+    acceptedFriends: { user_id: string; status?: string; custom_status_text?: string | null; custom_status_emoji?: string | null; custom_status_expires_at?: string | null }[];
     showGameActivity?: boolean;
     /** Increments each time the WS successfully (re)connects. Each one
      *  re-reads the user's chosen status from the server and adopts it (see
@@ -35,9 +37,11 @@ interface UseUserStatusOptions {
     /** Report this connection's idle state to a server that understands it
      *  (`presence:idle`). From useRealtime. */
     sendPresenceIdle?: (idle: boolean) => void;
+    /** Report this connection's game (`presence:game`). From useRealtime. */
+    sendPresenceGame?: (game: string | null) => void;
 }
 
-export function useUserStatus({ token, userId, acceptedFriends, showGameActivity = true, wsConnectCount = 0, sendPresenceIdle }: UseUserStatusOptions) {
+export function useUserStatus({ token, userId, acceptedFriends, showGameActivity = true, wsConnectCount = 0, sendPresenceIdle, sendPresenceGame }: UseUserStatusOptions) {
     const [myStatus, setMyStatusState] = useState<UserStatus>(() =>
         initialStatusFromSaved(secureLocalStore.getItem(`cipherline_status_${userId}`)),
     );
@@ -46,6 +50,11 @@ export function useUserStatus({ token, userId, acceptedFriends, showGameActivity
     );
     const [myCustomEmoji, setMyCustomEmoji] = useState<string>(() =>
         secureLocalStore.getItem(`cipherline_status_emoji_${userId}`) || ''
+    );
+    // When the custom status clears (ISO), or null. Persisted next to the text
+    // so an expired status does not flash back at boot; the server decides.
+    const [myCustomExpiresAt, setMyCustomExpiresAt] = useState<string | null>(() =>
+        secureLocalStore.getItem(`cipherline_status_expires_${userId}`) || null
     );
     const [myCurrentGame, setMyCurrentGame] = useState<string | null>(null);
     // The matched executable name behind myCurrentGame — kept alongside the
@@ -61,6 +70,7 @@ export function useUserStatus({ token, userId, acceptedFriends, showGameActivity
                 status: (f.status as UserStatus) || 'offline',
                 custom_status_text: f.custom_status_text ?? null,
                 custom_status_emoji: f.custom_status_emoji ?? null,
+                custom_status_expires_at: f.custom_status_expires_at ?? null,
                 current_game: null,
             };
         }
@@ -89,6 +99,15 @@ export function useUserStatus({ token, userId, acceptedFriends, showGameActivity
     const [presenceAuthoritative, setPresenceAuthoritative] = useState(false);
     const sendIdleRef = useRef(sendPresenceIdle);
     useEffect(() => { sendIdleRef.current = sendPresenceIdle; }, [sendPresenceIdle]);
+    // The game over the socket, per connection, refreshed while it runs — so
+    // the server drops it on its own once this machine stops saying so
+    // (utils/gameActivityReporter.ts). The REST PATCH still carries it for
+    // older servers.
+    const sendGameRef = useRef(sendPresenceGame);
+    useEffect(() => { sendGameRef.current = sendPresenceGame; }, [sendPresenceGame]);
+    const gameReporterRef = useRef<GameActivityReporter | null>(null);
+    if (!gameReporterRef.current) gameReporterRef.current = new GameActivityReporter(g => sendGameRef.current?.(g));
+    useEffect(() => () => gameReporterRef.current?.dispose(), []);
     const myStatusRef = useRef(myStatus);
     const myCurrentGameRef = useRef(myCurrentGame);
     useEffect(() => { myStatusRef.current = myStatus; }, [myStatus]);
@@ -98,6 +117,8 @@ export function useUserStatus({ token, userId, acceptedFriends, showGameActivity
     // after an adopt, before React has re-rendered.
     const myCustomTextRef = useRef(myCustomText);
     const myCustomEmojiRef = useRef(myCustomEmoji);
+    const myCustomExpiresRef = useRef(myCustomExpiresAt);
+    useEffect(() => { myCustomExpiresRef.current = myCustomExpiresAt; }, [myCustomExpiresAt]);
     useEffect(() => { myCustomTextRef.current = myCustomText; }, [myCustomText]);
     useEffect(() => { myCustomEmojiRef.current = myCustomEmoji; }, [myCustomEmoji]);
 
@@ -107,16 +128,29 @@ export function useUserStatus({ token, userId, acceptedFriends, showGameActivity
         text: string = myCustomText,
         emoji: string = myCustomEmoji,
         game_name: string | null = myCurrentGameRef.current,
+        // undefined = do not mention it (the server keeps an unchanged
+        // status's expiry); null = don't clear; ISO = clear then.
+        expiresAt?: string | null,
     ) => {
         if (!token) return false;
+        // An expiry already behind us (a replayed offline change) means the
+        // status is over: send it cleared rather than a request the server
+        // would refuse.
+        if (typeof expiresAt === 'string' && Date.parse(expiresAt) <= Date.now()) {
+            text = ''; emoji = ''; expiresAt = null;
+        }
         secureLocalStore.setItem(`cipherline_status_${userId}`, status);
         secureLocalStore.setItem(`cipherline_status_text_${userId}`, text);
         secureLocalStore.setItem(`cipherline_status_emoji_${userId}`, emoji);
         try {
+            // A My Emojis status sends only its `cl:p_<id>` reference: the image
+            // stays on devices and reaches friends end to end encrypted
+            // (utils/personalEmoji/statusEmoji.ts, driven from Dashboard).
             await axios.patch(`${API_BASE}/auth/status`, {
                 status,
                 custom_status_text: text || null,
                 custom_status_emoji: emoji || null,
+                ...(expiresAt !== undefined ? { custom_status_expires_at: expiresAt } : {}),
                 game_name: game_name,
             }, { headers: { Authorization: `Bearer ${token}` } });
             return true;
@@ -144,21 +178,24 @@ export function useUserStatus({ token, userId, acceptedFriends, showGameActivity
             fetchMe: async () => (await axios.get(`${API_BASE}/auth/me`, {
                 headers: { Authorization: `Bearer ${token}` },
             })).data,
-            patchStatus: (c: OwnChoice, game: string | null) => pushStatusRef.current(c.status, c.text, c.emoji, game),
+            patchStatus: (c: OwnChoice, game: string | null) => pushStatusRef.current(c.status, c.text, c.emoji, game, c.expiresAt),
             apply: (c: OwnChoice) => {
                 autoAwayRef.current = false;
                 chosenStatusRef.current = c.status;
                 myStatusRef.current = c.status;
                 myCustomTextRef.current = c.text;
                 myCustomEmojiRef.current = c.emoji;
+                myCustomExpiresRef.current = c.expiresAt ?? null;
                 setMyStatusState(c.status);
                 setMyCustomText(c.text);
                 setMyCustomEmoji(c.emoji);
+                setMyCustomExpiresAt(c.expiresAt ?? null);
                 secureLocalStore.setItem(`cipherline_status_${userId}`, c.status);
                 secureLocalStore.setItem(`cipherline_status_text_${userId}`, c.text);
                 secureLocalStore.setItem(`cipherline_status_emoji_${userId}`, c.emoji);
+                secureLocalStore.setItem(`cipherline_status_expires_${userId}`, c.expiresAt ?? '');
             },
-            getLocal: () => ({ status: announceable(), text: myCustomTextRef.current, emoji: myCustomEmojiRef.current }),
+            getLocal: () => ({ status: announceable(), text: myCustomTextRef.current, emoji: myCustomEmojiRef.current, expiresAt: myCustomExpiresRef.current }),
             getGame: () => myCurrentGameRef.current,
             loadPending: () => {
                 try {
@@ -177,20 +214,33 @@ export function useUserStatus({ token, userId, acceptedFriends, showGameActivity
 
     // Public setter — a real change on THIS device: the only thing that
     // sends a status. Resets the auto-away flag.
-    const setStatus = useCallback((status: UserStatus, text?: string, emoji?: string) => {
+    //
+    // `expiresAt` is for the custom-status dialog: an ISO instant, or null for
+    // "don't clear". Left out, an unchanged custom status keeps its expiry and
+    // a changed one has none (the same rule the server applies).
+    const setStatus = useCallback((status: UserStatus, text?: string, emoji?: string, expiresAt?: string | null) => {
         autoAwayRef.current = false;
         chosenStatusRef.current = status;
         myStatusRef.current = status;
         const newText  = text  !== undefined ? text  : myCustomTextRef.current;
         const newEmoji = emoji !== undefined ? emoji : myCustomEmojiRef.current;
+        const contentChanged = newText !== myCustomTextRef.current || newEmoji !== myCustomEmojiRef.current;
+        const newExpires = newText === '' && newEmoji === ''
+            ? null
+            : expiresAt !== undefined ? expiresAt : (contentChanged ? null : myCustomExpiresRef.current);
         myCustomTextRef.current = newText;
         myCustomEmojiRef.current = newEmoji;
+        myCustomExpiresRef.current = newExpires;
         setMyStatusState(status);
         setMyCustomText(newText);
         setMyCustomEmoji(newEmoji);
-        if (syncRef.current) void syncRef.current.changeLocally({ status, text: newText, emoji: newEmoji });
-        else void pushStatus(status, newText, newEmoji, myCurrentGameRef.current);
-    }, [pushStatus]);
+        setMyCustomExpiresAt(newExpires);
+        secureLocalStore.setItem(`cipherline_status_expires_${userId}`, newExpires ?? '');
+        // Only an explicit expiry is sent; otherwise the server keeps/derives it.
+        const choice: OwnChoice = { status, text: newText, emoji: newEmoji, ...(expiresAt !== undefined ? { expiresAt } : {}) };
+        if (syncRef.current) void syncRef.current.changeLocally(choice);
+        else void pushStatus(status, newText, newEmoji, myCurrentGameRef.current, expiresAt);
+    }, [pushStatus, userId]);
 
     /** A game started/stopped: tell the server (the PATCH carries the status
      *  this device already shows), but not before the server's choice has
@@ -216,6 +266,7 @@ export function useUserStatus({ token, userId, acceptedFriends, showGameActivity
     // an older server, re-announce as before).
     useEffect(() => {
         if (wsConnectCount < 1) return; // 0 = not yet connected
+        gameReporterRef.current?.onConnected();
         void syncRef.current?.onConnected();
     }, [wsConnectCount, token]);
 
@@ -301,6 +352,7 @@ export function useUserStatus({ token, userId, acceptedFriends, showGameActivity
             myCurrentGameRef.current = name;
             setMyCurrentGame(name);
             setMyCurrentGameProcess(processName);
+            gameReporterRef.current?.setGame(name);
             pushAmbient();
         };
 
@@ -333,6 +385,42 @@ export function useUserStatus({ token, userId, acceptedFriends, showGameActivity
         };
     }, [pushAmbient, showGameActivity]);
 
+    // Custom statuses clear on their own: one timer for the nearest expiry,
+    // for the user's own status and everyone else's. The server publishes the
+    // same change (and this is idempotent with it); this only covers a missed
+    // or late event, so an expired status never lingers on screen.
+    const nearestExpiry = (() => {
+        const own = myCustomExpiresAt ? [{ custom_status_expires_at: myCustomExpiresAt }] : [];
+        return nextCustomExpiry([...own, ...Object.values(friendStatuses)]);
+    })();
+    useEffect(() => {
+        if (nearestExpiry === null) return;
+        const t = setTimeout(() => {
+            const now = Date.now();
+            if (myCustomExpiresRef.current && Date.parse(myCustomExpiresRef.current) <= now) {
+                myCustomTextRef.current = '';
+                myCustomEmojiRef.current = '';
+                myCustomExpiresRef.current = null;
+                setMyCustomText('');
+                setMyCustomEmoji('');
+                setMyCustomExpiresAt(null);
+                secureLocalStore.setItem(`cipherline_status_text_${userId}`, '');
+                secureLocalStore.setItem(`cipherline_status_emoji_${userId}`, '');
+                secureLocalStore.setItem(`cipherline_status_expires_${userId}`, '');
+            }
+            setFriendStatuses(prev => {
+                let next: typeof prev | null = null;
+                for (const [id, e] of Object.entries(prev)) {
+                    if (!e.custom_status_expires_at || activeCustom(e.custom_status_text, e.custom_status_emoji, e.custom_status_expires_at, now)) continue;
+                    next = next ?? { ...prev };
+                    next[id] = { ...e, custom_status_text: null, custom_status_emoji: null, custom_status_expires_at: null };
+                }
+                return next ?? prev;
+            });
+        }, Math.max(nearestExpiry - Date.now(), 0) + 50);
+        return () => clearTimeout(t);
+    }, [nearestExpiry, userId]);
+
     // Seed friend statuses from the accepted friends list when it loads.
     // IMPORTANT: must return `prev` (not a spread copy) when nothing is new —
     // otherwise every render triggers a state update → infinite loop.
@@ -347,6 +435,7 @@ export function useUserStatus({ token, userId, acceptedFriends, showGameActivity
                     status: (f.status as UserStatus) || 'offline',
                     custom_status_text: f.custom_status_text ?? null,
                     custom_status_emoji: f.custom_status_emoji ?? null,
+                    custom_status_expires_at: f.custom_status_expires_at ?? null,
                     current_game: null,
                 };
             }
@@ -363,6 +452,7 @@ export function useUserStatus({ token, userId, acceptedFriends, showGameActivity
         myCurrentGameRef.current = null;
         setMyCurrentGame(null);
         setMyCurrentGameProcess(null);
+        gameReporterRef.current?.setGame(null);
         pushAmbient();
     }, [pushAmbient]);
 
@@ -370,6 +460,7 @@ export function useUserStatus({ token, userId, acceptedFriends, showGameActivity
         myStatus,
         myCustomText,
         myCustomEmoji,
+        myCustomExpiresAt,
         myCurrentGame,
         myCurrentGameProcess,
         setStatus,

@@ -53,6 +53,14 @@ export const KV_RULES: KvRule[] = [
     { pattern: 'cipherline_server_notif_prefs_{uid}',   match: 'exact',  include: true,  why: 'Per-server notification overrides' },
     { pattern: 'cipherline_channel_notif_prefs_{uid}',  match: 'exact',  include: true,  why: 'Per-channel notification overrides' },
     { pattern: 'cipherline_home_pins_{uid}',            match: 'exact',  include: true,  why: 'Home-screen pins' },
+    // Voice & Video settings remembered per microphone / speaker
+    // (utils/audioDeviceProfiles.ts). Included: profiles are keyed by the
+    // device's LABEL, not its per-machine id, so restoring onto a new PC gives
+    // the same headset its settings back the first time it is plugged in. The
+    // id/groupId hints inside are opaque per-origin values that simply never
+    // match elsewhere. Nothing new travels: the global voice settings in
+    // vault.voiceSettings already carry the picked devices' labels.
+    { pattern: 'cipherline_audio_device_profiles_{uid}', match: 'exact', include: true,  why: 'Voice & Video settings per microphone / speaker, keyed by device label' },
     { pattern: 'cipherline_server_rail_order_{uid}',    match: 'exact',  include: true,  why: 'Server rail order — legacy flat list, still written as the flattened order for pre-folder builds' },
     // Folders are a personal UI preference (and part of the on-device social
     // graph): names, colours, membership and the interleaved rail order. The
@@ -61,23 +69,21 @@ export const KV_RULES: KvRule[] = [
     { pattern: 'cipherline_server_rail_layout_{uid}',   match: 'exact',  include: true,  why: 'Server rail layout: order + server folders (name, colour, members)' },
     { pattern: 'cipherline_category_collapsed_{uid}_',  match: 'prefix', include: true,  why: 'Collapsed channel categories' },
     { pattern: 'cipherline_ignored_{uid}_',             match: 'prefix', include: true,  why: 'Ignored/blocked server members (safety)' },
-    { pattern: 'kv_verify_v2_{uid}_',                   match: 'prefix', include: true,  why: 'Safety-number verification state per contact' },
-    // Included for the same reason the pins above are, and it is a security
-    // inclusion rather than a convenience one. The pins record what was
-    // ACCEPTED (and which keys the user vouched for); this records what was
-    // REJECTED and is still unresolved. Restoring only the first half would
-    // bring a contact back looking verified/normal while the "…but something
-    // changed after that" record was dropped on the floor — the recovery path
-    // silencing an alarm. It also cannot be rebuilt from the pins: the
-    // offending key is deliberately never written into the pin store, so
-    // nothing else on disk remembers that it arrived. See senderWarningStore.ts
-    // (`mergeWarnings`) for why restore unions this key instead of replacing it.
-    { pattern: 'kv_warn_v1_{uid}',                      match: 'exact',  include: true,  why: 'Unresolved sender-identity warnings (key changed / unattributed) — not derivable from the pins' },
-    // Included: this is the only record of which own devices this account had
-    // already confirmed (docs/ghost-device.md). A fresh install restored from a
-    // backup then alarms on devices added since, instead of re-baselining and
-    // silently accepting whatever the server lists that day.
-    { pattern: 'kv_own_devices_v1_{uid}',               match: 'exact',  include: true,  why: 'Own-device ledger (ghost-device alarm) — which own devices were confirmed' },
+    // ── Excluded: TRUST state never travels in a backup or history transfer (F2) ──
+    // Safety-number pins, unresolved sender warnings and the own-device ledger
+    // are this install's own record of whom it has vouched for. They used to
+    // be restored from a vault, which made a vault — a history transfer
+    // delivered over the relay, or a backup file sitting on Drive behind a
+    // passphrase — able to mark an attacker's key as "verified" or a ghost
+    // device as "confirmed". Restoring trust is the one thing an import must
+    // never do, so a restored or newly synced device starts from TOFU: contacts
+    // show as unverified until re-verified, and the own-device ledger
+    // re-baselines with its one-time review banner (docs/ghost-device.md).
+    // include:false also makes applyIncludedKv IGNORE these keys in vaults
+    // written by older builds.
+    { pattern: 'kv_verify_v2_{uid}_',                   match: 'prefix', include: false, why: 'Safety-number verification pins — trust state, never imported from a vault (F2)' },
+    { pattern: 'kv_warn_v1_{uid}',                      match: 'exact',  include: false, why: 'Unresolved sender-identity warnings — trust state, stays with the install that raised them (F2)' },
+    { pattern: 'kv_own_devices_v1_{uid}',               match: 'exact',  include: false, why: 'Own-device ledger — trust state; a restored device re-baselines and asks for review (F2)' },
     { pattern: 'cipherline_backup_cfg_{uid}',           match: 'exact',  include: true,  why: 'Backup destinations, schedule, filename' },
     { pattern: 'cipherline_onboarded_v2_{uid}',         match: 'exact',  include: true,  why: 'Skip onboarding again after a restore' },
     { pattern: 'cipherline_checklist_dismissed_{uid}',  match: 'exact',  include: true,  why: 'Onboarding checklist dismissed' },
@@ -128,14 +134,37 @@ export const KV_RULES: KvRule[] = [
     // machine without that encoder it would force a software encode. The
     // overlay is a testing aid, not a preference worth carrying.
     { pattern: 'cipherline_screenshare_codec',          match: 'exact',  include: false, why: 'Screen-share encoder override — about this device’s GPU, never travels' },
+    { pattern: 'cipherline_entrance_prefs_{uid}',   match: 'exact',  include: true,  why: 'Listener settings for other people\'s call entrance sounds: the global switch + the people you muted (utils/entrancePrefs.ts). Personal preference, nothing sent anywhere' },
+    { pattern: 'cipherline_egg_progress_{uid}',        match: 'exact',  include: true,  why: 'Easter eggs FOUND (distinct ids, utils/eggProgress.ts) for the Egg hunter badge: account progress, so a restore on a new machine keeps it (the server also holds it; the union can only grow)' },
+    { pattern: 'cipherline_calls_connected_{uid}',  match: 'exact',  include: true,  why: 'Count of calls that connected (an integer; utils/milestones.ts) — account progress toward the 100th-call moment, so a restore on a new machine neither resets it nor replays the 100th. Never who, when or how long' },
+    { pattern: 'cipherline_egg_seen',                  match: 'exact',  include: false, why: 'Easter-egg ledger (which fired, how often, when — utils/easterEggs.ts): device-local rate-limit bookkeeping, a restore onto a new machine may happily re-tease you' },
     { pattern: 'cipherline_loading_game_best',          match: 'exact',  include: false, why: 'Firewall mini-game best score on the loading/offline screens — device-local, shown before sign-in' },
     { pattern: 'cipherline_stream_stats_hud',           match: 'exact',  include: false, why: 'Stream-stats overlay toggle — device-local testing aid' },
+    // Settings → which "Advanced audio" / "Troubleshooting" … rows were left
+    // open (components/settings/settingsDisclosureStore.ts). Pure UI layout
+    // memory for this window; a restore has nothing to gain from it.
+    { pattern: 'cipherline_settings_disclosures',       match: 'exact',  include: false, why: 'Settings disclosure rows left open — device-local UI layout, never travels' },
+    // The colour picker's "Recent" row (utils/recentColours.ts): the last 8 colours committed on THIS
+    // device. A UI nicety, not account data; a restore has nothing to gain from it.
+    { pattern: 'cipherline_recent_colours',             match: 'exact',  include: false, why: 'Colour picker "Recent" row (utils/recentColours.ts) — device-local UI nicety, never travels' },
     // The "share the game window instead" hint (utils/shareFullscreenHint.ts) is
     // shown ONCE per account; whether this device has shown it is a device fact.
     { pattern: 'cipherline_share_window_hint_seen_{uid}', match: 'exact', include: false, why: '"Share the game window instead" hint shown once (utils/shareFullscreenHint.ts) — a per-device UI nicety, a restore must not carry it' },
+    // Safety-number verification one-time markers (utils/safetyVerifyHint.ts, utils/firstVerification.ts):
+    // the "make sure it's really them" hint is finished, and the first-verification ceremony has played.
+    // One-time UI bookkeeping, and about state that never travels: the verification pins themselves are
+    // never restored from a vault (kv_verify_v2_ above), so a restored device has nobody verified yet
+    // and may say each once.
+    { pattern: 'cipherline_safety_hint_done_{uid}',      match: 'exact',  include: false, why: 'One-time "make sure it\u2019s really them" safety-number hint finished (utils/safetyVerifyHint.ts) - one-time UI marker; the pins it is about are not restored either' },
+    { pattern: 'cipherline_first_verify_played_{uid}',   match: 'exact',  include: false, why: 'First-verification ceremony already played (utils/firstVerification.ts) - one-time UI marker; the pins it is about are not restored either' },
     // The "video froze while gaming" offer's snooze / don't-ask-again flags
     // (utils/gamingVideoOffer.ts). About THIS machine's gaming load, like the
     // mode it offers (which lives in main's startup-flags.json, not here).
+    // "Listening to ..." (utils/integrations/listeningPrefs.ts): whether THIS
+    // computer's media session is read and shared. A per-device opt-in to read
+    // local state; a restore onto another machine must never switch it on.
+    { pattern: 'cipherline_listening_share_{uid}',      match: 'exact',  include: false, why: 'Share-what-I\u2019m-listening-to opt-in - per device (reads this machine\u2019s media session), never restored on' },
+    { pattern: 'cipherline_listening_browser_{uid}',    match: 'exact',  include: false, why: 'Listening status: include browser players - per-device companion of the opt-in above' },
     { pattern: 'cipherline_gaming_video_offer',         match: 'exact',  include: false, why: 'Gaming-video freeze offer snooze — about this device’s gaming load, never travels' },
     { pattern: 'cipherline_allow_hevc',                 match: 'exact',  include: false, why: 'Allow H.265 when everyone supports it — about this device’s GPU, never travels' },
     { pattern: 'cipherline_share_low_layer',            match: 'exact',  include: false, why: 'Screen share lighter copy for viewers — about this device’s encoder, never travels' },
@@ -145,14 +174,29 @@ export const KV_RULES: KvRule[] = [
     { pattern: 'cipherline_camera_codec',               match: 'exact',  include: false, why: 'Camera encoder override — about this device’s GPU, never travels' },
     { pattern: 'cipherline_incoming_video',             match: 'exact',  include: false, why: 'Incoming video quality (Auto/Reduced/Data saver) — about this PC and its connection, never travels' },
     { pattern: 'cipherline_perf_offer',                 match: 'exact',  include: false, why: 'Performance offer snooze / don’t-ask — about this machine, never travels' },
+    // The app version whose "What's new" dialog was last opened or skipped (utils/whatsNew.ts): about THIS install
+    // (restoring a backup onto a newer or older build must not decide whether its dialog shows).
+    { pattern: 'cipherline_whats_new_seen',             match: 'exact',  include: false, why: 'Last app version whose What’s new was shown — describes this install, never travels' },
     // Crash / issue reporter (utils/diagnostics/autoSend.ts). Per account (the
     // report is linked to the account that sends it) but EXCLUDED: consent to
     // upload crash reports automatically is given on each device and must
     // never be switched on by restoring a backup onto a new machine — same
     // device-local class as the two diagnostics prefs above. The log is
     // bookkeeping (hashed crash signatures + times for the daily cap/dedupe).
+    // Unsent composer drafts (utils/composerDrafts.ts): one record per account
+    // holding half-typed message PLAINTEXT per conversation. Excluded on
+    // purpose: it is a device-local convenience, not account data, and a backup
+    // file is the one thing here that deliberately TRAVELS (Drive, a USB stick)
+    // — copying unsent, possibly never-meant-to-be-sent text into it would
+    // widen where plaintext lives for no benefit. A restore onto another
+    // device also could not reattach it to anything: drafts are keyed by
+    // conversation/channel ids that device may not have cached yet.
+    { pattern: 'cipherline_composer_drafts_{uid}',      match: 'exact',  include: false, why: 'Unsent composer drafts (message plaintext) — device-local convenience; must not travel inside a backup file' },
     { pattern: 'cipherline_diag_auto_send_{uid}',       match: 'exact',  include: false, why: 'Automatically send crash reports — per-device consent, never restored' },
     { pattern: 'cipherline_diag_auto_send_log_{uid}',   match: 'exact',  include: false, why: 'Auto-send bookkeeping (hashed signatures + times) for the daily cap / dedupe' },
+    { pattern: 'cipherline_beta_diag_{uid}',            match: 'exact',  include: false, why: 'Share beta diagnostics — per-device consent (closed beta), never restored' },
+    { pattern: 'cipherline_beta_diag_notice_{uid}',     match: 'exact',  include: false, why: 'Beta diagnostics one-time notice seen — device-local UI bookkeeping' },
+    { pattern: 'cipherline_beta_diag_rating_{uid}',     match: 'exact',  include: false, why: 'Call rating card frequency ledger (calls since last prompt + time) — device-local bookkeeping' },
 
     // ── Excluded: carried by structured vault fields (don't duplicate) ────
     { pattern: 'cipherline_convs_{uid}',                match: 'exact',  include: false, why: 'vault.topics' },
@@ -165,10 +209,13 @@ export const KV_RULES: KvRule[] = [
     { pattern: 'cipherline_status_{uid}',               match: 'exact',  include: false, why: 'vault.userStatus' },
     { pattern: 'cipherline_status_text_{uid}',          match: 'exact',  include: false, why: 'vault.userStatus' },
     { pattern: 'cipherline_status_emoji_{uid}',         match: 'exact',  include: false, why: 'vault.userStatus' },
+    { pattern: 'cipherline_status_expires_{uid}',       match: 'exact',  include: false, why: 'When the custom status clears — server-enforced; this copy only stops a stale status flashing at boot' },
+    { pattern: 'cipherline_status_emoji_shared_{uid}', match: 'exact',  include: false, why: 'Which friends already hold the personal emoji used as a status - device-local delivery ledger (utils/personalEmoji/statusEmoji.ts)' },
     { pattern: 'cipherline_status_pending_{uid}',       match: 'exact',  include: false, why: 'Unsent status change made while offline — device-local, settled on the next connect (utils/ownStatusSync.ts)' },
     { pattern: 'cipherline_storage_policy_{uid}',       match: 'exact',  include: false, why: 'Retention policy — per-device, never travels; only its explicitly SAVED ids ride in vault.retentionSaves (retentionPortability.ts)' },
     { pattern: 'cipherline_voice_settings',             match: 'exact',  include: false, why: 'vault.voiceSettings' },
     { pattern: 'cipherline_keybinds',                   match: 'exact',  include: false, why: 'vault.keybinds' },
+    { pattern: 'cipherline_keybinds_migrated_v1',       match: 'exact',  include: false, why: 'one-time keybind migration marker; per device, like the binds it guards' },
     { pattern: 'cipherline_game_settings_{uid}',        match: 'exact',  include: false, why: 'vault.gameSettings (per account since 2026-09)' },
     { pattern: 'cipherline_game_settings',              match: 'exact',  include: false, why: 'legacy device-global record, migration source only' },
     // GIF library. Per-account since 2026-09; the two unscoped patterns below
@@ -180,6 +227,19 @@ export const KV_RULES: KvRule[] = [
     { pattern: 'cipherline_gif_key_{uid}_',             match: 'prefix', include: false, why: 'vault.gifKeys' },
     { pattern: 'cipherline_gif_favorites',              match: 'exact',  include: false, why: 'legacy device-global record, migration source only' },
     { pattern: 'cipherline_gif_key_',                   match: 'prefix', include: false, why: 'legacy device-global record, migration source only' },
+    // My Emojis (personal custom emojis). Library + per-item keys + the blob
+    // index ride in the vault (utils/personalEmoji/backup.ts); the sealed image
+    // files are `emoji:<id>` records. The sync bookkeeping is per device.
+    { pattern: 'cipherline_emoji_library_{uid}',        match: 'exact',  include: false, why: 'vault.emojiLibrary' },
+    { pattern: 'cipherline_emoji_index_{uid}',          match: 'exact',  include: false, why: 'vault.emojiIndex (size/mime/name of each stored image; last-used time is deliberately left out so viewing never churns a backup)' },
+    { pattern: 'cipherline_emoji_key_{uid}_',           match: 'prefix', include: false, why: 'vault.emojiKeys' },
+    { pattern: 'cipherline_emoji_sync_view_{uid}',      match: 'exact',  include: false, why: 'Emoji-sync bookkeeping (what this DEVICE knows about the personal_emojis slot - device-specific, must not restore)' },
+    // Custom entrance sound: this record holds the per-file AES key of the
+    // sealed `esound-<id>.enc` + an LWW stamp. The SOUND travels as
+    // vault.entranceSound (bytes inline, inside the encrypted vault's meta
+    // record) and is re-sealed under a fresh key on restore, so this
+    // device-local key must not ride in the generic kv map.
+    { pattern: 'cipherline_entrance_sound_{uid}',       match: 'exact',  include: false, why: 'vault.entranceSound (utils/customEntranceSound/transfer.ts)' },
     { pattern: 'cipherline_private_key',                match: 'exact',  include: false, why: 'per-device keypair — never leaves this device, not even in the vault (utils/crypto.ts BackupVault.privateKey)' },
     { pattern: 'cipherline_public_key',                 match: 'exact',  include: false, why: 'per-device keypair — never leaves this device, not even in the vault (utils/crypto.ts BackupVault.privateKey)' },
     { pattern: 'cipherline_device_id',                  match: 'exact',  include: false, why: 'vault.deviceId' },
@@ -203,6 +263,12 @@ export const KV_RULES: KvRule[] = [
     { pattern: 'cipherline_pin_ledger_{uid}',           match: 'exact',  include: false, why: 'Pin-sync bookkeeping' },
     { pattern: 'cipherline_gif_sync_seen_{uid}',        match: 'exact',  include: false, why: 'GIF-sync bookkeeping (which slot revision this DEVICE applied — device-specific, must not restore)' },
     { pattern: 'cipherline_gif_sync_view_{uid}',        match: 'exact',  include: false, why: 'GIF-sync bookkeeping (what this DEVICE knows about the slot, for anti-entropy — device-specific, must not restore)' },
+    { pattern: 'cipherline_achievements_sync_view_{uid}', match: 'exact', include: false, why: 'Achievements-sync bookkeeping (what this DEVICE knows about the achievements slot — device-specific, must not restore)' },
+    { pattern: 'cipherline_achievements_{uid}',         match: 'exact',  include: true,  why: 'Achievement progress (utils/achievements/state.ts): per-device counters, unlocks and the Most-played opt-in. Account progress, so a restore keeps it; the merge is a CRDT (per-device max, sum across devices) so a restore can only add' },
+    { pattern: 'cipherline_weekly_games_{uid}',         match: 'exact',  include: false, why: 'Rolling per-day play time on THIS machine (utils/achievements/mostPlayed.ts) — a week of device-local activity, expires on its own, must not travel' },
+    { pattern: 'cipherline_profile_notes_sync_view_{uid}', match: 'exact', include: false, why: 'Notes-sync bookkeeping (what this DEVICE knows about the profile_notes slot — device-specific, must not restore)' },
+    { pattern: 'cipherline_profile_notes_{uid}',        match: 'exact',  include: true,  why: 'Private notes on people (utils/profileNotes.ts): only you ever see them. Your own account data, so a restore keeps them; the merge is per-person last-writer-wins with tombstones, so a restore can only add or lose to a newer edit' },
+    { pattern: 'cipherline_friend_anniversaries_{uid}', match: 'exact', include: false, why: 'Which friend anniversaries this DEVICE already toasted this year (utils/profileMoments.ts) — a per-device nudge ledger, restoring it would only suppress or repeat a toast' },
     { pattern: 'cipherline_saves_sync_view_{uid}',      match: 'exact',  include: false, why: 'Saves-sync bookkeeping (what this DEVICE knows about the personal_saves slot — device-specific, must not restore)' },
     { pattern: 'cipherline_local_channel_pin_ledger_{uid}', match: 'exact', include: false, why: 'Channel-save sync bookkeeping (LWW ledger; the saves themselves are vault.localChannelPins)' },
     { pattern: 'cipherline_last_activity_{uid}',        match: 'exact',  include: false, why: 'Derived from history' },
@@ -250,6 +316,13 @@ export const KV_RULES: KvRule[] = [
     // fun on this device, not account data: not worth a record in a file that
     // travels to Drive or a USB stick, and losing it to a restore costs nothing.
     { pattern: 'cipherline_firewall_best_{uid}',        match: 'exact',  include: false, why: 'Home easter-egg game best score — a toy, not account data; never travels' },
+    // LEGACY: the first, local-only "eggs found" tally from the full-screen
+    // moments branch. Nothing writes it any more; on account bind
+    // utils/eggProgress.ts folds its registry ids into
+    // cipherline_egg_progress_{uid} (above) and otherwise ignores it. Classified
+    // like that key (include) so a backup taken on such a build still restores
+    // the user's own progress — egg ids only, nothing about messages or people.
+    { pattern: 'cipherline_eggs_found_{uid}',           match: 'exact',  include: true,  why: 'LEGACY easter eggs found (pre-sync tally; read-only, migrated into cipherline_egg_progress_{uid} on bind by utils/eggProgress.ts) — the user\'s own progress, egg ids only' },
     { pattern: 'cipherline_keys_spam_bag_{uid}',        match: 'exact',  include: false, why: 'Which Home spam-egg show Keys does next (utils/keysSpamStore.ts) — a toy, not account data; never travels' },
     { pattern: 'cipherline_pro_seen_{uid}',             match: 'exact',  include: false, why: 'Last tier this device saw (utils/proCelebration.ts) — gates the once-per-purchase Pro celebration; per-device UI state: a fresh device records what it first sees and does not celebrate' },
     { pattern: 'cipherline_trial_banner_dismissed_{uid}', match: 'exact', include: false, why: 'Billing banner state' },
@@ -336,6 +409,10 @@ export const SECURE_STORE_EXCLUDED = [
     // would unlock staging builds on a machine that never entered the
     // password. Prefix also covers the dev-preview key.
     'staging_unlock',
+    // F10: "this device has had its one legacy raw-record migration boot"
+    // (electron/kv-crypto.ts). Device-local security state; restoring it
+    // elsewhere would only close a window that device never had open.
+    'kv_raw_migration_closed_v1',
 ];
 
 const UID = '{uid}';

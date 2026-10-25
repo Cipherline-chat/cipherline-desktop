@@ -163,10 +163,13 @@ describe('history fold keeps system rows in order with real messages', () => {
         expect(foldChannelHistory(folded, [unwave])[0].reactions).toEqual({});
     });
 
-    it('a moderator\'s delete marker removes the system row', () => {
+    it('a moderator\'s delete marker removes the system row once the server confirms it (F3)', () => {
         const sys1 = memberEventFromHistory(CH, rawJoin({ id: 's1' }))! as ChannelRow;
         const del: ChannelRow = { id: 'd1', timestamp: '2026-10-13T10:00:07.000Z', sender_user_id: MOD, content: { type: 'delete', target_id: 's1' } };
-        expect(foldChannelHistory([sys1], [del])).toHaveLength(0);
+        // Confirmed (Dashboard checks the server no longer has the row).
+        expect(foldChannelHistory([sys1], [del], new Set(), undefined, { moderatorDeleteTargets: new Set(['s1']) })).toHaveLength(0);
+        // Unconfirmed: a delete marker alone cannot remove it.
+        expect(foldChannelHistory([sys1], [del])).toHaveLength(1);
     });
 
     it('a cached system row is reused, never re-processed or mistaken for a placeholder', () => {

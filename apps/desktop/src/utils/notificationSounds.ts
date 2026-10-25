@@ -420,6 +420,33 @@ export function previewSound(file: string, volume: number): void {
     } catch { /* ignore */ }
 }
 
+/**
+ * Play a cue that is not a stock file - today the procedurally generated
+ * entrance sounds (utils/entranceSounds.ts hands over a `blob:` WAV URL).
+ * Honours the master "sounds on" switch and master volume like every category,
+ * and goes through the same output-device routing (one reused element, so a
+ * second cue replaces a running one). `baseVolume` is the cue's own level on
+ * the loudness ladder.
+ */
+export function playGeneratedSound(src: string, baseVolume: number, prefs?: SoundsPrefs | null): void {
+    if (!src) return;
+    if (prefs && !prefs.sounds_enabled) return;
+    const vol = Math.min(1, Math.max(0, baseVolume * (prefs?.master_volume ?? 0.8)));
+    if (vol === 0) return;
+    if (!generatedEl) {
+        generatedEl = new Audio();
+        applyOutputDevice(generatedEl);
+    }
+    try {
+        generatedEl.src = src;
+        generatedEl.volume = vol;
+        generatedEl.currentTime = 0;
+        generatedEl.play().catch(() => { /* autoplay gate or no device */ });
+    } catch { /* ignore */ }
+}
+
+let generatedEl: HTMLAudioElement | undefined;
+
 let previewEl: HTMLAudioElement | undefined;
 
 function getOrCreatePreview(): HTMLAudioElement {
@@ -473,6 +500,12 @@ export async function testSpeakers(file: string, volume: number): Promise<Speake
     return { element, context, played };
 }
 
+/** Optional extras for playLoopingSound. */
+export interface LoopingSoundOptions {
+    /** Play `file` instead of the category's stock sound when `roll()` says so. */
+    alternate?: { file: string; roll: () => boolean; onPlay?: () => void };
+}
+
 /**
  * Start a looping sound (the outgoing ringback is the only one) and return a
  * stop function. Uses a dedicated element rather than the shared per-category
@@ -482,13 +515,25 @@ export async function testSpeakers(file: string, volume: number): Promise<Speake
  * Returns a no-op stopper when the sound is suppressed, so callers can always
  * call the result unconditionally in an effect cleanup.
  */
-export function playLoopingSound(category: SoundCategory, prefs?: SoundsPrefs | null): () => void {
+export function playLoopingSound(
+    category: SoundCategory,
+    prefs?: SoundsPrefs | null,
+    opts?: LoopingSoundOptions,
+): () => void {
     const r = resolve(category, prefs);
     if (!r) return () => { /* suppressed — nothing to stop */ };
 
+    // The rare alternate (utils/rareRingtone.ts). Rolled only here, after the
+    // category has resolved to audible, and only while the user is on the stock
+    // sound for this category: a sound they chose themselves is never swapped.
+    // The volume is r.vol either way, so the alternate is exactly as loud as
+    // the normal ring would have been.
+    const alt = opts?.alternate;
+    const useAlt = !!alt && r.file === DEFAULT_SOUNDS[category] && alt.roll();
+
     let el: HTMLAudioElement;
     try {
-        el = new Audio(r.file);
+        el = new Audio(useAlt ? alt!.file : r.file);
         el.loop = true;
         el.volume = r.vol;
         // Same reason as getOrCreate: the ringback has to come out of the
@@ -500,6 +545,7 @@ export function playLoopingSound(category: SoundCategory, prefs?: SoundsPrefs | 
     } catch {
         return () => { /* couldn't start — nothing to stop */ };
     }
+    if (useAlt) { try { alt!.onPlay?.(); } catch { /* cosmetic */ } }
 
     return () => {
         try {

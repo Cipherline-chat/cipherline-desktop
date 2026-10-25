@@ -22,7 +22,7 @@ describe('index.html splash', () => {
         expect(splash).not.toMatch(/<canvas|<progress|<svg|<img|lo-|loading|bar/i);
         // Exactly one element, with no children and no text.
         expect(splash.match(/<[a-z]/gi)).toHaveLength(1);
-        expect(splash.replace(/<[^>]*>/g, '').trim()).toBe('');
+        expect(splash.split(/<[^>]*>/).join('').trim()).toBe('');
     });
 
     it('is removed by React\'s first render, not by app readiness (so a locked app cannot be left holding it)', () => {

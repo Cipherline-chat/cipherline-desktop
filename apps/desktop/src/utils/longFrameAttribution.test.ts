@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { attributeFrame, frameLabels, scriptFile, scriptFn, scriptInvoker, type LoafEntryLike } from './longFrameAttribution';
-import { recordLongFrame, fetchFreezeLog, beginActivity, LONG_TASK_MS, __resetFreezeLogForTests } from './freezeLog';
+import { recordLongFrame, fetchFreezeLog, beginActivity, setFreezeTap, LONG_TASK_MS, WAKE_SETTLE_MS, __resetFreezeLogForTests } from './freezeLog';
 import { getCallEvents, clearCallEvents, validateCallEvent } from './callEventLog';
 
 const ORIGIN = 'http://127.0.0.1:48123';
@@ -162,6 +162,26 @@ describe('recordLongFrame — LoAF rows in the freeze log and the call-event rin
         expect(text).not.toMatch(/alice|Users|example|7d3f1a2e|https?:|file:/);
         expect(text).toContain('js:ext:run');
         expect(text).toContain('IMG.onload');
+    });
+
+    it('hands the freeze tap the BLOCKED time, not a frame span that covers idle or sleep', () => {
+        vi.useFakeTimers();
+        const seen: number[] = [];
+        setFreezeTap((ms) => { seen.push(ms); });
+        try {
+            // A frame left open across a 101-minute sleep (prod app_freeze ms=6077366):
+            // only ~300 ms of it blocked the thread.
+            recordLongFrame(frame(6_077_366, { blockingDuration: 300 }));
+            // Positive control: a real 1.4 s freeze still reaches the tap as one.
+            recordLongFrame(frame(1400));
+            // No blockingDuration from this Chromium: falls back to duration - 50.
+            recordLongFrame(frame(1200, { blockingDuration: undefined }));
+            vi.advanceTimersByTime(WAKE_SETTLE_MS);
+        } finally {
+            setFreezeTap(null);
+            vi.useRealTimers();
+        }
+        expect(seen).toEqual([300, 1350, 1150]);
     });
 
     it('caps long_frame call events per minute but keeps every freeze-log row', async () => {

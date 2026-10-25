@@ -10,32 +10,40 @@
  *         rnnoise.worker.ts) if the in-worklet path fails to come up. The
  *         RNNoise compensation gain, +3.5 dB when a sample was actually
  *         processed, is applied INSIDE this worklet either way — see nsKernel.js)
- *     → GateWorkletNode (RMS gate; pass-through when disabled). A stage of its
+ *     → SpeexLightWorkletNode ("Light" noise suppression: SpeexDSP's steady-floor
+         denoiser, one 128-sample frame = 2.7 ms, keeps whistling/whispering. A
+         plain copy unless noiseSuppressionMode is 'light'; exactly one of this
+         and the RNNoise node ever processes — see speexLightWorkletSource.ts
+         and nsLatency.ts)
+     → GateWorkletNode (RMS gate; pass-through when disabled). A stage of its
  *         own: it gates the raw capture when NS is off exactly as it gates
  *         RNNoise's output when NS is on (see voiceChain.ts for the bug that
  *         tied them together)
  *     → EQ[80Hz, 250Hz, 1kHz, 4kHz, 12kHz] (5× BiquadFilterNode; gains zeroed when disabled)
- *     → AgcWorkletNode (slow adaptive gain toward a target speech level, with a
- *         built-in fast peak limiter; pass-through at unity gain when the
- *         "Auto gain control" setting is off — see agcKernel.js)
- *     → DynamicsCompressorNode (fast layer for consonant peaks; ratio = 1 when
- *         "Auto gain control" is off = transparent passthrough)
- *     → MicVolumeGain (0–200% boost — post-compression makeup gain)
+ *     → AgcWorkletNode (the whole levelling stage: slow speech-gated gain toward
+ *         a target active-speech level, a fast burst guard, a make-up-free peak
+ *         compressor and a look-ahead limiter; pass-through at unity gain when
+ *         the "Auto gain control" setting is off — see agcKernel.js)
+ *     → DynamicsCompressorNode (kept in the graph but ALWAYS transparent:
+ *         ratio 1. A Web Audio compressor carries a hidden automatic make-up
+ *         gain that lifted everything below its threshold, noise included —
+ *         the compression now lives in agcKernel.js without one)
+ *     → MicVolumeGain (0–200% user boost, after the AGC on purpose: it is a
+ *         deliberate "I want to be louder" control)
  *     → AnalyserNode (feeds input level meter so meter reflects final gain)
  *     → MediaStreamAudioDestinationNode
  *     → processedTrack
  *
- * "Auto gain control" is a genuine two-stage AGC now (the libwebrtc AGC2
- * pattern), not just a compressor with a fixed threshold: the AGC worklet is
- * the slow stage (a few dB/s, steering average speech level toward a target
- * so two speakers with very different hardware levels converge to roughly
- * the same loudness on the wire) and the DynamicsCompressorNode downstream
- * is the fast stage (levelling out consonant peaks within one already-
- * normalized speaker's speech). See agcKernel.js for why a fixed-threshold
- * compressor alone couldn't do this: a quiet mic never crossed the old
- * threshold, so it only ever got a flat makeup gain, while a hot mic got
- * compressed — a 30 dB hardware gap came out ~20 dB apart regardless of the
- * setting on either end.
+ * "Auto gain control" is a genuine AGC (the libwebrtc AGC2 pattern), not a
+ * compressor with a fixed threshold: a slow stage steers the talker's average
+ * active-speech level to a fixed target (about -20 dBFS on the wire, the level
+ * libwebrtc-based apps such as Discord land at — see agcKernel.js for the
+ * sources) so two speakers with very different hardware levels arrive at the
+ * same loudness. A fixed-threshold compressor alone could not: a quiet mic
+ * never crossed the threshold, so a 30 dB hardware gap came out ~20 dB apart
+ * regardless of the setting on either end. Chromium's own AGC stays off
+ * (audioInput.ts): it would run on the raw mic BEFORE this chain, double-process
+ * the signal and, on Windows, move the OS mic slider.
  *
  * Noise suppression architecture (Phase 3, reliability audit):
  *   - Primary: the AudioWorklet accumulates 480-sample frames and runs RNNoise's
@@ -45,8 +53,12 @@
  *     scenario this whole reliability pass started from. See
  *     rnnoiseInWorkletSource.ts for the full design and the tradeoff it
  *     accepts (no graceful mid-quantum recovery if a single processFrame()
- *     call ever overruns the render-quantum budget — NsOutputRing's
- *     underrun/hysteresis auto-bypass, unchanged, is what bounds that risk).
+ *     call ever overruns the render-quantum budget). NOTE: NsOutputRing's
+ *     underrun auto-bypass cannot see that case — a synchronous producer never
+ *     falls behind the ring; the whole render callback is late instead. What
+ *     bounds it is nsLoadGuard.ts: the context's playbackStats underruns,
+ *     and Strong → Light (~23x cheaper) for the rest of the call when the
+ *     render thread keeps missing deadlines.
  *   - Fallback: if the in-worklet path fails to register/construct, this
  *     automatically falls back to the original design — a separate Web
  *     Worker (rnnoise.worker.ts) running the same WASM off the main thread,
@@ -70,50 +82,25 @@ import type { VoiceSettings } from '../hooks/useVoiceSettings';
 // The two RNNoise worklet sources are loaded on demand (the inline one is
 // ~4.8 MB of vendored WASM glue) — see rnnoiseSources.ts.
 import { loadInlineRnnoiseWorkletSource, loadRnnoiseWorkletSource } from './rnnoiseSources';
+import { loadSpeexLightWorkletSource, loadSpeexWasmBytes } from './speexSources';
 import { AGC_WORKLET_SOURCE } from './agcWorkletSource';
 import { registerCtxForUnlock } from './audioUnlock';
 import { workletModuleUrl, forgetWorkletModuleUrl } from './workletModuleUrl';
 import { planVoiceChain, type VoiceChainAvailability, type VoiceChainPlan } from './voiceChain';
+import { NsLoadGuard, UnderrunWindow, readPlaybackStats, NS_LOAD_TICK_MS, type NsEngineRunning } from './nsLoadGuard';
 
-// ── Compressor preset (applied when volumeNormalization is ON) ──────────────
-// Goal: genuine level normalisation — quiet mics come up, loud mics come down.
+// ── Compressor node: always transparent ───────────────────────────────────────
+// The levelling compressor moved into agcKernel.js (see its DEFAULT_COMP_*
+// notes). The old preset here (-26 dB threshold, 4:1) looked like a +0 dB
+// stage, but a Web Audio DynamicsCompressorNode applies an automatic make-up
+// gain — measured +9.1 dB for that preset in Chromium, to everything below the
+// threshold as well — which is why speech landed at -19.7 dBFS when the AGC
+// target said -28 and why room noise was lifted along with the voice.
+// The node stays wired (the chain topology is part of the tests) but its
+// ratio is 1, i.e. no reduction and no make-up, in both settings.
 //
-// threshold: -26 dBFS catches typical conversational speech (−20 to −30 dBFS)
-//            so the compressor actually fires on most voices. The old −14 value
-//            only caught loud peaks and left quiet mics untouched.
-// ratio:      4:1 is a levelling compressor (vs 2.5:1 which is more "gentle
-//             limiter"). Perceptually this evens out large level differences
-//             between speakers without sounding squashed.
-// knee:       12 dB wide knee → soft onset, natural-sounding transition into
-//             compression. Wider than the old 8 dB — avoids pumping artefacts
-//             on speech with sharp consonants.
-// attack:     3 ms — fast enough to catch consonant peaks without sounding
-//             harsh (same as before).
-// release:    200 ms — faster than the old 250 ms for a more responsive,
-//             "breathing" feel during pauses.
-//
-// IMPORTANT: this compressor sits downstream of the AgcWorkletNode (see the
-// module doc comment above). AGC does the actual cross-speaker levelling;
-// this compressor is the fast layer smoothing peaks WITHIN one already-
-// normalized speaker's speech. It no longer carries a makeup gain — see
-// COMPRESSOR_MAKEUP_GAIN below.
-
-const COMPRESSOR_PRESET = { threshold: -26, knee: 12, ratio: 4.0, attack: 0.003, release: 0.20 };
-
-// ── Compressor makeup gain ────────────────────────────────────────────────────
-// Was a dedicated GainNode placed between the compressor and MicVolumeGain,
-// lifting the compressed output (+5 dB, later +3 dB) so normalization raised
-// average loudness instead of just limiting peaks.
-//
-// Removed to 0 dB / unity as part of the "people in calls are too loud" fix
-// (2026-09-27): with the AGC worklet upstream already steering everyone's
-// speech RMS to a fixed target (see DEFAULT_TARGET_DB in agcKernel.js), any
-// flat makeup gain here just re-adds loudness AGC had already normalized
-// away — the two stages' gain compounded instead of one levelling (AGC) and
-// one smoothing (compressor). The GainNode stays wired in the graph (kept
-// for structural symmetry / a future per-user tuning knob) but is pinned to
-// unity in both the on and off states below.
-const COMPRESSOR_MAKEUP_GAIN = 1.0; // unity — was 1.413 (≈ +3 dB), before that ≈ +5 dB
+// (Makeup GainNode after it: unity, same reason.)
+const COMPRESSOR_MAKEUP_GAIN = 1.0;
 
 // Settings mic-volume slider is 0..200 (% of unity). Convert to a linear
 // gain multiplier with a perceptual power curve so the slider feels uniform.
@@ -125,9 +112,7 @@ const MIC_GAIN_EXPONENT = 1.25;
 const micSliderToGain = (slider: number): number =>
     Math.pow(Math.max(0, slider) / 100, MIC_GAIN_EXPONENT);
 
-// ── Compressor bypass values (transparent passthrough when OFF) ──────────────
-// ratio = 1 means 1:1 compression = no gain reduction regardless of input level.
-
+// ── Compressor node values (transparent: ratio 1 = no reduction, no make-up) ──
 const COMPRESSOR_BYPASS = { threshold: 0, knee: 0, ratio: 1, attack: 0.003, release: 0.25 };
 
 // ── 5-band EQ frequencies ─────────────────────────────────────────────────────
@@ -385,6 +370,11 @@ export interface VoiceProcessorCallbacks {
      *  dBFS — the exact quantity compared against the threshold — and whether
      *  the gate is open. See GATE_METER_REPORT_MS in voiceChain.ts. */
     onGateLevel?: (dbfs: number, open: boolean) => void;
+    /** Once per call: the audio render thread kept missing its deadlines with
+     *  Strong (RNNoise) running, so Light (Speex) took over — nsLoadGuard.ts. */
+    onNsLoadFallback?: (info: { underrunMs: number; underrunEvents: number }) => void;
+    /** Every 10 s that had any render underrun: totals + the engine that was running. */
+    onAudioRender?: (w: { underrunMs: number; underrunEvents: number; windowS: number; ns: NsEngineRunning }) => void;
 }
 
 export class CipherlineVoiceProcessor {
@@ -405,6 +395,18 @@ export class CipherlineVoiceProcessor {
     private _nsSupported = true;
     private source?: MediaStreamAudioSourceNode;
     private rnnoiseWorkletNode?: AudioWorkletNode;
+    /** Light noise suppression (Speex). Always built alongside RNNoise so switching
+     *  engines is a postMessage, never a graph splice; a plain copy while off. */
+    private speexWorkletNode?: AudioWorkletNode;
+    /** Its WASM is requested + sent the first time Light is actually active. */
+    private speexWasmRequested = false;
+    /** Render-thread watch (nsLoadGuard.ts). Kept across restart() — a device
+     *  switch must not undo a fallback — and reset when the user picks a mode. */
+    private readonly loadGuard = new NsLoadGuard();
+    private readonly underrunWindow = new UnderrunWindow();
+    private loadTimer?: ReturnType<typeof setInterval>;
+    /** Strong was replaced by Light for this call because the render thread fell behind. */
+    private _loadFallback = false;
     /** The slow-stage AGC — see the module doc comment. Pass-through at unity
      *  gain when "Auto gain control" is off. */
     private agcWorkletNode?: AudioWorkletNode;
@@ -455,7 +457,7 @@ export class CipherlineVoiceProcessor {
     /** Which worklet stages came up on the current context — see planVoiceChain. */
     private availability(): VoiceChainAvailability {
         return {
-            ns: !!this.rnnoiseWorkletNode && this._nsSupported,
+            ns: this.nsEngine() !== null && this._nsSupported,
             gate: !!this.gateWorkletNode,
             agc: !!this.agcWorkletNode,
         };
@@ -474,6 +476,41 @@ export class CipherlineVoiceProcessor {
      */
     private nsActive(): boolean {
         return this._nsSupported && this._settings.noiseSuppression;
+    }
+
+    /** Which engine runs when NS is on: exactly the one the user selected, or null
+     *  if its worklet did not come up. Deliberately NO silent fallback to the other
+     *  engine - that would hide the failure from the "noise suppression unavailable"
+     *  notice and swap the sound under the user's feet. */
+    private nsEngine(): 'strong' | 'light' | null {
+        if (this._settings.noiseSuppressionMode === 'light') return this.speexWorkletNode ? 'light' : null;
+        // The one deliberate exception: Strong overloaded the render thread
+        // (nsLoadGuard.ts) — announced to the user, logged, reset by a new choice.
+        if (this._loadFallback && this.speexWorkletNode) return 'light';
+        return this.rnnoiseWorkletNode ? 'strong' : null;
+    }
+
+    /** Point the two NS worklets at the current setting: exactly one engine
+     *  processes (the other is a no-work passthrough). Safe to call any time. */
+    private applyNsEngines() {
+        const on = this.nsActive();
+        const engine = this.nsEngine();
+        this.rnnoiseWorkletNode?.port.postMessage({ type: 'toggle', enabled: on && engine === 'strong' });
+        const speex = this.speexWorkletNode;
+        if (!speex) return;
+        const light = on && engine === 'light';
+        if (light && !this.speexWasmRequested) {
+            this.speexWasmRequested = true;
+            loadSpeexWasmBytes().then(bytes => {
+                // Transfer: this copy is ours alone.
+                if (this.speexWorkletNode === speex) speex.port.postMessage({ type: 'init', wasm: bytes }, [bytes]);
+            }).catch(err => {
+                this.speexWasmRequested = false;
+                console.warn('[VoiceProcessor] Light noise suppression WASM unavailable:', err);
+                this._callbacks.onNsUnavailable?.();
+            });
+        }
+        speex.port.postMessage({ type: 'toggle', enabled: light });
     }
 
     // ── Output node — connect this to a destination for monitoring ───────
@@ -683,7 +720,7 @@ export class CipherlineVoiceProcessor {
                         this._callbacks.onNsUnavailable?.();
                     }
                 };
-                this.rnnoiseWorkletNode.port.postMessage({ type: 'toggle', enabled: this.nsActive() });
+                // The initial toggle is sent by applyNsEngines() once the Light stage is built too.
                 console.log('[VoiceProcessor] In-worklet synchronous RNNoise registered');
             } catch (inlineErr) {
                 console.warn(
@@ -753,9 +790,9 @@ export class CipherlineVoiceProcessor {
                         // Apply the current NS preference (may have changed while WASM was loading).
                         this.rnnoiseWorkletNode.port.postMessage({
                             type: 'toggle',
-                            enabled: this.nsActive(),
+                            enabled: this.nsActive() && this.nsEngine() === 'strong',
                         });
-                        console.log('[VoiceProcessor] RNNoise Worker ready, NS toggled to', this.nsActive());
+                        console.log('[VoiceProcessor] RNNoise Worker ready, NS toggled to', this.nsActive() && this.nsEngine() === 'strong');
                     }
                 };
 
@@ -788,6 +825,33 @@ export class CipherlineVoiceProcessor {
             this.workerChannel = undefined;
             this._callbacks.onNsUnavailable?.();
         }
+
+        // ── Light noise suppression stage (Speex) ──
+        // Built on every call, a plain copy while off, so Strong <-> Light is a
+        // postMessage and never a graph splice. Its WASM is only requested and
+        // instantiated the first time Light is actually active (applyNsEngines).
+        try {
+            await addWorkletModule(await loadSpeexLightWorkletSource(), 'speex-light-worklet');
+            const node = new AudioWorkletNode(ctx, 'speex-light-worklet', {
+                numberOfInputs: 1,
+                numberOfOutputs: 1,
+                outputChannelCount: [1],
+            });
+            node.port.onmessage = ({ data }: MessageEvent) => {
+                if (data?.type === 'loadFailed') {
+                    // The worklet stays a passthrough; allow a retry on the next enable.
+                    this.speexWasmRequested = false;
+                    console.warn('[VoiceProcessor] Light noise suppression failed to start:', data.error);
+                    this._callbacks.onNsUnavailable?.();
+                }
+            };
+            this.speexWorkletNode = node;
+        } catch (err) {
+            console.error('[VoiceProcessor] Light noise suppression unavailable - continuing without it:', err);
+            try { this.speexWorkletNode?.disconnect(); } catch { /* never connected */ }
+            this.speexWorkletNode = undefined;
+        }
+        this.applyNsEngines();
 
         // ── AGC stage ──
         try {
@@ -838,7 +902,7 @@ export class CipherlineVoiceProcessor {
         });
 
         this.compressor = ctx.createDynamicsCompressor();
-        const preset = this._settings.volumeNormalization ? COMPRESSOR_PRESET : COMPRESSOR_BYPASS;
+        const preset = COMPRESSOR_BYPASS;
         this.compressor.threshold.value = preset.threshold;
         this.compressor.knee.value      = preset.knee;
         this.compressor.ratio.value     = preset.ratio;
@@ -849,7 +913,7 @@ export class CipherlineVoiceProcessor {
         // so the net effect is level normalisation (quiet up, loud down) rather
         // than mere peak limiting. Unity when normalization is off.
         this.compressorMakeupGain = ctx.createGain();
-        this.compressorMakeupGain.gain.value = this._settings.volumeNormalization ? COMPRESSOR_MAKEUP_GAIN : 1.0;
+        this.compressorMakeupGain.gain.value = COMPRESSOR_MAKEUP_GAIN;
 
         this.destination = ctx.createMediaStreamDestination();
 
@@ -869,7 +933,7 @@ export class CipherlineVoiceProcessor {
         // makeup gain was removed entirely rather than merely reduced again.
         //
         // MicVolumeGain sits AFTER the makeup gain as the user-controlled
-        // boost (0–300%). Analyser follows so the level meter reflects
+        // boost (0–200%). Analyser follows so the level meter reflects
         // the final gain the user has dialed in.
         //
         // A worklet stage that failed to come up (see above) is simply absent:
@@ -878,6 +942,10 @@ export class CipherlineVoiceProcessor {
         if (this.rnnoiseWorkletNode) {
             current.connect(this.rnnoiseWorkletNode);
             current = this.rnnoiseWorkletNode;
+        }
+        if (this.speexWorkletNode) {
+            current.connect(this.speexWorkletNode);
+            current = this.speexWorkletNode;
         }
         if (this.gateWorkletNode) {
             current.connect(this.gateWorkletNode);
@@ -899,6 +967,7 @@ export class CipherlineVoiceProcessor {
 
         this.processedTrack = this.destination.stream.getAudioTracks()[0];
         this.startLevelPolling();
+        this.startLoadGuard();
 
         console.log('[VoiceProcessor] Initialized (Worker+Worklet NS, 48 kHz)');
     }
@@ -924,6 +993,7 @@ export class CipherlineVoiceProcessor {
 
     async destroy() {
         this.stopLevelPolling();
+        this.stopLoadGuard();
 
         // Terminate the RNNoise Worker
         if (this.rnnoiseWorker) {
@@ -941,6 +1011,12 @@ export class CipherlineVoiceProcessor {
             try { this.rnnoiseWorkletNode.disconnect(); } catch { /* teardown is best-effort; the node/handle may already be closed */ }
             this.rnnoiseWorkletNode = undefined;
         }
+        if (this.speexWorkletNode) {
+            this.speexWorkletNode.port.onmessage = null;
+            try { this.speexWorkletNode.disconnect(); } catch { /* teardown is best-effort; the node/handle may already be closed */ }
+            this.speexWorkletNode = undefined;
+        }
+        this.speexWasmRequested = false;
 
         try { this.source?.disconnect(); } catch { /* teardown is best-effort; the node/handle may already be closed */ }
         try { this.compressorMakeupGain?.disconnect(); } catch { /* teardown is best-effort; the node/handle may already be closed */ }
@@ -988,17 +1064,19 @@ export class CipherlineVoiceProcessor {
         // finished loading yet, the worklet ignores this (workerPort is null so
         // process() passes through anyway). The Worker's 'ready' handler will apply
         // the current this._settings.noiseSuppression when it fires.
-        if (prev.noiseSuppression !== settings.noiseSuppression && this.rnnoiseWorkletNode) {
-            // nsActive() — not settings.noiseSuppression — so a context stuck at
-            // the wrong sample rate keeps the worklet in passthrough no matter
-            // what the toggle says. The compensation gain needs no separate
-            // ramp here: it's applied inside the worklet only to samples that
-            // are actually processed, so raw passthrough after a toggle-off is
-            // automatically unity gain with no GainNode to keep in sync.
-            this.rnnoiseWorkletNode.port.postMessage({
-                type: 'toggle',
-                enabled: this.nsActive(),
-            });
+        if (prev.noiseSuppression !== settings.noiseSuppression
+            || prev.noiseSuppressionMode !== settings.noiseSuppressionMode) {
+            // A new choice by the user overrides an automatic load fallback.
+            this._loadFallback = false;
+            this.loadGuard.reset();
+            // applyNsEngines() uses nsActive() — not settings.noiseSuppression — so a
+            // context stuck at the wrong sample rate keeps both worklets in
+            // passthrough no matter what the toggle says, and it points exactly one
+            // engine (Strong/RNNoise or Light/Speex) at the audio. The RNNoise
+            // compensation gain needs no separate ramp: it's applied inside that
+            // worklet only to samples it actually processed, so raw passthrough
+            // after a toggle-off or an engine switch is automatically unity gain.
+            this.applyNsEngines();
         }
 
         // ── Mic volume ──
@@ -1023,37 +1101,16 @@ export class CipherlineVoiceProcessor {
             }
         });
 
-        // ── Compressor (volume normalization) ──
-        if (prev.volumeNormalization !== settings.volumeNormalization && this.compressor) {
-            const preset = settings.volumeNormalization ? COMPRESSOR_PRESET : COMPRESSOR_BYPASS;
-            for (const [param, val] of [
-                [this.compressor.threshold, preset.threshold],
-                [this.compressor.knee,      preset.knee],
-                [this.compressor.ratio,     preset.ratio],
-            ] as [AudioParam, number][]) {
-                const cv = param.value;
-                param.cancelScheduledValues(t);
-                param.setValueAtTime(cv, t);
-                param.setTargetAtTime(val, t, RAMP_TC);
-            }
-            // Ramp the paired makeup gain in sync — enabling normalization
-            // should immediately start lifting the signal, not just compressing it.
-            if (this.compressorMakeupGain) {
-                const p = this.compressorMakeupGain.gain;
-                p.cancelScheduledValues(t);
-                p.setValueAtTime(p.value, t);
-                p.setTargetAtTime(settings.volumeNormalization ? COMPRESSOR_MAKEUP_GAIN : 1.0, t, RAMP_TC);
-            }
-            // Toggle the AGC worklet's slow stage in lockstep — "Auto gain
-            // control" now drives both. setEnabled(false) inside the worklet
-            // snaps its gain back to unity rather than leaving a stale
-            // boost/cut baked in (see agcKernel.js).
-            if (this.agcWorkletNode) {
-                this.agcWorkletNode.port.postMessage({
-                    type: 'enabled',
-                    value: settings.volumeNormalization,
-                });
-            }
+        // ── Auto gain control ──
+        // The levelling lives in the AGC worklet (compressor included); the
+        // compressor NODE stays transparent in both states. setEnabled(false)
+        // inside the worklet snaps its gain back to unity rather than leaving
+        // a stale boost/cut baked in (see agcKernel.js).
+        if (prev.volumeNormalization !== settings.volumeNormalization && this.agcWorkletNode) {
+            this.agcWorkletNode.port.postMessage({
+                type: 'enabled',
+                value: settings.volumeNormalization,
+            });
         }
 
         // ── Voice Gate ──
@@ -1097,4 +1154,47 @@ export class CipherlineVoiceProcessor {
             this.levelPollTimer = null;
         }
     }
+
+    // ── Render-thread load (nsLoadGuard.ts) ──────────────────────────────
+
+    /** The engine actually denoising right now. */
+    private runningEngine(): NsEngineRunning {
+        return this.nsActive() ? (this.nsEngine() ?? 'off') : 'off';
+    }
+
+    private startLoadGuard() {
+        this.stopLoadGuard();
+        const ctx = this.ctx;
+        if (!ctx || !readPlaybackStats(ctx)) return; // API missing: nothing to watch
+        this.loadTimer = setInterval(() => {
+            if (this.ctx !== ctx || ctx.state !== 'running') return;
+            const engine = this.runningEngine();
+            const d = this.loadGuard.observe(readPlaybackStats(ctx), engine);
+            if (!d.tick) return;
+            this.underrunWindow.add(d.tick);
+            const w = this.underrunWindow.take(NS_LOAD_REPORT_TICKS);
+            if (w) this._callbacks.onAudioRender?.({ ...w, ns: engine });
+            if (d.trip && this.speexWorkletNode) {
+                this._loadFallback = true;
+                console.warn(`[VoiceProcessor] Audio render thread overloaded (${d.tick.underrunMs} ms underrun in 1 s) — Strong noise suppression → Light for this call`);
+                this.applyNsEngines();
+                this._callbacks.onNsLoadFallback?.({ underrunMs: d.tick.underrunMs, underrunEvents: d.tick.underrunEvents });
+            }
+        }, NS_LOAD_TICK_MS);
+    }
+
+    private stopLoadGuard() {
+        if (this.loadTimer) {
+            clearInterval(this.loadTimer);
+            this.loadTimer = undefined;
+        }
+    }
+
+    /** Diagnostics / tests: Strong was swapped for Light because the render thread fell behind. */
+    get nsLoadFallbackActive(): boolean {
+        return this._loadFallback;
+    }
 }
+
+/** Underrun telemetry window, in guard ticks (seconds). */
+const NS_LOAD_REPORT_TICKS = 10;

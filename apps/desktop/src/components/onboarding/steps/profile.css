@@ -119,3 +119,9 @@
   .ob .pf-media { grid-template-columns: 1fr; gap: 8px; margin: 18px 0 14px; }
 }
 .ob .pf-name .inp[aria-invalid="true"] { border-color: var(--flash); }
+
+/* "There's more in Settings" hint under the bio. Quiet: one line of muted
+   text with the lume sparkle, not a callout competing with Continue. */
+.ob .pf-more { display: flex; align-items: flex-start; gap: 8px; margin: 14px 0 0; font-size: 12.5px; line-height: 1.45; color: var(--muted); }
+.ob .pf-more svg { flex: none; margin-top: 2px; color: var(--lume); }
+.ob .pf-more b { color: var(--text); font-weight: 800; }

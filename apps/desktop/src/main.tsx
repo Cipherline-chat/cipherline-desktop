@@ -29,12 +29,17 @@ import './styles/cl-kit-ext.css';
 import './styles/settings-descent.css';
 // “Drift” floating-deck workspace composition — the only layout; see layout-drift.css.
 import './styles/layout-drift.css';
+// “Night dive” — midnight-to-5am deeper BACKGROUND layers + the deep-sea layer
+// (utils/nightDive.ts, components/NightDiveSea.tsx). Imported LAST so its
+// background declarations win over the stylesheets they mirror.
+import './styles/night-dive.css';
 import App from './App.tsx';
 import { AuthProvider } from './contexts/AuthContext.tsx';
 import { SubscriptionProvider } from './contexts/SubscriptionContext.tsx';
 import { NotificationProvider } from './contexts/NotificationContext.tsx';
 import { createHashRouter, RouterProvider } from 'react-router-dom';
 import { secureLocalStore } from './utils/secureLocalStore';
+import { applyNightDiveNow } from './hooks/useNightDive';
 import StorageLockedScreen from './components/StorageLockedScreen';
 import StorageCorruptedScreen from './components/StorageCorruptedScreen';
 import RootErrorBoundary from './components/RootErrorBoundary';
@@ -62,6 +67,10 @@ async function renderApp() {
   // Before the first paint, so no frame is ever rendered with decorative
   // loops running in an already-background window.
   installIdleMotionGate();
+
+  // Night dive: the store is hydrated by now, so a client launched after
+  // midnight paints its very first frame already deep instead of fading in.
+  applyNightDiveNow();
 
   const root = createRoot(document.getElementById('root')!);
   // Covers the first render + commit, which React runs in later tasks; ends

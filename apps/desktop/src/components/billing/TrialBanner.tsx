@@ -12,17 +12,19 @@
  *      Dismissible, but it comes back at most twice more (3 appearances total)
  *      so it can't be permanently silenced by accident, and can't nag forever.
  *
- * Dismissal state is per-user and lives in secureLocalStore (never raw
- * localStorage — see CLAUDE.md).
+ * Both render through the shared ClBanner primitive. Dismissal state is
+ * per-user and lives in secureLocalStore (never raw localStorage — see
+ * CLAUDE.md).
  */
 import React, { useState } from 'react';
 import { useSubscription } from '../../contexts/SubscriptionContext';
 import { UpdateCardModal } from './UpdateCardModal';
 import { useAuth } from '../../contexts/AuthContext';
-import { Clock, AlertTriangle, X } from 'lucide-react';
-import { ClButton } from '../cl';
+import { Clock, AlertTriangle } from 'lucide-react';
+import { ClBanner } from '../ClBanner';
 import secureLocalStore from '../../utils/secureLocalStore';
 import { formatPlanPrice } from '@cipherline/shared';
+import { isTrialBannerEligible } from './trialBannerRule';
 
 /** Local calendar day, as YYYY-MM-DD. Local (not UTC) so "comes back the next
  *  day" matches the user's own sense of a day rolling over. */
@@ -67,42 +69,34 @@ export const TrialBanner: React.FC = () => {
         if (shown >= PAST_DUE_MAX_SHOWS) return null;
         return (
             <>
-            <div className="w-full px-4 py-2.5 bg-orange-500/15 border-b border-orange-500/30 text-orange-300 text-sm flex items-center justify-between gap-3">
-                <div className="flex items-center gap-2 min-w-0">
-                    <AlertTriangle size={15} className="shrink-0" />
-                    <span className="truncate">Your last payment failed. Update your card to keep your subscription active.</span>
-                    {error && <span className="text-red-400 ml-2 shrink-0">{error}</span>}
-                </div>
-                <div className="flex items-center gap-2 shrink-0">
-                    <ClButton
-                        type="button"
-                        variant="danger"
-                        size="sm"
-                        onClick={() => { setError(''); setCardOpen(true); }}
-                    >
-                        Update payment
-                    </ClButton>
-                    <ClButton
-                        type="button"
-                        icon
-                        variant="ghost"
-                        size="sm"
-                        tooltip="Dismiss"
-                        onClick={() => {
-                            // Count the dismissal, not the render — otherwise a
-                            // relaunch would burn a "show" the user never acted on.
-                            write(pastDueKey(userId), String(shown + 1));
-                            setDismissTick(t => t + 1);
-                        }}
-                    >
-                        <X size={13} />
-                    </ClButton>
-                </div>
-            </div>
+            <ClBanner
+                id="billing-past-due"
+                tone="danger"
+                priority={90}
+                icon={<AlertTriangle size={15} />}
+                title="Your last payment failed"
+                description={<>
+                    Update your card to keep your subscription active.
+                    {error && <span className="ml-2" style={{ color: 'var(--cl-flash)' }}>{error}</span>}
+                </>}
+                actions={[{
+                    key: 'update-payment',
+                    label: 'Update payment',
+                    variant: 'danger',
+                    onClick: () => { setError(''); setCardOpen(true); },
+                }]}
+                dismissLabel="Dismiss"
+                onDismiss={() => {
+                    // Count the dismissal, not the render — otherwise a
+                    // relaunch would burn a "show" the user never acted on.
+                    write(pastDueKey(userId), String(shown + 1));
+                    setDismissTick(t => t + 1);
+                }}
+            />
             <UpdateCardModal
                 open={cardOpen}
                 onClose={() => setCardOpen(false)}
-                onUpdated={() => { setCardOpen(false); void refresh(); }}
+                onUpdated={() => { setCardOpen(false); refresh().catch(() => { /* statusError is recorded by the context */ }); }}
             />
             </>
         );
@@ -112,7 +106,7 @@ export const TrialBanner: React.FC = () => {
     // Only the last 3 days, and only while the trial is genuinely still live.
     // effective_status is the authority on "still live" — subscription_status
     // stays 'trial' forever after a trial lapses.
-    if (status.subscription_status !== 'trial' || status.effective_status !== 'active') return null;
+    if (!isTrialBannerEligible(status)) return null;
 
     const daysLeft = status.trial_days_left;
     if (daysLeft > 3) return null;
@@ -120,59 +114,57 @@ export const TrialBanner: React.FC = () => {
     // Dismissed today already? Come back tomorrow.
     if (read(trialKey(userId)) === today()) return null;
 
-    const tone = daysLeft <= 1
-        ? 'bg-orange-500/15 border-orange-500/30 text-orange-300'
-        : 'bg-yellow-500/15 border-yellow-500/30 text-yellow-300';
+    // The last day is amber and ranks higher; before that it is a calm teal nudge.
+    const urgent = daysLeft <= 1;
 
     return (
-        <div className={`w-full px-4 py-2.5 border-b ${tone} text-sm flex items-center justify-between gap-3`} data-dismiss-tick={dismissTick}>
-            <div className="flex items-center gap-2 min-w-0">
-                <Clock size={15} className="shrink-0" />
-                <span className="truncate">
-                    {daysLeft <= 0
-                        ? 'Your free trial ends today.'
-                        : daysLeft === 1
-                        ? 'Your free trial ends tomorrow.'
-                        : `${daysLeft} days left in your free trial.`}
-                </span>
-                {error && <span className="text-red-400 ml-2 shrink-0">{error}</span>}
-            </div>
-            <div className="flex items-center gap-2 shrink-0">
-                {!status.trial_extended && (
-                    <ClButton
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        onClick={async () => {
-                            setExtending(true); setError(null);
-                            const r = await extendTrial();
-                            setExtending(false);
-                            if (!r.ok) setError(r.message || 'Could not extend.');
-                        }}
-                        disabled={extending}
-                        loading={extending}
-                    >
-                        Need more time? +3 days
-                    </ClButton>
-                )}
-                <ClButton type="button" variant="primary" size="sm" onClick={() => openInAppCheckout()}>
-                    Upgrade — {formatPlanPrice(status?.plan_amount, status?.plan_currency)}
-                </ClButton>
-                <ClButton
-                    type="button"
-                    icon
-                    variant="ghost"
-                    size="sm"
-                    tooltip="Dismiss until tomorrow"
-                    onClick={() => {
-                        write(trialKey(userId), today());
-                        setDismissTick(t => t + 1);
-                    }}
-                >
-                    <X size={13} />
-                </ClButton>
-            </div>
-        </div>
+        <ClBanner
+            id="billing-trial"
+            tone={urgent ? 'warning' : 'info'}
+            priority={urgent ? 64 : 50}
+            icon={<Clock size={15} />}
+            data={{ 'dismiss-tick': String(dismissTick) }}
+            title={daysLeft <= 0
+                ? 'Your trial ends today'
+                : daysLeft === 1
+                ? 'Your trial ends tomorrow'
+                : `${daysLeft} days left in your trial`}
+            description={<>
+                Keep video, screen share and 2 GB uploads with Pro.
+                {error && <span className="ml-2" style={{ color: 'var(--cl-flash)' }}>{error}</span>}
+            </>}
+            actions={[
+                ...(!status.trial_extended ? [{
+                    key: 'extend',
+                    label: '+3 days',
+                    variant: 'ghost' as const,
+                    tooltip: 'Need more time? Extend your trial by 3 days',
+                    loading: extending,
+                    disabled: extending,
+                    onClick: async () => {
+                        setExtending(true); setError(null);
+                        const r = await extendTrial();
+                        setExtending(false);
+                        if (!r.ok) setError(r.message || 'Could not extend.');
+                    },
+                }] : []),
+                {
+                    key: 'price',
+                    node: <span className="cl-banner__meta">{formatPlanPrice(status?.plan_amount, status?.plan_currency)}</span>,
+                },
+                {
+                    key: 'upgrade',
+                    label: 'Upgrade',
+                    variant: 'primary',
+                    onClick: () => openInAppCheckout(),
+                },
+            ]}
+            dismissLabel="Dismiss until tomorrow"
+            onDismiss={() => {
+                write(trialKey(userId), today());
+                setDismissTick(t => t + 1);
+            }}
+        />
     );
 };
 

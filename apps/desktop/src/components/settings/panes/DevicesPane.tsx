@@ -14,6 +14,8 @@ import {
     deviceApprovalBus, denyPendingDevice, describeApprovalError, fetchPendingRequests, formatCountdown, pruneExpired,
     platformLabel, removePending, secondsUntil, upsertPending, type PendingDeviceRequest,
 } from '../../../utils/deviceApproval';
+import { formatLastActive, staleBadgeLabel, staleTierOf, type StaleTier } from '../../../utils/staleDevices';
+import '../../../styles/stale-devices.css';
 
 /**
  * Twilight · Devices — Descent redesign (phase 2).
@@ -26,6 +28,9 @@ interface DeviceInfo {
     platform: string;
     created_at: string;
     last_seen_at: string;
+    // Stale-device policy (absent on older servers → treated as not stale).
+    last_active_on?: string;
+    stale_tier?: StaleTier;
 }
 
 function platformIcon(platform: string) {
@@ -255,6 +260,9 @@ export const DevicesPane: React.FC = () => {
                             // existing "seen X ago" when presence hasn't
                             // loaded (or failed) for this device.
                             const presence = presenceByDevice[d.device_id];
+                            // Stale-device policy: a quiet badge, never on this device.
+                            const staleBadge = staleBadgeLabel(staleTierOf(d));
+                            const lastActive = formatLastActive(d.last_active_on);
                             let statusNode: React.ReactNode;
                             if (isCurrent) {
                                 statusNode = <span style={{ color: 'var(--cl-ok)' }}>online now</span>;
@@ -275,6 +283,15 @@ export const DevicesPane: React.FC = () => {
                                             {d.device_name || 'Unknown device'}
                                             {isCurrent && <span className="sd-chip sd-chip--lume">This device</span>}
                                             <span className="sd-chip">{d.platform || 'unknown'}</span>
+                                            {!isCurrent && staleBadge && (
+                                                <span
+                                                    className={`stale-badge${staleTierOf(d) === '180d' ? ' stale-badge--old' : ''}`}
+                                                    title={lastActive ? `Last active ${lastActive}` : undefined}
+                                                    data-testid={`stale-badge-${d.device_id}`}
+                                                >
+                                                    {staleBadge}
+                                                </span>
+                                            )}
                                         </b>
                                         <span className="sd-mono">
                                             {shortId(d.device_id)} · {statusNode}

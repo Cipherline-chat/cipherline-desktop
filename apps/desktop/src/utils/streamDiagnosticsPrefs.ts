@@ -76,9 +76,10 @@ export function useAllowHevc(): boolean {
     return useSyncExternalStore(subscribe, getAllowHevc, () => true);
 }
 
-/** "Lighter copy for viewers (saves bandwidth)" — default OFF (shareLowLayer.ts). */
+/** "Lighter copy for viewers (saves bandwidth)" — default ON since 2026-10-23
+ *  (was off; see shareLowLayer.ts). Only an explicitly stored '0' turns it off. */
 export function getShareLowLayerEnabled(): boolean {
-    return read(SHARE_LOW_KEY) === '1';
+    return read(SHARE_LOW_KEY) !== '0';
 }
 
 export function setShareLowLayerEnabled(on: boolean): void {
@@ -87,5 +88,5 @@ export function setShareLowLayerEnabled(on: boolean): void {
 }
 
 export function useShareLowLayerEnabled(): boolean {
-    return useSyncExternalStore(subscribe, getShareLowLayerEnabled, () => false);
+    return useSyncExternalStore(subscribe, getShareLowLayerEnabled, () => true);
 }

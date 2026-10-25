@@ -1,0 +1,72 @@
+/* ============================================================================
+   Long-message collapse (components/LongMessage.tsx).
+
+   UNSCOPED on purpose, like dialog-frame.css: the kit's rules live in
+   @scope(.cl-kit), so every selector that competes with one carries an extra
+   class (`.mcard.dlg-card.lm-reader` beats `.mcard.dlg-card`).
+   ============================================================================ */
+
+/* The message body wrapper in ChatPane is `white-space: pre-wrap`; the footer
+   is chrome, not message text, so it resets that and cannot be drag-selected
+   into a copy of the message. */
+.lm{display:block;min-width:0}
+
+.lm-text{min-width:0}
+/* Collapsed: a few lines of the preview, fading out. The preview is already a
+   ~700-character slice (utils/longMessage), so the clip only has to tame a
+   preview made of many short lines. mask-image rather than a gradient overlay:
+   it works over any row background (hover tint, mention highlight). */
+.lm-text--clipped{
+  max-height:11.5em;overflow:hidden;
+  -webkit-mask-image:linear-gradient(to bottom,#000 calc(100% - 3.4em),transparent);
+          mask-image:linear-gradient(to bottom,#000 calc(100% - 3.4em),transparent);
+}
+
+.lm-foot{
+  display:flex;align-items:center;flex-wrap:wrap;gap:4px 6px;
+  margin-top:6px;padding:4px 6px 4px 10px;max-width:100%;width:fit-content;
+  border-radius:10px;border:1px solid rgba(255,255,255,.07);
+  background:rgba(255,255,255,.035);
+  white-space:normal;user-select:none;-webkit-user-select:none;
+  font-size:12px;line-height:1.3;color:var(--cl-muted, #A7B3D4);
+}
+.lm-meta{font-weight:600;letter-spacing:.005em;margin-right:4px}
+
+.lm-btn{
+  display:inline-flex;align-items:center;gap:5px;
+  padding:3px 8px;border:0;border-radius:7px;background:none;cursor:pointer;
+  font:inherit;font-weight:700;color:var(--cl-lume, #25E0C8);
+  transition:background-color .12s ease,color .12s ease;
+}
+.lm-btn:hover{background:rgba(37,224,200,.12)}
+.lm-btn:focus-visible{outline:2px solid var(--cl-lume, #25E0C8);outline-offset:1px}
+.lm-chev{transition:transform .16s ease}
+.lm-btn[aria-expanded="true"] .lm-chev{transform:rotate(180deg)}
+@media (prefers-reduced-motion:reduce){.lm-btn,.lm-chev{transition:none}}
+
+/* ── full-screen reader ── */
+.mcard.dlg-card.lm-reader{
+  width:90vw;height:90vh;max-width:none;max-height:none;
+}
+.lm-reader .dlg-head{padding-bottom:12px;border-bottom:1px solid var(--cl-border, #2A3558)}
+.lm-close{
+  display:inline-flex;align-items:center;justify-content:center;
+  width:32px;height:32px;border:0;border-radius:9px;background:none;cursor:pointer;
+  color:var(--cl-muted, #A7B3D4);transition:background-color .12s ease,color .12s ease;
+}
+.lm-close:hover{background:rgba(255,255,255,.07);color:var(--cl-text, #F4F7FF)}
+.lm-close:focus-visible{outline:2px solid var(--cl-lume, #25E0C8);outline-offset:1px}
+
+.lm-reader-scroll{
+  flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;
+  padding:28px 32px 36px;outline:none;
+}
+.lm-reader-scroll:focus-visible{box-shadow:inset 0 0 0 2px rgba(37,224,200,.35)}
+.lm-reader-text{
+  max-width:46rem;margin:0 auto;
+  font-size:16px;line-height:1.7;color:rgba(255,255,255,.92);
+  white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;
+  user-select:text;-webkit-user-select:text;
+}
+.lm-reader-wait{color:var(--cl-faint, #5E6B8F);font-size:14px}
+.lm-reader .dlg-foot{margin-top:0}

@@ -2,6 +2,8 @@ import React, { useCallback, useEffect, useRef } from 'react';
 import cipherlineMark from '../../assets/cipherline-mark.svg';
 import { useMascotCue } from '../../hooks/useMascotCue';
 import { railClick, RAIL_EGG_START, type RailEggState, type RailMove } from '../../utils/railKeysEgg';
+import { railGameClick } from '../../utils/railKeysGame';
+import { inputTime, type SpamStreak } from '../../utils/keysBurst';
 
 /**
  * The brand mark at the top of the left server rail: Keys himself, and the
@@ -13,6 +15,13 @@ import { railClick, RAIL_EGG_START, type RailEggState, type RailMove } from '../
  * squash, jelly swim, then a dizzy finale with sparkles; then he rests for a
  * few seconds. Animations only: no speech bubble, no text, no sound (the egg
  * that was here before had none either).
+ *
+ * RIGHT-click spam is a second, separate egg (utils/railKeysGame.ts is the
+ * rule: 6 right-clicks, no gap over 600 ms): it asks the host to open the
+ * loading screen's Firewall game over whatever view you are on (`onGameSpam`).
+ * The contextmenu event is swallowed (preventDefault) so no OS / Electron menu
+ * appears; one right-click does nothing visible. A tiny wiggle (the ladder's own
+ * move) and hop mark the streak building. Left-click behaviour is untouched.
  *
  * Cost and containment:
  *   - Web Animations on the mark's <img> (transform / opacity: compositor), one
@@ -99,11 +108,19 @@ const SPARKLES = [
     { x: -26, y: -2, d: 480, c: 'var(--cl-glow)' }, { x: 25, y: -4, d: 600, c: 'var(--cl-lume)' },
 ];
 
-export const RailKeys: React.FC<{ onClick: () => void }> = ({ onClick }) => {
+export const RailKeys: React.FC<{
+    onClick: () => void;
+    /** The right-click streak completed: the host decides (call? can't draw?)
+     *  whether the game opens, and says so quietly if not. */
+    onGameSpam?: () => void;
+}> = ({ onClick, onGameSpam }) => {
     const markRef = useRef<HTMLImageElement>(null);
     const sparkRef = useRef<HTMLSpanElement>(null);
     const stateRef = useRef<RailEggState>(RAIL_EGG_START);
     const runningRef = useRef<Animation | null>(null);
+    const gameStreakRef = useRef<SpamStreak | null>(null);
+    const onGameSpamRef = useRef(onGameSpam);
+    useEffect(() => { onGameSpamRef.current = onGameSpam; });
 
     const play = useCallback((move: RailMove) => {
         const el = markRef.current;
@@ -158,9 +175,20 @@ export const RailKeys: React.FC<{ onClick: () => void }> = ({ onClick }) => {
         if (r.move) play(r.move);
     };
 
+    const handleContextMenu = (e: React.MouseEvent) => {
+        e.preventDefault(); // no OS / Electron menu, ever, on this button
+        // When the press happened, not when the handler ran (keysBurst inputTime).
+        const r = railGameClick(gameStreakRef.current, inputTime(e.timeStamp, performance.now()));
+        gameStreakRef.current = r.streak;
+        if (r.fired) { onGameSpamRef.current?.(); return; }
+        if (r.clicks === 3) play('wiggle');
+        else if (r.clicks === 5) play('hop');
+    };
+
     return (
         <button
             onClick={handleClick}
+            onContextMenu={handleContextMenu}
             title="cipherline"
             className="no-drag"
             data-ob-anchor="rail-logo"

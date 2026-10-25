@@ -25,6 +25,7 @@ import { computeDnd } from './useDndState';
 import { playSound } from '../utils/notificationSounds';
 import { resolveNotification, type NotifDecision } from '../utils/notificationDecision';
 import { mentionsToDisplayText } from '../utils/mentionTokens';
+import { clipForPreview } from '../utils/messagePreviewText';
 import {
     selectNotificationAvatarId, getNotificationIconDataUrl, createToastSequencer,
     rasterizeCircleIcon, type NotifIconDeps,
@@ -112,14 +113,16 @@ export function useNotificationDispatch(options?: NotificationDispatchOptions) {
         // 1. Master switch — bail only if BOTH sound and toast are off.
         if (!p.desktop_notifications_enabled && !p.sounds_enabled) return;
 
-        const text = payload.text ?? '';
+        const text = typeof payload.text === 'string' ? payload.text : '';
         // What the toast SHOWS. `text` stays raw below because
         // resolveNotification's keyword matching runs against the message as
         // sent; only the human-readable body is de-tokenised. Without this the
         // OS toast printed the wire token verbatim —
         // "<@u:d43f9e1a-...:Shinobi> test" — for every message containing a
         // mention of any kind (user, role, @everyone, custom emoji).
-        const displayText = mentionsToDisplayText(text);
+        // Cut before de-tokenising: a toast shows a line or two, and this runs
+        // for every arriving message with no click (utils/messagePreviewText).
+        const displayText = mentionsToDisplayText(clipForPreview(text));
         const windowFocused = typeof document !== 'undefined' && document.hasFocus();
 
         // 2. What does this message mean? Either the caller already resolved it

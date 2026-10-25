@@ -1,6 +1,7 @@
 import type { ScreenShareOptions } from '../components/ScreenSharePickerModal';
 import { VideoPreset } from 'livekit-client';
 import { clampCaptureBox, planEncode } from './shareEncoderLimits';
+import { UNPROCESSED_TRACK_SETTINGS } from './audioInput';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Screen-share pipeline settings: capture box → codec → publish options →
@@ -86,13 +87,49 @@ const CODEC_BITRATE_FACTOR: Record<ScreenShareCodec, number> = {
     h265: 1.1,
 };
 
+/**
+ * Frame-rate multiplier on the 30 fps base ceilings. Linear up to 30 fps;
+ * above that it grows with (fps/30)^0.6, not linearly: at a higher frame rate
+ * each frame is a smaller step from the previous one, so the bits per frame
+ * a predictive (P-frame) encoder needs fall as the rate rises. Measured rules
+ * of thumb put the bitrate for the same quality at ~1.4–1.6x from 30 to 60 fps
+ * (YouTube's own 1080p30 → 1080p60 / 1440p30 → 1440p60 recommendations are
+ * 1.5x); 0.6 lands on 1.52x at 60 and 1.93x at 90. Rates above 90 (no picker
+ * option today) get the 90 fps multiplier, like the old 3x cap did.
+ */
+export function ssFpsFactor(fps: number): number {
+    const f = Math.min(Math.max(fps, 0), 90);
+    return f <= 30 ? f / 30 : (f / 30) ** 0.6;
+}
+
+/**
+ * Absolute ceiling, in VP9-equivalent bits (times CODEC_BITRATE_FACTOR, like
+ * the table): VP9 20, H.265 22, VP8 25, H.264 30 Mbps.
+ *
+ * Why there is one at all (2026-10-23 diagnostic reports): a source-resolution
+ * 1440p90 H.265 share was allowed 59.4 Mbps and the NVIDIA encoder spent
+ * ~57 Mbps of it. The sharer's uplink was fine (0 % loss, ~140 Mbps
+ * estimated), but a viewer's downlink could not carry it: 12–26 % loss on the
+ * share for long stretches, 3–10 % on every OTHER incoming track (voice
+ * included) at the same moments, RTT 76 → 151 ms (a queue filling), 44
+ * keyframe requests in two minutes and freezes of 2–20 s. A single layer that
+ * size is something the SFU cannot thin for one subscriber. For scale,
+ * YouTube's live-encoder guidance for 1440p60 is 9–18 Mbps of H.264; 22 Mbps
+ * of H.265 at 1440p90 is 0.066 bits per pixel per frame, so the cap trades
+ * little picture for fitting a normal home connection with headroom.
+ */
+export const SS_MAX_BITRATE_VP9_EQUIV = 20_000_000;
+
 // Compute the RTP maxBitrate CEILING for a screen share. It is a ceiling, not
 // a target: the encoder only spends what the content needs and what the
-// bandwidth estimate allows. Base values are tuned at 30fps (VP9) and scale
-// linearly with fps up to 3× so 90fps actually has enough bits to land on
-// target. Previously capped at 2× — that meant 60fps and 90fps shared the same
-// bitrate ceiling, which starved the encoder at 90fps and produced the "stuck
-// near 80fps" symptom.
+// bandwidth estimate allows — but a hardware encoder in WebRTC's CBR-like
+// mode on game content DOES spend all of it, and the receive side can be the
+// bottleneck the sender's estimate never sees. Base values are tuned at
+// 30fps (VP9), scaled by ssFpsFactor and held under SS_MAX_BITRATE_VP9_EQUIV.
+// (History: the multiplier was linear up to 3x — 1440p90 H.265 = 59.4 Mbps,
+// H.264 source 90 = 81 Mbps. That was set to stop 90 fps being starved when
+// it shared 60 fps's 2x ceiling; the measured starvation was a SOFTWARE
+// encoder dropping frames at 6 Mbps, far below anything here.)
 export function computeSSBitrate(
     res: ScreenShareOptions['resolution'],
     fps: number,
@@ -105,7 +142,10 @@ export function computeSSBitrate(
         '720p':   2_000_000,
         '480p':    800_000,
     };
-    return Math.round(base[res] * Math.min(fps / 30, 3) * CODEC_BITRATE_FACTOR[codec]);
+    const factor = CODEC_BITRATE_FACTOR[codec];
+    const raw = base[res] * ssFpsFactor(fps) * factor;
+    // Whole 10 kbps steps, so the table reads cleanly in logs and tests.
+    return Math.round(Math.min(raw, SS_MAX_BITRATE_VP9_EQUIV * factor) / 10_000) * 10_000;
 }
 
 /** Which codecs this machine can encode in HARDWARE, per
@@ -207,14 +247,34 @@ export interface GpuVendorInfo { vendor: string }
  * (media_foundation_video_encode_accelerator_win.cc, crbug.com/1088650) —
  * AFTER MediaCapabilities has already said "power efficient", because that
  * answer comes from the GPU's profile list, not from the encoder it will
- * actually open. With another vendor's encoder present (an Intel iGPU) it
- * moves on to that one; with none it falls back to OpenH264 in software.
- * Microsoft's Basic Render Driver has no encoder and is ignored. An empty or
- * missing list is "unknown", not NVIDIA-only.
+ * actually open. Microsoft's Basic Render Driver has no encoder and is
+ * ignored. An empty or missing list is "unknown", not NVIDIA-only.
  */
 export function isNvidiaOnly(gpus: readonly GpuVendorInfo[] | null | undefined): boolean {
     const real = (gpus ?? []).filter(g => !/^Microsoft/i.test(g.vendor));
     return real.length > 0 && real.every(g => g.vendor === 'NVIDIA');
+}
+
+/**
+ * True when the GPU Chromium encodes on is NVIDIA: NVIDIA-only, OR NVIDIA is
+ * the FIRST real GPU listed (Chromium's primary adapter, gpuDevice[0] — the
+ * D3D11 device the GPU process opens its Media Foundation encoders on).
+ *
+ * Why not just "NVIDIA-only": the owner's RTX 2080 Ti + Radeon Pro WX 2100
+ * (staging.174, 2026-10-24). At 1920x1080 MediaCapabilities said Constrained
+ * Baseline is "power efficient" (some encoder's profile list answered), the
+ * share went out as CB, and the encoder that actually opened was OpenH264 in
+ * SOFTWARE (encoderImplementation "OpenH264", hw:false for the whole share,
+ * 1080p60 while a game ran). Media Foundation skipped NVIDIA for CB and did
+ * NOT move on to the second card, as this rule used to assume it would. High
+ * on the same machine, same session, opened NVIDIA's MFT in hardware at
+ * 2560x1440 90 fps. So whenever NVIDIA is the primary adapter, CB is not
+ * trusted and High is preferred. (An Optimus laptop lists the Intel iGPU
+ * first; its CB encoder is on the primary adapter and stays trusted.)
+ */
+export function nvidiaIsPrimary(gpus: readonly GpuVendorInfo[] | null | undefined): boolean {
+    const real = (gpus ?? []).filter(g => !/^Microsoft/i.test(g.vendor));
+    return real.length > 0 && real[0].vendor === 'NVIDIA';
 }
 
 export interface ScreenShareCodecDecision {
@@ -229,17 +289,22 @@ export interface CodecDecisionOptions {
     /** A High-profile hardware encoder produced nothing earlier this session
      *  (watchH264HighStart) — do not pick High again until the app restarts. */
     h264HighFailed?: boolean;
+    /** A Constrained Baseline share's encoder reported SOFTWARE this session
+     *  (shareSoftwareGuard.ts): the probe's "CB is hardware" is not trusted
+     *  again until the app restarts. */
+    cbSoftware?: boolean;
 }
 
 /**
  * True when the hardware H.264 encoder Chromium will actually open is the
  * High-profile one: High probes as hardware, and Constrained Baseline either
- * does not (Chromium's Windows CBP gate on this GPU) or does only on an
- * NVIDIA-only machine, where Media Foundation skips NVIDIA for CB
- * (crbug.com/1088650) but not for High.
+ * does not (Chromium's Windows CBP gate on this GPU), or is on an NVIDIA
+ * primary adapter, where Media Foundation skips NVIDIA for CB
+ * (crbug.com/1088650) but not for High, or already ran in software this
+ * session.
  */
-function hardwareH264IsHighOnly(hw: HardwareEncoderSupport, gpus?: readonly GpuVendorInfo[] | null): boolean {
-    return !!hw.h264High && (!hw.h264 || isNvidiaOnly(gpus));
+function hardwareH264IsHighOnly(hw: HardwareEncoderSupport, gpus?: readonly GpuVendorInfo[] | null, cbSoftware = false): boolean {
+    return !!hw.h264High && (!hw.h264 || nvidiaIsPrimary(gpus) || cbSoftware);
 }
 
 /**
@@ -269,25 +334,29 @@ export function decideScreenShareCodec(
     gpus?: readonly GpuVendorInfo[] | null,
     opts: CodecDecisionOptions = {},
 ): ScreenShareCodecDecision {
-    const highUsable = !!hw && !opts.h264HighFailed && hardwareH264IsHighOnly(hw, gpus);
+    const cbSoftware = !!opts.cbSoftware;
+    const highUsable = !!hw && !opts.h264HighFailed && hardwareH264IsHighOnly(hw, gpus, cbSoftware);
     if (pref === 'h264') {
         return highUsable
             ? { codec: 'h264', h264Profile: 'high', reason: 'set in Settings · High (HW)' }
             : { codec: 'h264', h264Profile: 'cb', reason: opts.h264HighFailed ? 'set in Settings · High HW failed → CB' : 'set in Settings' };
     }
     if (pref !== 'auto') return { codec: pref, reason: 'set in Settings' };
-    if (hw?.h264 && !isNvidiaOnly(gpus)) return { codec: 'h264', h264Profile: 'cb', reason: 'auto: HW H.264' };
+    if (hw?.h264 && !nvidiaIsPrimary(gpus) && !cbSoftware) return { codec: 'h264', h264Profile: 'cb', reason: 'auto: HW H.264' };
     if (highUsable) {
         return {
             codec: 'h264',
             h264Profile: 'high',
-            reason: hw!.h264 ? 'auto: HW H.264 High (NVIDIA skips CB)' : 'auto: HW H.264 High (CB not HW)',
+            reason: !hw!.h264 ? 'auto: HW H.264 High (CB not HW)'
+                : cbSoftware ? 'auto: HW H.264 High (CB ran in software)'
+                    : 'auto: HW H.264 High (NVIDIA skips CB)',
         };
     }
     if (hw?.vp9) return { codec: 'vp9', reason: 'auto: HW VP9' };
     if (!hw) return { codec: 'vp8', reason: 'auto: no probe → VP8' };
     if (opts.h264HighFailed && hw.h264High) return { codec: 'vp8', reason: 'auto: H.264 High HW encoder failed → VP8' };
-    if (hw.h264 && isNvidiaOnly(gpus)) return { codec: 'vp8', reason: 'auto: NVIDIA skips H.264 CB → VP8' };
+    if (hw.h264 && cbSoftware) return { codec: 'vp8', reason: 'auto: H.264 CB ran in software → VP8' };
+    if (hw.h264 && nvidiaIsPrimary(gpus)) return { codec: 'vp8', reason: 'auto: NVIDIA skips H.264 CB → VP8' };
     return { codec: 'vp8', reason: 'auto: no HW encoder → VP8' };
 }
 
@@ -452,7 +521,26 @@ let h264HighFailedThisSession = false;
 export function markH264HighFailed(): void { h264HighFailedThisSession = true; }
 export function hasH264HighFailed(): boolean { return h264HighFailedThisSession; }
 /** Test-only reset. */
-export function resetH264HighFailedForTests(): void { h264HighFailedThisSession = false; }
+export function resetH264HighFailedForTests(): void { h264HighFailedThisSession = false; h264CbSoftwareThisSession = false; }
+
+/**
+ * Capture constraints for a share's SYSTEM audio on the Chromium loopback
+ * path (getDisplayMedia; the native WASAPI / ScreenCaptureKit path has no
+ * processing at all). Owner rule: screen-share audio never goes through noise
+ * suppression — and not through echo cancellation or AGC either, which would
+ * pump and duck game/music audio. Explicit instead of relying on Chromium's
+ * display-capture defaults. Pinned by screenShareAudioUnprocessed.test.ts.
+ * The literal lives in audioInput.ts (the one module allowed to spell the
+ * echoCancellation flag — echoCancellation.test.ts).
+ */
+export const SCREEN_SHARE_AUDIO_CAPTURE = UNPROCESSED_TRACK_SETTINGS;
+
+/** A Constrained Baseline share ran on a SOFTWARE encoder (OpenH264) this app
+ *  session although the probe called CB hardware (shareSoftwareGuard.ts):
+ *  every later share decision stops trusting that probe answer. */
+let h264CbSoftwareThisSession = false;
+export function markH264CbSoftware(): void { h264CbSoftwareThisSession = true; }
+export function hasH264CbSoftware(): boolean { return h264CbSoftwareThisSession; }
 
 // ── Capture pacing ──────────────────────────────────────────────────────────
 
@@ -488,10 +576,14 @@ export function captureFrameRateFor(targetFps: number, ceiling?: number | null):
 
 // ── The lower layer ─────────────────────────────────────────────────────────
 //
-// OFF BY DEFAULT — Settings → Advanced → "Lighter copy for viewers" — and
-// only on a HARDWARE encoder, only while ≥ 3 people watch, backed off for the
-// rest of the share at the first sign of cost to the sharer: see
-// shareLowLayer.ts. With it off a share is exactly the old single layer.
+// ON BY DEFAULT since 2026-10-23 — Settings → Advanced → "Lighter copy for
+// viewers" — but only on a HARDWARE encoder, only while people watch (≥ 1 on
+// a ≥ 60 fps or ≥ 1440p share, ≥ 2 otherwise), backed off for the rest of the
+// share at the first sign of cost to the sharer: see shareLowLayer.ts. With it
+// off a share is exactly the old single layer. It is also every viewer's
+// congestion fallback: the SFU (and remoteVideoQuality's loss fallback) can
+// only move a viewer whose downlink cannot carry the full layer to a layer
+// that exists. A 1080p share qualifies (short side 1080), H.265 included.
 //
 // A share used to be ONE layer at up to 30–54 Mbps (1440p/source at 60–90 fps)
 // that every viewer pulled in full — 8 viewers of one 1440p60 H.264 share is

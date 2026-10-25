@@ -1,5 +1,4 @@
 import { describe, it, expect } from 'vitest';
-import { escapeDriveQuery as renderer } from './driveFolders';
 import { escapeDriveQueryLiteral as main } from '../../electron/drive-query';
 
 /**
@@ -29,7 +28,7 @@ const CASES: Array<[string, string]> = [
     ['', ''],
 ];
 
-describe.each([['renderer', renderer], ['main', main]] as const)('escapeDriveQueryLiteral (%s copy)', (_n, escape) => {
+describe.each([['main', main]] as const)('escapeDriveQueryLiteral (%s copy)', (_n, escape) => {
     it.each(CASES)('escapes %j', (input, expected) => {
         expect(escape(input)).toBe(expected);
     });
@@ -48,8 +47,4 @@ describe.each([['renderer', renderer], ['main', main]] as const)('escapeDriveQue
         // ...whereas the fixed escape round-trips the same value.
         expect(parseQuoted("'" + escape('a\\') + "'")).toBe('a\\');
     });
-});
-
-it('both copies agree on every case', () => {
-    for (const [input] of CASES) expect(main(input)).toBe(renderer(input));
 });

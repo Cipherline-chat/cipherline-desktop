@@ -172,7 +172,9 @@ const receiveChannelBuggy: ChannelReceiver = (m, _stateRef, setState, onUnpin) =
 const receiveChannelFixed: ChannelReceiver = (m, stateRef, setState, onUnpin) => {
     const content = m.content as { type?: string; target_id?: string } | undefined;
     const deletedRowId = content?.type === 'delete'
-        ? deletedChannelTargetIds(stateRef.current[m.conversation_id] ?? [], [{ id: m.id, timestamp: m.timestamp, content }])[0] ?? null
+        // The action carries its sender, as Dashboard's liveAction does (F3:
+        // only the author's — or a server-confirmed moderator's — delete counts).
+        ? deletedChannelTargetIds(stateRef.current[m.conversation_id] ?? [], [{ id: m.id, timestamp: m.timestamp, content, sender_device_id: m.sender_device_id }])[0] ?? null
         : null;
     setState(prev => {
         const cId = m.conversation_id;

@@ -5,6 +5,7 @@ import * as fs from 'fs'
 import { execFileSync } from 'child_process'
 import { fileURLToPath } from 'url'
 import { escapeNonAsciiJs } from './src/utils/asciiJsSource'
+import { whatsNewPlugin } from './vite-plugin-whats-new'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -89,7 +90,7 @@ function asciiWorkletSources(): Plugin {
 
 // https://vite.dev/config/
 export default defineConfig({
-  plugins: [asciiWorkletSources(), react()],
+  plugins: [asciiWorkletSources(), whatsNewPlugin(), react()],
   // Emit pure-ASCII JavaScript (esbuild's own default; Vite overrides it to
   // utf8). Blink keeps every loaded script's source text alive for lazy
   // compilation, and stores it two bytes per character as soon as it contains

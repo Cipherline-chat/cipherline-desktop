@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { presenceBus, type WirePresence } from '../utils/presenceState';
+import { HIGH_FIVE_EVENT } from '../utils/profileMoments';
 import { parseReferralRedeemed, referralRedeemedBus } from '../utils/referralEvents';
 import { dispatchDeviceApprovalFrame } from '../utils/deviceApprovalEvents';
 import { selfPresenceBus } from '../utils/ownStatusSync';
@@ -26,6 +27,10 @@ import {
     huddleCallMediaKey, voiceChannelMediaKey,
 } from '../utils/callMediaPresence';
 import type { CallMediaReport, ChannelSystemMessageEvent } from '@cipherline/shared';
+import { APP_RESUMED_EVENT, WS_CLOSE_APP_SUSPENDED, dispatchSuspended, toNotice } from '../utils/clientControl';
+import { parseEpochAtSignal } from '../utils/channelKeyDistribution';
+import { applyListeningEvent } from '../utils/integrations/listening';
+import { parseGuestKeyEvent, parseGuestKeyRequestEvent, type GuestKeyEvent, type GuestKeyRequestEvent } from '../utils/guestCallKey';
 
 /** Matches the application-defined close code in the gateway. */
 const WS_CLOSE_UPGRADE_REQUIRED = 4426;
@@ -293,6 +298,16 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
             ws.send(JSON.stringify({ event: 'presence:idle', data: { idle } }));
         }
     }, []);
+    /** `presence:game` — the game THIS connection's machine is running (null
+     *  = none). Re-sent by utils/gameActivityReporter.ts on connect, on change
+     *  and on a refresh cadence; the server drops a game that stops being
+     *  refreshed. Its own event so an older server simply ignores it. */
+    const sendPresenceGame = useCallback((game: string | null) => {
+        const ws = wsRef.current;
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ event: 'presence:game', data: { game } }));
+        }
+    }, []);
     /** Continuity — self-read sync (see isSelfReadEvent above). Append-only
      *  queue (capped), drained by Dashboard — NOT a single slot: reading
      *  several conversations in a row on another device lands several of these,
@@ -423,8 +438,19 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
     const [huddleForceMoveEvent, setHuddleForceMoveEvent] = useState<{
         huddle_id: string; call_id: string; call_name: string;
         livekit_url: string; livekit_token: string; moved_by: string; moved_by_name?: string;
-        from_call_id?: string | null; nonce: number;
+        from_call_id?: string | null;
+        /** The destination call's server (absent from older servers). */
+        server_id?: string | null;
+        /** true = we cannot see that call's channel: we are a guest of that one
+         *  call and get its room key from a holder (utils/guestCallKey). */
+        guest?: boolean;
+        nonce: number;
     } | null>(null);
+    /** `huddle:guest_key` / `huddle:guest_key_request` — capped queues drained by
+     *  Dashboard (utils/guestCallKey). Queues, not one slot: several holders can
+     *  answer, or ask, in the same tick. */
+    const [guestKeyEvents, setGuestKeyEvents] = useState<GuestKeyEvent[]>([]);
+    const [guestKeyRequestEvents, setGuestKeyRequestEvents] = useState<GuestKeyRequestEvent[]>([]);
     /** A moderator with MANAGE_CALL_MEMBERS DISCONNECTED us from a call. */
     const [huddleForceDisconnectEvent, setHuddleForceDisconnectEvent] = useState<ForceDisconnectEvent | null>(null);
     const [serverRemovedEvent, setServerRemovedEvent] = useState<{ server_id: string; reason: 'kick' | 'ban' | 'deleted' } | null>(null);
@@ -533,6 +559,8 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
         server_id: string;
         channel_id: string;
         reason: string;
+        /** Latest epoch at the access change (newer APIs) — see rotationAlreadyDone. */
+        epoch_at_signal?: number;
         ts: number;
     }[]>([]);
     // Cap all three queues so a runaway burst (e.g. a bug elsewhere firing
@@ -657,6 +685,17 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
 
         window.addEventListener('online', onOnline);
         document.addEventListener('visibilitychange', onVisibilityChange);
+
+        // The kill switch lifted (ClientControlGate saw it on
+        // /v1/client-status): dial now instead of waiting out the long
+        // backstop timer armed on the 4503 close below. Reconnecting is what
+        // drives Dashboard's full resync, exactly as after any outage.
+        const onAppResumed = () => {
+            if (dead) return;
+            console.log('[WS] app resumed — reconnecting');
+            connectNow();
+        };
+        window.addEventListener(APP_RESUMED_EVENT, onAppResumed);
 
         const connect = async () => {
             if (dead) return;
@@ -1030,6 +1069,21 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
                             avatar_url: msg.data.avatar_url,
                         });
                     }
+                    if (msg.event === 'friend:listening') {
+                        // "Listening to ..." from a friend (or another device of yours). Friends-only
+                        // server side; validated and expired by the store (utils/integrations/listening.ts).
+                        applyListeningEvent(msg.data, myUserIdRef.current ?? null);
+                    }
+                    if (msg.event === 'user:high_five' && typeof msg.data?.from_user_id === 'string') {
+                        // Delivered, never stored. useProfileMoments decides whether to celebrate (never under DND).
+                        window.dispatchEvent(new CustomEvent(HIGH_FIVE_EVENT, {
+                            detail: {
+                                from_user_id: msg.data.from_user_id,
+                                from_username: typeof msg.data.from_username === 'string' ? msg.data.from_username.slice(0, 64) : '',
+                                count: typeof msg.data.count === 'number' ? msg.data.count : 0,
+                            },
+                        }));
+                    }
                     if (msg.event === 'user:username_updated') {
                         setUsernameUpdatedEvent({
                             user_id: msg.data.user_id,
@@ -1108,8 +1162,18 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
                             moved_by: msg.data.moved_by,
                             moved_by_name: readDisplayName(msg.data.moved_by_name),
                             from_call_id: fromCallId,
+                            server_id: typeof msg.data.server_id === 'string' ? msg.data.server_id : null,
+                            guest: msg.data.guest === true,
                             nonce: Date.now(),
                         });
+                    }
+                    if (msg.event === 'huddle:guest_key') {
+                        const gk = parseGuestKeyEvent(msg.data);
+                        if (gk) setGuestKeyEvents(prev => [...prev, gk].slice(-EVENT_QUEUE_CAP));
+                    }
+                    if (msg.event === 'huddle:guest_key_request') {
+                        const gr = parseGuestKeyRequestEvent(msg.data);
+                        if (gr) setGuestKeyRequestEvents(prev => [...prev, gr].slice(-EVENT_QUEUE_CAP));
                     }
                     if (msg.event === 'huddle:force_disconnect') {
                         const fd = parseForceDisconnect(msg.data);
@@ -1204,10 +1268,12 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
                         }].slice(-EVENT_QUEUE_CAP));
                     }
                     if (msg.event === 'server:channel_key_rotation_needed') {
+                        const epochAtSignal = parseEpochAtSignal(msg.data.epoch_at_signal);
                         setChannelKeyRotationEvents(prev => [...prev, {
                             server_id:  msg.data.server_id,
                             channel_id: msg.data.channel_id,
                             reason:     msg.data.reason,
+                            ...(epochAtSignal !== undefined ? { epoch_at_signal: epochAtSignal } : {}),
                             ts: Date.now(),
                         }].slice(-EVENT_QUEUE_CAP));
                     }
@@ -1238,6 +1304,13 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
                     // minimal window stub if imported transitively here.
                     if (msg.event === 'announcements:changed') {
                         window.dispatchEvent(new CustomEvent('cipherline:announcements-changed'));
+                    }
+                    // Admin kill switch: the gateway sends the notice, then
+                    // closes with 4503 (handled in onclose below). Re-emitted
+                    // as a window event for ClientControlGate, which owns the
+                    // blocking screen and the poll for the switch to lift.
+                    if (msg.event === 'app:suspended') {
+                        dispatchSuspended(toNotice(msg.data));
                     }
                     // Server storage grace (packages/shared/storage-grace.ts):
                     // `{ server_id }` only — a refetch trigger, never the status
@@ -1281,6 +1354,22 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
                     return;
                 }
 
+                // Admin kill switch. NOT a sign-out and NOT "offline": the
+                // blocking shutdown screen takes over (ClientControlGate),
+                // and the gate's poll fires APP_RESUMED_EVENT when it lifts,
+                // which redials at once (onAppResumed above). The long timer
+                // is only a backstop in case that never arrives — each dial
+                // during the shutdown is refused before any auth work, so it
+                // costs the server nothing. No 'cipherline:ws-disconnected':
+                // the offline overlay would be the wrong story.
+                if (ev.code === WS_CLOSE_APP_SUSPENDED) {
+                    dispatchSuspended();
+                    if (retryTimer !== null) { clearTimeout(retryTimer); retryTimer = null; }
+                    retryDelay = 120_000;
+                    scheduleReconnect();
+                    return;
+                }
+
                 // Server revoked this session (password change or account disable).
                 // Stop reconnecting and let AuthContext clear credentials + show login.
                 if (ev.code === WS_CLOSE_SESSION_REVOKED) {
@@ -1312,6 +1401,7 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
 
         return () => {
             dead = true;
+            window.removeEventListener(APP_RESUMED_EVENT, onAppResumed);
             window.removeEventListener('online', onOnline);
             document.removeEventListener('visibilitychange', onVisibilityChange);
             if (retryTimer !== null) { clearTimeout(retryTimer); retryTimer = null; }
@@ -1556,6 +1646,7 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
         friendRequestEvent,
         statusChangedEvent,
         sendPresenceIdle,
+        sendPresenceGame,
         callEndedEvent,
         soloKickEvent,
         answeredElsewhereEvent,
@@ -1569,6 +1660,10 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
         huddleRenameEvent,
         huddleParticipantEvent,
         huddleForceMoveEvent,
+        guestKeyEvents,
+        setGuestKeyEvents,
+        guestKeyRequestEvents,
+        setGuestKeyRequestEvents,
         huddleForceDisconnectEvent,
         serverRemovedEvent,
         serverMemberJoinedEvents,

@@ -70,6 +70,37 @@ export function isInsideCode(before: string): boolean {
     return (line.match(/`/g)?.length ?? 0) % 2 === 1;
 }
 
+/**
+ * `isInsideCode(text.slice(0, i))` for increasing `i`, in ONE pass over the
+ * text rather than one pass per query. `findChannelRefSpans` runs on received
+ * (sender-chosen) text and asks once per matching `#name`, so calling
+ * `isInsideCode` on every prefix made a long crafted message quadratic.
+ * Same rules: ``` fences toggle (left to right, non-overlapping) and, outside
+ * a fence, single backticks are counted on the current line, where a fenced
+ * block is removed before lines are split (so it does not end a line).
+ */
+function codeStateScanner(text: string): (i: number) => boolean {
+    let j = 0;
+    let fenceOpen = false;
+    let lineTicks = 0;
+    return (i: number) => {
+        while (j < i) {
+            if (text.startsWith('```', j) && j + 3 <= i) {
+                fenceOpen = !fenceOpen;
+                j += 3;
+                continue;
+            }
+            if (!fenceOpen) {
+                const ch = text.charCodeAt(j);
+                if (ch === 0x0a /* \n */) lineTicks = 0;
+                else if (ch === 0x60 /* ` */) lineTicks++;
+            }
+            j++;
+        }
+        return fenceOpen || lineTicks % 2 === 1;
+    };
+}
+
 export interface ChannelTrigger {
     /** The typed filter text after `#` (trailing spaces trimmed). */
     query: string;
@@ -207,6 +238,13 @@ export interface ChannelRefSpan {
 }
 
 /**
+ * At most this many links are drawn in one message. A real message names a
+ * few channels; received text is sender-chosen, and every span becomes a
+ * React node, so past this the rest stays plain text.
+ */
+export const MAX_CHANNEL_REF_SPANS = 500;
+
+/**
  * Where each ref's `#name` appears in `text`. A match needs the `#` at the
  * start or after whitespace, not inside code, the exact (case-sensitive) name,
  * then the end of the text or a boundary character. Longest name first, so
@@ -214,17 +252,17 @@ export interface ChannelRefSpan {
  * boundary) and `#general chat` beats `#general`.
  */
 export function findChannelRefSpans(text: string, refs: readonly ChannelRef[]): ChannelRefSpan[] {
-    if (!text || refs.length === 0) return [];
+    if (typeof text !== 'string' || !text || refs.length === 0) return [];
     const byLength = [...refs].sort((a, b) => b.name.length - a.name.length);
     const spans: ChannelRefSpan[] = [];
-    for (let i = 0; i < text.length; i++) {
-        if (text[i] !== '#') continue;
+    const insideCodeAt = codeStateScanner(text);
+    for (let i = text.indexOf('#'); i >= 0 && i < text.length && spans.length < MAX_CHANNEL_REF_SPANS; i = text.indexOf('#', i + 1)) {
         if (i > 0 && !/\s/.test(text[i - 1])) continue;
         for (const ref of byLength) {
             if (!text.startsWith(ref.name, i + 1)) continue;
             const end = i + 1 + ref.name.length;
             if (end < text.length && !NAME_END_RE.test(text[end])) continue;
-            if (isInsideCode(text.slice(0, i))) break;
+            if (insideCodeAt(i)) break;
             spans.push({ start: i, end, ref });
             i = end - 1;
             break;

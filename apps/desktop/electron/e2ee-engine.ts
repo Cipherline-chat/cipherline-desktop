@@ -733,13 +733,20 @@ function _decryptV3(
     // means the server is replaying a previously-processed envelope.
     // Load persisted cache on first decrypt so cross-restart replay is caught.
     ensureReplayLoaded();
-    const ephKey = envelope.eph as string;
+    if (typeof envelope.eph !== 'string') throw new Error('[E2EE:MALFORMED] v:3 envelope eph is not a string');
+    const ephPubBytes = Buffer.from(envelope.eph as string, 'base64');
+    if (ephPubBytes.length !== 32) throw new Error('[E2EE:MALFORMED] v:3 envelope eph is not a 32-byte X25519 key');
+    // The replay key is the CANONICAL encoding of the decoded bytes, never the
+    // wire string. Node's base64 decoder is lenient (padding optional,
+    // whitespace and the URL-safe alphabet accepted, unused trailing bits
+    // ignored), so many spellings decode to the same 32 bytes — and the HKDF
+    // info, the AAD and the signed transcript all use the BYTES, so every
+    // spelling is an equally valid envelope. Keying on the string let a relay
+    // re-deliver an already-read envelope by re-spelling `eph`.
+    // Backward compatible with the persisted set: senders have always written
+    // `Buffer#toString('base64')`, which is exactly this canonical form.
+    const ephKey = ephPubBytes.toString('base64');
     if (seenEphKeys.has(ephKey)) throw new Error('[E2EE:REPLAY] Replay detected — duplicate ephemeral key');
-    if (seenEphKeys.size >= REPLAY_CACHE_MAX) {
-        seenEphKeys.delete(seenEphKeys.values().next().value!);
-    }
-
-    const ephPubBytes = Buffer.from(ephKey, 'base64');
 
     const myEntry = envelope.recipients?.[myDeviceId] as { wrap?: string; otp_id?: number } | undefined;
     if (!myEntry?.wrap) throw new Error(`[E2EE:NO_RECIPIENT_ENTRY] No recipient entry for device ${myDeviceId}`);
@@ -751,8 +758,8 @@ function _decryptV3(
 
     let ikm: Buffer;
     // H4: Track which OTP to consume, but do NOT delete it yet — only delete
-    // after wrap authentication succeeds. A server forging an otp_id in a
-    // malformed envelope would otherwise silently burn the OTP.
+    // after the whole envelope authenticates (see F12 below). A forged
+    // envelope naming an otp_id would otherwise silently burn the OTP.
     let otpToConsume: number | null = null;
 
     if (myEntry.otp_id != null) {
@@ -787,25 +794,15 @@ function _decryptV3(
     }
     wrapKey.fill(0);
 
-    // H4: wrap authentication passed — now safe to consume the OTP.
-    //
-    // Written BEHIND (coalesced, off the main thread) rather than one whole-
-    // vault rewrite per key: a wake-up catch-up decrypts DMs in bursts, and
-    // two synchronous full rewrites per message held the window-owning thread
-    // for the whole burst. The in-memory delete is immediate, so this process
-    // can never use the prekey again; the on-disk copy follows within
-    // SecureStore.DEFER_MAX_MS, or at once on quit (main.ts flushes). That is
-    // the same order of window the replay set below already accepts.
-    if (otpToConsume != null) {
-        secureStore.deleteDeferred(`otp_priv_${otpToConsume}`);
-        secureStore.deleteDeferred(`otp_pub_${otpToConsume}`);
-    }
-
     const sortedIds = Object.keys(envelope.recipients).sort().join(',');
     const aad = Buffer.concat([ephPubBytes, Buffer.from(sortedIds, 'utf8')]);
 
     const iv     = Buffer.from(envelope.iv, 'base64');
     const ctFull = Buffer.from(envelope.ct, 'base64');
+    // Senders always use a 96-bit nonce; refuse anything else rather than let
+    // GCM take its GHASH-derived-IV path. A body shorter than the tag is junk.
+    if (iv.length !== 12) throw new Error('[E2EE:MALFORMED] v:3 envelope iv is not 12 bytes');
+    if (ctFull.length < 16) throw new Error('[E2EE:MALFORMED] v:3 envelope ct is shorter than the GCM tag');
     const ctBody = ctFull.subarray(0, ctFull.length - 16);
     const ctTag  = ctFull.subarray(ctFull.length - 16);
 
@@ -854,6 +851,28 @@ function _decryptV3(
         if (!sigValid) throw new Error(`[E2EE:SIG_INVALID] v:3 envelope signature invalid for device ${myDeviceId}`);
     }
 
+    // H4/F12: consume the one-time prekey only now that the envelope has
+    // FULLY authenticated (wrap, content AEAD and sender signature). Wrap
+    // authentication alone proves nothing about the sender — the wrap key is
+    // derived from public bundle values plus a sender-chosen ephemeral key —
+    // so consuming at that point let anyone holding the bundle burn a prekey
+    // with a garbage body, which also made the genuine message wrapped to it
+    // undecryptable. Still single-use: this whole function is synchronous, so
+    // no other decrypt can interleave between the OTP read above and this
+    // delete.
+    //
+    // Written BEHIND (coalesced, off the main thread) rather than one whole-
+    // vault rewrite per key: a wake-up catch-up decrypts DMs in bursts, and
+    // two synchronous full rewrites per message held the window-owning thread
+    // for the whole burst. The in-memory delete is immediate, so this process
+    // can never use the prekey again; the on-disk copy follows within
+    // SecureStore.DEFER_MAX_MS, or at once on quit (main.ts flushes). That is
+    // the same order of window the replay set below already accepts.
+    if (otpToConsume != null) {
+        secureStore.deleteDeferred(`otp_priv_${otpToConsume}`);
+        secureStore.deleteDeferred(`otp_pub_${otpToConsume}`);
+    }
+
     // RC-9: admit this eph into the replay cache only once EVERY check has
     // passed (wrap auth, content auth, signature) — not just wrap auth.
     // Admitting it right after wrap auth (the old placement) meant a message
@@ -864,6 +883,12 @@ function _decryptV3(
     // was. Only a message that decrypts and verifies cleanly is a message
     // this device will genuinely never need to see wrapped under this
     // ephemeral key again.
+    // Evict only here, on the success path: evicting on every ATTEMPT let a
+    // stream of garbage envelopes (which the relay fully controls) drain the
+    // whole set one entry per attempt, re-opening old envelopes to replay.
+    if (seenEphKeys.size >= REPLAY_CACHE_MAX) {
+        seenEphKeys.delete(seenEphKeys.values().next().value!);
+    }
     seenEphKeys.add(ephKey);
     scheduleReplayPersist();
 

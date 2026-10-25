@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { ClBanner, ClBannerOverlay } from './ClBanner';
 
 /**
  * Reliability audit (Phase J): surfaces the main process's
@@ -8,7 +9,8 @@ import { useEffect, useState } from 'react';
  * this is informational with an opt-in reload, never an automatic one.
  *
  * Mounted once at the app root (see App.tsx), not scoped to being in a
- * call, since a UI hang can happen at any time.
+ * call, since a UI hang can happen at any time. Floats above whatever is
+ * open (it is not part of the Dashboard's banner stack), as an inset card.
  */
 export function RendererHangBanner() {
   const [unresponsive, setUnresponsive] = useState(false);
@@ -23,24 +25,19 @@ export function RendererHangBanner() {
   if (!unresponsive) return null;
 
   return (
-    <div style={{
-      position: 'fixed', top: 32, left: 0, right: 0, zIndex: 9998,
-      background: 'var(--cl-warn, #b45309)', color: '#fff',
-      fontSize: 13, textAlign: 'center', padding: '6px 16px',
-      fontFamily: 'var(--cl-font-body, sans-serif)',
-      display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12,
-    }}>
-      <span>Cipherline isn&apos;t responding — a call in progress will likely keep working. Give it a moment, or force a reload.</span>
-      <button
-        onClick={() => window.location.reload()}
-        style={{
-          background: 'rgba(255,255,255,0.15)', border: '1px solid rgba(255,255,255,0.4)',
-          borderRadius: 6, color: '#fff', fontSize: 12, padding: '3px 10px',
-          cursor: 'pointer', fontFamily: 'inherit', flexShrink: 0,
-        }}
-      >
-        Force reload
-      </button>
-    </div>
+    <ClBannerOverlay>
+      <ClBanner
+        inline
+        tone="warning"
+        title="Cipherline isn't responding"
+        description="A call in progress will likely keep working. Give it a moment, or force a reload."
+        actions={[{
+          key: 'force-reload',
+          label: 'Force reload',
+          variant: 'primary',
+          onClick: () => window.location.reload(),
+        }]}
+      />
+    </ClBannerOverlay>
   );
 }

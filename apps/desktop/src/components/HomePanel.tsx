@@ -2,9 +2,6 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { motion, AnimatePresence } from 'framer-motion';
 import type { KeysSignal } from './mascot/Keys';
 import { HomeKeys, type PlayVerdict } from './mascot/HomeKeys';
-import { homeGameVerdict } from '../utils/keysBurst';
-import { FirewallOverlay } from './FirewallOverlay';
-import { canUseWorker } from './loadingWorkerHost';
 import { HomeAmbient } from './HomeAmbient';
 import { useAmbientMotion } from '../hooks/useAmbientMotion';
 import { EncryptedAvatar } from './EncryptedAvatar';
@@ -12,7 +9,8 @@ import { HomeStatusDot } from './HomeStatusDot';
 import { resolvePresenceWithMobile } from '../utils/activeNow';
 import { preloadAvatars } from '../hooks/useEncryptedAvatar';
 import type { ChannelInfo, ServerInfo, HuddleCallInfo } from '../hooks/useServers';
-import type { FriendStatusEntry } from '../hooks/useUserStatus';
+import type { FriendStatusEntry, UserStatus } from '../hooks/useUserStatus';
+import type { HomeKeysMirror } from './mascot/HomeKeys';
 import { ServerIcon } from './server/ServerIcon';
 import secureLocalStore from '../utils/secureLocalStore';
 import { pinKey, type PinnedHomeItem } from '../utils/homePins';
@@ -32,6 +30,11 @@ import { pokeLine, sleepyLine, type KeysContext } from '../utils/keysObservation
 import { playSound } from '../utils/notificationSounds';
 import { useNotificationPrefs } from '../contexts/NotificationContext';
 import { APP_VERSION } from '../constants';
+import { usePlayfulLine } from '../hooks/useEasterEggs';
+import { EMPTY_SEARCH_POOL } from '../utils/eggPools';
+import { hashSeed } from '../utils/easterEggs';
+import { StatusLine } from './StatusLine';
+import { statusLineModel } from '../utils/customStatus';
 import '../styles/home-deck.css';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -94,6 +97,19 @@ interface HomePanelProps {
      *  you're sitting in apart from the ones you could join — see
      *  utils/homeActiveCalls. */
     localCallSession?: LocalCallSession | null;
+    /** This client is connected to a call of any kind (DM, group, voice
+     *  channel, huddle). Not derivable from `localCallSession`, which is
+     *  always an object and only knows voice channels and huddles. */
+    inAnyCall?: boolean;
+    /** The easter-egg game's gate and opener, owned by Dashboard (hooks/useFirewallGame)
+     *  so the one FirewallOverlay can also open from the rail. HomeKeys asks the
+     *  verdict when a spam streak completes, then opens. */
+    canPlayGame: () => PlayVerdict;
+    onPlayGame: () => void;
+    /** Your own presence and game, for Keys to mirror (HomeKeys). */
+    myStatus?: UserStatus;
+    gaming?: boolean;
+    isPro?: boolean;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     onSelectConversation: (conv: any) => void;
     onJoinVoiceChannel: (channel: ChannelInfo) => void;
@@ -264,6 +280,8 @@ const AddPinCard: React.FC<{
 }> = ({ conversations, serverChannels, servers, pinnedItems, token, onPin }) => {
     const [open, setOpen] = useState(false);
     const [search, setSearch] = useState('');
+    // Egg: the empty-search line rotates per query (every line still starts "No matches.").
+    const noMatchLine = usePlayfulLine('No matches', EMPTY_SEARCH_POOL, hashSeed(search));
     const wrapRef = useRef<HTMLDivElement>(null);
     const inputRef = useRef<HTMLInputElement>(null);
 
@@ -358,7 +376,7 @@ const AddPinCard: React.FC<{
                         <div style={{ maxHeight: 240, overflowY: 'auto', padding: '0 6px 8px' }}>
                             {!hasResults && (
                                 <div style={{ padding: '10px 6px', color: 'var(--cl-faint)', fontSize: 12.5, textAlign: 'center' }}>
-                                    {search ? 'No matches' : 'Start typing to search'}
+                                    {search ? noMatchLine : 'Start typing to search'}
                                 </div>
                             )}
                             {matchingServers.length > 0 && (
@@ -482,7 +500,8 @@ export const HomePanel: React.FC<HomePanelProps> = ({
     conversations, unreadCounts, mentionCounts, lastActivityAt, presence,
     friends,
     servers, serverChannels, voiceParticipants, huddleCalls, serverMemberAvatarMaps, voiceUserNames, voiceUserAvatarIds,
-    serverBadges, serverLastActivityAt, pinnedItems, friendStatuses, localCallSession,
+    serverBadges, serverLastActivityAt, pinnedItems, friendStatuses, localCallSession, inAnyCall,
+    myStatus = 'online', gaming = false, isPro = false, canPlayGame, onPlayGame,
     onSelectConversation, onJoinVoiceChannel, onJoinHuddleCall, onSelectServer, onOpenChannel,
     onPin, onUnpin, onOpenStorage,
 }) => {
@@ -500,22 +519,15 @@ export const HomePanel: React.FC<HomePanelProps> = ({
 
     useEffect(() => () => { if (quipTimerRef.current) clearTimeout(quipTimerRef.current); }, []);
 
-    // The easter egg: spam Keys and he opens the loading screen's game over
-    // this pane (HomeKeys + utils/keysBurst decide when; FirewallOverlay is
-    // the game). Never during a call: it would sit over the call's Home row
-    // and take Space; and a call starting mid-game closes it.
-    const [gameOpen, setGameOpen] = useState(false);
-    const inCall = !!localCallSession;
-    // A call starting closes it (state adjusted during render, so the
-    // overlay never paints a frame over a live call).
-    if (inCall && gameOpen) setGameOpen(false);
-    // Not gated on reduced motion: see homeGameVerdict.
-    const canPlay = useCallback(
-        (): PlayVerdict => homeGameVerdict(inCall, () => canUseWorker(document.createElement('canvas'))),
-        [inCall],
-    );
-    const openGame = useCallback(() => { if (!inCall) setGameOpen(true); }, [inCall]);
-    const closeGame = useCallback(() => setGameOpen(false), []);
+    // The easter egg: spam Keys and he opens the loading screen's game (HomeKeys
+    // + utils/keysBurst decide when). The game itself lives in Dashboard now
+    // (hooks/useFirewallGame + the one FirewallOverlay it mounts), so the rail
+    // Keys' right-click spam opens the very same instance from any view. Never
+    // during a call, and a call starting closes it: both rules are the hook's.
+    // NOT `!!localCallSession`: that object always exists (its two ids are
+    // null outside a call), which kept Keys in his call pose and the game
+    // shut for everyone, and it never covered DM / group calls at all.
+    const inCall = !!inAnyCall;
 
     const { prefs: notifPrefs } = useNotificationPrefs();
     const notifPrefsRef = useRef(notifPrefs);
@@ -544,6 +556,10 @@ export const HomePanel: React.FC<HomePanelProps> = ({
         setKeysSpeech(line);
         quipTimerRef.current = setTimeout(() => setKeysSpeech(null), 3600);
     }, []);
+
+    // Keys' activity reactions (HomeKeys, utils/keysPlay.ts) get the same soft
+    // blub as a visible poke; their lines are his own, not the quip pool.
+    const handleKeysReact = useCallback(() => { playSound('mascot', notifPrefsRef.current); }, []);
 
     // Greeting
     const hour = new Date().getHours();
@@ -815,6 +831,33 @@ export const HomePanel: React.FC<HomePanelProps> = ({
     // key off this, so dropping it early would resize the leaving tile mid-fade.
     const alertCount = (backupNudge ? 1 : 0) + (activeCalls.length > 0 ? 1 : 0);
 
+    // What Keys mirrors (mascot/HomeKeys + utils/keysMirror): your status,
+    // your game (a flag, not its name), your call, the unread COUNT, Pro, and
+    // who among your friends is online (ids, only compared for arrivals).
+    const unreadTotal = useMemo(() => {
+        let n = 0;
+        for (const v of Object.values(unreadCounts)) n += v > 0 ? v : 0;
+        for (const b of Object.values(serverBadges ?? {})) n += b.unread > 0 ? b.unread : 0;
+        return n;
+    }, [unreadCounts, serverBadges]);
+    const onlineFriendKey = useMemo(() => {
+        const ids: string[] = [];
+        for (const f of friends?.accepted ?? []) {
+            const id = f?.user_id;
+            if (id && (friendStatuses?.[id]?.status ?? 'offline') !== 'offline') ids.push(id);
+        }
+        return ids.sort().join(',');
+    }, [friends, friendStatuses]);
+    const keysMirror = useMemo<HomeKeysMirror>(() => ({
+        status: myStatus,
+        gaming,
+        inCall,
+        unread: unreadTotal,
+        pro: isPro,
+        onlineFriends: new Set(onlineFriendKey ? onlineFriendKey.split(',') : []),
+        liveCalls: activeCalls.length,
+    }), [myStatus, gaming, inCall, unreadTotal, isPro, onlineFriendKey, activeCalls.length]);
+
     return (
         <div className="hd-frame">
         <div className="hd-host custom-scrollbar" data-ambient={ambientOn ? 'on' : 'off'}>
@@ -876,8 +919,10 @@ export const HomePanel: React.FC<HomePanelProps> = ({
                             signal={keysSignal}
                             speech={keysSpeech}
                             onPoke={handleKeysClick}
-                            canPlay={canPlay}
-                            onPlay={openGame}
+                            canPlay={canPlayGame}
+                            onPlay={onPlayGame}
+                            mirror={keysMirror}
+                            onReact={handleKeysReact}
                         />
                     </motion.div>
                 </div>
@@ -1159,7 +1204,9 @@ export const HomePanel: React.FC<HomePanelProps> = ({
                                         const fs = friendStatuses?.[f.user_id];
                                         const status = fs?.status ?? 'online';
                                         const game = fs?.current_game ?? null;
-                                        const say = fs?.custom_status_text ?? null;
+                                        // Custom status wins over the game; with both, StatusLine draws a small
+                                        // controller beside it. Expired/offline already read as empty here.
+                                        const say = statusLineModel(fs).text;
                                         const conv = conversations.find(c => c.type === 'dm' && c.other_user_id === f.user_id);
                                         // Who ELSE is on the call with this friend, not the friend
                                         // themselves (already shown at the left of the row) — that's
@@ -1201,7 +1248,7 @@ export const HomePanel: React.FC<HomePanelProps> = ({
                                                     <span className="hd-top">
                                                         <span className="hd-name">{f.display_name || f.username}</span>
                                                     </span>
-                                                    {game ? (
+                                                    {game && !say ? (
                                                         <span className="hd-sub hd-sub--game">
                                                             <svg width="11" height="11" viewBox="0 0 24 24" fill="none"
                                                                  stroke="currentColor" strokeWidth="2.2"
@@ -1213,8 +1260,7 @@ export const HomePanel: React.FC<HomePanelProps> = ({
                                                         </span>
                                                     ) : say ? (
                                                         <span className="hd-sub">
-                                                            {fs?.custom_status_emoji && <span>{fs.custom_status_emoji}</span>}
-                                                            <span>{say}</span>
+                                                            <StatusLine entry={fs} userId={f.user_id} className="min-w-0" />
                                                         </span>
                                                     ) : (
                                                         <span className="hd-sub hd-sub--quiet">
@@ -1378,7 +1424,6 @@ export const HomePanel: React.FC<HomePanelProps> = ({
                 </footer>
             </div>
         </div>
-        {gameOpen && <FirewallOverlay key={userId} userId={userId} onClose={closeGame} />}
         </div>
     );
 };

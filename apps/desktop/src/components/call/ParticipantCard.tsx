@@ -9,6 +9,8 @@ import { SignalBars, signalQuality } from './CallStatsPill';
 import { pingColor } from '../../hooks/useCallStats';
 import { useCallStatsSafe } from '../../contexts/callTelemetrySlices';
 import { usePersistentVolume, usePersistentNsEnabled, useParticipantMetadata, useFastIsSpeaking, useParticipantTrackState, useIsMicMuted } from './VideoTile';
+import { useCallPersonalization } from '../../utils/callPersonalizationStore';
+import { speakingShadow } from '../../utils/callPersonalizationStyle';
 import { useParticipantAudio } from '../../hooks/useParticipantAudio';
 import { useDismissOnOutsideClick } from '../../hooks/useDismissOnOutsideClick';
 import { useOpenProfile } from '../../contexts/ProfileOpenContext';
@@ -396,7 +398,10 @@ export interface ParticipantRowShellProps {
 }
 
 /** Row mode (voice-channel / huddle list). */
-export const ParticipantRowShell = ({ userId, displayName, avatarId, token, speaking, silenced, roleColor, onClick, onContextMenu, avatarRef, badges, children }: ParticipantRowShellProps) => (
+export const ParticipantRowShell = ({ userId, displayName, avatarId, token, speaking, silenced, roleColor, onClick, onContextMenu, avatarRef, badges, children }: ParticipantRowShellProps) => {
+    // Their ring colour + a faint wash of their profile theme (call personalization).
+    const { ring_color } = useCallPersonalization(userId);
+    return (
     <div
         className="flex items-center gap-2.5 px-2 py-1.5 hover:bg-white/[0.04] transition-colors w-full relative cursor-pointer"
         onClick={onClick}
@@ -406,7 +411,8 @@ export const ParticipantRowShell = ({ userId, displayName, avatarId, token, spea
         <div
             ref={avatarRef}
             className={`w-8 h-8 rounded-full overflow-hidden bg-cl-surface shrink-0
-                ${speaking ? 'ring-2 ring-green-500 shadow-[0_0_12px_rgba(34,197,94,0.35)] scale-105' : 'ring-1 ring-white/10'}`}
+                ${speaking ? 'scale-105' : 'ring-1 ring-white/10'}`}
+            style={speaking ? { boxShadow: speakingShadow(ring_color, { glow: 12, alpha: 0.35 }) } : undefined}
         >
             <EncryptedAvatar
                 attachmentId={avatarId}
@@ -436,7 +442,8 @@ export const ParticipantRowShell = ({ userId, displayName, avatarId, token, spea
 
         {children}
     </div>
-);
+    );
+};
 
 export interface ParticipantTileShellProps {
     userId: string;
@@ -461,6 +468,7 @@ export interface ParticipantTileShellProps {
 /** Tile mode (compact / normal / large; corner chrome for fullscreen cells). */
 export const ParticipantTileShell = ({ userId, displayName, avatarId, token, sizeMode, compact, cornerChrome = false, roleColor, speaking, dimmed, onClick, onContextMenu, buttonRef, badges, children }: ParticipantTileShellProps) => {
     const { effectiveCompact, effectiveLarge, size, nameTrunc, nameSize } = tileMetrics(sizeMode, compact);
+    const { ring_color } = useCallPersonalization(userId);
 
     // ── Corner chrome (fullscreen grid / people cells only) ──────────────────
     //
@@ -497,7 +505,8 @@ export const ParticipantTileShell = ({ userId, displayName, avatarId, token, siz
     );
 
     return (
-        <div className={cornerChrome
+        <div
+            className={cornerChrome
             // Fills the cell so the pill's corners ARE the tile's corners, and
             // so `chromeMaxWidthCss`'s `100%` resolves to the tile's width
             // rather than to a shrink-wrapped column's.
@@ -514,8 +523,9 @@ export const ParticipantTileShell = ({ userId, displayName, avatarId, token, siz
                     onContextMenu={onContextMenu}
                     className={`${size} p-0 border-none rounded-full overflow-hidden bg-cl-surface cursor-pointer transition-[transform,box-shadow] duration-150
                         ${speaking
-                            ? 'ring-2 ring-green-500 shadow-[0_0_20px_rgba(34,197,94,0.3)] scale-105'
+                            ? 'scale-105'
                             : 'ring-1 ring-white/10 hover:ring-white/30'}`}
+                    style={speaking ? { boxShadow: speakingShadow(ring_color, { glow: 20, alpha: 0.3 }) } : undefined}
                 >
                     <EncryptedAvatar
                         attachmentId={avatarId}

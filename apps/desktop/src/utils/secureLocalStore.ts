@@ -101,6 +101,8 @@ const IMMEDIATE_KEYS = new Set<string>([
 const IMMEDIATE_PREFIXES = ['cipherline_home_pins_'];
 
 const FLUSH_DEBOUNCE_MS = 300;
+/** Delay before legacy records flagged by main are re-written bound (see noteRebind). */
+export const REBIND_DELAY_MS = 2_000;
 
 /**
  * Any plaintext localStorage key under these prefixes is purged on boot. We do
@@ -207,6 +209,14 @@ class SecureLocalStore {
     private activeUserId: string | null = null;
     private flushTimer: ReturnType<typeof setTimeout> | null = null;
     private flushChain: Promise<void> = Promise.resolve();
+    /**
+     * Records main opened but flagged as the legacy unbound format (`m`), to
+     * be written back bound to their name: key → the owner tier they are
+     * stored under. Only ever filled once electron/record-binding.ts's
+     * WRITE_BOUND_RECORDS is on; see runRebind().
+     */
+    private rebind = new Map<string, string | null>();
+    private rebindTimer: ReturnType<typeof setTimeout> | null = null;
     /** Phase-2 records held back from hydrate(); see DEFERRED_PREFIXES. */
     private deferred: Array<[string, KvRecord]> = [];
     private messagesHydrated = false;
@@ -972,11 +982,47 @@ class SecureLocalStore {
         }
         try {
             const opened = await api.secureKvOpen(entries.map(([k, rec]) => ({ k, o: rec.o, b: rec.b })));
+            this.noteRebind(entries, opened);
             return opened.flatMap(({ k, v }) => (v === null ? [] : ([[k, v]] as Array<[string, string]>)));
         } catch (e) {
             console.warn('[secureLocalStore] batch decrypt failed — skipping', e);
             return [];
         }
+    }
+
+    /**
+     * Migration on read (electron/record-binding.ts, phase 2): main marks a
+     * record `m` when it opened in the legacy unbound format while bound
+     * writes are on. Re-write those shortly after, once hydrate has put the
+     * values in memory. Nothing is ever dropped here: a key that was written
+     * or deleted since is already covered by that write, a key whose value is
+     * not in memory (another account, purged) is left on disk as it is and
+     * stays readable, and the write itself is the ordinary flush.
+     */
+    private noteRebind(entries: Array<[string, KvRecord]>, opened: ReadonlyArray<{ k: string; v: string | null }>): void {
+        let any = false;
+        const owners = new Map(entries.map(([k, rec]) => [k, rec.o] as const));
+        for (const r of opened) {
+            if ((r as { m?: unknown }).m !== true || r.v === null || !owners.has(r.k)) continue;
+            this.rebind.set(r.k, owners.get(r.k) ?? null);
+            any = true;
+        }
+        if (any && !this.rebindTimer) this.rebindTimer = setTimeout(() => this.runRebind(), REBIND_DELAY_MS);
+    }
+
+    private runRebind(): void {
+        this.rebindTimer = null;
+        if (this.locked || this.status === 'locked') { this.rebind.clear(); return; }
+        let any = false;
+        for (const [k, owner] of this.rebind) {
+            if (this.dirty.has(k) || this.tombstones.has(k)) continue;
+            if (this.valueFor(k) === undefined) continue;
+            this.dirty.add(k);
+            this.dirtyOwner.set(k, owner);
+            any = true;
+        }
+        this.rebind.clear();
+        if (any) this.scheduleFlush(0);
     }
 
     /** Encrypt values via main. `b: null` marks a record the caller must re-queue. */
@@ -1040,6 +1086,8 @@ class SecureLocalStore {
         this.status = 'absent';
         this.activeUserId = null;
         if (this.flushTimer) { clearTimeout(this.flushTimer); this.flushTimer = null; }
+        if (this.rebindTimer) { clearTimeout(this.rebindTimer); this.rebindTimer = null; }
+        this.rebind.clear();
         this.flushChain = Promise.resolve();
         this.inFlightFlushes.clear();
         this.quitFlushInstalled = false;

@@ -12,6 +12,8 @@ export interface ToastInput {
     durationMs?: number;
     /** One optional button. Clicking it dismisses the toast, then runs `onClick`. */
     action?: { label: string; onClick: () => void };
+    /** Replaces the kind's stock icon (e.g. the Egg hunter tier badge). */
+    icon?: React.ReactNode;
 }
 
 interface Toast extends Required<Pick<ToastInput, 'message'>> {
@@ -19,6 +21,7 @@ interface Toast extends Required<Pick<ToastInput, 'message'>> {
     kind: ToastKind;
     title?: string;
     action?: ToastInput['action'];
+    icon?: React.ReactNode;
 }
 
 interface ToastContextValue {
@@ -72,6 +75,7 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             title: input.title,
             message: input.message,
             action: input.action,
+            icon: input.icon,
         };
         setToasts(prev => [...prev, toast]);
         const dur = input.durationMs ?? 4500;
@@ -95,7 +99,7 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                         >
                             {/* Accent stripe on the left */}
                             <span className={`absolute left-0 top-0 bottom-0 w-[3px] ${style.bar}`} />
-                            <span className="shrink-0 mt-0.5">{style.icon}</span>
+                            <span className="shrink-0 mt-0.5">{t.icon ?? style.icon}</span>
                             <div className="flex-1 min-w-0">
                                 {t.title && (
                                     <p className="text-[13px] font-semibold text-white leading-tight m-0">{t.title}</p>

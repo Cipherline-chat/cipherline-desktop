@@ -16,7 +16,7 @@
 import type { SettingsSnapshot, SettingsValue } from './bundle';
 
 export interface VoiceSettingsLike {
-    noiseSuppression?: boolean; echoCancellation?: boolean; volumeNormalization?: boolean; voiceGate?: boolean; voiceGateThreshold?: number;
+    noiseSuppression?: boolean; noiseSuppressionMode?: string; echoCancellation?: boolean; volumeNormalization?: boolean; voiceGate?: boolean; voiceGateThreshold?: number;
     pushToTalk?: boolean; micDeviceId?: string; speakerDeviceId?: string; cameraDeviceId?: string;
     micVolume?: number; speakerVolume?: number; eqEnabled?: boolean;
     cameraBrightness?: number; cameraContrast?: number; cameraSaturation?: number;
@@ -108,6 +108,7 @@ export function buildSettingsSnapshot(s: SettingsSources): SettingsSnapshot {
 
     const call = compact({
         noise_suppression: b(v?.noiseSuppression),
+        noise_suppression_mode: en(v?.noiseSuppressionMode),
         echo_cancellation: b(v?.echoCancellation),
         volume_normalization: b(v?.volumeNormalization),
         voice_gate: b(v?.voiceGate),

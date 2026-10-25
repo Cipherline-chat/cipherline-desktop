@@ -139,6 +139,8 @@ export class NsOutputRing {
         this.bypassUntilQuanta = 0;
         this.consecutiveFastTrips = 0;
         this.lastTripQuanta = -Infinity;
+        /** Samples dropped because the ring was full (push overflow). */
+        this.overflowDrops = 0;
         // Reused for every process() call: this runs ~375 times a second on
         // the real-time audio thread, where every allocation is future GC
         // work on the one thread that must never stall.
@@ -163,6 +165,15 @@ export class NsOutputRing {
 
     /** Push one processed sample (from a Worker-returned frame) into the ring. */
     push(sample) {
+        // Full: drop the OLDEST sample. Without this a burst (a Worker that
+        // stalled and then flushed its backlog) wrapped the ring over unread
+        // audio while available() kept growing — the reader then played
+        // overwritten, out-of-order audio and never caught up. Latency through
+        // the ring is bounded by its size (RING_SIZE = 80 ms), always.
+        if (this.w - this.r >= this.size) {
+            this.r = this.w - this.size + 1;
+            this.overflowDrops++;
+        }
         this.buf[this.w % this.size] = sample;
         this.w++;
     }

@@ -80,13 +80,49 @@ export interface PublicProfile {
     status: UserStatus;
     custom_status_text: string | null;
     custom_status_emoji: string | null;
+    /** ISO instant the custom status clears; absent on older servers. */
+    custom_status_expires_at?: string | null;
     last_seen_at: string | null;
     /** Present on phones only (newer servers; same gate as `status`). */
     on_mobile?: boolean;
     /** Paying (or comped) account. Server-derived; absent on older servers. */
     is_pro?: boolean;
+    /** Month ("YYYY-MM", UTC) the current Pro period began; month precision
+     *  only. Null for a comped/undated account or a non-Pro one, absent on an
+     *  older server. Drives the Pro badge's "member since" tooltip. */
+    pro_since?: string | null;
     /** Admin-granted custom profile badges. Absent on an older server. */
     badges?: ProfileBadge[];
+    /** IANA zone behind "local time"; friends-gateable (null when unset OR hidden from you). */
+    time_zone?: string | null;
+    /** Fields the owner restricted to friends. Only ever populated when YOU
+     *  are allowed to see them (a friend, or yourself); drives the lock icon. */
+    friends_only_fields?: string[];
+    /** Profile customisation (all absent on an older server). Theme, decoration,
+     *  effect and egg showcase are always public; widgets follow the `widgets`
+     *  visibility field (null = none, or hidden from you). */
+    profile_theme?: { primary: string; accent: string } | null;
+    avatar_decoration?: string | null;
+    profile_effect?: string | null;
+    /** Retired 2026-10-24: newer servers always send []. */
+    egg_showcase?: string[];
+    /** Per-item knobs for the current decoration (d) / effect (e); null = defaults. */
+    cosmetic_options?: import('./profileCosmetics').CosmeticOptions | null;
+    /** Verified Steam (Steam OpenID), behind the `links` visibility. Null = none, or hidden from you. */
+    steam?: { steam_id: string } | null;
+    widgets?: { games: string[] } | null;
+    /** Steam + socials (handles only; `links` visibility field). Null = none, or hidden from you. */
+    links?: Array<{ platform: string; handle: string }> | null;
+    /** Profile extras (all absent on an older server). `level` is server-computed and
+     *  cosmetic-only. `showcase` lists only the blocks YOU may see, in order; `interests`
+     *  is present only when that block is shown. `friends_since` is 'YYYY-MM' (friends only). */
+    level?: number;
+    /** Unlocked achievements (public); absent on an older server. */
+    achievement_count?: number;
+    high_five_count?: number;
+    showcase?: { blocks: string[]; top_achievements: string[] };
+    interests?: string[] | null;
+    friends_since?: string | null;
 }
 
 /** A cached response younger than this satisfies an open with no refetch. */

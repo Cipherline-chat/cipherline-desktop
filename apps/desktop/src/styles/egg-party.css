@@ -1,0 +1,53 @@
+/* ============================================================================
+   Keys party (the Konami egg) — components/KeysParty.tsx.
+   Transform + opacity ONLY, no filter/box-shadow/will-change (doctrine rule 11):
+   the layer is pointer-events:none and contain:strict, and it exists for ~6s.
+   Under reduced motion there is no animation at all: the component renders a
+   still Keys in a party hat for a moment instead (.egg-party--still).
+   ============================================================================ */
+.egg-party {
+  position: fixed; inset: 0; z-index: 9990;
+  pointer-events: none; overflow: hidden; contain: strict;
+}
+.egg-party-swimmer {
+  position: absolute; left: 0; bottom: 14%;
+  animation: egg-party-swim 6s cubic-bezier(.45, .05, .55, .95) forwards;
+}
+.egg-party-bob { animation: egg-party-bob .75s ease-in-out infinite alternate; }
+@keyframes egg-party-swim {
+  0%   { transform: translateX(-160px); opacity: 0; }
+  6%   { opacity: 1; }
+  94%  { opacity: 1; }
+  100% { transform: translateX(calc(100vw + 40px)); opacity: 0; }
+}
+@keyframes egg-party-bob {
+  from { transform: translateY(0) rotate(-4deg); }
+  to   { transform: translateY(-26px) rotate(4deg); }
+}
+.egg-party-bubble {
+  position: absolute; bottom: -24px; border-radius: 50%;
+  border: 1.5px solid rgba(37, 224, 200, .55);
+  opacity: 0;
+  animation: egg-party-rise var(--dur, 4s) ease-in var(--delay, 0s) forwards;
+}
+@keyframes egg-party-rise {
+  0%   { transform: translateY(0); opacity: 0; }
+  15%  { opacity: .9; }
+  100% { transform: translateY(-110vh) translateX(var(--drift, 0px)); opacity: 0; }
+}
+.egg-party-piece {
+  position: absolute; top: -14px; border-radius: 2px; opacity: 0;
+  animation: egg-party-fall var(--dur, 3s) ease-in var(--delay, 0s) forwards;
+}
+@keyframes egg-party-fall {
+  0%   { transform: translateY(0) rotate(0); opacity: 1; }
+  100% { transform: translateY(105vh) rotate(var(--spin, 360deg)); opacity: 0; }
+}
+
+/* Reduced motion: a still hello in the corner, no travel, no confetti. */
+.egg-party--still .egg-party-still {
+  position: absolute; right: 32px; bottom: 32px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .egg-party-swimmer, .egg-party-bob, .egg-party-bubble, .egg-party-piece { animation: none; }
+}

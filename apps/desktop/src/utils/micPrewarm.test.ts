@@ -45,7 +45,7 @@ describe('micPrewarm', () => {
         expect(getUserMedia).toHaveBeenCalledTimes(1);
         const audio = calls[0].audio as MediaTrackConstraints;
         expect(audio.deviceId).toBe('default');
-        expect(audio.echoCancellation).toBe(true); // the default, same as the call (micCaptureConstraints)
+        expect(audio.echoCancellation).toBe(false); // the default (OFF), same as the call (micCaptureConstraints)
         expect(audio.noiseSuppression).toBe(false);
         expect(audio.autoGainControl).toBe(false);
         expect(mod.__micPrewarmStateForTests().open).toBe(true);

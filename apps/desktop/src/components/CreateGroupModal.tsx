@@ -9,10 +9,19 @@ import { useAvatarBroadcast } from '../hooks/useAvatarBroadcast';
 import { saveAvatarKey } from '../utils/avatarKeyStore';
 import { AVATAR_OUTPUT } from '../utils/imageCrop';
 import { IMAGE_ACCEPT_ATTR, validateImageUpload } from '../utils/imageUploadValidation';
-import { Search, Loader2, Users, Camera, X } from 'lucide-react';
-import { EncryptedAvatar } from './EncryptedAvatar';
+import { Users, Camera, X } from 'lucide-react';
 import { useModalExit } from '../hooks/useModalExit';
-import { ClButton, ClInput, ClSearch, ClCheckbox, ClModal, ClImageCropper } from './cl';
+import { ClButton, ClInput, ClModal, ClImageCropper } from './cl';
+import { DialogHeader, DialogBody, DialogFooter, DialogError } from './dialog/DialogFrame';
+import { MemberPicker } from './peoplePicker/MemberPicker';
+import { GROUP_MAX_MEMBERS } from '../utils/groupAddMembers';
+import { GroupOfTwoDialog } from './GroupOfTwoDialog';
+import { eggCountNow, noteEggNow } from '../hooks/useEasterEggs';
+import { recordEggFound } from '../utils/eggProgress';
+import {
+    GROUP_OF_TWO_INSISTED, GROUP_OF_TWO_SHOWN, groupOfTwoCopy, groupOfTwoTarget, type GroupOfTwoPerson,
+} from '../utils/groupOfTwo';
+import { startDirectMessage, type StartedDm } from '../utils/startDirectMessage';
 
 interface CreateGroupModalProps {
     onClose: () => void;
@@ -20,6 +29,13 @@ interface CreateGroupModalProps {
     onGroupCreated: (group: any) => void;
     /** Users to pre-select when the modal opens (e.g. from "Add to Group → Create New") */
     preSelectedUsers?: { user_id: string; username: string; avatar_url?: string }[];
+    /**
+     * Open an existing/new 1:1 instead (the "group of two" egg's primary
+     * button). The host closes this modal's group form by unmounting it; it
+     * should do what the New Message dialog does on `onDMStarted`. Omit it and
+     * the egg never appears — there would be nowhere to send the user.
+     */
+    onOpenDm?: (chat: StartedDm) => void;
 }
 
 const PLACEHOLDERS = [
@@ -30,7 +46,10 @@ const PLACEHOLDERS = [
     'e.g. Just Between Us',
 ];
 
-export const CreateGroupModal: React.FC<CreateGroupModalProps> = ({ onClose, onGroupCreated, preSelectedUsers }) => {
+/** How many friends can be picked: the server's member cap minus you. */
+const MAX_GROUP_PICKS = GROUP_MAX_MEMBERS - 1;
+
+export const CreateGroupModal: React.FC<CreateGroupModalProps> = ({ onClose, onGroupCreated, preSelectedUsers, onOpenDm }) => {
     const { token, deviceId, userId } = useAuth();
     const toast = useToast();
     const { uploadEncryptedFile } = useAttachments(token);
@@ -39,9 +58,10 @@ export const CreateGroupModal: React.FC<CreateGroupModalProps> = ({ onClose, onG
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     const [friends, setFriends] = useState<any[]>([]);
     const [loadingFriends, setLoadingFriends] = useState(true);
+    const [friendsFailed, setFriendsFailed] = useState(false);
+    const [friendsReload, setFriendsReload] = useState(0);
 
     const [groupName, setGroupName] = useState('');
-    const [search, setSearch] = useState('');
     const [selectedFriendIds, setSelectedFriendIds] = useState<Set<string>>(
         new Set((preSelectedUsers || []).map(u => u.user_id))
     );
@@ -49,6 +69,14 @@ export const CreateGroupModal: React.FC<CreateGroupModalProps> = ({ onClose, onG
     const [error, setError] = useState<string | null>(null);
     const [egg, setEgg] = useState<string | null>(null);
     const placeholderIdx = useRef(Math.floor(Math.random() * PLACEHOLDERS.length));
+
+    // ── Egg: a "group" of you + one person ───────────────────────────────────
+    // Hooked into handleCreate (the one submit path), so it fires whichever
+    // door the user came in by: New Message's group link, the sidebar button,
+    // Add-to-group → Create new, a keyboard shortcut.
+    const [twoOf, setTwoOf] = useState<{ person: GroupOfTwoPerson; shown: number } | null>(null);
+    const [dmBusy, setDmBusy] = useState(false);
+    const [dmError, setDmError] = useState<string | null>(null);
 
     // ── Group photo ────────────────────────────────────────────────────────────
     // No conversation exists yet to attach an attachment to (same situation as
@@ -92,20 +120,12 @@ export const CreateGroupModal: React.FC<CreateGroupModalProps> = ({ onClose, onG
         axios.get(`${API_BASE}/friends`, {
             headers: { Authorization: `Bearer ${token}` }
         }).then(res => {
-            if (isMounted) { setFriends(res.data.accepted || []); setLoadingFriends(false); }
+            if (isMounted) { setFriends(res.data.accepted || []); setFriendsFailed(false); setLoadingFriends(false); }
         }).catch(() => {
-            if (isMounted) setLoadingFriends(false);
+            if (isMounted) { setFriendsFailed(true); setLoadingFriends(false); }
         });
         return () => { isMounted = false; };
-    }, [token]);
-
-    const toggleFriend = (id: string) => {
-        const next = new Set(selectedFriendIds);
-        if (next.has(id)) next.delete(id);
-        else next.add(id);
-        setSelectedFriendIds(next);
-        setError(null);
-    };
+    }, [token, friendsReload]);
 
     const handleNameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         const v = e.target.value;
@@ -118,7 +138,7 @@ export const CreateGroupModal: React.FC<CreateGroupModalProps> = ({ onClose, onG
         }
     };
 
-    const handleCreate = async () => {
+    const handleCreate = async (opts?: { skipGroupOfTwo?: boolean }) => {
         if (!groupName.trim()) {
             setError('Group name is required');
             return;
@@ -126,6 +146,22 @@ export const CreateGroupModal: React.FC<CreateGroupModalProps> = ({ onClose, onG
         if (selectedFriendIds.size === 0) {
             setError('Select at least one friend');
             return;
+        }
+
+        if (!opts?.skipGroupOfTwo && onOpenDm) {
+            const person = groupOfTwoTarget({
+                selectedIds: Array.from(selectedFriendIds),
+                people: [...friends, ...(preSelectedUsers ?? [])],
+                insistedCount: eggCountNow(GROUP_OF_TWO_INSISTED),
+            });
+            if (person) {
+                const shown = eggCountNow(GROUP_OF_TWO_SHOWN);
+                noteEggNow(GROUP_OF_TWO_SHOWN);
+                recordEggFound('group-of-two');
+                setDmError(null);
+                setTwoOf({ person, shown });
+                return;
+            }
         }
 
         setIsCreating(true);
@@ -181,7 +217,33 @@ export const CreateGroupModal: React.FC<CreateGroupModalProps> = ({ onClose, onG
         handleClose();
     };
 
-    const filteredFriends = friends.filter(f => f.username.toLowerCase().includes(search.toLowerCase()));
+    const openDmInstead = async () => {
+        if (!twoOf || !onOpenDm || dmBusy) return;
+        setDmBusy(true);
+        setDmError(null);
+        try {
+            const chat = await startDirectMessage({ token, deviceId, person: twoOf.person });
+            onOpenDm(chat);
+            setTwoOf(null);
+            handleClose();
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
+        } catch (err: any) {
+            setDmError(
+                err?.response?.status === 403
+                    ? `You can't message ${twoOf.person.username} right now. Make the group anyway, or sort out the friendship first.`
+                    : `Couldn't open your chat with ${twoOf.person.username}. Check your connection, or make the group anyway.`,
+            );
+        } finally {
+            setDmBusy(false);
+        }
+    };
+
+    const makeGroupAnyway = () => {
+        if (dmBusy) return;
+        noteEggNow(GROUP_OF_TWO_INSISTED);
+        setTwoOf(null);
+        void handleCreate({ skipGroupOfTwo: true });
+    };
 
     /**
      * Overlay-close guard for the host modal.
@@ -198,186 +260,140 @@ export const CreateGroupModal: React.FC<CreateGroupModalProps> = ({ onClose, onG
         handleClose();
     };
 
+    const atCap = selectedFriendIds.size >= MAX_GROUP_PICKS;
+    const ready = !!groupName.trim() && selectedFriendIds.size > 0;
+    let hint: React.ReactNode;
+    if (atCap) hint = <span><span className="dlg-hint-strong">Group limit reached</span> ({GROUP_MAX_MEMBERS} with you)</span>;
+    else if (selectedFriendIds.size > 0) hint = <><Users size={14} /><span><span className="dlg-hint-strong">{selectedFriendIds.size}</span> selected</span></>;
+    else hint = <span>Pick at least one friend</span>;
+
     return (
       <>
         <ClModal
             open={!closing}
             onClose={requestClose}
-            width={450}
-            cardStyle={{ padding: '32px', maxHeight: '90vh', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}
+            width={480}
+            label="Create group chat"
+            cardClassName="dlg-card"
         >
-            {/* Header */}
-            <div className="flex items-start justify-between mb-5 shrink-0">
-                <h2 className="text-xl font-bold text-cl-text m-0">Create Group Chat</h2>
-                <ClButton icon variant="ghost" onClick={handleClose} tooltip="Close">
-                    <X size={18} />
-                </ClButton>
-            </div>
-
-            {error && (
-                <div className="text-cl-flash font-medium text-[13px] mb-4 bg-cl-flash/10 border border-cl-flash/20 px-3 py-2 rounded-lg shrink-0">
-                    {error}
-                </div>
-            )}
-
-            {/* Photo + name — plain buttons throughout, not ClButton: the kit's
-                `.cap` fixes its own size/background/radius and ClButton puts the
-                `style` prop on the outer wrapper, so a small round camera badge
-                built from ClButton silently renders at the kit's default 46px
-                icon-button size instead of whatever size is asked for. */}
-            <div className="flex flex-col items-center gap-3 mb-5 shrink-0">
-                <div className="relative">
-                    <button
-                        type="button"
-                        onClick={() => avatarInputRef.current?.click()}
-                        className="cl-newgroup-avatar-picker group"
-                        aria-label="Set a group photo"
-                    >
-                        {avatarPreview ? (
-                            <img src={avatarPreview} alt="" className="w-full h-full object-cover" />
-                        ) : (
-                            <Users size={26} className="text-cl-faint" />
-                        )}
-                        <span className="cl-newgroup-avatar-hint">
-                            <Camera size={18} className="text-white" />
-                        </span>
-                    </button>
-                    {avatarPreview && (
+          <form className="dlg-form" noValidate onSubmit={(e) => { e.preventDefault(); if (!isCreating && !twoOf) void handleCreate(); }}>
+            <DialogHeader
+                icon={<Users size={19} strokeWidth={2.2} />}
+                title="New group chat"
+                subtitle="Name it, add a photo, and pick who's in."
+            />
+            <DialogBody>
+                {/* Photo + name — plain buttons throughout, not ClButton: the kit's
+                    `.cap` fixes its own size/background/radius and ClButton puts the
+                    `style` prop on the outer wrapper, so a small round camera badge
+                    built from ClButton silently renders at the kit's default 46px
+                    icon-button size instead of whatever size is asked for. */}
+                <div className="dlg-identity">
+                    <div className="relative shrink-0">
                         <button
                             type="button"
-                            onClick={clearAvatar}
-                            className="cl-newgroup-avatar-remove"
-                            aria-label="Remove photo"
+                            onClick={() => avatarInputRef.current?.click()}
+                            className="cl-newgroup-avatar-picker group"
+                            aria-label="Set a group photo"
                         >
-                            <X size={11} />
-                        </button>
-                    )}
-                </div>
-                <input
-                    ref={avatarInputRef}
-                    type="file"
-                    accept={IMAGE_ACCEPT_ATTR}
-                    onChange={handlePickAvatar}
-                    className="hidden"
-                />
-                {avatarError && (
-                    <p className="text-[11px] text-cl-flash -mt-1">{avatarError}</p>
-                )}
-
-                <div className="w-full">
-                    <ClInput
-                        type="text"
-                        aria-label="Group name"
-                        value={groupName}
-                        onChange={handleNameChange}
-                        placeholder={PLACEHOLDERS[placeholderIdx.current]}
-                        autoFocus
-                    />
-                    {egg && (
-                        <p className="text-[11px] font-bold text-cl-lume mt-1.5 ml-1">{egg}</p>
-                    )}
-                </div>
-            </div>
-
-            {/* Member picker */}
-            <div className="mb-2 flex-1 flex flex-col min-h-0">
-                <label className="flex items-center justify-between text-[13px] font-semibold text-cl-faint mb-2 uppercase tracking-wide">
-                    <span>Members</span>
-                    <span className="text-cl-lume">
-                        {selectedFriendIds.size} selected
-                        {preSelectedUsers && preSelectedUsers.length > 0 && (
-                            <span className="text-cl-faint font-normal normal-case tracking-normal ml-1">
-                                ({preSelectedUsers.map(u => u.username).join(', ')} pre-added)
+                            {avatarPreview ? (
+                                <img src={avatarPreview} alt="" className="w-full h-full object-cover" />
+                            ) : (
+                                <Camera size={22} className="text-cl-faint" />
+                            )}
+                            <span className="cl-newgroup-avatar-hint">
+                                <Camera size={18} className="text-white" />
                             </span>
+                        </button>
+                        {avatarPreview && (
+                            <button
+                                type="button"
+                                onClick={clearAvatar}
+                                className="cl-newgroup-avatar-remove"
+                                aria-label="Remove photo"
+                            >
+                                <X size={11} />
+                            </button>
                         )}
-                    </span>
-                </label>
-
-                <div className="mb-3">
-                    <ClSearch
-                        icon={<Search size={15} />}
-                        type="text"
-                        value={search}
-                        onChange={e => setSearch(e.target.value)}
-                        placeholder="Search friends"
+                    </div>
+                    <input
+                        ref={avatarInputRef}
+                        type="file"
+                        accept={IMAGE_ACCEPT_ATTR}
+                        onChange={handlePickAvatar}
+                        className="hidden"
                     />
+                    <div className="dlg-field" style={{ flex: 1, minWidth: 0 }}>
+                        <label className="dlg-label" htmlFor="create-group-name">Group name</label>
+                        <ClInput
+                            id="create-group-name"
+                            type="text"
+                            value={groupName}
+                            onChange={handleNameChange}
+                            placeholder={PLACEHOLDERS[placeholderIdx.current]}
+                            autoFocus
+                            autoComplete="off"
+                        />
+                    </div>
                 </div>
+                {avatarError && <div className="dlg-help" style={{ color: 'var(--cl-flash, #FF6B5E)', marginTop: 8 }}>{avatarError}</div>}
+                {egg && <div className="text-[12px] font-bold text-cl-lume" style={{ marginTop: 8 }}>{egg}</div>}
 
-                <div className="overflow-y-auto bg-cl-deep border border-white/5 rounded-xl p-2 custom-scrollbar flex-1"
-                    style={{ minHeight: '160px', maxHeight: '240px' }}
-                >
-                    {loadingFriends ? (
-                        <div className="flex items-center justify-center h-full text-cl-faint">
-                            <Loader2 className="w-6 h-6 animate-spin" />
-                        </div>
-                    ) : friends.length === 0 ? (
-                        <div className="flex flex-col items-center justify-center h-full py-6 text-center">
-                            <Users className="w-8 h-8 mb-2 text-cl-faint opacity-50" />
-                            <span className="text-sm text-cl-faint">Your circle is empty — add friends first.</span>
-                        </div>
-                    ) : filteredFriends.length === 0 ? (
-                        <div className="text-center text-cl-faint py-6 text-sm">
-                            No friends match &ldquo;{search}&rdquo;
-                        </div>
-                    ) : (
-                        filteredFriends.map(f => {
-                            const isSelected = selectedFriendIds.has(f.user_id);
-                            return (
-                                <ClButton
-                                    type="button"
-                                    key={f.user_id}
-                                    variant="ghost"
-                                    row
-                                    fullWidth
-                                    onClick={() => toggleFriend(f.user_id)}
-                                    style={{
-                                        marginBottom: 2,
-                                        background: isSelected ? 'rgba(37,224,200,0.08)' : 'transparent',
-                                    }}
-                                >
-                                    <div
-                                        className="w-9 h-9 rounded-full overflow-hidden shrink-0"
-                                        style={{
-                                            boxShadow: isSelected ? '0 0 0 2px var(--cl-lume)' : '0 0 0 1px var(--cl-border)',
-                                            transition: 'box-shadow .15s ease',
-                                        }}
-                                    >
-                                        <EncryptedAvatar
-                                            attachmentId={f.avatar_url}
-                                            userId={f.user_id}
-                                            token={token}
-                                            className="w-full h-full"
-                                            fallbackSize={17}
-                                            disableClickProfile
-                                        />
-                                    </div>
-                                    <span className="text-[14px] font-semibold text-cl-text truncate flex-1 text-left">
-                                        {f.username}
-                                    </span>
-                                    <span className="pointer-events-none shrink-0">
-                                        <ClCheckbox checked={isSelected} onChange={() => {}} />
-                                    </span>
-                                </ClButton>
-                            );
-                        })
+                <div className="dlg-label" style={{ margin: '18px 0 8px', display: 'flex', justifyContent: 'space-between' }}>
+                    <span>Members</span>
+                    {preSelectedUsers && preSelectedUsers.length > 0 && (
+                        <span style={{ textTransform: 'none', letterSpacing: 0, fontWeight: 700 }}>
+                            {preSelectedUsers.map(u => u.username).join(', ')} pre-added
+                        </span>
                     )}
                 </div>
-            </div>
-
-            <div className="flex justify-end gap-2.5 mt-5 shrink-0">
-                <ClButton type="button" variant="ghost" disabled={isCreating} onClick={handleClose}>
+                <MemberPicker
+                    people={friends}
+                    loading={loadingFriends}
+                    loadFailed={friendsFailed}
+                    onRetry={() => { setLoadingFriends(true); setFriendsFailed(false); setFriendsReload(k => k + 1); }}
+                    selection={Array.from(selectedFriendIds)}
+                    onSelectionChange={(next) => { setSelectedFriendIds(new Set(next)); setError(null); }}
+                    max={MAX_GROUP_PICKS}
+                    token={token}
+                    knownPeople={preSelectedUsers}
+                    ariaLabel="Search friends to add"
+                    emptyTitle="No friends yet"
+                    emptyBody="Add a friend first, then you can start a group with them."
+                    onSubmit={() => { if (!isCreating && !twoOf) void handleCreate(); }}
+                    disabled={isCreating}
+                    compact
+                />
+            </DialogBody>
+            {error && <DialogError>{error}</DialogError>}
+            <DialogFooter hint={hint}>
+                <ClButton type="button" variant="ghost" size="sm" disabled={isCreating} onClick={handleClose}>
                     Cancel
                 </ClButton>
                 <ClButton
-                    type="button"
-                    disabled={isCreating || selectedFriendIds.size === 0 || !groupName.trim()}
+                    type="submit"
+                    size="sm"
+                    disabled={isCreating || !ready}
                     loading={isCreating}
-                    onClick={handleCreate}
+                    tooltip={!ready ? 'Name the group and pick a friend' : undefined}
                 >
-                    Create
+                    Create group
                 </ClButton>
-            </div>
+            </DialogFooter>
+          </form>
         </ClModal>
+
+        {twoOf && (
+            <GroupOfTwoDialog
+                name={twoOf.person.username}
+                {...groupOfTwoCopy(twoOf.shown, twoOf.person.username)}
+                busy={dmBusy}
+                error={dmError}
+                onOpenDm={() => { void openDmInstead(); }}
+                onProceed={makeGroupAnyway}
+                onDismiss={() => { setTwoOf(null); setDmError(null); }}
+            />
+        )}
 
         <ClImageCropper
             open={!!cropFile}

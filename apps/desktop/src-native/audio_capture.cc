@@ -659,6 +659,9 @@ void RegisterWindowGeometry(napi_env env, napi_value exports);
 // share_power.cc — process power-throttling opt-out, foreground probe and
 // timer resolution for the screen-share boost (electron/share-boost.ts).
 void RegisterSharePower(napi_env env, napi_value exports);
+// hdr_capture.cc — tone-mapped Desktop Duplication of an HDR display for
+// screen shares (electron/hdr-share.ts).
+void RegisterHdrCapture(napi_env env, napi_value exports);
 
 static napi_value Init(napi_env env, napi_value exports)
 {
@@ -675,6 +678,7 @@ static napi_value Init(napi_env env, napi_value exports)
 
     RegisterWindowGeometry(env, exports);
     RegisterSharePower(env, exports);
+    RegisterHdrCapture(env, exports);
 
     return exports;
 }

@@ -198,7 +198,9 @@ class RNNoiseInlineWorklet extends AudioWorkletProcessor {
         const out = outputs[0]?.[0];
         if (!out) return true;
 
-        if (inp) {
+        // Disabled (NS off, or the Light/Speex engine is selected): accumulate and
+        // denoise NOTHING. The ring is bypassed below, so this work was pure waste.
+        if (inp && this.enabled) {
             for (let i = 0; i < inp.length; i++) {
                 this.inRing[this.inW % this.inSize] = inp[i];
                 this.inW++;

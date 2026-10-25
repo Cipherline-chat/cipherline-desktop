@@ -52,8 +52,14 @@ describe('every key-handshake POST goes through the flow-controlled loop', () =>
         expect(fn).not.toMatch(/setTimeout\(r, 100\)/);
     });
 
-    it('there is exactly ONE place in Dashboard that POSTs key-handshake', () => {
-        expect(src.match(/\/key-handshake`/g)).toHaveLength(1);
+    it('Dashboard POSTs key-handshake only from the two flow-controlled distributors', () => {
+        // distributeChannelKeys (runKeyDistribution) and distributeChannelKeysMany
+        // (runKeyDistributionMany) — both through the shared Pacer / back-off.
+        expect(src.match(/\/key-handshake`/g)).toHaveLength(2);
+        expect(src.match(/\/key-handshake\/batch`/g)).toHaveLength(2);
+        const many = src.slice(src.indexOf('const distributeChannelKeysMany = useCallback('));
+        expect(many.slice(0, many.indexOf('/key-handshake`'))).toContain('return runKeyDistributionMany({');
+        expect(many.slice(0, many.indexOf('/key-handshake`'))).toContain('pacer: handshakePacer,');
     });
 
     it('a one-shot distribution that was deferred is resumed (bounded), not dropped', () => {

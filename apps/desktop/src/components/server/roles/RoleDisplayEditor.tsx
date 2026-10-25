@@ -3,7 +3,7 @@
  * toggle, and a live preview chip.
  *
  * Auto-saves: name input debounces PATCH by 500ms; color clicks are
- * immediate (palette presets) or debounced 300ms (native picker drag).
+ * immediate (palette presets) or debounced 300ms (custom colour picker commit).
  * Toggles (mentionable / hoist) fire PATCH immediately.
  */
 
@@ -13,6 +13,7 @@ import { Lock, Trash2 } from 'lucide-react';
 import { apiUrl } from '../../../utils/apiPath';
 import { roleColorHexFromInt } from '../../../utils/roleColor';
 import { ClButton, ClInput, ClToggle } from '../../cl';
+import { ColourSwatchButton } from '../../settings/ui/ColourPicker';
 import type { Role } from './types';
 
 const PRESET_COLORS = [
@@ -128,6 +129,7 @@ export const RoleDisplayEditor: React.FC<Props> = ({ role, serverId, token, read
         patch({ color: -1 });
     };
 
+    const hasCustomColor = !!localColorHex && !PRESET_COLORS.some(c => c.toLowerCase() === localColorHex.toLowerCase());
     const previewColor = localColorHex ?? 'rgba(255,255,255,0.9)';
     // Live preview name mirrors the local (debounced) name input, not the
     // saved role.name, so the hero updates as you type.
@@ -262,20 +264,19 @@ export const RoleDisplayEditor: React.FC<Props> = ({ role, serverId, token, read
                                 />
                             );
                         })}
-                        {/* Custom picker */}
-                        <label
-                            className="w-7 h-7 rounded-full cursor-pointer border-2 border-dashed border-white/25 flex items-center justify-center text-[11px] text-cl-faint hover:border-white/50 hover:text-cl-muted transition-colors"
-                            title="Custom color"
+                        {/* Custom picker: Cipherline's own colour picker (not the OS dialog).
+                            Dashed "+" until a non-preset colour is set, then that colour. */}
+                        <ColourSwatchButton
+                            value={localColorHex ?? '#5865f2'}
+                            label="Custom role color"
+                            triggerLabel={localColorHex ? `Custom role color: ${localColorHex}` : 'Pick a custom role color'}
+                            size={28}
+                            disabled={readOnly}
+                            onCommit={applyColorHex}
+                            className={hasCustomColor ? undefined : 'cp-trigger--dashed'}
                         >
-                            +
-                            <input
-                                type="color"
-                                className="sr-only"
-                                value={localColorHex ?? '#5865f2'}
-                                onChange={e => applyColorHex(e.target.value)}
-                                disabled={readOnly}
-                            />
-                        </label>
+                            {hasCustomColor ? undefined : <span aria-hidden="true">+</span>}
+                        </ColourSwatchButton>
                     </div>
 
                     {localColorHex && (

@@ -14,8 +14,13 @@ const avatarMemoryCache = new Map<string, string>();
 /** Byte size of each cached avatar Blob — the bytes live in the BROWSER
  *  process until the URL is revoked. Diagnostics only (memoryReport.ts). */
 const avatarBytes = new Map<string, number>();
+/** Decrypted blob type per URL, so views can tell an animated-capable image
+ *  (GIF / WebP) without re-reading it. See utils/animatedImage.ts. */
+const avatarMimeByUrl = new Map<string, string>();
+export const avatarUrlMime = (url: string | null | undefined): string | null => (url ? avatarMimeByUrl.get(url) ?? null : null);
 const cacheAvatarUrl = (id: string, blob: Blob): string => {
     const url = URL.createObjectURL(blob);
+    avatarMimeByUrl.set(url, blob.type);
     avatarMemoryCache.set(id, url);
     avatarBytes.set(id, blob.size);
     return url;

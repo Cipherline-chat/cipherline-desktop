@@ -1,0 +1,199 @@
+/* ============================================================================
+   Settings UI kit for the calm Profile / Personalize panes (su- = settings ui,
+   pp- = profile pane layout). Elevation: hairline borders for structure, one
+   soft shadow only on the floating popover. Spacing sits on a 4px scale. Motion
+   is opacity/transform, 120-200ms, and off under prefers-reduced-motion.
+   ============================================================================ */
+
+/* ---- a row that shows the current choice and opens a popover -------------- */
+.su-pick { display: flex; align-items: center; justify-content: space-between; gap: 8px 16px; padding: 12px 0; flex-wrap: wrap; }
+.su-pick + .su-pick, .su-row + .su-pick, .su-pick + .su-row { border-top: 1px solid rgba(42, 53, 88, .5); }
+.su-pick-text { min-width: 160px; flex: 1 1 160px; display: flex; flex-direction: column; gap: 2px; }
+.su-pick-label { font-size: 13.5px; font-weight: 700; color: var(--cl-text); }
+.su-pick-hint { font-size: 12px; line-height: 1.4; color: var(--cl-faint); }
+.su-pick-trigger {
+  flex: none; display: inline-flex; align-items: center; gap: 8px; max-width: 58%; min-height: 36px;
+  padding: 4px 10px 4px 6px; border-radius: 10px; cursor: pointer; color: var(--cl-text);
+  font: inherit; font-size: 13px; font-weight: 600;
+  background: rgba(255, 255, 255, .04); border: 1px solid var(--cl-border);
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+.su-pick-trigger:hover:not(:disabled) { background: rgba(255, 255, 255, .08); border-color: rgba(255, 255, 255, .22); }
+.su-pick-trigger:focus-visible { outline: 2px solid var(--cl-lume); outline-offset: 2px; }
+.su-pick-trigger:disabled { opacity: .5; cursor: not-allowed; }
+.su-pick-trigger[aria-expanded="true"] { border-color: var(--cl-lume); }
+.su-pick-value { display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
+.su-pick-value > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.su-pick-chev { flex: none; color: var(--cl-faint); transition: transform 160ms ease; }
+.su-pick-trigger[aria-expanded="true"] .su-pick-chev { transform: rotate(180deg); }
+
+/* a plain labelled row (toggle, select, button on the right) */
+.su-row { display: flex; align-items: center; justify-content: space-between; gap: 8px 16px; padding: 12px 0; flex-wrap: wrap; }
+.su-row + .su-row { border-top: 1px solid rgba(42, 53, 88, .5); }
+.su-row-text { min-width: 160px; flex: 1 1 160px; display: flex; flex-direction: column; gap: 2px; }
+.su-row-label { font-size: 13.5px; font-weight: 700; color: var(--cl-text); }
+.su-row-hint { font-size: 12px; line-height: 1.4; color: var(--cl-faint); }
+.su-row-ctl { flex: none; display: flex; align-items: center; gap: 8px; }
+
+/* ---- the popover panel ---------------------------------------------------- */
+.su-pop {
+  isolation: isolate; overflow: auto; overscroll-behavior: contain; box-sizing: border-box;
+  padding: 12px; border-radius: 14px; background: var(--cl-raise, #1a2340);
+  border: 1px solid rgba(255, 255, 255, .12);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, .45), 0 2px 6px rgba(0, 0, 0, .3);
+  animation: su-pop-in 140ms ease-out backwards;
+}
+.su-pop:focus { outline: none; }
+@keyframes su-pop-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+.su-pop-eyebrow {
+  margin: 0 0 8px; font: 600 10.5px/1.2 var(--cl-font-mono); letter-spacing: 1.2px; text-transform: uppercase; color: var(--cl-faint);
+}
+.su-pop-note { margin: 8px 0 0; font-size: 12px; line-height: 1.4; color: var(--cl-faint); }
+.su-pop-sep { height: 1px; margin: 12px 0; background: rgba(255, 255, 255, .08); border: 0; }
+
+/* ---- tiles (decoration / effect pickers) ---------------------------------- */
+.su-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(80px, 1fr)); gap: 8px; }
+.su-tile {
+  display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 8px 4px 8px; min-width: 0;
+  border: 0; border-radius: 12px; cursor: pointer; color: var(--cl-text); font: inherit; text-align: center;
+  background: rgba(255, 255, 255, .04); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .08);
+  transition: background-color 120ms ease, box-shadow 120ms ease;
+}
+.su-tile:hover:not([data-locked]) { background: rgba(255, 255, 255, .08); }
+.su-tile:focus-visible { outline: 2px solid var(--cl-lume); outline-offset: 2px; }
+.su-tile[aria-checked="true"] { background: rgba(37, 224, 200, .12); box-shadow: inset 0 0 0 1.5px var(--cl-lume); }
+.su-tile[data-locked] { cursor: not-allowed; }
+.su-tile[data-locked] .su-tile-prev { opacity: .5; }
+.su-tile-prev { height: 52px; display: flex; align-items: center; justify-content: center; }
+.su-tile-name { max-width: 100%; font-size: 11.5px; font-weight: 600; line-height: 1.25; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow-wrap: anywhere; }
+.su-tile-lock { display: inline-flex; align-items: center; gap: 4px; font-size: 10.5px; line-height: 1.2; color: var(--cl-muted); font-variant-numeric: tabular-nums; }
+
+/* the thumbnails: the user's own avatar wearing the decoration / effect */
+.su-avatar { position: relative; display: inline-block; width: 36px; height: 36px; flex: none; }
+.su-avatar > .pc-deco-host, .su-avatar > .pc-deco-host > span:first-child { display: block; width: 36px; height: 36px; }
+.su-avatar-face { display: block; width: 36px; height: 36px; border-radius: 50%; overflow: hidden; background: var(--cl-raise); }
+.su-avatar-face > * { width: 100%; height: 100%; }
+.su-fx-thumb {
+  position: relative; display: block; width: 76px; height: 48px; border-radius: 10px; overflow: hidden; isolation: isolate;
+  background: var(--cl-deep); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .1);
+}
+.su-fx-thumb-face { position: absolute; left: 50%; top: 50%; width: 30px; height: 30px; margin: -15px 0 0 -15px; border-radius: 50%; overflow: hidden; opacity: .9; }
+.su-fx-thumb-face > * { width: 100%; height: 100%; }
+.su-fx-thumb--sm { width: 40px; height: 28px; border-radius: 8px; }
+.su-fx-thumb--sm .su-fx-thumb-face { width: 18px; height: 18px; margin: -9px 0 0 -9px; }
+
+/* theme swatches */
+.su-swatch { flex: none; width: 24px; height: 24px; border-radius: 50%; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .22); }
+.su-swatches { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.su-swatch-btn {
+  width: 32px; height: 32px; border-radius: 50%; border: 0; padding: 0; cursor: pointer;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .22); transition: transform 120ms ease;
+}
+.su-swatch-btn:hover:not(:disabled) { transform: scale(1.08); }
+.su-swatch-btn:focus-visible { outline: 2px solid var(--cl-lume); outline-offset: 3px; }
+.su-swatch-btn[aria-pressed="true"] { box-shadow: 0 0 0 2px var(--cl-raise, #1a2340), 0 0 0 4px var(--cl-text); }
+.su-pill {
+  height: 32px; padding: 0 12px; border-radius: 999px; border: 0; cursor: pointer; font: inherit; font-size: 12px; font-weight: 700;
+  color: var(--cl-text); background: rgba(255, 255, 255, .06); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .1);
+}
+.su-pill:focus-visible { outline: 2px solid var(--cl-lume); outline-offset: 2px; }
+.su-pill[aria-pressed="true"] { box-shadow: inset 0 0 0 1.5px var(--cl-lume); }
+
+/* ---- chips + small blocks inside sections --------------------------------- */
+.su-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.su-block { padding: 12px 0; }
+.su-block + .su-block { border-top: 1px solid rgba(42, 53, 88, .5); }
+.su-block-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin: 0 0 8px; }
+.su-block-title { margin: 0; font-size: 13.5px; font-weight: 700; color: var(--cl-text); }
+.su-count { font-size: 12px; color: var(--cl-faint); font-variant-numeric: tabular-nums; }
+.su-hint { margin: 8px 0 0; font-size: 12px; line-height: 1.4; color: var(--cl-faint); }
+.su-empty { margin: 0; font-size: 12.5px; color: var(--cl-muted); }
+.su-slot { display: flex; align-items: center; gap: 8px; padding: 6px 8px 6px 12px; border-radius: 10px; background: rgba(255, 255, 255, .05); }
+.su-slot[data-empty] { background: none; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .12); color: var(--cl-faint); font-size: 12.5px; padding-block: 8px; }
+.su-slot[data-locked] { opacity: .65; }
+.su-slot-n { width: 16px; font-size: 11px; color: var(--cl-faint); font-variant-numeric: tabular-nums; }
+.su-slot-name { flex: 1; min-width: 0; font-size: 13px; font-weight: 600; color: var(--cl-text); }
+.su-iconbtn {
+  width: 28px; height: 28px; padding: 0; display: inline-flex; align-items: center; justify-content: center; flex: none;
+  border: 0; border-radius: 8px; cursor: pointer; background: transparent; color: var(--cl-muted);
+  transition: background-color 120ms ease, color 120ms ease;
+}
+.su-iconbtn:hover:not(:disabled) { background: rgba(255, 255, 255, .08); color: var(--cl-text); }
+.su-iconbtn:focus-visible { outline: 2px solid var(--cl-lume); outline-offset: 1px; }
+.su-iconbtn:disabled { opacity: .35; cursor: not-allowed; }
+.su-slots { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 4px; }
+.su-level { display: flex; flex-direction: column; gap: 8px; padding: 4px 0 12px; }
+.su-level-top { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.su-level-top b { font-size: 15px; color: var(--cl-text); }
+.su-level-top span { font-size: 12px; color: var(--cl-muted); font-variant-numeric: tabular-nums; }
+.su-bar { height: 6px; border-radius: 999px; overflow: hidden; background: rgba(255, 255, 255, .08); }
+.su-bar > div { height: 100%; border-radius: 999px; background: var(--cl-lume); }
+
+/* ---- profile pane layout: preview aside + sections ------------------------ */
+.pp-wrap { container-type: inline-size; }
+.pp-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; align-items: start; }
+.pp-aside { order: -1; min-width: 0; }
+.pp-aside-card { display: flex; flex-direction: column; gap: 12px; padding: 16px; border-radius: 20px; background: var(--cl-deep); border: 1px solid var(--cl-border); }
+.pp-aside-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.pp-aside-title { margin: 0; font: 700 12px/1.2 var(--cl-font-body, 'Nunito', sans-serif); color: var(--cl-muted); }
+.pp-aside-note { margin: 0; font-size: 11.5px; line-height: 1.4; color: var(--cl-faint); text-align: center; }
+.pp-main { min-width: 0; }
+.pp-main > .sd-card, .pp-main > .sx-disc { margin-bottom: 12px; }
+/* The Settings pane is rarely wider than ~720px, so beside the form the card is shown at 75%
+   (a live, interactive preview, just smaller); a genuinely wide pane gets it at full size. */
+.pp-card-zoom { min-width: 0; }
+/* The preview is the 320px popover card: beside the form it is scaled to fit its column exactly,
+   from a 600px pane up (a small window keeps the card and the controls side by side). */
+.pp-card-zoom { max-width: 320px; margin: 0 auto; width: 100%; }
+@container (min-width: 600px) {
+  .pp-layout { grid-template-columns: minmax(0, 1fr) 236px; }
+  .pp-aside { order: 0; position: sticky; top: 8px; grid-column: 2; grid-row: 1; }
+  .pp-main { grid-column: 1; grid-row: 1; }
+  .pp-card-zoom { zoom: .6625; }
+  .pp-aside-card { padding: 10px; }
+}
+@container (min-width: 700px) {
+  .pp-layout { grid-template-columns: minmax(0, 1fr) 272px; }
+  .pp-aside { order: 0; position: sticky; top: 8px; grid-column: 2; grid-row: 1; }
+  .pp-main { grid-column: 1; grid-row: 1; }
+  .pp-card-zoom { zoom: .775; }
+  .pp-aside-card { padding: 12px; }
+}
+@container (min-width: 940px) {
+  .pp-layout { grid-template-columns: minmax(0, 1fr) 352px; }
+  .pp-card-zoom { zoom: 1; }
+  .pp-aside-card { padding: 16px; }
+}
+
+
+/* ---- calls ring row ------------------------------------------------------- */
+.su-ring { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.su-ring-you {
+  width: 36px; height: 36px; border-radius: 50%; flex: none; display: flex; align-items: center; justify-content: center;
+  overflow: hidden; color: var(--cl-faint); background: var(--cl-surface, #1c2542); user-select: none;
+}
+.su-ring-dot {
+  width: 24px; height: 24px; border-radius: 50%; border: 2px solid transparent; padding: 0; cursor: pointer;
+  display: flex; align-items: center; justify-content: center; transition: border-color 120ms ease, transform 120ms ease;
+}
+.su-ring-dot:hover { transform: scale(1.1); }
+.su-ring-dot:focus-visible { outline: 2px solid var(--cl-lume); outline-offset: 3px; }
+.su-ring-dot[aria-checked="true"] { border-color: var(--cl-text); }
+
+/* ---- emoji grid: two rows, then "show all" -------------------------------- */
+.su-more { display: flex; justify-content: center; margin-top: 8px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .su-pop { animation: none; }
+  .su-pick-chev, .su-swatch-btn, .su-ring-dot, .su-tile, .su-pick-trigger { transition: none; }
+  .su-swatch-btn:hover:not(:disabled), .su-ring-dot:hover { transform: none; }
+}
+
+/* the save bar docks to the bottom of the pane */
+.pp-dock { position: sticky; bottom: 8px; z-index: 5; margin-top: 4px; }
+.pp-dock .sd-savebar { border: 1px solid var(--cl-border); border-radius: 14px; margin-top: 0; background: var(--cl-raise, #1a2340); box-shadow: 0 8px 24px rgba(0, 0, 0, .35); }
+.pp-dock .sd-savebar-wrap { margin-bottom: 0; }
+.pp-dock .sd-savebar-wrap + .sd-savebar-wrap { margin-top: 4px; }
+
+/* one-line summaries on the closed section rows of the Profile / Personalize panes */
+.pp-main .sx-disc-txt > span, .pz-main .sx-disc-txt > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

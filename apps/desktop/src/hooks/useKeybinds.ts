@@ -89,7 +89,9 @@ const DEFAULT_KEYBINDS: KeybindMap = {
     'toggle-mute':        'ctrl+shift+m',
     'toggle-deafen':      'ctrl+shift+d',
     'toggle-camera':      'ctrl+shift+v',
-    'toggle-screenshare': 'ctrl+shift+s',
+    // Not Ctrl+Shift+S: as a GLOBAL shortcut it took "Save As" away from every
+    // other app (and AMD's overlay) while Cipherline ran. See migrateKeybinds.
+    'toggle-screenshare': 'ctrl+shift+f9',
     'leave-call':         'ctrl+shift+h',
     'quick-screenshare':  'ctrl+shift+q',
     'lock-screen':        'ctrl+shift+l',
@@ -209,11 +211,36 @@ export function mergeKeybinds(saved: unknown, defaults: KeybindMap = DEFAULT_KEY
     return out;
 }
 
+const MIGRATION_KEY = 'cipherline_keybinds_migrated_v1';
+
+/**
+ * One-time fixes to SAVED binds. The whole map is persisted, so a changed
+ * default never reaches an existing user on its own. v1: Screen Share's old
+ * default Ctrl+Shift+S (a global shortcut that swallowed "Save As" in every
+ * app) moves to the new default, unless that combo is already in use. Runs
+ * once per account; a user who re-binds Ctrl+Shift+S afterwards keeps it.
+ */
+export function migrateKeybinds(saved: unknown, alreadyMigrated: boolean): unknown {
+    if (alreadyMigrated || !saved || typeof saved !== 'object' || Array.isArray(saved)) return saved;
+    const out = { ...(saved as Record<string, unknown>) };
+    const next = DEFAULT_KEYBINDS['toggle-screenshare']!;
+    if (out['toggle-screenshare'] === 'ctrl+shift+s') {
+        const taken = Object.entries(out).some(([a, c]) => a !== 'toggle-screenshare' && c === next);
+        out['toggle-screenshare'] = taken ? UNBOUND : next;
+    }
+    return out;
+}
+
 function loadKeybinds(): KeybindMap {
     try {
         const raw = secureLocalStore.getItem(STORAGE_KEY);
         if (!raw) return { ...DEFAULT_KEYBINDS };
-        return mergeKeybinds(JSON.parse(raw));
+        const migrated = secureLocalStore.getItem(MIGRATION_KEY) === '1';
+        const merged = mergeKeybinds(migrateKeybinds(JSON.parse(raw), migrated));
+        if (!migrated) {
+            try { secureLocalStore.setItem(MIGRATION_KEY, '1'); } catch { /* retried next launch; the fix is idempotent for the old default */ }
+        }
+        return merged;
     } catch {
         return { ...DEFAULT_KEYBINDS };
     }

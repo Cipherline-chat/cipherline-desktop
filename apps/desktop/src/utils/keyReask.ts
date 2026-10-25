@@ -145,7 +145,7 @@ export interface ReaskTickDeps {
     lastAskedAt: (channelId: string) => number | undefined;
     activeChannelId: () => string | null;
     /** POST key-request (bypassing the 60 s dedup; this schedule IS the limit). */
-    fileKeyRequest: (serverId: string, channelId: string) => Promise<void>;
+    fileKeyRequest: (serverId: string, channelId: string) => Promise<unknown>;
     sleep: (ms: number) => Promise<void>;
     now: () => number;
     budget: ReaskBudget;

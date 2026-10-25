@@ -1,0 +1,289 @@
+/* ============================================================================
+   Night dive — midnight to 05:00 local time the sea gets deeper.
+
+   BACKGROUND ONLY. `<html data-depth="night">` (utils/nightDive.ts decides,
+   hooks/useNightDive.ts applies) darkens the layers that ARE background:
+
+     - the water the drift cards float on (Dashboard root, the title bar, the
+       drift row, the rail's open water) — painted at night by the deep-sea
+       layer of components/NightDiveSea.tsx, which sits BEHIND all content;
+     - the main views' own backgrounds: the chat feed (DMs, groups, server
+       channels), Friends, Home, and the Settings water column.
+
+   It never touches a design token that colours an element: panels, cards,
+   inputs, buttons, borders, accents and text keep their exact daylight values
+   (nightDive.palette.test.ts asserts it). The only token re-pointed is
+   --cl-abyss, and only INSIDE the rail, where it is the colour that badge /
+   status rings are cut out of — those rings must match the water they sit in.
+
+   How the fade works: every value that changes is a registered, NON-inherited
+   custom property declared and transitioned on the one element that paints
+   it, so the 5 s fade restyles a handful of elements, not the whole tree. By
+   day each property's initial value is exactly what the base stylesheet
+   paints, so nothing changes by day. prefers-reduced-motion = instant.
+
+   This file is imported by the desktop renderer ONLY (main.tsx). The website
+   never loads it and has no data-depth attribute.
+   ============================================================================ */
+
+/* ── Registered background properties (initial = the daylight value) ─────── */
+@property --nd-bar       { syntax: '<color>';  inherits: false; initial-value: #0B0F1E; }
+@property --nd-rail      { syntax: '<color>';  inherits: false; initial-value: #0B0F1E; }
+@property --nd-feed-top  { syntax: '<color>';  inherits: false; initial-value: #131A30; }
+@property --nd-feed-bot  { syntax: '<color>';  inherits: false; initial-value: #0B0F1E; }
+@property --nd-friends   { syntax: '<color>';  inherits: false; initial-value: #0B0F1E; }
+@property --nd-home      { syntax: '<color>';  inherits: false; initial-value: #131A30; }
+@property --nd-home-tint { syntax: '<color>';  inherits: false; initial-value: #1B3A4A; }
+@property --nd-sun       { syntax: '<number>'; inherits: false; initial-value: 1; }
+@property --nd-sea-0     { syntax: '<color>';  inherits: false; initial-value: #101830; }
+@property --nd-sea-1     { syntax: '<color>';  inherits: false; initial-value: #0C1226; }
+@property --nd-sea-2     { syntax: '<color>';  inherits: false; initial-value: #0B0F1E; }
+@property --nd-sea-3     { syntax: '<color>';  inherits: false; initial-value: #080B17; }
+@property --nd-sea-4     { syntax: '<color>';  inherits: false; initial-value: #05070F; }
+
+:root {
+  --nd-fade: 5s;
+  /* Into the night the backgrounds clear early (the sea shows through while
+     the descent is still playing); back to day they firm up late, so the
+     dawn plays out over the sea rather than behind opaque panes. */
+  --nd-ease-in: cubic-bezier(.25, .55, .35, 1);
+  --nd-ease-out: cubic-bezier(.6, 0, .7, .9);
+}
+
+/* ── The layers that paint background, written against the properties ─────
+   Each declaration reproduces its base stylesheet exactly at the initial
+   (daylight) values. */
+
+/* Title bar (bg-cl-abyss by day). Stays a flat colour so the native Windows
+   caption buttons (titleBarColor(), utils/nightDive.ts) can match it. */
+[data-layout="drift"] > .drag-region {
+  background-color: var(--nd-bar);
+  transition: --nd-bar var(--nd-fade) var(--nd-ease-out);
+}
+/* Rail: the badge / status rings inside it are cut from --cl-abyss. */
+[data-layout="drift"] .app-rail {
+  --cl-abyss: var(--nd-rail);
+  transition: --nd-rail var(--nd-fade) var(--nd-ease-out);
+}
+/* Chat feed — DMs, groups and server channels (ChatPane's root). */
+/* Its inline gradient reads these two properties (ChatPane.tsx). */
+.chat-pane-root {
+  transition: --nd-feed-top var(--nd-fade) var(--nd-ease-out), --nd-feed-bot var(--nd-fade) var(--nd-ease-out);
+}
+/* Friends. */
+:root .friends-pane-root {
+  background-color: var(--nd-friends);
+  transition: --nd-friends var(--nd-fade) var(--nd-ease-out);
+}
+/* Home deck (home-deck.css: surface light falling into the deep). */
+:root .hd-host {
+  background:
+    radial-gradient(56% 320px at 32% -40px, rgba(37, 224, 200, calc(.075 * var(--nd-sun))), transparent 70%),
+    radial-gradient(40% 260px at 78% -60px, rgba(37, 224, 200, calc(.05 * var(--nd-sun))), transparent 70%),
+    linear-gradient(160deg, transparent 0 30%, rgba(37, 224, 200, calc(.012 * var(--nd-sun))) 42%, transparent 54%),
+    linear-gradient(180deg, color-mix(in oklab, var(--nd-home) 94%, var(--nd-home-tint)) 0, var(--nd-home) 420px);
+  background-color: var(--nd-home);
+  transition:
+    --nd-home var(--nd-fade) var(--nd-ease-out), --nd-home-tint var(--nd-fade) var(--nd-ease-out),
+    --nd-sun var(--nd-fade) var(--nd-ease-out);
+}
+/* Settings: the water column behind the Descent's panels. */
+:root .sd-sea-grad {
+  background: linear-gradient(180deg,
+    var(--nd-sea-0) 0%, var(--nd-sea-1) 22%, var(--nd-sea-2) 45%, var(--nd-sea-3) 72%, var(--nd-sea-4) 100%);
+  transition:
+    transform 1100ms cubic-bezier(.45, .05, .2, 1),
+    --nd-sea-0 var(--nd-fade) var(--nd-ease-out), --nd-sea-1 var(--nd-fade) var(--nd-ease-out),
+    --nd-sea-2 var(--nd-fade) var(--nd-ease-out), --nd-sea-3 var(--nd-fade) var(--nd-ease-out),
+    --nd-sea-4 var(--nd-fade) var(--nd-ease-out);
+}
+
+/* ── Night values ──────────────────────────────────────────────────────────── */
+:root[data-depth="night"] [data-layout="drift"] > .drag-region {
+  --nd-bar: #05070F;
+  transition-timing-function: var(--nd-ease-in);
+}
+:root[data-depth="night"] [data-layout="drift"] .app-rail {
+  --nd-rail: #04060D;
+  transition-timing-function: var(--nd-ease-in);
+}
+/* Translucent: the deep-sea layer (and its motes) shows through the feed. */
+:root[data-depth="night"] .chat-pane-root {
+  --nd-feed-top: rgba(14, 20, 40, .62);
+  --nd-feed-bot: rgba(5, 8, 18, .4);
+  transition-timing-function: var(--nd-ease-in);
+}
+:root[data-depth="night"] .friends-pane-root {
+  --nd-friends: rgba(5, 8, 18, .42);
+  transition-timing-function: var(--nd-ease-in);
+}
+:root[data-depth="night"] .hd-host {
+  --nd-home: rgba(9, 13, 28, .6);
+  --nd-home-tint: rgba(16, 40, 52, .6);
+  --nd-sun: .45;
+  transition-timing-function: var(--nd-ease-in);
+}
+/* The deck's one-shot entry veil fades out of the page colour. */
+:root[data-depth="night"] .hd-host::after { background: #04060D; }
+:root[data-depth="night"] .sd-sea-grad {
+  --nd-sea-0: #080D1D;
+  --nd-sea-1: #060917;
+  --nd-sea-2: #05070F;
+  --nd-sea-3: #03050B;
+  --nd-sea-4: #020307;
+  transition-timing-function: var(--nd-ease-in);
+}
+
+/* While the sea layer is mounted the window's own water is see-through, so
+   the layer behind everything is what you see between and through the cards.
+   (Its first frame on the way down and its last on the way up are exactly the
+   daylight water, so this swap is invisible.) */
+:root[data-nd-sea] [data-layout="drift"],
+:root[data-nd-sea] [data-layout="drift"] .app-mainrow,
+:root[data-nd-sea] [data-layout="drift"] .app-pane3-sheet {
+  background: transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-layout="drift"] > .drag-region, [data-layout="drift"] .app-rail, .chat-pane-root,
+  :root .friends-pane-root, :root .hd-host { transition: none; }
+  :root .sd-sea-grad { transition: none; }
+}
+
+/* ============================================================================
+   The deep-sea layer (components/NightDiveSea.tsx)
+   Fixed, z-index -1 in the root stacking context: above the canvas, below
+   every in-flow box. Only transform and opacity ever animate.
+   ============================================================================ */
+.nds {
+  position: fixed; inset: 0; z-index: -1;
+  pointer-events: none; overflow: hidden; contain: strict;
+  /* The daylight water (Dashboard root / title bar: --cl-abyss). */
+  background: #0B0F1E;
+}
+/* Daylight glow: the drift row's surface light, placed exactly where the row
+   paints it (below the 34 px title bar). */
+.nds-dayglow {
+  position: absolute; left: 0; right: 0; top: 34px; bottom: 0;
+  background: radial-gradient(120% 90% at 18% 0%, rgba(37, 224, 200, .05), transparent 55%);
+}
+/* The night sea: blacker, cooler, darker still toward the floor. Oversized so
+   the descent's drift never shows an edge. */
+.nds-night {
+  position: absolute; left: 0; right: 0; top: -10vh; height: 120vh;
+  background: linear-gradient(180deg, #05070F 0%, #04060D 40%, #02040A 100%);
+  opacity: 0;
+}
+:root[data-depth="night"] .nds-night { opacity: 1; }
+:root[data-depth="night"] .nds-dayglow { opacity: 0; }
+/* A last trace of light from very far above, cold rather than aqua. */
+.nds-moon {
+  position: absolute; inset: 0;
+  background:
+    radial-gradient(70% 38% at 26% -4%, rgba(90, 130, 200, .07), transparent 70%),
+    radial-gradient(50% 30% at 80% -6%, rgba(37, 224, 200, .025), transparent 70%);
+}
+/* Deep vignette: the edges fall away into black. */
+.nds-vignette {
+  position: absolute; inset: 0;
+  background: radial-gradient(120% 95% at 50% 30%, transparent 50%, rgba(0, 0, 0, .45) 100%);
+}
+
+/* ── The descent (00:00) ─────────────────────────────────────────────────── */
+.nds[data-run="descend"] .nds-dayglow { animation: nds-surface-away 5s cubic-bezier(.45, .05, .3, 1) both; }
+.nds[data-run="descend"] .nds-night   { animation: nds-deep-in 5s cubic-bezier(.3, .2, .3, 1) both; }
+.nds[data-run="descend"] .nds-motes   { animation: nds-fade-in 2.6s ease-out 2.8s both; }
+@keyframes nds-surface-away {
+  from { opacity: 1; transform: translateY(0); }
+  to   { opacity: 0; transform: translateY(-14vh); }
+}
+@keyframes nds-deep-in {
+  from { opacity: 0; transform: translateY(6vh); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes nds-fade-in { from { opacity: 0; } to { opacity: 1; } }
+
+/* ── The ascent (05:00) ──────────────────────────────────────────────────── */
+.nds[data-run="ascend"] .nds-dayglow { animation: nds-surface-back 5.2s cubic-bezier(.5, 0, .3, 1) .3s both; }
+.nds[data-run="ascend"] .nds-night   { animation: nds-deep-out 5.2s cubic-bezier(.45, 0, .4, 1) .2s both; }
+.nds[data-run="ascend"] .nds-motes   { animation: nds-fade-out 1.4s ease-in both; }
+@keyframes nds-surface-back {
+  from { opacity: 0; transform: translateY(-14vh); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes nds-deep-out {
+  from { opacity: 1; transform: translateY(0); }
+  to   { opacity: 0; transform: translateY(6vh); }
+}
+@keyframes nds-fade-out { from { opacity: 1; } to { opacity: 0; } }
+
+/* ── Light shafts: surface light slanting down through the water ───────────
+   On the way down they glow briefly, then dim and recede upward; on the way
+   up they reach back down and fade into the daylight. */
+.nds-shafts {
+  position: absolute; left: 0; right: 0; top: -10vh; height: 85vh;
+  opacity: 0;
+}
+.nds-shafts i {
+  position: absolute; top: 0; bottom: 0;
+  background: linear-gradient(180deg, transparent 0, rgba(160, 225, 245, .11) 30%, rgba(120, 210, 230, .045) 62%, transparent 100%);
+  transform: skewX(-14deg);
+  transform-origin: 50% 0;
+}
+.nds-shafts i:nth-child(1) { left: 14%; width: 5%; }
+.nds-shafts i:nth-child(2) { left: 31%; width: 8%; opacity: .8; }
+.nds-shafts i:nth-child(3) { left: 55%; width: 4%; opacity: .7; }
+.nds-shafts i:nth-child(4) { left: 72%; width: 7%; }
+.nds[data-run="descend"] .nds-shafts { animation: nds-shafts-recede 4.6s cubic-bezier(.35, .1, .3, 1) both; }
+.nds[data-run="ascend"]  .nds-shafts { animation: nds-shafts-return 5.4s cubic-bezier(.4, .1, .4, 1) .2s both; }
+@keyframes nds-shafts-recede {
+  0%   { opacity: 0; transform: translateY(0); }
+  18%  { opacity: 1; }
+  100% { opacity: 0; transform: translateY(-16vh); }
+}
+@keyframes nds-shafts-return {
+  0%   { opacity: 0; transform: translateY(-16vh); }
+  60%  { opacity: 1; }
+  100% { opacity: 0; transform: translateY(0); }
+}
+
+/* ── Bubbles drifting up behind the content ──────────────────────────────── */
+.nds-bubbles { position: absolute; inset: 0; }
+.nds-bubbles i {
+  position: absolute; bottom: -12px; border-radius: 50%;
+  box-shadow: inset 0 0 0 1px rgba(170, 235, 250, .7);
+  background: radial-gradient(circle at 34% 30%, rgba(255, 255, 255, .6), rgba(150, 225, 245, .06) 62%);
+  opacity: 0;
+  animation-name: nds-bubble; animation-timing-function: cubic-bezier(.4, 0, .7, 1); animation-fill-mode: both;
+}
+@keyframes nds-bubble {
+  0%   { opacity: 0;   transform: translate(0, 0); }
+  15%  { opacity: .75; }
+  70%  { opacity: .45; }
+  100% { opacity: 0;   transform: translate(var(--dx, 0), var(--rise, -60vh)); }
+}
+
+/* ── Night motes: a few, faint, very slow ──────────────────────────────────── */
+.nds-motes { position: absolute; inset: 0; }
+.nds-motes i {
+  position: absolute; bottom: -6px; border-radius: 50%;
+  background: radial-gradient(circle, rgba(37, 224, 200, .85) 0%, rgba(37, 224, 200, .2) 55%, transparent 75%);
+  opacity: 0;
+  animation-name: nds-mote; animation-timing-function: linear; animation-iteration-count: infinite;
+}
+@keyframes nds-mote {
+  0%   { opacity: 0; transform: translate(0, 0); }
+  15%  { opacity: var(--peak, .3); }
+  85%  { opacity: var(--peak, .3); }
+  100% { opacity: 0; transform: translate(var(--dx, 0), -104vh); }
+}
+/* Nobody watches a blurred, hidden or covered window: stop the loop
+   (utils/idleMotion.ts). */
+:root[data-cl-motion="idle"] .nds-motes i,
+:root[data-cl-occluded="on"] .nds-motes i { animation-play-state: paused; }
+
+/* Reduced motion: the sea is still there, nothing in it moves. */
+@media (prefers-reduced-motion: reduce) {
+  .nds *, .nds { animation: none !important; }
+  .nds-shafts, .nds-bubbles, .nds-motes { display: none; }
+}

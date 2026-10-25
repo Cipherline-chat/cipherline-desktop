@@ -15,6 +15,8 @@
  * through every setter.
  */
 
+import { stripBidiControls } from './fileSafety';
+
 export const SELF_LABEL = 'You';
 
 /** What every self row is called: `<your name> (You)`. */
@@ -48,7 +50,13 @@ export function labelSelfConversations<T extends ConvLike & { title?: string | n
     myUserId: string | null | undefined,
 ): T[] {
     return rows.map(r => {
-        if (!isSelfDm(r, myUserId)) return r;
+        if (!isSelfDm(r, myUserId)) {
+            // A group title is set by any member: no bidi / control characters
+            // in what the list and header draw (utils/fileSafety.ts).
+            return typeof r.title === 'string' && r.title !== stripBidiControls(r.title)
+                ? { ...r, title: stripBidiControls(r.title) }
+                : r;
+        }
         const base = (r.title || '').replace(/ \(You\)$/, '');
         return { ...r, title: selfConversationTitle(base) };
     });

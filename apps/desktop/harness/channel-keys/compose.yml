@@ -1,0 +1,26 @@
+# Throwaway Postgres + Redis for the channel-key harness (run.sh).
+#
+# Isolated from the shared dev stack on purpose: its own compose project
+# (`ckharness`), its own container names, its own loopback ports, and NO named
+# volumes (data lives and dies with the containers). Nothing here touches
+# cipherline-db / cipherline-redis / the single-owner dev API.
+name: ckharness
+services:
+  pg:
+    image: postgres:15-alpine
+    container_name: ckh-pg
+    environment:
+      POSTGRES_USER: ckh
+      POSTGRES_PASSWORD: ckh
+      POSTGRES_DB: ckh
+    ports:
+      - "127.0.0.1:5497:5432"
+    command: ["postgres", "-c", "max_connections=300", "-c", "fsync=off", "-c", "synchronous_commit=off"]
+    tmpfs:
+      - /var/lib/postgresql/data
+  redis:
+    image: redis:7-alpine
+    container_name: ckh-redis
+    ports:
+      - "127.0.0.1:6397:6379"
+    command: ["redis-server", "--save", "", "--appendonly", "no"]

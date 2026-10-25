@@ -422,58 +422,51 @@ describe('storage bound', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('backup round trip', () => {
-    it('is classified as included — the pins alone would restore only the reassuring half', () => {
-        expect(classifyKvKey(warnKey(USER_A), USER_A)).toBe('include');
-        // Sanity: the pins it must stay consistent with are included too.
-        expect(classifyKvKey(`kv_verify_v2_${USER_A}_${BOB}`, USER_A)).toBe('include');
+    // F2: trust state (pins, warnings, own-device ledger) is never exported
+    // and never imported. A vault — a history transfer over the relay, or a
+    // backup file on Drive — must not be able to mark a key as verified, nor
+    // clear or plant alarms. A restored device starts from TOFU instead.
+    it('pins and warnings are classified as EXCLUDED from backups and transfers', () => {
+        expect(classifyKvKey(warnKey(USER_A), USER_A)).toBe('exclude');
+        expect(classifyKvKey(`kv_verify_v2_${USER_A}_${BOB}`, USER_A)).toBe('exclude');
+        expect(classifyKvKey(`kv_own_devices_v1_${USER_A}`, USER_A)).toBe('exclude');
     });
 
-    it('raised -> backed up -> restored onto a fresh device -> still present AND still dismissible', async () => {
-        await relaunch();
-        await signIn(USER_A);
-        raiseWarning(USER_A, BOB, 'key_changed', NEW_PUB, DEVICE);
-        recordFirstSeen(USER_A, BOB, OLD_PUB, DEVICE);    // the pin it contradicts
-        const vault = collectIncludedKv(secureLocalStore, USER_A);
-        expect(Object.keys(vault)).toContain('kv_warn_v1_{uid}');
-        await secureLocalStore.flushNow();
-
-        // A brand-new install of the same account: nothing local at all.
-        await wipeDb();
-        await relaunch();
-        await signIn(USER_A);
-        expect(loadWarnings(USER_A)).toEqual({});
-
-        const local = snapshotWarnings(USER_A);
-        applyIncludedKv(secureLocalStore, vault, USER_A);
-        mergeWarnings(USER_A, local);
-
-        expect(loadWarnings(USER_A)[BOB]).toBe('key_changed');
-        // A warning that survives a restore and cannot be cleared would be a
-        // worse bug than the one being fixed.
-        resolveWarning(USER_A, BOB);
-        expect(loadWarnings(USER_A)[BOB]).toBeUndefined();
-    });
-
-    it('POSITIVE CONTROL — a restore that skips the key restores the pins and drops the alarm', async () => {
+    it('a new backup carries neither pins nor warnings', async () => {
         await relaunch();
         await signIn(USER_A);
         raiseWarning(USER_A, BOB, 'key_changed', NEW_PUB, DEVICE);
         markVerified(USER_A, BOB, OLD_PUB, DEVICE);
         const vault = collectIncludedKv(secureLocalStore, USER_A);
-        await secureLocalStore.flushNow();
+        expect(Object.keys(vault).some(k => k.startsWith('kv_warn_') || k.startsWith('kv_verify_'))).toBe(false);
+    });
 
-        await wipeDb();
+    it('a vault that DOES carry them (older build, or forged) does not apply them', async () => {
         await relaunch();
         await signIn(USER_A);
-        const withoutWarnings = Object.fromEntries(
-            Object.entries(vault).filter(([k]) => !k.startsWith('kv_warn_v1_')),
-        );
-        applyIncludedKv(secureLocalStore, withoutWarnings, USER_A);
-
-        // Bob comes back looking verified, with no record that his key ever
-        // changed. Exactly the security regression the `include` rule prevents.
+        const local = snapshotWarnings(USER_A);
+        applyIncludedKv(secureLocalStore, {
+            'kv_verify_v2_{uid}_attacker': JSON.stringify({ v: 2, devices: { rogue: { pub: 'ATTACKER', verified: true, first_seen: 1, last_seen: 1, sv: 2 } } }),
+            'kv_warn_v1_{uid}': JSON.stringify({ v: 1, warnings: { [BOB]: { verdict: 'unattributed', pub: 'p', at: 1 } } }),
+        }, USER_A);
+        mergeWarnings(USER_A, local);
+        expect(secureLocalStore.getItem(`kv_verify_v2_${USER_A}_attacker`)).toBeNull();
         expect(loadWarnings(USER_A)).toEqual({});
-        expect(secureLocalStore.getItem(`kv_verify_v2_${USER_A}_${BOB}`)).toContain(OLD_PUB);
+    });
+
+    it('a restore leaves this device\'s own alarms and pins untouched', async () => {
+        await relaunch();
+        await signIn(USER_A);
+        raiseWarning(USER_A, BOB, 'key_changed', NEW_PUB, DEVICE);
+        markVerified(USER_A, CAROL, OLD_PUB, DEVICE);
+        const local = snapshotWarnings(USER_A);
+        applyIncludedKv(secureLocalStore, {
+            'kv_warn_v1_{uid}': JSON.stringify({ v: 1, warnings: {} }),
+            [`kv_verify_v2_{uid}_${CAROL}`]: JSON.stringify({ v: 2, devices: {} }),
+        }, USER_A);
+        mergeWarnings(USER_A, local);
+        expect(loadWarnings(USER_A)[BOB]).toBe('key_changed');
+        expect(secureLocalStore.getItem(`kv_verify_v2_${USER_A}_${CAROL}`)).toContain(OLD_PUB);
     });
 
     it('restore UNIONS: an alarm raised since the backup is not dropped by it', async () => {

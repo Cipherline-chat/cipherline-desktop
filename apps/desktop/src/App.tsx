@@ -3,16 +3,30 @@ import { useAuth } from './contexts/AuthContext';
 import { ToastProvider } from './contexts/ToastContext';
 import AuthScreen from './components/AuthScreen';
 import { SeasonalLayer } from './components/SeasonalLayer';
+import { EggLayer } from './components/EggLayer';
+import { EggProgressHost } from './components/EggProgressHost';
+import { AchievementsHost } from './components/AchievementsHost';
+import { ProfileNotesHost } from './components/ProfileNotesHost';
+import { HighFiveOverlay } from './components/HighFiveOverlay';
+import { CallPersonalizationHost } from './components/CallPersonalizationHost';
+import { MomentHost } from './components/moments/MomentHost';
+import { MomentClock } from './components/moments/MomentClock';
+import { MilestoneWatch } from './components/moments/MilestoneWatch';
 import { useSeasonalEffects } from './hooks/useSeasonalEffects';
+import { useNightDiveRuntime } from './hooks/useNightDive';
+import { NightDiveSea } from './components/NightDiveSea';
 import Dashboard from './components/Dashboard';
 import UpgradeRequiredOverlay from './components/UpgradeRequiredOverlay';
+import { ClientControlGate } from './components/ClientControlGate';
 import { UpdateProvider } from './contexts/UpdateContext';
 import { AppLoadingScreen } from './components/AppLoadingScreen';
 import { HydrationGate } from './components/HydrationGate';
 import { HydrationProvider, useHydration } from './contexts/HydrationContext';
 import { OfflineScreen } from './components/OfflineScreen';
+import { BackOnlineHost } from './components/BackOnlineHost';
 import { RendererHangBanner } from './components/RendererHangBanner';
 import { ReportProblemHost } from './components/diagnostics/ReportProblemHost';
+import { BetaDiagnosticsHost } from './components/diagnostics/BetaDiagnosticsHost';
 import { useNetworkStatus } from './hooks/useNetworkStatus';
 import { useOfflineGrace } from './hooks/useOfflineGrace';
 import { ClKitGallery } from './components/cl/ClKitGallery';
@@ -37,6 +51,10 @@ function AppInner() {
   const { ready: hydrated } = useHydration();
   const [showKit, setShowKit] = useState(false);
   const [seasonalEffects] = useSeasonalEffects();
+  // Night dive (00:00–04:59 local): keeps <html data-depth="night"> in step with
+  // the clock and announces `cipherline:night-dive` (Keys listens). Mounted
+  // above the auth split. No setting — it is part of the app.
+  useNightDiveRuntime();
 
   // GPU process restart ("graphics driver reset") from main: the live call
   // recovers its video, otherwise main is told there was no call to recover
@@ -178,6 +196,30 @@ function AppInner() {
           months of the year. */}
       {isAuthenticated && <SeasonalLayer enabled={seasonalEffects} />}
 
+      {/* Global easter eggs (Konami → Keys party). Signed-in app only; renders
+          nothing until one fires. See components/EggLayer.tsx. */}
+      {isAuthenticated && <EggLayer />}
+
+      {/* Night dive: the deep sea BEHIND the signed-in app from 00:00 to 05:00,
+          and the slow descent / ascent when the clock crosses either. Portals a
+          z-index:-1 layer into <body>, so it can never cover content; renders
+          null by day. See components/NightDiveSea.tsx. */}
+      {isAuthenticated && <NightDiveSea />}
+
+      {/* Easter-egg progress → the Egg hunter profile badge: syncs finds to the
+          server and toasts a newly earned tier. Renders nothing. */}
+      {isAuthenticated && <EggProgressHost />}
+      {isAuthenticated && <AchievementsHost />}
+      {isAuthenticated && <ProfileNotesHost />}
+      {isAuthenticated && <HighFiveOverlay />}
+      {isAuthenticated && <CallPersonalizationHost />}
+
+      {/* Full-screen moments ("You played yourself." etc.): the one host every
+          trigger asks via requestMoment(). See components/moments/MomentHost.tsx. */}
+      {isAuthenticated && <MomentHost />}
+      {isAuthenticated && <MomentClock />}
+      {isAuthenticated && <MilestoneWatch />}
+
       {/* Entry curtain — solid ABYSS that fades out on first login, giving the
           "app fades in from dark" feel without wrapping Dashboard in a new
           stacking context. Pointer-events:none so it never blocks the UI. */}
@@ -200,10 +242,6 @@ function AppInner() {
         <OfflineScreen isOnline={overlayOnline} />
       )}
 
-      {/* Mounted at root so it covers every screen when the server forces
-          an upgrade or electron-updater has a fresh build ready. */}
-      <UpgradeRequiredOverlay />
-
       {/* Main-process-detected renderer hang. Mounted unconditionally (even
           pre-auth) since a hang can happen at any time. */}
       <RendererHangBanner />
@@ -212,6 +250,16 @@ function AppInner() {
           boot-time "closed unexpectedly" crash prompt. Signed-in only: a
           report is tied to the account that sends it. */}
       {isAuthenticated && <ReportProblemHost />}
+
+      {/* "Back online": a small toast after two minutes or more offline
+          (utils/backOnline.ts). Fed the same raw connectivity signal as the
+          offline screen; renders nothing itself. */}
+      {isAuthenticated && <BackOnlineHost isOnline={isOnline} />}
+
+      {/* Closed-beta automatic diagnostics: idle unless the server switched
+          them on AND the user's toggle is on. Renders the one-time notice and
+          the call rating card (utils/betaDiagnostics). */}
+      {isAuthenticated && <BetaDiagnosticsHost />}
     </div>
   );
 }
@@ -223,6 +271,14 @@ function App() {
         <HydrationProvider>
           <AppInner />
         </HydrationProvider>
+        {/* Server-imposed blocking screens, mounted OUTSIDE AppInner so they
+            also cover the boot loading screen (AppInner returns early while
+            initializing) — sign-in, dashboard and calls alike. Both portal to
+            <body> and make the app inert. The update screen renders last, so
+            if both apply it is on top: updating is the one thing a user can
+            usefully do while the app is shut down. */}
+        <ClientControlGate />
+        <UpgradeRequiredOverlay />
       </UpdateProvider>
     </ToastProvider>
   );

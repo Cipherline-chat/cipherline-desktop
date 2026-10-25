@@ -1,4 +1,7 @@
+import { useSpeakerPromotion } from '../hooks/useSpeakerPromotion';
+import { applyPromotion as applyPromotionShared } from '../utils/overflowPriority';
 import React from 'react';
+import { setOwnCallMedia, OWN_MEDIA_OFF } from '../utils/keysBeats';
 import ReactDOM from 'react-dom';
 import { AnimatePresence, LayoutGroup, motion } from 'framer-motion';
 import { useParticipants, useLocalParticipant, useRoomContext } from '@livekit/components-react';
@@ -27,9 +30,13 @@ import {
     watchH264HighStart,
     markH264HighFailed,
     hasH264HighFailed,
+    markH264CbSoftware,
+    hasH264CbSoftware,
+    SCREEN_SHARE_AUDIO_CAPTURE,
     type SenderCreatedSource,
     type ScreenShareCodec,
 } from '../utils/screenShare';
+import { ShareSoftwareGuard, softwareShareNotice, type ShareSoftwareContext } from '../utils/shareSoftwareGuard';
 import { getScreenShareCodecPref, getAllowHevc, getShareLowLayerEnabled } from '../utils/streamDiagnosticsPrefs';
 import {
     startCamera, applyCameraTier, retuneCamera, republishCamera, watchHardwareCamera, chooseCameraCodec,
@@ -45,7 +52,10 @@ import {
 import { swapShareCodec, type ShareParticipantLike } from '../utils/shareRepublish';
 import { installShareLowLayerControl, type ShareTrackLike } from '../utils/shareLowLayer';
 import { ShareBackgroundProbe, subscribeWindowBackground, isWindowBackground } from '../utils/shareBackgroundProbe';
+import { chooseQuickShareSource, pickGameWindow } from '../utils/quickShareTarget';
+import { mintCaptureGrant, grantTokenFor, type CaptureGrant, type PendingShare } from '../utils/captureGrant';
 import { createCropPipeline, supportsCropPipeline, type CropPipeline } from '../utils/shareCrop';
+import { startHdrSharePipeline, parseHdrProbe, fitOutputSize, type HdrSharePipeline } from '../utils/hdrSharePipeline';
 import { sliceRect, layoutChoices, aspectOf, type ShareLayout } from '../utils/shareLayout';
 import { planEncode } from '../utils/shareEncoderLimits';
 import {
@@ -83,6 +93,7 @@ import { EncryptedAvatar } from './EncryptedAvatar';
 import { CallEncryptionIndicator, type CallEncryptionIndicatorMode } from './server/CallEncryptionIndicator';
 import { ScreenSharePickerModal } from './ScreenSharePickerModal';
 import { VideoTile, subscribeFastSpeaking } from './call/VideoTile';
+import { AloneEcho } from './call/AloneEcho';
 import { ParticipantCard } from './call/ParticipantCard';
 import { ScreenShareGate } from './call/ScreenShareGate';
 import { withoutIdentity, focusAfterStopWatching, unsubscribeShareTracks } from '../utils/stopWatchingScreenshare';
@@ -93,6 +104,7 @@ import { FullscreenOverlay } from './call/FullscreenOverlay';
 import { useCallContextSafe } from '../contexts/CallContext';
 import { useCallTelemetrySettersSafe } from '../contexts/callTelemetrySlices';
 import { useCallStats } from '../hooks/useCallStats';
+import { useLocalPublicationSid } from '../hooks/useLocalPublicationSid';
 import { Permissions } from '@cipherline/shared';
 import { annotationStore } from '../utils/annotationStore';
 import { useDesktopAnnotationOverlay } from '../hooks/useDesktopAnnotationOverlay';
@@ -134,6 +146,7 @@ import { useToast } from '../contexts/ToastContext';
 import { reapplyOutputDevice, setOutputDeviceFallbackHandler } from '../utils/audioOutput';
 import type { DeviceHint } from '../utils/deviceResolve';
 import { SilenceWatchdog } from '../utils/audioSilenceWatchdog';
+import { reportBeta } from '../utils/betaDiagnostics/reporter';
 import { getCurrentPipelineDbfs } from '../utils/micLevelRegistry';
 import { flatRecordEqual } from '../utils/flatRecordEqual';
 import { ROSTER_ONLY } from '../utils/callRosterEvents';
@@ -703,9 +716,13 @@ export const SidebarConference = ({
         return () => clearInterval(interval);
     }, [localParticipant]);
 
-    // Clear on unmount (call ended) — restores unread dot or clean icon.
+    // Clear on unmount (call ended) — restores unread dot or clean icon, and
+    // Keys on Home takes his headset's mic light / ring light / frame down.
     React.useEffect(() => {
-        return () => { window.electronAPI?.traySetCallSpeaking?.(false, false, false, false); };
+        return () => {
+            window.electronAPI?.traySetCallSpeaking?.(false, false, false, false);
+            setOwnCallMedia(OWN_MEDIA_OFF);
+        };
     }, []);
 
     // ── Mic device reliability ────────────────────────────────────────────────
@@ -756,6 +773,11 @@ export const SidebarConference = ({
      *  used to converge on a silent mute with only a console.warn, no banner
      *  at all — every mic failure mode had one, camera had none. */
     const [cameraError, setCameraError] = React.useState<string | null>(null);
+    // Closed-beta diagnostics: the moment each of these turns ON (the copy
+    // shown to the user is never sent — only that it happened).
+    React.useEffect(() => { if (micError) reportBeta('mic_failed', { stage: 'in_call' }); }, [micError]);
+    React.useEffect(() => { if (cameraError) reportBeta('camera_failed', { stage: 'in_call' }); }, [cameraError]);
+    React.useEffect(() => { if (isPipelineSilent) reportBeta('call_one_way_audio', { direction: 'out' }); }, [isPipelineSilent]);
     /** The published-mic device follower (utils/micDeviceSync.ts). One per Room. */
     const micSyncRef = React.useRef<MicDeviceSync | null>(null);
 
@@ -1111,87 +1133,11 @@ export const SidebarConference = ({
     // once a call mounts this component. See the ActiveDeviceChanged handler
     // above for the one call-scoped piece left (undoing LiveKit's reroutes).
 
-    // Active talker tracking — counts stored in a ref so the interval always
-    // sees and mutates the latest value. Using setState with a functional updater
-    // that returned `prev` on no-promotion ticks discarded increments entirely,
-    // pinning counts at 0 and making the promotion branch unreachable (P2-REND-2).
-    const speakerTicksRef = React.useRef<Record<string, number>>({});
-    const participantsRef = React.useRef(participants);
-    React.useEffect(() => { participantsRef.current = participants; }, [participants]);
-
-    // Stable promotion list for active-speaker ordering. Each entry is a participant
-    // identity string; the array is ordered most-recently-promoted first.
-    //
-    // Promotion rule: speak continuously for ≥2 ticks (2 s) → move to front.
-    // Demotion rule:  stop speaking → wait 5 s, then remove from list.
-    //
-    // This means the list only changes when someone starts talking (at most once per
-    // person per speaking burst) or after they've been silent for 5 s — never on
-    // every 1 s tick. Participants who aren't promoted stay in their original join order.
-    const [promotedIds, setPromotedIds] = React.useState<string[]>([]);
-    // Everyone who has spoken this call, most recent speech start first — the
-    // decode cap's priority (see budgetHiddenVideoIds). Never shrinks during
-    // the call; ids that left are ignored where it is read.
-    const [speakOrder, setSpeakOrder] = React.useState<string[]>([]);
-    const silenceTimerMapRef = React.useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
-
-    React.useEffect(() => {
-        const interval = setInterval(() => {
-            const ticks = speakerTicksRef.current;
-            participantsRef.current.forEach(p => {
-                const id = p.identity;
-                if (p.isSpeaking) {
-                    const oldVal = ticks[id] || 0;
-                    ticks[id] = oldVal + 1;
-                    if (oldVal < 2 && ticks[id] >= 2) {
-                        // Just crossed the active threshold → promote to front.
-                        // Cancel any pending demotion timer first so a speaker who
-                        // pauses briefly and resumes doesn't get demoted mid-burst.
-                        const timers = silenceTimerMapRef.current;
-                        if (timers.has(id)) { clearTimeout(timers.get(id)); timers.delete(id); }
-                        setPromotedIds(prev => [id, ...prev.filter(x => x !== id)]);
-                        setSpeakOrder(prev => (prev[0] === id ? prev : [id, ...prev.filter(x => x !== id)]));
-                    }
-                } else {
-                    const oldVal = ticks[id] || 0;
-                    if (oldVal > 0) {
-                        ticks[id] = Math.max(0, oldVal - 1);
-                        if (oldVal >= 2 && ticks[id] < 2) {
-                            // Just fell below active threshold → schedule demotion.
-                            // The 5 s delay keeps them at the top through brief pauses.
-                            const timers = silenceTimerMapRef.current;
-                            if (!timers.has(id)) {
-                                timers.set(id, setTimeout(() => {
-                                    setPromotedIds(prev => prev.filter(x => x !== id));
-                                    silenceTimerMapRef.current.delete(id);
-                                }, 5000));
-                            }
-                        }
-                    }
-                }
-            });
-        }, 1000);
-        return () => {
-            clearInterval(interval);
-            silenceTimerMapRef.current.forEach(t => clearTimeout(t));
-            // eslint-disable-next-line react-hooks/exhaustive-deps -- the map is a long-lived mutable ref; cleanup must clear whatever timers exist at unmount, so reading .current then is intended
-            silenceTimerMapRef.current.clear();
-        };
-    }, []);
-
-    // Clean up promoted state and tick counts when a participant leaves the call.
-    React.useEffect(() => {
-        const ids = new Set(participants.map(p => p.identity));
-        setPromotedIds(prev => {
-            const filtered = prev.filter(id => ids.has(id));
-            return filtered.length === prev.length ? prev : filtered;
-        });
-        const ticks = speakerTicksRef.current;
-        Object.keys(ticks).forEach(id => { if (!ids.has(id)) delete ticks[id]; });
-        silenceTimerMapRef.current.forEach((timer, id) => {
-            if (!ids.has(id)) { clearTimeout(timer); silenceTimerMapRef.current.delete(id); }
-        });
-    }, [participants]);
+    // Stable active-speaker promotion list + speak-order. The 1 s tick, the
+    // promote-after-2s / demote-after-5s hysteresis and the departed-participant
+    // cleanup live in hooks/useSpeakerPromotion.ts so the fullscreen strip
+    // orders overflow by the SAME rules (utils/overflowPriority.ts).
+    const { promotedIds, speakOrder } = useSpeakerPromotion(participants);
 
     const [hasConnectedOnce, setHasConnectedOnce] = React.useState(false);
     const [forceActive, setForceActive] = React.useState(false);
@@ -1305,6 +1251,16 @@ export const SidebarConference = ({
         if (!room || !localIdentity) return;
         window.electronAPI?.traySetCallSpeaking?.(true, localIsSpeaking, localIsMuted, isLocalDeafened);
     }, [room, localIdentity, localIsSpeaking, localIsMuted, isLocalDeafened]);
+
+    // Keys on Home mirrors your call (utils/keysBeats): three booleans, no
+    // audio, no identities. Only the edges cost anything (setOwnCallMedia is a
+    // no-op when nothing changed).
+    const localSharingNow = !!localParticipant?.isScreenShareEnabled;
+    const localCameraNow = !!localParticipant?.isCameraEnabled;
+    React.useEffect(() => {
+        if (!room || !localIdentity) return;
+        setOwnCallMedia({ speaking: localIsSpeaking && !localIsMuted, sharing: localSharingNow, video: localCameraNow });
+    }, [room, localIdentity, localIsSpeaking, localIsMuted, localSharingNow, localCameraNow]);
 
     // Sync local avatar to LiveKit metadata
     React.useEffect(() => {
@@ -1647,7 +1603,24 @@ export const SidebarConference = ({
     const [pickerPreset, setPickerPreset] = React.useState<{ exe: string } | null>(null);
     // Pending options during the getDisplayMedia handshake. This ref is cleared as
     // soon as Electron's setDisplayMediaRequestHandler resolves (see line ~620).
-    const pendingScreenShareRef = React.useRef<ScreenShareOptions | null>(null);
+    const pendingScreenShareRef = React.useRef<PendingShare | null>(null);
+    // The one-time capture grant main minted for the pick being started
+    // (utils/captureGrant.ts, electron/capture-consent.ts). The getDisplayMedia
+    // answer and the native audio start both present it.
+    const shareGrantRef = React.useRef<CaptureGrant | null>(null);
+    /** Options parked for the getDisplayMedia handshake, carrying the grant to present. */
+    const pendingShare = (o: ScreenShareOptions, audio: boolean): PendingShare =>
+        ({ ...o, audio, grantToken: shareGrantRef.current?.token ?? null });
+    /**
+     * Ask main for a fresh one-time capture grant for exactly this pick, right
+     * before a capture that will present it (each grant is single-use per
+     * capture kind, so a fallback attempt needs its own). Main decides from REAL
+     * input it observed whether the grant is silent or needs a confirmation
+     * dialog; nothing here adds a click.
+     */
+    const mintShareGrant = async (o: ScreenShareOptions): Promise<void> => {
+        shareGrantRef.current = await mintCaptureGrant(o.sourceId, o.audio);
+    };
     // Long-lived record of the currently-running share — set after a successful
     // publish, cleared when the share stops. Used by "Change Source" and "Adjust
     // Quality" so they can reference the active sourceId/quality even after the
@@ -1675,12 +1648,19 @@ export const SidebarConference = ({
     const shareResStepRef = React.useRef(0);
     const shareResStepSourceRef = React.useRef<string | null>(null);
     const shareWatchdogRef = React.useRef<ShareEncoderWatchdog | null>(null);
+    // HDR screen shares (utils/hdrSharePipeline.ts): our own tone-mapped
+    // capture's generated track, when the shared screen is in HDR mode. Same
+    // lifecycle as the crop pipeline - stopped on every path that ends a share.
+    const hdrPipelineRef = React.useRef<HdrSharePipeline | null>(null);
     const stopCropPipeline = () => {
         const pipe = cropPipelineRef.current;
         cropPipelineRef.current = null;
         cropOutSizeRef.current = null;
         cropSourceSizeRef.current = null;
         try { pipe?.stop(); } catch { /* already stopped */ }
+        const hdr = hdrPipelineRef.current;
+        hdrPipelineRef.current = null;
+        try { hdr?.stop(); } catch { /* already stopped */ }
     };
 
     // Desktop annotation overlay (docs/video-annotation-design.md, Phase 5) —
@@ -1720,6 +1700,8 @@ export const SidebarConference = ({
     // self-call from inside handleScreenShareSelect makes the React compiler
     // treat the whole handler as render-reachable). Set in an effect below.
     const republishShareRef = React.useRef<((o: ScreenShareOptions) => void) | null>(null);
+    /** The current share's codec facts for the software-encoder guard. */
+    const shareSoftwareCtxRef = React.useRef<{ sourceId: string; ctx: ShareSoftwareContext } | null>(null);
     React.useEffect(() => {
         if (!localParticipant) return;
         return installH264HighPreference(
@@ -1830,12 +1812,18 @@ export const SidebarConference = ({
             // What WE advertise (read back from our own attribute, so a
             // post-GPU-restart "no H.265" re-advertisement shows up too).
             const selfDecode = parseDecodeCaps(lp.attributes?.[HEVC_ATTR])?.h265 ?? false;
-            const key = `${caps.capable}/${caps.total}/${hevcEncodeRef.current}/${selfDecode}`;
+            const allowed = (getAllowHevc() || getCameraCodecPref() === 'h265') && hevcEncodeRef.current && !hasHevcFailed() && !hasHevcGpuLost();
+            // `allowed` + WHY not: the owner's reports showed every peer
+            // H.265-capable and self_encode true yet no h265_switch for minutes,
+            // and nothing in the log could say whether the setting, an earlier
+            // failure or a GPU reset was the reason.
+            const blocked = allowed ? '' : !(getAllowHevc() || getCameraCodecPref() === 'h265') ? 'setting_off'
+                : !hevcEncodeRef.current ? 'no_hw_encode' : hasHevcGpuLost() ? 'gpu_lost' : 'failed_earlier';
+            const key = `${caps.capable}/${caps.total}/${hevcEncodeRef.current}/${selfDecode}/${blocked}`;
             if (key !== capsKey) {
                 capsKey = key;
-                logCallEvent('h265_caps', { capable: caps.capable, total: caps.total, self_encode: hevcEncodeRef.current, self_decode: selfDecode });
+                logCallEvent('h265_caps', { capable: caps.capable, total: caps.total, self_encode: hevcEncodeRef.current, self_decode: selfDecode, allowed, blocked });
             }
-            const allowed = (getAllowHevc() || getCameraCodecPref() === 'h265') && hevcEncodeRef.current && !hasHevcFailed() && !hasHevcGpuLost();
             const hevcWant = hevc.observe(roomHevcState(remotes), allowed, now);
             if (hevcWant) { hevc.applied(hevcWant, now); hevcModeRef.current = hevcWant; }
             const wantHevc = hevcModeRef.current === 'h265';
@@ -2262,7 +2250,7 @@ export const SidebarConference = ({
         // app's root tree (captures that app only); for full-screen shares this is
         // EXCLUDE on Cipherline's own tree (captures everything else, no feedback).
         console.log(`[NativeAudio] Calling startWindowAudioCapture: pid=${rootPid} mode=${wasapiMode}`);
-        const started = await window.electronAPI!.startWindowAudioCapture(rootPid, wasapiMode);
+        const started = await window.electronAPI!.startWindowAudioCapture(rootPid, wasapiMode, grantTokenFor(shareGrantRef.current, sourceId));
         if (!started) {
             console.warn('[NativeAudio] startWindowAudioCapture returned false — native capture failed to init');
             setScreenShareNotice({
@@ -2347,7 +2335,7 @@ export const SidebarConference = ({
         const unsub = window.electronAPI.onShowScreensharePicker(() => {
             const pending = pendingScreenShareRef.current;
             if (pending) {
-                window.electronAPI!.resolveDesktopSource(pending.sourceId, pending.audio);
+                window.electronAPI!.resolveDesktopSource(pending.sourceId, pending.audio, pending.grantToken ?? undefined);
                 pendingScreenShareRef.current = null;
             }
         });
@@ -2479,19 +2467,22 @@ export const SidebarConference = ({
     const [isScrollable, setIsScrollable] = React.useState(false);
 
     // ── Video-overflow detection ─────────────────────────────────────────────
-    // When there are more video tiles than fit in the visible panel, we enable
-    // active-speaker promotion so the person talking automatically floats to the
-    // top of the list. A 1-px sentinel div placed after the last video tile is
-    // watched with IntersectionObserver: as soon as it leaves the viewport the
-    // promotion mode turns on. It only turns OFF when the participant count
-    // drops back down and the sentinel is visible again — preventing oscillation
-    // where promotion moves tiles up, brings the sentinel into view, clears the
-    // flag, tiles shuffle back, sentinel leaves view again.
+    // Active-speaker promotion only makes sense when a video tile is actually cut
+    // off at the bottom of the visible panel (so someone speaking could be out of
+    // sight). When every tile is fully visible, reordering is just annoying, so
+    // it stays off. It is NOT a tile count: how many fit depends on the monitor,
+    // the sidebar width (tiles are 16:9) and the window height.
+    //
+    // This is a pure measurement — the tile strip's natural bottom (a 1-px
+    // sentinel after the last tile) against the bottom of the visible scroll zone
+    // (or the floating call pill, whichever is higher) — recomputed on resize.
+    // It is NOT latched: promotion only reorders tiles of equal size, so it can't
+    // change the measurement and there is no oscillation to guard against. (The
+    // previous IntersectionObserver version latched ON for good the first time the
+    // sentinel was clipped, which the tile strip's mount height animation does
+    // for free.)
     const videoBottomSentinelRef = React.useRef<HTMLDivElement>(null);
     const [isVideoOverflowing, setIsVideoOverflowing] = React.useState(false);
-    const isVideoOverflowingRef = React.useRef(false);
-    React.useEffect(() => { isVideoOverflowingRef.current = isVideoOverflowing; }, [isVideoOverflowing]);
-    const prevCamCountRef = React.useRef(0);
 
     // The control bar is rendered via portal to `#call-controlbar-root` (lives at
     // the bottom of the chat panel) so it pins to the bottom of the panel rather
@@ -2596,18 +2587,11 @@ export const SidebarConference = ({
     // When everything fits on screen, preserve join order so nobody jumps around.
     // Promoted participants appear first in promotion-recency order; everyone else
     // keeps their original position in the list.
-    const applyPromotion = <T extends { identity: string }>(list: T[]): T[] => {
-        const promotedSet = new Set(promotedIds);
-        const front = promotedIds
-            .map(id => list.find(p => p.identity === id))
-            .filter((p): p is T => p != null);
-        const rest = list.filter(p => !promotedSet.has(p.identity));
-        return [...front, ...rest];
-    };
+    const applyPromotion = <T extends { identity: string }>(list: T[]): T[] =>
+        applyPromotionShared(list, promotedIds);
 
     // Promote active speakers to the top when tiles overflow the visible area.
-    // isVideoOverflowing is set by the IntersectionObserver sentinel below the
-    // tile list — it enables here so the speaking participant floats to the top.
+    // isVideoOverflowing is measured from the sentinel below the tile list.
     const sortedVisibleRemoteCamParticipants = isVideoOverflowing
         ? applyPromotion(visibleRemoteCamParticipants)
         : visibleRemoteCamParticipants;
@@ -2750,41 +2734,40 @@ export const SidebarConference = ({
         };
     }, []); // stable — reads only from refs and DOM
 
-    // Sentinel-based overflow detection (speaker promotion gate).
-    // Re-runs whenever anyVideo flips (sentinel mounts/unmounts).
+    // Overflow detection (speaker promotion gate) — see the block near
+    // videoBottomSentinelRef. Re-runs whenever the tile set changes.
+    const videoTileCount = (localCam ? 1 : 0) + (localScreenShare ? 1 : 0)
+        + visibleRemoteCamParticipants.length + visibleScreenShareParticipants.length;
     React.useEffect(() => {
         const sentinel = videoBottomSentinelRef.current;
-        if (!sentinel) {
+        const scroller = sentinel?.closest<HTMLElement>('[data-call-scroll-zone]') ?? null;
+        if (!sentinel || !scroller) {
             setIsVideoOverflowing(false);
             return;
         }
-        // Only enable overflow — never auto-clear it to avoid oscillation
-        // (promotion moves tiles up → sentinel comes into view → would clear
-        // overflow → tiles shuffle back → sentinel leaves → repeat).
-        const obs = new IntersectionObserver(
-            ([entry]) => { if (!entry.isIntersecting) setIsVideoOverflowing(true); },
-            { threshold: 0 }
-        );
-        obs.observe(sentinel);
-        return () => obs.disconnect();
-    }, [anyVideo]);
-
-    // Clear overflow only when the video participant count drops and the sentinel
-    // is actually back in view — safe to do without risking oscillation because
-    // the sentinel moves up when a tile is removed, not when promotion reshuffles.
-    React.useEffect(() => {
-        const curr = visibleRemoteCamParticipants.length;
-        if (curr < prevCamCountRef.current && isVideoOverflowingRef.current) {
-            const sentinel = videoBottomSentinelRef.current;
-            if (!sentinel) { setIsVideoOverflowing(false); prevCamCountRef.current = curr; return; }
-            requestAnimationFrame(() => {
-                const rect = sentinel.getBoundingClientRect();
-                // 24px buffer — don't re-enable the feature on the very next frame
-                if (rect.bottom <= window.innerHeight + 24) setIsVideoOverflowing(false);
-            });
-        }
-        prevCamCountRef.current = curr;
-    }, [visibleRemoteCamParticipants.length]);
+        const measure = () => {
+            const scRect = scroller.getBoundingClientRect();
+            // The control pill floats over the bottom of the scroll zone, so a tile
+            // under it is as good as cut off: the visible bottom is the higher of
+            // the zone's bottom edge and the pill's top.
+            const bar = document.getElementById('call-controlbar-root');
+            const barTop = bar && bar.childElementCount > 0 ? bar.getBoundingClientRect().top : Infinity;
+            const visibleBottom = Math.min(scRect.bottom, barTop);
+            // Sentinel bottom as it sits at scrollTop = 0, so scrolling can't flip
+            // the result. getBoundingClientRect reports the in-flow position even
+            // while the tile strip is height-clipped mid-animation.
+            const bottomAtTop = sentinel.getBoundingClientRect().bottom + scroller.scrollTop;
+            setIsVideoOverflowing(bottomAtTop > visibleBottom + 1);
+        };
+        measure();
+        const ro = new ResizeObserver(measure);
+        ro.observe(scroller);
+        if (sentinel.parentElement) ro.observe(sentinel.parentElement);
+        const bar = document.getElementById('call-controlbar-root');
+        if (bar) ro.observe(bar);
+        window.addEventListener('resize', measure);
+        return () => { ro.disconnect(); window.removeEventListener('resize', measure); };
+    }, [anyVideo, videoTileCount, noRinging, controlsRoot]);
 
     // ── Solo inactivity kick ──────────────────────────────────────────────────
     // If the local user is alone in the call for 15 minutes, show a countdown
@@ -2888,6 +2871,11 @@ export const SidebarConference = ({
         // P13: VIDEO gate — block enable when denied; allow disable.
         if (willEnable && !canVideo) return;
         if (willEnable) setIsCameraEnabling(true);
+        // Your OWN camera cue plays on the press, not when the camera has
+        // finished opening (a first publish can take a second or more). Other
+        // people still hear it from the Room events in CallPane's
+        // CallAudioEffects, which skip the local camera for exactly this reason.
+        playSound(willEnable ? 'camera_on' : 'camera_off', soundsPrefs());
         if (willEnable) {
             // First publish of the call goes through cameraPublish: capture at
             // the camera's best native mode (up to the Camera quality tier),
@@ -2901,14 +2889,9 @@ export const SidebarConference = ({
         } else {
             localParticipant.setCameraEnabled(false).catch(() => {});
         }
-        // NOT playSound here, unlike toggleMic above: camera_on/camera_off is
-        // bilateral (the whole call should hear it, not just the person who
-        // toggled), and CallPane's CallAudioEffects already plays it for
-        // EVERY participant — including this one, via LiveKit's Local*
-        // event variants — by listening on the Room itself rather than the
-        // click handler. Calling playSound here too would double-fire it for
-        // the local user. Mute/unmute stays a direct call above because it is
-        // deliberately local-only — see CallAudioEffects' onTrackMuted.
+        // The local cue was played on the press above; CallAudioEffects plays
+        // camera_on/camera_off for everyone ELSE from the Room events and
+        // skips the local camera so this user doesn't hear it twice.
     };
 
     // Hovering the share button warms the picker's default tab (screen names
@@ -2962,7 +2945,7 @@ export const SidebarConference = ({
      * share_clamp, exactly as a fresh publish does.
      */
     const liveShareApplier = (): LiveShareApplier => ({
-        cropActive: () => !!cropPipelineRef.current,
+        cropActive: () => !!cropPipelineRef.current || !!hdrPipelineRef.current,
         retune: async (resolution, frameRate) => {
             const track = localParticipant?.getTrackPublication(Track.Source.ScreenShare)?.track;
             return retuneScreenShareInPlace(track, resolution, frameRate, { step: shareResStepRef.current });
@@ -3107,7 +3090,7 @@ export const SidebarConference = ({
         if (typeof lkTrack.replaceTrack !== 'function' || !lkTrack.sender) return false;
         // A single-screen (cropped) share on either side of the swap needs its
         // pipeline built or torn down: that is the republish path's job.
-        if (cropPipelineRef.current || options.layout?.kind === 'slice') return false;
+        if (cropPipelineRef.current || hdrPipelineRef.current || options.layout?.kind === 'slice') return false;
 
         // Held to what the live share's codec can encode (shareEncoderLimits.ts):
         // the swapped-in capture goes straight onto the running encoder.
@@ -3127,7 +3110,8 @@ export const SidebarConference = ({
             // request. onShowScreensharePicker reads it and resolves the source.
             // audio:false unconditionally — this path is only entered when audio
             // is either off or handled out-of-band by the native addon.
-            pendingScreenShareRef.current = { ...options, audio: false };
+            await mintShareGrant(options);
+            pendingScreenShareRef.current = pendingShare(options, false);
             mediaPromise = navigator.mediaDevices.getDisplayMedia({
                 video: {
                     width:     { max: dims.width },
@@ -3249,7 +3233,7 @@ export const SidebarConference = ({
         return {
             codec,
             step: shareResStepRef.current,
-            ...(cropPipelineRef.current && out ? { sourceSize: out, box: captureBoxFor(options.resolution, codec) } : {}),
+            ...((cropPipelineRef.current || hdrPipelineRef.current) && out ? { sourceSize: out, box: captureBoxFor(options.resolution, codec) } : {}),
         };
     };
     const reapplyShareSenderParams = async () => {
@@ -3368,6 +3352,70 @@ export const SidebarConference = ({
     };
 
     /** A capture or publish error → the share notice (or nothing, for a cancel). */
+    /**
+     * A whole-screen share of a display in HDR mode (Windows): Chromium's
+     * capturers would hand it over clipped at 80 nits ("everything blown
+     * out"), so capture it ourselves, tone-mapped (utils/hdrSharePipeline.ts,
+     * electron/hdr-share.ts). Null = share the normal way; `spent` = this
+     * attempt reached main's consent check, so the grant's video half is used
+     * up and the normal path needs a fresh one. Logs `share_hdr` either way
+     * (the display's HDR state and which path the share took).
+     */
+    const tryStartHdrShare = async (
+        options: ScreenShareOptions, box: { width: number; height: number }, fps: number,
+    ): Promise<{ pipe: HdrSharePipeline | null; spent: boolean }> => {
+        const api = window.electronAPI?.hdrShare;
+        if (!api) return { pipe: null, spent: false };
+        let probe;
+        try { probe = parseHdrProbe(await api.probe(options.sourceId)); } catch { return { pipe: null, spent: false }; }
+        const base = {
+            hdr: probe.hdr ?? 'unknown',
+            reason: probe.reason,
+            white: probe.display?.sdrWhiteNits ?? 0,
+            peak: probe.display?.maxLuminance ?? 0,
+            bits: probe.display?.bitsPerColor ?? 0,
+        };
+        if (!probe.use || !probe.display) {
+            logCallEvent('share_hdr', { ...base, path: 'chromium' });
+            return { pipe: null, spent: false };
+        }
+        const size = fitOutputSize(probe.display, box);
+        const t0 = performance.now();
+        const r = await startHdrSharePipeline(
+            options.sourceId, grantTokenFor(shareGrantRef.current, options.sourceId), { ...size, maxFps: fps }, { api },
+        );
+        if (!r.ok) {
+            console.warn(`[ScreenShare] HDR capture unavailable (${r.reason}) - sharing the normal way`);
+            logCallEvent('share_hdr', { ...base, path: 'fallback', why: r.reason });
+            return { pipe: null, spent: true };
+        }
+        const i = r.pipeline.info;
+        console.info(`[ScreenShare] HDR screen: tone-mapped capture ${i.srcWidth}x${i.srcHeight} ${i.inputFormat} -> ${i.width}x${i.height}` +
+            ` (SDR white ${i.sdrWhiteNits} nits, peak ${i.peakNits}, knee ${i.knee}) in ${Math.round(performance.now() - t0)}ms`);
+        logCallEvent('share_hdr', {
+            ...base, path: 'native_tonemap', in_fmt: i.inputFormat, white: i.sdrWhiteNits, peak: i.peakNits,
+            knee: i.knee, src: `${i.srcWidth}x${i.srcHeight}`, res: `${i.width}x${i.height}`,
+            start_ms: Math.round(performance.now() - t0),
+        });
+        // The tone map's measured cost on this GPU, once it has run a while.
+        const pipe = r.pipeline;
+        setTimeout(() => {
+            if (hdrPipelineRef.current !== pipe) return;
+            void api.stats().then((raw) => {
+                const n = ((raw as { native?: Record<string, unknown> } | null)?.native ?? {}) as Record<string, unknown>;
+                const v = (k: string) => (typeof n[k] === 'number' ? n[k] as number : -1);
+                const st = pipe.stats();
+                logCallEvent('share_hdr', {
+                    path: 'native_tonemap', stage: 'stats', frames: v('frames'), dropped: v('dropped'),
+                    gpu_us_avg: v('gpuUsAvg'), gpu_us_max: v('gpuUsMax'), wait_us_avg: v('waitUsAvg'),
+                    redup: v('reduplications'), written: st.written, enc_drop: st.dropped,
+                    fps: pipe.captureSettings().frameRate ?? 0,
+                });
+            }).catch(() => { /* diagnostics only */ });
+        }, 10_000);
+        return { pipe, spent: true };
+    };
+
     const reportShareStartError = (err: unknown): ShareStartOutcome => {
         // A failed start must not leave a half-built crop pipeline holding the display capture.
         stopCropPipeline();
@@ -3585,7 +3633,7 @@ export const SidebarConference = ({
                 new Promise<null>(res => setTimeout(() => res(null), 750)),
             ]),
         ]);
-        const decision = decideScreenShareCodec(codecPref, hwEncoders, mainDiag?.gpus, { h264HighFailed: hasH264HighFailed() });
+        const decision = decideScreenShareCodec(codecPref, hwEncoders, mainDiag?.gpus, { h264HighFailed: hasH264HighFailed(), cbSoftware: hasH264CbSoftware() });
         // H.265 when the room negotiation says everyone can decode it and this
         // machine HW-encodes it (hevcNegotiation.ts); otherwise the normal choice,
         // which the republish loop also falls back to mid-share.
@@ -3600,6 +3648,18 @@ export const SidebarConference = ({
         const shareHw = codec === 'h265' || (codec === 'h264' && shareHwH264Ref.current);
         const lowerLayer = getShareLowLayerEnabled() && shareHw;
         wantH264HighRef.current = h264High;
+        // What the software-encoder guard (shareSoftwareGuard.ts) needs to know
+        // about THIS share's codec choice.
+        shareSoftwareCtxRef.current = {
+            sourceId: options.sourceId,
+            ctx: {
+                codec,
+                profile: codec === 'h264' ? (decision.h264Profile ?? 'cb') : undefined,
+                targetFps: options.frameRate,
+                highHw: !!hwEncoders?.h264High,
+                highFailed: hasH264HighFailed(),
+            },
+        };
         // Ask the capturer for headroom above the send rate (see
         // captureFrameRateFor); the encoder's maxFramerate stays at the target.
         // A capturer with a fixed ceiling (Linux Wayland/PipeWire: 60) is not
@@ -3701,15 +3761,24 @@ export const SidebarConference = ({
         // Always tell Electron's displayMedia handler to use video-only when we're
         // handling audio natively, so we don't stack Electron's 'loopback' stream
         // on top of the native capture.
-        pendingScreenShareRef.current = {
-            ...options,
-            audio: useNativeAudio ? false : options.audio,
-        };
+        await mintShareGrant(options);
+        pendingScreenShareRef.current = pendingShare(options, useNativeAudio ? false : options.audio);
 
         // The share's ceiling, for its start bitrate (installShareStartBitrate
         // arms on the sender LiveKit creates inside this publish).
         shareMaxBitrateRef.current = maxBitrate;
         shareParamsCtxRef.current = { options, codec };
+        // An HDR screen goes through our own tone-mapped capture (see
+        // tryStartHdrShare); anything else - every SDR screen - costs one IPC.
+        let hdrPipe: HdrSharePipeline | null = null;
+        if (!sliceLayout && !isWindowSource) {
+            const hdr = await tryStartHdrShare(options, box, captureFps);
+            hdrPipe = hdr.pipe;
+            if (!hdrPipe && hdr.spent) {
+                await mintShareGrant(options);
+                pendingScreenShareRef.current = pendingShare(options, useNativeAudio ? false : options.audio);
+            }
+        }
         // A single screen of the display, native size: capture the WHOLE display
         // ourselves (the same getDisplayMedia -> main-process handler handshake
         // LiveKit would do), crop each frame before the encoder ever sees it,
@@ -3719,7 +3788,8 @@ export const SidebarConference = ({
         let sliceStartSize: { width: number; height: number } | undefined;
         let sliceCapture: { width: number; height: number } | undefined;
         const publishCroppedShare = async (layout: Extract<ShareLayout, { kind: 'slice' }>) => {
-            pendingScreenShareRef.current = { ...options, audio: false };
+            await mintShareGrant(options);
+            pendingScreenShareRef.current = pendingShare(options, false);
             const mediaPromise = navigator.mediaDevices.getDisplayMedia({
                 // Far above any display: the capturer never upscales, so this is
                 // "the display's own size" - the crop needs the real pixels.
@@ -3771,6 +3841,23 @@ export const SidebarConference = ({
         try {
           if (sliceLayout) {
             await publishCroppedShare(sliceLayout);
+          } else if (hdrPipe) {
+            const pipe = hdrPipe;
+            hdrPipelineRef.current = pipe;
+            pendingScreenShareRef.current = null; // no getDisplayMedia handshake follows
+            sliceCapture = { width: pipe.info.srcWidth, height: pipe.info.srcHeight };
+            sliceStartSize = { width: pipe.info.width, height: pipe.info.height };
+            cropSourceSizeRef.current = sliceCapture;
+            cropOutSizeRef.current = sliceStartSize;
+            setShareDisplayAspect(aspectOf(pipe.info.srcWidth, pipe.info.srcHeight));
+            pipe.onSourceEnded((reason) => {
+                console.info(`[ScreenShare] the HDR capture ended (${reason}) - ending the share`);
+                if (reason === 'not_hdr') setScreenShareNotice({ tone: 'info', text: 'HDR was turned off on the shared screen. Share it again to continue.' });
+                stopCropPipeline();
+                void localParticipant.setScreenShareEnabled(false).catch(() => { /* already unpublished */ });
+            });
+            pipe.track.contentHint = 'motion';
+            await localParticipant.publishTrack(new LocalVideoTrack(pipe.track, undefined, true), { source: Track.Source.ScreenShare, ...publishOptions });
           } else {
             await localParticipant.setScreenShareEnabled(true, {
                 resolution: {
@@ -3778,7 +3865,10 @@ export const SidebarConference = ({
                     height: box.height,
                     frameRate: captureFps,
                 },
-                audio: useNativeAudio ? false : options.audio,
+                // Share audio is NEVER voice-processed (owner rule): the
+                // Chromium loopback fallback is asked explicitly for no AEC /
+                // NS / AGC rather than trusting display-capture defaults.
+                audio: useNativeAudio ? false : (options.audio ? { ...SCREEN_SHARE_AUDIO_CAPTURE } : false),
                 // Set at CAPTURE time, not after publishing. WebRTC reads
                 // contentHint when it first configures the encoder, so applying
                 // it post-publish (which we also still do defensively below)
@@ -4166,8 +4256,11 @@ export const SidebarConference = ({
     // every reconnect. Re-applying whenever the publication's sid changes means
     // a network blip can't silently demote a 90 fps share back to WebRTC's
     // defaults. No-ops when the parameters already match.
-    const ssTrackSid = localParticipant
-        ?.getTrackPublication(Track.Source.ScreenShare)?.trackSid ?? null;
+    // STATE driven by LocalTrack{,Un}Published, not a render-time read: a
+    // republish of our own track (H.265 switch, reconnect) causes no re-render,
+    // and every effect below keyed on it stayed bound to the dead sender
+    // (report dfda9c13) — see hooks/useLocalPublicationSid.ts.
+    const ssTrackSid = useLocalPublicationSid(localParticipant, Track.Source.ScreenShare);
     React.useEffect(() => {
         if (!localParticipant || !ssTrackSid) return;
         const share = currentShareRef.current;
@@ -4187,7 +4280,8 @@ export const SidebarConference = ({
 
     // Lighter copy for viewers (shareLowLayer.ts): only when the share was
     // published with it (setting ON + hardware encoder); the gate keeps it OFF
-    // unless ≥ 3 viewers, a verified hardware encoder, and no cost to the
+    // unless enough viewers (≥ 1 on a heavy share, ≥ 2 otherwise —
+    // shareIsHeavy), a verified hardware encoder, and no cost to the
     // sharer — and latches it off for the rest of the share on the first sign
     // of one. Re-installed for each new share publication.
     const shareViewersRef = React.useRef(0);
@@ -4314,10 +4408,32 @@ export const SidebarConference = ({
         const sender = track?.sender;
         if (!share || !sender) return;
         const num = (v: unknown): number => (typeof v === 'number' ? v : NaN);
+        // Never sit on a software encoder at a high frame rate silently
+        // (shareSoftwareGuard.ts — the owner's OpenH264 1080p60 share).
+        const swCtx = shareSoftwareCtxRef.current;
+        const swGuard = swCtx && swCtx.sourceId === share.sourceId ? new ShareSoftwareGuard(swCtx.ctx) : null;
+        const onEncoderSample = (hw: boolean | null) => {
+            const act = swGuard?.observe(hw);
+            if (!act) return;
+            const cur = currentShareRef.current;
+            if (!cur || cur.sourceId !== share.sourceId) return;
+            logCallEvent('share_fallback', {
+                from: `${swCtx!.ctx.codec}${swCtx!.ctx.profile ? `-${swCtx!.ctx.profile}` : ''}-software`,
+                to: act.kind === 'switch-high' ? 'h264-high' : `fps_${act.fps}`,
+                reason: 'software-encoder',
+            });
+            setScreenShareNotice({ tone: 'warn', text: softwareShareNotice(act) });
+            if (act.kind === 'switch-high') {
+                markH264CbSoftware();
+                republishShareRef.current?.({ ...cur });
+            } else {
+                republishShareRef.current?.({ ...cur, frameRate: act.fps as ScreenShareOptions['frameRate'] });
+            }
+        };
         const sampler = new ShareStatsSampler({
             getStats: () => sender.getStats(),
             getCaptureFps: () => {
-                try { return (cropPipelineRef.current?.captureSettings() ?? track?.mediaStreamTrack?.getSettings())?.frameRate; } catch { return undefined; }
+                try { return (cropPipelineRef.current?.captureSettings() ?? hdrPipelineRef.current?.captureSettings() ?? track?.mediaStreamTrack?.getSettings())?.frameRate; } catch { return undefined; }
             },
             focused: () => { try { return document.hasFocus(); } catch { return false; } },
             visible: () => { try { return !document.hidden; } catch { return true; } },
@@ -4349,6 +4465,7 @@ export const SidebarConference = ({
                     target: share.frameRate, focus: d.focus === true,
                     fg_state: fgLog.fg_state, fg_exe: fgLog.fg_exe, fg_cover: fgLog.fg_cover,
                 });
+                onEncoderSample(typeof d.hw === 'boolean' ? d.hw : null);
             },
         });
         sampler.start();
@@ -4548,8 +4665,9 @@ export const SidebarConference = ({
             'keybind:leave-call':         handleUserLeave,
             'keybind:quick-screenshare':  () => {
                 // Quick share: toggle on/off. When starting fresh, resolve the
-                // best source without the picker — prefer a detected game
-                // window, fall back to the primary display. Always default
+                // best source without the picker — a detected game window,
+                // else the window that was in front when the shortcut was
+                // pressed, else the primary display. Always default
                 // preset (1080p/30fps) with audio.
                 if (!localParticipant) return;
                 if (shareStartRef.current?.starting) return;
@@ -4600,31 +4718,39 @@ export const SidebarConference = ({
                             ? await api.getCurrentGame().catch(() => null)
                             : null;
 
-                        const norm = (s: string) => s.toLowerCase();
                         type Src = { id: string; name: string; thumbnailDataUrl: string };
-                        let picked: Src | null = null;
                         let sources: Src[] = [];
 
-                        // Match priority:
-                        //   1. Window source whose name matches the detected game (case-insensitive substring both ways).
-                        //   2. First `screen:` source (primary display).
-                        //   3. First source of any kind.
+                        // Pick order (owner decision 2026-10-20; src/utils/quickShareTarget.ts):
+                        //   1. A detected game whose window is in the list -> that
+                        //      window, whatever is focused.
+                        //   2. Else the window that was in FRONT when the shortcut was
+                        //      pressed. Main read it natively in the shortcut callback
+                        //      (electron/quick-share-foreground.ts) and returns only a
+                        //      source id from its own window list; null for Cipherline
+                        //      itself, the desktop, an unknown window, a non-Windows OS
+                        //      or an older addon.
+                        //   3. Else the first `screen:` source (primary display), then
+                        //      the first source of any kind.
                         if (currentGame) {
                             sources = await api.getDesktopSources(['window', 'screen'], { thumbnails: false }) ?? [];
-                            const needle = norm(currentGame.name);
-                            picked = sources.find(s =>
-                                s.id.startsWith('window:') &&
-                                (norm(s.name).includes(needle) || needle.includes(norm(s.name)))
-                            ) ?? null;
                         }
-                        if (!picked) {
-                            // No game, or the game window wasn't in the list: all we
+                        const gameHit = pickGameWindow(sources, currentGame?.name) !== null;
+                        const foregroundSourceId = !gameHit && api.getQuickShareForegroundSource
+                            ? await api.getQuickShareForegroundSource().catch(() => null)
+                            : null;
+                        if (!gameHit && !foregroundSourceId && !sources.some(s => s.id.startsWith('screen:'))) {
+                            // Neither a game window nor a foreground window: all we
                             // need now is a display, so ask for displays only.
-                            if (sources.length === 0) {
-                                sources = await api.getDesktopSources(['screen'], { thumbnails: false }) ?? [];
-                            }
-                            picked = sources.find(s => s.id.startsWith('screen:')) ?? sources[0] ?? null;
+                            sources = await api.getDesktopSources(['screen'], { thumbnails: false }) ?? [];
                         }
+                        const picked = chooseQuickShareSource({
+                            gameName: currentGame?.name,
+                            sources,
+                            foregroundSourceId,
+                        });
+                        // Which rule chose, never what it chose (no titles in logs).
+                        if (picked) console.log(`[quick-screenshare] target=${picked.why}`);
                         if (!picked) {
                             setIsScreenSharePickerOpen(true);
                             return;
@@ -4786,6 +4912,10 @@ export const SidebarConference = ({
                     <span className="text-cl-text">Reconnecting…</span>
                 </motion.div>
             )}
+
+            {/* Easter egg: alone in the call for a few minutes → Keys echoes.
+                Same pill row as Reconnecting; see components/call/AloneEcho.tsx. */}
+            <AloneEcho alone={participants.length === 1 && !isReconnecting} sessionId={sessionId} />
 
             {/* "Connected but silent" watchdog banner — sustained mismatch
                 between what our own pipeline thinks it's producing and what's
@@ -5071,9 +5201,9 @@ export const SidebarConference = ({
                     )}
                     </AnimatePresence>
                     </LayoutGroup>
-                    {/* Overflow sentinel for server/voice calls — 1 px div watched by
-                        IntersectionObserver to detect when the tile strip has scrolled
-                        below the visible panel and enable speaker promotion. */}
+                    {/* Overflow sentinel for server/voice calls — 1 px div measured against
+                        the visible scroll zone to detect a cut-off tile and enable speaker
+                        promotion. */}
                     {noRinging && <div ref={videoBottomSentinelRef} style={{ height: 1, flexShrink: 0, pointerEvents: 'none', visibility: 'hidden' }} aria-hidden />}
                 </motion.div>
                 )}
@@ -5269,8 +5399,8 @@ export const SidebarConference = ({
                     </LayoutGroup>
                 )}
                 {/* Overflow sentinel — 1 px invisible div at the bottom of video tiles.
-                    IntersectionObserver watches this to detect when tiles scroll
-                    out of view and enable active-speaker promotion.
+                    Measured against the visible scroll zone to detect a cut-off
+                    tile and enable active-speaker promotion.
 
                     marginTop: -13, not -12 — cancels BOTH this flex column's
                     own `gap-3` (12px, inserted before the sentinel same as
@@ -5281,8 +5411,8 @@ export const SidebarConference = ({
                     gap but left that last 1px measurably standing — live-
                     measured as an exact 1px remainder against the video's
                     own top gap. The sentinel still renders, still sits last
-                    in the DOM, still 1px and hidden — IntersectionObserver
-                    tracks its own box regardless of margin, so its function
+                    in the DOM, still 1px and hidden — the measurement
+                    uses its own box regardless of margin, so its function
                     is untouched; it now visually claims exactly zero space,
                     matching there being nothing analogous above the first
                     tile at all. */}

@@ -83,14 +83,14 @@ export type TrustLevel =
 export interface DeviceTrust {
     deviceId: string;
     verified: boolean;
-    /** Verified on a pre-v2 comparison. Meaningless when `verified` is false. */
+    /** Verified over a year ago (`isLegacyVerified`). Meaningless when `verified` is false. */
     legacy?: boolean;
 }
 
 /**
  * The ONE mapping from pin-store records to trust input. Every caller that
  * feeds `getKnownDevices` into `deriveContactTrust` goes through here, so none
- * can drop the `legacy` bit and quietly paint a pre-v2 verification green.
+ * can drop the `legacy` bit and quietly paint a year-old verification green.
  */
 export function pinsToTrustDevices(records: Record<string, VerificationRecordLike>): DeviceTrust[] {
     return Object.entries(records).map(([deviceId, rec]) => ({
@@ -251,7 +251,7 @@ export function trustExplanation(t: ContactTrust, displayName: string): string {
         case 'verified_legacy':
             // Calm by design: nothing is known to be wrong. The one fact is
             // that a past check used a weaker number than the app shows now.
-            return `You verified ${displayName} before Cipherline strengthened its safety numbers. That still protects you: you will be warned if their keys change. But the older check was shorter, so compare codes with them once more to restore the full green shield.`;
+            return `You verified ${displayName} over a year ago and their devices haven't changed since. You're still protected: you'll be warned if their keys change. Compare codes with them once more to keep the full green shield.`;
         case 'partially_verified': {
             // Worded without "this device", because the same string is shown on
             // a call badge (where there IS one specific device) and on the

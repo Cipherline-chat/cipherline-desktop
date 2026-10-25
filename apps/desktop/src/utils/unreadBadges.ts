@@ -156,6 +156,23 @@ export function trayBadgeCount(o: TrayBadgeInput): number {
 }
 
 /**
+ * Whether the Windows taskbar should show the "@" glyph: any unread @mention
+ * anywhere (a DM/group or a server channel). Mentions bypass mute, exactly as
+ * resolveBadge does, so this ignores notification modes. The one switch that
+ * does apply is the user's "show badge count" preference: with OS badges
+ * turned off nothing should decorate the taskbar. It reads the same mention
+ * maps the in-app badges clear on read, so the glyph goes away with them.
+ */
+export function hasUnreadMention(
+    mentionCounts: CountMap,
+    channelMentionCounts: CountMap,
+    showBadgeCount: boolean,
+): boolean {
+    if (!showBadgeCount) return false;
+    return sumCounts(mentionCounts) > 0 || sumCounts(channelMentionCounts) > 0;
+}
+
+/**
  * DM + Group rail badges, count-driven rather than list-driven.
  *
  * `classify` maps a conversation_id to 'dm' | 'group' — normally built from

@@ -8,6 +8,8 @@ import { PopoverMenu } from './PopoverMenu';
 import { AnnotationGrantBadge } from './AnnotationGrantBadge';
 import { ViewerCountBadge } from './ViewerCountBadge';
 import { usePersistentVolume, useFastIsSpeaking, useIsMicMuted } from './VideoTile';
+import { useCallPersonalization } from '../../utils/callPersonalizationStore';
+import { resolveRingColor, speakingBorderColor, withAlpha } from '../../utils/callPersonalizationStyle';
 import { useParticipantAudio } from '../../hooks/useParticipantAudio';
 import { TileNamePill } from './TileCornerChrome';
 import { tileCornerInsets, tileChromeSlots } from './videoRectChrome';
@@ -70,6 +72,7 @@ export const ScreenShareGate = ({
     // token didn't include a display name.
     const displayName = p.name || 'Unknown';
     const isSpeaking = useFastIsSpeaking(p);
+    const { ring_color: ringColor } = useCallPersonalization(p.identity);
     // Reactive (TrackMuted/Unmuted/Published/Unpublished) — this gate's own
     // forceRender effect below only listens for metadata/attribute changes,
     // so a raw p.isMicrophoneEnabled read never picked up a plain mute
@@ -148,6 +151,8 @@ export const ScreenShareGate = ({
         }
     };
 
+    const gateSpeaking = isSpeaking && !isLocalMuted && !isLocalDeafened;
+
     return (
         <div
             className={`relative @container ${
@@ -155,7 +160,8 @@ export const ScreenShareGate = ({
                     ? 'w-full h-full'
                     : 'w-full aspect-video shrink-0 min-h-[64px]'
             } rounded-xl overflow-hidden bg-cl-abyss flex flex-col items-center justify-center px-2 py-1.5 transition-all group ss-gate-enter
-                ${isSpeaking && !isLocalMuted && !isLocalDeafened ? 'border-2 border-green-500 shadow-[0_0_20px_rgba(34,197,94,0.2)]' : 'border border-cl-lume/20'}`}
+                ${gateSpeaking ? 'border-2' : 'border border-cl-lume/20'}`}
+            style={gateSpeaking ? { borderColor: speakingBorderColor(ringColor), boxShadow: `0 0 20px ${withAlpha(resolveRingColor(ringColor), 0.2)}` } : undefined}
         >
             {/* Hit surface — right click for the context menu; left click is a
                 shorthand for "Click to Watch" so the whole card (not just the

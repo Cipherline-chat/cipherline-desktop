@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { resolveSliderReset, useSliderResetHint } from './sliderReset';
 
 interface ClSliderProps {
     value: number;
@@ -7,10 +8,20 @@ interface ClSliderProps {
     step?: number;
     onChange: (v: number) => void;
     formatLabel?: (v: number) => string;
+    /**
+     * The setting's default. When given, double-clicking the slider commits it
+     * through the same `onChange` a drag uses, and the slider shows a
+     * "Double-click to reset" hint. Omit it for a slider with no meaningful
+     * default.
+     */
     resetValue?: number;
     disabled?: boolean;
     className?: string;
     style?: React.CSSProperties;
+    /** Accessible name, for a slider with no visible <label> pointing at it. */
+    ariaLabel?: string;
+    /** Human-readable value for screen readers (e.g. "0:12.4"). */
+    ariaValueText?: string;
 }
 
 /**
@@ -26,11 +37,11 @@ interface ClSliderProps {
  */
 export const ClSlider: React.FC<ClSliderProps> = ({
     value, min, max, step = 1, onChange,
-    formatLabel, resetValue, disabled, className, style,
+    formatLabel, resetValue, disabled, className, style, ariaLabel, ariaValueText,
 }) => {
     const [grabbing, setGrabbing] = useState(false);
     const [snapping, setSnapping] = useState(false);
-    const rootRef = useRef<HTMLDivElement>(null);
+    const rootRef = useRef<HTMLDivElement | null>(null);
     const bodyRef = useRef<HTMLSpanElement>(null);
     const fillRef = useRef<HTMLSpanElement>(null);
     const thumbWrapRef = useRef<HTMLSpanElement>(null);
@@ -45,6 +56,14 @@ export const ClSlider: React.FC<ClSliderProps> = ({
     // Always-current onChange so RAF closures never go stale.
     const onChangeRef = useRef(onChange);
     onChangeRef.current = onChange;
+
+    const canReset = resolveSliderReset(resetValue, min, max, disabled) !== null;
+    const hint = useSliderResetHint(canReset);
+    const { anchorRef: hintAnchorRef } = hint;
+    const setRoot = useCallback((node: HTMLDivElement | null) => {
+        rootRef.current = node;
+        hintAnchorRef(node);
+    }, [hintAnchorRef]);
 
     const reduced = typeof window !== 'undefined'
         && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -61,22 +80,32 @@ export const ClSlider: React.FC<ClSliderProps> = ({
         return Math.min(Math.max(snapped, min), max);
     }, [min, max, step]);
 
+    // Paint a value straight onto the DOM — fill, thumb, bubble, aria. The
+    // slider is deliberately not driven by React state while the pointer is
+    // down, so anything that changes the value outside a drag (a double-click
+    // reset) must repaint here too: a parent that debounces its write, or hands
+    // in a snapshot `value` (the call-bar context menu), would otherwise never
+    // re-render the slider to the value it was just reset to.
+    const paintValue = useCallback((v: number) => {
+        const newPct = `${((v - min) / (max - min)) * 100}%`;
+        if (fillRef.current)     fillRef.current.style.width = newPct;
+        if (thumbWrapRef.current) thumbWrapRef.current.style.left = newPct;
+        if (bubbleRef.current) {
+            bubbleRef.current.style.left = newPct;
+            bubbleRef.current.textContent = formatLabel ? formatLabel(v) : String(Math.round(v));
+        }
+        rootRef.current?.setAttribute('aria-valuenow', String(v));
+    }, [min, max, formatLabel]);
+
     const applyFromX = useCallback((clientX: number) => {
         const el = rootRef.current;
         if (!el) return;
         const r = el.getBoundingClientRect();
         const raw = Math.min(Math.max((clientX - r.left) / r.width, 0), 1);
         const newValue = snap(min + raw * (max - min));
-        const newPct = `${((newValue - min) / (max - min)) * 100}%`;
 
         // Synchronous DOM updates — no React render cycle, no scheduler delay.
-        if (fillRef.current)     fillRef.current.style.width = newPct;
-        if (thumbWrapRef.current) thumbWrapRef.current.style.left = newPct;
-        if (bubbleRef.current) {
-            bubbleRef.current.style.left = newPct;
-            bubbleRef.current.textContent = formatLabel ? formatLabel(newValue) : String(Math.round(newValue));
-        }
-        el.setAttribute('aria-valuenow', String(newValue));
+        paintValue(newValue);
 
         dragValueRef.current = newValue;
 
@@ -106,9 +135,10 @@ export const ClSlider: React.FC<ClSliderProps> = ({
                 body.style.transform = '';
             }
         }
-    }, [min, max, snap, reduced, formatLabel]);
+    }, [min, max, snap, reduced, paintValue]);
 
     const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+        hint.closeHint();
         if (disabled) return;
         e.currentTarget.setPointerCapture(e.pointerId);
         isGrabRef.current = true;
@@ -160,14 +190,27 @@ export const ClSlider: React.FC<ClSliderProps> = ({
         if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') { onChange(snap(value - step)); e.preventDefault(); }
     };
 
+    // A double-click is pointerdown/up, pointerdown/up, THEN dblclick — so by
+    // the time this runs the two clicks have already moved the thumb to the
+    // clicked spot and committed that value (release() fires onChange). This
+    // runs last, so the default is the final value any debounced save lands on.
     const onDoubleClick = () => {
-        if (resetValue !== undefined && !disabled) onChange(resetValue);
+        const target = resolveSliderReset(resetValue, min, max, disabled);
+        if (target === null) return;
+        if (rafRef.current !== null) {
+            cancelAnimationFrame(rafRef.current);
+            rafRef.current = null;
+        }
+        dragValueRef.current = null;
+        paintValue(target);
+        if (bodyRef.current) bodyRef.current.style.transform = '';
+        onChangeRef.current(target);
     };
 
     return (
         <span className="cl-kit" style={{ display: 'contents' }}>
             <div
-                ref={rootRef}
+                ref={setRoot}
                 className={[
                     'cls',
                     grabbing ? 'grab' : '',
@@ -180,7 +223,11 @@ export const ClSlider: React.FC<ClSliderProps> = ({
                 aria-valuemin={min}
                 aria-valuemax={max}
                 aria-valuenow={value}
+                aria-label={ariaLabel}
+                aria-valuetext={ariaValueText}
                 aria-disabled={disabled}
+                aria-describedby={hint.describedBy}
+                {...hint.handlers}
                 onPointerDown={onPointerDown}
                 onPointerMove={onPointerMove}
                 onPointerUp={release}
@@ -198,6 +245,7 @@ export const ClSlider: React.FC<ClSliderProps> = ({
                 </span>
                 <span ref={bubbleRef} className="sbub" style={{ left: `${pct}%` }}>{label}</span>
             </div>
+            {hint.tip}
         </span>
     );
 };

@@ -9,7 +9,7 @@ export default defineConfig([
   // 'dist-electron' is a local build artifact (gitignored, never committed) —
   // linting it hit a rule that doesn't exist in the current typescript-eslint
   // version, which is a hard config error, not a content one.
-  globalIgnores(['dist', 'dist-electron', 'dist-ssr']),
+  globalIgnores(['dist', 'dist-electron', 'dist-ssr', 'harness/channel-keys/out']),
   {
     files: ['**/*.{ts,tsx}'],
     extends: [

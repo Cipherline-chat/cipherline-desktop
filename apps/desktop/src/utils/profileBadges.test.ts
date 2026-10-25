@@ -4,6 +4,9 @@ import {
     DEFAULT_PROFILE_BADGE_ICON,
     PROFILE_BADGE_COLOR_TOKENS,
     PROFILE_BADGE_ICONS,
+    MAX_BADGE_COUNT,
+    eggBadgeCount,
+    sanitizeBadgeCount,
     resolveProfileBadgeColor,
     resolveProfileBadgeIcon,
     sortProfileBadges,
@@ -152,5 +155,30 @@ describe('sortProfileBadges', () => {
 
     it('returns an empty array for an empty input, never throws', () => {
         expect(sortProfileBadges([])).toEqual([]);
+    });
+});
+
+describe('sanitizeBadgeCount', () => {
+    it.each([0, 1, 12, 25, MAX_BADGE_COUNT])('accepts %i', (n) => {
+        expect(sanitizeBadgeCount(n)).toBe(n);
+    });
+    it.each([-1, MAX_BADGE_COUNT + 1, 1.5, NaN, Infinity, -Infinity, Number.MAX_SAFE_INTEGER + 1, '12', null, undefined, {}, [], true])(
+        'drops %s',
+        (v) => {
+            expect(sanitizeBadgeCount(v)).toBeUndefined();
+        },
+    );
+});
+
+describe('eggBadgeCount', () => {
+    it('returns the validated count for the egg-hunter badge', () => {
+        expect(eggBadgeCount({ badge_id: 'egg-hunter', count: 9 })).toBe(9);
+    });
+    it('drops an invalid count on the egg-hunter badge', () => {
+        expect(eggBadgeCount({ badge_id: 'egg-hunter', count: -3 })).toBeUndefined();
+        expect(eggBadgeCount({ badge_id: 'egg-hunter' })).toBeUndefined();
+    });
+    it('ignores a count on any other badge', () => {
+        expect(eggBadgeCount({ badge_id: 'founder', count: 9 })).toBeUndefined();
     });
 });

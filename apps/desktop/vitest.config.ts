@@ -1,6 +1,7 @@
 import { defineConfig } from 'vitest/config';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
+import { whatsNewPlugin } from './vite-plugin-whats-new';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -8,6 +9,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // WebCrypto (which actually implements crypto.subtle, unlike jsdom). The setup
 // file installs the fake IndexedDB and minimal window/document stubs.
 export default defineConfig({
+    // `virtual:whats-new` (the release notes parsed from CHANGELOG.md), same as the app build.
+    plugins: [whatsNewPlugin()],
     test: {
         environment: 'node',
         // `electron/**` is in scope for the pure, dependency-free modules the

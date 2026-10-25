@@ -8,9 +8,15 @@
  * heavy bytes yet:
  *
  *   meta                        everything not keyed by conversation/channel/blob
+ *                               (incl. vault.entranceSound: your custom call entrance
+ *                               sound, <= 64 KB inline - deliberately NOT a record kind
+ *                               of its own, because applyBackupContainer below throws on
+ *                               an unknown record id, so a new kind would make every
+ *                               older build refuse to restore a newer backup)
  *   dm:<convId>:<YYYY-MM>       one DM/group conversation, one calendar month
  *   ch:<channelId>:<YYYY-MM>    one server channel, one calendar month
  *   gif:<gifId>                 raw bytes of `userData/cipherline-gifs/<gifId>.enc`
+ *   emoji:<emojiId>             raw bytes of `userData/cipherline-gifs/emoji-<emojiId>.enc` (My Emojis)
  *   att:<id>                    raw E2EE ciphertext of a cached/downloadable attachment
  *   sound:<name>                a custom notification sound file
  *
@@ -32,6 +38,8 @@
 
 import { buildLocalVault, importLocalHistory, type BackupVault } from '../utils/crypto';
 import { isKlipyRefEntry } from '../utils/gifLibrarySync';
+import { emojiBackupIds } from '../utils/personalEmoji/backup';
+import { personalEmojis } from '../utils/personalEmoji/service';
 import { getEncryptedAttachment, putEncryptedAttachment } from '../utils/attachmentCache';
 import { sha256Hex, IMMUTABLE_HASH, type ContainerWriter, type OpenedContainer } from '../utils/backupContainer';
 
@@ -184,10 +192,12 @@ export async function specsFromVault(parts: {
     history: Record<string, unknown[]>;
     channelHistory: Record<string, unknown[]>;
     gifIds?: string[];
+    emojiIds?: string[];
     attachmentIds?: string[];
     sounds?: { name: string; file: string }[];
     loaders?: {
         gif?: (id: string) => Promise<Uint8Array | null>;
+        emoji?: (id: string) => Promise<Uint8Array | null>;
         attachment?: (id: string) => Promise<Uint8Array | null>;
         sound?: (file: string) => Promise<Uint8Array | null>;
     };
@@ -201,6 +211,7 @@ export async function specsFromVault(parts: {
     }
     const L = parts.loaders ?? {};
     for (const id of parts.gifIds ?? []) specs.push(blobSpec(`gif:${id}`, () => L.gif?.(id) ?? Promise.resolve(null)));
+    for (const id of parts.emojiIds ?? []) specs.push(blobSpec(`emoji:${id}`, () => L.emoji?.(id) ?? Promise.resolve(null)));
     for (const s of parts.sounds ?? []) specs.push(blobSpec(`sound:${s.name}`, () => L.sound?.(s.file) ?? Promise.resolve(null)));
     for (const id of parts.attachmentIds ?? []) specs.push(blobSpec(`att:${id}`, () => L.attachment?.(id) ?? Promise.resolve(null)));
     return specs;
@@ -238,6 +249,11 @@ export async function buildBackupPlan(
             gifIds = [...(await api.listGifFiles())].filter(id => owned.has(id)).sort();
         } catch { gifIds = []; }
     }
+    // My Emojis: the images listed in this vault's emoji index (library + the
+    // received-emoji cache), each with a key in the vault. Their sealed files
+    // live in the same directory but are NOT in gifIds above (that list is
+    // filtered to the GIF library's own ids).
+    const emojiIds = emojiBackupIds(vault.emojiIndex, vault.emojiKeys);
     let sounds: { name: string; file: string }[] = [];
     if (api?.listCustomSounds) {
         try { sounds = (await api.listCustomSounds()).sort((a, b) => a.name.localeCompare(b.name)); } catch { sounds = []; }
@@ -247,9 +263,10 @@ export async function buildBackupPlan(
     const toU8 = (b: Uint8Array | ArrayBuffer) => (b instanceof Uint8Array ? b : new Uint8Array(b));
     const cap = opts.maxAttachmentBytes;
     const records = await specsFromVault({
-        meta, history, channelHistory, gifIds, sounds, attachmentIds: refs.ids,
+        meta, history, channelHistory, gifIds, emojiIds, sounds, attachmentIds: refs.ids,
         loaders: {
             gif: async (id) => { try { return api?.readGifFile ? toU8(await api.readGifFile(id)) : null; } catch { return null; } },
+            emoji: async (id) => { try { return api?.readGifFile ? toU8(await api.readGifFile(`emoji-${id}`)) : null; } catch { return null; } },
             sound: async (file) => { try { return api?.readCustomSound ? toU8(await api.readCustomSound(file)) : null; } catch { return null; } },
             attachment: async (id) => {
                 const hint = refs.sizeHints[id] ?? 0;
@@ -353,7 +370,7 @@ export async function applyBackupContainer(
     // sorts first too.
     const dmBuckets: Record<string, Record<string, unknown[]>> = {};
     const chBuckets: Record<string, Record<string, unknown[]>> = {};
-    const blobRecords: { id: string; kind: 'gif' | 'att' | 'sound'; key: string }[] = [];
+    const blobRecords: { id: string; kind: 'gif' | 'emoji' | 'att' | 'sound'; key: string }[] = [];
     for (const r of records) {
         if (r.id === 'meta') continue;
         const sep = r.id.indexOf(':');
@@ -369,6 +386,7 @@ export async function applyBackupContainer(
                 break;
             }
             case 'gif': blobRecords.push({ id: r.id, kind: 'gif', key: rest }); break;
+            case 'emoji': blobRecords.push({ id: r.id, kind: 'emoji', key: rest }); break;
             case 'att': blobRecords.push({ id: r.id, kind: 'att', key: rest }); break;
             case 'sound': blobRecords.push({ id: r.id, kind: 'sound', key: rest }); break;
             default: throw new Error(`Unknown backup record "${r.id}"`);
@@ -388,11 +406,17 @@ export async function applyBackupContainer(
     const api = window.electronAPI;
     // Custom sounds go first: importLocalHistory re-points the notification
     // prefs at whatever custom-sound files exist on this machine.
-    const applyBlob = async (b: { id: string; kind: 'gif' | 'att' | 'sound'; key: string }) => {
+    const applyBlob = async (b: { id: string; kind: 'gif' | 'emoji' | 'att' | 'sound'; key: string }) => {
         try {
             const bytes = await container.readBytes(b.id);
             if (b.kind === 'gif') {
                 if (api?.writeGifFile) await api.writeGifFile(b.key, bytes);
+            } else if (b.kind === 'emoji') {
+                if (api?.writeGifFile) {
+                    await api.writeGifFile(`emoji-${b.key}`, bytes);
+                    // Wake any emoji already on screen that was waiting for this file.
+                    personalEmojis().store.emit(b.key);
+                }
             } else if (b.kind === 'sound') {
                 if (api?.uploadCustomSound) await api.uploadCustomSound(b.key, bytes);
             } else {

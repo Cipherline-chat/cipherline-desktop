@@ -648,11 +648,11 @@ img {
   scrollbar-width: none;            /* Firefox */
   -ms-overflow-style: none;
   scroll-behavior: smooth;
-  background:
-    linear-gradient(to right, #05070F 40%, rgba(5, 7, 15, 0)) left center / 32px 100% no-repeat local,
-    linear-gradient(to left,  #05070F 40%, rgba(5, 7, 15, 0)) right center / 32px 100% no-repeat local,
-    linear-gradient(to right, rgba(5, 7, 15, 0.92), rgba(5, 7, 15, 0)) left center / 32px 100% no-repeat scroll,
-    linear-gradient(to left,  rgba(5, 7, 15, 0.92), rgba(5, 7, 15, 0)) right center / 32px 100% no-repeat scroll;
+  /* No background at all any more: the strip floats over the video, and the
+   * old scroll-shadow vignette used an opaque #05070F "local" cover, which
+   * over a live picture would paint solid black blocks at the row's ends. The
+   * "+N" chip in FullscreenOverlay is the overflow cue now. */
+  background: none;
 }
 .cl-fs-strip-row::-webkit-scrollbar { display: none; }   /* Chromium / WebKit */
 /* The row is a tab stop (it has to be, to be keyboard-scrollable), so it needs
@@ -1391,6 +1391,23 @@ img {
   scrollbar-color: var(--cl-border) transparent;
 }
 
+/* Focus rings. Alt-Tabbing back in is keyboard modality, so Chromium re-shows
+ * :focus-visible on whatever last held focus — usually a whole pane: a
+ * programmatically focused tabindex=-1 container, or a scroll container
+ * (Chromium makes scrollers keyboard-focusable). Its default ring is drawn in
+ * the Windows accent colour, often yellow: a big off-brand box around the
+ * chat or sidebar. Containers get no ring; real controls keep one (keyboard
+ * users need it), drawn in the brand colour. Zero-specificity :where() so a
+ * component's own focus style still wins. */
+:where(:focus-visible) {
+  outline-color: var(--cl-lume);
+}
+:where(:focus-visible:not(a[href], button, input, textarea, select, summary, [contenteditable]:not([contenteditable="false"]),
+  [role="button"], [role="link"], [role="tab"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"],
+  [role="option"], [role="checkbox"], [role="radio"], [role="switch"], [role="slider"], [role="treeitem"], [role="gridcell"])) {
+  outline: none;
+}
+
 /* ── ProfileModal popover entrance ─────────────────────────────────────── */
 @keyframes profile-popover-drop {
   from { opacity: 0; transform: scale(0.94) translateY(-8px); }
@@ -1472,8 +1489,6 @@ button,.cl-btn,.cl-toggle,.cl-check,.cl-radio,.cl-seg,.cl-selt,.cl-selm,.cl-pill
 @keyframes cl-icocrash{0%{transform:none;opacity:1}20%{transform:translate(3px,-3px) rotate(-8deg)}45%{transform:translate(5px,2px) rotate(40deg)}75%{transform:translate(3px,12px) rotate(110deg);opacity:1}88%{transform:translate(2px,17px) rotate(125deg);opacity:0}96%{transform:none;opacity:0}100%{transform:none;opacity:1}}
 .cl-ico.play-dizzy{animation:cl-icodizzy .8s var(--cl-spring) 1}
 @keyframes cl-icodizzy{0%{transform:rotate(0)}55%{transform:rotate(380deg)}75%{transform:rotate(350deg)}100%{transform:rotate(360deg)}}
-.cl-ico.play-scared{animation:cl-icoscared .55s ease 1}
-@keyframes cl-icoscared{0%,100%{transform:none}12%{transform:translate(-1px,1px) rotate(-4deg)}28%{transform:translate(1px,-1px) rotate(3deg)}44%{transform:translate(-1px,0) rotate(-3deg)}60%{transform:translate(1px,1px) rotate(4deg)}78%{transform:translate(-1px,-1px) rotate(-2deg)}}
 .cl-ico.play-trash{animation:cl-icoshake .4s ease 1}
 @keyframes cl-icoshake{0%,100%{transform:rotate(0)}25%{transform:rotate(-9deg)}60%{transform:rotate(8deg)}}
 .cl-ico.play-star{animation:cl-icostar .5s var(--cl-spring) 1}

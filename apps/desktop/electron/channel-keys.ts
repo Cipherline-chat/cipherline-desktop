@@ -30,6 +30,44 @@ interface ChannelKeyEntry {
     rotatesAt: string;
 }
 
+/**
+ * Highest epoch a channel key may carry. Matches the API's RecordEpochDto
+ * `@Max(1_000_000)`: an epoch the server will never register is never
+ * legitimately distributed, and accepting one made it this device's "latest"
+ * forever (`getLatestEpoch` is a max), so every later post went out under an
+ * epoch no other member holds.
+ */
+export const MAX_CHANNEL_EPOCH = 1_000_000;
+/** Channel keys are AES-256 keys: exactly 32 bytes. */
+export const CHANNEL_KEY_BYTES = 32;
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** Standard-alphabet base64 of 32 bytes: 43 chars, pad optional (other
+ *  clients' encoders differ on padding; the decoded length is what matters). */
+const KEY32_B64_RE = /^[A-Za-z0-9+/]{43}=?$/;
+
+export function isValidChannelId(channelId: unknown): channelId is string {
+    return typeof channelId === 'string' && UUID_RE.test(channelId);
+}
+
+export function isValidChannelEpoch(epoch: unknown): epoch is number {
+    return typeof epoch === 'number' && Number.isSafeInteger(epoch) && epoch >= 1 && epoch <= MAX_CHANNEL_EPOCH;
+}
+
+export function isValidChannelKeyB64(keyB64: unknown): keyB64 is string {
+    return typeof keyB64 === 'string' && KEY32_B64_RE.test(keyB64)
+        && Buffer.from(keyB64, 'base64').length === CHANNEL_KEY_BYTES;
+}
+
+/** Throws on a malformed (channel, epoch, key) triple — the IPC trust boundary. */
+function assertValidInstall(channelId: unknown, epoch: unknown, keyB64?: unknown): void {
+    if (!isValidChannelId(channelId)) throw new TypeError('[ChannelKeys] invalid channel id');
+    if (!isValidChannelEpoch(epoch)) throw new TypeError(`[ChannelKeys] invalid epoch for channel ${channelId}`);
+    if (keyB64 !== undefined && !isValidChannelKeyB64(keyB64)) {
+        throw new TypeError(`[ChannelKeys] channel key for ${channelId} epoch ${epoch} is not a 32-byte key`);
+    }
+}
+
 // Hot cache in main-process memory: channelId → epoch → entry
 const cache = new Map<string, Map<number, ChannelKeyEntry>>();
 
@@ -53,9 +91,16 @@ function loadFromStore(channelId: string): Map<number, ChannelKeyEntry> {
         const parsed = JSON.parse(raw) as Record<string, ChannelKeyEntry>;
         for (const [epochStr, entry] of Object.entries(parsed)) {
             const epoch = parseInt(epochStr, 10);
-            if (!isNaN(epoch) && entry.keyHex && entry.rotatesAt) {
-                m.set(epoch, entry);
+            // Out-of-range epochs and wrong-length keys can only have been
+            // installed before validation existed, and either one poisons the
+            // channel (see MAX_CHANNEL_EPOCH). Skip them on load so a device
+            // that took one heals; they drop from disk on the next save.
+            if (!isValidChannelEpoch(epoch) || typeof entry?.keyHex !== 'string' || !entry.rotatesAt) continue;
+            if (!/^[0-9a-f]{64}$/i.test(entry.keyHex)) {
+                console.warn(`[ChannelKeys] Ignoring malformed stored key for channel ${channelId} epoch ${epoch}`);
+                continue;
             }
+            m.set(epoch, entry);
         }
     } catch (err) {
         console.error('[ChannelKeys] Failed to parse stored keys for channel', channelId, err);
@@ -111,6 +156,10 @@ export function setChannelKey(
     rotatesAt: Date,
     opts?: { replaceIfFingerprintB64?: string },
 ): 'stored' | 'duplicate' | 'conflict' {
+    assertValidInstall(channelId, epoch, keyB64);
+    if (!(rotatesAt instanceof Date) || Number.isNaN(rotatesAt.getTime())) {
+        throw new TypeError(`[ChannelKeys] invalid rotatesAt for channel ${channelId}`);
+    }
     const m = getOrLoad(channelId);
     const incomingHex = Buffer.from(keyB64, 'base64').toString('hex');
     const existing = m.get(epoch);
@@ -203,6 +252,7 @@ export function listChannelEpochs(channelId: string): number[] {
 export function rotateChannelKey(channelId: string, atEpoch?: number): { epoch: number; keyB64: string; rotatesAt: Date } {
     const currentEpoch = getLatestEpoch(channelId) ?? 0;
     const newEpoch = atEpoch ?? (currentEpoch + 1);
+    assertValidInstall(channelId, newEpoch);
     const key = crypto.randomBytes(32);
     const keyB64 = key.toString('base64');
     // Default rotation schedule: 7 days from now

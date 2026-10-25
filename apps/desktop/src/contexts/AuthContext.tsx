@@ -9,7 +9,7 @@ import { dropSessionMedia } from '../utils/sessionMedia';
 import { clearRosterCache } from '../utils/serverRosterCache';
 import { clearCallEvents } from '../utils/callEventLog';
 import { clearDesktopSourceCache } from '../utils/desktopSourceCache';
-import { settleBootRefresh, BOOT_REFRESH_WAIT_MS } from '../utils/bootRefresh';
+import { settleBootRefresh, BOOT_REFRESH_WAIT_MS, isRefreshRejection } from '../utils/bootRefresh';
 
 interface AuthState {
     isAuthenticated: boolean;
@@ -28,6 +28,32 @@ interface AuthState {
          *  utils/usernameField.ts. */
         username_changed_at?: string | null,
         next_username_change_at?: string | null,
+        /** /auth/me: opt-in IANA time zone and
+         *  the visibility settings (`{}` = Public). Absent on an older API.
+         *  See utils/profileVisibility.ts. */
+        time_zone?: string | null,
+        profile_visibility?: import('../utils/profileVisibility').ProfileVisibility,
+        /** /auth/me: profile customisation as stored (absent on an older API).
+         *  See utils/profileCosmetics.ts + utils/profileTheme.ts. */
+        profile_theme?: { primary: string; accent: string } | null,
+        avatar_decoration?: string | null,
+        profile_effect?: string | null,
+        egg_showcase?: string[] | null,
+        widget_games?: string[] | null,
+        /** Handles only, `[{ platform, handle }]`; see utils/profileLinks.ts. */
+        profile_links?: Array<{ platform: string; handle: string }> | null,
+        /** /auth/me: profile extras (absent on an older API). Level is server-computed and cosmetic-only. */
+        profile_level?: { level: number; points: number; next_level_points: number | null; showcase_slots: number },
+        profile_showcase?: { blocks: string[]; top_achievements: string[] },
+        interests?: string[],
+        high_five_count?: number,
+        /** Per-item knobs for the current decoration / effect (utils/profileCosmetics.ts). */
+        cosmetic_options?: import('../utils/profileCosmetics').CosmeticOptions | null,
+        /** Limited-time cosmetic seasons this account claimed (kept forever; utils/profileCosmetics SEASONS).
+         *  Equipping a seasonal item while its event runs claims it; POST /auth/cosmetics/claim { season } also does. */
+        cosmetic_claims?: string[],
+        /** Your verified Steam (Steam OpenID; set only by the server). */
+        steam?: { steam_id: string } | null,
     } | null;
     /** Set when this session was force-revoked by the server (password change / disable).
      *  Shown as a banner on the login screen, then cleared on next login. */
@@ -138,6 +164,16 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
                 const isNetworkError = axios.isAxiosError(err) && !err.response;
                 if (isNetworkError) {
                     console.warn('[AuthContext] Token refresh failed (offline) — keeping existing session');
+                    return null;
+                }
+                // ...and ONLY a rejection signs out. Every other answer — a 5xx
+                // from a proxy or a deploy, a 429, the admin kill switch's 503
+                // APP_SUSPENDED — says nothing about the refresh token and used
+                // to wipe the session anyway (the comment above always said
+                // 401/403; the code never checked). The server also exempts
+                // refresh from the kill switch for builds that still do this.
+                if (!isRefreshRejection(axios.isAxiosError(err) ? err.response?.status : undefined)) {
+                    console.warn('[AuthContext] Token refresh failed (server error) — keeping existing session');
                     return null;
                 }
 

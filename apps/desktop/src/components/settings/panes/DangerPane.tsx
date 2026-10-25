@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useAuth } from '../../../contexts/AuthContext';
 import { LogOut, Trash2, AlertTriangle, Lock, Eye, EyeOff } from 'lucide-react';
+import { DialogHeader, DialogBody, DialogFooter, DialogError, DialogText, DialogCallout, DialogField } from '../../dialog/DialogFrame';
 import { ClButton, ClInput, ClModal } from '../../cl';
 import SlottedCodeInput from '../../SlottedCodeInput';
 import axios from 'axios';
@@ -44,6 +45,53 @@ export const DangerPane: React.FC<DangerPaneProps> = ({ onLogout, onCloseSetting
         }
     };
 
+    const sendDeletionCode = async () => {
+        if (!token) return;
+        setDeleteSendingCode(true); setDeleteError('');
+        try {
+            await axios.post(`${API_BASE}/auth/account/deletion-code`, {}, { headers: { Authorization: `Bearer ${token}` } });
+            setDeleteCodeSent(true);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
+        } catch (err: any) {
+            setDeleteError(err?.response?.data?.message || 'Failed to send code.');
+        } finally {
+            setDeleteSendingCode(false);
+        }
+    };
+
+    // Step-up gate: the password always, plus the authenticator code when 2FA is
+    // on, or an emailed code (which must have been requested) when it is off.
+    // Also held back while the 2FA status is still loading, so the right second
+    // factor is never skipped. The server enforces all of it independently.
+    const canDelete = !deleting
+        && !!deletePassword
+        && deleteTotpEnabled !== null
+        && !(deleteTotpEnabled === true && !deleteTotp)
+        && !(deleteTotpEnabled === false && !deleteCodeSent);
+
+    const deleteAccount = async () => {
+        if (!token) return;
+        setDeleting(true); setDeleteError('');
+        try {
+            await axios.delete(`${API_BASE}/auth/account`, {
+                headers: { Authorization: `Bearer ${token}` },
+                data: {
+                    password: deletePassword,
+                    ...(deleteTotp ? { totp_code: deleteTotp } : {}),
+                    ...(deleteEmailCode ? { email_code: deleteEmailCode } : {}),
+                },
+            });
+            setShowDeleteConfirm(false);
+            onCloseSettings();
+            onLogout();
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
+        } catch (err: any) {
+            setDeleteError(err?.response?.data?.message || 'Deletion failed. Please try again.');
+        } finally {
+            setDeleting(false);
+        }
+    };
+
     return (
         <>
             {/* Sign out */}
@@ -68,151 +116,121 @@ export const DangerPane: React.FC<DangerPaneProps> = ({ onLogout, onCloseSetting
                 </ClButton>
             </div>
 
-            {/* ── Delete Account Modal (ported 1:1 from SettingsModal) ────────── */}
+            {/* ── Delete account dialog (same requests + step-up as before) ────── */}
             <ClModal
                 open={showDeleteConfirm}
-                onClose={() => setShowDeleteConfirm(false)}
+                onClose={() => { if (!deleting) setShowDeleteConfirm(false); }}
                 width={480}
+                label="Delete account"
+                cardClassName="dlg-card"
             >
-                <div className="p-7">
-                    <div className="text-center mb-6">
-                        <div className="w-14 h-14 rounded-2xl flex items-center justify-center mx-auto mb-4" style={{ background: 'rgba(248,113,113,.1)', border: '1px solid rgba(248,113,113,.2)' }}>
-                            <AlertTriangle className="w-7 h-7" style={{ color: 'var(--cl-flash)' }} />
-                        </div>
-                        <h3 className="text-lg mb-1 font-display" style={{ color: 'var(--cl-flash)' }}>Delete Account</h3>
-                        <p className="text-sm leading-relaxed" style={{ color: 'var(--cl-muted)' }}>
-                            This permanently deletes your account, all devices, and all server-side data.<br />
-                            <span style={{ color: 'var(--cl-glow)' }}>Your encrypted messages are stored locally — back up from Storage settings first if you want to keep them.</span>
-                        </p>
-                    </div>
-                    {deleteError && (
-                        <div className="mb-4 px-4 py-3 rounded-xl text-sm text-center" style={{ background: 'rgba(248,113,113,.1)', border: '1px solid rgba(248,113,113,.25)', color: 'var(--cl-flash)' }}>{deleteError}</div>
-                    )}
-                    <div className="space-y-3">
-                        {/* Password */}
-                        <div className="relative">
-                            <span className="absolute left-3.5 top-1/2 -translate-y-1/2 z-10" style={{ color: 'var(--cl-faint)' }}><Lock size={14} /></span>
-                            <ClInput
-                                type={deleteShowPassword ? 'text' : 'password'}
-                                value={deletePassword}
-                                onChange={e => setDeletePassword(e.target.value)}
-                                placeholder="Your current password"
-                                autoFocus
-                                style={{ paddingLeft: 40, paddingRight: 40, width: '100%' }}
-                            />
-                            {/* A plain flat button, matching AuthScreen's own reveal
-                                toggle — not a ClButton. The kit button is a 40px
-                                depth control with its own shadow sheets, which
-                                inside a 43px field fills it corner to corner and
-                                reads as a second control sitting on top of the
-                                input rather than an adornment inside it. */}
-                            <button
-                                type="button"
-                                aria-label={deleteShowPassword ? 'Hide password' : 'Show password'}
-                                onClick={() => setDeleteShowPassword(v => !v)}
-                                className="absolute right-3 top-1/2 -translate-y-1/2 z-10 flex items-center justify-center text-cl-faint hover:text-cl-text transition-colors"
-                                style={{ border: 'none', background: 'none', cursor: 'pointer', padding: 4 }}
-                            >
-                                {deleteShowPassword ? <EyeOff size={15} /> : <Eye size={15} />}
-                            </button>
-                        </div>
+                <form className="dlg-form" noValidate onSubmit={(e) => { e.preventDefault(); if (canDelete) void deleteAccount(); }}>
+                    <DialogHeader
+                        tone="danger"
+                        icon={<Trash2 size={18} strokeWidth={2.2} />}
+                        title="Delete account"
+                        subtitle="This permanently erases your account. It can't be undone."
+                    />
+                    <DialogBody>
+                        <DialogText>
+                            This deletes your account, all devices, and all server-side data.
+                        </DialogText>
+                        <DialogCallout icon={<AlertTriangle size={14} />}>
+                            Your encrypted messages are stored locally. Back up from Storage settings first if you want to keep them.
+                        </DialogCallout>
 
-                        {/* 2FA */}
-                        {deleteTotpEnabled === null ? (
-                            <div className="h-12 flex items-center justify-center">
-                                <div className="w-4 h-4 rounded-full border-2 border-t-white/60 animate-spin" style={{ borderColor: 'rgba(255,255,255,.2)', borderTopColor: 'rgba(255,255,255,.6)' }} />
-                            </div>
-                        ) : deleteTotpEnabled ? (
-                            <ClInput
-                                type="text"
-                                inputMode="numeric"
-                                maxLength={6}
-                                value={deleteTotp}
-                                onChange={e => setDeleteTotp(e.target.value.replace(/[^\d]/g, '').slice(0, 6))}
-                                placeholder="Authenticator code"
-                                style={{ width: '100%', textAlign: 'center', letterSpacing: '0.15em', fontFamily: 'var(--cl-font-mono)' }}
-                            />
-                        ) : (
-                            <div className="space-y-2">
-                                {!deleteCodeSent ? (
-                                    <ClButton
-                                        variant="ghost"
-                                        fullWidth
-                                        loading={deleteSendingCode}
-                                        disabled={deleteSendingCode}
-                                        onClick={async () => {
-                                            if (!token) return;
-                                            setDeleteSendingCode(true); setDeleteError('');
-                                            try {
-                                                await axios.post(`${API_BASE}/auth/account/deletion-code`, {}, { headers: { Authorization: `Bearer ${token}` } });
-                                                setDeleteCodeSent(true);
-                                            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
-                                            } catch (err: any) {
-                                                setDeleteError(err?.response?.data?.message || 'Failed to send code.');
-                                            } finally {
-                                                setDeleteSendingCode(false);
-                                            }
-                                        }}
+                        <div style={{ marginTop: 16 }}>
+                            <DialogField label="Confirm it's you" htmlFor="delete-account-password">
+                                {/* Password */}
+                                <div className="relative">
+                                    <span className="absolute left-3.5 top-1/2 -translate-y-1/2 z-10" style={{ color: 'var(--cl-faint)' }}><Lock size={14} /></span>
+                                    <ClInput
+                                        id="delete-account-password"
+                                        type={deleteShowPassword ? 'text' : 'password'}
+                                        value={deletePassword}
+                                        onChange={e => setDeletePassword(e.target.value)}
+                                        placeholder="Your current password"
+                                        autoComplete="current-password"
+                                        autoFocus
+                                        disabled={deleting}
+                                        style={{ paddingLeft: 40, paddingRight: 40, width: '100%' }}
+                                    />
+                                    {/* A plain flat button, matching AuthScreen's own reveal
+                                        toggle — not a ClButton. The kit button is a 40px
+                                        depth control with its own shadow sheets, which
+                                        inside a 43px field fills it corner to corner and
+                                        reads as a second control sitting on top of the
+                                        input rather than an adornment inside it. */}
+                                    <button
+                                        type="button"
+                                        aria-label={deleteShowPassword ? 'Hide password' : 'Show password'}
+                                        onClick={() => setDeleteShowPassword(v => !v)}
+                                        className="absolute right-3 top-1/2 -translate-y-1/2 z-10 flex items-center justify-center text-cl-faint hover:text-cl-text transition-colors"
+                                        style={{ border: 'none', background: 'none', cursor: 'pointer', padding: 4 }}
                                     >
-                                        {deleteSendingCode ? 'Sending…' : 'Send verification code to your email'}
-                                    </ClButton>
+                                        {deleteShowPassword ? <EyeOff size={15} /> : <Eye size={15} />}
+                                    </button>
+                                </div>
+
+                                {/* 2FA */}
+                                {deleteTotpEnabled === null ? (
+                                    <div className="h-12 flex items-center justify-center">
+                                        <div className="w-4 h-4 rounded-full border-2 border-t-white/60 animate-spin" style={{ borderColor: 'rgba(255,255,255,.2)', borderTopColor: 'rgba(255,255,255,.6)' }} />
+                                    </div>
+                                ) : deleteTotpEnabled ? (
+                                    <ClInput
+                                        type="text"
+                                        inputMode="numeric"
+                                        maxLength={6}
+                                        aria-label="Authenticator code"
+                                        value={deleteTotp}
+                                        onChange={e => setDeleteTotp(e.target.value.replace(/[^\d]/g, '').slice(0, 6))}
+                                        placeholder="Authenticator code"
+                                        disabled={deleting}
+                                        style={{ width: '100%', textAlign: 'center', letterSpacing: '0.15em', fontFamily: 'var(--cl-font-mono)' }}
+                                    />
                                 ) : (
                                     <div className="space-y-2">
-                                        <SlottedCodeInput
-                                            value={deleteEmailCode}
-                                            onChange={setDeleteEmailCode}
-                                        />
-                                        <ClButton
-                                            variant="ghost"
-                                            size="sm"
-                                            onClick={() => { setDeleteCodeSent(false); setDeleteEmailCode(''); }}
-                                        >
-                                            Resend code
-                                        </ClButton>
+                                        {!deleteCodeSent ? (
+                                            <ClButton
+                                                variant="ghost"
+                                                fullWidth
+                                                loading={deleteSendingCode}
+                                                disabled={deleteSendingCode}
+                                                onClick={sendDeletionCode}
+                                            >
+                                                {deleteSendingCode ? 'Sending…' : 'Email me a verification code'}
+                                            </ClButton>
+                                        ) : (
+                                            <div className="space-y-2">
+                                                <SlottedCodeInput
+                                                    value={deleteEmailCode}
+                                                    onChange={setDeleteEmailCode}
+                                                />
+                                                <ClButton
+                                                    variant="ghost"
+                                                    size="sm"
+                                                    onClick={() => { setDeleteCodeSent(false); setDeleteEmailCode(''); }}
+                                                >
+                                                    Resend code
+                                                </ClButton>
+                                            </div>
+                                        )}
                                     </div>
                                 )}
-                            </div>
-                        )}
-
-                        <ClButton
-                            variant="danger"
-                            fullWidth
-                            disabled={deleting || !deletePassword || (deleteTotpEnabled === true && !deleteTotp) || (deleteTotpEnabled === false && !deleteCodeSent)}
-                            loading={deleting}
-                            onClick={async () => {
-                                if (!token) return;
-                                setDeleting(true); setDeleteError('');
-                                try {
-                                    await axios.delete(`${API_BASE}/auth/account`, {
-                                        headers: { Authorization: `Bearer ${token}` },
-                                        data: {
-                                            password: deletePassword,
-                                            ...(deleteTotp ? { totp_code: deleteTotp } : {}),
-                                            ...(deleteEmailCode ? { email_code: deleteEmailCode } : {}),
-                                        },
-                                    });
-                                    setShowDeleteConfirm(false);
-                                    onCloseSettings();
-                                    onLogout();
-                                // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
-                                } catch (err: any) {
-                                    setDeleteError(err?.response?.data?.message || 'Deletion failed. Please try again.');
-                                } finally {
-                                    setDeleting(false);
-                                }
-                            }}
-                        >
-                            {deleting ? 'Deleting…' : 'Permanently Delete My Account'}
-                        </ClButton>
-                        <ClButton
-                            variant="ghost"
-                            fullWidth
-                            onClick={() => setShowDeleteConfirm(false)}
-                        >
+                            </DialogField>
+                        </div>
+                    </DialogBody>
+                    {deleteError && <DialogError>{deleteError}</DialogError>}
+                    <DialogFooter hint={deleteTotpEnabled === false && !deleteCodeSent ? <span>Request a code to continue</span> : undefined}>
+                        <ClButton type="button" variant="ghost" size="sm" disabled={deleting} onClick={() => setShowDeleteConfirm(false)}>
                             Cancel
                         </ClButton>
-                    </div>
-                </div>
+                        <ClButton type="submit" variant="danger" size="sm" disabled={!canDelete} loading={deleting}>
+                            {deleting ? 'Deleting…' : 'Delete my account'}
+                        </ClButton>
+                    </DialogFooter>
+                </form>
             </ClModal>
         </>
     );

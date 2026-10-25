@@ -17,7 +17,8 @@ vi.mock('../../utils/secureLocalStore', () => {
     return { default: api, secureLocalStore: api };
 });
 
-import { HomeKeys, BURST_LINES, PLAY_DELAY_MS, SETTLE_SLACK_MS, type PlayVerdict } from './HomeKeys';
+import { HomeKeys, BURST_LINES, PLAY_DELAY_MS, SETTLE_SLACK_MS, STATIC_PAYOFF_MS, type PlayVerdict } from './HomeKeys';
+import { applyMotionState } from '../../utils/idleMotion';
 import { __resetWaveGuard } from './Keys';
 import { SPAM_GAP_MS, homeGameVerdict } from '../../utils/keysBurst';
 import { SHOWS, PERSONALITIES, type Personality } from '../../utils/keysSpam';
@@ -51,7 +52,7 @@ function mount(verdict: PlayVerdict = 'ok', userId = UID) {
 }
 /** The next streak gets `id`. */
 const lineUp = (id: Personality, userId = UID) => store.set(spamBagKey(userId), JSON.stringify({ bag: [id], last: null }));
-const rig = () => host.querySelector('[role="img"]') as HTMLElement;
+const rig = () => host.querySelector('.k2-root') as HTMLElement;
 /** Click him `n` times, `gap` ms apart. */
 function clicks(n: number, gap: number) {
     for (let i = 0; i < n; i++) {
@@ -208,14 +209,12 @@ describe('HomeKeys: the rotation', () => {
 });
 
 describe('HomeKeys: refusals and slow clicking', () => {
-    it.each([
-        ['call', BURST_LINES.call],
-        ['unavailable', BURST_LINES.unavailable],
-    ] as const)('when the host says "%s", he says why and the game stays shut', (verdict, line) => {
-        const { onPlay, canPlay } = mount(verdict);
+    it('the machine cannot draw the game: he says why, plays the show\'s payoff, and the game stays shut', () => {
+        lineUp('camo');
+        const { onPlay, canPlay } = mount('unavailable');
         spamFor(5000);
         expect(canPlay).toHaveBeenCalledTimes(1);
-        expect(speech()).toBe(line);
+        expect(speech()).toBe(BURST_LINES.unavailable);
         act(() => { vi.advanceTimersByTime(5000); });
         expect(onPlay).not.toHaveBeenCalled();
         expect(showing()).toBeNull();
@@ -453,5 +452,236 @@ describe('HomeKeys: the idle-CPU contract', () => {
             root!.render(React.createElement(HomeKeys, { userId: UID, signal: 'idle', speech: null, lively: false, onPoke: () => {}, canPlay: (): PlayVerdict => 'ok', onPlay: () => {} }));
         });
         expect(host.querySelector('.hk')?.getAttribute('data-swim')).toBe('off');
+    });
+});
+
+describe('HomeKeys: the payoff when the game cannot open (a call is live)', () => {
+    interface Rec { el: Element; frames: Keyframe[]; ms: number; cancelled: boolean; paused: boolean; pauses: number; plays: number }
+    /** Element.animate stand-in that records every animation (jsdom has none). */
+    const recorder = () => {
+        const proto = Element.prototype as unknown as { animate?: unknown };
+        const had = proto.animate;
+        const recs: Rec[] = [];
+        proto.animate = function (this: Element, frames: Keyframe[], o: { duration: number }) {
+            const r: Rec = { el: this, frames, ms: o.duration, cancelled: false, paused: false, pauses: 0, plays: 0 };
+            recs.push(r);
+            return {
+                cancel() { r.cancelled = true; },
+                pause() { r.paused = true; r.pauses++; },
+                play() { r.paused = false; r.plays++; },
+                playState: 'running',
+            } as unknown as Animation;
+        };
+        return { recs, restore: () => { proto.animate = had; } };
+    };
+    const callLine = /after your call|your call|in a call|call/i;
+
+    afterEach(() => { applyMotionState(true); });
+
+    it.each(PERSONALITIES)('%s: 5 s of spam in a call ends on its own payoff line, never a call refusal, and the game stays shut', (id) => {
+        lineUp(id);
+        const { onPlay, canPlay } = mount('call');
+        spamFor(5000);
+        expect(canPlay).toHaveBeenCalledTimes(1);
+        expect(speech()).toBe(SHOWS[id].payoffLine);
+        expect(speech()).not.toMatch(callLine);
+        act(() => { vi.advanceTimersByTime(SHOWS[id].payoff().ms + 100); });
+        expect(onPlay).not.toHaveBeenCalled();
+        expect(showing()).toBeNull();                 // the show is over, back to plain Keys
+        expect(host.querySelector('.k2-brow')).not.toBeNull();
+    });
+
+    it.each(PERSONALITIES)('%s: the payoff plays real animations on html elements, then every one is let go', (id) => {
+        const spy = recorder();
+        try {
+            lineUp(id);
+            mount('call');
+            spamFor(4900);
+            const before = spy.recs.length;
+            act(() => { rig().click(); }); // the 5 s click
+            const payoff = spy.recs.slice(before);
+            expect(payoff.length).toBeGreaterThanOrEqual(4);
+            expect(payoff.every(r => r.el instanceof HTMLElement || r.el.tagName.toLowerCase() === 'svg')).toBe(true);
+            expect(payoff.some(r => r.el.closest('.k2-svg') && r.el.tagName.toLowerCase() !== 'svg')).toBe(false);
+            expect(Math.max(...payoff.map(r => r.ms))).toBe(SHOWS[id].payoff().ms);
+            act(() => { vi.advanceTimersByTime(SHOWS[id].payoff().ms + 100); });
+            expect(spy.recs.every(r => r.cancelled || !r.frames.some(f => (f as { _held?: boolean })._held))).toBe(true);
+            // everything it held was cancelled by the end (nothing keeps a pose)
+            expect(spy.recs.slice(before).filter(r => !r.cancelled).every(r => r.frames.length > 1)).toBe(true);
+        } finally { spy.restore(); }
+    });
+
+    it('clicks that keep coming during the payoff neither cut it short nor start a new show', () => {
+        lineUp('dance');
+        const { onPlay, onPoke } = mount('call');
+        spamFor(5000);
+        const pokes = onPoke.mock.calls.length;
+        clicks(10, 100);                              // the spammer has not noticed
+        expect(showing()).toBe('dance');
+        expect(speech()).toBe(SHOWS.dance.payoffLine);
+        expect(onPoke.mock.calls.length).toBe(pokes);
+        expect(onPlay).not.toHaveBeenCalled();
+        act(() => { vi.advanceTimersByTime(SHOWS.dance.payoff().ms); });
+        expect(showing()).toBeNull();
+    });
+
+    it('control: with no call the same spam still opens the game and plays the FINALE, not the payoff', () => {
+        const spy = recorder();
+        try {
+            lineUp('dance');
+            const { onPlay } = mount('ok');
+            spamFor(5000);
+            expect(speech()).toBe(SHOWS.dance.finaleLine);
+            expect(speech()).not.toBe(SHOWS.dance.payoffLine);
+            expect(spy.recs.every(r => r.ms < SHOWS.dance.payoff().ms)).toBe(true);
+            act(() => { vi.advanceTimersByTime(PLAY_DELAY_MS); });
+            expect(onPlay).toHaveBeenCalledTimes(1);
+        } finally { spy.restore(); }
+    });
+
+    it('reduced motion: no animation at all, his line is the payoff, and it clears after a read', () => {
+        reduce = true;
+        const spy = recorder();
+        try {
+            lineUp('dance');
+            const { onPlay } = mount('call');
+            spamFor(5000);
+            expect(speech()).toBe(SHOWS.dance.payoffLine);
+            expect(spy.recs).toHaveLength(0);
+            act(() => { vi.advanceTimersByTime(STATIC_PAYOFF_MS - 200); });
+            expect(showing()).toBe('dance');          // still being read
+            act(() => { vi.advanceTimersByTime(400); });
+            expect(showing()).toBeNull();
+            expect(onPlay).not.toHaveBeenCalled();
+        } finally { spy.restore(); }
+    });
+
+    it('positive control for the reduced-motion case: the same spam without it does animate', () => {
+        const spy = recorder();
+        try {
+            lineUp('dance');
+            mount('call');
+            spamFor(5000);
+            expect(spy.recs.some(r => r.ms === SHOWS.dance.payoff().ms)).toBe(true);
+        } finally { spy.restore(); }
+    });
+
+    it('a resting window (blurred / hidden / minimised) at the 5 s mark: no animation, just the line', () => {
+        const spy = recorder();
+        try {
+            lineUp('charge');
+            mount('call');
+            spamFor(4900);
+            applyMotionState(false);
+            const before = spy.recs.length;
+            act(() => { rig().click(); });
+            expect(spy.recs.slice(before)).toHaveLength(0);
+            expect(speech()).toBe(SHOWS.charge.payoffLine);
+            act(() => { vi.advanceTimersByTime(STATIC_PAYOFF_MS + 100); });
+            expect(showing()).toBeNull();
+        } finally { spy.restore(); }
+    });
+
+    it('the window starts resting MID-payoff: it freezes, does not end, and finishes after the rest', () => {
+        const spy = recorder();
+        try {
+            lineUp('dodge');
+            mount('call');
+            spamFor(5000);
+            const live = spy.recs.filter(r => !r.cancelled && r.ms === SHOWS.dodge.payoff().ms);
+            expect(live.length).toBeGreaterThan(0);
+            act(() => { vi.advanceTimersByTime(1000); now += 1000; });
+            act(() => { applyMotionState(false); });
+            expect(live.every(r => r.paused)).toBe(true);
+            // a long while later (window still resting): he is still mid-payoff
+            act(() => { vi.advanceTimersByTime(60_000); now += 60_000; });
+            expect(showing()).toBe('dodge');
+            expect(live.every(r => !r.cancelled)).toBe(true);
+            act(() => { applyMotionState(true); });
+            expect(live.every(r => !r.paused && r.plays >= 1)).toBe(true);
+            // ~1 s was already played: the remaining ~2.6 s, not the whole 3.6 s again
+            act(() => { vi.advanceTimersByTime(2400); });
+            expect(showing()).toBe('dodge');
+            act(() => { vi.advanceTimersByTime(400); });
+            expect(showing()).toBeNull();
+        } finally { spy.restore(); }
+    });
+
+    it('positive control: a window that never rests runs the payoff straight through to the end', () => {
+        const spy = recorder();
+        try {
+            lineUp('dodge');
+            mount('call');
+            spamFor(5000);
+            const live = spy.recs.filter(r => r.ms === SHOWS.dodge.payoff().ms);
+            expect(live.every(r => r.pauses === 0)).toBe(true);
+            act(() => { vi.advanceTimersByTime(SHOWS.dodge.payoff().ms + 100); });
+            expect(showing()).toBeNull();
+        } finally { spy.restore(); }
+    });
+
+    it('unmounting mid-payoff cancels its timers and animations', () => {
+        const spy = recorder();
+        try {
+            lineUp('glitch');
+            mount('call');
+            spamFor(5000);
+            act(() => { root!.unmount(); });
+            root = null;
+            expect(spy.recs.filter(r => r.ms === SHOWS.glitch.payoff().ms).every(r => r.cancelled)).toBe(true);
+            vi.advanceTimersByTime(10_000);           // nothing throws on a dead component
+        } finally { spy.restore(); }
+    });
+
+    it('no source file still carries the call refusal tag-on', () => {
+        const here = dirname(fileURLToPath(import.meta.url));
+        const src = readFileSync(join(here, 'HomeKeys.tsx'), 'utf8') + readFileSync(join(here, '..', '..', 'utils', 'keysSpam.ts'), 'utf8');
+        expect(src).not.toMatch(/after your call/i);
+        expect(Object.values(BURST_LINES).join(' ')).not.toMatch(/call/i);
+        expect('call' in BURST_LINES).toBe(false);
+    });
+
+    it('each show mounts the props its payoff animates (and only while that show is on)', () => {
+        const props: Record<string, string[]> = {
+            dance: ['.hk-disco-a', '.hk-disco-b', '.hk-ball', '.hk-spark--0'],
+            glitch: ['.hk-scan', '.hk-ghost-a'],
+            dodge: ['.hk-streak--r', '.hk-streak--l', '.hk-dust'],
+            charge: ['.hk-ring--fill', '.hk-spark--1'],
+            camo: ['.hk-sheen', '.hk-stripes'],
+        };
+        for (const id of PERSONALITIES) {
+            lineUp(id);
+            mount('call');
+            expect(host.querySelector('.hk-disco, .hk-ball, .hk-scan, .hk-streak, .hk-dust, .hk-sheen, .hk-spark'), `${id} idle`).toBeNull();
+            spamFor(1200);
+            for (const sel of props[id]) expect(host.querySelector(sel), `${id} ${sel}`).not.toBeNull();
+            rest();
+            act(() => { root!.unmount(); });
+            root = createRoot(host);
+            __resetSpamBagMemory(); store.clear();
+        }
+    });
+});
+
+describe('HomeKeys: the payoff props are decoration, never load-bearing', () => {
+    const raw = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'styles', 'home-keys.css'), 'utf8');
+    const css = raw.replace(/\/\*[\s\S]*?\*\//g, '');
+    const rule = (sel: string) => css.match(new RegExp(`(?:^|\\})\\s*${sel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\{([^}]*)\\}`))?.[1] ?? '';
+
+    it.each(['.hk-ball', '.hk-spark', '.hk-scan', '.hk-streak', '.hk-dust', '.hk-sheen'])('%s rests invisible (opacity 0), so nothing shows if its animation never runs', (sel) => {
+        expect(rule(sel)).toMatch(/opacity:\s*0\b/);
+    });
+    it('the disco layers rest invisible', () => {
+        expect(rule('.hk-disco > span')).toMatch(/opacity:\s*0\b/);
+    });
+    it('reduced motion does not even lay the props out', () => {
+        const m = css.match(/@media \(prefers-reduced-motion: reduce\)\s*\{\s*\.hk-disco[^{]*\{\s*display:\s*none/);
+        expect(m).not.toBeNull();
+    });
+    it('props use design tokens, and none of the payoff CSS uses filter / shadow / will-change / looping animation', () => {
+        const payoffCss = css.slice(css.indexOf('.hk-disco {'));
+        expect(payoffCss).toMatch(/var\(--cl-lume\)/);
+        expect(payoffCss).toMatch(/var\(--cl-glow\)/);
+        expect(payoffCss).not.toMatch(/(^|[^-])filter\s*:|box-shadow|will-change|animation\s*:|@keyframes/);
     });
 });

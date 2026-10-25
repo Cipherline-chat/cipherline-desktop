@@ -21,7 +21,9 @@
  * The addon (share_power.cc getForegroundInfo) reports the Windows
  * notification state enum, the foreground process's image BASENAME (never a
  * path), whether that window's rectangle equals its monitor's, and whether it
- * is ours. No window titles, no handles. The basename is a program name, like
+ * is ours. No window titles, no handles (the addon also returns the
+ * foreground window's handle as `fgWindow`; ForegroundInfo drops it, and only
+ * quick-share-foreground.ts in MAIN reads it). The basename is a program name, like
  * the game detector already uses; it only ever sits in the in-memory call
  * event log and a report the user chooses to send.
  *

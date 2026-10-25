@@ -1,11 +1,14 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
     INITIAL_BRAIN, onPoke, onWake, onRest, applySignal, shouldArmRest,
-    nextBlinkDelay, pokeReaction, BROWS, REST_MS,
+    nextBlinkDelay, pokeReaction, BROWS, REST_MS, heldBrows,
     type BrainState, type KeysMood, type KeysSignal, type PokeReaction, type KeysFace,
 } from '../../utils/keysBrain';
 import { useMascotCue } from '../../hooks/useMascotCue';
 import { isMotionActive } from '../../utils/idleMotion';
+import { useEasterCostume } from '../../hooks/useEasterEggs';
+import { COSTUME_LABEL, type Costume } from '../../utils/easterEggs';
+import { KeysCostume } from './KeysCostume';
 import '../../styles/keys.css';
 
 export type { KeysMood, KeysSignal, KeysFace, PokeReaction } from '../../utils/keysBrain';
@@ -71,6 +74,14 @@ export interface KeysProps {
      *  own compositor-only swim turns it off; one-shots (wave, flail, perk)
      *  still play. */
     idleSway?: boolean;
+    /** A hat for the day. Undefined (the default) = whatever today's calendar
+     *  says (Halloween, New Year, the birthday); pass null to force none, or a
+     *  costume to force one. */
+    costume?: Costume | null;
+    /** Render his root as a real <button> (focusable, Enter / Space poke
+     *  him, named by `ariaLabel`) instead of a labelled image. The Home deck
+     *  does: there clicking him is the point. Default false. */
+    asButton?: boolean;
     onPoke?: (count: number) => void;
     onMoodChange?: (m: KeysMood) => void;
     className?: string;
@@ -85,10 +96,12 @@ export const Keys: React.FC<KeysProps> = ({
     interactive = true, waveOnMount = true, lively = false,
     wave: waveProp = false, sad = false,
     ariaLabel = 'Keys, the Cipherline mascot',
-    face = null, interceptPoke, idleSway = true,
+    face = null, interceptPoke, idleSway = true, costume: costumeProp, asButton = false,
     onPoke: onPokeCb, onMoodChange, className,
 }) => {
     const [brain, setBrain] = useState<BrainState>(INITIAL_BRAIN);
+    const calendarCostume = useEasterCostume();
+    const costume = costumeProp === undefined ? calendarCostume : costumeProp;
     const [blink, setBlink] = useState(false);
     const [wave, setWave] = useState(false);
     const [wig, setWig] = useState(0);
@@ -264,9 +277,13 @@ export const Keys: React.FC<KeysProps> = ({
     // A held face outranks the mood (and the blink: you can't blink at
     // someone you're cross with), but never sadness or sleep.
     const held = sad || asleep ? null : face;
-    const browL = sad ? BROWS.sadL : held === 'happy' ? BROWS.happyL
+    // A held face's brows (keysBrain heldBrows); 'blank' draws none, and a
+    // held 'focus' / 'wide' still blinks (a blink is a beat, not a mood).
+    const heldPair = heldBrows(held);
+    const blinkThrough = blink && (held === 'focus' || held === 'wide');
+    const browL = sad ? BROWS.sadL : blinkThrough ? BROWS.closedL : heldPair ? heldPair.l
         : closed ? BROWS.closedL : happy ? BROWS.happyL : BROWS.awakeL;
-    const browR = sad ? BROWS.sadR : held === 'happy' ? BROWS.happyR
+    const browR = sad ? BROWS.sadR : blinkThrough ? BROWS.closedR : heldPair ? heldPair.r
         : closed ? BROWS.closedR : happy ? BROWS.happyR : BROWS.awakeR;
 
     const svgCls = [
@@ -279,13 +296,18 @@ export const Keys: React.FC<KeysProps> = ({
         className ?? '',
     ].filter(Boolean).join(' ');
 
+    // The root: a labelled image, or (asButton) a real button with the same
+    // name. `k2-root` is the hook hosts style and query it by either way.
+    const Root = asButton ? 'button' : 'span';
+    const name = costume ? `${ariaLabel} ${COSTUME_LABEL[costume]}` : ariaLabel;
     return (
-        <span
+        <Root
+            className={asButton ? 'k2-root k2-btn' : 'k2-root'}
             style={{ position: 'relative', display: 'inline-flex', width: fluid ? '100%' : undefined, cursor: interactive ? 'pointer' : undefined }}
             onClick={interactive ? poke : undefined}
             onMouseEnter={interactive ? hoverWake : undefined}
-            role="img"
-            aria-label={ariaLabel}
+            {...(asButton ? { type: 'button' as const } : { role: 'img' })}
+            aria-label={name}
         >
             {speech && !asleep && <span className="k2-speech">{speech}</span>}
             {/* The one-shot wrapper: its animation is replayed by the layout
@@ -328,6 +350,8 @@ export const Keys: React.FC<KeysProps> = ({
                         {/* A single small tear — understated, not overdone
                             (carried over from OfflineScreen's sad face). */}
                         {sad && <path d="M40 45 q-2 5 0 7.5 q2 -2.5 0 -7.5" fill="var(--cl-lume-hi)" opacity="0.85" />}
+                        {/* The day's hat (Halloween, New Year, the birthday). */}
+                        {costume && <KeysCostume costume={costume} />}
                     </g>
                     {reaction === 'squish' && (
                         <g className="k2-ink" fill="#0B0F1E">
@@ -344,7 +368,7 @@ export const Keys: React.FC<KeysProps> = ({
                     )}
                 </svg>
             </span>
-        </span>
+        </Root>
     );
 };
 

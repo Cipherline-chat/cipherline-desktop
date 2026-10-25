@@ -1,0 +1,311 @@
+/*
+ * Full-screen blocking screens for the server's version floor ("Update
+ * required") and admin kill switch ("App shut down") — ClientBlockScreen.tsx.
+ *
+ * "Glow in the deep": abyss ground, two slow luminous currents, a little
+ * marine snow drifting up, one glass card. Tone per screen: `--cb-tone` is the
+ * Lume aqua for the update (forward motion), the Glow amber for the shutdown
+ * (calm caution — deliberately NOT flash red: nobody did anything wrong).
+ *
+ * Every decorative animation stops under prefers-reduced-motion AND while the
+ * window is idle (<html data-cl-motion="idle">, utils/idleMotion.ts), so a
+ * blocked app left open on a second monitor costs no GPU.
+ */
+
+.cb-root {
+    --cb-tone: var(--cl-lume);
+    --cb-tone-rgb: 37, 224, 200;
+    position: fixed;
+    inset: 0;
+    z-index: 2147483000; /* above every app layer, call windows and toasts */
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 48px 24px 32px;
+    overflow: hidden auto;
+    background:
+        radial-gradient(90% 70% at 50% 0%, rgba(var(--cb-tone-rgb), .10) 0%, transparent 60%),
+        radial-gradient(120% 100% at 50% 110%, #0E1530 0%, var(--cl-abyss) 70%);
+    color: var(--cl-text);
+    font-family: var(--cl-font-body);
+    isolation: isolate;
+    animation: cb-in 420ms cubic-bezier(.2, .8, .2, 1) both;
+}
+.cb-root[data-tone='glow'] {
+    --cb-tone: var(--cl-glow);
+    --cb-tone-rgb: 255, 201, 77;
+}
+.cb-root[data-tone='ok'] {
+    --cb-tone: var(--cl-ok);
+    --cb-tone-rgb: 74, 222, 128;
+}
+
+/* Frameless window: keep the top strip draggable like the app's own bar. */
+.cb-drag {
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    height: 32px;
+    -webkit-app-region: drag;
+    z-index: 2;
+}
+.cb-winctl {
+    position: fixed;
+    top: 4px; right: 6px;
+    display: flex;
+    gap: 2px;
+    z-index: 3;
+    -webkit-app-region: no-drag;
+}
+.cb-winctl button {
+    width: 40px; height: 26px;
+    display: flex; align-items: center; justify-content: center;
+    border: 0; border-radius: 8px; padding: 0;
+    background: transparent; color: var(--cl-muted); cursor: pointer;
+}
+.cb-winctl button:hover, .cb-winctl button:focus-visible { background: var(--cl-surface); color: var(--cl-text); outline: none; }
+.cb-winctl button.cb-close:hover, .cb-winctl button.cb-close:focus-visible { background: var(--cl-flash); color: var(--cl-on-flash); }
+
+/* ── The deep: two drifting currents + marine snow ─────────────────────── */
+.cb-current {
+    position: absolute;
+    width: 70vmax; height: 70vmax;
+    border-radius: 50%;
+    filter: blur(80px);
+    opacity: .16;
+    pointer-events: none;
+    z-index: -1;
+    background: radial-gradient(circle, rgba(var(--cb-tone-rgb), .9) 0%, transparent 62%);
+}
+.cb-current.a { top: -38vmax; left: -22vmax; animation: cb-drift-a 26s ease-in-out infinite alternate; }
+.cb-current.b {
+    bottom: -44vmax; right: -26vmax; opacity: .10;
+    background: radial-gradient(circle, rgba(59, 234, 214, .8) 0%, transparent 62%);
+    animation: cb-drift-b 32s ease-in-out infinite alternate;
+}
+.cb-snow { position: absolute; inset: 0; pointer-events: none; z-index: -1; }
+.cb-snow i {
+    position: absolute;
+    bottom: -10px;
+    width: 3px; height: 3px;
+    border-radius: 50%;
+    background: rgba(var(--cb-tone-rgb), .55);
+    box-shadow: 0 0 6px rgba(var(--cb-tone-rgb), .6);
+    animation: cb-rise linear infinite;
+}
+
+/* ── Card ─────────────────────────────────────────────────────────────── */
+.cb-card {
+    position: relative;
+    width: 100%;
+    max-width: 520px;
+    padding: 40px 36px 28px;
+    border-radius: 28px;
+    background: linear-gradient(180deg, rgba(28, 37, 66, .78) 0%, rgba(19, 26, 48, .82) 100%);
+    border: 1.5px solid rgba(var(--cb-tone-rgb), .22);
+    box-shadow:
+        0 0 0 1px rgba(0, 0, 0, .25),
+        0 30px 80px rgba(0, 0, 0, .55),
+        0 0 60px rgba(var(--cb-tone-rgb), .08);
+    backdrop-filter: blur(14px);
+    text-align: center;
+    animation: cb-rise-in 560ms var(--cl-ease-enter, cubic-bezier(.3, 1.4, .4, 1)) 80ms both;
+}
+.cb-card:focus { outline: none; }
+
+/* Emblem: a tone-coloured disc inside a slowly turning halo. */
+.cb-emblem {
+    position: relative;
+    width: 92px; height: 92px;
+    margin: 0 auto 22px;
+    display: grid;
+    place-items: center;
+}
+.cb-emblem::before {
+    content: '';
+    position: absolute; inset: 0;
+    border-radius: 50%;
+    background: conic-gradient(from 0deg, transparent 0 20%, rgba(var(--cb-tone-rgb), .95) 45%, transparent 70% 100%);
+    -webkit-mask: radial-gradient(circle, transparent 57%, #000 59%);
+            mask: radial-gradient(circle, transparent 57%, #000 59%);
+    animation: cb-spin 3.2s linear infinite;
+}
+.cb-emblem-core {
+    position: relative;
+    width: 66px; height: 66px;
+    border-radius: 50%;
+    display: grid; place-items: center;
+    background: radial-gradient(circle at 35% 30%, rgba(var(--cb-tone-rgb), .35), rgba(var(--cb-tone-rgb), .10) 70%);
+    border: 1.5px solid rgba(var(--cb-tone-rgb), .45);
+    box-shadow: 0 0 30px rgba(var(--cb-tone-rgb), .30), inset 0 0 18px rgba(var(--cb-tone-rgb), .18);
+    color: var(--cb-tone);
+}
+/* Shutdown: a calm sonar instead of a spinner — "we're here, we're watching". */
+.cb-emblem[data-kind='sonar']::before { display: none; }
+.cb-emblem .cb-ring {
+    position: absolute; inset: 13px;
+    border-radius: 50%;
+    border: 1.5px solid rgba(var(--cb-tone-rgb), .55);
+    animation: cb-sonar 3.6s cubic-bezier(.2, .6, .3, 1) infinite;
+}
+.cb-emblem .cb-ring:nth-child(2) { animation-delay: 1.2s; }
+.cb-emblem .cb-ring:nth-child(3) { animation-delay: 2.4s; }
+
+.cb-eyebrow {
+    display: inline-flex; align-items: center; gap: 7px;
+    padding: 5px 12px;
+    border-radius: 99px;
+    background: rgba(var(--cb-tone-rgb), .12);
+    color: var(--cb-tone);
+    font-size: 11px;
+    font-weight: 800;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    margin-bottom: 14px;
+}
+.cb-title {
+    font-family: var(--cl-font-display);
+    font-weight: 600;
+    font-size: 28px;
+    line-height: 1.18;
+    letter-spacing: -.01em;
+    margin: 0 0 10px;
+    color: var(--cl-text);
+    overflow-wrap: anywhere;
+}
+.cb-body {
+    font-size: 14.5px;
+    line-height: 1.6;
+    color: var(--cl-muted);
+    margin: 0 auto;
+    max-width: 420px;
+    white-space: pre-line; /* server copy may carry paragraphs */
+    overflow-wrap: anywhere;
+}
+
+/* Installed → required */
+.cb-versions {
+    display: flex; align-items: center; justify-content: center; gap: 10px;
+    margin: 22px 0 4px;
+    flex-wrap: wrap;
+}
+.cb-chip {
+    display: inline-flex; flex-direction: column; align-items: center;
+    min-width: 112px;
+    padding: 9px 14px;
+    border-radius: 14px;
+    background: var(--cl-abyss);
+    border: 1.5px solid var(--cl-border);
+}
+.cb-chip small { font-size: 10.5px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; color: var(--cl-faint); }
+.cb-chip b { font-family: var(--cl-font-mono); font-weight: 500; font-size: 15px; color: var(--cl-text); margin-top: 2px; }
+.cb-chip.is-target { border-color: rgba(var(--cb-tone-rgb), .5); box-shadow: 0 0 18px rgba(var(--cb-tone-rgb), .12); }
+.cb-chip.is-target b { color: var(--cb-tone); }
+.cb-arrow { color: var(--cl-faint); }
+
+/* Progress / status area */
+.cb-status {
+    margin: 22px auto 0;
+    max-width: 400px;
+    min-height: 44px;
+}
+.cb-status .prog { width: 100%; }
+.cb-status-line {
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+    font-size: 13px;
+    color: var(--cl-muted);
+    margin-top: 10px;
+    font-variant-numeric: tabular-nums;
+}
+.cb-status-line.is-error { color: var(--cl-flash); }
+.cb-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--cb-tone);
+    box-shadow: 0 0 0 0 rgba(var(--cb-tone-rgb), .6);
+    animation: cb-breathe 2.4s ease-in-out infinite;
+    flex: none;
+}
+
+.cb-meta {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    margin: 22px 0 0;
+    text-align: left;
+}
+.cb-meta > div {
+    padding: 10px 14px;
+    border-radius: 14px;
+    background: var(--cl-abyss);
+    border: 1.5px solid var(--cl-border);
+}
+.cb-meta > div:only-child { grid-column: 1 / -1; text-align: center; }
+.cb-meta small { display: block; font-size: 10.5px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; color: var(--cl-faint); }
+.cb-meta b { display: block; font-size: 14px; font-weight: 700; color: var(--cl-text); margin-top: 2px; }
+.cb-meta span { font-size: 12px; color: var(--cl-muted); }
+
+.cb-actions {
+    display: flex; flex-direction: column; align-items: center; gap: 10px;
+    margin-top: 26px;
+}
+.cb-link {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: none; border: 0; padding: 6px 10px; border-radius: 8px;
+    font: inherit; font-size: 12.5px; font-weight: 700;
+    color: var(--cl-faint);
+    cursor: pointer;
+}
+.cb-link:hover, .cb-link:focus-visible { color: var(--cl-text); background: rgba(255, 255, 255, .04); outline: none; }
+.cb-link:focus-visible { box-shadow: 0 0 0 2px rgba(var(--cb-tone-rgb), .6); }
+
+.cb-foot {
+    margin-top: 18px;
+    padding-top: 16px;
+    border-top: 1px solid rgba(42, 53, 88, .7);
+    font-size: 12px;
+    color: var(--cl-faint);
+    display: flex; align-items: center; justify-content: center; gap: 6px;
+}
+
+/* "We're back" beat before the shutdown screen gets out of the way */
+.cb-root.is-leaving { animation: cb-out 520ms ease-in 380ms forwards; }
+
+/* ── Keyframes ────────────────────────────────────────────────────────── */
+@keyframes cb-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes cb-out { to { opacity: 0; visibility: hidden; } }
+@keyframes cb-rise-in { from { opacity: 0; transform: translateY(18px) scale(.98); } to { opacity: 1; transform: none; } }
+@keyframes cb-spin { to { transform: rotate(360deg); } }
+@keyframes cb-sonar {
+    0% { transform: scale(.9); opacity: .8; }
+    100% { transform: scale(1.75); opacity: 0; }
+}
+@keyframes cb-breathe {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(var(--cb-tone-rgb), .55); }
+    50% { box-shadow: 0 0 0 6px rgba(var(--cb-tone-rgb), 0); }
+}
+@keyframes cb-drift-a { to { transform: translate(14vmax, 10vmax) scale(1.08); } }
+@keyframes cb-drift-b { to { transform: translate(-12vmax, -8vmax) scale(1.12); } }
+@keyframes cb-rise {
+    0% { transform: translateY(0); opacity: 0; }
+    10% { opacity: 1; }
+    90% { opacity: .8; }
+    100% { transform: translateY(-110vh); opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .cb-root, .cb-card, .cb-current, .cb-snow i, .cb-emblem::before,
+    .cb-emblem .cb-ring, .cb-dot { animation: none !important; }
+    .cb-snow { display: none; }
+    .cb-emblem .cb-ring:nth-child(n+2) { display: none; }
+    .cb-root.is-leaving { animation: cb-out 1ms linear 600ms forwards !important; }
+}
+html[data-cl-motion='idle'] .cb-current,
+html[data-cl-motion='idle'] .cb-snow i,
+html[data-cl-motion='idle'] .cb-emblem::before,
+html[data-cl-motion='idle'] .cb-emblem .cb-ring,
+html[data-cl-motion='idle'] .cb-dot { animation-play-state: paused; }
+
+@media (max-width: 520px) {
+    .cb-card { padding: 32px 20px 22px; border-radius: 22px; }
+    .cb-title { font-size: 23px; }
+    .cb-meta { grid-template-columns: 1fr; }
+}

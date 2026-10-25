@@ -23,6 +23,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ShieldCheck, KeyRound, QrCode, Loader2, Clock, LifeBuoy } from 'lucide-react';
 import { ClButton } from './ClButton';
+import { ClBanner } from './ClBanner';
 import { ClConfirm, ClInput } from './cl';
 import type { PendingDeviceApproval } from '../utils/deviceRegistration';
 import { deriveDeviceApprovalCode, formatDeviceApprovalCode } from '../utils/deviceApprovalCode';
@@ -50,7 +51,7 @@ interface Props {
 }
 
 const ErrorLine: React.FC<{ msg: string }> = ({ msg }) => (
-    <div className="auth-bannerin px-4 py-3 bg-cl-flash/10 border border-cl-flash/25 rounded-xl text-cl-flash text-sm text-center">{msg}</div>
+    <ClBanner inline tone="danger" description={msg} />
 );
 
 export const DeviceApprovalPending: React.FC<Props> = ({ userId, deviceId, token, approval, onApproved, onUseQr, onBack }) => {

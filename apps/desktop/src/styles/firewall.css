@@ -24,6 +24,20 @@
   to   { opacity: 1; }
 }
 
+/* The single instance Dashboard mounts (placement="shell"): the shell's content
+   area, i.e. exactly where the Home pane's card sits in the Drift layout.
+   Dashboard's root is the positioned ancestor: 34px titlebar + the main row's
+   6px top padding; the 72px rail + 2px left padding; 10px right and bottom. */
+.fw-root.fw-root--shell {
+  inset: auto;
+  top: 40px;
+  left: 74px;
+  right: 10px;
+  bottom: 10px;
+  border-radius: 18px;
+  border: 1px solid var(--cl-border);
+}
+
 .fw-stage { position: absolute; inset: 0; }
 .fw-canvas {
   position: absolute;

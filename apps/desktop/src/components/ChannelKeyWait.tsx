@@ -1,15 +1,61 @@
 import React, { useEffect, useState } from 'react';
-import { KEY_WAIT_COPY, type KeyWaitStage } from '../utils/channelKeyWait';
+import { KEY_WAIT_BANNER_COPY, KEY_WAIT_COPY, type KeyWaitStage } from '../utils/channelKeyWait';
 import type { KeyWaitPhase } from '../hooks/useChannelKeyWait';
 import '../styles/key-wait.css';
 
 /**
- * The whole-pane "waiting for this channel's keys" layer. ChatPane keeps its
+ * The whole-pane "getting this channel's keys" layer. ChatPane keeps its
  * header and composer; this covers only the feed. Lifecycle and stages:
  * hooks/useChannelKeyWait.ts; decision and signals: utils/channelKeyWait.ts;
  * motion rules: styles/key-wait.css.
+ *
+ * Also the fallback: {@link ChannelKeyWaitBanner}, the ONE banner over the
+ * feed when the wait went unanswered (instead of a feed of key pills).
  */
 
+/** After "Ask again", the button rests this long (the request is filed at
+ *  once; a second click could only be refused by the API's bucket). */
+export const KEY_WAIT_RETRY_REST_MS = 8_000;
+
+export interface ChannelKeyWaitBannerProps {
+    /** Rows of the newest page still waiting on a key. */
+    waitingCount: number;
+    /** File a fresh key request and pull (Dashboard). Absent = no button. */
+    onRetry?: () => void;
+}
+
+export const ChannelKeyWaitBanner: React.FC<ChannelKeyWaitBannerProps> = ({ waitingCount, onRetry }) => {
+    const [asked, setAsked] = useState(false);
+    useEffect(() => {
+        if (!asked) return;
+        const t = setTimeout(() => setAsked(false), KEY_WAIT_RETRY_REST_MS);
+        return () => clearTimeout(t);
+    }, [asked]);
+    return (
+        <div className="ckw-banner" role="status" aria-live="polite" data-waiting={waitingCount}>
+            <div className="ckw-banner-lock" aria-hidden="true">
+                <svg viewBox="0 0 16 16" width="14" height="14">
+                    <path d="M4.5 7V5.2a3.5 3.5 0 0 1 7 0V7" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+                    <rect x="2.75" y="7" width="10.5" height="7.25" rx="2.2" fill="currentColor" />
+                </svg>
+            </div>
+            <div className="ckw-banner-text">
+                <p className="ckw-banner-title">{KEY_WAIT_BANNER_COPY.title}</p>
+                <p className="ckw-banner-detail">{KEY_WAIT_BANNER_COPY.detail}</p>
+            </div>
+            {onRetry && (
+                <button
+                    type="button"
+                    className="ckw-banner-retry"
+                    disabled={asked}
+                    onClick={() => { setAsked(true); onRetry(); }}
+                >
+                    {asked ? KEY_WAIT_BANNER_COPY.retried : KEY_WAIT_BANNER_COPY.retry}
+                </button>
+            )}
+        </div>
+    );
+};
 
 
 /** Deterministic ciphertext-looking lines (no Math.random: stable across
@@ -54,7 +100,7 @@ const LockMark: React.FC = () => (
 );
 
 export interface ChannelKeyWaitProps {
-    phase: Exclude<KeyWaitPhase, 'hidden'>;
+    phase: Exclude<KeyWaitPhase, 'hidden' | 'pending'>;
     stage: KeyWaitStage;
     reduced: boolean;
     /** Space the floating composer covers at the bottom of the feed. */

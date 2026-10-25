@@ -1,12 +1,17 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-    UserCircle, Monitor, Laptop, Volume2, Bell, Keyboard, Gamepad2,
+    UserCircle, Plug, Monitor, Palette, Laptop, Volume2, Bell, Keyboard, Gamepad2,
     Shield, HardDrive, CreditCard, FlaskConical, AlertTriangle, Search,
+    type LucideIcon,
 } from 'lucide-react';
 import { ClInput } from '../cl';
 import type { PaneId } from './SettingsScreen';
 import { Keys } from '../mascot/Keys';
-import { SETTINGS_PLACEHOLDERS, SETTINGS_SEARCH_NOTES } from '../../utils/eggPools';
+import { SETTINGS_PLACEHOLDERS, HALLOWEEN_ZONE_NAMES, BIRTHDAY_POOL, fillLine, pickRotating } from '../../utils/eggPools';
+import { useEggCalendar } from '../../hooks/useEasterEggs';
+import { emitMascotCue } from '../../hooks/useMascotCue';
+import { settingsSearchPool } from '../../utils/settingsSearchNote';
+import { recordEggFound } from '../../utils/eggProgress';
 import { searchSettingsIndex } from './settingsSearchIndex';
 
 /**
@@ -15,6 +20,11 @@ import { searchSettingsIndex } from './settingsSearchIndex';
  * spring-slides to "you are here" (flash in the Abyss, via .sd-z-abyss on
  * the root). Search filters the gauge; a few queries earn a factual note
  * (personality doctrine: words only in owned slots, always true about E2E).
+ *
+ * Keyboard: ↓ from the search box (or Enter to jump straight to the first
+ * hit) moves into the list; ↑/↓/Home/End walk the sections. Picking a section
+ * that only matched through one of its settings hands that setting's label to
+ * onSelect, so SettingsScreen can scroll to it (revealSetting.ts).
  */
 
 export interface ZoneDef {
@@ -22,7 +32,7 @@ export interface ZoneDef {
     depth: number;      // meters, for the readout
     label: string;      // fathom reading shown in the gauge
     abyss?: boolean;
-    items: { id: PaneId; label: string; icon: React.ReactNode }[];
+    items: { id: PaneId; label: string; Icon: LucideIcon }[];
 }
 
 // eslint-disable-next-line react-refresh/only-export-components -- co-located helper export; splitting the file would only affect dev Fast Refresh, not runtime behaviour
@@ -30,33 +40,35 @@ export const ZONES: ZoneDef[] = [
     {
         name: 'Surface', depth: 0, label: '0 m',
         items: [
-            { id: 'profile',    label: 'Profile',    icon: <UserCircle size={16} /> },
-            { id: 'appearance', label: 'Appearance', icon: <Monitor size={16} /> },
+            { id: 'profile',    label: 'Profile',    Icon: UserCircle },
+            { id: 'connections', label: 'Connections', Icon: Plug },
+            { id: 'appearance', label: 'Appearance', Icon: Monitor },
+            { id: 'personalize', label: 'Personalize', Icon: Palette },
         ],
     },
     {
         name: 'Twilight', depth: 200, label: '−200 m',
         items: [
-            { id: 'devices',       label: 'Devices',       icon: <Laptop size={16} /> },
-            { id: 'voice',         label: 'Voice & Video', icon: <Volume2 size={16} /> },
-            { id: 'notifications', label: 'Notifications', icon: <Bell size={16} /> },
-            { id: 'keybinds',      label: 'Keybinds',      icon: <Keyboard size={16} /> },
-            { id: 'activity',      label: 'Game Activity', icon: <Gamepad2 size={16} /> },
+            { id: 'devices',       label: 'Devices',       Icon: Laptop },
+            { id: 'voice',         label: 'Voice & Video', Icon: Volume2 },
+            { id: 'notifications', label: 'Notifications', Icon: Bell },
+            { id: 'keybinds',      label: 'Keybinds',      Icon: Keyboard },
+            { id: 'activity',      label: 'Game Activity', Icon: Gamepad2 },
         ],
     },
     {
         name: 'Midnight', depth: 1000, label: '−1,000 m',
         items: [
-            { id: 'privacy', label: 'Privacy & Safety', icon: <Shield size={16} /> },
-            { id: 'storage', label: 'Storage',          icon: <HardDrive size={16} /> },
-            { id: 'billing', label: 'Subscription',     icon: <CreditCard size={16} /> },
+            { id: 'privacy', label: 'Privacy & Safety', Icon: Shield },
+            { id: 'storage', label: 'Storage',          Icon: HardDrive },
+            { id: 'billing', label: 'Subscription',     Icon: CreditCard },
         ],
     },
     {
         name: 'The Abyss', depth: 4000, label: '−4,000 m', abyss: true,
         items: [
-            { id: 'advanced', label: 'Advanced',    icon: <FlaskConical size={16} /> },
-            { id: 'danger',   label: 'Danger Zone', icon: <AlertTriangle size={16} /> },
+            { id: 'advanced', label: 'Advanced',    Icon: FlaskConical },
+            { id: 'danger',   label: 'Danger Zone', Icon: AlertTriangle },
         ],
     },
 ];
@@ -66,23 +78,32 @@ export function zoneOf(pane: PaneId): number {
     return ZONES.findIndex(z => z.items.some(i => i.id === pane));
 }
 
+/** A zone's display name. On Halloween the deep gets a costume of its own.
+ *  Everything keyed on the zone — the bead, the Abyss styling — keeps using `name`/`abyss`; only the label changes. */
+// eslint-disable-next-line react-refresh/only-export-components -- co-located helper export; splitting the file would only affect dev Fast Refresh, not runtime behaviour
+export function zoneLabel(name: string, halloween: boolean): string {
+    return halloween ? (HALLOWEEN_ZONE_NAMES[name] ?? name) : name;
+}
+
 // Pools live in utils/eggPools.ts so the doctrine tests can hold them to the
 // ≥3-line minimum — these three shipped with two lines each.
 const PLACEHOLDERS = SETTINGS_PLACEHOLDERS;
-const SEARCH_NOTES = SETTINGS_SEARCH_NOTES;
 
 interface DepthGaugeProps {
     active: PaneId;
-    onSelect: (pane: PaneId) => void;
+    /** `setting`: the matched setting's label when the section was found through it. */
+    onSelect: (pane: PaneId, setting?: string) => void;
     appVersion: string;
 }
 
 export const DepthGauge: React.FC<DepthGaugeProps> = ({ active, onSelect, appVersion }) => {
+    const calendar = useEggCalendar();
     const [query, setQuery] = useState('');
     const [note, setNote] = useState('');
     const [placeholder, setPlaceholder] = useState<typeof PLACEHOLDERS[number]>(PLACEHOLDERS[0]);
     const focusCount = useRef(0);
     const scrollRef = useRef<HTMLDivElement>(null);
+    const searchRef = useRef<HTMLInputElement>(null);
     const beadRef = useRef<HTMLSpanElement>(null);
     const itemRefs = useRef<Partial<Record<PaneId, HTMLButtonElement | null>>>({});
 
@@ -101,11 +122,38 @@ export const DepthGauge: React.FC<DepthGaugeProps> = ({ active, onSelect, appVer
                 // Hint only when the tab label itself didn't match — a direct
                 // tab match needs no explanation.
                 hint: q && !i.label.toLowerCase().includes(q)
-                    ? (deepHits[i.id] ?? []).slice(0, 2).join(' · ')
+                    ? (deepHits[i.id] ?? []).slice(0, 2).join(', ')
                     : '',
+                setting: q && !i.label.toLowerCase().includes(q) ? deepHits[i.id]?.[0] : undefined,
             })),
     })), [q, deepHits]);
     const hits = filtered.reduce((n, z) => n + z.items.length, 0);
+    const firstHit = filtered.flatMap(z => z.items)[0];
+
+    const navButtons = () => Array.from(scrollRef.current?.querySelectorAll<HTMLButtonElement>('.sd-nitem') ?? []);
+    const onListKey = (e: React.KeyboardEvent) => {
+        const list = navButtons();
+        if (!list.length) return;
+        const at = list.indexOf(document.activeElement as HTMLButtonElement);
+        let next = -1;
+        if (e.key === 'ArrowDown') next = at < 0 ? 0 : Math.min(list.length - 1, at + 1);
+        else if (e.key === 'ArrowUp') next = at <= 0 ? -1 : at - 1;
+        else if (e.key === 'Home') next = 0;
+        else if (e.key === 'End') next = list.length - 1;
+        else return;
+        e.preventDefault();
+        if (next < 0) searchRef.current?.focus();
+        else list[next].focus();
+    };
+    const onSearchKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
+        if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            navButtons()[0]?.focus();
+        } else if (e.key === 'Enter' && q && firstHit) {
+            e.preventDefault();
+            onSelect(firstHit.id, firstHit.setting);
+        }
+    };
 
     const moveBead = useCallback(() => {
         const btn = itemRefs.current[active];
@@ -128,9 +176,14 @@ export const DepthGauge: React.FC<DepthGaugeProps> = ({ active, onSelect, appVer
 
     const handleInput = (v: string) => {
         setQuery(v);
-        const key = v.trim().toLowerCase();
-        const pool = SEARCH_NOTES[key];
-        setNote(pool ? pool[Math.floor(Math.random() * pool.length)] : '');
+        // Factual notes first, then the playful ones (octopus / squid /
+        // kraken / abyss) in the same owned field-message slot
+        // (utils/settingsSearchNote.ts).
+        const hit = settingsSearchPool(v);
+        setNote(hit ? hit.pool[Math.floor(Math.random() * hit.pool.length)] : '');
+        // The wrong cephalopod makes every mounted Keys wiggle in protest (once per session).
+        if (hit?.misnamed) emitMascotCue();
+        if (hit?.egg) recordEggFound(hit.egg);
     };
 
     return (
@@ -138,7 +191,9 @@ export const DepthGauge: React.FC<DepthGaugeProps> = ({ active, onSelect, appVer
             <div className="sd-search cl-fld">
                 <Search size={15} />
                 <ClInput
+                    ref={searchRef}
                     value={query}
+                    onKeyDown={onSearchKey}
                     onChange={e => handleInput(e.target.value)}
                     onFocus={() => setPlaceholder(PLACEHOLDERS[(focusCount.current++) % PLACEHOLDERS.length])}
                     placeholder={placeholder}
@@ -147,27 +202,25 @@ export const DepthGauge: React.FC<DepthGaugeProps> = ({ active, onSelect, appVer
                 <p className={`cl-fmsg${note ? ' note' : ''}`}>{note}</p>
             </div>
 
-            <div className="sd-gscroll" ref={scrollRef}>
+            <div className="sd-gscroll" ref={scrollRef} onKeyDown={onListKey}>
                 <span className="sd-bead" ref={beadRef} style={{ opacity: q ? 0 : 1 }} />
                 {filtered.map((z, zi) => z.items.length > 0 && (
                     <div key={z.name} className={`sd-zone${z.abyss ? ' sd-zone--abyss' : ''}`}>
-                        <div className="sd-zlab"><b>{z.name}</b><span>{z.label}</span></div>
+                        {/* Zone name only — the depth itself is read out once, in the pane header. */}
+                        <div className="sd-zlab"><b>{zoneLabel(z.name, calendar.halloween)}</b></div>
                         {z.items.map((item, ii) => (
                             <button
                                 key={item.id}
                                 ref={el => { itemRefs.current[item.id] = el; }}
                                 className={`sd-nitem${active === item.id ? ' sd-on' : ''}`}
                                 style={{ '--sd-enter-delay': `${0.2 + (zi * 3 + ii) * 0.035}s` } as React.CSSProperties}
-                                onClick={() => onSelect(item.id)}
+                                aria-current={active === item.id ? 'page' : undefined}
+                                onClick={() => onSelect(item.id, item.setting)}
                             >
-                                {item.icon}
-                                <span style={{ minWidth: 0 }}>
+                                <item.Icon size={16} aria-hidden="true" />
+                                <span className="sd-nlabel">
                                     {item.label}
-                                    {item.hint && (
-                                        <span style={{ display: 'block', fontSize: 10.5, color: 'var(--cl-faint)', fontWeight: 500, lineHeight: 1.3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                            {item.hint}
-                                        </span>
-                                    )}
+                                    {item.hint && <span className="sd-nhint">{item.hint}</span>}
                                 </span>
                             </button>
                         ))}
@@ -181,7 +234,12 @@ export const DepthGauge: React.FC<DepthGaugeProps> = ({ active, onSelect, appVer
                     hover wakes) and the cuttlefish-cue wiggle live in the
                     component now. No wave: that hello is the home deck's. */}
                 <Keys size={40} waveOnMount={false} />
-                <small>E2E encrypted<br />at every depth · v{appVersion}</small>
+                <small>
+                    E2E encrypted<br />at every depth · v{appVersion}
+                    {calendar.birthday > 0 && (
+                        <><br /><span className="sd-bday">{fillLine(pickRotating(BIRTHDAY_POOL, calendar.birthday), { n: calendar.birthday })}</span></>
+                    )}
+                </small>
             </div>
         </nav>
     );

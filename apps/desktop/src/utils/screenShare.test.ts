@@ -1,12 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
     resolveSSResolution,
-    computeSSBitrate,
+    computeSSBitrate, ssFpsFactor, SS_MAX_BITRATE_VP9_EQUIV,
     applyScreenShareSenderParams,
     retuneScreenShareInPlace,
     chooseScreenShareCodec,
     decideScreenShareCodec,
     isNvidiaOnly,
+    nvidiaIsPrimary,
     buildScreenSharePublishOptions,
     shareHasLowerLayer,
     shareLowEncoding,
@@ -59,13 +60,17 @@ describe('resolveSSResolution', () => {
 });
 
 describe('computeSSBitrate', () => {
-    // Base values (tuned at 30fps) × min(fps/30, 3), from the source.
+    // Base values (tuned at 30fps) × ssFpsFactor (linear to 30, (fps/30)^0.6
+    // above), held under SS_MAX_BITRATE_VP9_EQUIV × the codec factor, in 10 kbps
+    // steps. ≤ 30 fps is unchanged from the old linear table; above 30 every
+    // number dropped (old: 60 fps = 2x base, 90 fps = 3x base) — see the
+    // 2026-10-23 freeze reports in screenShare.ts.
     const EXPECTED: Record<ScreenShareOptions['resolution'], Record<number, number>> = {
-        source:  { 90: 54_000_000, 60: 36_000_000, 30: 18_000_000, 15: 9_000_000 },
-        '1440p': { 90: 36_000_000, 60: 24_000_000, 30: 12_000_000, 15: 6_000_000 },
-        '1080p': { 90: 18_000_000, 60: 12_000_000, 30:  6_000_000, 15: 3_000_000 },
-        '720p':  { 90:  6_000_000, 60:  4_000_000, 30:  2_000_000, 15: 1_000_000 },
-        '480p':  { 90:  2_400_000, 60:  1_600_000, 30:    800_000, 15:   400_000 },
+        source:  { 90: 20_000_000, 60: 20_000_000, 30: 18_000_000, 15: 9_000_000 },
+        '1440p': { 90: 20_000_000, 60: 18_190_000, 30: 12_000_000, 15: 6_000_000 },
+        '1080p': { 90: 11_600_000, 60:  9_090_000, 30:  6_000_000, 15: 3_000_000 },
+        '720p':  { 90:  3_870_000, 60:  3_030_000, 30:  2_000_000, 15: 1_000_000 },
+        '480p':  { 90:  1_550_000, 60:  1_210_000, 30:    800_000, 15:   400_000 },
     };
 
     for (const res of RESOLUTIONS) {
@@ -80,17 +85,46 @@ describe('computeSSBitrate', () => {
         expect(computeSSBitrate('1440p', 90)).toBe(computeSSBitrate('1440p', 90, 'vp9'));
     });
 
+    // 1440p90: the uncapped value (12 M × 1.933 × factor) is over every
+    // codec's absolute cap, so these ARE the caps (20 M × factor).
     it.each([
-        ['vp9',  36_000_000],
-        ['vp8',  45_000_000],
-        ['h264', 54_000_000],
+        ['vp9',  20_000_000],
+        ['vp8',  25_000_000],
+        ['h264', 30_000_000],
+        ['h265', 22_000_000],
     ] as const)('gives %s its codec factor at 1440p90 (%d bps)', (codec, expected) => {
         expect(computeSSBitrate('1440p', 90, codec)).toBe(expected);
     });
 
-    it('caps the fps multiplier at 3x for rates beyond 90 (e.g. a future preset)', () => {
-        // 30fps is the multiplier's baseline (1x); doubling past 90 must not
-        // scale past the 3x ceiling the comment documents.
+    it('the 2026-10-23 share (source 1440p90 H.265) is capped at 22 Mbps (was 59.4)', () => {
+        expect(computeSSBitrate('source', 90, 'h265')).toBe(22_000_000);
+        expect(SS_MAX_BITRATE_VP9_EQUIV).toBe(20_000_000);
+    });
+
+    it('frame rate scales sub-linearly above 30 fps and linearly below', () => {
+        expect(ssFpsFactor(30)).toBe(1);
+        expect(ssFpsFactor(15)).toBe(0.5);
+        expect(ssFpsFactor(60)).toBeCloseTo(1.516, 3);
+        expect(ssFpsFactor(90)).toBeCloseTo(1.933, 3);
+        // More fps never lowers the ceiling.
+        for (const res of RESOLUTIONS) {
+            for (const codec of ['vp9', 'vp8', 'h264', 'h265'] as const) {
+                const v = [15, 30, 60, 90].map(f => computeSSBitrate(res, f, codec));
+                for (let i = 1; i < v.length; i++) expect(v[i]).toBeGreaterThanOrEqual(v[i - 1]);
+            }
+        }
+    });
+
+    it('no ceiling exceeds its codec\'s absolute cap', () => {
+        for (const res of RESOLUTIONS) {
+            for (const fps of [15, 30, 60, 90, 120]) {
+                expect(computeSSBitrate(res, fps, 'h264')).toBeLessThanOrEqual(30_000_000);
+                expect(computeSSBitrate(res, fps, 'h265')).toBeLessThanOrEqual(22_000_000);
+            }
+        }
+    });
+
+    it('caps the fps multiplier at 90 for rates beyond 90 (e.g. a future preset)', () => {
         expect(computeSSBitrate('1080p', 120)).toBe(computeSSBitrate('1080p', 90));
     });
 });
@@ -367,7 +401,11 @@ describe('decideScreenShareCodec — GPU vendor and profile rules', () => {
     const OWNER_GPUS = [{ vendor: 'NVIDIA' }, { vendor: 'AMD' }, { vendor: 'Microsoft (software)' }];
     it.each<[string, HardwareEncoderSupport | null, Array<{ vendor: string }> | undefined, string, 'cb' | 'high' | undefined, RegExp]>([
         ['CB HW, Intel/AMD', CB, [{ vendor: 'AMD' }], 'h264', 'cb', /HW H\.264$/],
-        ['CB HW, NVIDIA + iGPU → iGPU encodes CB', CB, NV_INTEL, 'h264', 'cb', /HW H\.264$/],
+        ['CB "HW", NVIDIA primary + iGPU → High (MF skips NVIDIA for CB; nothing else took over on the owner\'s box)', CB, NV_INTEL, 'h264', 'high', /High \(NVIDIA skips CB\)/],
+        ['CB HW, Optimus (iGPU primary, NVIDIA second) → the primary\'s CB', CB, [{ vendor: 'Intel' }, { vendor: 'NVIDIA' }], 'h264', 'cb', /HW H\.264$/],
+        // staging.174, 2026-10-24: at 1080p the probe said CB is hardware on the
+        // RTX 2080 Ti + WX 2100, and the share ran on OpenH264 for its whole life.
+        ['the owner\'s 1080p probe: CB "HW" + High HW, NVIDIA + AMD → High', CB, OWNER_GPUS, 'h264', 'high', /High \(NVIDIA skips CB\)/],
         ['CB HW, GPU list unknown → trust the probe', CB, undefined, 'h264', 'cb', /HW H\.264$/],
         ['CB "HW", NVIDIA only → High (MF skips NVIDIA for CB, not for High)', CB, NV, 'h264', 'high', /High \(NVIDIA skips CB\)/],
         ['CB "HW", NVIDIA only, VP9 HW → still High first', { ...CB, vp9: true }, NV, 'h264', 'high', /High/],
@@ -381,6 +419,26 @@ describe('decideScreenShareCodec — GPU vendor and profile rules', () => {
         expect(d.codec).toBe(codec);
         expect(d.h264Profile).toBe(profile);
         expect(d.reason).toMatch(reason);
+    });
+
+    it('after a CB share ran in software this session, CB is not trusted again: High if HW, else VP8', () => {
+        const opts = { cbSoftware: true };
+        expect(decideScreenShareCodec('auto', CB, [{ vendor: 'AMD' }], opts)).toEqual({
+            codec: 'h264', h264Profile: 'high', reason: 'auto: HW H.264 High (CB ran in software)',
+        });
+        expect(decideScreenShareCodec('auto', { ...CB, h264High: false }, [{ vendor: 'AMD' }], opts)).toEqual({
+            codec: 'vp8', reason: 'auto: H.264 CB ran in software → VP8',
+        });
+        // Without the flag the same AMD machine keeps its CB.
+        expect(decideScreenShareCodec('auto', CB, [{ vendor: 'AMD' }])).toMatchObject({ codec: 'h264', h264Profile: 'cb' });
+    });
+
+    it('nvidiaIsPrimary: only the FIRST real adapter decides; Microsoft\'s software adapter is skipped', () => {
+        expect(nvidiaIsPrimary([{ vendor: 'NVIDIA' }, { vendor: 'AMD' }])).toBe(true);
+        expect(nvidiaIsPrimary([{ vendor: 'Microsoft (software)' }, { vendor: 'NVIDIA' }])).toBe(true);
+        expect(nvidiaIsPrimary([{ vendor: 'Intel' }, { vendor: 'NVIDIA' }])).toBe(false);
+        expect(nvidiaIsPrimary([])).toBe(false);
+        expect(nvidiaIsPrimary(null)).toBe(false);
     });
 
     it('after a High encoder failed to start, auto never picks High again (VP8, or HW VP9 if present)', () => {
@@ -603,7 +661,9 @@ describe('the lighter copy (lower layer) — off unless asked for', () => {
         expect(shareLowEncoding(undefined, undefined, 30, 'vp8').scaleResolutionDownBy).toBe(2);
     });
     it('H.265 ceiling is ~27 % under H.264', () => {
-        expect(computeSSBitrate('1440p', 60, 'h265') / computeSSBitrate('1440p', 60, 'h264')).toBeCloseTo(1.1 / 1.5, 5);
+        // At 1080p30 (exact, no 10 kbps rounding, under the cap); the absolute caps keep the same ratio.
+        expect(computeSSBitrate('1080p', 30, 'h265') / computeSSBitrate('1080p', 30, 'h264')).toBeCloseTo(1.1 / 1.5, 5);
+        expect(computeSSBitrate('1440p', 90, 'h265') / computeSSBitrate('1440p', 90, 'h264')).toBeCloseTo(1.1 / 1.5, 5);
         expect(asScreenShareCodec('h265')).toBe('h265');
         expect(asScreenShareCodec('av1')).toBeUndefined();
     });
@@ -617,7 +677,7 @@ describe('buildScreenSharePublishOptions', () => {
             simulcast: false,
             videoCodec: 'h264',
             backupCodec: false,
-            screenShareEncoding: { maxBitrate: 54_000_000, maxFramerate: 90, priority: 'high' },
+            screenShareEncoding: { maxBitrate: 30_000_000, maxFramerate: 90, priority: 'high' },
             degradationPreference: 'maintain-framerate',
         });
     });
@@ -627,7 +687,7 @@ describe('buildScreenSharePublishOptions', () => {
             simulcast: false,
             videoCodec: 'vp9',
             backupCodec: false,
-            screenShareEncoding: { maxBitrate: 54_000_000, maxFramerate: 90, priority: 'high' },
+            screenShareEncoding: { maxBitrate: 20_000_000, maxFramerate: 90, priority: 'high' },
             degradationPreference: 'maintain-framerate',
         });
     });

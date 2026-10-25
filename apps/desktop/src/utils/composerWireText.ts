@@ -15,7 +15,7 @@
  * save — and it is not a property you can check by reading a 6k-line
  * component.
  */
-import { MENTION_TOKEN_RE, parseMentionToken } from './mentionTokens';
+import { findMentionTokens, parseMentionToken } from './mentionTokens';
 
 /**
  * Transform display-text mentions (`@label`) into wire-format mention tokens
@@ -76,9 +76,7 @@ export function tokenMapsFromWireText(text: string): {
 } {
     const mentions: Record<string, string> = {};
     const emojis: Record<string, string> = {};
-    const re = new RegExp(MENTION_TOKEN_RE.source, 'g');
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(text)) !== null) {
+    for (const m of findMentionTokens(text)) {
         const parsed = parseMentionToken(m[0]);
         if (!parsed) continue;
         if (parsed.kind === 'user' || parsed.kind === 'role') mentions[parsed.label] = m[0];

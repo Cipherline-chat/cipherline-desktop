@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Camera, Image as ImageIcon, Trash2 } from 'lucide-react';
+import { Camera, Image as ImageIcon, Sparkles, Trash2 } from 'lucide-react';
 import { USERNAME_REGEX, USERNAME_NOT_ALLOWED_MESSAGE, isNameAllowed, padDiscriminator } from '@cipherline/shared';
 import { ClImageCropper, ClInput, ClTextarea } from '../../cl';
 import { Keys } from '../../mascot/Keys';
@@ -379,6 +379,14 @@ export const ProfileStep: React.FC<StepProps> = ({ deps, flow, setFlow, reducedM
                         disabled={busy}
                     />
                 </div>
+
+                <p className="pf-more">
+                    <Sparkles size={14} aria-hidden="true" />
+                    <span>
+                        There's a lot more later in <b>Settings</b>: themes, avatar decorations, links,
+                        a showcase, your own emojis and who sees what.
+                    </span>
+                </p>
 
                 {saveError && <p className="ob-err" role="alert">{saveError}</p>}
                 <StepActions onBack={onBack} onNext={onContinue} nextDisabled={!canContinue} loading={busy} />

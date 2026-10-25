@@ -198,7 +198,7 @@ export interface PinnedDevice {
     deviceId: string;
     pub: string;
     verified: boolean;
-    /** Verified before safety-number v2 (`verificationStrength.isLegacyVerified`). */
+    /** Verified over a year ago (`verificationStrength.isLegacyVerified`). */
     legacy?: boolean;
 }
 

@@ -6,6 +6,9 @@ import { extractPortableSaves, portableSavesFromVault, applyRestoredSaves, type 
 import { snapshotWarnings, mergeWarnings } from './senderWarningStore';
 import { classifyHistoryPayload } from './historyPayloadFormat';
 import { isKlipyRefEntry } from './gifLibrarySync';
+import { buildEmojiVaultPart, restoreEmojiVaultPart, realBackupIO, type EmojiVaultPart } from './personalEmoji/backup';
+import { exportEntranceSound, importEntranceSound, type EntranceSoundTransfer } from './customEntranceSound/transfer';
+import { ownEntranceSound } from './customEntranceSound/ownStore';
 import { BackupWrongPasswordError } from './backupErrors';
 /**
  * WebCrypto AES-GCM (256-bit) Blob Encryption Utilities
@@ -194,6 +197,18 @@ export interface BackupVault {
      *  a restore keeps its deletion tombstones — without them the next sync
      *  from a device that still holds a deleted GIF would resurrect it. */
     gifLedger?: Record<string, number>;
+    // My Emojis (personal custom emojis) - see utils/personalEmoji/backup.ts.
+    emojiLibrary?: EmojiVaultPart['emojiLibrary'];
+    emojiIndex?: EmojiVaultPart['emojiIndex'];
+    emojiKeys?: EmojiVaultPart['emojiKeys'];
+    /** Sealed image files, inline. Legacy all-in-one vault only; the record-based
+     *  backup streams them as `emoji:<id>` records. */
+    emojiFiles?: EmojiVaultPart['emojiFiles'];
+    /** Your custom entrance sound (<= 64 KB, its encoded bytes inline - the
+     *  vault is itself encrypted), or its removal tombstone. Rides in the
+     *  `meta` record of the record-based backup; an older build ignores it.
+     *  See utils/customEntranceSound/transfer.ts. */
+    entranceSound?: EntranceSoundTransfer;
     // Attachment keys (v2).
     avatarKeys?: Record<string, { keyB64: string; nonceB64: string }>;
     // Channel messages (v3) — Record<channelId, Message[]>. Subject to the
@@ -539,6 +554,9 @@ export async function buildLocalVault(
             ? undefined
             : await collectGifFiles(new Set(gifFavorites.filter(g => !isKlipyRefEntry(g)).map(g => g?.id).filter(Boolean))),
 
+        ...(await buildEmojiVaultPart(userId, realBackupIO(), { inlineFiles: opts.includeGifFiles !== false })),
+        entranceSound: await exportEntranceSound(ownEntranceSound()).catch(() => undefined),
+
         avatarKeys: await collectAvatarKeys(),
 
         attachmentBlobs,
@@ -652,6 +670,11 @@ export async function importLocalHistory(userId: string, blob: Blob): Promise<vo
             }
         }
     }
+    await restoreEmojiVaultPart(userId, vault as EmojiVaultPart, realBackupIO());
+    // Last-writer-wins against this device's own copy; verified (size, WebM,
+    // content hash) before it is re-sealed under a fresh local key. Counted as
+    // a LOCAL change so own-device sync carries it to the other devices.
+    await importEntranceSound(ownEntranceSound(), (vault as { entranceSound?: unknown }).entranceSound, 'local');
     if (vault.avatarKeys && window.electronAPI?.setAvatarKey) {
         for (const [attId, v] of Object.entries(vault.avatarKeys as Record<string, { keyB64: string; nonceB64: string }>)) {
             try { await window.electronAPI.setAvatarKey(attId, v.keyB64, v.nonceB64); }
@@ -660,7 +683,11 @@ export async function importLocalHistory(userId: string, blob: Blob): Promise<vo
     }
 
     // V4: registry-driven settings. applyIncludedKv only writes keys the
-    // registry includes, so a crafted vault can't plant session material.
+    // registry includes, so a crafted vault can't plant session material —
+    // nor, since F2, trust state: verification pins, sender warnings and the
+    // own-device ledger are excluded and never imported (backupRegistry.ts).
+    // The warning snapshot/merge below is kept as a guard: nothing an import
+    // writes may drop an alarm this device raised.
     //
     // ONE key is not a straight overwrite: unresolved sender-identity
     // warnings. A backup is a snapshot of an earlier moment, and replacing the

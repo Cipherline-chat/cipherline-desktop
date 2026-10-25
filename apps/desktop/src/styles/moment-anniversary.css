@@ -1,0 +1,52 @@
+/* "Happy Cipherversary." — components/moments/views/AnniversaryMoment.tsx.
+   8.5 s, transform/opacity only. Phases: notice 0–0.5, main 0.5–2.7,
+   read 2.7–6.8, hold 6.8–7.8, exit 7.8–8.5. */
+/* Notice: one bubble wobbles up from below, where the cake will rise. */
+.mo-anv-lead {
+  position: absolute; left: -8px; top: 260px; width: 16px; height: 16px; border-radius: 50%;
+  border: 2px solid rgba(255, 233, 170, .85); opacity: 0;
+  animation: mo-anv-lead .9s ease-out both;
+}
+@keyframes mo-anv-lead {
+  0% { transform: translateY(40px) scale(.6); opacity: 0; } 30% { opacity: 1; }
+  100% { transform: translate(6px, -120px) scale(1.2); opacity: 0; }
+}
+.mo-anv-scene {
+  position: absolute; left: -150px; top: 70px; width: 300px; height: 200px;
+  animation: mo-anv-sink var(--mo-exit-dur, .7s) cubic-bezier(.45, 0, .55, 1) var(--mo-exit, 7.8s) forwards;
+}
+@keyframes mo-anv-sink { to { transform: translateY(30vh); } }
+.mo-anv-cake { position: absolute; left: 20px; top: 40px; animation: mo-anv-rise 1s cubic-bezier(.2, .8, .3, 1) .5s both; }
+@keyframes mo-anv-rise { from { transform: translateY(55vh); } to { transform: none; } }
+.mo-anv-keys { position: absolute; left: 196px; top: 108px; animation: mo-anv-pop .6s cubic-bezier(.2, .8, .3, 1.25) 1.2s both; }
+@keyframes mo-anv-pop { from { transform: translateY(80px) scale(.6); opacity: 0; } to { transform: none; opacity: 1; } }
+/* Wobbles 1.5–6.5 (an even count: it ends where it started), then still. */
+.mo-anv-flame {
+  position: absolute; left: 70px; top: -4px; width: 20px; height: 24px; border-radius: 50% 50% 50% 50% / 60% 60% 40% 40%;
+  border: 2.5px solid #FFC94D; background: rgba(255, 201, 77, .25);
+  animation: mo-anv-flame .5s ease-in-out 1.5s 10 alternate both;
+}
+@keyframes mo-anv-flame { from { transform: scale(.95, 1.02) rotate(-4deg); } to { transform: scale(1.08, .92) rotate(6deg); } }
+.mo-anv-bub {
+  position: absolute; left: 76px; top: -6px; width: 9px; height: 9px; border-radius: 50%;
+  border: 2px solid rgba(255, 233, 170, .85); opacity: 0;
+  animation: mo-anv-bub 1.6s ease-out both;
+}
+.mo-anv-bub-0 { animation-delay: 1.8s; }
+.mo-anv-bub-1 { animation-delay: 2.4s; --dx: -14px; }
+.mo-anv-bub-2 { animation-delay: 3s; --dx: 12px; }
+.mo-anv-bub-3 { animation-delay: 3.6s; --dx: -6px; }
+.mo-anv-bub-4 { animation-delay: 4.2s; --dx: 16px; }
+@keyframes mo-anv-bub {
+  0% { transform: translate(0, 0) scale(.5); opacity: 0; } 20% { opacity: 1; }
+  100% { transform: translate(var(--dx, 6px), -120px) scale(1.4); opacity: 0; }
+}
+.mo-anv .mo-anv-title {
+  position: absolute; left: 0; top: -150px; font-size: 52px; color: var(--cl-lume, #25E0C8);
+  animation: mo-anv-up .6s cubic-bezier(.2, .8, .3, 1.1) 1.7s both;
+}
+.mo-anv .mo-anv-sub {
+  position: absolute; left: 0; top: -80px; font-size: 22px;
+  animation: mo-anv-up .6s cubic-bezier(.2, .8, .3, 1) 2.1s both;
+}
+@keyframes mo-anv-up { from { transform: translate(-50%, 24px); opacity: 0; } to { transform: translateX(-50%); opacity: 1; } }

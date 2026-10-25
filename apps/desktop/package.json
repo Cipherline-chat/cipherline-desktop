@@ -1,7 +1,7 @@
 {
   "name": "desktop",
   "private": true,
-  "version": "1.0.22",
+  "version": "1.0.23",
   "license": "Apache-2.0",
   "homepage": "https://cipherline.chat",
   "main": "dist-electron/entry.js",
@@ -135,6 +135,16 @@
       }
     ],
     "npmRebuild": false,
+    "electronFuses": {
+      "runAsNode": false,
+      "enableCookieEncryption": true,
+      "enableNodeOptionsEnvironmentVariable": false,
+      "enableNodeCliInspectArguments": false,
+      "enableEmbeddedAsarIntegrityValidation": true,
+      "onlyLoadAppFromAsar": true,
+      "loadBrowserProcessSpecificV8Snapshot": false,
+      "grantFileProtocolExtraPrivileges": false
+    },
     "deb": {
       "packageName": "cipherline",
       "artifactName": "cipherline_${version}_${arch}.${ext}"
@@ -152,6 +162,7 @@
     "@marsidev/react-turnstile": "^1.5.3",
     "@noble/curves": "^1.9.7",
     "@noble/ed25519": "^3.0.0",
+    "@sapphi-red/speex-preprocess-wasm": "0.4.0",
     "@scure/bip39": "^2.0.1",
     "@shiguredo/rnnoise-wasm": "2025.1.5",
     "@stripe/react-stripe-js": "^3.10.0",

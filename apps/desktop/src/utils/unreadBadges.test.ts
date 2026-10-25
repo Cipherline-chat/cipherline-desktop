@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { sumCounts, splitCountsByOwner, dmGroupRailBadges, serverChannelBadges, clearCountsForIds, formatRailBadgeCount, resolveBadge, trayBadgeCount, effectiveChannelMode, type TrayBadgeInput } from './unreadBadges';
+import { sumCounts, splitCountsByOwner, dmGroupRailBadges, serverChannelBadges, clearCountsForIds, formatRailBadgeCount, resolveBadge, trayBadgeCount, hasUnreadMention, effectiveChannelMode, type TrayBadgeInput } from './unreadBadges';
 
 describe('sumCounts', () => {
     it('sums every value in the map', () => {
@@ -324,6 +324,26 @@ describe('trayBadgeCount', () => {
         const input = base({ unreadCounts: { a: 2 }, mentionCounts: { b: 1 }, channelMentionCounts: { c: 1 } });
         expect(trayBadgeCount({ ...input, showBadgeCount: false })).toBe(0);
         expect(trayBadgeCount({ ...input, onlyMentions: true })).toBe(2);
+    });
+});
+
+describe('hasUnreadMention (Windows taskbar "@" glyph)', () => {
+    it('is true for a mention in a DM/group, or in a server channel', () => {
+        expect(hasUnreadMention({ c1: 1 }, {}, true)).toBe(true);
+        expect(hasUnreadMention({}, { ch1: 2 }, true)).toBe(true);
+    });
+    it('is false with no mentions, including when plain unread exists (those are not mentions)', () => {
+        expect(hasUnreadMention({}, {}, true)).toBe(false);
+        expect(hasUnreadMention({ c1: 0 }, { ch1: 0 }, true)).toBe(false);
+    });
+    it('goes false when the mention counts are cleared by reading', () => {
+        const m: Record<string, number> = { c1: 1 };
+        expect(hasUnreadMention(m, {}, true)).toBe(true);
+        delete m.c1;
+        expect(hasUnreadMention(m, {}, true)).toBe(false);
+    });
+    it('respects the user turning OS badges off', () => {
+        expect(hasUnreadMention({ c1: 3 }, { ch1: 3 }, false)).toBe(false);
     });
 });
 

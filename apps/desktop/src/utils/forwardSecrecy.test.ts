@@ -287,3 +287,48 @@ describe('C5 — superseded signed prekeys are deleted', () => {
         expect(SERVER_ENVELOPE_RETENTION_MS).toBe(30 * DAY);
     });
 });
+
+describe('F12 — a prekey is consumed only by an envelope that fully authenticates', () => {
+    async function wrappedToOtp(body: string) {
+        const device = installSpk(1);
+        const otp = x25519Pair();
+        store.set('otp_priv_7', otp.privHex);
+        store.set('otp_pub_7', otp.pubB64);
+        const { envelope_b64 } = await encryptForDevices(
+            JSON.stringify({ type: 'text', body }), SENDER_USER_ID,
+            [{ ...device, otp_id: 7, otp_pub_b64: otp.pubB64 }], DEVICE_ID);
+        return envelope_b64;
+    }
+    const mutate = (b64: string, f: (env: Record<string, unknown>) => void) => {
+        const env = JSON.parse(Buffer.from(b64, 'base64').toString('utf8'));
+        f(env);
+        return Buffer.from(JSON.stringify(env)).toString('base64');
+    };
+
+    it('a valid wrap with a forged body is refused and leaves the prekey in place', async () => {
+        const genuine = await wrappedToOtp('real');
+        const forged = mutate(genuine, (env) => {
+            const ct = Buffer.from(env.ct as string, 'base64');
+            ct[0] ^= 0xff;
+            env.ct = ct.toString('base64');
+        });
+        expect(() => decryptEnvelope(forged, DEVICE_ID, spkCandidatesFromStore())).toThrow(/CONTENT_AUTH_FAILED/);
+        expect(store.get('otp_priv_7')).toBeDefined();
+
+        // Positive control: the genuine message wrapped to that prekey still
+        // opens, and THAT consumes the prekey.
+        const out = decryptEnvelope(genuine, DEVICE_ID, spkCandidatesFromStore());
+        expect(JSON.parse(out.contentJson)).toEqual({ type: 'text', body: 'real' });
+        expect(out.usedOneTimePrekey).toBe(true);
+        expect(store.get('otp_priv_7')).toBeUndefined();
+    });
+
+    it('a valid wrap and body with a bad signature is refused and leaves the prekey in place', async () => {
+        const genuine = await wrappedToOtp('real');
+        const forged = mutate(genuine, (env) => { env.sig = Buffer.alloc(64, 1).toString('base64'); });
+        expect(() => decryptEnvelope(forged, DEVICE_ID, spkCandidatesFromStore())).toThrow(/SIG_INVALID/);
+        expect(store.get('otp_priv_7')).toBeDefined();
+        expect(JSON.parse(decryptEnvelope(genuine, DEVICE_ID, spkCandidatesFromStore()).contentJson).body).toBe('real');
+        expect(store.get('otp_priv_7')).toBeUndefined();
+    });
+});

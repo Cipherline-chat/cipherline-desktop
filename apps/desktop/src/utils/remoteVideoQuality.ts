@@ -261,6 +261,8 @@ export interface QualityTarget {
 interface Entry {
     claims: Map<number, VideoQuality>;
     applied: VideoQuality | undefined;
+    /** Highest layer allowed regardless of the claims (shareLossFallback); null = none. */
+    ceiling: VideoQuality | null;
     timer: ReturnType<typeof setTimeout> | null;
     /** When the last UPGRADE was requested (performance.now()) — diagnostics only. */
     upgradedAt: number | null;
@@ -271,7 +273,7 @@ let nextId = 1;
 
 function entryFor(pub: QualityTarget): Entry {
     let e = entries.get(pub);
-    if (!e) { e = { claims: new Map(), applied: undefined, timer: null, upgradedAt: null }; entries.set(pub, e); }
+    if (!e) { e = { claims: new Map(), applied: undefined, ceiling: null, timer: null, upgradedAt: null }; entries.set(pub, e); }
     return e;
 }
 
@@ -281,6 +283,12 @@ function apply(pub: QualityTarget, e: Entry, q: VideoQuality) {
     try { pub.setVideoQuality(q); } catch { /* unsubscribed meanwhile */ }
 }
 
+/** What the tiles want, held under the ceiling. */
+function wanted(e: Entry): VideoQuality {
+    const claimed = Math.max(...e.claims.values()) as VideoQuality;
+    return e.ceiling !== null && claimed > e.ceiling ? e.ceiling : claimed;
+}
+
 function settle(pub: QualityTarget, e: Entry) {
     if (e.claims.size === 0) {
         // Nobody shows it: leave the layer as is (remoteVideoDemand pauses
@@ -288,7 +296,7 @@ function settle(pub: QualityTarget, e: Entry) {
         if (e.timer) { clearTimeout(e.timer); e.timer = null; }
         return;
     }
-    const want = Math.max(...e.claims.values()) as VideoQuality;
+    const want = wanted(e);
     if (e.applied === undefined || want > e.applied) {
         if (e.timer) { clearTimeout(e.timer); e.timer = null; }
         apply(pub, e, want); // upgrades: immediately
@@ -298,14 +306,40 @@ function settle(pub: QualityTarget, e: Entry) {
         if (e.timer) { clearTimeout(e.timer); e.timer = null; }
         return;
     }
+    // A downgrade forced by the ceiling (the layer is not getting through):
+    // immediately — the delay below exists to stop UI flapping, and every
+    // second on a frozen layer is the problem being fixed.
+    if (e.ceiling !== null && want === e.ceiling) {
+        if (e.timer) { clearTimeout(e.timer); e.timer = null; }
+        apply(pub, e, want);
+        return;
+    }
     // Downgrade: wait, re-evaluate at fire time.
     if (e.timer) return;
     e.timer = setTimeout(() => {
         e.timer = null;
         if (e.claims.size === 0) return;
-        const now = Math.max(...e.claims.values()) as VideoQuality;
+        const now = wanted(e);
         if (e.applied === undefined || now !== e.applied) apply(pub, e, now);
     }, DOWNGRADE_DELAY_MS);
+}
+
+/**
+ * Hold a publication at or below `q` whatever its tiles ask for (null lifts
+ * it). Used by the screen-share loss fallback (shareLossFallback.ts): a cap
+ * applies at once, lifting it upgrades at once.
+ */
+export function setQualityCeiling(pub: QualityTarget, q: VideoQuality | null): void {
+    const e = entryFor(pub);
+    if (e.ceiling === q) return;
+    e.ceiling = q;
+    settle(pub, e);
+}
+
+/** The highest layer the tiles showing this publication ask for, before any ceiling. */
+export function claimedQuality(pub: QualityTarget): VideoQuality | undefined {
+    const e = entries.get(pub);
+    return e && e.claims.size > 0 ? Math.max(...e.claims.values()) as VideoQuality : undefined;
 }
 
 export interface QualityClaim {

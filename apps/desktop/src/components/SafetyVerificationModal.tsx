@@ -356,7 +356,7 @@ export const SafetyVerificationModal: React.FC<Props> = ({
                         deviceId, pub: rec.pub, verified: rec.verified, legacy: isLegacyVerified(rec),
                     }));
                 const pinTrust = deriveContactTrust({ devices: pinsToTrustDevices(known) });
-                // A legacy-verified contact is still a fully VOUCHED one, so it
+                // A re-check-suggested contact is still a fully VOUCHED one, so it
                 // keeps the offline view. What it renders there is the refresh
                 // prompt, not the all-clear (see `allClear` below).
                 if (pinTrust.level !== 'verified' && pinTrust.level !== 'verified_legacy') return false;
@@ -582,10 +582,9 @@ export const SafetyVerificationModal: React.FC<Props> = ({
      *     returns 'unverified' for it, so the same branch catches it. That is
      *     the event safety numbers exist to surface and it must never read as
      *     "you're done here";
-     *   • every device vouched for, but at least one vouch predates
-     *     safety-number v2 → 'verified_legacy'. The quick-verify card stays
-     *     up, with a calm "refresh" line, because green would be claiming a
-     *     comparison the user never made (G1);
+     *   • every device vouched for, but at least one vouch is over a
+     *     year old → 'verified_legacy'. The quick-verify card stays up, with
+     *     a calm "refresh" line, because the comparison is stale;
      *   • a changed key or any warnable verdict → 'compromised';
      *   • no keys at all → 'unverifiable'.
      *
@@ -614,7 +613,7 @@ export const SafetyVerificationModal: React.FC<Props> = ({
     }, [showAllClear]);
 
     const markOne = useCallback((device_id: string, pub: string) => {
-        markVerified(myUserId, remoteUserId, pub, device_id);
+        markVerified(myUserId, remoteUserId, pub, device_id, remoteUsername);
         setDevices(prev => prev.map(d => (d.device_id === device_id ? { ...d, state: 'verified', legacy: false } : d)));
         onResolved?.();
         // If this click is the one that completes the set, the per-device seal
@@ -624,7 +623,7 @@ export const SafetyVerificationModal: React.FC<Props> = ({
         setSealingId(device_id);
         if (sealTimer.current) clearTimeout(sealTimer.current);
         sealTimer.current = setTimeout(() => setSealingId(null), SEAL_ANIM_MS);
-    }, [myUserId, remoteUserId, onResolved]);
+    }, [myUserId, remoteUserId, onResolved, remoteUsername]);
 
     /**
      * The one-click path. A matching code means the key set this client holds
@@ -653,7 +652,7 @@ export const SafetyVerificationModal: React.FC<Props> = ({
         for (const d of devices) {
             // A legacy vouch is re-marked too: this match IS the
             // current-strength check that refreshes it.
-            if (d.state !== 'verified' || d.legacy) markVerified(myUserId, remoteUserId, d.pub, d.device_id);
+            if (d.state !== 'verified' || d.legacy) markVerified(myUserId, remoteUserId, d.pub, d.device_id, remoteUsername);
         }
         setDevices(prev => prev.map(d => ({ ...d, state: 'verified', legacy: false })));
         onResolved?.();
@@ -675,7 +674,7 @@ export const SafetyVerificationModal: React.FC<Props> = ({
         setCodeSealing(true);
         if (codeSealTimer.current) clearTimeout(codeSealTimer.current);
         codeSealTimer.current = setTimeout(() => setCodeSealing(false), SEAL_ANIM_MS);
-    }, [theirCode, typed, devices, myUserId, remoteUserId, onResolved]);
+    }, [theirCode, typed, devices, myUserId, remoteUserId, onResolved, remoteUsername]);
 
     const handleAcknowledgeChange = (device_id: string, pub: string) => {
         acknowledgeKeyChange(myUserId, remoteUserId, pub, device_id);
@@ -945,8 +944,8 @@ export const SafetyVerificationModal: React.FC<Props> = ({
                             makes it green. */}
                         {trust.level === 'verified_legacy' && (
                             <p className="text-[11px] leading-snug m-0" style={{ color: 'var(--cl-lume)' }} role="status">
-                                You verified {remoteUsername} before safety numbers were strengthened. Nothing is
-                                wrong. Compare codes once more to refresh it.
+                                You verified {remoteUsername} over a year ago and their devices haven't changed.
+                                Nothing is wrong. Compare codes once more to refresh it.
                             </p>
                         )}
 

@@ -299,6 +299,10 @@ describe('title-bar wordmark', () => {
         expect(dash.slice(bar, wm)).not.toContain('</div>');
     });
 
+    // The base rule (index.css) is unchanged: unselectable, dimmed, never no-drag. The hidden
+    // title-bar lap needs the WORD to receive clicks, so styles/titlebar-lap.css carves out
+    // `.cl-titlebar-wordmark.is-clickable` alone (see TitleBarWordmark.test.ts); the component
+    // itself still draws no logo (Keys' mark lives in TinyKeys.tsx, shown only during the lap).
     it('is draggable + unselectable text with no logo, and never no-drag', () => {
         const comp = readFileSync(join(__dirname, 'TitleBarWordmark.tsx'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
         expect(comp).not.toMatch(/<img|<svg|cipherlineMark|no-drag/);

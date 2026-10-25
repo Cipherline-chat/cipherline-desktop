@@ -45,15 +45,23 @@ function body(startMarker: string, endMarker: string): string {
 
 const serve = () => body('const serveKeyRequests = useCallback', 'const channelKeyOpsRef = useRef(');
 const distribute = () => body('const distributeChannelKeys = useCallback', 'const mayMintChannelKey = useCallback');
-const fileReq = () => body('const fileKeyRequest = useCallback', 'const maybeFileKeyRequest = useCallback');
+// The ask path (2026-10-21 per-server batch): prepareKeyAsk -> POST (one channel,
+// or fileKeyRequests = one server) -> finishKeyAsk applies the answer.
+const finishAsk = () => body('const finishKeyAsk = useCallback', 'const fileKeyRequest = useCallback');
+const askOne = () => body('const fileKeyRequest = useCallback', 'const fileKeyRequests = useCallback');
+const askMany = () => body('const fileKeyRequests = useCallback', 'const fileKeyRequestsRef = useRef(');
 const pull = () => body('const pullChannelKeysOnce = useCallback', '// ── Channel key backfill protocol');
 const memberJoined = () => body('const distributeKeysToNewMember = (server_id: string, newUserId: string) => {', '}, [serverMemberJoinedEvents]);');
 
 describe('holder side: serving a key request', () => {
     it('records a requester device that is not listed with a key bundle instead of skipping it silently', () => {
         const pass = passBody();
-        const skip = pass.slice(pass.indexOf('if (!dev)'));
+        // the per-request path…
+        const skip = pass.slice(pass.lastIndexOf('if (!dev)'));
         expect(skip.slice(0, skip.indexOf('continue;'))).toContain('deps.onNoRecipientBundle?.(req);');
+        // …and the one-call-per-device path (distributeMany)
+        const many = pass.slice(pass.indexOf('if (!dev)'));
+        expect(many.slice(0, 200)).toContain('deps.onNoRecipientBundle?.(first);');
         const hook = serve().slice(serve().indexOf('onNoRecipientBundle: (req) => {'));
         expect(hook.slice(0, 700)).toContain("recordDelivery('channel_key_distribute'");
         expect(hook.slice(0, 700)).toContain('[E2EE:NO_RECIPIENT_BUNDLE]');
@@ -61,8 +69,9 @@ describe('holder side: serving a key request', () => {
 
     it('isolates each request: a throw is caught and recorded INSIDE the loop, so later requests are still served', () => {
         const pass = passBody();
-        const loop = pass.slice(pass.indexOf('const phases = latestFirstPhases(walk);'));
-        const perRequest = loop.slice(0, loop.indexOf('if (stop) { stoppedAt = i; break; }'));
+        const loop = pass.slice(pass.indexOf('for (let i = 0; i < phases.length; i++) {'));
+        const perRequest = loop.slice(0, loop.lastIndexOf('if (stop) { stoppedAt = i; break; }'));
+        expect(perRequest).toMatch(/\} catch \(e\) \{\s*for \(const en of entries\) unfinished\.add\(en\.requestVersion\);\s*deps\.onRequestError\?\.\(first, e\)/);
         // The per-request try must have its own catch before its finally.
         expect(perRequest).toMatch(/\} catch \(e\) \{[\s\S]*deps\.onRequestError\?\.\(req, e\)/);
         expect(serve()).toMatch(/onRequestError: \(req, e\) => \{[\s\S]*recordDelivery\('channel_key_distribute', e/);
@@ -85,7 +94,8 @@ describe('holder side: wrapping and posting envelopes', () => {
     it('records a failed key-handshake POST (403/429/5xx) instead of only warning', () => {
         const fn = distribute();
         const post = fn.slice(fn.indexOf('/key-handshake`'));
-        expect(post.slice(0, 800)).toContain("recordDelivery('channel_key_distribute', e");
+        // (the batch route's postBatch/batchSupport sit between post and onPostError)
+        expect(post.slice(0, 1600)).toContain("recordDelivery('channel_key_distribute', e");
     });
 });
 
@@ -106,7 +116,12 @@ describe('holder side: server:member_joined distribution', () => {
 
 describe('keyless side: requesting and pulling', () => {
     it('records a failed key-request POST', () => {
-        expect(fileReq()).toMatch(/key-request failed for[\s\S]*recordDelivery\('channel_key_request', e/);
+        expect(finishAsk()).toMatch(/key-request failed for[\s\S]*recordDelivery\('channel_key_request', answer\.error/);
+        // Both POST paths hand their failure to it: the single ask's catch, and
+        // the batch's catch AND its per-channel `refused` result.
+        expect(askOne()).toMatch(/\} catch \(e\) \{[\s\S]*finishKeyAsk\(serverId, channelId, ask, \{ ok: false, error: e \}\)/);
+        expect(askMany()).toMatch(/finishKeyAsk\(serverId, l\.channelId, l\.ask, \{ ok: false, error: new Error\('key request refused'\) \}\)/);
+        expect(askMany()).toMatch(/\} catch \(e\) \{[\s\S]*finishKeyAsk\(serverId, l\.channelId, l\.ask, \{ ok: false, error: e \}\)/);
     });
 
     it('records a failed pending-envelope pull', () => {

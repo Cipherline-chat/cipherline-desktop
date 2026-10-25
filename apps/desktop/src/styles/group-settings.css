@@ -1,0 +1,53 @@
+/* ============================================================================
+   Group settings dialog (GroupSettingsModal): banner + editable picture, and
+   the members list. The blurred-picture layer itself is group-hero.css.
+   ============================================================================ */
+
+.cl-group-hero--banner{
+  display:flex;align-items:center;justify-content:center;
+  height:132px;padding:0;flex:none;
+  background:radial-gradient(180px 110px at 50% 135%, var(--cl-lume-tint, rgba(37,224,200,.14)), transparent 72%), var(--cl-sink, #0F1530);
+}
+.cl-group-hero--banner .cl-group-hero-copy{display:flex;align-items:center;justify-content:center}
+
+/* Plain <button>, not ClButton: the kit's .cap fixes its own size/radius. */
+.cl-group-pic-btn{
+  position:relative;width:88px;height:88px;padding:0;border:0;border-radius:50%;
+  overflow:hidden;cursor:pointer;background:var(--cl-raise);
+  box-shadow:0 0 0 4px rgba(11,15,30,.55), 0 0 0 5px rgba(255,255,255,.14), 0 8px 24px rgba(0,0,0,.45);
+  transition:box-shadow .18s ease;
+}
+.cl-group-pic-btn:focus-visible{outline:none;box-shadow:0 0 0 4px rgba(11,15,30,.55), 0 0 0 6px var(--cl-lume), 0 8px 24px rgba(0,0,0,.45)}
+.cl-group-pic-btn:disabled{cursor:default}
+.cl-group-pic-btn-overlay{
+  position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;
+  background:rgba(8,12,26,.62);color:#fff;font-size:11.5px;font-weight:800;letter-spacing:.02em;
+  opacity:0;transition:opacity .16s ease;
+}
+.cl-group-pic-btn:hover:not(:disabled) .cl-group-pic-btn-overlay,
+.cl-group-pic-btn:focus-visible .cl-group-pic-btn-overlay{opacity:1}
+
+.gset-members-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:18px 0 8px}
+.gset-members-title{
+  display:flex;align-items:center;gap:8px;
+  font-size:11px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:var(--cl-faint, #5E6B8F);
+}
+.gset-count{
+  min-width:20px;padding:1px 7px;border-radius:999px;text-align:center;
+  font-size:11px;letter-spacing:0;color:var(--cl-muted, #A7B3D4);background:var(--cl-surface, #1C2542);
+}
+.gset-members{
+  max-height:216px;min-height:58px;overflow-y:auto;overscroll-behavior:contain;
+  border-radius:12px;background:var(--cl-sink, #0F1530);box-shadow:inset 0 0 0 1px rgba(255,255,255,.05);
+  padding:6px;display:flex;flex-direction:column;gap:2px;flex:none;
+}
+.gset-member{display:flex;align-items:center;gap:12px;min-height:46px;padding:5px 8px;border-radius:9px;transition:background-color .12s ease}
+.gset-member:hover{background:rgba(255,255,255,.04)}
+.gset-member-av{width:34px;height:34px;border-radius:50%;overflow:hidden;flex:none;box-shadow:0 0 0 1px rgba(255,255,255,.06)}
+.gset-member-name{flex:1;min-width:0;font-size:14px;font-weight:700;color:var(--cl-text, #F4F7FF);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.gset-you{margin-left:6px;font-size:11.5px;font-weight:700;color:var(--cl-faint, #5E6B8F)}
+.gset-members-note{padding:18px 8px;text-align:center;font-size:13px;font-weight:700;color:var(--cl-faint, #5E6B8F)}
+
+@media (prefers-reduced-motion: reduce){
+  .cl-group-pic-btn,.cl-group-pic-btn-overlay,.gset-member{transition:none}
+}

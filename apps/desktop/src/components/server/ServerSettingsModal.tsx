@@ -65,6 +65,8 @@ import { useToast } from '../../contexts/ToastContext';
 import { useUnsavedChangesGuard, useReportDirty } from '../../hooks/useUnsavedChangesGuard';
 import { useEscape } from '../../hooks/useEscape';
 import { writeToClipboard } from '../../utils/clipboard';
+import { MemberActionDialog, type MemberActionKind } from './MemberActionDialog';
+import { requestMoment } from '../../utils/moments';
 
 // ── Helper Types ─────────────────────────────────────────────────────────────
 
@@ -711,6 +713,8 @@ function MembersTab({ server, token, userId, onServerUpdated, proMemberIds, proO
     const [transferring, setTransferring] = useState(false);
     const [transferPassword, setTransferPassword] = useState('');
     const [transferError, setTransferError] = useState<string | null>(null);
+    /** Kick/ban target awaiting confirmation (same dialog as the member list). */
+    const [memberAction, setMemberAction] = useState<{ kind: MemberActionKind; member: Member } | null>(null);
 
     const load = useCallback(async () => {
         if (!token) return;
@@ -747,6 +751,9 @@ function MembersTab({ server, token, userId, onServerUpdated, proMemberIds, proO
                 { headers: { Authorization: `Bearer ${token}` } },
             );
             setMembers(m => m.filter(x => x.user_id !== targetUserId));
+            // Moment: your first ban ever (the ledger keeps it once-ever). Only
+            // the fact that a ban succeeded — never who.
+            requestMoment('first-ban');
         // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (e: any) { toast.push({ kind: 'error', message: e?.response?.data?.message ?? 'Failed to ban' }); }
     };
@@ -892,8 +899,8 @@ function MembersTab({ server, token, userId, onServerUpdated, proMemberIds, proO
                                             </ClButton>
                                         )}
                                         <ClButton size="sm" variant="ghost" onClick={() => setMuteTarget(m.user_id)} style={{ color: 'var(--cl-glow, #a78bfa)' }}>Mute</ClButton>
-                                        <ClButton size="sm" variant="danger" onClick={() => kick(m.user_id)}>Kick</ClButton>
-                                        <ClButton size="sm" variant="danger" onClick={() => ban(m.user_id)}>Ban</ClButton>
+                                        <ClButton size="sm" variant="danger" onClick={() => setMemberAction({ kind: 'kick', member: m })}>Kick</ClButton>
+                                        <ClButton size="sm" variant="danger" onClick={() => setMemberAction({ kind: 'ban', member: m })}>Ban</ClButton>
                                     </>
                                 )}
                             </div>
@@ -906,6 +913,18 @@ function MembersTab({ server, token, userId, onServerUpdated, proMemberIds, proO
 
             {/* ── Transfer Ownership dialog ─────────────────────────────── */}
             <ClModal open={!!transferDialog} onClose={closeTransferDialog} width={448} overlayStyle={{ zIndex: 1100 }} cardStyle={{ padding: 0, overflow: 'hidden' }}>
+                {memberAction && (
+                    <MemberActionDialog
+                        kind={memberAction.kind}
+                        serverName={server.name}
+                        memberId={memberAction.member.user_id}
+                        memberName={memberAction.member.nickname || memberAction.member.username || 'this member'}
+                        avatarUrl={memberAction.member.avatar_url ?? null}
+                        token={token}
+                        onConfirm={() => { const { kind, member } = memberAction; void (kind === 'kick' ? kick(member.user_id) : ban(member.user_id)); }}
+                        onClose={() => setMemberAction(null)}
+                    />
+                )}
                 {transferDialog && (
                     <>
                         <div className="px-6 pt-6 pb-4 border-b border-cl-border/40">
@@ -1454,7 +1473,7 @@ function EmojisTab({ server, token, canManageEmojis }: {
                     <div className="flex items-center justify-between">
                         <div>
                             <p className="text-sm font-medium text-cl-text">Add an emoji</p>
-                            <p className="text-xs text-cl-faint">JPG, PNG, WEBP, or GIF — up to 5 MB. Cropped to a square and shrunk to 128 px, so most emojis take only a few KB of server storage.</p>
+                            <p className="text-xs text-cl-faint">JPG, PNG, WEBP, or GIF, animated ones too (up to 100 frames) — up to 5 MB. Cropped to a square and shrunk to 128 px, so most emojis take only a few KB of server storage.</p>
                         </div>
                         <ClButton
                             size="sm"

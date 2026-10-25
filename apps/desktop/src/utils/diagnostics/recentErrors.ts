@@ -14,6 +14,8 @@
  */
 import { createScrubber, type Scrubber } from './scrub';
 import { DIAGNOSTIC_LIMITS } from './reportTypes';
+import { networkErrorCode } from '../networkError';
+import { logCallEvent } from '../callEventLog';
 
 export interface CapturedError {
     at: number;
@@ -48,9 +50,29 @@ function describe(value: unknown): { name?: string; message: string; stack?: str
 }
 
 /** Record one error (exported for tests and for explicit reporting). */
+/** One observer of every captured renderer error (beta diagnostics). Gets the
+ *  RAW value — the observer scrubs it itself. Must not throw (isolated). */
+type ErrorTap = (kind: CapturedError['kind'], value: unknown) => void;
+let errorTap: ErrorTap | null = null;
+export function setErrorTap(fn: ErrorTap | null): void { errorTap = fn; }
+
 export function captureError(kind: CapturedError['kind'], value: unknown, at: number = Date.now()): void {
     const d = describe(value);
     if (IGNORED.some(re => re.test(d.message))) return;
+    // A rejected axios call whose failure was the TRANSPORT (no HTTP answer) is
+    // connectivity, not a bug - typically the first seconds after a wake while
+    // Wi-Fi reconnects. Mirrors electron/net-error.ts: it becomes a non-fatal
+    // diagnostic row (call-event ring, `net_unhandled`, code only) and is NOT
+    // forwarded as an `unhandled_error`. Everything else - including an axios
+    // error that DID get a response, or any TypeError - is reported as before.
+    // It still enters the recent-errors ring below, so a bug report shows it.
+    const netCode = kind === 'unhandledrejection' ? networkErrorCode(value) : null;
+    if (netCode) {
+        try { logCallEvent('net_unhandled', { cause: netCode }); } catch { /* isolate */ }
+        try { console.warn(`[net] unhandled network rejection (non-fatal) ${netCode}`); } catch { /* no console */ }
+    } else if (errorTap) {
+        try { errorTap(kind, value); } catch { /* isolate */ }
+    }
     const message = scrubber.text(d.message, 1000) || '(no message)';
     const stack = d.stack ? scrubber.stack(d.stack, 25) : undefined;
     const last = ring[ring.length - 1];

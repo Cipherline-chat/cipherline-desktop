@@ -1,6 +1,8 @@
-import React from 'react';
+import React, { useRef } from 'react';
+import { EyeOff, LogOut } from 'lucide-react';
 import { useModalExit } from '../hooks/useModalExit';
 import { ClButton, ClCheckbox, ClModal } from './cl';
+import { DialogHeader, DialogBody, DialogFooter, DialogText, useInitialFocus } from './dialog/DialogFrame';
 
 interface CloseChatDialogProps {
     state: { id: string; title: string; isGroup?: boolean };
@@ -27,62 +29,67 @@ export const CloseChatDialog: React.FC<CloseChatDialogProps> = ({
     // would fire first and unmount this component (and ClModal with it)
     // mid-animation, same reasoning as SoloKickDialog.tsx's identical call.
     const { closing, handleClose } = useModalExit(onClose, 260);
+    const cancelSlot = useRef<HTMLSpanElement>(null);
+    // The checkbox comes first in DOM order, so ClModal would focus it; this
+    // dialog can delete history, so initial focus belongs on the safe button.
+    useInitialFocus(cancelSlot, !closing);
 
     const confirmDisabled = !!(state.isGroup && !deleteDataChecked);
     const confirmVariant = (deleteDataChecked || state.isGroup) ? 'danger' : 'primary';
+    const title = state.isGroup ? 'Leave group?' : 'Close chat?';
 
     return (
         <ClModal
             open={!closing}
             onClose={handleClose}
-            width={400}
-            cardStyle={{ padding: 32 }}
-            label={state.isGroup ? 'Leave Group?' : 'Close Chat?'}
+            width={420}
+            cardClassName="dlg-card dlg-card--confirm"
+            label={title}
         >
-            <h2 className="text-xl font-bold text-cl-text mb-2" style={{ marginTop: 0 }}>
-                {state.isGroup ? 'Leave Group?' : 'Close Chat?'}
-            </h2>
-            <p className="text-cl-faint" style={{ fontSize: '0.9rem', lineHeight: 1.5, marginBottom: '24px' }}>
-                {state.isGroup ? (
-                    <>Leaving <strong className="text-cl-text">{state.title}</strong> will permanently delete your local chat history. You won't be able to rejoin unless added again.</>
-                ) : (
-                    <>Are you sure you want to close your chat with <strong className="text-cl-text">{state.title}</strong>? It will remain hidden until a new message is exchanged.</>
-                )}
-            </p>
+            <DialogHeader
+                tone={confirmVariant === 'danger' ? 'danger' : 'default'}
+                icon={state.isGroup ? <LogOut size={18} strokeWidth={2.2} /> : <EyeOff size={18} strokeWidth={2.2} />}
+                title={title}
+            />
+            <DialogBody>
+                <DialogText>
+                    {state.isGroup ? (
+                        <>Leaving <strong>{state.title}</strong> will permanently delete your local chat history. You won't be able to rejoin unless added again.</>
+                    ) : (
+                        <>Close your chat with <strong>{state.title}</strong>? It stays hidden until a new message is exchanged.</>
+                    )}
+                </DialogText>
 
-            {/* For groups: require checkbox before enabling Leave. For DMs: show optional delete history */}
-            <div className="mb-6">
-                <ClCheckbox
-                    checked={deleteDataChecked}
-                    onChange={setDeleteDataChecked}
-                    label={state.isGroup
-                        ? 'I understand my chat history will be deleted'
-                        : 'Delete all local chat history forever'}
-                />
-            </div>
-
-            <div style={{ display: 'flex', gap: '12px' }}>
-                <ClButton
-                    type="button"
-                    variant="ghost"
-                    fullWidth
-                    onClick={handleClose}
-                >
-                    Cancel
-                </ClButton>
+                {/* For groups: require the checkbox before enabling Leave. For DMs: optional delete history. */}
+                <div style={{ marginTop: 14 }}>
+                    <ClCheckbox
+                        checked={deleteDataChecked}
+                        onChange={setDeleteDataChecked}
+                        label={state.isGroup
+                            ? 'I understand my chat history will be deleted'
+                            : 'Also delete all local chat history forever'}
+                    />
+                </div>
+            </DialogBody>
+            <DialogFooter hint={confirmDisabled ? <span>Tick the box to continue</span> : undefined}>
+                <span ref={cancelSlot} className="dlg-focus-slot">
+                    <ClButton type="button" variant="ghost" size="sm" onClick={handleClose}>
+                        Cancel
+                    </ClButton>
+                </span>
                 <ClButton
                     type="button"
                     variant={confirmVariant}
-                    fullWidth
+                    size="sm"
                     disabled={confirmDisabled}
                     onClick={() => {
                         onConfirm();
                         handleClose();
                     }}
                 >
-                    {state.isGroup ? 'Leave Group' : (deleteDataChecked ? 'Delete & Close' : 'Close DM')}
+                    {state.isGroup ? 'Leave group' : (deleteDataChecked ? 'Delete & close' : 'Close chat')}
                 </ClButton>
-            </div>
+            </DialogFooter>
         </ClModal>
     );
 };

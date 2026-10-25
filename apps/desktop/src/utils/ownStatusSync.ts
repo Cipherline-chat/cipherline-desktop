@@ -47,6 +47,12 @@ export interface OwnChoice {
     status: UserStatus;
     text: string;
     emoji: string;
+    /** When the custom status clears (ISO). Set by the custom-status dialog
+     *  (sent as `custom_status_expires_at`) and by adopting the server's
+     *  value (display only). Deliberately NOT part of `sameChoice`, and never
+     *  re-sent by the ambient/re-announce paths: an omitted expiry makes the
+     *  server keep the one it holds for an unchanged status. */
+    expiresAt?: string | null;
 }
 
 export interface PendingLocalChange extends OwnChoice {
@@ -59,6 +65,7 @@ export interface ServerOwnState {
     chosen: UserStatus | null;
     text: string;
     emoji: string;
+    expiresAt: string | null;
     /** `current_game` as the server holds it; undefined when not reported. */
     game: string | null | undefined;
     showMobilePresence: boolean | undefined;
@@ -80,6 +87,7 @@ export function readServerOwnState(me: unknown): ServerOwnState | 'unsupported' 
         chosen: isChosen(m.chosen_status) ? m.chosen_status : null,
         text: str(m.custom_status_text),
         emoji: str(m.custom_status_emoji),
+        expiresAt: typeof m.custom_status_expires_at === 'string' ? m.custom_status_expires_at : null,
         game: 'current_game' in m ? (typeof m.current_game === 'string' ? m.current_game : null) : undefined,
         showMobilePresence: typeof m.show_mobile_presence === 'boolean' ? m.show_mobile_presence : undefined,
     };
@@ -91,7 +99,10 @@ export function readSelfEvent(data: unknown): { choice: OwnChoice; showMobilePre
     const d = data as Record<string, unknown>;
     if (!isChosen(d.status)) return null;
     return {
-        choice: { status: d.status, text: str(d.custom_status_text), emoji: str(d.custom_status_emoji) },
+        choice: {
+            status: d.status, text: str(d.custom_status_text), emoji: str(d.custom_status_emoji),
+            ...(typeof d.custom_status_expires_at === 'string' ? { expiresAt: d.custom_status_expires_at } : {}),
+        },
         showMobilePresence: typeof d.show_mobile_presence === 'boolean' ? d.show_mobile_presence : undefined,
     };
 }
@@ -110,7 +121,7 @@ export function decideOnConnect(
     if (server === 'unsupported') return { kind: 'reannounce' };
     if (server === 'unavailable') return { kind: 'none' };
     if (server.chosen === null) return { kind: 'seed' };
-    const choice: OwnChoice = { status: server.chosen, text: server.text, emoji: server.emoji };
+    const choice: OwnChoice = { status: server.chosen, text: server.text, emoji: server.emoji, ...(server.expiresAt ? { expiresAt: server.expiresAt } : {}) };
     if (pending) {
         if (sameChoice(choice, pending.base)) return { kind: 'send-pending' };
         if (sameChoice(choice, pending)) return { kind: 'adopt', choice, conflict: false };
@@ -201,7 +212,7 @@ export class OwnStatusSync {
         this.base = choice;
         if (this.pending) this.setPending(null);
         const local = this.deps.getLocal();
-        if (!sameChoice(local, choice)) this.deps.apply(choice);
+        if (!sameChoice(local, choice) || (local.expiresAt ?? null) !== (choice.expiresAt ?? null)) this.deps.apply(choice);
     }
 
     /** Send the local choice as the server's (re-announce / seed / pending). */
@@ -209,7 +220,8 @@ export class OwnStatusSync {
         const choice = this.deps.getLocal();
         const gen = this.gen;
         this.inFlight++;
-        const ok = await this.deps.patchStatus(choice, this.deps.getGame()).catch(() => false);
+        // Ambient re-sends never carry an expiry (see OwnChoice.expiresAt).
+        const ok = await this.deps.patchStatus({ ...choice, expiresAt: undefined }, this.deps.getGame()).catch(() => false);
         this.inFlight--;
         if (ok && gen === this.gen) {
             this.base = choice;
@@ -355,7 +367,7 @@ export class OwnStatusSync {
             const s = readServerOwnState(await this.deps.fetchMe());
             if (s === 'unsupported' || s.chosen === null) return;
             if (gen !== this.gen || this.inFlight > 0 || this.pending) return;
-            this.adopt({ status: s.chosen, text: s.text, emoji: s.emoji });
+            this.adopt({ status: s.chosen, text: s.text, emoji: s.emoji, ...(s.expiresAt ? { expiresAt: s.expiresAt } : {}) });
         } catch { /* the next event or connect settles it */ }
     }
 }

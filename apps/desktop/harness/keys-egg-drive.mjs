@@ -42,7 +42,7 @@ async function attempt(page, cdp) {
                 const el = document.elementFromPoint(e.clientX, e.clientY);
                 let drag = false;
                 for (let n = el; n; n = n.parentElement) if (getComputedStyle(n).getPropertyValue('-webkit-app-region') === 'drag') drag = true;
-                const where = !el ? 'none' : el.closest('.hk [role="img"]') ? 'rig' : el.closest('.hk') ? 'zone' : String(el.className?.baseVal ?? el.className ?? el.tagName);
+                const where = !el ? 'none' : el.closest('.hk .k2-root') ? 'rig' : el.closest('.hk') ? 'zone' : String(el.className?.baseVal ?? el.className ?? el.tagName);
                 window.__log.push({ type: 'down', ts: e.timeStamp, now: performance.now(), where, drag });
             }, true);
             addEventListener('click', e => {
@@ -50,7 +50,7 @@ async function attempt(page, cdp) {
             }, true);
         }
     });
-    const box = await page.locator('.hk [role="img"]').boundingBox();
+    const box = await page.locator('.hk .k2-root').boundingBox();
     // Where this person aims: anywhere on him (dome or legs), held still while spamming.
     const cx = box.x + box.width * (0.25 + rnd() * 0.5), cy = box.y + box.height * (0.2 + rnd() * 0.6);
     const t0 = Date.now();
@@ -106,7 +106,7 @@ for (const mode of MODES) {
     const cdp = await ctx.newCDPSession(page);
     if (THROTTLE > 1) await cdp.send('Emulation.setCPUThrottlingRate', { rate: THROTTLE });
     await page.goto(BASE);
-    await page.waitForSelector('.hk [role="img"]');
+    await page.waitForSelector('.hk .k2-root');
     await sleep(1500);
     let ok = 0;
     const rows = [];

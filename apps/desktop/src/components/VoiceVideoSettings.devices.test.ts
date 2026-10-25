@@ -45,3 +45,26 @@ describe('VoiceVideoSettings — the gate meter is the gate', () => {
         expect(src).toMatch(/\{ gateMeterMs: GATE_METER_REPORT_MS \}/);
     });
 });
+
+describe('VoiceVideoSettings — the camera preview follows the picked camera', () => {
+    it('opens through openCameraPreview ({exact}), not a bare id (an ideal Chromium ignores)', () => {
+        expect(src).toMatch(/openCameraPreview\(deviceId, c => navigator\.mediaDevices\.getUserMedia\(c\)\)/);
+        expect(src).not.toMatch(/deviceId: deviceId \|\| undefined/);
+    });
+
+    it('restarts when the pick changes, and when the hardware changes under it', () => {
+        expect(src).toMatch(/\}, \[deviceId, active, reopenTick\]\);/);
+        expect(src).toMatch(/addEventListener\('devicechange', onDeviceChange\)/);
+        expect(src).toMatch(/addEventListener\('ended'/);
+    });
+
+    it('keeps a pick that is not plugged in visible in the picker instead of blanking it', () => {
+        expect(src).toMatch(/makeDeviceOptions\(videoDevices, 'Default Camera', settings\.cameraDeviceId, undefined\)/);
+    });
+
+    it('the call is opened with the same stored pick (LiveKit wraps a string deviceId in {exact})', () => {
+        const call = readFileSync(join(here, 'CallPane.tsx'), 'utf8');
+        expect(call).toMatch(/useState\(\(\) => voice\?\.settings\.cameraDeviceId \|\| undefined\)/);
+        expect(call).toMatch(/videoCaptureDefaults: \{[^}]*deviceId: initialCameraDeviceId,/s);
+    });
+});

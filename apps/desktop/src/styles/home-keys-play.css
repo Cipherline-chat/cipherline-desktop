@@ -1,0 +1,375 @@
+/* ============================================================================
+   Keys on Home: his click reactions, their effects, the rare surprises
+   (components/mascot/HomeKeys.tsx + KeysPlayFx.tsx, utils/keysPlay.ts,
+   utils/keysRare.ts).
+
+   PERF CONTRACT (same bar as home-keys.css / home-keys-mirror.css):
+   - Every effect is an HTML element that rests at opacity 0 and moves only
+     while a Web Animation started by a click runs (transform / opacity:
+     compositor). Nothing here loops, nothing animates on its own, no
+     filter / box-shadow / will-change.
+   - Reduced motion: HomeKeys never starts the motion (he still says his
+     line); the effects are not even laid out.
+   ============================================================================ */
+
+/* His body is a real button on Home (Keys `asButton`). */
+.k2-btn {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: inherit;
+  appearance: none;
+  -webkit-appearance: none;
+  border-radius: 14px;
+}
+.k2-btn:focus { outline: none; }
+.k2-btn:focus-visible { outline: 2px solid var(--cl-lume); outline-offset: 3px; }
+
+/* ── the effects' layers ─────────────────────────────────────────────────── */
+.hkp-stage { pointer-events: none; }
+.hkp-on {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 4;
+  width: 100%;
+  aspect-ratio: 110 / 92;
+  pointer-events: none;
+}
+.hkp { position: absolute; opacity: 0; pointer-events: none; }
+.hkp > svg { display: block; width: 100%; height: 100%; overflow: visible; }
+
+/* origins of the gear pieces the reactions move (their svgs span his whole
+   110 x 92 box, so the pivot has to be the piece's own spot) */
+.hkg-pad > svg, .hkg-box > svg, .hkg-mug > svg { transform-origin: 50% 72%; }
+.hkg-crown > svg { transform-origin: 38% 13%; }
+.hkg-lantern > svg { transform-origin: 60% 30%; }
+.hkg-phones > svg, .hkg-headset > svg { transform-origin: 50% 48%; }
+.hkg-sign > svg, .hkg-ring > svg { transform-origin: 50% 100%; }
+.hkg-camoeyes > svg { transform-origin: 50% 40%; }
+.hkg-nosig > svg { transform-origin: 50% 100%; }
+.hkg-safe > svg { transform-origin: 50% 100%; }
+.hkg-pile { transform-origin: 50% 100%; }
+
+/* ── BACK: on the TV ─────────────────────────────────────────────────────── */
+.hkp-at-tv, .hkp-at-safe { position: absolute; }
+.hkp-at-tv { left: -66%; top: 30%; width: 56%; aspect-ratio: 60 / 56; }
+.hkp-at-safe { left: 100%; top: 52%; width: 34%; aspect-ratio: 1; }
+.hkp-screen {
+  left: 8.5%;
+  top: 21%;
+  width: 72%;
+  height: 59%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  border-radius: 12% / 16%;
+  background: #0E1430;
+  font: 800 7px/1.05 var(--cl-font-mono, 'JetBrains Mono', ui-monospace, monospace);
+  letter-spacing: .04em;
+  color: var(--cl-flash);
+}
+.hkp-hiscore { color: var(--cl-glow); }
+.hkp-bit { left: 42%; top: 44%; width: 10%; aspect-ratio: 1; }
+.hkp-conf--0, .hkp-conf--3 { background: var(--cl-lume); }
+.hkp-conf--1, .hkp-conf--4 { background: var(--cl-glow); }
+.hkp-conf--2, .hkp-conf--5 { background: var(--cl-flash); border-radius: 50%; }
+.hkp-shard { width: 12%; }
+.hkp-shard--0, .hkp-shard--4 { background: var(--cl-lume); }
+.hkp-shard--1, .hkp-shard--5 { background: var(--cl-flash); }
+.hkp-shard--2, .hkp-shard--6 { background: var(--cl-glow); }
+.hkp-shard--3, .hkp-shard--7 { background: #fff; }
+
+/* ── BACK: on the safe ───────────────────────────────────────────────────── */
+.hkp-dial { left: 30%; top: 42.5%; width: 40%; aspect-ratio: 1; }
+.hkp-door {
+  left: 5%;
+  top: 10%;
+  width: 90%;
+  height: 85%;
+  border-radius: 4px;
+  background: var(--cl-raise);
+  border: 1.5px solid var(--cl-border);
+  box-sizing: border-box;
+  transform-origin: 0 50%;
+}
+.hkp-door > i {
+  position: absolute;
+  right: 12%;
+  top: 40%;
+  width: 10%;
+  height: 22%;
+  border-radius: 2px;
+  background: var(--cl-lume);
+}
+.hkp-vkey { left: 30%; top: 45%; width: 44%; aspect-ratio: 2; }
+
+/* ── ON HIM ──────────────────────────────────────────────────────────────── */
+/* a tentacle raised to the mic ("shh") — his own colour, drawn like a leg */
+.hkp-finger {
+  left: 20%;
+  top: 56%;
+  width: 6%;
+  height: 24%;
+  border-radius: 999px;
+  background: var(--hk-body, var(--cl-lume));
+  transform-origin: 50% 100%;
+}
+.hkp-mute {
+  left: 66%;
+  top: -22%;
+  width: 22%;
+  aspect-ratio: 1;
+  padding: 3%;
+  border-radius: 50%;
+  background: var(--cl-deep);
+  border: 1px solid var(--cl-border);
+  box-sizing: border-box;
+}
+.hkp-tap {
+  left: 23.5%;
+  top: 54%;
+  width: 14%;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  border: 2px solid var(--cl-glow);
+  box-sizing: border-box;
+}
+.hkp-busy {
+  left: 30%;
+  top: 52%;
+  width: 40%;
+  height: 22%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 3px;
+  background: #F4F7FF;
+  border: 1px solid #9AA6C8;
+  font: 800 8px/1 var(--cl-font-body, 'Nunito', system-ui, sans-serif);
+  letter-spacing: .08em;
+  color: var(--cl-flash);
+}
+.hkp-vol {
+  left: 97%;
+  top: 30%;
+  width: 14%;
+  height: 22%;
+  display: flex;
+  align-items: flex-end;
+  gap: 12%;
+  transform-origin: 0 100%;
+}
+.hkp-vol > i { flex: 1; border-radius: 1px; background: var(--cl-flash); }
+.hkp-vol > i:nth-child(1) { height: 35%; }
+.hkp-vol > i:nth-child(2) { height: 65%; }
+.hkp-vol > i:nth-child(3) { height: 100%; }
+.hkp-stripes {
+  left: 19.1%;
+  top: 15.2%;
+  width: 61.8%;
+  height: 42.4%;
+  border-radius: 50% 50% 0 0 / 100% 100% 0 0;
+  background: repeating-linear-gradient(115deg, rgba(11, 15, 30, .55) 0 4px, transparent 4px 9px);
+}
+.hkp-antenna {
+  left: 48.5%;
+  top: -6%;
+  width: 3%;
+  height: 22%;
+  border-radius: 999px;
+  background: var(--cl-raise);
+  transform-origin: 50% 100%;
+}
+.hkp-antenna::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 0;
+  width: 260%;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  background: var(--cl-flash);
+  transform: translate(-50%, -50%);
+}
+.hkp-drop {
+  left: 46%;
+  top: 62%;
+  width: 3.5%;
+  aspect-ratio: .8;
+  border-radius: 50% 50% 50% 50% / 60% 60% 40% 40%;
+  background: #8A4A2E;
+}
+.hkp-gust { left: 28%; top: 54%; width: 16%; height: 10%; transform-origin: 100% 50%; }
+.hkp-gust > i {
+  position: absolute;
+  right: 0;
+  height: 2px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--cl-text, #E8EEFF) 70%, transparent);
+}
+.hkp-gust > i:nth-child(1) { top: 20%; width: 100%; }
+.hkp-gust > i:nth-child(2) { top: 70%; width: 70%; }
+.hkp-beam {
+  left: 84.5%;
+  top: 8.7%;
+  width: 150%;
+  aspect-ratio: 1;
+  margin: -75% 0 0 -75%;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, color-mix(in srgb, var(--cl-glow) 70%, transparent), color-mix(in srgb, var(--cl-glow) 18%, transparent) 55%, transparent);
+}
+.hkp-moth { left: 84.5%; top: 8.7%; width: 6%; aspect-ratio: 1; margin: -3% 0 0 -3%; }
+.hkp-moth > i {
+  position: absolute;
+  top: 10%;
+  width: 55%;
+  height: 80%;
+  border-radius: 50%;
+  background: #D9D2C3;
+}
+.hkp-moth > i:nth-child(1) { left: -5%; }
+.hkp-moth > i:nth-child(2) { right: -5%; }
+.hkp-twinkle {
+  width: 9%;
+  aspect-ratio: 1;
+  background: #fff;
+  clip-path: polygon(50% 0, 62% 38%, 100% 50%, 62% 62%, 50% 100%, 38% 62%, 0 50%, 38% 38%);
+}
+.hkp-csp0 { left: 24%; top: -2%; background: var(--cl-glow); }
+.hkp-csp1 { left: 47%; top: 6%; }
+.hkp-shine0 { left: 10%; top: 4%; }
+.hkp-shine1 { left: 80%; top: 14%; background: var(--hk-shiny, #C9A7FF); }
+.hkp-doc {
+  left: 46%;
+  top: 58%;
+  width: 9%;
+  aspect-ratio: .78;
+  border-radius: 1.5px;
+  background: #F4F7FF;
+  border: 1px solid #9AA6C8;
+  box-sizing: border-box;
+}
+.hkp-doc > i {
+  position: absolute;
+  left: 18%;
+  right: 18%;
+  top: 25%;
+  height: 40%;
+  background: repeating-linear-gradient(to bottom, #9AA6C8 0 1px, transparent 1px 3px);
+}
+.hkp-squig { width: 26%; aspect-ratio: 30 / 12; }
+.hkp-squig > svg { fill: none; stroke: var(--cl-flash); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.hkp-squig--0 { left: -18%; top: 10%; }
+.hkp-squig--1 { left: 90%; top: 6%; }
+.hkp-squig--2 { left: 37%; top: -24%; }
+.hkp-ball { left: 45.5%; top: 42%; width: 9%; aspect-ratio: 1; border-radius: 50%; }
+.hkp-ball--0 { background: var(--cl-flash); }
+.hkp-ball--1 { background: var(--cl-glow); }
+.hkp-ball--2 { background: var(--cl-ok); }
+/* the rare newspaper, held up in front of him */
+.hkp-paper {
+  left: 20%;
+  top: 46%;
+  width: 60%;
+  height: 40%;
+  padding: 5% 7%;
+  box-sizing: border-box;
+  border-radius: 2px;
+  background: #EDEAE0;
+  border: 1px solid #B9B4A6;
+  display: flex;
+  flex-direction: column;
+  gap: 7%;
+}
+.hkp-paper > b { display: block; height: 18%; background: #3A3F52; border-radius: 1px; }
+.hkp-paper > i { display: block; height: 7%; width: 58%; background: #A39E90; border-radius: 1px; }
+.hkp-paper > .hkp-paper-pic {
+  position: absolute;
+  right: 8%;
+  top: 34%;
+  width: 26%;
+  height: 46%;
+  background: color-mix(in srgb, var(--cl-lume) 55%, #A39E90);
+}
+/* his eyes while he reads: down at the page, scanning the lines */
+.hk.hk-reading .k2-eyes { animation: hkp-read 1.4s ease-in-out 3; }
+@keyframes hkp-read {
+  0%, 100% { transform: translate(-1.6px, 2.4px); }
+  45% { transform: translate(1.8px, 2.4px); }
+  50% { transform: translate(1.8px, 3.2px); }
+  55% { transform: translate(-1.6px, 3.2px); }
+}
+/* one eye open, one shut (asleep, poked) */
+.hkp-oneeye {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  fill: none;
+  stroke: var(--cl-abyss);
+  stroke-width: 3.5;
+  stroke-linecap: round;
+}
+
+/* ── FRONT ───────────────────────────────────────────────────────────────── */
+.hkp-env { width: 22%; aspect-ratio: 24 / 16; margin-left: -11%; }
+.hkp-aval { width: 26%; margin-left: -13%; }
+.hkp-env > svg { display: block; width: 100%; height: 100%; }
+.hkp-wall {
+  left: -8%;
+  top: 14%;
+  width: 116%;
+  height: 86%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  border-radius: 4px;
+  box-sizing: border-box;
+  border: 1.5px solid #8C3A33;
+  background:
+    repeating-linear-gradient(to bottom, transparent 0 9px, rgba(11, 15, 30, .28) 9px 10px),
+    var(--cl-flash);
+  transform-origin: 50% 100%;
+}
+.hkp-wall > b {
+  padding: 2px 5px;
+  border-radius: 3px;
+  background: rgba(11, 15, 30, .22);
+  font: 800 9px/1.15 var(--cl-font-display, 'Fredoka', system-ui, sans-serif);
+  letter-spacing: .05em;
+  color: #fff;
+}
+.hkp-dust {
+  left: 4%;
+  top: 80%;
+  width: 92%;
+  height: 18%;
+  background:
+    radial-gradient(closest-side, color-mix(in srgb, var(--cl-text, #E8EEFF) 50%, transparent), transparent) 0 50% / 30% 100% no-repeat,
+    radial-gradient(closest-side, color-mix(in srgb, var(--cl-text, #E8EEFF) 50%, transparent), transparent) 100% 50% / 30% 100% no-repeat,
+    radial-gradient(closest-side, color-mix(in srgb, var(--cl-text, #E8EEFF) 35%, transparent), transparent) 50% 60% / 40% 80% no-repeat;
+}
+
+/* ── asleep: he moved his bed to the other side (the finale) ─────────────── */
+.hk[data-pose="asleep"][data-bed="moved"] .hk-pose {
+  transform: translateX(16%) translateY(6%) scale(-1.07, .84) rotate(-4deg);
+  transition-delay: .9s;
+}
+
+/* ── Shiny Keys: a rare colourway for the whole session (keysRare.ts) ────── */
+.hk[data-shiny="on"] { --hk-shiny: #C9A7FF; --hk-body: var(--hk-shiny); }
+/* the rig sets its colour inline; the rare colourway outranks it */
+.hk[data-shiny="on"] .k2-svg { color: var(--hk-shiny) !important; }
+
+@media (prefers-reduced-motion: reduce) {
+  .hkp, .hkp-on > svg:not(.hkp-oneeye) { display: none; }
+  .hk.hk-reading .k2-eyes { animation: none; }
+  .hk[data-pose="asleep"][data-bed="moved"] .hk-pose { transition: none; }
+}

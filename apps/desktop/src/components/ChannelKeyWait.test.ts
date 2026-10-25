@@ -19,7 +19,7 @@ import { channelPlaceholderContent } from '../utils/channelDecryptFailure';
 
 /**
  * The key-wait layer's contract with ChatPane:
- *   - it is up only while the newest page is all key_missing (and the list is
+ *   - it is up while what is on screen needs keys (and the list is
  *     not rendered at all meanwhile — no pill ever paints);
  *   - its copy follows the real signals Dashboard notes;
  *   - it leaves when the page is readable AND the decrypt has folded in, with
@@ -50,7 +50,7 @@ const Pane: React.FC<{ rows: Rows; enabled?: boolean; onState: (s: ChannelKeyWai
     return React.createElement('div', { className: 'pane' },
         kw.holdList ? null : React.createElement('div', { className: kw.handoff ? 'list ckw-list-in' : 'list' },
             rows.map(r => React.createElement('div', { key: r.id, className: 'row' }, String((r.content as { type?: string })?.type)))),
-        kw.phase !== 'hidden' ? React.createElement(ChannelKeyWait, { phase: kw.phase, stage: kw.stage, reduced: kw.reduced }) : null,
+        kw.phase === 'shown' || kw.phase === 'exiting' ? React.createElement(ChannelKeyWait, { phase: kw.phase, stage: kw.stage, reduced: kw.reduced }) : null,
     );
 };
 
@@ -94,8 +94,8 @@ describe('when it shows', () => {
         expect(list()).toBeNull();
         expect(host.querySelectorAll('.row')).toHaveLength(0);
     });
-    it('control: a readable page renders the list and no layer', () => {
-        render([...page(99, pill), msg()]);
+    it('control: a page whose screen reads (older rows waiting) renders the list and no layer', () => {
+        render([...page(30, pill), ...page(70, msg)]);
         expect(layer()).toBeNull();
         expect(host.querySelectorAll('.row')).toHaveLength(100);
     });
@@ -192,8 +192,8 @@ describe('leaving', () => {
         render(page(100, pill));
         let end = () => {};
         act(() => { noteChannelKeyReceived(CH); end = beginChannelPageDecrypt(CH); });
-        // one live message decrypted first; the page's decrypt is still running
-        render([...page(99, pill), msg()]);
+        // most of the page decrypted; the page's decrypt is still folding in
+        render([...page(20, pill), ...page(80, msg)]);
         expect(lastState!.phase).toBe('shown');
         expect(list()).toBeNull();
         act(() => { end(); });
@@ -202,14 +202,14 @@ describe('leaving', () => {
     it('…but not forever', () => {
         render(page(100, pill));
         act(() => { beginChannelPageDecrypt(CH); }); // never ends
-        render([...page(99, pill), msg()]);
+        render([...page(20, pill), ...page(80, msg)]);
         expect(lastState!.phase).toBe('shown');
         act(() => { vi.advanceTimersByTime(KEY_WAIT_DECRYPT_HOLD_MS + 10); });
         expect(lastState!.phase).toBe('exiting');
     });
     it('never comes back for the same pane (a later undecryptable live row cannot flicker it)', () => {
         render(page(3, pill));
-        render([...page(3, pill), msg()]);
+        render([pill(), msg(), msg(), msg()]);
         act(() => { vi.advanceTimersByTime(KEY_WAIT_EXIT_MS + 10); });
         expect(layer()).toBeNull();
         render(page(5, pill));
@@ -244,7 +244,7 @@ describe('reduced motion', () => {
     it('exit is the short fade', () => {
         reduce = true;
         render(page(3, pill));
-        render([...page(3, pill), msg()]);
+        render([pill(), msg(), msg(), msg()]);
         expect(lastState!.phase).toBe('exiting');
         act(() => { vi.advanceTimersByTime(KEY_WAIT_REDUCED_EXIT_MS + 5); });
         expect(layer()).toBeNull();

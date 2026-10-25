@@ -43,12 +43,20 @@ export function signedMessage(channel, fileName, bytes) {
     return Buffer.from(`${DOMAIN}:${channel}:${fileName}:${digest}`, 'utf8');
 }
 
+const LATEST_KEY_LIST_RE = /\blatest:\s*\[([^\]]*)\]/;
+const STAGING_KEY_LIST_RE = /\bstaging:\s*\[([^\]]*)\]/;
+
 /** Allowlisted keys per channel, read from the app's own source. */
 export function allowlistedKeys(channel, source = readFileSync(KEYS_FILE, 'utf8')) {
     const start = source.indexOf('UPDATE_MANIFEST_PUBLIC_KEYS');
     if (start < 0) throw new Error('UPDATE_MANIFEST_PUBLIC_KEYS not found in update-manifest-keys.ts');
-    const body = source.slice(start).replace(/\/\/[^\n]*/g, '');
-    const m = new RegExp(`\\b${channel}:\\s*\\[([^\\]]*)\\]`).exec(body);
+    // Strip `// …` comments, but never inside a quoted key: standard base64 contains '/', so a
+    // key with two adjacent slashes (about 1 in 100 random keys) would otherwise lose its closing quote.
+    const body = source.slice(start).replace(/'[^'\n]*'|\/\/[^\n]*/g, (t) => (t.startsWith('//') ? '' : t));
+    // A fixed pattern per channel, never a RegExp built from the argument.
+    const re = channel === 'latest' ? LATEST_KEY_LIST_RE : channel === 'staging' ? STAGING_KEY_LIST_RE : null;
+    if (!re) throw new Error(`unknown channel "${channel}" (latest | staging)`);
+    const m = re.exec(body);
     if (!m) throw new Error(`no ${channel} key list in update-manifest-keys.ts`);
     return [...m[1].matchAll(/'([^']*)'/g)].map((x) => x[1]);
 }

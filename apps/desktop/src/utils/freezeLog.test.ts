@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import {
     beginActivity, trackActivity, activityDuring, recordLongTask, fetchFreezeLog, clearFreezeLog,
     formatFreezeReport, LONG_TASK_MS, __resetFreezeLogForTests, setFreezeLogView,
+    setFreezeTap, noteIdleBoundary, WAKE_SETTLE_MS,
 } from './freezeLog';
 
 describe('freezeLog (renderer half of the freeze diagnostic)', () => {
@@ -94,5 +95,63 @@ describe('freezeLog (renderer half of the freeze diagnostic)', () => {
         expect(report).toContain('event        840 ms  window:first-frame restore to next painted frame');
         expect(report).toMatch(/metrics\s+restore: browser 1\.0% 140MB/);
         expect(report).not.toMatch(/window:minimize.*0 ms|0 ms\s+window:minimize/);
+    });
+
+    describe('beta tap: sleep and hidden-window guard', () => {
+        afterEach(() => { setFreezeTap(null); });
+
+        it('reports a real freeze once the wake-settle window passes with no idle boundary', () => {
+            vi.useFakeTimers();
+            const tap = vi.fn();
+            setFreezeTap(tap);
+            recordLongTask(performance.now(), 2_300);
+            expect(tap).not.toHaveBeenCalled();
+            vi.advanceTimersByTime(WAKE_SETTLE_MS);
+            expect(tap).toHaveBeenCalledWith(2_300, expect.any(String));
+        });
+
+        it('drops a freeze when an OS resume / visibility change lands after it started', () => {
+            vi.useFakeTimers();
+            const tap = vi.fn();
+            setFreezeTap(tap);
+            const t0 = performance.now();
+            recordLongTask(t0, 120_000);
+            noteIdleBoundary(t0 + 120_000 + 50); // dispatched after the stalled task ends
+            vi.advanceTimersByTime(WAKE_SETTLE_MS);
+            expect(tap).not.toHaveBeenCalled();
+        });
+
+        it('ignores an idle boundary from before the freeze started', () => {
+            vi.useFakeTimers();
+            const tap = vi.fn();
+            setFreezeTap(tap);
+            const t0 = performance.now();
+            noteIdleBoundary(t0 - 1);
+            recordLongTask(t0, 1_500);
+            vi.advanceTimersByTime(WAKE_SETTLE_MS);
+            expect(tap).toHaveBeenCalledTimes(1);
+        });
+
+        it('never reports an implausible multi-minute "freeze" (16,889 s from the field)', () => {
+            vi.useFakeTimers();
+            const tap = vi.fn();
+            setFreezeTap(tap);
+            recordLongTask(performance.now(), 16_889_795);
+            vi.advanceTimersByTime(WAKE_SETTLE_MS);
+            expect(tap).not.toHaveBeenCalled();
+        });
+
+        it('drops a freeze when the window is hidden at decision time, and still logs it locally', async () => {
+            vi.useFakeTimers();
+            const tap = vi.fn();
+            setFreezeTap(tap);
+            const vis = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+            recordLongTask(performance.now(), 3_000);
+            vi.advanceTimersByTime(WAKE_SETTLE_MS);
+            vis.mockRestore();
+            expect(tap).not.toHaveBeenCalled();
+            vi.useRealTimers();
+            expect((await fetchFreezeLog()).some(r => r.ms === 3_000)).toBe(true);
+        });
     });
 });

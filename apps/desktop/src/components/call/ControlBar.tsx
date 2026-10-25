@@ -1,12 +1,14 @@
 import React from 'react';
 import ReactDOM from 'react-dom';
-import { PhoneCall, ScreenShare, Loader2, X, ChevronDown, ChevronLeft, Maximize2, Minimize2, Monitor, Sliders, Check, Volume2, VolumeX, LifeBuoy } from 'lucide-react';
+import { PhoneCall, ScreenShare, Loader2, X, ChevronDown, ChevronLeft, Maximize2, Minimize2, Monitor, Sliders, Check, Volume2, VolumeX, LifeBuoy, Settings2 } from 'lucide-react';
 import { useCallContextSafe } from '../../contexts/CallContext';
 import { useSubscription } from '../../contexts/SubscriptionContext';
 import { useDismissOnOutsideClick } from '../../hooks/useDismissOnOutsideClick';
 import { useContextMenu } from '../../hooks/useContextMenu';
 import { useMediaDevices, buildDeviceRowModel } from '../../hooks/useMediaDevices';
-import type { VoiceSettingsHook } from '../../hooks/useVoiceSettings';
+import { DEFAULT_VOICE_SETTINGS, MIC_VOLUME_MAX, SPEAKER_VOLUME_MAX, type VoiceSettingsHook } from '../../hooks/useVoiceSettings';
+import { MAX_VOLUME_PERCENT } from '../../utils/volumeLimits';
+import { VolumeCeilingWatch } from '../moments/VolumeCeilingWatch';
 import type { ContextMenuItem } from '../primitives/ContextMenu';
 import type { ScreenShareOptions } from '../ScreenSharePickerModal';
 import { ClButton } from '../cl';
@@ -14,9 +16,11 @@ import { ShareFpsNote } from '../ShareFpsNote';
 import { MicIcon, CamIcon, HeadphonesIcon } from '../icons/SlashableIcon';
 import { ClSlider } from '../ClSlider';
 import { playIco } from '../../utils/clPhysics';
+import { recordEggFound } from '../../utils/eggProgress';
 import { bumpStreak, firesAt, type Streak } from '../../utils/eggStreak';
 import { computeTooltipPlacement, type TooltipPlacement } from '../cl/tooltipPlacement';
 import { openReportProblem } from '../../utils/diagnostics/reportRequest';
+import { requestOpenSettings } from '../../utils/openSettingsRequest';
 import { layoutsEqual, WHOLE_LAYOUT, type ShareLayout } from '../../utils/shareLayout';
 
 interface ControlBarProps {
@@ -231,12 +235,14 @@ function buildDeviceRows(
 // a snapshot in useContextMenu's state, not re-rendered on every ControlBar
 // re-render, so a value we read from `voice.settings` at build time can't
 // track the debounced write that lands ~120ms after release anyway).
-function volumeRow(label: string, value: number, onChange: (v: number) => void): ContextMenuItem {
+function volumeRow(label: string, value: number, onChange: (v: number) => void, resetValue: number, max = MAX_VOLUME_PERCENT): ContextMenuItem {
     return {
         custom: (
             <div className="ctxm-vol-row">
                 <span className="ctxm-vol-label">{label}</span>
-                <ClSlider min={0} max={300} step={1} value={value} onChange={onChange} resetValue={100} formatLabel={v => `${v}%`} />
+                <VolumeCeilingWatch>
+                    <ClSlider min={0} max={max} step={1} value={value} onChange={onChange} resetValue={resetValue} formatLabel={v => `${v}%`} />
+                </VolumeCeilingWatch>
             </div>
         ),
     };
@@ -371,6 +377,7 @@ export const ControlBar = ({
         micStreakRef.current = s;
         if (!firesAt(s, MIC_DIZZY_AT) || micDizziedRef.current) return;
         micDizziedRef.current = true;                       // once per mount (rule 6)
+        recordEggFound('mute-dizzy');
         // force: dizzy is in ICO_PAYOFFS, so it may interrupt the routine
         // mute/unmute icon swap — and nothing may interrupt it (rule 10).
         playIco(btn.querySelector<HTMLElement>('.cl-ico'), 'play-dizzy', true);
@@ -399,6 +406,14 @@ export const ControlBar = ({
         }),
     });
 
+    // Everything else about the mic / speakers (noise suppression, gate, echo
+    // cancellation, per-device settings) is one click away from these menus.
+    const voiceSettingsItem: ContextMenuItem = {
+        icon: <Settings2 className="w-4 h-4" />,
+        label: 'Voice & Video settings…',
+        onSelect: () => requestOpenSettings('voice'),
+    };
+
     const openMicMenu = (e: React.MouseEvent<HTMLButtonElement>) => {
         e.preventDefault();
         if (!voice) return;
@@ -408,8 +423,9 @@ export const ControlBar = ({
                 micMenu.updateItems(build(pickedId));
             }),
             { divider: true },
-            volumeRow('Mic Volume', voice.settings.micVolume, voice.setMicVolume),
+            volumeRow('Mic Volume', voice.settings.micVolume, voice.setMicVolume, DEFAULT_VOICE_SETTINGS.micVolume, MIC_VOLUME_MAX),
             { divider: true },
+            voiceSettingsItem,
             reportQualityItem(),
         ];
         micMenu.open(e, build(voice.settings.micDeviceId), 'Microphone');
@@ -424,8 +440,9 @@ export const ControlBar = ({
                 deafenMenu.updateItems(build(pickedId));
             }),
             { divider: true },
-            volumeRow('Output Volume', voice.settings.speakerVolume, voice.setSpeakerVolume),
+            volumeRow('Output Volume', voice.settings.speakerVolume, voice.setSpeakerVolume, DEFAULT_VOICE_SETTINGS.speakerVolume, SPEAKER_VOLUME_MAX),
             { divider: true },
+            voiceSettingsItem,
             reportQualityItem(),
         ];
         deafenMenu.open(e, build(voice.settings.speakerDeviceId), 'Speaker');

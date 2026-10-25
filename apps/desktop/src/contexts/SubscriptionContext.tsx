@@ -159,7 +159,15 @@ export const SubscriptionProvider: React.FC<{ children: ReactNode }> = ({ childr
         }
     }, [isAuthenticated, token]);
 
-    useEffect(() => { refresh(); }, [refresh]);
+    // Fire-and-forget callers (mount, the 5-minute timer, window focus, the
+    // subscription-required event) use refreshQuietly: refresh() RETHROWS so
+    // awaiting callers can react, and an unawaited rethrow is an unhandled
+    // rejection - exactly what a focus-on-wake into a still-reconnecting network
+    // produced (AxiosError: Network Error). The failure is already recorded in
+    // statusError above; the next trigger retries.
+    const refreshQuietly = useCallback(() => { refresh().catch(() => { /* recorded in statusError */ }); }, [refresh]);
+
+    useEffect(() => { refreshQuietly(); }, [refreshQuietly]);
 
     // Celebrate a purchase this device OBSERVES: a payment on the website (which
     // is also where the in-app checkout's "open your account page" fallback
@@ -186,9 +194,9 @@ export const SubscriptionProvider: React.FC<{ children: ReactNode }> = ({ childr
     // happens promptly without a reload. Every 5 minutes.
     useEffect(() => {
         if (!isAuthenticated) return;
-        const t = setInterval(() => { refresh(); }, 5 * 60_000);
+        const t = setInterval(() => { refreshQuietly(); }, 5 * 60_000);
         return () => clearInterval(t);
-    }, [isAuthenticated, refresh]);
+    }, [isAuthenticated, refreshQuietly]);
 
     // The realtime gateway emits `subscription_required` when it rejects a
     // write-like event from a lapsed account — re-fetch so the UI reflects
@@ -200,11 +208,11 @@ export const SubscriptionProvider: React.FC<{ children: ReactNode }> = ({ childr
             const now = Date.now();
             if (now - last < 30_000) return;
             last = now;
-            refresh();
+            refreshQuietly();
         };
         window.addEventListener('cipherline:subscription-required', onRequired);
         return () => window.removeEventListener('cipherline:subscription-required', onRequired);
-    }, [refresh]);
+    }, [refreshQuietly]);
 
     // Refresh when the window regains focus — the Stripe checkout completes in the
     // external browser, so this is how we notice "they just paid" when they come
@@ -216,11 +224,11 @@ export const SubscriptionProvider: React.FC<{ children: ReactNode }> = ({ childr
             const now = Date.now();
             if (now - last < 10_000) return;
             last = now;
-            refresh();
+            refreshQuietly();
         };
         window.addEventListener('focus', onFocus);
         return () => window.removeEventListener('focus', onFocus);
-    }, [isAuthenticated, refresh]);
+    }, [isAuthenticated, refreshQuietly]);
 
     const extendTrial = useCallback(async (): Promise<{ ok: boolean; message?: string }> => {
         if (!token) return { ok: false, message: 'not authenticated' };

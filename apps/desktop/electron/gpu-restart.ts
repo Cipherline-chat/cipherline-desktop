@@ -44,7 +44,7 @@
  * prompt does not ask about an app that never closed.
  */
 
-import { crashFromChildGone, crashSignature } from './diagnostics';
+import { crashFromChildGone, crashSignature, isOsSessionEndExit } from './diagnostics';
 
 /** Chromium's GPU process exit code for "exited to recover from a lost context". */
 export const GPU_EXIT_ON_CONTEXT_LOST = 34;
@@ -84,6 +84,8 @@ export const MAX_GPU_RESTART_SEQ = 1_000_000;
  */
 export function gpuRestartFromChildGone(details: unknown, seq: number, quitting: boolean): GpuRestartedPayload | null {
     if (quitting) return null;
+    // Windows is logging the user off / shutting down: the GPU process went with it.
+    if (isOsSessionEndExit(details)) return null;
     const d = (details ?? {}) as { type?: unknown; reason?: unknown; exitCode?: unknown };
     if (d.type !== 'GPU') return null;
     if (typeof d.reason !== 'string' || !(GPU_GONE_REASONS as readonly string[]).includes(d.reason)) return null;

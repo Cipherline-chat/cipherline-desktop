@@ -261,6 +261,8 @@ export function setTrayCallState(
 
 export interface TrayMenuState {
     unreadCount: number;
+    /** An unread @mention exists anywhere — drives the Windows taskbar "@" glyph. */
+    hasMention?: boolean;
     /** Computed DND (manual + schedule + auto-triggers) — for tooltip / future use. */
     dndActive: boolean;
     /** The manual "pause notifications" toggle specifically — drives the checkbox. */

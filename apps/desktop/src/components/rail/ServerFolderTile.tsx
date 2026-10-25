@@ -87,7 +87,7 @@ export const ServerFolderTile: React.FC<Props> = ({
                 {callCount > 0 && (
                     <div
                         aria-hidden
-                        className="absolute -bottom-1 -right-1 z-10 pointer-events-none flex items-center justify-center rounded-full bg-cl-lume text-cl-on-lume ring-2 ring-cl-abyss"
+                        className="absolute -bottom-1 -right-1 z-10 pointer-events-none flex items-center justify-center rounded-full bg-cl-lume text-cl-on-lume ring-2 ring-[color:var(--cl-abyss)]"
                         style={{ width: 16, height: 16 }}
                     >
                         <Volume2 size={9} strokeWidth={2.75} aria-hidden />

@@ -1,0 +1,47 @@
+/* Beta diagnostics — the call rating card and the one-time notice.
+   Both reuse the floating .rp-prompt card (reportProblem.css); this file adds
+   only the stars, the tag chips and the notice's small type. Tokens only
+   ("glow in the deep"); no new colours. */
+
+.bd-card { width: 360px; }
+.bd-card .bd-beta { display: inline-block; margin-left: 6px; padding: 1px 7px; border-radius: 999px; vertical-align: 2px;
+  font: 800 10px/1.6 var(--cl-font-body); letter-spacing: .06em; text-transform: uppercase;
+  color: var(--cl-on-glow); background: var(--cl-glow); }
+
+/* ── stars ─────────────────────────────────────────────────────────────── */
+.bd-stars { display: flex; gap: 4px; margin-top: 12px; }
+.bd-star { display: inline-flex; align-items: center; justify-content: center; width: 40px; height: 40px; padding: 0;
+  border: none; border-radius: 12px; background: transparent; cursor: pointer; color: var(--cl-faint);
+  transition: color .15s, background-color .15s, transform .3s var(--cl-spring); }
+.bd-star svg { width: 24px; height: 24px; }
+.bd-star:hover { background: var(--cl-lume-tint); }
+.bd-star.is-on { color: var(--cl-glow); }
+.bd-star.is-on svg { fill: currentColor; }
+.bd-star:active { transform: scale(.92); }
+.bd-star:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--cl-lume), 0 0 0 5px rgba(37,224,200,.2); }
+.bd-star-hint { margin: 2px 0 0; min-height: 18px; font-size: 12.5px; color: var(--cl-muted); }
+
+/* ── tags ──────────────────────────────────────────────────────────────── */
+.bd-tags-label { margin: 10px 0 6px; font-size: 12px; font-weight: 700; color: var(--cl-muted); }
+.bd-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.bd-tag { padding: 5px 10px; border-radius: 999px; border: 1px solid var(--cl-border); background: var(--cl-surface);
+  font: 700 12px/1.3 var(--cl-font-body); color: var(--cl-muted); cursor: pointer;
+  transition: background-color .15s, border-color .15s, color .15s; }
+.bd-tag:hover { border-color: var(--cl-raise); color: var(--cl-text); }
+.bd-tag[aria-pressed="true"] { background: var(--cl-lume-tint); border-color: var(--cl-lume); color: var(--cl-text); }
+.bd-tag:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--cl-lume); }
+
+.bd-thanks { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 13px; font-weight: 700; color: var(--cl-ok); }
+
+/* ── notice ────────────────────────────────────────────────────────────── */
+.bd-notice-list { margin: 10px 0 0; padding: 0; list-style: none; display: grid; gap: 6px; }
+.bd-notice-list li { display: flex; gap: 8px; align-items: flex-start; font-size: 12.5px; line-height: 1.45; color: var(--cl-muted); }
+.bd-notice-list svg { flex: none; margin-top: 2px; color: var(--cl-lume); }
+
+/* ── settings row ──────────────────────────────────────────────────────── */
+.bd-setting-sub { display: block; }
+
+@media (prefers-reduced-motion: reduce) {
+  .bd-star, .bd-tag { transition: none; }
+  .bd-star:active { transform: none; }
+}

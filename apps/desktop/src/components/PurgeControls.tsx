@@ -4,6 +4,7 @@ import { ChevronDown, Trash2, AlertTriangle } from 'lucide-react';
 import { useDismissOnOutsideClick } from '../hooks/useDismissOnOutsideClick';
 import { useEscape } from '../hooks/useEscape';
 import { ClButton, ClModal } from './cl';
+import { DialogHeader, DialogBody, DialogFooter, DialogText, DialogCallout } from './dialog/DialogFrame';
 import '../styles/purge-menu.css';
 import { computePurgeMenuPlacement, formatPurgeCount, MENU_MIN_WIDTH, type PurgeMenuPlacement } from '../utils/purgeMenuPlacement';
 
@@ -304,47 +305,49 @@ export const PurgeConfirmModal: React.FC<PurgeConfirmModalProps> = ({ count, lab
     const isEverything = label === 'Everything';
     const msgNoun = count === 1 ? 'message' : 'messages';
 
+    const accent = (v: React.ReactNode) => <strong style={{ color: 'var(--cl-flash)' }}>{v}</strong>;
     return (
-        <ClModal open onClose={onCancel} width={440}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
-                {/* Flash-tinted (the palette's "careful" colour), matching the menu's Everything row. */}
-                <div style={{ width: 40, height: 40, borderRadius: '50%', background: 'rgba(255,107,94,.15)', border: '1px solid rgba(255,107,94,.3)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                    <Trash2 size={20} style={{ color: 'var(--cl-flash)' }} />
-                </div>
-                <h4 style={{ margin: 0 }}>Purge Messages</h4>
-            </div>
-
-            {count === 0 ? (
-                <p style={{ fontSize: 14, color: 'var(--cl-muted)', lineHeight: 1.6, marginBottom: 20 }}>
-                    No messages match <strong style={{ color: 'var(--cl-text)' }}>{label}</strong>
-                    {convTitle ? <> in <strong style={{ color: 'var(--cl-text)' }}>{convTitle}</strong></> : null}. Nothing to delete.
-                </p>
-            ) : (
-                <>
-                    <p style={{ fontSize: 14, color: 'var(--cl-muted)', lineHeight: 1.6, marginBottom: 12 }}>
-                        {isEverything ? (
-                            <>This will permanently delete <strong style={{ color: 'var(--cl-flash)' }}>{count.toLocaleString()}</strong> {msgNoun}
-                            {convTitle ? <> from <strong style={{ color: 'var(--cl-text)' }}>{convTitle}</strong></> : null} on this device.</>
-                        ) : (
-                            <>This will permanently delete <strong style={{ color: 'var(--cl-flash)' }}>{count.toLocaleString()}</strong> {msgNoun} older than <strong style={{ color: 'var(--cl-text)' }}>{label}</strong>
-                            {convTitle ? <> from <strong style={{ color: 'var(--cl-text)' }}>{convTitle}</strong></> : null} on this device.</>
-                        )}
-                    </p>
-                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, padding: '10px 12px', borderRadius: 10, background: 'rgba(245,158,11,.08)', border: '1px solid rgba(245,158,11,.25)', fontSize: 11, color: 'var(--cl-glow)', marginBottom: 20 }}>
-                        <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: 1 }} />
-                        <span>{warning ?? 'This cannot be undone. Other devices and recipients keep their copies.'}</span>
-                    </div>
-                </>
-            )}
-
-            <div className="mrow">
-                <ClButton variant="ghost" size="sm" onClick={onCancel}>{count === 0 ? 'Close' : 'Cancel'}</ClButton>
-                {count > 0 && (
-                    <ClButton variant="danger" size="sm" autoFocus onClick={onConfirm}>
-                        Delete {count.toLocaleString()}
-                    </ClButton>
+        <ClModal open onClose={onCancel} width={440} label="Purge messages" cardClassName="dlg-card dlg-card--confirm">
+            <DialogHeader
+                tone={count === 0 ? 'default' : 'danger'}
+                icon={<Trash2 size={18} strokeWidth={2.2} />}
+                title={count === 0 ? 'Nothing to purge' : 'Purge messages'}
+            />
+            <DialogBody>
+                {count === 0 ? (
+                    <DialogText>
+                        No messages match <strong>{label}</strong>
+                        {convTitle ? <> in <strong>{convTitle}</strong></> : null}. Nothing to delete.
+                    </DialogText>
+                ) : (
+                    <>
+                        <DialogText>
+                            {isEverything ? (
+                                <>This will permanently delete {accent(count.toLocaleString())} {msgNoun}
+                                {convTitle ? <> from <strong>{convTitle}</strong></> : null} on this device.</>
+                            ) : (
+                                <>This will permanently delete {accent(count.toLocaleString())} {msgNoun} older than <strong>{label}</strong>
+                                {convTitle ? <> from <strong>{convTitle}</strong></> : null} on this device.</>
+                            )}
+                        </DialogText>
+                        <DialogCallout icon={<AlertTriangle size={14} />}>
+                            {warning ?? 'This cannot be undone. Other devices and recipients keep their copies.'}
+                        </DialogCallout>
+                    </>
                 )}
-            </div>
+            </DialogBody>
+            <DialogFooter>
+                {count === 0 ? (
+                    <ClButton size="sm" onClick={onCancel}>Close</ClButton>
+                ) : (
+                    <>
+                        <ClButton variant="ghost" size="sm" onClick={onCancel}>Cancel</ClButton>
+                        <ClButton variant="danger" size="sm" onClick={onConfirm}>
+                            Delete {count.toLocaleString()}
+                        </ClButton>
+                    </>
+                )}
+            </DialogFooter>
         </ClModal>
     );
 };

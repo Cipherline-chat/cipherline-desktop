@@ -128,7 +128,7 @@
   transform-origin:top;transform:scaleY(0);transition:transform 900ms cubic-bezier(.3,1,.4,1) 150ms}
 .sd-root.sd-arrived .sd-gauge::before{transform:scaleY(1)}
 
-.sd-search{margin:0 12px 16px 0;position:relative}
+.sd-search{margin:0 12px 12px 0;position:relative}
 /* the kit input renders as .cl-kit > .inp; cover the cl- spelling too */
 .sd-search .inp,.sd-search .cl-inp{padding:9px 13px 9px 34px;font-size:13px;border-radius:11px}
 .sd-search>svg{position:absolute;left:11px;top:16px;color:var(--cl-faint);pointer-events:none;z-index:1}
@@ -144,16 +144,17 @@
   z-index:2;pointer-events:none}
 .sd-root.sd-z-abyss .sd-bead{background:var(--cl-flash);box-shadow:0 0 10px rgba(255,107,94,.8),0 0 26px rgba(255,107,94,.35)}
 
-.sd-zone+.sd-zone{margin-top:16px}
-.sd-zlab{display:flex;align-items:baseline;gap:8px;padding:0 0 7px 22px;opacity:0;transform:translateX(-8px);
+.sd-zone+.sd-zone{margin-top:12px}
+.sd-zlab{display:flex;align-items:baseline;gap:8px;padding:0 0 4px 22px;opacity:0;transform:translateX(-8px);
   transition:opacity .5s ease,transform .6s var(--cl-spring)}
 .sd-root.sd-arrived .sd-zlab{opacity:1;transform:none}
-.sd-zlab b{font-family:var(--cl-font-display);font-weight:600;font-size:12.5px;letter-spacing:1.6px;text-transform:uppercase;color:var(--cl-muted)}
+/* Sentence case, quiet: zone names group the list, they are not headings to read. */
+.sd-zlab b{font-family:var(--cl-font-display);font-weight:500;font-size:12.5px;letter-spacing:.2px;color:var(--cl-faint)}
 .sd-zlab span{font-family:var(--cl-font-mono);font-size:10.5px;color:var(--cl-faint)}
 .sd-zone--abyss .sd-zlab b{color:var(--cl-flash)}
 
 .sd-nitem{display:flex;align-items:center;gap:11px;width:calc(100% - 12px);border:none;background:none;cursor:pointer;
-  padding:8px 10px 8px 22px;border-radius:11px;color:var(--cl-muted);font-family:var(--cl-font-body);
+  padding:7px 10px 7px 22px;border-radius:11px;color:var(--cl-muted);font-family:var(--cl-font-body);
   font-weight:700;font-size:13.5px;text-align:left;position:relative;
   /* The entrance stagger (--sd-enter-delay, set per item by DepthGauge) delays ONLY
      transform + opacity. It used to be an inline `transition-delay`, which applies to
@@ -181,15 +182,16 @@
 .sd-gfoot svg{transition:transform .4s var(--cl-spring)}
 .sd-gfoot svg:hover{transform:translateY(-2px)}
 .sd-gfoot small{font-family:var(--cl-font-mono);font-size:10px;color:var(--cl-faint);line-height:1.5;user-select:none}
+.sd-gfoot .sd-bday{color:var(--cl-glow);font-weight:700}
 
 /* ---- content column ---- */
 .sd-main{flex:1;min-width:0;overflow-y:auto;padding:20px 48px 80px;scrollbar-width:thin;scrollbar-color:var(--cl-border) transparent}
 .sd-col{max-width:720px;margin:0 auto}
 
-.sd-chead{margin:0 0 22px;opacity:0;transform:translateY(14px);transition:opacity .45s ease,transform .55s var(--cl-spring)}
+.sd-chead{margin:0 0 24px;opacity:0;transform:translateY(14px);transition:opacity .45s ease,transform .55s var(--cl-spring)}
 .sd-root.sd-arrived .sd-chead{opacity:1;transform:none}
-.sd-eyebrow{display:flex;align-items:center;gap:10px;margin:0 0 8px}
-.sd-eyebrow b{font-family:var(--cl-font-mono);font-weight:600;font-size:11.5px;letter-spacing:1.2px;color:var(--cl-faint);text-transform:uppercase}
+.sd-eyebrow{display:flex;align-items:baseline;gap:10px;margin:0 0 4px}
+.sd-eyebrow b{font-family:var(--cl-font-display);font-weight:500;font-size:13px;letter-spacing:.2px;color:var(--cl-faint)}
 .sd-depth{font-family:var(--cl-font-mono);font-size:11.5px;color:var(--cl-lume);font-variant-numeric:tabular-nums}
 .sd-root.sd-z-abyss .sd-depth{color:var(--cl-flash)}
 .sd-chead h1{margin:0;font-family:var(--cl-font-display);font-weight:600;font-size:30px;letter-spacing:.2px;color:var(--cl-text)}
@@ -328,7 +330,7 @@
 
 /* option cards (update channel) — a kit-radio face on a selectable card */
 .sd-opts{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-.sd-opt{position:relative;text-align:left;cursor:pointer;border-radius:14px;padding:14px 16px;
+.sd-opt{position:relative;display:flex;flex-direction:column;justify-content:flex-start;text-align:left;cursor:pointer;border-radius:14px;padding:14px 16px;
   background:var(--cl-surface);border:none;box-shadow:inset 0 0 0 1.5px var(--cl-border);
   transition:box-shadow .2s,background .2s,transform .3s var(--cl-spring)}
 .sd-opt:hover{box-shadow:inset 0 0 0 1.5px var(--cl-lume)}
@@ -423,4 +425,223 @@
   .sd-pane .sd-card,.sd-chead h1{animation:none}
   .sd-listin>*,.sd-kbd.sd-rec i,.sd-conf{animation:none}
   .sd-savebar-wrap{transition:none}
+  .sx-port svg,.sx-disc-body{animation:none}
+  .sx-disc-chev{transition:none}
+  .sx-flash{animation:none;background-color:rgba(37,224,200,.10);box-shadow:0 0 0 8px rgba(37,224,200,.10)}
 }
+
+/* ============================================================
+   Settings redesign (2026-10) — sx- prefix.
+   Calm columns: the everyday controls stay in view, the expert ones fold
+   behind SettingsDisclosure rows. Hairlines, type weight and space.
+   ============================================================ */
+
+/* ---- nav: search-hit hint + keyboard focus ---- */
+.sd-nlabel{min-width:0}
+.sd-nhint{display:block;font-size:11px;font-weight:600;line-height:1.3;color:var(--cl-faint);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sd-nitem:focus-visible{outline:2px solid var(--cl-lume);outline-offset:-2px}
+.sd-zone--abyss .sd-nitem:focus-visible{outline-color:var(--cl-flash)}
+
+/* ---- disclosure rows (SettingsDisclosure.tsx) ---- */
+.sx-disc--inset{border-top:1px solid rgba(42,53,88,.5);margin-top:4px}
+.sd-card.sx-disc--card{padding:6px 22px}
+.sd-card.sx-disc--card[data-open="true"]{padding-bottom:16px}
+.sx-disc-head{display:flex;align-items:center;gap:12px;width:calc(100% + 24px);margin:0 -12px;padding:12px;
+  border:none;background:none;border-radius:12px;cursor:pointer;text-align:left;color:var(--cl-text);
+  font-family:var(--cl-font-body);transition:background-color 120ms ease}
+.sx-disc-head:hover{background-color:rgba(37,224,200,.05)}
+.sx-disc-head:active{background-color:rgba(37,224,200,.08)}
+.sx-disc-head:focus-visible{outline:2px solid var(--cl-lume);outline-offset:0}
+.sx-disc-ico{flex:none;width:32px;height:32px;border-radius:10px;display:flex;align-items:center;justify-content:center;
+  background:var(--cl-raise);border:1px solid var(--cl-border);color:var(--cl-muted)}
+.sx-disc[data-open="true"] .sx-disc-ico{color:var(--cl-lume)}
+.sx-disc-txt{flex:1;min-width:0}
+.sx-disc-txt>b{display:block;font-size:14px;font-weight:800}
+.sx-disc-txt>span{display:block;margin-top:2px;font-size:12.5px;line-height:1.45;color:var(--cl-muted)}
+.sx-disc-badge{flex:none;font-family:var(--cl-font-mono);font-variant-numeric:tabular-nums;font-size:11.5px;color:var(--cl-faint)}
+.sx-disc-chev{flex:none;color:var(--cl-faint);transition:transform 200ms cubic-bezier(.2,.8,.3,1)}
+.sx-disc[data-open="true"]>.sx-disc-head .sx-disc-chev{transform:rotate(180deg);color:var(--cl-muted)}
+/* `backwards`, not `both`: a retained forwards fill keeps the body composited and
+   flattens the toggle-knob slide inside it (see the .sd-card note above). */
+.sx-disc-body{animation:sx-discin 220ms cubic-bezier(.2,.8,.3,1) backwards}
+@keyframes sx-discin{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:none}}
+.sx-disc-body>.sd-row:first-child{border-top:1px solid rgba(42,53,88,.5)}
+.sx-disc-body>.sd-row:last-child{padding-bottom:4px}
+/* a disclosure body's own sub-blocks */
+.sx-sublabel{margin:14px 0 6px;font-size:12px;font-weight:700;color:var(--cl-faint)}
+
+/* ---- "take me to it": the one-shot highlight after a search jump ---- */
+.sx-flash{border-radius:12px;animation:sx-flash 1.8s ease-out}
+@keyframes sx-flash{
+  0%,35%{background-color:rgba(37,224,200,.12);box-shadow:0 0 0 8px rgba(37,224,200,.12)}
+  100%{background-color:rgba(37,224,200,0);box-shadow:0 0 0 8px rgba(37,224,200,0)}}
+
+/* ---- compact card header used by merged cards ---- */
+.sx-cardnote{margin:12px 0 0;font-size:12px;line-height:1.5;color:var(--cl-faint)}
+
+/* ---- friendly empty state with Keys ---- */
+.sx-empty{display:flex;align-items:center;gap:14px;padding:14px 0 6px}
+.sx-empty p{margin:0;font-size:13px;line-height:1.5;color:var(--cl-muted);max-width:46ch}
+.sx-empty b{display:block;color:var(--cl-text);font-weight:800}
+
+/* ---- inline link row (policies) ---- */
+.sx-links{display:flex;flex-wrap:wrap;gap:8px}
+
+/* A card component rendered INSIDE a disclosure (Advanced → Troubleshooting) sheds
+   its own chrome and becomes a hairline-separated block: no card-in-card. */
+.sx-disc-body .sd-card{background:none;border:none;border-radius:0;padding:16px 0 4px;margin:0;
+  border-top:1px solid rgba(42,53,88,.5);animation:none}
+.sx-disc-body>.sd-card:first-child{margin-top:4px}
+
+/* Appearance → Motion: a live thumbnail of Home ambience (motes rise while it is
+   on, freeze while it is off). The preview IS the setting, so it is the one
+   looping thing in Settings; reduced motion stills it like the real thing. */
+.sx-motes{flex:none;position:relative;width:76px;height:44px;border-radius:12px;overflow:hidden;isolation:isolate;
+  background:var(--cl-abyss);border:1px solid var(--cl-border)}
+.sx-motes i{position:absolute;bottom:-4px;width:4px;height:4px;border-radius:50%;background:var(--cl-lume);opacity:0;
+  animation:sx-rise 3.4s linear infinite}
+.sx-motes i:nth-child(1){left:12%;animation-delay:0s}
+.sx-motes i:nth-child(2){left:31%;animation-delay:-1.2s;width:3px;height:3px}
+.sx-motes i:nth-child(3){left:52%;animation-delay:-2.3s}
+.sx-motes i:nth-child(4){left:70%;animation-delay:-.6s;width:3px;height:3px}
+.sx-motes i:nth-child(5){left:86%;animation-delay:-1.8s}
+@keyframes sx-rise{0%{transform:translateY(0);opacity:0}15%{opacity:1}100%{transform:translateY(-48px);opacity:0}}
+.sx-motes[data-on="false"] i{animation-play-state:paused;opacity:.25}
+@media (prefers-reduced-motion:reduce){.sx-motes i{animation:none;opacity:.35;bottom:40%}}
+
+/* Card headings + their one-line subs, wherever a pane nests them in a header
+   row (Update channel, Help & feedback, Your games, …). Before this only
+   direct children were styled, so nested ones fell back to body type and
+   read as 16px paragraphs. Inline styles on a heading still win. */
+.sd-card h3{font-family:var(--cl-font-display);font-weight:500;font-size:16.5px;line-height:1.3;color:var(--cl-text)}
+.sd-card .sd-sub{font-size:12.5px;line-height:1.5;font-weight:600;color:var(--cl-faint)}
+
+/* ---- Voice & Video (VoiceVideoSettings.tsx) ----
+   One row shape for every setting: name (+ the "i") in a fixed label column,
+   control in the rest, switches always flush right. Rows share one height so
+   the pane scans as a list, not a stack of paragraphs. The pane is a size
+   container so the label column and the camera tile follow the column width,
+   not the window. */
+.vv{container-type:inline-size;container-name:vv;--vv-lab:184px}
+.vv-card{padding:18px 22px 8px}
+.vv-card>h3{margin:0 0 4px}
+.vv-row{display:grid;grid-template-columns:var(--vv-lab) minmax(0,1fr);align-items:center;column-gap:16px;min-height:48px;padding:4px 0}
+.vv-row--switch{grid-template-columns:minmax(0,1fr) auto}
+.vv-row+.vv-row,.vv-video+.vv-row,.vv-eq+.vv-row,.sx-disc-body>.vv-row:first-child{border-top:1px solid rgba(42,53,88,.5)}
+.vv-lab{display:flex;align-items:center;gap:4px;min-width:0}
+.vv-lab>b{font-size:13.5px;font-weight:800;line-height:1.3;color:var(--cl-text)}
+.vv-ctl{display:flex;align-items:center;justify-content:flex-end;gap:12px;min-width:0}
+.vv-val{flex:none;width:40px;text-align:right;font-family:var(--cl-font-mono);font-variant-numeric:tabular-nums;font-size:11.5px;color:var(--cl-faint)}
+.vv-val--wide{width:52px}
+.vv-gateval{width:64px;display:inline-flex;align-items:center;justify-content:flex-end;gap:6px}
+.vv-dot{flex:none;width:7px;height:7px;border-radius:50%;background:var(--cl-border);transition:background-color 120ms ease}
+.vv-gateval.vv-live{color:var(--cl-muted)}
+.vv-gateval.vv-live .vv-dot{background:var(--cl-ok)}
+.vv-meter{flex:1;min-width:0}
+.vv-gate{flex:1;min-width:0;width:auto}
+.vv-gate.vv-off{opacity:.35;pointer-events:none}
+.vv-gate:focus-visible{outline:2px solid var(--cl-lume);outline-offset:3px;border-radius:8px}
+.vv-note{margin:0 0 8px calc(var(--vv-lab) + 16px);font-size:12px;font-weight:600;line-height:1.45;color:var(--cl-faint)}
+.vv-actions{display:flex;justify-content:flex-end;padding:4px 0 8px}
+.vv-health{flex:1;min-width:0;font-size:11px;line-height:1.7;color:var(--cl-muted);padding:6px 0}
+.vv-eq{display:flex;align-items:flex-end;gap:16px;padding:0 0 12px calc(var(--vv-lab) + 16px)}
+.vv-eq .sd-eq{flex:1;min-width:0;padding-top:0}
+.vv-kbd i{padding:2px 8px}
+.vv-kbd i.vv-kbd-empty{color:var(--cl-muted);border-style:dashed}
+
+/* a row's name column: the name (+ "i"), then an optional must-read line */
+.vv-labcol{min-width:0}
+.vv-rnote{margin:2px 0 0;font-size:12px;font-weight:600;line-height:1.45;color:var(--cl-faint)}
+/* `block` rows: name on top, the control (option cards) the full width under it */
+.vv-row--block{grid-template-columns:minmax(0,1fr);row-gap:10px;padding:12px 0 14px}
+.vv-row--block>.vv-ctl{display:block}
+/* Noise suppression: the Update channel option cards (settings/OptionCard), three across */
+.sd-opts.vv-ns{grid-template-columns:repeat(3,minmax(0,1fr))}
+.vv-hint{margin:10px 0 0;font-size:12.5px;font-weight:600;line-height:1.5;color:var(--cl-muted)}
+
+/* card title + "Saving for <device>" — which device the card's settings are remembered for */
+.vv-head{display:flex;align-items:center;gap:6px;min-height:28px;margin:0 0 4px}
+.vv-head>h3{margin:0;flex:none}
+.vv-for{margin-left:auto;display:inline-flex;align-items:center;gap:6px;min-width:0;max-width:62%;height:26px;padding:0 10px;
+  border-radius:999px;background:rgba(37,224,200,.08);box-shadow:inset 0 0 0 1px rgba(37,224,200,.22);
+  font-size:12px;font-weight:600;color:var(--cl-muted);white-space:nowrap}
+.vv-for-k{flex:none;color:var(--cl-faint)}
+.vv-for>b{min-width:0;overflow:hidden;text-overflow:ellipsis;font-weight:800;color:var(--cl-text)}
+.vv-for-d{flex:none;font-family:var(--cl-font-mono);font-size:10.5px;color:var(--cl-lume)}
+
+/* Your audio devices (settings/AudioDeviceList.tsx) */
+.vv-devgroup{padding:6px 0 10px}
+.vv-devgroup+.vv-devgroup{border-top:1px solid rgba(42,53,88,.5);padding-top:12px}
+.vv-devgroup-title{margin:0 0 6px;font-size:11px;font-weight:800;letter-spacing:.6px;text-transform:uppercase;color:var(--cl-faint)}
+.vv-devlist{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
+.vv-dev{border-radius:12px;background:var(--cl-surface);box-shadow:inset 0 0 0 1px var(--cl-border);transition:box-shadow 150ms ease}
+.vv-dev--open{box-shadow:inset 0 0 0 1.5px rgba(37,224,200,.55)}
+.vv-dev-main{display:flex;align-items:center;gap:10px;width:100%;padding:9px 12px;border:none;background:none;border-radius:12px;
+  cursor:pointer;text-align:left;color:var(--cl-text);font-family:var(--cl-font-body);transition:background-color 120ms ease}
+.vv-dev-main:hover{background-color:rgba(37,224,200,.05)}
+.vv-dev-main:focus-visible{outline:2px solid var(--cl-lume);outline-offset:0}
+.vv-dev-ico{flex:none;color:var(--cl-faint)}
+.vv-dev--inuse .vv-dev-ico{color:var(--cl-lume)}
+.vv-dev-txt{flex:1;min-width:0;display:flex;flex-direction:column}
+.vv-dev-txt>b{font-size:13.5px;font-weight:800;line-height:1.35;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.vv-dev-txt>span{font-size:12px;font-weight:600;line-height:1.4;color:var(--cl-faint)}
+.vv-dev-chev{flex:none;color:var(--cl-faint);transition:transform 200ms cubic-bezier(.2,.8,.3,1)}
+.vv-dev--open .vv-dev-chev{transform:rotate(180deg);color:var(--cl-muted)}
+.vv-dev-edit{padding:0 14px 4px;border-top:1px solid rgba(42,53,88,.5);animation:sx-discin 220ms cubic-bezier(.2,.8,.3,1) backwards}
+.vv-dev-edit .vv-row{--vv-lab:168px}
+
+/* Video: a fixed 16:9 camera tile beside its three rows, whatever the preview
+   state, so switching it on never reflows the card. */
+.vv-video{display:grid;grid-template-columns:184px minmax(0,1fr);column-gap:20px;align-items:center;padding:2px 0 8px}
+.vv-stack{min-width:0}
+.vv-cam{position:relative;width:100%;aspect-ratio:16/9;border-radius:12px;overflow:hidden;isolation:isolate;
+  background:#060A16;border:1px solid var(--cl-border)}
+.vv-cam--off{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:var(--cl-faint)}
+.vv-cam-err{max-width:100%;padding:0 12px;text-align:center;font-size:11.5px;line-height:1.4;color:var(--cl-muted)}
+.vv-cam-note{position:absolute;left:6px;right:6px;bottom:6px;padding:4px 6px;border-radius:6px;pointer-events:none;
+  font-size:10.5px;line-height:1.35;background:rgba(6,10,22,.78);color:var(--cl-text)}
+
+@container vv (max-width:640px){
+  /* the tile moves under its rows, into the control column */
+  .vv-video{grid-template-columns:minmax(0,1fr);row-gap:4px}
+  .vv-video>.vv-cam{order:1;max-width:240px;margin-left:calc(var(--vv-lab) + 16px)}
+  .sd-opts.vv-ns{grid-template-columns:minmax(0,1fr)}
+  .vv-for{max-width:70%}
+}
+@container vv (max-width:460px){
+  /* too narrow for side-by-side: the name goes above its control */
+  .vv-row--field{grid-template-columns:minmax(0,1fr);row-gap:6px;padding:8px 0}
+  .vv-note,.vv-eq{margin-left:0;padding-left:0}
+  .vv-video>.vv-cam{margin-left:0}
+}
+
+/* the "i" (settings/InfoTip.tsx) and the note it opens (portaled to <body>) */
+.vv-info{flex:none;display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;margin:-4px 0;padding:0;
+  border:none;border-radius:50%;background:none;color:var(--cl-faint);cursor:help;
+  transition:color 120ms ease,background-color 120ms ease}
+.vv-info:hover,.vv-info[data-open="true"]{color:var(--cl-lume);background-color:rgba(37,224,200,.1)}
+.vv-info:active{background-color:rgba(37,224,200,.16)}
+.vv-info:focus-visible{outline:2px solid var(--cl-lume);outline-offset:0}
+.vv-tip{box-sizing:border-box;max-width:min(300px,calc(100vw - 16px));padding:10px 12px;border-radius:12px;
+  background:var(--cl-surface);border:1px solid var(--cl-border);
+  box-shadow:0 1px 2px rgba(3,6,14,.35),0 10px 28px rgba(3,6,14,.45);
+  font-family:var(--cl-font-body);font-size:12.5px;font-weight:600;line-height:1.5;color:var(--cl-muted);
+  animation:vv-tipin 140ms ease-out}
+.vv-tip[data-side="bottom"]{animation-name:vv-tipin-below}
+.vv-tip p{margin:0}
+.vv-tip p+p{margin-top:6px}
+.vv-tip b{font-weight:800;color:var(--cl-text)}
+@keyframes vv-tipin{from{opacity:0;transform:translateY(3px)}to{opacity:1;transform:none}}
+@keyframes vv-tipin-below{from{opacity:0;transform:translateY(-3px)}to{opacity:1;transform:none}}
+@media (prefers-reduced-motion:reduce){
+  .vv-tip{animation:none}
+  .vv-info{transition:none}
+  .vv-dev-edit{animation:none}
+  .vv-dev-chev,.vv-dev,.vv-dev-main{transition:none}
+}
+
+/* ---- disclosure header with a sibling action (SettingsDisclosure `action`) ---- */
+.sx-disc-top{display:flex;align-items:center;gap:4px}
+.sx-disc-top>.sx-disc-head{flex:1;min-width:0;width:auto;margin-right:0}
+.sx-disc-action{flex:none;padding-left:4px}

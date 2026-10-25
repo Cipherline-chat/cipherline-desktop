@@ -1,0 +1,192 @@
+/* ============================================================================
+   People picker (components/peoplePicker/PeoplePicker.tsx).
+
+   Search field with chips + sectioned listbox of people. UNSCOPED (see
+   dialog-frame.css for why competing selectors carry an extra class). Tokens
+   are the app's --cl-* custom properties from index.css.
+
+   Motion: hover/highlight colour fades, the selection box filling, a chip
+   easing in. Every one is a transition FROM a resting state that is already
+   correct, so with prefers-reduced-motion (the kit's @scope already zeroes
+   animation/transition inside .cl-kit; repeated below for use outside a
+   modal) everything is simply there — nothing appears only via animation.
+   ============================================================================ */
+
+/* ── search field ── */
+.pp-field{
+  position:relative;flex:none;
+  display:flex;flex-wrap:wrap;align-items:center;gap:6px;
+  min-height:46px;max-height:118px;overflow-y:auto;
+  padding:7px 12px 7px 40px;
+  background:var(--cl-surface, #1C2542);
+  border:1.5px solid var(--cl-border, #2A3558);
+  border-radius:13px;cursor:text;
+  transition:border-color .2s ease, box-shadow .2s ease;
+}
+.pp-field--query{padding-right:40px}
+.pp-field:focus-within{border-color:var(--cl-lume, #25E0C8);box-shadow:0 0 0 3px rgba(37,224,200,.12), 0 0 14px rgba(37,224,200,.16)}
+.pp-field-icon{position:absolute;left:14px;top:14px;color:var(--cl-faint, #5E6B8F);pointer-events:none;transition:color .2s ease}
+.pp-field:focus-within .pp-field-icon{color:var(--cl-lume, #25E0C8)}
+.pp-field .pp-field-input{
+  flex:1 1 72px;min-width:72px;height:28px;padding:0 2px;
+  background:transparent;border:none;outline:none;box-shadow:none;
+  color:var(--cl-text, #F4F7FF);
+  font-family:var(--cl-font-body, 'Nunito', sans-serif);font-size:14.5px;font-weight:600;
+}
+.pp-field .pp-field-input::placeholder{color:var(--cl-faint, #5E6B8F);font-weight:600}
+.pp-field .pp-field-clear{
+  position:absolute;right:9px;top:9px;width:26px;height:26px;border-radius:50%;
+  display:flex;align-items:center;justify-content:center;
+  color:var(--cl-muted, #A7B3D4);background:transparent;cursor:pointer;
+  transition:background-color .15s ease,color .15s ease;
+}
+.pp-field .pp-field-clear:hover{background:var(--cl-raise, #243056);color:var(--cl-text, #F4F7FF)}
+
+/* chips */
+.pp-chip{
+  display:inline-flex;align-items:center;gap:6px;height:28px;max-width:100%;
+  padding:0 4px 0 3px;border-radius:99px;
+  background:rgba(37,224,200,.12);
+  box-shadow:inset 0 0 0 1px rgba(37,224,200,.30);
+  color:var(--cl-text, #F4F7FF);font-size:13px;font-weight:700;
+  animation:pp-chip-in .2s cubic-bezier(.2,.8,.25,1);
+  user-select:none;
+}
+.pp-chip-av{width:22px;height:22px;border-radius:50%;overflow:hidden;flex:none;display:block}
+.pp-chip-av > *{width:100%;height:100%}
+.pp-chip-label{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:140px;padding-left:1px}
+.pp-chip .pp-chip-x{
+  width:20px;height:20px;border-radius:50%;flex:none;
+  display:flex;align-items:center;justify-content:center;
+  color:var(--cl-lume, #25E0C8);background:transparent;cursor:pointer;
+  transition:background-color .15s ease,color .15s ease;
+}
+.pp-chip .pp-chip-x:hover{background:var(--cl-lume, #25E0C8);color:var(--cl-on-lume, #06251F)}
+@keyframes pp-chip-in{from{opacity:0;transform:translateY(3px)}}
+
+/* ── list ── */
+.pp-list{
+  position:relative;flex:none;
+  height:min(352px, calc(100vh - 330px));min-height:200px;
+  margin:12px -12px 0;padding:0 12px 6px;
+  overflow-y:auto;overscroll-behavior:contain;
+}
+.pp-section + .pp-section{margin-top:6px}
+/* Shorter list for dialogs that carry other fields above it (create group). */
+.pp-list--compact{height:min(236px, calc(100vh - 470px));min-height:160px}
+/* Plain rows: no presence badge / status line, so the row is shorter. */
+.pp-row--plain{min-height:46px}
+.pp-section-head{
+  position:sticky;top:0;z-index:2;
+  display:flex;align-items:center;gap:8px;
+  padding:10px 10px 6px;
+  background:var(--cl-deep, #131A30);
+  font-size:11px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;
+  color:var(--cl-faint, #5E6B8F);
+  user-select:none;
+}
+.pp-section-count{
+  font-variant-numeric:tabular-nums;letter-spacing:0;
+  padding:1px 7px;border-radius:99px;background:var(--cl-surface, #1C2542);color:var(--cl-muted, #A7B3D4);
+}
+
+/* ── row ── */
+.pp-row{
+  --pp-row-bg:var(--cl-deep, #131A30);
+  position:relative;display:flex;align-items:center;gap:12px;
+  min-height:54px;padding:7px 10px;border-radius:12px;
+  background:var(--pp-row-bg);cursor:pointer;
+  scroll-margin-top:36px;scroll-margin-bottom:6px;
+  transition:background-color .12s ease;
+  user-select:none;
+}
+.pp-row.is-active{--pp-row-bg:var(--cl-surface, #1C2542)}
+.pp-row.is-selected{--pp-row-bg:#16283A}
+.pp-row.is-selected.is-active{--pp-row-bg:#1A3042}
+.pp-row.is-disabled{cursor:default}
+.pp-row.is-active::before{
+  content:"";position:absolute;left:-6px;top:50%;width:3px;height:20px;margin-top:-10px;
+  border-radius:99px;background:var(--cl-lume, #25E0C8);
+}
+
+/* avatar + presence */
+.pp-av{position:relative;width:38px;height:38px;flex:none}
+.pp-av-img{display:block;width:100%;height:100%;border-radius:50%;overflow:hidden;box-shadow:0 0 0 1px rgba(255,255,255,.06)}
+.pp-av-img > *{width:100%;height:100%}
+.pp-row.is-offline .pp-av-img{filter:saturate(.75)}
+.pp-presence{
+  position:absolute;right:-2px;bottom:-2px;z-index:1;
+  display:flex;align-items:center;justify-content:center;
+  padding:2.5px;border-radius:50%;background:var(--pp-row-bg);
+  transition:background-color .12s ease;
+}
+.pp-presence > *{display:block}
+.pp-presence--game{padding:1px;border-radius:6px;right:-4px;bottom:-4px}
+
+/* text */
+.pp-text{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px}
+.pp-name-line{display:flex;align-items:baseline;gap:6px;min-width:0}
+.pp-name{font-size:14.5px;font-weight:800;color:var(--cl-text, #F4F7FF);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.pp-row.is-offline .pp-name{color:#D3DAEE}
+.pp-tag{flex:none;font-family:var(--cl-font-mono, 'JetBrains Mono', monospace);font-size:11px;font-weight:600;color:var(--cl-faint, #5E6B8F)}
+.pp-you{flex:none;font-size:10.5px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;color:var(--cl-lume, #25E0C8);background:rgba(37,224,200,.12);padding:1px 6px;border-radius:6px}
+.pp-sub{font-size:12.5px;font-weight:600;color:var(--cl-muted, #A7B3D4);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pp-sub--offline{color:var(--cl-faint, #5E6B8F)}
+
+/* trailing: last activity / action, then the selection box */
+.pp-end{flex:none;display:flex;align-items:center;gap:10px;min-height:30px}
+.pp-ago{font-size:12px;font-weight:700;color:var(--cl-faint, #5E6B8F);font-variant-numeric:tabular-nums;min-width:22px;text-align:right}
+.pp-row .pp-action{
+  display:inline-flex;align-items:center;gap:5px;height:30px;padding:0 11px 0 13px;border-radius:99px;
+  font-family:var(--cl-font-body, 'Nunito', sans-serif);font-size:12.5px;font-weight:800;white-space:nowrap;
+  color:var(--cl-lume, #25E0C8);background:rgba(37,224,200,.12);
+  box-shadow:inset 0 0 0 1px rgba(37,224,200,.32);cursor:pointer;
+  transition:background-color .15s ease, color .15s ease, transform .15s ease;
+}
+/* Quiet until aimed at: the footer's primary stays the loudest thing on screen. */
+.pp-row .pp-action:hover{background:var(--cl-lume, #25E0C8);color:var(--cl-on-lume, #06251F);box-shadow:none}
+.pp-row .pp-action:active{transform:translateY(1px)}
+.pp-spin{animation:pp-spin .9s linear infinite}
+@keyframes pp-spin{to{transform:rotate(360deg)}}
+
+.pp-check{
+  width:20px;height:20px;border-radius:7px;flex:none;
+  display:flex;align-items:center;justify-content:center;
+  background:transparent;box-shadow:inset 0 0 0 1.5px #27324F;
+  transition:background-color .15s ease, box-shadow .15s ease;
+}
+.pp-row.is-active .pp-check{box-shadow:inset 0 0 0 1.5px #3A4874}
+.pp-check svg path{fill:none;stroke:var(--cl-on-lume, #06251F);stroke-width:3;stroke-linecap:round;stroke-linejoin:round;opacity:0;transition:opacity .12s ease}
+.pp-check.on,.pp-row .pp-check.on{background:var(--cl-lume, #25E0C8);box-shadow:inset 0 0 0 1.5px var(--cl-lume, #25E0C8)}
+/* Resting rule holds the drawn tick — no animation is needed to show it. */
+.pp-check.on svg path{opacity:1}
+
+/* ── empty / error ── */
+.pp-empty{
+  height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  text-align:center;padding:12px 28px 24px;gap:0;
+}
+.pp-empty-icon{
+  width:56px;height:56px;border-radius:18px;margin-bottom:14px;
+  display:flex;align-items:center;justify-content:center;
+  background:var(--cl-surface, #1C2542);color:var(--cl-muted, #A7B3D4);
+  box-shadow:inset 0 0 0 1px var(--cl-border, #2A3558);
+}
+.pp-empty--error .pp-empty-icon{color:var(--cl-flash, #FF6B5E);background:var(--cl-flash-tint, rgba(255,107,94,.12));box-shadow:inset 0 0 0 1px rgba(255,107,94,.22)}
+.pp-empty-title{font-family:var(--cl-font-display, 'Fredoka', sans-serif);font-size:16px;font-weight:600;color:var(--cl-text, #F4F7FF);max-width:100%;overflow-wrap:anywhere}
+.pp-empty-body{margin-top:5px;font-size:13px;line-height:1.5;font-weight:600;color:var(--cl-muted, #A7B3D4);max-width:310px}
+.pp-empty-action{margin-top:16px}
+
+/* ── skeleton ── */
+.pp-sk{display:block;background:linear-gradient(90deg,var(--cl-surface, #1C2542) 25%,var(--cl-raise, #243056) 50%,var(--cl-surface, #1C2542) 75%);background-size:200% 100%;animation:shimmer 1.4s linear infinite;border-radius:7px}
+.pp-sk--head{width:64px;height:10px}
+.pp-sk-row{display:flex;align-items:center;gap:12px;min-height:54px;padding:7px 10px}
+.pp-sk--av{width:38px;height:38px;border-radius:50%;flex:none}
+.pp-sk-lines{display:flex;flex-direction:column;gap:7px}
+.pp-sk--ln{height:11px}
+.pp-sk--ln2{height:9px;opacity:.7}
+
+@media (prefers-reduced-motion: reduce){
+  .pp-field,.pp-field-icon,.pp-chip,.pp-chip-x,.pp-row,.pp-presence,.pp-action,.pp-check,.pp-check svg path,.pp-field-clear{transition:none}
+  .pp-chip,.pp-sk{animation:none}
+}

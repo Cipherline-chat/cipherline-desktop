@@ -149,7 +149,10 @@ describe('wiring (source check — the hook cannot be rendered under vitest node
 
     it('useKeyRotation gates uploads on shouldUploadBundle and subscribes to the triggers', () => {
         const src = read('../hooks/useKeyRotation.ts');
-        expect(src).toMatch(/!shouldUploadBundle\(data\)/);
+        // The gate moved into the retrying runner (prekeyTopup.ts) so every
+        // attempt - first or retried - applies the same rule.
+        expect(src).toMatch(/runTopupWithRetry\(/);
+        expect(read('./prekeyTopup.ts')).toMatch(/!shouldUploadBundle\(status\)/);
         expect(src).not.toMatch(/!data\.needs_rotation\)/);
         expect(src).toMatch(/subscribePrekeyCheckTriggers\(window,/);
     });

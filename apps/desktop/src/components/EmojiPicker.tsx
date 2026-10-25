@@ -7,6 +7,12 @@ import { useDismissOnOutsideClick } from '../hooks/useDismissOnOutsideClick';
 import { useEscape } from '../hooks/useEscape';
 import { useServerEmojiUrls } from '../hooks/useServerEmojiUrl';
 import type { ServerEmoji } from '../hooks/useServerEmojis';
+import { usePersonalEmojiLibrary } from '../hooks/usePersonalEmojis';
+import { personalEmojis } from '../utils/personalEmoji/service';
+import { PLACEHOLDER_HIDE_CSS, buildEmojiTabCategories, isEmptyPlaceholderId } from './emojiPickerTabs';
+import { useEmptyTabOverlay } from './useEmptyTabOverlay';
+import EmojiPickerEmptyState from './EmojiPickerEmptyState';
+import { useMyEmojiContextMenu } from './useMyEmojiContextMenu';
 
 // Initialise the picker's own index once at module load (used by the
 // <Picker> component below).
@@ -107,6 +113,11 @@ export interface PickerProps {
     /** This server's custom emojis (omit/empty for DMs and groups — there is
      *  no server, so no custom category). See docs/custom-emoji-design.md. */
     customEmojis?: CustomEmojiInput[];
+    /** True only when opened for a server (channel composer / server-message
+     *  reaction): shows the "Server emojis" tab, even while that server has no
+     *  emojis yet. Omitted/false (DMs, group DMs, the status editor) = no such
+     *  tab at all. */
+    serverContext?: boolean;
     /** Needed to decrypt customEmojis' blobs — see EmojiPickerCustomResolver. */
     token?: string | null;
 }
@@ -150,9 +161,12 @@ const SHADOW_OVERRIDES = `
     #nav {
         border-top: 1px solid rgba(255,255,255,0.07) !important;
     }
+    /* The placeholder that keeps an EMPTY Server emojis / My Emojis tab on the
+       bar — see emojiPickerTabs.ts. */
+    ${PLACEHOLDER_HIDE_CSS}
 `;
 
-const EmojiPickerPopover: React.FC<PickerProps> = ({ onEmojiSelect, onClose, anchorEl, customEmojis, token }) => {
+const EmojiPickerPopover: React.FC<PickerProps> = ({ onEmojiSelect, onClose, anchorEl, customEmojis, serverContext = false, token }) => {
     const ref = useRef<HTMLDivElement>(null);
     const [style, setStyle] = useState<React.CSSProperties>({ opacity: 0, pointerEvents: 'none', position: 'fixed', top: -9999 });
 
@@ -173,7 +187,24 @@ const EmojiPickerPopover: React.FC<PickerProps> = ({ onEmojiSelect, onClose, anc
     );
     const resolvedUrls = useServerEmojiUrls(emojiRefs, token ?? null);
 
-    const customCategories = useMemo(() => {
+    // The user's own My Emojis: a category of their own in every chat (DMs,
+    // groups and servers alike). Their images are decrypted from the local
+    // store into blob: URLs; the grid shows a placeholder tile until each is ready.
+    const { entries: myEmojis } = usePersonalEmojiLibrary();
+    const [myUrls, setMyUrls] = useState<Record<string, string>>({});
+    useEffect(() => {
+        let live = true;
+        const store = personalEmojis().store;
+        void Promise.all(myEmojis.map(async e => [e.id, await store.getUrl(e.id)] as const)).then(pairs => {
+            if (!live) return;
+            const next: Record<string, string> = {};
+            for (const [id, url] of pairs) if (url) next[id] = url;
+            setMyUrls(next);
+        });
+        return () => { live = false; };
+    }, [myEmojis]);
+
+    const { customCategories, emptyTabs } = useMemo(() => {
         const list = customEmojis ?? [];
         // Deliberately called here (during render), not in a useEffect: the
         // child <Picker>'s own mount effect (which triggers emoji-mart's
@@ -185,17 +216,22 @@ const EmojiPickerPopover: React.FC<PickerProps> = ({ onEmojiSelect, onClose, anc
         // impure, but safe here: it's idempotent (recomputing with the same
         // ids is a no-op) and touches no React state, only an external
         // library's own global — see scopeCustomEmojis's own comment.
-        scopeCustomEmojis(new Set(list.map(e => e.emoji_id)));
+        const built = buildEmojiTabCategories(
+            list.map(e => ({ id: e.emoji_id, name: e.name, src: resolvedUrls[e.attachment_id] ?? CUSTOM_EMOJI_PLACEHOLDER_SRC })),
+            myEmojis.map(e => ({ id: e.id, name: e.name, src: myUrls[e.id] ?? CUSTOM_EMOJI_PLACEHOLDER_SRC })),
+            CUSTOM_EMOJI_PLACEHOLDER_SRC,
+            serverContext,
+        );
+        const ids = new Set<string>();
+        for (const c of built.categories) for (const e of c.emojis as { id: string }[]) ids.add(e.id);
+        scopeCustomEmojis(ids);
+        return { customCategories: built.categories, emptyTabs: built.emptyTabs };
+    }, [customEmojis, resolvedUrls, myEmojis, myUrls, serverContext]);
 
-        if (list.length === 0) return undefined;
-        const emojis = list.map(e => ({
-            id: e.emoji_id,
-            name: e.name,
-            keywords: [e.name],
-            skins: [{ src: resolvedUrls[e.attachment_id] ?? CUSTOM_EMOJI_PLACEHOLDER_SRC }],
-        }));
-        return [{ id: 'server_emojis', name: 'This Server', emojis }];
-    }, [customEmojis, resolvedUrls]);
+    const { overlay: emptyOverlay, dismiss: dismissEmpty } = useEmptyTabOverlay(ref, emptyTabs);
+    // Right-click a My Emojis emoji -> Remove (with Undo). The menu is a portal
+    // to <body>, so the outside-click check below has to count it as "inside".
+    const { menu: myEmojiMenu } = useMyEmojiContextMenu(ref, myEmojis, myUrls);
 
     // Two-pass positioning: first render off-screen (invisible) so we can measure
     // the picker's actual rendered height, then snap to the correct position.
@@ -246,7 +282,8 @@ const EmojiPickerPopover: React.FC<PickerProps> = ({ onEmojiSelect, onClose, anc
     // picker AND the anchor as "inside."
     useDismissOnOutsideClick(
         useCallback(
-            (t: Node) => !!(ref.current?.contains(t)) || !!(anchorEl?.contains(t)),
+            (t: Node) => !!(ref.current?.contains(t)) || !!(anchorEl?.contains(t))
+                || !!(t as Element).closest?.('.ctxm'),
             [anchorEl],
         ),
         true,
@@ -304,7 +341,11 @@ const EmojiPickerPopover: React.FC<PickerProps> = ({ onEmojiSelect, onClose, anc
     // so a new parent closure doesn't count as a change.
     const onSelectRef = useRef(onEmojiSelect);
     useLayoutEffect(() => { onSelectRef.current = onEmojiSelect; });
-    const stableOnSelect = useCallback((e: EmojiSelection) => onSelectRef.current(e), []);
+    const stableOnSelect = useCallback((e: EmojiSelection) => {
+        // The hidden placeholder that keeps an empty tab on the bar is not an emoji.
+        if (isEmptyPlaceholderId(e.id)) return;
+        onSelectRef.current(e);
+    }, []);
     const pickerEl = useMemo(() => (
             <Picker
                 data={data}
@@ -333,6 +374,7 @@ const EmojiPickerPopover: React.FC<PickerProps> = ({ onEmojiSelect, onClose, anc
         <>
             <div
             ref={ref}
+            data-cl-emoji-picker=""
             style={{
                 ...style,
                 background:   '#1e2024',
@@ -344,6 +386,8 @@ const EmojiPickerPopover: React.FC<PickerProps> = ({ onEmojiSelect, onClose, anc
             onClick={e => e.stopPropagation()}
         >
             {pickerEl}
+            {myEmojiMenu}
+            {emptyOverlay && <EmojiPickerEmptyState overlay={emptyOverlay} onClose={onClose} onDismiss={dismissEmpty} />}
             {/*
               * Override emoji-mart's web-component (em-emoji-picker) CSS variables.
               * CSS custom properties cross the shadow-DOM boundary, so --rgb-background

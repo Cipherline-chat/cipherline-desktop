@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { deriveContactTrust, trustLabel, trustExplanation, pinsToTrustDevices } from './contactTrust';
 import type { SenderVerdict } from './senderTrust';
+import { RECHECK_AFTER_MS } from './verificationStrength';
 
 const dev = (deviceId: string, verified: boolean) => ({ deviceId, verified });
 
@@ -174,8 +175,8 @@ describe('trust copy', () => {
     });
 });
 
-// ── G1 migration: legacy verification is its own calm level ────────────────
-describe('deriveContactTrust — pre-v2 (legacy) verification', () => {
+// ── Re-check nudge: a year-old verification is its own calm level ────────────────
+describe('deriveContactTrust — year-old (legacy) verification', () => {
     const legacyDev = (deviceId: string) => ({ deviceId, verified: true, legacy: true });
 
     it('all devices verified but one legacy is verified_legacy: not green', () => {
@@ -200,19 +201,24 @@ describe('deriveContactTrust — pre-v2 (legacy) verification', () => {
         const t = deriveContactTrust({ devices: [legacyDev('d1')] });
         expect(trustLabel(t)).toBe('Re-check suggested');
         const why = trustExplanation(t, 'Alice');
-        expect(why).toMatch(/strengthened/);
+        expect(why).toMatch(/over a year ago/);
         expect(why).not.toMatch(/never confirmed|does not check out|intercept/i);
     });
 
-    it('pinsToTrustDevices derives legacy from the record, so no caller can drop it', () => {
+    it('pinsToTrustDevices derives legacy from the record age, so no caller can drop it', () => {
+        const now = Date.now();
         expect(pinsToTrustDevices({
-            a: { verified: true },            // pre-v2
-            b: { verified: true, sv: 2 },     // current
-            c: { verified: false },           // never verified: not "legacy"
+            a: { verified: true, sv: 2, verified_at: now - RECHECK_AFTER_MS - 1000 }, // over a year
+            b: { verified: true, sv: 2, verified_at: now - 1000 },                    // fresh
+            c: { verified: false, verified_at: now - RECHECK_AFTER_MS - 1000 },       // never verified: not "legacy"
+            d: { verified: true },                                                     // no date, no sv: plain verified
+            e: { verified: true, verified_at: now },                                   // sv absent but recent
         })).toEqual([
             { deviceId: 'a', verified: true,  legacy: true },
             { deviceId: 'b', verified: true,  legacy: false },
             { deviceId: 'c', verified: false, legacy: false },
+            { deviceId: 'd', verified: true,  legacy: false },
+            { deviceId: 'e', verified: true,  legacy: false },
         ]);
     });
 });

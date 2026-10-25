@@ -1,0 +1,42 @@
+/* "Happy New Year! Fireworks, but underwater." — components/moments/views/NewYearMoment.tsx.
+   8.5 s, transform/opacity only. Phases: notice 0–0.5, main 0.5–3.0,
+   read 3.0–6.8, hold 6.8–7.8, exit 7.8–8.5. */
+.mo-ny-burst { position: absolute; width: 0; height: 0; }
+.mo-ny-rocket {
+  position: absolute; left: -7px; top: -7px; width: 14px; height: 14px; border-radius: 50%;
+  border: 2px solid var(--c); opacity: 0;
+  animation: mo-ny-rocket 1s cubic-bezier(.2, .6, .4, 1) both;
+}
+@keyframes mo-ny-rocket {
+  0%   { transform: translate(0, 60vh) scale(.6); opacity: 0; }
+  12%  { opacity: 1; }
+  50%  { transform: translate(8px, 28vh) scale(.8); }
+  99%  { transform: translate(-4px, 0) scale(1); opacity: 1; }
+  100% { transform: translate(-4px, 0) scale(1); opacity: 0; }
+}
+.mo-ny-spark {
+  position: absolute; left: -5px; top: -5px; width: 10px; height: 10px; border-radius: 50%;
+  background: var(--c); opacity: 0;
+  animation: mo-ny-spark 2.6s cubic-bezier(.15, .7, .3, 1) both;
+}
+@keyframes mo-ny-spark {
+  0%   { transform: rotate(var(--a)) translateX(0) translateY(0) scale(1.2); opacity: 0; }
+  5%   { opacity: 1; }
+  40%  { transform: rotate(var(--a)) translateX(110px) translateY(0) scale(1); opacity: 1; }
+  100% { transform: rotate(var(--a)) translateX(135px) translateY(0) scale(.3); opacity: 0; }
+}
+.mo-ny-flash {
+  position: absolute; left: -40px; top: -40px; width: 80px; height: 80px; border-radius: 50%;
+  background: radial-gradient(circle, var(--c), rgba(0, 0, 0, 0) 70%); opacity: 0;
+  animation: mo-ny-flash .8s ease-out both;
+}
+@keyframes mo-ny-flash { 0% { transform: scale(.3); opacity: 0; } 20% { opacity: .55; } 100% { transform: scale(2.2); opacity: 0; } }
+.mo-ny .mo-ny-title {
+  position: absolute; left: 0; top: 30px; font-size: 60px; color: var(--cl-glow, #FFC94D);
+  animation: mo-ny-up .7s cubic-bezier(.2, .8, .3, 1.1) 1.6s both;
+}
+.mo-ny .mo-ny-sub {
+  position: absolute; left: 0; top: 110px; font-size: 24px;
+  animation: mo-ny-up .6s cubic-bezier(.2, .8, .3, 1) 2.4s both;
+}
+@keyframes mo-ny-up { from { transform: translate(-50%, 30px); opacity: 0; } to { transform: translateX(-50%); opacity: 1; } }

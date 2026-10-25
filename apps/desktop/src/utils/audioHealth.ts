@@ -30,6 +30,10 @@ export interface AudioHealthSnapshot {
     nsAutoBypassActive: boolean;
     /** Worklet pipeline (gate+NS+AGC) failed to initialize at all this call. */
     nsUnavailable: boolean;
+    /** Audio render-thread underrun this call (AudioContext.playbackStats, nsLoadGuard.ts), ms. */
+    renderUnderrunMs: number;
+    /** Strong was swapped for Light this call because the render thread fell behind. */
+    nsLoadFallback: boolean;
     /** Currently-applied AGC gain in dB, or null before the first stats report. */
     agcGainDb: number | null;
     agcVoiceActive: boolean;
@@ -44,6 +48,8 @@ function emptySnapshot(): AudioHealthSnapshot {
         nsAutoBypassCount: 0,
         nsAutoBypassActive: false,
         nsUnavailable: false,
+        renderUnderrunMs: 0,
+        nsLoadFallback: false,
         agcGainDb: null,
         agcVoiceActive: false,
         lastUpdatedAt: null,
@@ -81,6 +87,14 @@ export function recordNsAutoBypass(active: boolean): void {
     });
 }
 
+export function recordRenderUnderrun(ms: number): void {
+    if (ms > 0) commit({ renderUnderrunMs: snapshot.renderUnderrunMs + ms });
+}
+
+export function recordNsLoadFallback(): void {
+    commit({ nsLoadFallback: true });
+}
+
 export function recordNsUnavailable(): void {
     commit({ nsUnavailable: true, nsState: 'unavailable' });
 }
@@ -104,6 +118,6 @@ export function summarize(): string {
     const s = snapshot;
     return (
         `ns=${s.nsState} underruns=${s.nsUnderruns} autoBypass=${s.nsAutoBypassCount} ` +
-        `unavailable=${s.nsUnavailable} agcGainDb=${s.agcGainDb?.toFixed(1) ?? 'n/a'}`
+        `unavailable=${s.nsUnavailable} renderUnderrunMs=${s.renderUnderrunMs} nsLoadFallback=${s.nsLoadFallback} agcGainDb=${s.agcGainDb?.toFixed(1) ?? 'n/a'}`
     );
 }

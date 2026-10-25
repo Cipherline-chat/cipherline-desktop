@@ -62,6 +62,8 @@ export interface EmojiSuggestion {
     /** Present only for a custom-server-emoji suggestion (see ChatPane's
      *  searchEmojiWithCustom). Carries what EmojiImage needs to render it. */
     custom?: { attachmentId: string; keyB64: string; nonceB64: string };
+    /** Present (true) for one of the user's own "My Emojis"; `id` is its `p_...` id. */
+    personal?: boolean;
 }
 
 // emoji-mart's own `SearchIndex.search()` is async (always returns a Promise,

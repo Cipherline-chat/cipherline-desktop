@@ -129,7 +129,7 @@ describe('installAnnexBCanonicalizer (wrapping LiveKit\'s worker onmessage)', ()
         expect(scope.onmessage).toBeNull();
     });
 
-    it('passes every message to LiveKit; only encode streams get a stage in front', async () => {
+    it('passes every message to LiveKit; encode streams get the Annex-B stage, decode streams only the audio-lag cap', async () => {
         const seen: unknown[] = [];
         const scope = { onmessage: ((ev: MessageEvent) => { seen.push(ev.data); }) as ((ev: MessageEvent) => unknown) | null, postMessage: () => {} };
         expect(installAnnexBCanonicalizer(scope)).toBe(true);
@@ -140,8 +140,14 @@ describe('installAnnexBCanonicalizer (wrapping LiveKit\'s worker onmessage)', ()
             { kind: 'updateCodec', data: { trackId: 'cam', codec: 'h264', participantIdentity: 'me' } },
         ];
         for (const m of msgs) scope.onmessage!({ data: m } as MessageEvent);
-        expect(seen).toEqual(msgs);
-        expect((seen[1] as { data: { readableStream: unknown } }).data.readableStream).toBe(decodeReadable); // receiver untouched
+        expect(seen[0]).toEqual(msgs[0]);
+        expect(seen[2]).toEqual(msgs[2]);
+        const dec = seen[1] as { kind: string; data: { readableStream: unknown; trackId: string } };
+        expect(dec.kind).toBe('decode');
+        expect(dec.data.trackId).toBe('r');
+        // Receiver: wrapped by the audio-lag cap (e2eeAudioLag.ts), nothing else.
+        expect(dec.data.readableStream).not.toBe(decodeReadable);
+        expect(decodeReadable.locked).toBe(true);
 
         let ctl!: ReadableStreamDefaultController<EncodedFrameLike>;
         const encodeReadable = new ReadableStream<EncodedFrameLike>({ start(c) { ctl = c; } });

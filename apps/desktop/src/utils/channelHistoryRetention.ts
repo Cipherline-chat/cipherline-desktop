@@ -84,3 +84,28 @@ export function pageNeedsKeyRequest(
     // asking other members for one (utils/channelDecryptFailure.ts).
     return kept.some(m => !purgedIds.has(m.id) && isUndecryptablePlaceholder(m) && placeholderWantsKey(m));
 }
+
+/**
+ * The epochs the key-waiting placeholders of a page were sent under — what a
+ * key request for that page should NAME. `undefined` when any such row does
+ * not carry its epoch (then the old "everything" ask is the only honest one).
+ *
+ * 2026-10-20: these re-asks named nothing, and an ask that names nothing gets
+ * EVERY epoch from every holder that answers it. A channel with a message
+ * under an epoch nobody holds any more kept such a row on screen forever, so
+ * every open / re-read of it asked again: 98% of the 88,484 envelopes relayed
+ * in 24 h were epochs the device had already installed, re-sent after an ask.
+ */
+export function placeholderEpochsWantingKey(
+    kept: readonly ChannelRow[],
+    purgedIds: ReadonlySet<string> = new Set(),
+): number[] | undefined {
+    const out = new Set<number>();
+    for (const m of kept) {
+        if (purgedIds.has(m.id) || !isUndecryptablePlaceholder(m) || !placeholderWantsKey(m)) continue;
+        const epoch = (m.content as { data?: { epoch?: unknown } } | undefined)?.data?.epoch;
+        if (typeof epoch !== 'number' || !Number.isInteger(epoch) || epoch < 1) return undefined;
+        out.add(epoch);
+    }
+    return [...out].sort((a, b) => a - b);
+}

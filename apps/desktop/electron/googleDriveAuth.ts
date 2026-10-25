@@ -268,6 +268,42 @@ export function isDriveConfigured(): boolean {
     return !!CLIENT_ID && !!CLIENT_SECRET;
 }
 
+const DRIVE_FILE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
+
+/** Thrown when the user finished Google's consent screen without ticking the Drive
+ *  checkbox. The renderer shows `message` as-is, so keep it user-facing. */
+export const DRIVE_ACCESS_NOT_GRANTED_MESSAGE =
+    'Google Drive access wasn\u2019t allowed. On Google\u2019s screen, tick the box '
+    + 'that lets Cipherline see, edit, create and delete only the Drive files you use with it, '
+    + 'then press Continue. Try connecting again.';
+
+/**
+ * Google's consent screen shows each scope as an UNCHECKED box, and pressing
+ * Continue with it unticked still returns a token — just one carrying only the
+ * non-sensitive `email` scope. `scope` in the token response is Google's list of
+ * what was actually granted, so that is the only reliable signal.
+ *
+ * Only a PRESENT scope string that lacks drive.file counts as "not granted": if
+ * Google ever omits the field we'd rather connect than block a legitimate grant.
+ */
+export function driveAccessWasGranted(grantedScope: unknown): boolean {
+    if (typeof grantedScope !== 'string' || grantedScope.trim() === '') return true;
+    return grantedScope.split(/\s+/).includes(DRIVE_FILE_SCOPE);
+}
+
+/** Best-effort revoke of one token at Google (errors ignored — it may already be gone). */
+function revokeGoogleToken(token: string): Promise<void> {
+    return new Promise<void>((resolve) => {
+        const req = https.request({
+            hostname: 'oauth2.googleapis.com',
+            path: `/revoke?token=${encodeURIComponent(token)}`,
+            method: 'POST',
+        }, () => resolve());
+        req.on('error', () => resolve());
+        req.end();
+    });
+}
+
 export async function startOAuth(): Promise<{ email: string; name: string }> {
     // Without credentials Google would answer 'Missing required parameter:
     // client_id' in the browser. Say it here instead, before anything opens.
@@ -381,6 +417,16 @@ export async function startOAuth(): Promise<{ email: string; name: string }> {
         throw new Error(`Token exchange failed: ${tokenResp.error_description || tokenResp.error}`);
     }
 
+    // The user can press Continue on Google's consent screen without ticking the
+    // Drive box. Don't store a token that can't reach Drive (it would look
+    // "connected" and then 403 on every backup) — drop it and say what to do.
+    // Anything already stored from an earlier connection is left alone.
+    if (!driveAccessWasGranted(tokenResp.scope)) {
+        const stray = tokenResp.refresh_token || tokenResp.access_token;
+        if (typeof stray === 'string' && stray) await revokeGoogleToken(stray);
+        throw new Error(DRIVE_ACCESS_NOT_GRANTED_MESSAGE);
+    }
+
     const { access_token, refresh_token, expires_in } = tokenResp;
     const expiry = new Date(Date.now() + (expires_in - 60) * 1000).toISOString();
 
@@ -458,18 +504,7 @@ export async function getAccessToken(): Promise<string> {
 export async function revokeTokens(): Promise<void> {
     await secureStore.initialize();
     const token = secureStore.get(KEYS.refreshToken) || secureStore.get(KEYS.accessToken);
-    if (token) {
-        // Fire-and-forget revoke — ignore errors (token may already be gone)
-        await new Promise<void>((resolve) => {
-            const req = https.request({
-                hostname: 'oauth2.googleapis.com',
-                path: `/revoke?token=${encodeURIComponent(token)}`,
-                method: 'POST',
-            }, () => resolve());
-            req.on('error', () => resolve());
-            req.end();
-        });
-    }
+    if (token) await revokeGoogleToken(token);
     for (const key of Object.values(KEYS)) {
         secureStore.delete(key);
     }

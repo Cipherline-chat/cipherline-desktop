@@ -6,6 +6,12 @@
  * drive the real detector against a fake Windows Steam library and a fake
  * process list, with a fake clock, and pin the backstop: a heuristic match is
  * only believed for a bounded amount of active time.
+ *
+ * The fixture exe is a deliberately unremarkable name ("ToolHost.exe"): the
+ * backstop exists for resident software whose name gives nothing away.
+ * Launchers / updaters / anti-cheat named as such (the actual Marvel Rivals
+ * case, MarvelRivals_Launcher.exe) are no longer credited at all — see
+ * game-detector.launcher.test.ts.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { join } from 'path';
@@ -62,8 +68,8 @@ beforeEach(async () => {
     dirs.set(join(STEAM, 'steamapps'), []);
     files.set(join(steamapps, 'appmanifest_1.acf'), '"AppState" { "name" "Marvel Rivals" "installdir" "MarvelRivals" }');
     dirs.set(steamapps, [{ name: 'appmanifest_1.acf', dir: false }]);
-    dirs.set(join(steamapps, 'common', 'MarvelRivals'), [{ name: 'MarvelRivals_Launcher.exe', dir: false }]);
-    dirs.set(gameDir, [{ name: 'MarvelRivals_Launcher.exe', dir: false }]);
+    dirs.set(join(steamapps, 'common', 'MarvelRivals'), [{ name: 'ToolHost.exe', dir: false }]);
+    dirs.set(gameDir, [{ name: 'ToolHost.exe', dir: false }]);
 
     clock = Date.UTC(2026, 9, 1, 12, 0, 0);
     vi.spyOn(Date, 'now').mockImplementation(() => clock);
@@ -96,16 +102,16 @@ async function runFor(totalMs: number, stepMs = 2 * MIN) {
 
 describe('Steam-folder heuristic — resident software backstop', () => {
     it('credits the Steam folder exe to the game while it is plausibly being played', async () => {
-        tasklist = tl('system', 'marvelrivals_launcher');
-        expect(await scan()).toEqual({ name: 'Marvel Rivals', processName: 'marvelrivals_launcher' });
-        expect(await runFor(3 * HOUR)).toEqual({ name: 'Marvel Rivals', processName: 'marvelrivals_launcher' });
-        expect(await runFor(11 * HOUR)).toEqual({ name: 'Marvel Rivals', processName: 'marvelrivals_launcher' }); // 14 h in, still inside the budget
+        tasklist = tl('system', 'toolhost');
+        expect(await scan()).toEqual({ name: 'Marvel Rivals', processName: 'toolhost' });
+        expect(await runFor(3 * HOUR)).toEqual({ name: 'Marvel Rivals', processName: 'toolhost' });
+        expect(await runFor(11 * HOUR)).toEqual({ name: 'Marvel Rivals', processName: 'toolhost' }); // 14 h in, still inside the budget
     });
 
     it('REGRESSION: a resident exe from the folder stops reading as "playing" once it exceeds the budget', async () => {
         // The stuck state: the process never exits, so the old code reported
         // it forever.
-        tasklist = tl('system', 'marvelrivals_launcher');
+        tasklist = tl('system', 'toolhost');
         expect(await scan()).not.toBeNull();
         expect(await runFor(gd.HEURISTIC_MAX_ACTIVE_MS + HOUR)).toBeNull();
         // ...and keeps not reading as play on every later scan, for days.
@@ -113,26 +119,26 @@ describe('Steam-folder heuristic — resident software backstop', () => {
     });
 
     it('a fresh launch (the process left the list and came back) starts a new session', async () => {
-        tasklist = tl('marvelrivals_launcher');
+        tasklist = tl('toolhost');
         await scan();
         expect(await runFor(gd.HEURISTIC_MAX_ACTIVE_MS + HOUR)).toBeNull();
         tasklist = tl('system');           // game closed
         expect(await runFor(4 * MIN)).toBeNull();
-        tasklist = tl('marvelrivals_launcher'); // played again
+        tasklist = tl('toolhost'); // played again
         clock += 4 * MIN;
-        expect(await scan()).toEqual({ name: 'Marvel Rivals', processName: 'marvelrivals_launcher' });
+        expect(await scan()).toEqual({ name: 'Marvel Rivals', processName: 'toolhost' });
     });
 
     it('time the machine spent asleep (or with polling off) does not count against a real session', async () => {
-        tasklist = tl('marvelrivals_launcher');
+        tasklist = tl('toolhost');
         await scan();
         clock += 20 * HOUR;               // overnight sleep: one scan, a 20 h gap
-        expect(await scan()).toEqual({ name: 'Marvel Rivals', processName: 'marvelrivals_launcher' });
-        expect(await runFor(10 * HOUR)).toEqual({ name: 'Marvel Rivals', processName: 'marvelrivals_launcher' });
+        expect(await scan()).toEqual({ name: 'Marvel Rivals', processName: 'toolhost' });
+        expect(await runFor(10 * HOUR)).toEqual({ name: 'Marvel Rivals', processName: 'toolhost' });
     });
 
     it('but a resident exe on a laptop that sleeps every night is still caught (sleep neither resets nor counts)', async () => {
-        tasklist = tl('marvelrivals_launcher');
+        tasklist = tl('toolhost');
         await scan();
         for (let day = 0; day < 3; day++) {
             await runFor(8 * HOUR);       // awake and polling
@@ -142,11 +148,11 @@ describe('Steam-folder heuristic — resident software backstop', () => {
     });
 
     it('a scan gap beyond a day cannot be assumed to be the same instance', async () => {
-        tasklist = tl('marvelrivals_launcher');
+        tasklist = tl('toolhost');
         await scan();
         expect(await runFor(gd.HEURISTIC_MAX_ACTIVE_MS + HOUR)).toBeNull();
         clock += 2 * 24 * HOUR;           // app was not scanning for two days
-        expect(await scan()).toEqual({ name: 'Marvel Rivals', processName: 'marvelrivals_launcher' });
+        expect(await scan()).toEqual({ name: 'Marvel Rivals', processName: 'toolhost' });
     });
 
     it('does not bound the exact layers: a curated-database game and a custom game keep reading as played', async () => {
@@ -160,11 +166,11 @@ describe('Steam-folder heuristic — resident software backstop', () => {
     });
 
     it('resetHeuristicSessions (game activity switched off) forgets every session', async () => {
-        tasklist = tl('marvelrivals_launcher');
+        tasklist = tl('toolhost');
         await scan();
         expect(await runFor(gd.HEURISTIC_MAX_ACTIVE_MS + HOUR)).toBeNull();
         gd.resetHeuristicSessions();
-        expect(await scan()).toEqual({ name: 'Marvel Rivals', processName: 'marvelrivals_launcher' });
+        expect(await scan()).toEqual({ name: 'Marvel Rivals', processName: 'toolhost' });
     });
 });
 

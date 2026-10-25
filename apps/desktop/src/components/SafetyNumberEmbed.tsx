@@ -122,7 +122,7 @@ function readPinnedDevices(myUserId: string, theirUserId: string) {
  * and it creates no new way to BECOME verified, since `markVerified` is still
  * the only writer.
  *
- * A LEGACY vouch (made before safety-number v2) does not count as answered.
+ * A LEGACY vouch (made over a year ago) does not count as answered.
  * This code comparison is a current-strength check, and confirming it is
  * exactly how a legacy verification gets refreshed. Skipping the prompt would
  * leave the user no way to do that from the embed.
@@ -242,7 +242,7 @@ export const SafetyNumberEmbed: React.FC<Props> = ({
             // effect of keeping it was a second encrypted read-modify-write of
             // the pin store per device, and a second apparent writer sitting
             // next to a security-critical one.
-            markVerified(myUserId, senderUserId, pub, device_id);
+            markVerified(myUserId, senderUserId, pub, device_id, senderName);
         }
         setAttested(true);
         // Re-derive the resting claim from what was just written, so the
@@ -250,7 +250,7 @@ export const SafetyNumberEmbed: React.FC<Props> = ({
         // every future mount agree on.
         setStoreEpoch(e => e + 1);
         onVerified?.(senderUserId);
-    }, [senderUserId, myUserId, localPubs, onVerified]);
+    }, [senderUserId, myUserId, localPubs, onVerified, senderName]);
 
     const verdict = phase.s === 'done' ? phase.verdict : null;
 
@@ -366,7 +366,12 @@ export const SafetyNumberEmbed: React.FC<Props> = ({
                                     className={`cl-sn-result cl-sn-result--${
                                         restingClear ? 'ok'
                                         : restingTrust.trust.level === 'compromised' ? 'bad'
-                                        : 'warn'}`}
+                                        : 'warn'}${
+                                        // A labelled badge ("Re-check suggested", "Partly
+                                        // verified (1/2)") beside the sentence squeezed the
+                                        // sentence into a thin column in a narrow card;
+                                        // stack them instead. The icon-only case stays inline.
+                                        restingClear || restingTrust.trust.level !== 'verified' ? ' cl-sn-result--stack' : ''}`}
                                     role={restingTrust.trust.level === 'compromised' ? 'alert' : 'status'}
                                 >
                                     {/* The badge is withheld in exactly one

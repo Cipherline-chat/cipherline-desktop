@@ -239,7 +239,11 @@ export const HuddleButton: React.FC<Props> = ({
                         </span>
                         {!canConnect && <Lock size={10} className="text-cl-faint shrink-0" />}
                     </div>
-                    <div className="text-[10px] truncate">
+                    {/* The "…" of a truncated line takes the colour of the element that
+                        owns `text-overflow: ellipsis` — this div — not of the span inside
+                        it, so the grey/amber colour lives HERE (a white ellipsis next to
+                        grey text was the bug). */}
+                    <div className={`text-[10px] truncate ${cooldownSecs && cooldownSecs > 0 ? 'text-amber-400/80' : 'text-cl-faint'}`}>
                         {cooldownSecs && cooldownSecs > 0
                             ? <span className="text-amber-400/80">Hold on — {cooldownSecs}s</span>
                             : isLive

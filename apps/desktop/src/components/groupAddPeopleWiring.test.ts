@@ -36,10 +36,26 @@ describe('Dashboard group-panel "+" wiring', () => {
     });
 });
 
-describe('GroupSettingsModal uses the extracted picker', () => {
-    it('embeds AddGroupMembersPicker and no longer carries its own invite call', () => {
-        expect(settings).toContain('<AddGroupMembersPicker');
+describe('GroupSettingsModal uses the shared add-people dialog', () => {
+    it('opens AddGroupMembersModal (same invite logic as the panel "+") and carries no invite call of its own', () => {
+        expect(settings).toContain('<AddGroupMembersModal');
+        expect(settings).not.toContain('<AddGroupMembersPicker');
         expect(settings).not.toContain('/invite');
         expect(settings).not.toContain('selectedToAdd');
+    });
+
+    it('renders the stacked dialog OUTSIDE the settings <form> so it can never submit it', () => {
+        expect(settings.indexOf('</form>')).toBeGreaterThan(0);
+        expect(settings.indexOf('<AddGroupMembersModal')).toBeGreaterThan(settings.indexOf('</form>'));
+    });
+});
+
+describe('Dashboard group card', () => {
+    it('renders the group picture header with the loaded roster size and the conversation picture', () => {
+        expect(dash).toMatch(/<GroupContextHeader[\s\S]{0,300}memberCount=\{groupMembers\.length\}[\s\S]{0,200}avatarUrl=\{activeChat\.avatar_url \?\? null\}/);
+    });
+
+    it('no longer hard-codes the unpluralised "members" count', () => {
+        expect(dash).not.toMatch(/\{groupMembers\.length\} members/);
     });
 });

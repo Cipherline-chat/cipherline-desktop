@@ -749,13 +749,13 @@ describe('the strip scrolls by wheel, trackpad and keyboard, with no layout-eati
         expect(stripBlock.slice(0, 200)).not.toContain('custom-scrollbar');
     });
 
-    it('replaces the bar with a scroll cue that cannot disagree with scrollLeft', () => {
-        // The `local`/`scroll` background-attachment pair IS the state: there
-        // is no class to toggle, so the cue cannot drift out of sync the way a
-        // JS-managed one would.
+    it('paints NO background on the row (it floats over the video) and cues overflow with the "+N" chip', () => {
+        // The old local/scroll vignette used an opaque #05070F cover that, over
+        // a live picture, painted solid black blocks at the row's ends.
         const row = CSS.slice(CSS.indexOf('.cl-fs-strip-row {'), CSS.indexOf('.cl-fs-strip-row::-webkit-scrollbar'));
-        expect(row).toContain('no-repeat local');
-        expect(row).toContain('no-repeat scroll');
+        expect(row).toMatch(/background:\s*none/);
+        expect(row).not.toContain('linear-gradient');
+        expect(OVERLAY).toContain('stripHiddenCount');
     });
 
     it('a focusable row has a VISIBLE focus ring — an invisible tab stop is a trap', () => {

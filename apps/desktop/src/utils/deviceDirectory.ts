@@ -152,13 +152,39 @@ export function recordFullUser(userId: string, entries: DirectoryEntry[] | undef
  */
 export function status(userId: string, pub: string, deviceId?: string | null): DirectoryStatus {
     if (!userId || !pub) return 'unknown';
+    // F4: a device id is never shared between accounts. A claimed device that
+    // the directory lists under ANOTHER user is not this user's device, which
+    // is exactly how a group member borrowed someone else's device id (and
+    // with it their name, avatar and edit/delete authority).
+    if (deviceId) {
+        const owner = deviceOwner(deviceId);
+        if (owner && owner !== userId) return 'mismatch';
+    }
     const snap = snapshots.get(userId);
     if (!snap) return 'unknown';
 
     if (deviceId && snap.devices[deviceId]) {
         return snap.devices[deviceId] === pub ? 'match' : 'mismatch';
     }
+    // F4: the key is published for this user, but under a DIFFERENT device id
+    // than the one claimed — the claimed id is not bound to this key.
+    if (deviceId && Object.entries(snap.devices).some(([id, p]) => p === pub && id !== deviceId)) return 'mismatch';
     return Object.values(snap.devices).includes(pub) ? 'match' : 'mismatch';
+}
+
+/** The user a device id is listed under in any cached snapshot, or null. */
+export function deviceOwner(deviceId: string): string | null {
+    if (!deviceId) return null;
+    for (const [uid, snap] of snapshots) {
+        if (Object.prototype.hasOwnProperty.call(snap.devices, deviceId)) return uid;
+    }
+    return null;
+}
+
+/** True when `id` is a USER id the cache holds a snapshot for. A sender
+ *  device id equal to a user id is not a device id at all. */
+export function isKnownUserId(id: string): boolean {
+    return !!id && snapshots.has(id);
 }
 
 /** True when a snapshot exists and is inside the TTL. */

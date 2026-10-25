@@ -6,18 +6,23 @@ import { Worker } from 'worker_threads';
 import { app, safeStorage, dialog } from 'electron';
 import { classifyKeyProtection, type KeyProtection } from './key-protection';
 import { freezeMonitor } from './freeze-monitor';
+import { decideSmokeTestMode } from './smoke-mode';
 import { deriveRecoveryApprovalKeypair, type RecoveryApprovalKeypair } from './device-approval-keys';
-
-const ALG = 'aes-256-gcm';
+import {
+    type EncryptedEntry, encryptEntry, decryptEntry, migrateEntriesToBound, WRITE_BOUND_RECORDS,
+} from './record-binding';
 
 // Legacy format: the master key was written as 64 lowercase-hex chars in
 // plaintext. safeStorage-wrapped blobs are binary and will not match this.
 const PLAINTEXT_HEX = /^[0-9a-f]{64}$/;
 
-interface EncryptedEntry {
-    iv: string;
-    authTag: string;
-    ciphertext: string;
+/** CI smoke test? Same decision as main.ts's IS_SMOKE_TEST (smoke-mode.ts):
+ *  the env var alone is not enough in a packaged build. Evaluated per call
+ *  because tests toggle the env var at runtime. */
+function isSmokeTestProcess(): boolean {
+    let packaged = false;
+    try { packaged = app?.isPackaged === true; } catch { packaged = false; }
+    return decideSmokeTestMode(process.env, process.argv, packaged);
 }
 
 function getUserDataPath(): string {
@@ -291,7 +296,7 @@ export class SecureStore {
     private async _doInitialize() {
         // In CI smoke test mode skip DPAPI/safeStorage entirely — the smoke
         // test only needs the window to appear; it doesn't exercise the store.
-        if (process.env.CIPHERLINE_SMOKE_TEST) {
+        if (isSmokeTestProcess()) {
             this.masterKey = crypto.randomBytes(32);
             this._status = 'ok';
             // Yield even here. If the smoke-test path were the one shape of
@@ -436,6 +441,23 @@ export class SecureStore {
             this.set('__canary__', 'cipherline-keycheck-v1');
             await this.whenDurable();
         }
+        this.migrateToBoundEntries();
+    }
+
+    /**
+     * Phase 2 of record-binding.ts (inert while WRITE_BOUND_RECORDS is false):
+     * re-seal every legacy entry bound to its name, in one coalesced write. An
+     * entry that does not decrypt is left untouched, never dropped.
+     */
+    private migrateToBoundEntries(): void {
+        if (!WRITE_BOUND_RECORDS || !this.masterKey || this._status !== 'ok') return;
+        // Replaces entries with NEW objects, never edits in place: an in-flight
+        // write holds references to the old ones (see the write-behind notes).
+        const migrated = migrateEntriesToBound(this.masterKey, this.data);
+        if (migrated > 0) {
+            console.log(`[SecureStore] bound ${migrated} legacy entries to their names`);
+            this.changed(false);
+        }
     }
 
     /**
@@ -508,17 +530,13 @@ export class SecureStore {
         } catch { return false; }
         if (key.length !== 32) return false;
 
-        // Validate against any existing entry.
-        const entries = Object.values(this.data);
-        if (entries.length > 0) {
-            const probe = entries[0];
+        // Validate against any existing entry (either format: a bound entry
+        // is checked under its own name).
+        const names = Object.keys(this.data);
+        if (names.length > 0) {
+            const probeName = names[0];
             try {
-                const iv = Buffer.from(probe.iv, 'base64');
-                const authTag = Buffer.from(probe.authTag, 'base64');
-                const decipher = crypto.createDecipheriv(ALG, key, iv);
-                decipher.setAuthTag(authTag);
-                decipher.update(probe.ciphertext, 'base64', 'utf8');
-                decipher.final('utf8');
+                decryptEntry(key, probeName, this.data[probeName]);
             } catch {
                 return false; // wrong key
             }
@@ -713,7 +731,7 @@ export class SecureStore {
         this.clearWriteTimer();
         if (this.seq <= this.durableSeq) return;
         const target = this.seq;
-        if (process.env.CIPHERLINE_SMOKE_TEST) { this.markDurable(target); return; }
+        if (isSmokeTestProcess()) { this.markDurable(target); return; }
         // Any async snapshot still in flight is older than this one.
         this.saveGen++;
         this.writeCount++;
@@ -776,7 +794,7 @@ export class SecureStore {
     /** True when `key` already holds exactly `value` (small values only). */
     private holds(key: string, value: string): boolean {
         if (!this.has(key) || value.length > SecureStore.NOOP_CHECK_MAX_CHARS) return false;
-        try { return this.decrypt(this.data[key]) === value; } catch { return false; }
+        try { return this.decrypt(key, this.data[key]) === value; } catch { return false; }
     }
 
     private put(key: string, value: string, deferred: boolean): void {
@@ -785,7 +803,7 @@ export class SecureStore {
         // stored: each of these used to cost a whole-vault rewrite.
         if (this.holds(key, value)) return;
         const isNew = !this.has(key);
-        this.data[key] = this.encrypt(value);
+        this.data[key] = this.encrypt(key, value);
         if (isNew) for (const [p, idx] of this.indexes) if (key.startsWith(p)) idx.add(key);
         this.changed(deferred);
     }
@@ -882,7 +900,7 @@ export class SecureStore {
         // dbPath (the test only needs the window to paint). Values have
         // already landed in this.data, so the store keeps working in-process
         // for the run; just don't touch disk.
-        if (process.env.CIPHERLINE_SMOKE_TEST) { this.markDurable(target); return; }
+        if (isSmokeTestProcess()) { this.markDurable(target); return; }
         if (!this.dbPath) {
             // A write before initialize() is a real bug and stays loud.
             const err = new Error('SecureStore write before initialize() — no vault path');
@@ -963,25 +981,17 @@ export class SecureStore {
         return true;
     }
 
-    private encrypt(plaintext: string): EncryptedEntry {
+    // Entry format and AAD binding: record-binding.ts. Reads accept both the
+    // legacy (unbound) and the name-bound format; writes are bound only once
+    // WRITE_BOUND_RECORDS is switched on.
+    private encrypt(key: string, plaintext: string): EncryptedEntry {
         if (!this.masterKey) throw new Error('SecureStore not initialized');
-        const iv = crypto.randomBytes(12);
-        const cipher = crypto.createCipheriv(ALG, this.masterKey, iv);
-        let ciphertext = cipher.update(plaintext, 'utf8', 'base64');
-        ciphertext += cipher.final('base64');
-        const authTag = cipher.getAuthTag().toString('base64');
-        return { iv: iv.toString('base64'), authTag, ciphertext };
+        return encryptEntry(this.masterKey, key, plaintext, WRITE_BOUND_RECORDS);
     }
 
-    private decrypt(entry: EncryptedEntry): string {
+    private decrypt(key: string, entry: EncryptedEntry): string {
         if (!this.masterKey) throw new Error('SecureStore not initialized');
-        const iv      = Buffer.from(entry.iv, 'base64');
-        const authTag = Buffer.from(entry.authTag, 'base64');
-        const decipher = crypto.createDecipheriv(ALG, this.masterKey, iv);
-        decipher.setAuthTag(authTag);
-        let plaintext = decipher.update(entry.ciphertext, 'base64', 'utf8');
-        plaintext += decipher.final('utf8');
-        return plaintext;
+        return decryptEntry(this.masterKey, key, entry);
     }
 
     /** Store `value` under `key`. In memory at once; on disk shortly after —
@@ -1033,7 +1043,7 @@ export class SecureStore {
         const entry = this.has(key) ? this.data[key] : undefined;
         if (!entry) return null;
         try {
-            return this.decrypt(entry);
+            return this.decrypt(key, entry);
         } catch (err) {
             console.error('[SecureStore] Failed to decrypt key:', key, err);
             return null;
@@ -1053,6 +1063,31 @@ export class SecureStore {
     keys(): string[] {
         this.assertReadable('keys');
         return Object.keys(this.data);
+    }
+
+    /**
+     * The IV (base64, as stored) of every entry in this vault. kv-crypto uses
+     * it to refuse to open a SecureStore ciphertext that has been handed to
+     * `securekv:open`: both are AES-256-GCM under the same master key with no
+     * AAD (until record-binding phase 2), so without this check the renderer's
+     * KV decrypt would also decrypt this vault's entries. IVs are 96 random
+     * bits, so a real KV record never collides with one by chance. Not
+     * guarded by assertReadable: before init it is simply empty, and nothing
+     * can be opened then anyway.
+     */
+    /** How many entries the loaded envelope holds — readable while locked, so
+     *  the recovery gate can tell whether a candidate key can be validated. */
+    entryCount(): number {
+        return Object.keys(this.data).length;
+    }
+
+    entryIvs(): Set<string> {
+        const out = new Set<string>();
+        for (const k of Object.keys(this.data)) {
+            const iv = this.data[k]?.iv;
+            if (typeof iv === 'string') out.add(iv);
+        }
+        return out;
     }
 }
 

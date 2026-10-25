@@ -75,7 +75,10 @@ describe('upload body shape (the every-top-up-400s bug)', () => {
             expect(src, rel).not.toMatch(/keys\/upload_bundle`,\s*\{\s*\n?\s*device_id/);
         }
         const rotation = fs.readFileSync(path.resolve(here, '../hooks/useKeyRotation.ts'), 'utf8');
-        expect(rotation).toMatch(/postBundle\(toUploadBundleBody\(bundle, deviceId\), token\)/);
+        // The body is built by toUploadBundleBody and handed to postBundle (the retrying
+        // runner posts it - see prekeyTopup.ts); never a raw bundle.
+        expect(rotation).toMatch(/toUploadBundleBody\(bundle, deviceId\)/);
+        expect(rotation).toMatch(/post: \(body\) => postBundle\(body, token\)/);
     });
 });
 

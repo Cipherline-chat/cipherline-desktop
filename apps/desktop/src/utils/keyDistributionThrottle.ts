@@ -480,9 +480,45 @@ export interface KeyDistributionDeps {
     wrap: (args: { channelId: string; epoch: number; keyB64: string; device: Omit<DistributionRecipient, 'user_id'> }) => Promise<string>;
     /** POST /servers/:sid/key-handshake. Throws an axios-shaped error on failure. */
     post: (serverId: string, body: { recipient_user_id: string; channel_id: string; epoch: number; envelopes: { device_id: string; ciphertext_b64: string }[] }) => Promise<unknown>;
+    /**
+     * POST /servers/:sid/key-handshake/batch — several epochs of one channel
+     * for one recipient user in one call (see runKeyDistribution). Absent →
+     * one POST per epoch, as before.
+     */
+    postBatch?: (serverId: string, body: KeyHandshakeBatchBody) => Promise<unknown>;
+    /** Shared and mutable: set once the API answers the batch route with 404
+     *  (an API from before it), so this session posts per epoch from then on. */
+    batchSupport?: { unsupported: boolean };
     onWrapError?: (e: unknown, ctx: { epoch: number; recipientUserId: string; deviceId: string }) => void;
     onNothingWrapped?: (ctx: { epoch: number; recipientUserId: string; devices: number }) => void;
     onPostError?: (e: unknown, ctx: { epoch: number; recipientUserId: string; envelopes: number }) => void;
+}
+
+export interface KeyHandshakeBatchBody {
+    /** Default recipient (the API's DTO requires it); every item names its own. */
+    recipient_user_id: string;
+    channel_id: string;
+    items: { epoch: number; recipient_user_id?: string; channel_id?: string; envelopes: { device_id: string; ciphertext_b64: string }[] }[];
+}
+
+/** The API's caps on one batch (SubmitKeyHandshakeBatchDto): epochs per call,
+ *  envelopes across them. */
+export const KEY_HANDSHAKE_BATCH_MAX_EPOCHS = 100;
+export const KEY_HANDSHAKE_BATCH_MAX_ENVELOPES = 100;
+
+/** Split batch items so no call exceeds the API's caps (order kept). */
+export function chunkBatchItems<T extends { envelopes: unknown[] }>(items: T[]): T[][] {
+    const out: T[][] = [];
+    let cur: T[] = [];
+    let envs = 0;
+    for (const it of items) {
+        if (cur.length && (cur.length >= KEY_HANDSHAKE_BATCH_MAX_EPOCHS || envs + it.envelopes.length > KEY_HANDSHAKE_BATCH_MAX_ENVELOPES)) {
+            out.push(cur); cur = []; envs = 0;
+        }
+        cur.push(it); envs += it.envelopes.length;
+    }
+    if (cur.length) out.push(cur);
+    return out;
 }
 
 export interface KeyDistributionArgs {
@@ -528,6 +564,83 @@ export async function runKeyDistribution(
             const list = byUser.get(r.user_id) ?? [];
             list.push({ device_id: r.device_id, spk_pub_b64: r.spk_pub_b64, sig_b64: r.sig_b64, identity_pub_b64: r.identity_pub_b64 });
             byUser.set(r.user_id, list);
+        }
+
+        // ── Batched: one POST per ≤50 (epoch, recipient) pairs ──────────────
+        // 2026-10-20: one POST per (epoch, recipient) made a joiner's history
+        // on a 20-channel x 15-epoch server 300 POSTs — ~105 s from any one
+        // holder at the pacer's rate — and a rotation one POST per member. A
+        // batch carries a channel's epochs (a joiner) or one epoch for every
+        // member (a rotation) in one call. An API without the route (404)
+        // drops this session to the per-epoch loop below, which the ledger
+        // keeps from repeating what went out.
+        if (deps.postBatch && !deps.batchSupport?.unsupported && (epochs.length > 1 || byUser.size > 1)) {
+            const keyOf = new Map<number, string | null>();
+            const keyFor = async (epoch: number) => {
+                if (!keyOf.has(epoch)) keyOf.set(epoch, await deps.getChannelKey(channelId, epoch));
+                return keyOf.get(epoch)!;
+            };
+            const items: (KeyHandshakeBatchBody['items'][number] & { recipient_user_id: string })[] = [];
+            for (const [recipientUserId, devices] of byUser) {
+                for (const epoch of epochs) {
+                    const need = devices.filter(d => !deps.ledger.shouldSkip(channelId, epoch, d.device_id, requestVersion, requestSeenAt));
+                    if (!need.length) continue;
+                    const keyB64 = await keyFor(epoch);
+                    if (!keyB64) continue; // pruned locally — another holder may still cover it
+                    const envelopes: { device_id: string; ciphertext_b64: string }[] = [];
+                    for (const device of need) {
+                        try {
+                            envelopes.push({ device_id: device.device_id, ciphertext_b64: await deps.wrap({ channelId, epoch, keyB64, device }) });
+                        } catch (e) {
+                            deps.onWrapError?.(e, { epoch, recipientUserId, deviceId: device.device_id });
+                        }
+                    }
+                    if (!envelopes.length) { deps.onNothingWrapped?.({ epoch, recipientUserId, devices: need.length }); continue; }
+                    items.push({ epoch, recipient_user_id: recipientUserId, envelopes });
+                }
+            }
+            let fellBack = false;
+            for (const chunk of chunkBatchItems(items)) {
+                const blocked = stopIfBlocked();
+                if (blocked) return blocked;
+                await deps.pacer.wait();
+                const blockedAfterWait = stopIfBlocked();
+                if (blockedAfterWait) return blockedAfterWait;
+                if (budget) budget.remaining -= 1;
+                const record = () => { for (const it of chunk) for (const env of it.envelopes) deps.ledger.record(channelId, it.epoch, env.device_id, requestVersion); };
+                const recipientUserId = chunk[0].recipient_user_id;
+                try {
+                    await deps.postBatch(serverId, { recipient_user_id: recipientUserId, channel_id: channelId, items: chunk });
+                    posted += 1;
+                    deps.backoff.onSuccess();
+                    // Stored, skipped (the device already holds it) and
+                    // refused (no history permission / no longer a viewer)
+                    // are all final for this ask.
+                    record();
+                } catch (e) {
+                    const status = (e as HttpErrorLike)?.response?.status;
+                    if (status === 404 || status === 405) {
+                        if (deps.batchSupport) deps.batchSupport.unsupported = true;
+                        fellBack = true;
+                        break;
+                    }
+                    deps.onPostError?.(e, { epoch: chunk[0].epoch, recipientUserId, envelopes: chunk.reduce((n, it) => n + it.envelopes.length, 0) });
+                    const kind = classifyHandshakeError(e);
+                    if (kind === 'refused') { record(); continue; }
+                    if (status === 500) {
+                        // Same bound as the per-epoch path: a submission that
+                        // deterministically 500s must not hold every other
+                        // recipient behind a growing back-off.
+                        const failKey = `batch:${channelId}:${chunk.map(it => `${it.recipient_user_id}/${it.epoch}`).join(',')}`;
+                        const n = (serverErrorCounts.get(failKey) ?? 0) + 1;
+                        if (n >= SERVER_ERROR_GIVE_UP) { serverErrorCounts.delete(failKey); record(); continue; }
+                        serverErrorCounts.set(failKey, n);
+                    }
+                    const retryInMs = deps.backoff.onFailure(kind === 'throttled' ? parseRetryAfterMs(e) : undefined);
+                    return deferred(kind === 'throttled' ? 'throttled' : 'unavailable', retryInMs);
+                }
+            }
+            if (!fellBack) return { status: 'done', posted };
         }
 
         for (const epoch of epochs) {
@@ -602,6 +715,124 @@ export async function runKeyDistribution(
                         return deferred(kind === 'throttled' ? 'throttled' : 'unavailable', retryInMs);
                     }
                 }
+            }
+        }
+        return { status: 'done', posted };
+    });
+}
+
+export interface ManyChannelEntry {
+    channelId: string;
+    epochs: number[];
+    requestVersion?: string;
+    requestSeenAt?: number;
+}
+
+/**
+ * Answer ONE recipient's requests for several channels in as few calls as the
+ * API takes (POST key-handshake/batch with per-item channel_id): every
+ * channel's newest epoch first, then the history newest-first, ≤100 items /
+ * ≤100 envelopes per call. Same pacing, back-off, budget (one per call),
+ * ledger (per channel, per request version) and error handling as
+ * runKeyDistribution. Without the batch route (deps.postBatch absent, or a
+ * 404 this session) it falls back to runKeyDistribution per channel.
+ *
+ * 2026-10-20, harness: ten joiners at once needed one call per (joiner,
+ * channel) — 200 through the API's 3-per-server bulkhead — and that queue
+ * set the last joiner's wait (current-epoch p95 ~30 s on one pod).
+ */
+export async function runKeyDistributionMany(
+    deps: KeyDistributionDeps,
+    args: { serverId: string; recipient: DistributionRecipient[]; entries: ManyChannelEntry[]; budget?: { remaining: number } },
+): Promise<DistributionOutcome> {
+    const { serverId, recipient, entries, budget } = args;
+    const live = entries.filter(e => e.epochs.length);
+    if (!live.length || !recipient.length) return { status: 'done', posted: 0 };
+    const recipientUserId = recipient[0].user_id;
+    const perChannel = async (): Promise<DistributionOutcome> => {
+        let posted = 0;
+        for (const e of live) {
+            const out = await runKeyDistribution(deps, {
+                serverId, channelId: e.channelId, epochs: e.epochs, recipients: recipient,
+                requestVersion: e.requestVersion, requestSeenAt: e.requestSeenAt, budget,
+            });
+            posted += out.posted;
+            if (out.status === 'deferred') return { ...out, posted };
+        }
+        return { status: 'done', posted };
+    };
+    if (!deps.postBatch || deps.batchSupport?.unsupported || live.length === 1) return perChannel();
+
+    return deps.mutex.run(`${serverId}:many:${recipient.map(r => r.device_id).sort().join(',')}`, async (): Promise<DistributionOutcome> => {
+        let posted = 0;
+        const deferred = (reason: DeferReason, retryInMs: number): DistributionOutcome => ({ status: 'deferred', reason, retryInMs, posted });
+        const stopIfBlocked = (): DistributionOutcome | null => {
+            if (deps.backoff.isBlocked()) return deferred('throttled', deps.backoff.remainingMs());
+            if (budget && budget.remaining <= 0) return deferred('budget', PASS_CONTINUATION_DELAY_MS);
+            return null;
+        };
+        // Every channel's newest epoch first, then the history newest-first.
+        const order: { e: ManyChannelEntry; epoch: number }[] = [];
+        const sorted = live.map(e => ({ e, epochs: [...new Set(e.epochs)].sort((a, b) => b - a) }));
+        for (const { e, epochs } of sorted) order.push({ e, epoch: epochs[0] });
+        for (const { e, epochs } of sorted) for (const epoch of epochs.slice(1)) order.push({ e, epoch });
+
+        type Item = KeyHandshakeBatchBody['items'][number] & { channel_id: string; version?: string };
+        const items: Item[] = [];
+        for (const { e, epoch } of order) {
+            const need = recipient.filter(d => !deps.ledger.shouldSkip(e.channelId, epoch, d.device_id, e.requestVersion, e.requestSeenAt));
+            if (!need.length) continue;
+            const keyB64 = await deps.getChannelKey(e.channelId, epoch);
+            if (!keyB64) continue;
+            const envelopes: { device_id: string; ciphertext_b64: string }[] = [];
+            for (const d of need) {
+                const device = { device_id: d.device_id, spk_pub_b64: d.spk_pub_b64, sig_b64: d.sig_b64, identity_pub_b64: d.identity_pub_b64 };
+                try {
+                    envelopes.push({ device_id: d.device_id, ciphertext_b64: await deps.wrap({ channelId: e.channelId, epoch, keyB64, device }) });
+                } catch (err) {
+                    deps.onWrapError?.(err, { epoch, recipientUserId, deviceId: d.device_id });
+                }
+            }
+            if (!envelopes.length) { deps.onNothingWrapped?.({ epoch, recipientUserId, devices: need.length }); continue; }
+            items.push({ epoch, channel_id: e.channelId, envelopes, version: e.requestVersion });
+        }
+        for (const chunk of chunkBatchItems(items)) {
+            const blocked = stopIfBlocked();
+            if (blocked) return blocked;
+            await deps.pacer.wait();
+            const blockedAfterWait = stopIfBlocked();
+            if (blockedAfterWait) return blockedAfterWait;
+            if (budget) budget.remaining -= 1;
+            const record = () => { for (const it of chunk) for (const env of it.envelopes) deps.ledger.record(it.channel_id, it.epoch, env.device_id, it.version); };
+            try {
+                await deps.postBatch!(serverId, {
+                    recipient_user_id: recipientUserId,
+                    channel_id: chunk[0].channel_id,
+                    items: chunk.map(({ version: _v, ...it }) => it),
+                });
+                posted += 1;
+                deps.backoff.onSuccess();
+                record();
+            } catch (err) {
+                const status = (err as HttpErrorLike)?.response?.status;
+                if (status === 404 || status === 405 || status === 400) {
+                    // An API without the route (404) — or one without per-item
+                    // channels (400) — answers what it can the old way.
+                    if (status !== 400 && deps.batchSupport) deps.batchSupport.unsupported = true;
+                    const rest = await perChannel();
+                    return { ...rest, posted: posted + rest.posted };
+                }
+                deps.onPostError?.(err, { epoch: chunk[0].epoch, recipientUserId, envelopes: chunk.reduce((n, it) => n + it.envelopes.length, 0) });
+                const kind = classifyHandshakeError(err);
+                if (kind === 'refused') { record(); continue; }
+                if (status === 500) {
+                    const failKey = `many:${chunk.map(it => `${it.channel_id}/${it.epoch}`).join(',')}:${recipientUserId}`;
+                    const n = (serverErrorCounts.get(failKey) ?? 0) + 1;
+                    if (n >= SERVER_ERROR_GIVE_UP) { serverErrorCounts.delete(failKey); record(); continue; }
+                    serverErrorCounts.set(failKey, n);
+                }
+                const retryInMs = deps.backoff.onFailure(kind === 'throttled' ? parseRetryAfterMs(err) : undefined);
+                return deferred(kind === 'throttled' ? 'throttled' : 'unavailable', retryInMs);
             }
         }
         return { status: 'done', posted };

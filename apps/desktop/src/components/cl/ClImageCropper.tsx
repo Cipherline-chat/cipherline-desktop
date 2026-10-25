@@ -333,7 +333,7 @@ export const ClImageCropper: React.FC<ClImageCropperProps> = ({
                     step={0.01}
                     onChange={(v) => zoomTo(v)}
                     formatLabel={(v) => `${v.toFixed(1)}×`}
-                    resetValue={1}
+                    resetValue={IDENTITY_CROP.scale}
                     disabled={!img}
                     style={{ flex: 1 }}
                 />

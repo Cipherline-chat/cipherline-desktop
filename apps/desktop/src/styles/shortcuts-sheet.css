@@ -1,0 +1,99 @@
+/* Keyboard shortcuts cheat sheet (components/ShortcutsSheet.tsx). Static: no
+   animation of its own beyond ClModal's entrance, so nothing to switch off
+   for reduced motion. */
+
+.shortcuts-card .ss-scroll {
+  max-height: min(62vh, 560px);
+  overflow-y: auto;
+  padding: 3px 8px 3px 4px;
+  margin-right: -6px;
+  outline: none;
+}
+.shortcuts-card .ss-scroll:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--cl-lume);
+  border-radius: 10px;
+}
+
+.ss-keys {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px 10px 10px;
+  margin-bottom: 14px;
+  border-radius: 14px;
+  background: var(--cl-surface);
+  border: 1px solid var(--cl-border);
+}
+.ss-keys-art { flex-shrink: 0; display: grid; place-items: center; width: 64px; }
+.ss-keys-arrow { color: var(--cl-lume); font-weight: 800; font-size: 18px; line-height: 1; }
+.ss-keys-note {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--cl-muted);
+}
+
+.ss-group { margin: 0 0 16px; }
+.ss-group:last-child { margin-bottom: 2px; }
+.ss-gtitle {
+  margin: 0;
+  font-family: var(--cl-font-display);
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--cl-text);
+  letter-spacing: .01em;
+}
+.ss-ghint {
+  margin: 2px 0 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--cl-faint);
+}
+.ss-rows { list-style: none; margin: 0; padding: 0; }
+.ss-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 7px 0;
+  border-top: 1px solid var(--cl-border);
+}
+.ss-row:first-child { border-top: none; }
+.ss-label {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--cl-text);
+}
+.ss-note {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--cl-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ss-caps { display: inline-flex; gap: 5px; flex-shrink: 0; }
+.ss-cap {
+  font-family: var(--cl-font-mono);
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--cl-text);
+  background: var(--cl-surface);
+  border: 1px solid var(--cl-border);
+  border-bottom-width: 2.5px;
+  border-radius: 7px;
+  padding: 3px 8px;
+  min-width: 18px;
+  text-align: center;
+}
+.ss-unbound { font-size: 12px; font-weight: 700; color: var(--cl-faint); flex-shrink: 0; }
+
+@media (max-width: 560px) {
+  .ss-note { display: none; }
+}

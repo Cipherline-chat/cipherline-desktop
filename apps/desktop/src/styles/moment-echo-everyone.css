@@ -1,0 +1,68 @@
+/* "@everyone… everyone… one…" — components/moments/views/EchoEveryoneMoment.tsx.
+   transform/opacity only. Phases: notice 0–0.5, main 0.5–4.2, read 4.2–6.8,
+   then it holds its settled frame until dismissed (the Invite button stays). */
+.mo-echo .mo-echo-word { position: absolute; left: 0; top: 0; color: var(--cl-glow, #FFC94D); }
+.mo-echo-w1 { font-size: 58px; --x: -50%; --y: -230px; animation: mo-echo-call 1.9s ease-out .5s both; }
+.mo-echo-w2 { font-size: 40px; --x: 0%;   --y: -160px; animation: mo-echo-call 1.8s ease-out 1.25s both; }
+.mo-echo-w3 { font-size: 28px; --x: 140%; --y: -112px; animation: mo-echo-call 1.7s ease-out 2s both; }
+/* Each echo is fully up for ~0.8 s, then fades out as it carries away. */
+@keyframes mo-echo-call {
+  0%   { transform: translate(var(--x), var(--y)) scale(.8); opacity: 0; }
+  15%  { transform: translate(var(--x), var(--y)) scale(1); opacity: 1; }
+  55%  { transform: translate(var(--x), var(--y)) scale(1.06); opacity: 1; }
+  100% { transform: translate(var(--x), var(--y)) scale(1.22); opacity: 0; }
+}
+
+.mo-echo-ground {
+  position: absolute; left: -36vw; top: 110px; width: 72vw; height: 2px;
+  background: rgba(184, 154, 102, .35); border-radius: 2px;
+  animation: mo-fade-in-ground .5s ease-out both;
+}
+@keyframes mo-fade-in-ground { from { opacity: 0; } to { opacity: 1; } }
+
+/* The tumbleweed crosses at an unhurried, steady pace (0.9–4.6). */
+.mo-echo-tw-x { position: absolute; left: -48px; top: 14px; animation: mo-echo-tw-x 3.7s linear .9s both; }
+@keyframes mo-echo-tw-x { from { transform: translateX(-60vw); } to { transform: translateX(60vw); } }
+.mo-echo-tw-y { animation: mo-echo-tw-y 3.7s .9s both; }
+@keyframes mo-echo-tw-y {
+  0%   { transform: translateY(-110px); animation-timing-function: cubic-bezier(.5, 0, 1, .6); }
+  20%  { transform: none;               animation-timing-function: cubic-bezier(0, .5, .5, 1); }
+  35%  { transform: translateY(-62px);  animation-timing-function: cubic-bezier(.5, 0, 1, .6); }
+  50%  { transform: none;               animation-timing-function: cubic-bezier(0, .5, .5, 1); }
+  65%  { transform: translateY(-38px);  animation-timing-function: cubic-bezier(.5, 0, 1, .6); }
+  80%  { transform: none;               animation-timing-function: cubic-bezier(0, .5, .5, 1); }
+  90%  { transform: translateY(-14px);  animation-timing-function: cubic-bezier(.5, 0, 1, .6); }
+  100% { transform: none; }
+}
+.mo-echo-tw-r { animation: mo-echo-tw-r 3.7s linear .9s both; }
+@keyframes mo-echo-tw-r { from { transform: rotate(0); } to { transform: rotate(900deg); } }
+
+.mo-echo-dust {
+  position: absolute; top: 96px; width: 34px; height: 14px; margin-left: -17px; border-radius: 50%;
+  background: rgba(184, 154, 102, .45); opacity: 0;
+  animation: mo-echo-dust .8s ease-out both;
+}
+.mo-echo-dust-0 { left: -36vw; animation-delay: 1.65s; }
+.mo-echo-dust-1 { left: 0;     animation-delay: 2.75s; }
+.mo-echo-dust-2 { left: 36vw;  animation-delay: 3.85s; }
+@keyframes mo-echo-dust {
+  0% { transform: scale(.3); opacity: 0; } 15% { opacity: 1; } 100% { transform: scale(2.2, 1.4) translateY(-6px); opacity: 0; }
+}
+
+.mo-echo-chirp {
+  position: absolute; font: italic 600 18px var(--cl-font-sans, 'Nunito', sans-serif);
+  color: var(--cl-muted, #9AA6C8); opacity: 0;
+  animation: mo-echo-chirp 1.2s ease-out both;
+}
+.mo-echo-chirp-1 { left: -300px; top: 40px; animation-delay: 2.1s; }
+.mo-echo-chirp-2 { left: 250px;  top: -20px; animation-delay: 3.5s; }
+@keyframes mo-echo-chirp {
+  0% { transform: translateY(6px) rotate(-6deg); opacity: 0; } 20% { transform: rotate(4deg); opacity: 1; }
+  65% { transform: rotate(-3deg); opacity: 1; } 100% { transform: translateY(-6px); opacity: 0; }
+}
+
+.mo-echo-line {
+  position: absolute; left: 0; top: 10px; font-size: 34px;
+  animation: mo-echo-line .6s cubic-bezier(.2, .8, .3, 1.1) 3.6s both;
+}
+@keyframes mo-echo-line { from { transform: translate(-50%, 12px) scale(.9); opacity: 0; } to { transform: translate(-50%, 0); opacity: 1; } }

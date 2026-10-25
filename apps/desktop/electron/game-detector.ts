@@ -142,6 +142,39 @@ export function isDefaultExcludedSteamApp(appid: string | undefined, installDir:
 }
 
 /**
+ * Executable names that are a game's launcher, updater, anti-cheat, crash
+ * reporter, installer or other helper — never the game itself. Matched as a
+ * SUBSTRING of the lowercase exe name, because the exact-name list above
+ * (HELPER_PROCESSES) only ever knew the generic ones: publisher launchers are
+ * named after the game ("MarvelRivals_Launcher.exe"), so no fixed list catches
+ * them.
+ *
+ * Why it matters: the Steam-folder layer credits every exe it finds in a
+ * game's install folder to that game. For Marvel Rivals the ONLY exe it found
+ * there was the NetEase launcher (the game itself lives four folders down, in
+ * MarvelGame/Marvel/Binaries/Win64), and that launcher stays open after the
+ * game closes — so its owner read as "Playing Marvel Rivals" whenever the
+ * launcher was up, game or no game (owner reports 2026-10-11 and 2026-10-19).
+ * The 16 h backstop below only shortened that to "for most of a day".
+ *
+ * Applies to the Steam-folder heuristic only: a custom game (Layer 1) or a
+ * curated name (Layer 3) is an exact, deliberate match and still wins.
+ * Pure; exported for tests.
+ */
+const HEURISTIC_HELPER_NAME = new RegExp([
+    'launcher', 'launchpad', 'bootstrap',
+    'updater', 'update', 'patcher', 'downloader',
+    'crash', 'bugreport', 'errorreport', 'reporter', 'bugsplat',
+    'anticheat', 'anti_cheat', 'anti-cheat', 'easyanticheat', 'battleye', '^be(client|service)', 'eac_',
+    'setup', 'install', 'uninst', '^unins\\d*$', 'redist', 'prereq',
+    'helper', 'service', 'overlay', 'subprocess', 'webview', 'cefprocess',
+].join('|'));
+
+export function isHeuristicHelperName(exeName: string): boolean {
+    return HEURISTIC_HELPER_NAME.test(exeName.toLowerCase());
+}
+
+/**
  * Turn "exe name → every Steam game whose folder contains it" into the
  * detection cache. An executable that shows up under two or more different
  * games is a shared runtime or helper that HELPER_PROCESSES didn't know
@@ -202,7 +235,12 @@ async function findSteamLibraryFolders(): Promise<string[]> {
 }
 
 async function scanDirForExecutables(dir: string, gameName: string, owners: Map<string, Set<string>>): Promise<void> {
-    const claim = (exe: string) => { const set = owners.get(exe) ?? new Set<string>(); set.add(gameName); owners.set(exe, set); };
+    const claim = (exe: string) => {
+        // A launcher / updater / anti-cheat / crash reporter is never the
+        // game, and is exactly the kind of process that outlives it.
+        if (HELPER_PROCESSES.has(exe) || isHeuristicHelperName(exe)) return;
+        const set = owners.get(exe) ?? new Set<string>(); set.add(gameName); owners.set(exe, set);
+    };
     try {
         const entries = await readdir(dir, { withFileTypes: true });
         for (const entry of entries) {
@@ -228,7 +266,6 @@ async function scanDirForExecutables(dir: string, gameName: string, owners: Map<
                     exeName = name;
                 }
 
-                if (HELPER_PROCESSES.has(exeName)) continue;
                 claim(exeName);
             } else if (entry.isDirectory()) {
                 // Scan one level deep (many games put the exe in a subfolder like bin/, Binaries/)
@@ -238,6 +275,15 @@ async function scanDirForExecutables(dir: string, gameName: string, owners: Map<
                     subName === '_redist' || subName === 'dotnet') continue;
                 try {
                     const subEntries = await readdir(join(dir, entry.name), { withFileTypes: true });
+                    // Unreal Engine layout: the real game exe is
+                    // <Project>/Binaries/Win64/<Project>-Win64-Shipping.exe,
+                    // below the two levels scanned here — sometimes one more
+                    // folder down (Marvel Rivals: MarvelGame/Marvel/Binaries).
+                    // Without this, a UE game could only ever be matched by
+                    // whatever sat at the top of its folder (its launcher).
+                    if (subName !== 'engine') {
+                        await scanUnrealProject(join(dir, entry.name), subEntries, claim);
+                    }
                     for (const sub of subEntries) {
                         if (!sub.isFile()) continue;
                         const subFileName = sub.name.toLowerCase();
@@ -256,13 +302,60 @@ async function scanDirForExecutables(dir: string, gameName: string, owners: Map<
                             } catch { continue; }
                             subExeName = subFileName;
                         }
-                        if (HELPER_PROCESSES.has(subExeName)) continue;
                         claim(subExeName);
                     }
                 } catch { /* best-effort; failure is non-fatal and intentionally ignored */ }
             }
         }
     } catch { /* best-effort; failure is non-fatal and intentionally ignored */ }
+}
+
+type DirEntry = { name: string; isFile(): boolean; isDirectory(): boolean };
+
+/** `<dir>/Binaries` (or, for a wrapper folder with only a few sub-folders,
+ *  `<dir>/<child>/Binaries`) → claim the Unreal shipping executables. */
+async function scanUnrealProject(dir: string, entries: DirEntry[], claim: (exe: string) => void): Promise<void> {
+    const subdirs = entries.filter(e => e.isDirectory());
+    const binaries = subdirs.find(e => e.name.toLowerCase() === 'binaries');
+    if (binaries) {
+        await scanUnrealBinaries(join(dir, binaries.name), claim);
+        return;
+    }
+    // One more level only for a small wrapper folder (MarvelGame/ holds
+    // Marvel/ and Engine/), so a content-heavy folder never costs a readdir
+    // per asset sub-folder.
+    if (subdirs.length > 8) return;
+    for (const child of subdirs) {
+        if (child.name.toLowerCase() === 'engine') continue;
+        try {
+            const inner = await readdir(join(dir, child.name), { withFileTypes: true });
+            const bin = inner.find(e => e.isDirectory() && e.name.toLowerCase() === 'binaries');
+            if (bin) await scanUnrealBinaries(join(dir, child.name, bin.name), claim);
+        } catch { /* best-effort */ }
+    }
+}
+
+const UNREAL_PLATFORM_DIRS = new Set(['win64', 'wingdk', 'win32', 'linux', 'linuxarm64']);
+
+/** Only `*-Shipping` executables: that is the packaged game by Unreal's own
+ *  naming; everything else under Binaries is tooling or a helper. */
+async function scanUnrealBinaries(binDir: string, claim: (exe: string) => void): Promise<void> {
+    try {
+        for (const plat of await readdir(binDir, { withFileTypes: true })) {
+            if (!plat.isDirectory() || !UNREAL_PLATFORM_DIRS.has(plat.name.toLowerCase())) continue;
+            for (const f of await readdir(join(binDir, plat.name), { withFileTypes: true })) {
+                if (!f.isFile()) continue;
+                const lower = f.name.toLowerCase();
+                if (process.platform === 'win32') {
+                    if (!lower.endsWith('.exe')) continue;
+                    const exe = lower.slice(0, -4);
+                    if (exe.endsWith('-shipping')) claim(exe);
+                } else if (/-shipping(\.exe)?$/.test(lower)) {
+                    claim(lower);
+                }
+            }
+        }
+    } catch { /* best-effort */ }
 }
 
 let steamDirStamp = '';
@@ -359,7 +452,7 @@ const GAME_DB: Record<string, string | null> = {
     'deadlock':                         'Deadlock',
 
     // ── Riot Games ─────────────────────────────────────────────────────
-    'riotclientservices':               'League of Legends',
+    'riotclientservices':               null,  // Riot Client background service: up whenever the Riot Client is, game or not
     'league of legends':                'League of Legends',
     'leagueclient':                     'League of Legends',
     'valorant-win64-shipping':          'VALORANT',
@@ -640,6 +733,11 @@ const GAME_DB: Record<string, string | null> = {
     'spacemarine2':                     'Warhammer 40,000: Space Marine 2',
     'content warning':                  'Content Warning',
     'contentwarning':                   'Content Warning',
+
+    // ── Hero shooters ──────────────────────────────────────────────────
+    // The game process itself (MarvelGame/Marvel/Binaries/Win64). Its
+    // launcher stays open after the game closes; see the exclusion below.
+    'marvel-win64-shipping':            'Marvel Rivals',
 
     // ── Battle Royale ──────────────────────────────────────────────────
     'pubg':                             'PUBG: Battlegrounds',
@@ -927,6 +1025,9 @@ const GAME_DB: Record<string, string | null> = {
     'vrcompositor':                     null,
     'oculusclient':                     null,
     'oculusdash':                       null,
+    // Game launchers that outlive their game (named after it, so no generic
+    // rule can know them all — isHeuristicHelperName covers the pattern).
+    'marvelrivals_launcher':            null,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════

@@ -46,7 +46,16 @@ const StorageLockedScreen: React.FC = () => {
     const startFresh = async () => {
         setBusy(true); setError('');
         try {
-            await window.electronAPI?.factoryResetSecureStore?.();
+            // Main asks for confirmation in a native dialog and returns false
+            // when the user cancels (or the keystore no longer needs a reset).
+            // Wiping the local store after a refusal would destroy data the
+            // keystore still protects, so stop here.
+            const reset = await window.electronAPI?.factoryResetSecureStore?.();
+            if (reset === false) {
+                setBusy(false);
+                setConfirmingFresh(false);
+                return;
+            }
             await secureLocalStore.wipeLocalData();
             window.location.reload();
         } catch {

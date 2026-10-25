@@ -118,6 +118,7 @@ type Bridge = {
     perfRecord?: (rows: Array<{ at: number; ms: number; activity: string }>) => Promise<unknown>;
     perfGetLog?: () => Promise<FreezeEntry[]>;
     perfClear?: () => Promise<unknown>;
+    onOsResume?: (cb: () => void) => () => void;
 };
 const bridge = (): Bridge | null =>
     (typeof window !== 'undefined' ? ((window as unknown as { electronAPI?: Bridge }).electronAPI ?? null) : null);
@@ -145,10 +146,49 @@ function queue(row: { at: number; ms: number; activity: string }): void {
 const timeOrigin = (): number =>
     (typeof performance !== 'undefined' && performance.timeOrigin ? performance.timeOrigin : Date.now() - nowMs());
 
+/** One observer of every renderer stall this log records (beta diagnostics):
+ *  its duration and the static activity labels. Must not throw (isolated). */
+type FreezeTap = (ms: number, activity: string) => void;
+let freezeTap: FreezeTap | null = null;
+export function setFreezeTap(fn: FreezeTap | null): void { freezeTap = fn; }
+const tapNow = (ms: number, activity: string) => { if (freezeTap) { try { freezeTap(ms, activity); } catch { /* isolate */ } } };
+
+/**
+ * Sleep and hidden-window guard for the beta tap. A task or frame that is open
+ * while the machine sleeps, or while Chromium has the hidden window's page
+ * frozen, measures all of that idle time, even as `blockingDuration`. Beta
+ * reports from 1.0.23-staging.171 (2026-10-20..22) show it: app_freeze of
+ * 738 s, 808 s, 896 s and 16,889 s (4.7 h) with only view:* or dm:pull as the
+ * phase. The events that tell us (OS resume, visibilitychange, page-lifecycle
+ * resume) are dispatched only AFTER the stalled task ends, so the decision
+ * waits WAKE_SETTLE_MS and then drops the freeze if any of them landed
+ * between its start and that check, or if the window is hidden at that point.
+ * The local perf log keeps every row unchanged; only the beta event is filtered.
+ */
+export const WAKE_SETTLE_MS = 10_000;
+/** Longer than any freeze the app could survive; beyond this it is idle time, never a block. */
+export const MAX_PLAUSIBLE_FREEZE_MS = 5 * 60_000;
+let idleMarks: number[] = [];
+export function noteIdleBoundary(at: number = nowMs()): void {
+    idleMarks.push(at);
+    if (idleMarks.length > 32) idleMarks = idleMarks.slice(-32);
+}
+const isHidden = () => { try { return typeof document !== 'undefined' && document.visibilityState === 'hidden'; } catch { return false; } };
+function tapFreeze(ms: number, activity: string, start: number): void {
+    if (!freezeTap || ms > MAX_PLAUSIBLE_FREEZE_MS) return;
+    if (isHidden()) return;
+    setTimeout(() => {
+        if (isHidden() || idleMarks.some(t => t >= start)) return;
+        tapNow(ms, activity);
+    }, WAKE_SETTLE_MS);
+}
+
 /** Record a long task (exported for the fallback sampler and for tests). */
 export function recordLongTask(startTime: number, duration: number): void {
     if (duration < LONG_TASK_MS) return;
-    queue({ at: Math.round(timeOrigin() + startTime), ms: Math.round(duration), activity: activityDuring(startTime, startTime + duration) });
+    const activity = activityDuring(startTime, startTime + duration);
+    queue({ at: Math.round(timeOrigin() + startTime), ms: Math.round(duration), activity });
+    tapFreeze(Math.round(duration), activity, startTime);
 }
 
 /** Main drops a row whose activity is longer than this (freeze-monitor.ts). */
@@ -187,6 +227,12 @@ export function recordLongFrame(entry: LoafEntryLike): void {
     while (extra.length && [...labels, ...extra].join(', ').length > MAX_ACTIVITY_CHARS) extra.pop();
     const activity = [...labels, ...extra].join(', ') || 'idle';
     queue({ at: Math.round(timeOrigin() + entry.startTime), ms: a.ms, activity });
+    // The beta `app_freeze` gets the time this thread was BLOCKED, not the
+    // frame's wall span: a frame that is open across idle time — the window
+    // hidden with no rendering opportunity, or the machine asleep — spans all
+    // of it. Prod (1.0.23-staging.169, 2026-10-20): app_freeze ms=6077366
+    // phase=resume:wake, i.e. a 101-minute sleep reported as a freeze.
+    tapFreeze(Math.round(Math.min(entry.duration, blocking)), context, entry.startTime);
 
     const t = nowMs();
     if (t - frameEventWindow.start > 60_000) frameEventWindow = { start: t, count: 0 };
@@ -231,6 +277,11 @@ export function startFreezeLog(): () => void {
         const onKey = () => { lastInput = { at: nowMs(), kind: 'key' }; };
         window.addEventListener('pointerdown', onPointer, { capture: true, passive: true });
         window.addEventListener('keydown', onKey, { capture: true, passive: true });
+        // Idle boundaries for the beta tap's sleep / hidden-window guard.
+        const mark = () => noteIdleBoundary();
+        document.addEventListener('visibilitychange', mark);
+        document.addEventListener('resume', mark);
+        bridge()?.onOsResume?.(mark);
     } catch { /* no DOM (tests) */ }
     // LoAF when available: it reports every long task too (a task with no
     // rendering is its own frame), so observing both would log each freeze
@@ -308,4 +359,5 @@ export function __resetFreezeLogForTests(): void {
     flushTimer = null;
     started = false;
     frameEventWindow = { start: 0, count: 0 };
+    idleMarks = [];
 }

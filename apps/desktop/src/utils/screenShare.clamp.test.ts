@@ -110,7 +110,10 @@ describe('the 90 fps request reaches the capturer and the encoder', () => {
             expect(o.screenShareEncoding.maxFramerate).toBe(90);
             expect(o.degradationPreference).toBe('maintain-framerate');
             expect(o.screenShareEncoding.maxBitrate).toBe(computeSSBitrate('source', 90, codec));
-            expect(o.screenShareEncoding.maxBitrate).toBeGreaterThan(computeSSBitrate('source', 60, codec));
+            // 'source' at 60 and 90 both sit on the absolute cap now
+            // (SS_MAX_BITRATE_VP9_EQUIV); below the cap the ceiling still rises with fps.
+            expect(o.screenShareEncoding.maxBitrate).toBeGreaterThanOrEqual(computeSSBitrate('source', 60, codec));
+            expect(computeSSBitrate('1080p', 90, codec)).toBeGreaterThan(computeSSBitrate('1080p', 60, codec));
         }
     });
 });

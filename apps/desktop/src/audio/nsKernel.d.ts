@@ -52,6 +52,8 @@ export class NsOutputRing {
     bypassUntilQuanta: number;
     consecutiveFastTrips: number;
     lastTripQuanta: number;
+    /** Samples dropped because the ring was full (push overflow). */
+    overflowDrops: number;
 
     constructor(opts?: NsOutputRingOptions);
 

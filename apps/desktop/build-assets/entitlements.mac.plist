@@ -4,7 +4,7 @@
   Required for `mac.hardenedRuntime: true` (itself required for
   notarization) — without these, the packaged app either fails to launch
   (Electron's V8 needs the JIT entitlements) or the OS silently denies mic/
-  camera/native-module access the app already declares intent to use via
+  camera access the app already declares intent to use via
   NSMicrophoneUsageDescription etc. in package.json's `mac.extendInfo`.
 
   Not a sandbox profile — this is a Developer ID (outside-the-App-Store)
@@ -19,14 +19,21 @@
     <true/>
     <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
     <true/>
-    <key>com.apple.security.cs.allow-dyld-environment-variables</key>
-    <true/>
 
-    <!-- Native .node addons (e.g. rnnoise-wasm's loader, any future native
-         module) aren't necessarily signed by the same Team ID as the app
-         itself — library validation would block loading them. -->
-    <key>com.apple.security.cs.disable-library-validation</key>
-    <true/>
+    <!-- Deliberately ABSENT (E-6, 2026-10 security audit), do not add back:
+           * com.apple.security.cs.allow-dyld-environment-variables
+             lets any same-user process launch this signed app with
+             DYLD_INSERT_LIBRARIES and run its own code inside it, inheriting
+             the microphone / camera / Screen Recording grants and the
+             Keychain item behind safeStorage.
+           * com.apple.security.cs.disable-library-validation
+             lets the app load a dylib / .node signed by anyone. Not needed:
+             the only native module is our own audio_capture.node
+             (ScreenCaptureKit), which electron-builder signs with the same
+             Developer ID as the app, so it carries the app's Team ID and
+             passes library validation. (rnnoise is WASM, not native.)
+         scripts/smoke-test.mjs checks that the packaged addon really has the
+         app's Team ID; src/utils/electronHardening.test.ts pins this file. -->
 
     <!-- Matches the NSMicrophoneUsageDescription / NSCameraUsageDescription
          purpose strings already declared in package.json's mac.extendInfo —

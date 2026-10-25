@@ -23,7 +23,7 @@ describe('gdrive:upload-file carries an optional existing file id end to end', (
         const handler = main.slice(main.indexOf("ipcMain.handle('gdrive:upload-file'"), main.indexOf("ipcMain.handle('gdrive:download-file'"));
         expect(handler).toContain('existingFileId?: string');
         expect(handler).toMatch(/existingFileId !== undefined && \(typeof existingFileId !== 'string' \|\| !\/\^\[A-Za-z0-9_-\]\+\$\/\.test\(existingFileId\)\)/);
-        expect(handler).toContain('filePath, existingFileId');
+        expect(handler).toContain('filePath: source, existingFileId');
     });
 
     it('the uploader PATCHes that file id instead of searching the folder for it', () => {

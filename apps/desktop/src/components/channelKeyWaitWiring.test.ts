@@ -21,19 +21,33 @@ const between = (src: string, a: string, b: string) => {
 
 describe('Dashboard notes the real events', () => {
     it('request acknowledged: only after the key-request POST resolved', () => {
-        const fn = between(dash, 'const fileKeyRequest = useCallback', 'const maybeFileKeyRequest = useCallback');
-        const post = fn.indexOf('/key-request`');
-        const note = fn.indexOf('noteKeyRequestAcked(channelId)');
-        const fail = fn.indexOf('} catch (e) {');
-        expect(post).toBeGreaterThan(-1);
-        expect(note).toBeGreaterThan(post);
-        expect(note).toBeLessThan(fail);
+        // The ack lives in finishKeyAsk's ok branch; both POST paths (single and
+        // per-server batch) call it with ok:true only after their axios.post resolved.
+        const fin = between(dash, 'const finishKeyAsk = useCallback', 'const fileKeyRequest = useCallback');
+        const ok = fin.indexOf('if (answer.ok) {');
+        const note = fin.indexOf('noteKeyRequestAcked(channelId)');
+        expect(ok).toBeGreaterThan(-1);
+        expect(note).toBeGreaterThan(ok);
+        expect(note).toBeLessThan(fin.indexOf('} else {'));
+        for (const [fn, post] of [
+            [between(dash, 'const fileKeyRequest = useCallback', 'const fileKeyRequests = useCallback'), '/key-request`'],
+            [between(dash, 'const fileKeyRequests = useCallback', 'const fileKeyRequestsRef = useRef('), '/key-requests`'],
+        ] as const) {
+            const at = fn.indexOf(post);
+            const okCall = fn.indexOf('{ ok: true, latestEpoch');
+            const fail = fn.indexOf('} catch (e) {');
+            expect(at).toBeGreaterThan(-1);
+            expect(okCall).toBeGreaterThan(at);
+            expect(okCall).toBeLessThan(fail);
+        }
     });
-    it('key received: only after setChannelKey stored it (not on a conflict)', () => {
+    it('key received: only after setChannelKey stored a NEW key (not on a conflict, not on a duplicate copy)', () => {
         const fn = between(dash, 'const pullChannelKeysOnce = useCallback', 'const pullChannelKeys = useCallback');
         const note = fn.indexOf('noteChannelKeyReceived(env.channel_id)');
         expect(note).toBeGreaterThan(fn.indexOf("if (stored === 'conflict') {\n                            // Either the server"));
-        expect(fn.slice(note - 200, note)).toContain('Received epoch');
+        expect(fn.slice(note - 800, note)).toContain('Received epoch');
+        // 2026-10-20: every duplicate copy used to flip the banner off and on.
+        expect(fn.slice(note - 120, note)).toContain("if (stored === 'stored') {");
     });
     it('page decrypt: begun around decryptChannelRows in ingestChannelRows, ended in finally after the fold', () => {
         const fn = between(dash, 'const ingestChannelRows = useCallback', 'const loadChannelMessagesById = useCallback');
@@ -54,7 +68,7 @@ describe('Dashboard notes the real events', () => {
 
 describe('ChatPane replaces the list, keeps header and composer', () => {
     it('the hook is fed the channel thread, server channels only', () => {
-        expect(pane).toMatch(/useChannelKeyWait\(\{\s*enabled: isServerChannel,\s*channelId: activeChannel\?\.channel_id \?\? null,\s*messages,\s*\}\)/);
+        expect(pane).toMatch(/useChannelKeyWait\(\{\s*enabled: isServerChannel,\s*channelId: activeChannel\?\.channel_id \?\? null,\s*messages,\s*loading: messagesFetching,\s*coolingOff: channelKeyCoolingOff,\s*\}\)/);
     });
     it('while held, no row, no "load earlier", no history-start line renders', () => {
         expect(pane).toContain('{keyWait.holdList ? null : messages.length === 0 ? (');
@@ -86,11 +100,52 @@ describe('2026-10-11: the fast re-ask keeps the layer honest', () => {
         expect(fn).toContain('.finally(() => noteNewestKeyPending(cid, false));');
     });
     it('a request filed while keyless sets the pending flag; giving up clears it', () => {
-        expect(between(dash, 'if (keyless && latestEpoch !== 0) {', 'keyReaskScheduler.arm(serverId);')).toContain('noteNewestKeyPending(channelId, true);');
+        expect(between(dash, 'if (ask.keyless && latestEpoch !== 0) {', 'keyReaskScheduler.arm(serverId);')).toContain('noteNewestKeyPending(channelId, true);');
         expect(between(dash, 'onExhausted: (sid) => {', 'keyReaskTargets.clearServer(sid);')).toContain('noteNewestKeyPending(cid, false)');
     });
     it('the hook feeds the pending flag into the decision', () => {
         const hook = readFileSync(join(__dirname, '..', 'hooks', 'useChannelKeyWait.ts'), 'utf8');
         expect(hook).toContain('needsKeyWaitState(messages, undefined, { newestKeyPending })');
+    });
+});
+
+describe('2026-10-20: the key-loading view on every open, and the fallback', () => {
+    it('Dashboard notes the channel open around the key bootstrap + history re-read, ending it in finally', () => {
+        const fn = between(dash, 'const handleSelectChannel = useCallback', 'const handleNavigateToChannel = useCallback');
+        const begin = fn.indexOf('const endOpen = beginChannelOpen(channel.channel_id);');
+        const ensure = fn.indexOf('await ensureChannelKeyBootstrap(channel);');
+        const refresh = fn.indexOf('await refreshChannelHistory(channel.server_id, channel.channel_id);');
+        const end = fn.indexOf('} finally {\n            endOpen();');
+        expect(begin).toBeGreaterThan(-1);
+        // before the first await, so the pane's first render already sees it
+        expect(fn.slice(0, begin)).not.toContain('await ');
+        expect(ensure).toBeGreaterThan(begin);
+        expect(refresh).toBeGreaterThan(ensure);
+        expect(end).toBeGreaterThan(refresh);
+    });
+    it('the banner\'s "Ask again" files a request, pulls, and re-reads the open channel', () => {
+        const fn = between(dash, 'onRetryChannelKeys={(serverId, channelId) => {', 'onReport=');
+        const ask = fn.indexOf('channelKeyOpsRef.current.fileKeyRequest(serverId, channelId)');
+        const pull = fn.indexOf('channelKeyOpsRef.current.pullChannelKeys(serverId)');
+        const reread = fn.indexOf('refreshChannelHistoryRef.current(serverId, channelId)');
+        expect(ask).toBeGreaterThan(-1);
+        expect(pull).toBeGreaterThan(ask);
+        expect(reread).toBeGreaterThan(pull);
+    });
+    it('ChatPane: the layer only while shown/exiting; ONE banner; key pills collapsed into runs', () => {
+        expect(pane).toContain("{(keyWait.phase === 'shown' || keyWait.phase === 'exiting') && (");
+        expect(pane).toMatch(/\{keyWait\.banner && !chatSearch\.trim\(\) && \(\s*<ChannelKeyWaitBanner/);
+        expect(pane).toMatch(/onRetryChannelKeys\(activeChannel\.server_id, activeChannel\.channel_id\)/);
+        expect(pane).toContain('keyMissingRuns(displayMessages, id => gapByRowId.has(id))');
+        const rows = between(pane, 'const rowEls = displayMessages.map((msg, index) => {', 'const rowKey = rowKeys[index];');
+        expect(rows).toContain('const keyRun = keyRuns.get(msg.id);');
+        expect(rows).toContain('if (keyRun === 0) return null;');
+        expect(pane).toContain('replyTarget, rowCall, rowCall?.active ? callTick : 0, keyRun,');
+        expect(pane).toContain('{keyRun ? keyMissingRunLabel(keyRun) : placeholderLabel(placeholderReason(msg))}');
+    });
+    it('the hook latches only on a settled page with encrypted rows (never on the joiner\'s join line)', () => {
+        const hook = readFileSync(join(__dirname, '..', 'hooks', 'useChannelKeyWait.ts'), 'utf8');
+        expect(hook).toContain('} else if (enabled && !refreshing && hasEncryptedRows(messages)) {');
+        expect(hook).not.toMatch(/else if \(enabled && messages\.length > 0\)/);
     });
 });

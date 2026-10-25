@@ -15,6 +15,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // The real module is ~4.8 MB of vendored WASM glue; a stub keeps this fast.
 vi.mock('./rnnoiseInWorkletSource', () => ({ RNNOISE_INLINE_WORKLET_SOURCE: 'registerProcessor("rnnoise-inline-worklet", class {})' }));
+vi.mock('./speexLightWorkletSource', () => ({ SPEEX_LIGHT_WORKLET_SOURCE: 'registerProcessor("speex-light-worklet", class {})' }));
 // Module "URLs" are the processor names, so the fake context knows what it is registering.
 vi.mock('./workletModuleUrl', () => ({ workletModuleUrl: (name: string) => name, forgetWorkletModuleUrl: () => {} }));
 
@@ -122,6 +123,8 @@ function node(kind: string): FakeNode {
         disconnect() { n.out = []; },
         gain: param(), frequency: param(), Q: param(), threshold: param(), knee: param(), ratio: param(),
         attack: param(), release: param(), fftSize: 0, smoothingTimeConstant: 0, type: '',
+        // The level poll (20 ms) fires while a test awaits; give the analyser fake its reader.
+        getFloatTimeDomainData() {},
         port: { postMessage: (m: Msg) => n.msgs.push(m), onmessage: null },
     };
     return n;
@@ -152,7 +155,7 @@ class FakeCtx {
 const workletNodes: FakeNode[] = [];
 function FakeWorkletNode(this: unknown, ctx: FakeCtx, name: string) {
     if (!ctx.registered.has(name)) throw new Error(`${name} not registered`);
-    const kind = name === 'gate-worklet' ? 'gate' : name === 'agc-worklet' ? 'agc' : 'rnnoise';
+    const kind = name === 'gate-worklet' ? 'gate' : name === 'agc-worklet' ? 'agc' : name === 'speex-light-worklet' ? 'speex' : 'rnnoise';
     const n = node(kind);
     workletNodes.push(n);
     return n;
@@ -160,7 +163,7 @@ function FakeWorkletNode(this: unknown, ctx: FakeCtx, name: string) {
 
 const track = () => ({ applyConstraints: async () => {} }) as unknown as MediaStreamTrack;
 const SETTINGS = {
-    noiseSuppression: false, volumeNormalization: true, voiceGate: true, voiceGateThreshold: -45,
+    noiseSuppression: false, noiseSuppressionMode: 'strong' as 'strong' | 'light', volumeNormalization: true, voiceGate: true, voiceGateThreshold: -45,
     pushToTalk: false, pushToTalkKey: null, micDeviceId: '', speakerDeviceId: '', cameraDeviceId: '',
     micVolume: 100, speakerVolume: 100, eqEnabled: false, eqBands: [0, 0, 0, 0, 0],
     cameraBrightness: 100, cameraContrast: 100, cameraSaturation: 100,
@@ -191,10 +194,10 @@ async function build(settings: Partial<typeof SETTINGS>, failing: string[] = [])
 }
 
 describe('voice chain — the gate with noise suppression OFF', () => {
-    it('NS off, gate on: the gate is in the chain, enabled, right after the (bypassed) RNNoise stage', async () => {
+    it('NS off, gate on: the gate is in the chain, enabled, right after the (bypassed) NS stages', async () => {
         const { vp, ctx } = await build({ noiseSuppression: false, voiceGate: true });
         expect(path(ctx)).toEqual([
-            'source', 'rnnoise', 'gate', 'eq', 'eq', 'eq', 'eq', 'eq', 'agc',
+            'source', 'rnnoise', 'speex', 'gate', 'eq', 'eq', 'eq', 'eq', 'eq', 'agc',
             'compressor', 'gain', 'gain', 'analyser', 'destination',
         ]);
         expect(gateNode()!.msgs).toContainEqual({ type: 'gate', enabled: true });
@@ -215,7 +218,7 @@ describe('voice chain — the gate with noise suppression OFF', () => {
         await vp.init({ track: track(), audioContext: ctx as unknown as AudioContext });
         expect(nsUnavailable).toHaveBeenCalled();
         expect(path(ctx)).toEqual([
-            'source', 'gate', 'eq', 'eq', 'eq', 'eq', 'eq', 'agc',
+            'source', 'speex', 'gate', 'eq', 'eq', 'eq', 'eq', 'eq', 'agc',
             'compressor', 'gain', 'gain', 'analyser', 'destination',
         ]);
         expect(gateNode()!.msgs).toContainEqual({ type: 'gate', enabled: true });
@@ -226,7 +229,7 @@ describe('voice chain — the gate with noise suppression OFF', () => {
     it('a gate that cannot load drops only itself — NS and AGC still run', async () => {
         const { vp, ctx } = await build({ noiseSuppression: true }, ['gate-worklet']);
         expect(path(ctx)).toEqual([
-            'source', 'rnnoise', 'eq', 'eq', 'eq', 'eq', 'eq', 'agc',
+            'source', 'rnnoise', 'speex', 'eq', 'eq', 'eq', 'eq', 'eq', 'agc',
             'compressor', 'gain', 'gain', 'analyser', 'destination',
         ]);
         expect(vp.chainPlan).toMatchObject({ ns: true, gate: false });
@@ -273,3 +276,128 @@ describe('voice chain — the gate with noise suppression OFF', () => {
     });
 });
 
+
+
+describe('voice chain — Light (Speex) noise suppression', () => {
+    const speexNode = () => workletNodes.find(n => n.kind === 'speex')!;
+    const rnnoiseNode = () => workletNodes.find(n => n.kind === 'rnnoise')!;
+
+    it('Strong (default): RNNoise processes, the Light node stays a passthrough and never asks for its WASM', async () => {
+        const { vp } = await build({ noiseSuppression: true, noiseSuppressionMode: 'strong' });
+        expect(rnnoiseNode().msgs).toContainEqual({ type: 'toggle', enabled: true });
+        expect(speexNode().msgs).toContainEqual({ type: 'toggle', enabled: false });
+        expect(speexNode().msgs.some(m => m.type === 'init')).toBe(false);
+        expect(vp.chainPlan).toMatchObject({ ns: true });
+        await vp.destroy();
+    });
+
+    it('Light: Speex processes, RNNoise is switched off, and the WASM is sent once', async () => {
+        const { vp, ctx } = await build({ noiseSuppression: true, noiseSuppressionMode: 'light' });
+        expect(rnnoiseNode().msgs.at(-1)).toEqual({ type: 'toggle', enabled: false });
+        expect(speexNode().msgs).toContainEqual({ type: 'toggle', enabled: true });
+        await vi.waitFor(() => expect(speexNode().msgs.some(m => m.type === 'init')).toBe(true));
+        const init = speexNode().msgs.find(m => m.type === 'init') as unknown as { wasm: ArrayBuffer };
+        expect(init.wasm.byteLength).toBeGreaterThan(40000);
+        expect(vp.chainPlan).toMatchObject({ ns: true });
+        expect(path(ctx)).toContain('speex');
+        await vp.destroy();
+    });
+
+    it('switching engines mid-call is a message to the live nodes — the graph is not rebuilt, and WASM is requested once', async () => {
+        const { vp, ctx } = await build({ noiseSuppression: true, noiseSuppressionMode: 'strong' });
+        const before = path(ctx);
+        vp.updateSettings({ ...SETTINGS, noiseSuppression: true, noiseSuppressionMode: 'light' } as never);
+        expect(rnnoiseNode().msgs.at(-1)).toEqual({ type: 'toggle', enabled: false });
+        expect(speexNode().msgs.at(-1)).toEqual({ type: 'toggle', enabled: true });
+        vp.updateSettings({ ...SETTINGS, noiseSuppression: true, noiseSuppressionMode: 'strong' } as never);
+        expect(rnnoiseNode().msgs.at(-1)).toEqual({ type: 'toggle', enabled: true });
+        expect(speexNode().msgs.at(-1)).toEqual({ type: 'toggle', enabled: false });
+        vp.updateSettings({ ...SETTINGS, noiseSuppression: true, noiseSuppressionMode: 'light' } as never);
+        await vi.waitFor(() => expect(speexNode().msgs.some(m => m.type === 'init')).toBe(true));
+        expect(speexNode().msgs.filter(m => m.type === 'init')).toHaveLength(1);
+        expect(path(ctx)).toEqual(before);
+        await vp.destroy();
+    });
+
+    it('turning NS off silences both engines', async () => {
+        const { vp } = await build({ noiseSuppression: true, noiseSuppressionMode: 'light' });
+        vp.updateSettings({ ...SETTINGS, noiseSuppression: false, noiseSuppressionMode: 'light' } as never);
+        expect(rnnoiseNode().msgs.at(-1)).toEqual({ type: 'toggle', enabled: false });
+        expect(speexNode().msgs.at(-1)).toEqual({ type: 'toggle', enabled: false });
+        await vp.destroy();
+    });
+
+    it('NO silent fallback: Light selected but its worklet cannot load -> NS is unavailable (and RNNoise does not quietly take over)', async () => {
+        const { vp } = await build({ noiseSuppression: true, noiseSuppressionMode: 'light' }, ['speex-light-worklet']);
+        expect(vp.chainPlan).toMatchObject({ ns: false, gate: true });
+        expect(rnnoiseNode().msgs.at(-1)).toEqual({ type: 'toggle', enabled: false });
+        await vp.destroy();
+    });
+});
+
+// ── 3. Strong → Light when the render thread falls behind (nsLoadGuard.ts) ──
+
+describe('voice chain — render-thread overload swaps Strong for Light', () => {
+    async function buildWithStats(onNsLoadFallback = vi.fn(), onAudioRender = vi.fn()) {
+        const { CipherlineVoiceProcessor } = await import('./voiceProcessor');
+        const ctx = new FakeCtx() as FakeCtx & { playbackStats: { underrunDuration: number; underrunEvents: number; totalDuration: number } };
+        ctx.playbackStats = { underrunDuration: 0, underrunEvents: 0, totalDuration: 0 };
+        const vp = new CipherlineVoiceProcessor({ ...SETTINGS, noiseSuppression: true, noiseSuppressionMode: 'strong' } as never, { onNsLoadFallback, onAudioRender });
+        await vp.init({ track: track(), audioContext: ctx as unknown as AudioContext });
+        const second = async (underrunMs: number) => {
+            ctx.playbackStats = {
+                underrunDuration: ctx.playbackStats.underrunDuration + underrunMs / 1000,
+                underrunEvents: ctx.playbackStats.underrunEvents + (underrunMs > 0 ? 5 : 0),
+                totalDuration: ctx.playbackStats.totalDuration + 1,
+            };
+            await vi.advanceTimersByTimeAsync(1000);
+        };
+        return { vp, second, onNsLoadFallback, onAudioRender };
+    }
+    const rn = () => workletNodes.find(n => n.kind === 'rnnoise')!;
+    const sx = () => workletNodes.find(n => n.kind === 'speex')!;
+
+    it('three bad seconds: RNNoise off, Speex on, callback once; a new mode choice puts Strong back', async () => {
+        vi.useFakeTimers();
+        try {
+            const { vp, second, onNsLoadFallback } = await buildWithStats();
+            expect(rn().msgs.at(-1)).toEqual({ type: 'toggle', enabled: true });
+            await second(0);              // baseline
+            await second(50); await second(0); await second(60);
+            expect(onNsLoadFallback).not.toHaveBeenCalled();
+            await second(80);
+            expect(onNsLoadFallback).toHaveBeenCalledTimes(1);
+            expect(onNsLoadFallback).toHaveBeenCalledWith({ underrunMs: 80, underrunEvents: 5 });
+            expect(vp.nsLoadFallbackActive).toBe(true);
+            expect(rn().msgs.at(-1)).toEqual({ type: 'toggle', enabled: false });
+            expect(sx().msgs.filter(m => m.type === 'toggle').at(-1)).toEqual({ type: 'toggle', enabled: true }); // (its WASM 'init' may follow)
+            for (let i = 0; i < 5; i++) await second(200);
+            expect(onNsLoadFallback).toHaveBeenCalledTimes(1);   // latched: once per call
+            vp.updateSettings({ ...SETTINGS, noiseSuppression: true, noiseSuppressionMode: 'strong' } as never); // no change → still Light
+            expect(vp.nsLoadFallbackActive).toBe(true);
+            vp.updateSettings({ ...SETTINGS, noiseSuppression: true, noiseSuppressionMode: 'light' } as never);
+            vp.updateSettings({ ...SETTINGS, noiseSuppression: true, noiseSuppressionMode: 'strong' } as never);
+            expect(vp.nsLoadFallbackActive).toBe(false);
+            expect(rn().msgs.at(-1)).toEqual({ type: 'toggle', enabled: true });
+            await vp.destroy();
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('a healthy render thread changes nothing and reports nothing; underrun windows are reported', async () => {
+        vi.useFakeTimers();
+        try {
+            const { vp, second, onNsLoadFallback, onAudioRender } = await buildWithStats();
+            for (let i = 0; i < 25; i++) await second(0);
+            expect(onNsLoadFallback).not.toHaveBeenCalled();
+            expect(onAudioRender).not.toHaveBeenCalled();
+            for (let i = 0; i < 10; i++) await second(i === 4 ? 12 : 0);   // one small hiccup
+            expect(onAudioRender).toHaveBeenCalledWith({ underrunMs: 12, underrunEvents: 5, windowS: 10, ns: 'strong' });
+            expect(vp.nsLoadFallbackActive).toBe(false);
+            await vp.destroy();
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+});

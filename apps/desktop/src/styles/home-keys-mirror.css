@@ -1,0 +1,387 @@
+/* ============================================================================
+   Keys mirrors you (components/mascot/HomeKeys.tsx + KeysGear.tsx,
+   utils/keysMirror.ts): his pose and gear on the Home deck.
+
+   PERF CONTRACT (same bar as home-keys.css):
+   1. Every moving thing is an HTML element animating transform / opacity
+      only (compositor). Nothing inside an svg animates. No filter, no
+      box-shadow, no will-change.
+   2. Entries and exits are CSS TRANSITIONS: they run once and stop, and
+      when a state flips back mid-way they reverse from where they are (that
+      is the "interrupts cleanly" guarantee — no keyframe restarts).
+   3. The few loops (TV flicker, button mash, Zzz, steam, the call bars, the
+      lantern's glow) run only while their piece is on, and PAUSE (not stop,
+      so nothing snaps) when the window rests or Settings covers Home
+      (utils/idleMotion.ts), and are off under reduced motion.
+   4. Reduced motion: no transitions, no loops, no gestures — every state is
+      a still pose that swaps instantly.
+   ============================================================================ */
+
+/* ── the body pose (a CSS transition on its own wrapper) ──────────────────── */
+.hk-pose {
+  transform-origin: 50% 88%;
+  transition: transform .8s cubic-bezier(.3, .7, .3, 1), translate .8s cubic-bezier(.3, .7, .3, 1), opacity .6s ease;
+}
+.hk-gest { transform-origin: 50% 86%; }
+.hk-pose, .hk-gest { position: relative; }
+
+/* Curling up waits for the yawn (keysGestures `doze`); waking does not wait. */
+.hk[data-pose="asleep"] .hk-pose { transform: translateY(6%) scale(1.07, .84) rotate(-4deg); transition-delay: .55s; }
+.hk[data-pose="focus"] .hk-pose { transform: translateY(2%) scale(.98, .95); }
+.hk[data-pose="gaming"] .hk-pose { transform: translateX(-3%) rotate(-5deg); }
+.hk[data-pose="call"] .hk-pose { transform: rotate(-2deg); }
+.hk[data-pose="offline"] .hk-pose { transform: translateY(4%) scale(.97) rotate(3deg); }
+/* Buried to the eyes: he sinks a little into the heap. */
+.hk[data-pile="3"] .hk-pose { translate: 0 3%; }
+
+/* Invisible: he camouflages (the cuttlefish trick from the spam egg's camo
+   show), only his eyes left floating. The rig fades; his gear does not. */
+.hk .hk-react > .k2-root { transition: opacity .7s ease; }
+.hk[data-camo="on"] .hk-react > .k2-root { opacity: .22; }
+
+/* ── a piece of gear: invisible at rest, `is-on` brings it in ─────────────── */
+.hkg-stage {
+  position: absolute;
+  inset: 0; /* = his box: the stages sit in .hk-par, inside .hk's hit-zone padding */
+  pointer-events: none;
+}
+.hkg-stage--back { z-index: 0; }
+.hkg-stage--front { z-index: 3; }
+.hk-lean { position: relative; z-index: 1; }
+
+.hkg-on {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 3;
+  width: 100%;
+  aspect-ratio: 110 / 92;
+  pointer-events: none;
+}
+.hkg-on > .hkg:not(.hkg-tvglow) { inset: 0; }
+.hkg > svg { display: block; width: 100%; height: 100%; overflow: visible; }
+
+.hkg {
+  position: absolute;
+  opacity: 0;
+  transform: var(--hkg-off, translateY(8%) scale(.85));
+  transition: opacity .26s ease, transform .4s cubic-bezier(.3, .7, .3, 1);
+}
+.hkg.is-on {
+  opacity: 1;
+  transform: none;
+  /* Out goes first; in comes a beat later (keysMirror GEAR_ENTER_DELAY_MS). */
+  transition: opacity .32s ease var(--hkg-in, .32s), transform .55s cubic-bezier(.34, 1.4, .64, 1) var(--hkg-in, .32s);
+}
+
+/* where each piece comes from / goes to */
+.hkg-tv       { --hkg-off: translateX(14%) scale(.6); left: -66%; top: 30%; width: 56%; aspect-ratio: 60 / 56; transform-origin: 70% 100%; }
+.hkg-ring     { --hkg-off: translateY(18%) scale(.6); left: 98%; top: 4%; width: 36%; aspect-ratio: 40 / 70; transform-origin: 50% 100%; }
+.hkg-safe     { --hkg-off: translateY(16%) scale(.6); left: 100%; top: 52%; width: 34%; aspect-ratio: 1; transform-origin: 50% 100%; }
+.hkg-sign     { --hkg-off: scaleY(0); left: 86%; top: 38%; width: 20%; aspect-ratio: 24 / 44; transform-origin: 50% 100%; }
+.hkg-headset, .hkg-phones { --hkg-off: translateY(-16%) scale(1.06); }
+.hkg-mask     { --hkg-off: translateY(-12%) scaleY(.5); }
+.hkg-crown    { --hkg-off: translate(-6%, -22%) rotate(-25deg); transform-origin: 40% 15%; }
+.hkg-lantern  { --hkg-off: translateY(-10%) scale(.8); transform-origin: 60% 30%; }
+.hkg-camoeyes { --hkg-off: none; }
+.hkg-pad, .hkg-frame, .hkg-box, .hkg-papers, .hkg-mug { --hkg-off: translateY(16%) scale(.7); transform-origin: 50% 80%; }
+.hkg-bubble, .hkg-zzz { --hkg-off: translateY(20%) scale(.4); }
+
+/* ── BACK: the TV ──────────────────────────────────────────────────────── */
+.hkg-tv-screen {
+  position: absolute;
+  left: 8.5%;
+  top: 21%;
+  width: 72%;
+  height: 59%;
+  border-radius: 12% / 16%;
+  overflow: hidden;
+  background: #0E1430;
+}
+.hkg-tv-screen > i, .hkg-tvglow > i { position: absolute; inset: 0; opacity: 0; }
+.hkg-tv-a { background: radial-gradient(circle at 30% 40%, var(--cl-lume), transparent 70%); }
+.hkg-tv-b { background: radial-gradient(circle at 70% 60%, var(--cl-flash), transparent 70%); }
+.hkg-tv-c { background: radial-gradient(circle at 50% 30%, var(--cl-glow), transparent 70%); }
+/* a pixel "sprite" hopping across the game */
+.hkg-tv-pix {
+  position: absolute;
+  left: 20%;
+  bottom: 18%;
+  width: 14%;
+  aspect-ratio: 1;
+  background: #fff;
+  opacity: .85;
+}
+.hkg-tv.is-on .hkg-tv-a { animation: hkg-wash 2.4s steps(1, end) infinite; }
+.hkg-tv.is-on .hkg-tv-b { animation: hkg-wash 2.4s steps(1, end) -.8s infinite; }
+.hkg-tv.is-on .hkg-tv-c { animation: hkg-wash 2.4s steps(1, end) -1.6s infinite; }
+.hkg-tv.is-on .hkg-tv-pix { animation: hkg-pix 1.6s steps(8, end) infinite; }
+@keyframes hkg-wash {
+  0%   { opacity: .9; }
+  33%  { opacity: .55; }
+  66%  { opacity: 0; }
+}
+@keyframes hkg-pix {
+  0%   { transform: translate(0, 0); }
+  25%  { transform: translate(120%, -90%); }
+  50%  { transform: translate(260%, 0); }
+  75%  { transform: translate(380%, -60%); }
+  100% { transform: translate(0, 0); }
+}
+.hkg-live {
+  --hkg-off: scale(.4);
+  position: absolute;
+  right: -10%;
+  top: -4%;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 1px 4px 1px 3px;
+  border-radius: 999px;
+  background: var(--cl-flash);
+  color: #fff;
+  font: 800 7px/1.2 var(--cl-font-body, 'Nunito', system-ui, sans-serif);
+  letter-spacing: .04em;
+}
+.hkg-live > i { width: 4px; height: 4px; border-radius: 50%; background: #fff; }
+.hkg-live.is-on > i { animation: hkg-blink 1.2s ease-in-out infinite; }
+@keyframes hkg-blink { 50% { opacity: .2; } }
+
+/* The game's light on HIS dome: the same three washes, clipped to the dome,
+   strongest on the side facing the TV (his left). */
+.hkg-tvglow {
+  --hkg-off: none;
+  left: 19.1%;
+  top: 15.2%;
+  width: 61.8%;
+  height: 42.4%;
+  border-radius: 50% 50% 0 0 / 100% 100% 0 0;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to right, #000, transparent 75%);
+  mask-image: linear-gradient(to right, #000, transparent 75%);
+}
+.hkg-tvglow.is-on { opacity: .55; }
+.hkg-tvglow.is-on .hkg-tv-a { animation: hkg-wash 2.4s steps(1, end) infinite; }
+.hkg-tvglow.is-on .hkg-tv-b { animation: hkg-wash 2.4s steps(1, end) -.8s infinite; }
+.hkg-tvglow.is-on .hkg-tv-c { animation: hkg-wash 2.4s steps(1, end) -1.6s infinite; }
+
+/* ── BACK: ring light, safe ─────────────────────────────────────────────── */
+.hkg-ring-halo {
+  position: absolute;
+  left: -40%;
+  top: -18%;
+  width: 180%;
+  aspect-ratio: 1;
+  background: radial-gradient(closest-side, color-mix(in srgb, var(--cl-glow) 45%, transparent), transparent);
+  opacity: .7;
+}
+
+/* ── ON: the headset's mic light, the lantern, held things ──────────────── */
+.hkg-mic {
+  position: absolute;
+  left: 27.3%;
+  top: 58.5%;
+  width: 7%;
+  aspect-ratio: 1;
+  margin: -3.5% 0 0 -3.5%;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, color-mix(in srgb, var(--cl-glow) 80%, transparent), transparent);
+  opacity: 0;
+}
+/* lit while you speak: a transition on the speaking edge, not another loop
+   (the call bubble's bars are the one speaking loop) */
+.hkg-mic { transform: scale(.8); transition: opacity .15s ease, transform .15s ease; }
+.hk[data-speaking="on"] .hkg-headset.is-on .hkg-mic { opacity: 1; transform: scale(1.6); }
+
+.hkg-lantern-halo {
+  position: absolute;
+  left: 84.5%;
+  top: 8.7%;
+  width: 22%;
+  aspect-ratio: 1;
+  margin: -11% 0 0 -11%;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, color-mix(in srgb, var(--cl-glow) 70%, transparent), transparent);
+  transition: opacity .8s ease;
+}
+.hkg-lantern.is-on .hkg-lantern-halo { animation: hkg-lure 3.2s ease-in-out infinite; }
+@keyframes hkg-lure { 0%, 100% { transform: scale(.85); } 50% { transform: scale(1.12); } }
+/* Asleep at night: the lure burns low. */
+.hkg-lantern .hkg-lantern-bulb { transition: opacity .8s ease; }
+.hkg-lantern.is-dim .hkg-lantern-halo { opacity: .25; }
+.hkg-lantern.is-dim .hkg-lantern-bulb { opacity: .45; }
+
+.hkg-camoeyes > svg { fill: none; stroke: #EFFFFC; stroke-width: 3.5; stroke-linecap: round; stroke-linejoin: round; }
+
+/* button mashing: tiny, fast, stepped (it's thumbs, not a wobble) */
+.hkg-pad.is-on > svg { animation: hkg-mash .36s steps(2, end) infinite; transform-origin: 50% 72%; }
+@keyframes hkg-mash {
+  0%   { transform: translate(0, 0) rotate(0deg); }
+  50%  { transform: translate(.6%, .9%) rotate(-1.5deg); }
+  100% { transform: translate(-.4%, .3%) rotate(1deg); }
+}
+.hkg-frame-glare {
+  position: absolute;
+  left: 33%;
+  top: 53%;
+  width: 10%;
+  height: 24%;
+  background: linear-gradient(105deg, transparent, rgba(255, 255, 255, .55), transparent);
+  opacity: 0;
+}
+.hkg-frame.is-on .hkg-frame-glare { animation: hkg-glare 3.4s ease-in-out infinite; }
+@keyframes hkg-glare { 0%, 55% { opacity: 0; transform: translateX(0); } 65% { opacity: 1; } 85%, 100% { opacity: 0; transform: translateX(300%); } }
+.hkg-box.is-on > svg { animation: hkg-bob 1.6s ease-in-out infinite; }
+@keyframes hkg-bob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(2.5%); } }
+/* papers: a sheet flies off the stack into the safe, again and again */
+.hkg-sheet {
+  position: absolute;
+  left: 40%;
+  top: 60%;
+  width: 22%;
+  height: 12%;
+  border-radius: 2px;
+  background: #E8EEFF;
+  opacity: 0;
+}
+.hkg-papers.is-on .hkg-sheet { animation: hkg-file 1.8s cubic-bezier(.4, 0, .4, 1) infinite; }
+@keyframes hkg-file {
+  0%   { opacity: 0; transform: translate(0, 0) rotate(0deg); }
+  15%  { opacity: 1; }
+  60%  { opacity: 1; transform: translate(210%, -160%) rotate(20deg); }
+  80%  { opacity: 0; transform: translate(330%, -40%) rotate(8deg) scale(.6); }
+  100% { opacity: 0; }
+}
+.hkg-steam {
+  position: absolute;
+  left: 46%;
+  top: 50%;
+  width: 3.5%;
+  height: 12%;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--cl-text, #E8EEFF) 55%, transparent);
+  opacity: 0;
+}
+.hkg-steam--b { left: 54%; }
+.hkg-mug.is-on .hkg-steam { animation: hkg-steam 2.2s ease-out infinite; }
+.hkg-mug.is-on .hkg-steam--b { animation-delay: -1.1s; }
+@keyframes hkg-steam { 0% { opacity: 0; transform: translateY(0) scaleY(.6); } 30% { opacity: .8; } 100% { opacity: 0; transform: translateY(-90%) scaleY(1.2); } }
+
+/* ── FRONT: bubbles ─────────────────────────────────────────────────────── */
+.hkg-bubble {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  padding: 3px 5px;
+  border-radius: 9px;
+  background: var(--cl-deep);
+  border: 1px solid var(--cl-border);
+  transform-origin: 30% 100%;
+}
+.hkg-nosig { left: 66%; top: -26%; width: 34%; aspect-ratio: 30 / 22; padding: 2px; }
+.hkg-nosig > svg { width: 100%; height: 100%; }
+.hkg-nosig.is-on > svg { animation: hkg-blink 1.6s ease-in-out infinite; }
+.hkg-callb { left: -14%; top: -24%; height: 24%; padding: 0 6% 0 4%; }
+.hkg-callb-phone { height: 72%; aspect-ratio: 1; margin-right: 2px; }
+.hkg-eq {
+  width: 3px;
+  height: 38%;
+  border-radius: 2px;
+  background: var(--cl-lume);
+  transform-origin: 50% 100%;
+  transform: scaleY(.45);
+  transition: transform .2s ease;
+}
+.hk[data-speaking="on"] .hkg-callb.is-on .hkg-eq { animation: hkg-eq .42s ease-in-out infinite alternate; }
+.hk[data-speaking="on"] .hkg-callb.is-on .hkg-eq--b { animation-delay: -.14s; }
+.hk[data-speaking="on"] .hkg-callb.is-on .hkg-eq--c { animation-delay: -.28s; }
+@keyframes hkg-eq { from { transform: scaleY(.35); } to { transform: scaleY(1.25); } }
+
+.hkg-zzz { left: 76%; top: -16%; width: 30%; height: 40%; }
+.hkg-zzz > i {
+  position: absolute;
+  font: 600 13px/1 var(--cl-font-display, 'Fredoka', system-ui, sans-serif);
+  font-style: normal;
+  color: var(--cl-lume);
+  opacity: 0;
+}
+.hkg-zzz > i:nth-child(1) { left: 0; top: 60%; font-size: 10px; }
+.hkg-zzz > i:nth-child(2) { left: 30%; top: 30%; font-size: 13px; }
+.hkg-zzz > i:nth-child(3) { left: 62%; top: 0; font-size: 16px; }
+.hkg-zzz.is-on > i { animation: hkg-z 3s ease-in-out infinite; }
+.hkg-zzz.is-on > i:nth-child(2) { animation-delay: .8s; }
+.hkg-zzz.is-on > i:nth-child(3) { animation-delay: 1.6s; }
+@keyframes hkg-z { 0% { opacity: 0; transform: translate(0, 6px) scale(.7); } 25% { opacity: .9; } 80% { opacity: .6; } 100% { opacity: 0; transform: translate(6px, -8px) scale(1.05); } }
+
+/* ── FRONT: the unread pile ─────────────────────────────────────────────── */
+.hkg-pile { position: absolute; inset: 0; }
+.hkg-env {
+  aspect-ratio: 24 / 16;
+  margin-left: -12%;
+  --hkg-off: translate(var(--ex, 0), -60px) rotate(calc(var(--r, 0deg) * 4));
+  transform: var(--hkg-off);
+}
+.hkg-env > svg { display: block; width: 100%; height: 100%; }
+.hkg-env.is-on {
+  transform: rotate(var(--r, 0deg));
+  /* in: dropped onto the heap, one after another (bouncy) */
+  transition: opacity .2s ease var(--d, 0ms), transform .6s cubic-bezier(.34, 1.5, .64, 1) var(--d, 0ms);
+}
+/* out (digging himself out): flung up and away, staggered the same way */
+.hkg-env:not(.is-on) { transition: opacity .35s ease calc(var(--d, 0ms) + 150ms), transform .6s cubic-bezier(.4, 0, .9, .6) var(--d, 0ms); }
+
+/* ── FRONT: puffs and the plane (Web Animations; at rest, invisible) ────── */
+.hkg-puff { position: absolute; opacity: 0; }
+.hkg-bang {
+  left: 47%;
+  top: -30%;
+  font: 800 20px/1 var(--cl-font-display, 'Fredoka', system-ui, sans-serif);
+  color: var(--cl-glow);
+}
+.hkg-shh {
+  left: -24%;
+  top: 4%;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: var(--cl-deep);
+  border: 1px solid var(--cl-border);
+  font: 700 10px/1.4 var(--cl-font-body, 'Nunito', system-ui, sans-serif);
+  color: var(--cl-flash);
+}
+.hkg-stars { left: 18%; top: -8%; width: 64%; aspect-ratio: 2.4; }
+.hkg-stars > i { position: absolute; font-style: normal; font-size: 11px; line-height: 1; color: var(--cl-glow); }
+.hkg-stars > i:nth-child(1) { left: 0; top: 40%; }
+.hkg-stars > i:nth-child(2) { left: 45%; top: 0; color: var(--cl-lume); }
+.hkg-stars > i:nth-child(3) { right: 0; top: 45%; }
+.hkg-ping {
+  left: 10%;
+  top: 0;
+  width: 80%;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  border: 2px solid color-mix(in srgb, var(--cl-lume) 70%, transparent);
+}
+.hkg-plane {
+  position: absolute;
+  left: 0;
+  top: 2%;
+  width: 34%;
+  aspect-ratio: 32 / 22;
+  opacity: 0;
+}
+.hkg-plane > svg { display: block; width: 100%; height: 100%; }
+/* reduced motion: a still plane parked by him for a moment */
+.hkg-plane.is-static { opacity: 1; transform: translate(-70%, -30%) rotate(-8deg); }
+
+/* ── gates ───────────────────────────────────────────────────────────────── */
+:root[data-cl-motion="idle"] .hk .hkg *,
+:root[data-cl-motion="idle"] .hk .hkg { animation-play-state: paused; }
+:root[data-cl-occluded="on"] .hk:not(.sd-root *) .hkg *,
+:root[data-cl-occluded="on"] .hk:not(.sd-root *) .hkg { animation-play-state: paused; }
+
+@media (prefers-reduced-motion: reduce) {
+  .hk-pose, .hk .hk-react > .k2-root, .hkg, .hkg.is-on, .hkg-env.is-on, .hkg-env:not(.is-on),
+  .hkg *, .hkg-lantern-halo, .hkg-eq { transition: none !important; animation: none !important; }
+  .hkg-puff { display: none; }
+}

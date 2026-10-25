@@ -65,6 +65,15 @@ describe('boot bundle: nothing heavy or blocking on the startup path', () => {
         expect(read('utils/rnnoiseSources.ts')).toMatch(/import\(['"]\.\/rnnoiseInWorkletSource['"]\)/);
     });
 
+    it('the Speex (Light noise suppression) worklet source and WASM are only reachable through the lazy loaders - speexSources.ts', () => {
+        expect(staticImporters(/from\s+['"][./]*(utils\/)?speex(LightWorkletSource|Wasm)['"]/)).toEqual([]);
+        // The generated base64 module is only ever pulled in by the lazy speexWasm.ts.
+        expect(staticImporters(/from\s+['"][./]*(utils\/)?speexWasmBase64['"]/)).toEqual(['utils/speexWasm.ts']);
+        const loader = read('utils/speexSources.ts');
+        expect(loader).toMatch(/import\(['"]\.\/speexLightWorkletSource['"]\)/);
+        expect(loader).toMatch(/import\(['"]\.\/speexWasm['"]\)/);
+    });
+
     it('emoji-mart and its dataset are only reachable through the lazy picker — emojiPickerLazy.tsx', () => {
         expect(staticImporters(/from\s+['"]\.\.?\/(components\/)?EmojiPicker['"]/)).toEqual([]);
         const direct = staticImporters(/from\s+['"](@emoji-mart\/|emoji-mart)/);

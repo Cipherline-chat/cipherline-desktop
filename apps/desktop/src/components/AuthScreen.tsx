@@ -12,9 +12,11 @@ import { markLocalHistory, probeLocalHistory } from '../utils/localHistoryFlag';
 import { startOnboarding } from '../utils/onboardingProgress';
 import cipherlineMark from '../assets/cipherline-mark.svg';
 import { ClButton } from './ClButton';
+import { ClBanner } from './ClBanner';
 import { DatePicker } from './DatePicker';
 import { ClInput, ClCheckbox, ClSegment } from './cl';
 import SlottedCodeInput from './SlottedCodeInput';
+import { noteAuthScreenShown } from '../utils/betaDiagnostics/startup';
 import { bubbleCount, makeBubbles } from '../utils/deepField';
 import { registerOrReuseDevice, type PendingDeviceApproval } from '../utils/deviceRegistration';
 import { DeviceApprovalPending } from './DeviceApprovalPending';
@@ -61,12 +63,13 @@ const Field: React.FC<{
     </div>
 );
 
+// Form messages on the auth card: the shared banner primitive, inline (no stack).
 const ErrorBanner: React.FC<{ msg: string }> = ({ msg }) => (
-    <div className="auth-bannerin px-4 py-3 bg-cl-flash/10 border border-cl-flash/25 rounded-xl text-cl-flash text-sm text-center">{msg}</div>
+    <ClBanner inline tone="danger" description={msg} />
 );
 
 const InfoBanner: React.FC<{ msg: string }> = ({ msg }) => (
-    <div className="auth-bannerin px-4 py-3 bg-cl-lume/10 border border-cl-lume/25 rounded-xl text-cl-lume text-sm text-center">{msg}</div>
+    <ClBanner inline tone="info" description={msg} />
 );
 
 const StrengthBar: React.FC<{ score: number }> = ({ score }) => {
@@ -501,6 +504,7 @@ const LegalLink: React.FC<{ href: string; children: React.ReactNode }> = ({ href
 
 const AuthScreen: React.FC = () => {
     const { login, logoutReason, clearLogoutReason } = useAuth();
+    useEffect(() => { noteAuthScreenShown(); }, []); // beta diagnostics: startup time excludes a sign-in
     const [view, setView] = useState<View>(() => (!logoutReason && getPendingReferral() ? 'register' : 'login'));
     // Which panel the 'login' view shows — password form, or QR sign-in
     // (docs/QR-LINKING.md §2/§7). QrSignInPanel owns its own session/poll

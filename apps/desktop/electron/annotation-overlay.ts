@@ -75,8 +75,6 @@ import { app, BrowserWindow, screen, type DesktopCapturerSource, type Display } 
 /** What the overlay needs from a picker source (in-process or helper-listed). */
 export type OverlaySource = Pick<DesktopCapturerSource, 'id' | 'display_id'>;
 import * as path from 'path';
-import * as fs from 'fs';
-import * as os from 'os';
 // Wire shape shared with the renderer (src/utils/desktopAnnotationOverlay.ts)
 // — kept in a dependency-free module so neither side pulls in the other's
 // runtime deps (electron here, livekit-client there) just to see the type.
@@ -85,6 +83,7 @@ import * as os from 'os';
 import type { OverlayDelta, OverlayShowResult, OverlayRefusal } from '../src/utils/annotationOverlayTypes';
 export type { OverlayPoint, OverlayStroke, OverlayDelta, OverlayShowResult, OverlayRefusal } from '../src/utils/annotationOverlayTypes';
 import { lockPageZoom } from './page-zoom-lock';
+import { writePrivatePage, type PrivatePage } from './private-page-file';
 import { overlayCanvasLayout, type OverlayCanvasLayout, type Rect } from './annotation-overlay-projection';
 import {
     resolveCapturedDisplay, parseScreenSourceIndex, parseWindowSourceHandle, cleanRect,
@@ -483,13 +482,15 @@ function createOverlay(b: Rect, topmost: boolean): boolean {
     try { win.setContentProtection(true); } catch { win.destroy(); overlay = null; target = null; return false; }
     try { overlayHwnd = nativeHandleToDecimal(win.getNativeWindowHandle()); } catch { overlayHwnd = null; }
 
-    const tmpPath = path.join(os.tmpdir(), `cipherline-annot-overlay-${process.pid}-${++pageSeq}.html`);
-    try { fs.writeFileSync(tmpPath, OVERLAY_HTML, 'utf8'); } catch (e) {
+    // A private mkdtemp directory (0700, exclusive 0600 file), never a
+    // predictable name in the shared temp dir — see private-page-file.ts.
+    let page: PrivatePage;
+    try { page = writePrivatePage(`cl-annot-${++pageSeq}`, OVERLAY_HTML); } catch (e) {
         console.warn('[annot-overlay] could not write page:', e);
         win.destroy(); overlay = null; target = null; return false;
     }
     win.webContents.on('did-finish-load', () => {
-        fs.unlink(tmpPath, () => {});
+        page.cleanup();
         if (overlay !== win) return;
         overlayReady = true;
         // Geometry sent before this document existed (a resize/move while it
@@ -523,20 +524,23 @@ function createOverlay(b: Rect, topmost: boolean): boolean {
     // letting the new client box redefine the coordinate space.
     win.webContents.on('did-fail-load', (_e, code, desc, _url, isMainFrame) => {
         if (!isMainFrame || overlay !== win) return;
-        fs.unlink(tmpPath, () => {});
+        page.cleanup();
         console.warn(`[annot-overlay] overlay page failed to load (${code} ${desc}); desktop overlay off`);
         hideAnnotationOverlay();
     });
     win.on('resize', syncGeometry);
     win.on('move', syncGeometry);
     win.on('closed', () => {
+        page.cleanup();
         if (overlay === win) {
             stopTracking();
             overlay = null; target = null; captureRect = null; overlayHwnd = null;
             overlayReady = false; queued = [];
         }
     });
-    void win.loadFile(tmpPath);
+    // A failed load is already handled by the did-fail-load listener above;
+    // the promise's rejection is the same failure and must not go unhandled.
+    win.loadFile(page.filePath).catch(() => { /* handled by did-fail-load */ });
     return true;
 }
 

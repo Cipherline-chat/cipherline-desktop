@@ -55,6 +55,8 @@ import { EncryptedAvatar } from '../EncryptedAvatar';
 import { AnnotationGrantBadge } from './AnnotationGrantBadge';
 import { useCallTelemetrySafe, useCallContextSafe } from '../../contexts/CallContext';
 import { useIsCallParticipantSpeaking } from '../../utils/callSpeakingStore';
+import { useCallPersonalization } from '../../utils/callPersonalizationStore';
+import { speakingShadow } from '../../utils/callPersonalizationStyle';
 import { useOpenProfile } from '../../contexts/ProfileOpenContext';
 import { useCallServerCtx } from '../../contexts/CallServerCtx';
 import { useDismissOnOutsideClick } from '../../hooks/useDismissOnOutsideClick';
@@ -133,6 +135,7 @@ const FloatingParticipantRow: React.FC<RowProps> = ({
     const pmeta = telemetry?.participantMetadata?.[uid];
     // Per-identity subscription — see utils/callSpeakingStore.ts.
     const isSpeaking = useIsCallParticipantSpeaking(uid);
+    const { ring_color } = useCallPersonalization(uid);
     const isLocalMutedByMe = callCtx?.localMutedIds.has(uid) ?? false;
     const isVideoHiddenByMe = callCtx?.hiddenVideoIds.has(uid) ?? false;
     const isScreenHiddenByMe = callCtx?.hiddenScreenShareIds.has(uid) ?? false;
@@ -187,7 +190,8 @@ const FloatingParticipantRow: React.FC<RowProps> = ({
             onContextMenu={handleContextMenu}
         >
             <div
-                className={`w-8 h-8 rounded-full overflow-hidden bg-cl-surface flex items-center justify-center shrink-0 transition-[box-shadow] duration-150 ${isSpeaking ? 'ring-2 ring-green-500 shadow-[0_0_6px_rgba(34,197,94,0.5)]' : 'ring-1 ring-white/10'}`}
+                className={`w-8 h-8 rounded-full overflow-hidden bg-cl-surface flex items-center justify-center shrink-0 transition-[box-shadow] duration-150 ${isSpeaking ? '' : 'ring-1 ring-white/10'}`}
+                style={isSpeaking ? { boxShadow: speakingShadow(ring_color, { glow: 6, alpha: 0.5 }) } : undefined}
             >
                 <EncryptedAvatar
                     attachmentId={avatarId}

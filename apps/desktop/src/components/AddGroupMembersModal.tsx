@@ -1,8 +1,11 @@
 import React, { useEffect, useMemo, useRef } from 'react';
-import { X } from 'lucide-react';
+import { UserPlus, Users } from 'lucide-react';
 import { useModalExit } from '../hooks/useModalExit';
 import { ClButton, ClModal } from './cl';
-import { AddGroupMembersPicker, type AddGroupMembersResult } from './AddGroupMembersPicker';
+import { DialogHeader, DialogBody, DialogFooter, DialogError, DialogOk } from './dialog/DialogFrame';
+import { MemberPicker } from './peoplePicker/MemberPicker';
+import { useGroupMemberInvites, type AddGroupMembersResult } from './AddGroupMembersPicker';
+import { GROUP_MAX_MEMBERS } from '../utils/groupAddMembers';
 
 /** How long the success message stays up before the modal closes itself. */
 export const ADD_MEMBERS_CLOSE_DELAY_MS = 900;
@@ -19,10 +22,12 @@ interface AddGroupMembersModalProps {
 
 /**
  * "Add people to <group>" — opened by the "+" beside the right-hand panel's
- * Members heading. A thin ClModal around AddGroupMembersPicker (the same picker
- * GroupSettingsModal embeds). After a fully-successful add it shows the
- * picker's success message for a beat, then closes; if any invite failed it
- * stays open so the error can be read and the rest retried.
+ * Members heading. A dialog-frame card around the shared MemberPicker; the
+ * invite logic is `useGroupMemberInvites` (the same hook behind the inline
+ * AddGroupMembersPicker that GroupSettingsModal embeds). After a
+ * fully-successful add it shows the success message for a beat, then closes;
+ * if any invite failed it stays open so the error can be read and the rest
+ * retried.
  */
 export const AddGroupMembersModal: React.FC<AddGroupMembersModalProps> = ({
     conversationId, conversationTitle, memberIds, onClose, onAdded,
@@ -43,36 +48,65 @@ export const AddGroupMembersModal: React.FC<AddGroupMembersModalProps> = ({
         }
     };
 
+    const {
+        token, friends, loading, friendsFailed, reloadFriends, remaining, atCap,
+        selectedToAdd, setSelection, isAddingMembers, error, success, handleAddSelectedMembers,
+    } = useGroupMemberInvites({ conversationId, memberIds: memberIdSet, onResult: handleResult });
+
+    const candidates = useMemo(() => friends.filter(f => !memberIdSet.has(f.user_id)), [friends, memberIdSet]);
+    const count = selectedToAdd.size;
+
+    let hint: React.ReactNode;
+    if (remaining === 0) hint = <span><span className="dlg-hint-strong">Group is full</span> ({GROUP_MAX_MEMBERS} members)</span>;
+    else if (atCap && count > 0) hint = <span><span className="dlg-hint-strong">Group limit reached</span> ({GROUP_MAX_MEMBERS} max)</span>;
+    else if (count > 0) hint = <><Users size={14} /><span><span className="dlg-hint-strong">{count}</span> selected</span></>;
+    else hint = <span data-testid="group-size-note">{memberIdSet.size} / {GROUP_MAX_MEMBERS} members</span>;
+
     return (
         <ClModal
             open={!closing}
             onClose={handleClose}
-            width={440}
+            width={480}
             label={`Add people to ${conversationTitle}`}
-            cardStyle={{ padding: '28px 28px 24px', maxHeight: '82vh', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '12px' }}
-            cardClassName="custom-scrollbar"
+            cardClassName="dlg-card"
         >
-            <div className="flex items-start justify-between shrink-0">
-                <div className="min-w-0">
-                    <h2 className="text-xl font-bold text-cl-text mt-0 mb-1 truncate">
-                        Add people to {conversationTitle}
-                    </h2>
-                    <p className="text-[13px] text-cl-faint m-0">Pick friends to bring into this group.</p>
-                </div>
-                <ClButton icon onClick={handleClose} variant="ghost" tooltip="Close">
-                    <X size={16} />
-                </ClButton>
-            </div>
-
-            <AddGroupMembersPicker
-                conversationId={conversationId}
-                memberIds={memberIdSet}
-                showLabel={false}
-                autoFocusSearch
-                onResult={handleResult}
+            <DialogHeader
+                icon={<UserPlus size={19} strokeWidth={2.2} />}
+                title={<>Add people to {conversationTitle}</>}
+                subtitle="Pick friends to bring into this group."
             />
-
-            <ClButton variant="ghost" fullWidth onClick={handleClose}>Done</ClButton>
+            <DialogBody>
+                <MemberPicker
+                    people={candidates}
+                    loading={loading}
+                    loadFailed={friendsFailed}
+                    onRetry={reloadFriends}
+                    selection={Array.from(selectedToAdd)}
+                    onSelectionChange={setSelection}
+                    max={remaining}
+                    token={token}
+                    ariaLabel="Search friends to add"
+                    emptyTitle={friends.length === 0 ? 'No friends yet' : 'Everyone is already in'}
+                    emptyBody={friends.length === 0 ? 'Add a friend first, then you can bring them in.' : 'All your friends are already in this group.'}
+                    onSubmit={() => { if (!isAddingMembers) void handleAddSelectedMembers(); }}
+                    disabled={isAddingMembers}
+                    autoFocus
+                />
+            </DialogBody>
+            {error && <DialogError>{error}</DialogError>}
+            {success && <DialogOk>{success}</DialogOk>}
+            <DialogFooter hint={hint}>
+                <ClButton variant="ghost" size="sm" onClick={handleClose}>{success ? 'Done' : 'Cancel'}</ClButton>
+                <ClButton
+                    size="sm"
+                    onClick={() => { void handleAddSelectedMembers(); }}
+                    loading={isAddingMembers}
+                    disabled={isAddingMembers || count === 0 || count > remaining}
+                    tooltip={count === 0 ? 'Pick at least one friend' : undefined}
+                >
+                    {count > 0 ? `Add ${count} ${count === 1 ? 'member' : 'members'}` : 'Add members'}
+                </ClButton>
+            </DialogFooter>
         </ClModal>
     );
 };

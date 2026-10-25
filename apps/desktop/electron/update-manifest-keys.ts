@@ -71,7 +71,13 @@ export const UPDATE_MANIFEST_PUBLIC_KEYS: Readonly<Record<ManifestChannel, reado
 
 export type ManifestSignatureEnforcement = 'grace' | 'linux' | 'all';
 
+// 2026-10-15: both channels go straight to 'all'. Steps 2 and 3 are done on both:
+// every manifest of stable 1.0.22 (latest, latest-mac, latest-linux) and staging
+// 1.0.22-staging.161+ is signed and verified against the keys above, signing is
+// mandatory in both release workflows, and each publish job re-verifies its .sig
+// after upload. Owner-approved; the 'linux' intermediate step was skipped because
+// all three platforms were already signed in the same releases.
 export const REQUIRE_MANIFEST_SIG: Readonly<Record<ManifestChannel, ManifestSignatureEnforcement>> = {
-    latest: 'grace',
-    staging: 'grace',
+    latest: 'all',
+    staging: 'all',
 };

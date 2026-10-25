@@ -144,7 +144,7 @@ export const ENCRYPTING_POOL = [
     'Encrypting…',
     'Scrambling bits…',
     'Doing the math…',
-    'Folding it into the dark…',
+    'Locking it up…',
 ] as const;
 
 /**
@@ -181,9 +181,9 @@ export function uploadLabel(filename: string, streak: number): string {
 /** Settings search box placeholders, cycled per focus. */
 export const SETTINGS_PLACEHOLDERS = [
     'Find a setting…',
-    'Search the deep…',
-    'It’s down here somewhere…',
-    'Sonar for settings…',
+    'Search settings…',
+    'It’s in here somewhere…',
+    'What are you looking for?',
 ] as const;
 
 /**
@@ -220,7 +220,7 @@ export const KEYS_QUIPS = [
     'do I look like a button?',
     'careful — I’m load-bearing.',
     'that tickles. stop it. continue.',
-    'blub.',
+    'that was my face.',
     'poke received. encrypted. discarded.',
     'I’m a cuttlefish, not a jellyfish. common mistake.',
     'the server can’t see this. lucky server.',
@@ -249,23 +249,23 @@ export const KEYS_OBS_CALLS = [
 
 /** Deep night, 00:00–04:59. */
 export const KEYS_OBS_LATENIGHT = [
-    'it is deeply past bedtime. I would know. I live in the deep.',
-    'the 3am shift. just you, me, and the anglerfish.',
+    'it is very past bedtime.',
+    'the 3am shift. just you and me.',
     'nothing good gets typed at this hour. type it anyway.',
 ] as const;
 
 /** Early birds, 05:00–07:59. */
 export const KEYS_OBS_EARLY = [
-    'you’re up early. the sun doesn’t even reach this depth yet.',
+    'you’re up early. nobody else is.',
     'dawn patrol. respect.',
-    'early. the plankton aren’t even awake.',
+    'coffee first. messages second.',
 ] as const;
 
 /** No backup configured — the one observation that's also advice. */
 export const KEYS_OBS_NOBACKUP = [
     'still no backup. bold.',
     'your history lives on this one machine. sleep well.',
-    'ink clouds protect me. backups protect you. you have none.',
+    'no backup. this machine is the only copy.',
 ] as const;
 
 /** Unreads piling up. */
@@ -277,16 +277,16 @@ export const KEYS_OBS_UNREADS = [
 
 /** Nobody online, nothing waiting. */
 export const KEYS_OBS_QUIET = [
-    'nobody’s around. just us down here. blub.',
+    'nobody’s around. just us.',
     'quiet. the good kind.',
-    'all clear. the ocean keeps its own counsel and so do I.',
+    'all clear. nothing to report.',
 ] as const;
 
-/** Friday. The currents feel different. */
+/** Friday. */
 export const KEYS_OBS_FRIDAY = [
-    'it’s friday. even the abyss relaxes.',
-    'friday. the currents feel different.',
-    'weekend incoming. batten the hatches.',
+    'it’s friday. nobody’s reading announcements.',
+    'friday. it can all wait until monday.',
+    'weekend incoming.',
 ] as const;
 
 /** December — the marine snow window. */
@@ -307,14 +307,145 @@ export const KEYS_SLEEPY_POOL = [
 
 /** Label for the chat-list section holding conversations untouched for a year
  *  or more. The younger sections get plain labels ("Today", "Yesterday", …);
- *  the oldest one gets the deep-sea treatment — the further down the list, the
- *  deeper the water. Sentence case (status-label voice); the divider's CSS
+ *  the oldest one gets a small wink instead of a date — and stays plain enough
+ *  to read as a label. Sentence case (status-label voice); the divider's CSS
  *  uppercases it. Rotates by day via pickRotating in chatListDividers.ts. */
 export const ANCIENT_CHATS_POOL = [
-    'The hadal zone',
-    'Sediment layer',
-    'Lost to the abyss',
-    'Anglerfish territory',
+    'Over a year ago',
+    'Way back when',
+    'Long, long ago',
+    'Ancient history',
+] as const;
+
+// ── playful touches (2026-10 pass; always on, no switch) ─────────────────────
+// Voice: cheeky and warm, the joke is always on the SITUATION (or on the user
+// poking fun at themselves), never on a person.
+
+/** Creating a "group" of you + one person. The dialog's title and body rotate
+ *  independently on how many times it has been shown. */
+export const GROUP_OF_TWO_TITLES = [
+    'That’s… a DM with extra steps.',
+    'A group of two. Bold.',
+    'Two people. In a group. Hm.',
+] as const;
+
+/** `{name}` is the other person's username (fillLine). */
+export const GROUP_OF_TWO_BODIES = [
+    'A group of two is a DM in a trench coat. You and {name} already have a perfectly good one.',
+    'Just you and {name}. A DM does that without anyone having to come up with a group name.',
+    'Same two people, same encryption, one extra name to invent. Your call, though.',
+] as const;
+
+/** Composer placeholder, 03:00–04:59 local. Each still ends by being a
+ *  usable "type here" prompt (rule 5: the slot keeps doing its job). */
+export const LATE_NIGHT_PLACEHOLDERS = [
+    'Shouldn’t you be asleep?',
+    'It’s the small hours. Message…',
+    'Still up? Message…',
+    'Sleep is also an option. Message…',
+] as const;
+
+/** Alone in a call for a few minutes. Walked in order (pickEscalating): the
+ *  opener first, then it settles. */
+export const ALONE_ECHO_POOL = [
+    '…echo… echo…',
+    'hello? … hello?',
+    'it’s very quiet in here.',
+    'I’ll stay as long as you do.',
+] as const;
+
+/** Presence status flipped six times inside a minute. Replaces the picker's
+ *  "Status" label for a few seconds — an owned slot. */
+export const STATUS_FLAP_POOL = [
+    'Still deciding?',
+    'Pick one. Any one.',
+    'The dot is getting dizzy',
+    'Decisions, decisions',
+] as const;
+
+/** Tapping the version row in Advanced after developer mode is already on. */
+export const KEYS_DEV_POOL = [
+    'You’re already a developer. It does nothing.',
+    'Developer mode is still purely cosmetic.',
+    'Keys is proud of you. Mildly.',
+] as const;
+
+/** Settings search for the wrong cephalopod. The facts are real: cuttlefish
+ *  carry a cuttlebone, and have eight arms plus two feeding tentacles. */
+export const MISNAMED_KEYS_POOL = [
+    'He’s a cuttlefish. We’ve been over this.',
+    'Wrong cephalopod. Cuttlefish carry a cuttlebone; octopuses don’t.',
+    'Close. Eight arms plus two feeding tentacles is a cuttlefish.',
+] as const;
+
+/** Settings search for "abyss". */
+export const ABYSS_SEARCH_POOL = [
+    'The last stop in the gauge: Advanced and the Danger Zone.',
+    'All the way down: Advanced settings.',
+    'It’s the section with the red button. Tread lightly.',
+] as const;
+
+/** Home-deck search with nothing found. Every line still says "no matches". */
+export const EMPTY_SEARCH_POOL = [
+    'No matches. Try another word.',
+    'No matches. Not even a rumor.',
+    'No matches. Checked everywhere.',
+    'No matches. Nothing by that name.',
+] as const;
+
+/** Game Activity with nothing detected. Every line keeps the instruction. */
+export const NO_GAME_POOL = [
+    'Launch something and it’ll show up here within a few seconds.',
+    'Nothing yet. Launch a game and it’ll show up here within a few seconds.',
+    'Nothing playing, nothing to report. Launch a game and it’ll appear here in a few seconds.',
+    'No game running. Launch a game and it’ll show up here within a few seconds.',
+] as const;
+
+/** Friends search with nothing found (a second line under the plain one). */
+export const FRIENDS_NO_MATCH_POOL = [
+    'Not on your list, or very good at stealth.',
+    'Nobody by that name.',
+    'Check the spelling?',
+] as const;
+
+/** Birthday line for the settings gauge footer. `{n}` = years since launch. */
+export const BIRTHDAY_POOL = [
+    'Cipherline is {n} today.',
+    'Happy birthday to us.',
+    'Thanks for being here.',
+] as const;
+
+/** The playful settings-search queries — consulted after SETTINGS_SEARCH_NOTES
+ *  (utils/settingsSearchNote.ts). */
+export const EGG_SEARCH_NOTES: Record<string, readonly string[]> = {
+    octopus: MISNAMED_KEYS_POOL,
+    squid: MISNAMED_KEYS_POOL,
+    kraken: MISNAMED_KEYS_POOL,
+    abyss: ABYSS_SEARCH_POOL,
+};
+
+/** Halloween relabels of the settings depth zones (Oct 31 only). Not a pool —
+ *  a one-day calendar label, like the December snow. */
+export const HALLOWEEN_ZONE_NAMES: Record<string, string> = {
+    Midnight: 'The Witching Hour',
+    'The Abyss': 'The Haunted Abyss',
+};
+
+/** Fill `{name}` / `{n}` in a pool line. Plain split/join: names are user
+ *  text and must never be read as a replacement pattern. */
+export function fillLine(line: string, vars: Record<string, string | number>): string {
+    return Object.entries(vars).reduce((s, [k, v]) => s.split(`{${k}}`).join(String(v)), line);
+}
+
+/**
+ * Add Friend with your own tag — the dialog's error slot while the
+ * full-screen "You played yourself." moment plays (utils/moments.ts). Every
+ * line says plainly that nothing was sent: it is still a validation message.
+ */
+export const SELF_FRIEND_ERRORS = [
+    'That’s your own tag. Request not sent.',
+    'That’s you. We didn’t send it.',
+    'You’re already stuck with yourself — no request sent.',
 ] as const;
 
 // ── registry ─────────────────────────────────────────────────────────────────
@@ -325,6 +456,7 @@ export const ANCIENT_CHATS_POOL = [
  * to remember.
  */
 export const ALL_POOLS: Record<string, readonly string[]> = {
+    SELF_FRIEND_ERRORS,
     CUTTLEFISH_POOL,
     SELF_EGGS,
     DRAFT_ERASED_POOL,
@@ -344,6 +476,18 @@ export const ALL_POOLS: Record<string, readonly string[]> = {
     KEYS_OBS_FRIDAY,
     KEYS_OBS_SNOW,
     KEYS_SLEEPY_POOL,
+    GROUP_OF_TWO_TITLES,
+    GROUP_OF_TWO_BODIES,
+    LATE_NIGHT_PLACEHOLDERS,
+    ALONE_ECHO_POOL,
+    STATUS_FLAP_POOL,
+    KEYS_DEV_POOL,
+    MISNAMED_KEYS_POOL,
+    ABYSS_SEARCH_POOL,
+    EMPTY_SEARCH_POOL,
+    NO_GAME_POOL,
+    FRIENDS_NO_MATCH_POOL,
+    BIRTHDAY_POOL,
     ...Object.fromEntries(
         Object.entries(CHANNEL_NAME_EGGS).map(([k, v]) => [`CHANNEL_NAME_EGGS.${k}`, v]),
     ),

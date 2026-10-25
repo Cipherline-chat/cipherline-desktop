@@ -40,6 +40,77 @@ interface EditContent { type: 'edit'; target_id: string; text: string; channel_r
 interface DeleteContent { type: 'delete'; target_id: string }
 interface ReactionContent { type: 'reaction'; target_id: string; emoji: string; action: 'add' | 'remove' }
 
+// ── Who may edit / delete a channel row (F3) ───────────────────────────────
+//
+// The server authorizes edits (author only) and deletes (author, or
+// MANAGE_MESSAGES) from the `action_type` the client DECLARES next to the
+// ciphertext; it cannot read the encrypted body. A member could therefore
+// post an ordinary message (no action_type) whose encrypted content is an
+// edit or delete of someone else's row, and every receiver applied it. So the
+// receiver authorizes too:
+//
+//   • edit   — only the target's author;
+//   • delete — the target's author, or a moderator delete the SERVER has
+//              confirmed (it tombstones a validated delete's target before
+//              fanning the marker out; Dashboard checks that tombstone). In
+//              history a validated delete needs no marker at all: the target
+//              is served as a tombstone and dropped before decrypting.
+//
+// The author is the server-labelled `sender_user_id`, which the sender also
+// binds inside the AEAD (G4 `_cb`), with the server-labelled device as the
+// fallback for rows that carry no user id.
+
+/** Same author for a channel action and its target. */
+export function sameChannelAuthor(target: Pick<ChannelRow, 'sender_user_id' | 'sender_device_id'>, action: Pick<ChannelRow, 'sender_user_id' | 'sender_device_id'>): boolean {
+    if (target.sender_user_id && action.sender_user_id) return target.sender_user_id === action.sender_user_id;
+    return !!target.sender_device_id && target.sender_device_id === action.sender_device_id;
+}
+
+/**
+ * Index of the row an action targets: an exact row id first; only failing
+ * that, a row whose `client_msg_id` matches AND that the actor wrote (the
+ * actor's own message still under its local id). `client_msg_id` is chosen by
+ * whoever wrote the row, so it must never let one member's action land on
+ * another member's row.
+ */
+export function findChannelActionTarget(thread: ReadonlyArray<ChannelRow>, targetId: string, action: ChannelRow): number {
+    if (typeof targetId !== 'string' || !targetId) return -1;
+    const exact = thread.findIndex(t => t.id === targetId);
+    if (exact !== -1) return exact;
+    return thread.findIndex(t => (t.content as { client_msg_id?: unknown } | undefined)?.client_msg_id === targetId
+        && sameChannelAuthor(t, action));
+}
+
+export interface ChannelActionOptions {
+    /** Target row ids whose deletion the server has confirmed (tombstoned). */
+    moderatorDeleteTargets?: ReadonlySet<string>;
+}
+
+/** Whether `action` (an edit or a delete) may change `target`. */
+export function channelActionAllowed(target: ChannelRow, action: ChannelRow, kind: 'edit' | 'delete', opts: ChannelActionOptions = {}): boolean {
+    if (sameChannelAuthor(target, action)) return true;
+    return kind === 'delete' && !!opts.moderatorDeleteTargets?.has(target.id);
+}
+
+/**
+ * Apply one edit or delete to a thread, authorized as above. Pure; returns the
+ * same array when nothing applies. Shared by the history fold and the live
+ * channel-message path so the two cannot disagree.
+ */
+export function applyChannelEditDelete<T extends ChannelRow>(thread: T[], action: ChannelRow, opts: ChannelActionOptions = {}): T[] {
+    const c = action.content as (EditContent | DeleteContent | undefined);
+    if (c?.type !== 'edit' && c?.type !== 'delete') return thread;
+    const idx = findChannelActionTarget(thread, c.target_id, action);
+    if (idx === -1 || !channelActionAllowed(thread[idx], action, c.type, opts)) return thread;
+    const next = [...thread];
+    if (c.type === 'edit') {
+        next[idx] = { ...next[idx], content: editedContent(next[idx].content, c.text, c.channel_refs), edited: true };
+    } else {
+        next.splice(idx, 1);
+    }
+    return next;
+}
+
 /**
  * A cached row that stands in for a message we couldn't decrypt (missing epoch
  * key). Written by both the history path and the live-poll path in the same
@@ -224,14 +295,18 @@ export function foldChannelHistory(
     incoming: ChannelRow[],
     purgedIds: ReadonlySet<string> = new Set(),
     serverWindow?: ServerWindow | null,
+    actionOpts: ChannelActionOptions = {},
 ): ChannelRow[] {
     const sorted = [...incoming].sort((a, b) => tsOf(a) - tsOf(b));
     const folded: ChannelRow[] = [...existing];
     const existingIds = new Set(existing.map(m => m.id));
 
-    const indexOfTarget = (targetId: string) => folded.findIndex(
-        t => t.id === targetId || (t.content as { client_msg_id?: string } | undefined)?.client_msg_id === targetId,
-    );
+    // Reactions only: a reaction is attributed to its own (server-labelled)
+    // sender, so it cannot act as anyone else and keeps the permissive match.
+    const indexOfReactionTarget = (targetId: string) => {
+        const exact = folded.findIndex(t => t.id === targetId);
+        return exact !== -1 ? exact : folded.findIndex(t => (t.content as { client_msg_id?: string } | undefined)?.client_msg_id === targetId);
+    };
 
     for (const m of sorted) {
         const c = m.content as (EditContent | DeleteContent | ReactionContent | { type?: string } | undefined);
@@ -253,23 +328,16 @@ export function foldChannelHistory(
             if (self !== -1 && isUndecryptablePlaceholder(folded[self])) folded.splice(self, 1);
         }
 
-        if (c?.type === 'edit') {
-            const { target_id, text, channel_refs } = c as EditContent;
-            const idx = indexOfTarget(target_id);
-            if (idx !== -1) {
-                folded[idx] = {
-                    ...folded[idx],
-                    content: editedContent(folded[idx].content, text, channel_refs),
-                    edited: true,
-                };
-            }
-            // Drop the edit envelope itself once applied.
-        } else if (c?.type === 'delete') {
-            const idx = indexOfTarget((c as DeleteContent).target_id);
-            if (idx !== -1) folded.splice(idx, 1);
+        if (c?.type === 'edit' || c?.type === 'delete') {
+            // F3: the author, or a moderator delete the caller had the server
+            // confirm (actionOpts). An unconfirmed foreign delete is dropped;
+            // a validated one also reaches history as the target's tombstone.
+            const applied = applyChannelEditDelete(folded, m, actionOpts);
+            if (applied !== folded) folded.splice(0, folded.length, ...applied);
+            // Either way the action envelope itself is never a row.
         } else if (c?.type === 'reaction') {
             const { target_id, emoji, action } = c as ReactionContent;
-            const idx = indexOfTarget(target_id);
+            const idx = indexOfReactionTarget(target_id);
             if (idx !== -1) {
                 const target = folded[idx];
                 const reactions: Record<string, string[]> = { ...(target.reactions || {}) };
@@ -336,21 +404,19 @@ export function deletedChannelTargetIds(
     existing: ChannelRow[],
     incoming: ChannelRow[],
     purgedIds: ReadonlySet<string> = new Set(),
+    opts: ChannelActionOptions = {},
 ): string[] {
     const sorted = [...incoming].sort((a, b) => tsOf(a) - tsOf(b));
     const folded: ChannelRow[] = [...existing];
     const out: string[] = [];
 
-    const indexOfTarget = (targetId: string) => folded.findIndex(
-        t => t.id === targetId || (t.content as { client_msg_id?: string } | undefined)?.client_msg_id === targetId,
-    );
-
     for (const m of sorted) {
         const c = m.content as (DeleteContent | { type?: string } | undefined);
         if (purgedIds.has(m.id)) continue;
         if (c?.type === 'delete') {
-            const idx = indexOfTarget((c as DeleteContent).target_id);
-            if (idx !== -1) {
+            // Same target matching and authorization as the fold (F3).
+            const idx = findChannelActionTarget(folded, (c as DeleteContent).target_id, m);
+            if (idx !== -1 && channelActionAllowed(folded[idx], m, 'delete', opts)) {
                 out.push(folded[idx].id);
                 folded.splice(idx, 1);
             }

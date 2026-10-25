@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { useEncryptedAvatar, evictAvatar } from '../hooks/useEncryptedAvatar';
+import { useEncryptedAvatar, evictAvatar, avatarUrlMime } from '../hooks/useEncryptedAvatar';
+import { useStillGate } from '../utils/animatedImage';
 import { safeImageSrc } from '../utils/safeMediaUrl';
 import { useIsFriendOrSelf } from '../contexts/FriendshipContext';
 import cipherlineMark from '../assets/cipherline-mark.svg';
@@ -33,6 +34,9 @@ interface BannerProps {
      *  uploaded yet) shown INSTEAD of the attachment. The onboarding profile
      *  card uses it; everything else leaves it unset. */
     src?: string | null;
+    /** Animated banners (GIF / animated WebP) play. Default false = first
+     *  frame; the profile card and the settings preview pass true. */
+    animate?: boolean;
 }
 
 /**
@@ -71,6 +75,7 @@ export const Banner: React.FC<BannerProps> = ({
     className = '',
     bypassFriendGate = false,
     src = null,
+    animate = false,
 }) => {
     const isFriendOrSelf = useIsFriendOrSelf();
     // Privacy gate: strangers in a shared group / call never see this user's
@@ -83,7 +88,8 @@ export const Banner: React.FC<BannerProps> = ({
     // are ~3x an avatar and must not evict the avatars every chat row paints.
     const resolvedUrl = useEncryptedAvatar(allowImage && !src ? attachmentId : null, token, null, BANNER_KIND);
     // Only a validated image URL (blob:, data:image/*, trusted https) ever reaches <img src>.
-    const bannerUrl = safeImageSrc(src || resolvedUrl) ?? null;
+    const fullUrl = safeImageSrc(src || resolvedUrl) ?? null;
+    const bannerUrl = useStillGate(fullUrl, src ? null : avatarUrlMime(fullUrl), animate);
 
     // ── No blank flash, no pop ───────────────────────────────────────────────
     // The default banner is ALWAYS underneath, so there is never an empty box.

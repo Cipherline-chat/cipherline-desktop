@@ -1,5 +1,6 @@
 import React from 'react';
 import { shallowArrayEqual } from '../utils/renderMemo';
+import { RowErrorBoundary } from './RowErrorBoundary';
 
 /**
  * Renders `render()` and then skips re-rendering for as long as `deps` stay
@@ -20,7 +21,20 @@ interface MemoRowProps {
     render: () => React.ReactNode;
 }
 
-const MemoRowImpl: React.FC<MemoRowProps> = ({ render }) => <>{render()}</>;
+/** Calls `render()` as a CHILD of the boundary, so a throw in it is caught there. */
+const RenderCall: React.FC<{ render: () => React.ReactNode }> = ({ render }) => <>{render()}</>;
+
+/**
+ * Every row sits in its own error boundary: a row renders content another
+ * user chose, and one bad row must cost that row, not the whole app (it used
+ * to reach RootErrorBoundary, on every launch, since the row is stored). The
+ * boundary retries when `deps` change.
+ */
+const MemoRowImpl: React.FC<MemoRowProps> = ({ render, deps }) => (
+    <RowErrorBoundary resetKeys={deps} label="message row">
+        <RenderCall render={render} />
+    </RowErrorBoundary>
+);
 
 export const MemoRow = React.memo(
     MemoRowImpl,

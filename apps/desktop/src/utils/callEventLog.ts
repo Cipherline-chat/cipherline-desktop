@@ -33,7 +33,13 @@
  *     (optional -N) or remote-video-N — nothing else;
  *   - reserved keys `kind`, `source`, `quality_limitation_reason` are not used.
  * validateCallEvent() checks all of it; sanitising enforces what it can.
+ *
+ * One exception to "memory of THIS process": an allowlist of kinds is also
+ * mirrored, as `k=v` scalars, into the main process's in-memory perf log
+ * (crashBreadcrumbs.ts), so an auto crash report still knows what the call
+ * was doing when the renderer died. Same data, same memory-only rule.
  */
+import { mirrorBreadcrumb } from './crashBreadcrumbs';
 
 export const CALL_EVENT_KINDS = [
     'call_join', 'call_leave', 'participants', 'ice_route', 'reconnecting', 'reconnected',
@@ -64,7 +70,17 @@ export const CALL_EVENT_KINDS = [
     'share_gpu_sched',
     // The "share the game window instead" hint: shown / accepted (shareFullscreenHint.ts).
     'share_hint',
+    // A screen share's display HDR state and capture path: `path` chromium |
+    // native_tonemap | fallback (+ why), SDR white / peak nits, and ~10 s in
+    // (stage=stats) the tone map's GPU cost per frame (SidebarConference
+    // tryStartHdrShare, utils/hdrSharePipeline.ts).
+    'share_hdr',
     'dynacast_layers', 'quality_limitation', 'freeze_start', 'freeze_end',
+    // Receive side (CallEventMonitor): a remote video's decoded size changed
+    // (layer switch); a 10 s window with loss / keyframe requests (counts and
+    // %); a remote share held at / released from its lower layer because its
+    // full layer was not getting through (shareLossFallback.ts).
+    'rx_layer', 'rx_video_health', 'share_rx_fallback',
     'focus_upgrade', 'focus_switched',
     'incoming_mode', 'decode_cap',
     'load_trigger', 'offer_shown', 'offer_answer',
@@ -93,6 +109,20 @@ export const CALL_EVENT_KINDS = [
     // (micDeviceSync.applyCapture): the wanted echo-cancellation value,
     // whether it was among the flags that differed, ok|failed. Booleans only.
     'mic_echo_cancellation',
+    // The voice processor's audio render thread fell behind (AudioContext
+    // playbackStats, nsLoadGuard.ts): a 10 s window's underrun ms / events and
+    // the NS engine that was running; once per call, Strong → Light.
+    'audio_render', 'ns_load_fallback',
+    // Audio latency guards (2026-10-24 "audio a minute late on both ends"):
+    // the E2EE worker's audio-frame lag per direction and the frames it
+    // dropped to stay inside the cap (utils/e2eeAudioLag.ts). The inbound
+    // jitter-buffer delay is in every webrtc sample as jb_ms.
+    // Milliseconds, counts and a direction enum only.
+    'e2ee_audio_lag',
+    // Receiver-side screen-share A/V sync: the extra delay put on the SHARE
+    // VIDEO receiver to meet its share audio (utils/shareAvSync.ts). Never on
+    // a microphone or camera receiver.
+    'av_sync_applied',
     // One per output-device (setSinkId) attempt, element or AudioContext, in a
     // call or not (audioOutput.ts): target, ok, landed (read-back matches),
     // to_default, a reason enum and a DOMException-name enum. Never a device
@@ -110,6 +140,11 @@ export const CALL_EVENT_KINDS = [
     // script's file BASENAME on our own origin, function name, character
     // offset and invoker kind — code identifiers only (longFrameAttribution.ts).
     'long_frame',
+    // A rejected axios call nothing caught whose failure was the TRANSPORT (no
+    // HTTP answer: ERR_NETWORK / ECONNABORTED...), e.g. right after a wake while
+    // Wi-Fi is still reconnecting. A non-fatal diagnostic, not a crash: the
+    // transport code only, never the URL (utils/networkError.ts).
+    'net_unhandled',
 ] as const;
 export type CallEventKind = (typeof CALL_EVENT_KINDS)[number];
 
@@ -193,6 +228,13 @@ const same = (a?: CallEventDetail, b?: CallEventDetail) => {
 
 function emit() { for (const l of [...listeners]) { try { l(); } catch { /* isolate */ } } }
 
+/** One observer of every logged event, BEFORE coalescing (beta diagnostics'
+ *  call summary counts each one). Gets the sanitized detail; must not throw
+ *  (it is isolated anyway). */
+type CallEventTap = (kind: CallEventKind, detail: CallEventDetail | undefined) => void;
+let tap: CallEventTap | null = null;
+export function setCallEventTap(fn: CallEventTap | null): void { tap = fn; }
+
 /** Record one event. Unknown kinds are dropped (the kind list is the contract). */
 export function logCallEvent(kind: CallEventKind, detail?: CallEventDetail): void {
     if (!(CALL_EVENT_KINDS as readonly string[]).includes(kind)) return;
@@ -200,6 +242,9 @@ export function logCallEvent(kind: CallEventKind, detail?: CallEventDetail): voi
     const ev: CallEvent = { t: Date.now(), kind };
     const d = sanitize(detail);
     if (d) ev.detail = d;
+    if (tap) { try { tap(kind, d); } catch { /* isolate */ } }
+    // Survives a renderer crash (crashBreadcrumbs.ts → main's perf log).
+    mirrorBreadcrumb(kind, d);
     const last = buf[buf.length - 1];
     if (last && last.ev.kind === kind && abs - last.abs <= COALESCE_MS && (NOISY.has(kind) || same(last.ev.detail, ev.detail))) {
         const repeat = Number(last.ev.detail?.repeat ?? 1) + 1;

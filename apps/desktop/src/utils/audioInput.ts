@@ -74,14 +74,22 @@ export const MIC_CAPTURE_BASE_CONSTRAINTS = {
 } satisfies MediaTrackConstraints & { voiceIsolation: boolean };
 
 /**
- * Acoustic echo cancellation is ON by default (Settings -> Voice & Video).
+ * Acoustic echo cancellation is OFF by default (Settings -> Voice & Video).
  *
  * It is a user setting because it is the one stage with a cost for people who
  * do not need it: Chromium's AEC3 adaptive filter adds some CPU and can
  * slightly colour the voice, and with headphones there is no echo path to
- * remove.
+ * remove. People on speakers turn it on.
+ *
+ * This is only the default for a setting that was NEVER saved. The voice
+ * settings are persisted as one JSON object, so an account that has saved ANY
+ * voice setting already carries an explicit `echoCancellation` boolean (true if
+ * it never touched the toggle, because the old default was ON) and that stored
+ * value is honoured as-is - a stored `true` cannot be told apart from a user who
+ * deliberately turned it on, and flipping it would silently change the audio of
+ * people who chose it.
  */
-export const DEFAULT_ECHO_CANCELLATION = true;
+export const DEFAULT_ECHO_CANCELLATION = false;
 
 /**
  * Coerce whatever was persisted (an older saved settings object has no field; a

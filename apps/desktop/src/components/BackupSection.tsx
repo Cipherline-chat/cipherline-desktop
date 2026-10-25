@@ -6,11 +6,11 @@
  * backup-related touches the Cipherline server.
  */
 import { trackActivity } from '../utils/freezeLog';
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
     Lock, Download, Upload, AlertTriangle, ShieldCheck,
-    FolderOpen, Loader2, Clock, Image as ImageIcon, Folder, Info,
+    FolderOpen, Loader2, Clock, Image as ImageIcon, Folder, Info, FileCog,
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
@@ -21,10 +21,18 @@ import {
 } from '../services/driveBackup';
 import { readBackupCfg, writeBackupCfg, type BackupCfg } from '../hooks/useBackupAutoSchedule';
 import { RestorePasswordModal } from './RestorePasswordModal';
+import { StaleBackupModal } from './StaleBackupModal';
+import { BackupProgressBars } from './BackupProgressBars';
+import {
+    initProgressRows, advanceProgressRows, finishProgressRows, type ProgressRows,
+} from '../services/backupProgressState';
 import { useStepUp } from '../hooks/useStepUp';
 import { BackupWrongPasswordError } from '../utils/backupErrors';
-import { ClToggle, ClButton, ClInput, ClSelect, ClModal } from './cl';
+import { loadZxcvbn, useZxcvbn } from '../utils/passwordStrength';
+import { judgeBackupPassphrase } from '../utils/backupPassphrasePolicy';
+import { ClToggle, ClButton, ClInput, ClSelect } from './cl';
 import type { ClSelectOption } from './cl';
+import { SettingsDisclosure } from './settings/SettingsDisclosure';
 
 // Module-level cache — persists across BackupSection remounts within the same
 // Electron session. Reset only on explicit disconnect / reconnect.
@@ -114,6 +122,25 @@ export const BackupSection: React.FC = () => {
     const [password, setPassword] = useState('');
     const [hasSavedPw, setHasSavedPw] = useState(false);
     const [showPw, setShowPw] = useState(false);
+    /** F9: the passphrase already saved on this device (null when none). A
+     *  different one is a NEW passphrase and must meet the strength bar. */
+    const [savedPw, setSavedPw] = useState<string | null>(null);
+    const zxcvbn = useZxcvbn(!!password && password !== savedPw);
+    // Account words zxcvbn should treat as guessable.
+    const accountName = user?.username ?? '';
+    const accountEmail = user?.email ?? '';
+    const pwVerdict = password && zxcvbn
+        ? judgeBackupPassphrase(password, savedPw, zxcvbn, [accountName, accountEmail])
+        : null;
+    /** Gate for anything that saves / uses a passphrase to write a backup. */
+    const checkNewPassphrase = useCallback(async (): Promise<string | null> => {
+        try {
+            const z = await loadZxcvbn();
+            return judgeBackupPassphrase(password, savedPw, z, [accountName, accountEmail]).message;
+        } catch {
+            return 'Could not check passphrase strength — try again.';
+        }
+    }, [password, savedPw, accountName, accountEmail]);
     /**
      * Revealing a STORED passphrase needs a fresh "Confirm it's you" (2FA code,
      * backup code, or the account password if 2FA is off); hiding never does.
@@ -133,6 +160,11 @@ export const BackupSection: React.FC = () => {
     );
     const [busy, setBusy] = useState<'backup' | 'restore' | null>(null);
     const [progress, setProgress] = useState<DriveBackupProgress | null>(null);
+    // Per-destination bars for a manual "Back up now". Kept on screen for a few
+    // seconds after the run so the result (done / failed) is actually seen.
+    const [rows, setRows] = useState<ProgressRows | null>(null);
+    const rowsHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+    useEffect(() => () => { if (rowsHideTimer.current) clearTimeout(rowsHideTimer.current); }, []);
     const [lastBackup, setLastBackup] = useState<string | null>(null);
     /**
      * The active restore session: which source, the picked file (local), and
@@ -169,7 +201,7 @@ export const BackupSection: React.FC = () => {
         if (!_hostnameCache) {
             window.electronAPI.getDeviceName?.().then(h => { _hostnameCache = h || ''; }).catch(() => {});
         }
-        getCachedPassword().then(pw => { if (pw) { setPassword(pw); setHasSavedPw(true); setShowPw(false); } }).catch(() => {});
+        getCachedPassword().then(pw => { if (pw) { setSavedPw(pw); setPassword(pw); setHasSavedPw(true); setShowPw(false); } }).catch(() => {});
         if (userId) {
             const c = readBackupCfg(userId);
             if (!c.backupFileBase || c.backupFileBase === 'cipherline-backup') {
@@ -223,7 +255,13 @@ export const BackupSection: React.FC = () => {
             }
         // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (err: any) {
-            toast.push({ kind: 'error', title: 'Google Drive', message: err?.message || 'Connection failed or was cancelled.' });
+            // Electron prefixes errors thrown in the main process with
+            // "Error invoking remote method '…': Error: " — strip it so the
+            // message (e.g. "tick the Drive box") reads as written.
+            const msg = typeof err?.message === 'string'
+                ? err.message.replace(/^Error invoking remote method '[^']*': (?:Error: )?/, '')
+                : '';
+            toast.push({ kind: 'error', title: 'Google Drive', message: msg || 'Connection failed or was cancelled.' });
         } finally { setConnecting(false); }
     }, [toast, persist]);
 
@@ -252,16 +290,22 @@ export const BackupSection: React.FC = () => {
         if (!userId || !token) return;
         if (!password) { toast.push({ kind: 'error', title: 'Backup', message: 'Enter a backup passphrase first.' }); return; }
         if (!wantLocal && !wantDrive) { toast.push({ kind: 'error', title: 'Backup', message: 'Pick a local folder and/or connect Google Drive.' }); return; }
+        // F9: a newly chosen passphrase must be strong; a saved one keeps working.
+        const weak = await checkNewPassphrase();
+        if (weak) { toast.push({ kind: 'error', title: 'Backup', message: weak }); return; }
         setBusy('backup'); setProgress(null);
+        if (rowsHideTimer.current) { clearTimeout(rowsHideTimer.current); rowsHideTimer.current = null; }
+        setRows(initProgressRows([...(wantLocal ? ['local' as const] : []), ...(wantDrive ? ['drive' as const] : [])]));
         try {
-            await setCachedPassword(password); setHasSavedPw(true); setShowPw(false);
+            await setCachedPassword(password); setSavedPw(password); setHasSavedPw(true); setShowPw(false);
             // Labelled for Settings → Advanced → Performance log, like backup:auto.
             const res = await trackActivity('backup:manual', () => runBackup({
                 userId, token, password,
                 includeAttachments: cfg.includeAttachments, maxAttachmentBytes: cfg.maxAttachmentBytes,
                 destinations: { localDir: wantLocal ? cfg.localDir : null, drive: wantDrive, driveFolderId: cfg.driveFolderId, fileName: cfg.backupFileBase },
-                onProgress: setProgress,
+                onProgress: ev => { setProgress(ev); setRows(r => (r ? advanceProgressRows(r, ev) : r)); },
             }));
+            setRows(r => (r ? finishProgressRows(r, res) : r));
             // No timestamp write here — runBackup stamps both keys itself, so
             // every caller (and every future one) is covered by construction.
             setLastBackup(res.at);
@@ -313,9 +357,13 @@ export const BackupSection: React.FC = () => {
             }
         // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (err: any) {
+            setRows(r => (r ? finishProgressRows(r, null) : r));
             toast.push({ kind: 'error', title: 'Backup failed', message: err?.message || 'Unknown error.' });
-        } finally { setBusy(null); setProgress(null); }
-    }, [userId, token, password, cfg, wantLocal, wantDrive, toast, persist]);
+        } finally {
+            setBusy(null); setProgress(null);
+            rowsHideTimer.current = setTimeout(() => { setRows(null); rowsHideTimer.current = null; }, 5000);
+        }
+    }, [userId, token, password, cfg, wantLocal, wantDrive, toast, persist, checkNewPassphrase]);
 
     /**
      * Turning automatic backups on has to cache the passphrase, otherwise the
@@ -334,15 +382,18 @@ export const BackupSection: React.FC = () => {
             });
             return;
         }
+        const weak = await checkNewPassphrase();
+        if (weak) { toast.push({ kind: 'error', title: 'Automatic backups', message: weak }); return; }
         try {
             await setCachedPassword(password);
+            setSavedPw(password);
             setHasSavedPw(true); setShowPw(false);
         } catch {
             toast.push({ kind: 'error', title: 'Automatic backups', message: "Couldn't save the passphrase securely." });
             return;
         }
         persist({ enabled: true });
-    }, [password, persist, toast]);
+    }, [password, persist, toast, checkNewPassphrase]);
 
     /** Local restore: pick the file first, THEN ask for that file's password. */
     const startRestore = useCallback(async (source: 'drive' | 'local') => {
@@ -412,7 +463,7 @@ export const BackupSection: React.FC = () => {
         : null;
 
     return (
-        <div className="sd-card overflow-hidden" style={{ padding: 0 }}>
+        <div className="sd-card overflow-hidden" style={{ padding: 0 }} data-labels="Encrypted backups">
             {/* Header */}
             <div className="flex items-start gap-3.5 p-5 pb-4">
                 <span className="sd-tile"><ShieldCheck size={17} /></span>
@@ -428,7 +479,7 @@ export const BackupSection: React.FC = () => {
             <div className="px-5 pb-5 space-y-4">
                 {/* Passphrase */}
                 <div>
-                    <label className="text-[11px] font-semibold uppercase tracking-wider" style={{ color: 'var(--cl-faint)' }}>Passphrase</label>
+                    <label className="text-[12px] font-bold" style={{ color: 'var(--cl-muted)' }}>Passphrase</label>
                     <div className="relative mt-1.5">
                         <span className="absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none z-10" style={{ color: 'var(--cl-faint)' }}>
                             <Lock size={15} />
@@ -450,28 +501,19 @@ export const BackupSection: React.FC = () => {
                             {showPw ? 'Hide' : 'Show'}
                         </ClButton>
                     </div>
-                </div>
-
-                {/* Filename */}
-                <div>
-                    <label className="text-[11px] font-semibold uppercase tracking-wider" style={{ color: 'var(--cl-faint)' }}>Filename</label>
-                    <div className="mt-1.5 space-y-1.5">
-                        <ClInput
-                            type="text"
-                            value={cfg.backupFileBase}
-                            onChange={e => persist({ backupFileBase: e.target.value })}
-                            placeholder="cipherline-backup"
-                            style={{ width: '100%' }}
-                        />
-                        <p className="text-[11px]" style={{ color: 'var(--cl-faint)' }}>
-                            One file, kept up to date: <span className="font-mono" style={{ color: 'var(--cl-muted)' }}>{backupFileName(cfg.backupFileBase)}</span>
+                    {/* F9: only for a passphrase being chosen, never for the saved one. */}
+                    {pwVerdict && !pwVerdict.existing && (
+                        <p className="text-[11.5px] mt-1.5" role="status" style={{ color: pwVerdict.ok ? 'var(--cl-faint)' : 'var(--cl-glow)' }}>
+                            {pwVerdict.ok
+                                ? 'Strong enough. Keep it somewhere safe — it can’t be recovered.'
+                                : 'Too easy to guess for a backup file. Use a few unrelated words.'}
                         </p>
-                    </div>
+                    )}
                 </div>
 
                 {/* Destinations */}
                 <div className="space-y-2.5">
-                    <label className="text-[11px] font-semibold uppercase tracking-wider" style={{ color: 'var(--cl-faint)' }}>Back up to</label>
+                    <label className="text-[12px] font-bold" style={{ color: 'var(--cl-muted)' }}>Back up to</label>
 
                     {/* Local folder */}
                     <div className="rounded-xl overflow-hidden" style={{ border: '1px solid var(--cl-border)', background: 'rgba(0,0,0,.15)' }}>
@@ -585,29 +627,59 @@ export const BackupSection: React.FC = () => {
                     </div>
                 </div>
 
-                {/* Include attachments + per-file size limit */}
-                <div className="rounded-xl overflow-hidden" style={{ border: '1px solid var(--cl-border)', background: 'rgba(0,0,0,.1)' }}>
-                    <div className="flex items-center gap-3 px-3.5 py-3">
-                        <ImageIcon size={15} style={{ color: 'var(--cl-faint)', flexShrink: 0 }} />
-                        <span className="text-[13px] flex-1" style={{ color: 'var(--cl-muted)' }}>Include images &amp; files</span>
-                        <ClToggle checked={cfg.includeAttachments} onChange={v => persist({ includeAttachments: v })} />
+                {/* File name + attachments: set once, rarely revisited. Folded
+                    with the current file name on the row so nothing is hidden. */}
+                <SettingsDisclosure
+                    id="storage.backup-options"
+                    title="File name & attachments"
+                    summary={`${backupFileName(cfg.backupFileBase)}, ${cfg.includeAttachments ? 'images and files included' : 'messages only'}`}
+                    icon={<FileCog size={15} />}
+                    labels={['Include images & files', 'Filename']}
+                >
+                    <div className="space-y-4 pt-2 pb-1">
+                        {/* Filename */}
+                        <div>
+                            <label className="text-[12px] font-bold" style={{ color: 'var(--cl-muted)' }}>Filename</label>
+                            <div className="mt-1.5 space-y-1.5">
+                                <ClInput
+                                    type="text"
+                                    value={cfg.backupFileBase}
+                                    onChange={e => persist({ backupFileBase: e.target.value })}
+                                    placeholder="cipherline-backup"
+                                    style={{ width: '100%' }}
+                                />
+                                <p className="text-[11px]" style={{ color: 'var(--cl-faint)' }}>
+                                    One file, kept up to date: <span className="font-mono" style={{ color: 'var(--cl-muted)' }}>{backupFileName(cfg.backupFileBase)}</span>
+                                </p>
+                            </div>
+                        </div>
+
+                        {/* Include attachments + per-file size limit */}
+                        <div className="rounded-xl overflow-hidden" style={{ border: '1px solid var(--cl-border)', background: 'rgba(0,0,0,.1)' }}>
+                            <div className="flex items-center gap-3 px-3.5 py-3">
+                                <ImageIcon size={15} style={{ color: 'var(--cl-faint)', flexShrink: 0 }} />
+                                <span className="text-[13px] flex-1" style={{ color: 'var(--cl-muted)' }}>Include images &amp; files</span>
+                                <ClToggle checked={cfg.includeAttachments} onChange={v => persist({ includeAttachments: v })} />
+                            </div>
+                            <AnimatePresence initial={false}>
+                                {cfg.includeAttachments && (
+                                    <motion.div {...reveal} className="overflow-hidden">
+                                        <div className="px-3.5 pb-3.5 flex items-center gap-3">
+                                            <span className="text-[12px] flex-1" style={{ color: 'var(--cl-faint)' }}>Skip files larger than</span>
+                                            <ClSelect<AttachmentCapKey>
+                                                value={bytesToCapKey(cfg.maxAttachmentBytes)}
+                                                onChange={k => persist({ maxAttachmentBytes: ATTACHMENT_CAPS[k].bytes })}
+                                                options={ATTACHMENT_CAP_OPTIONS}
+                                                style={{ width: 160 }}
+                                            />
+                                        </div>
+                                    </motion.div>
+                                )}
+                            </AnimatePresence>
+                        </div>
+
                     </div>
-                    <AnimatePresence initial={false}>
-                        {cfg.includeAttachments && (
-                            <motion.div {...reveal} className="overflow-hidden">
-                                <div className="px-3.5 pb-3.5 flex items-center gap-3">
-                                    <span className="text-[12px] flex-1" style={{ color: 'var(--cl-faint)' }}>Skip files larger than</span>
-                                    <ClSelect<AttachmentCapKey>
-                                        value={bytesToCapKey(cfg.maxAttachmentBytes)}
-                                        onChange={k => persist({ maxAttachmentBytes: ATTACHMENT_CAPS[k].bytes })}
-                                        options={ATTACHMENT_CAP_OPTIONS}
-                                        style={{ width: 160 }}
-                                    />
-                                </div>
-                            </motion.div>
-                        )}
-                    </AnimatePresence>
-                </div>
+                </SettingsDisclosure>
 
                 {/* Actions */}
                 <div className="flex flex-wrap items-center gap-2.5">
@@ -637,6 +709,9 @@ export const BackupSection: React.FC = () => {
                         </motion.div>
                     )}
                 </AnimatePresence>
+
+                {/* One bar per destination while "Back up now" runs, then its result for a few seconds */}
+                {rows && <BackupProgressBars rows={rows} />}
 
                 {/* Schedule */}
                 <div className="rounded-xl overflow-hidden" style={{ border: '1px solid var(--cl-border)', background: 'rgba(0,0,0,.15)' }}>
@@ -722,21 +797,7 @@ export const BackupSection: React.FC = () => {
                 wrote here. Info-styled, primary action proceeds. Closing it
                 any other way (backdrop, Esc) is a decline, which leaves the
                 device untouched — never a silent restore. */}
-            <ClModal open={!!staleAsk} onClose={() => staleAsk?.decide(false)} width={400}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
-                    <div style={{ width: 36, height: 36, borderRadius: 12, background: 'rgba(56,189,248,.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                        <Clock size={17} style={{ color: 'var(--cl-glow)' }} />
-                    </div>
-                    <h4 style={{ margin: 0 }}>{staleAsk?.warning.title}</h4>
-                </div>
-                <p style={{ fontSize: 13, color: 'var(--cl-muted)', lineHeight: 1.6, marginBottom: 20 }}>
-                    {staleAsk?.warning.message}
-                </p>
-                <div className="mrow">
-                    <ClButton variant="ghost" size="sm" onClick={() => staleAsk?.decide(false)}>Cancel</ClButton>
-                    <ClButton size="sm" onClick={() => staleAsk?.decide(true)}>Restore anyway</ClButton>
-                </div>
-            </ClModal>
+            <StaleBackupModal warning={staleAsk?.warning ?? null} onDecide={ok => staleAsk?.decide(ok)} />
         </div>
     );
 };

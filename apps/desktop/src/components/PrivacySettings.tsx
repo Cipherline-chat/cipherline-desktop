@@ -1,5 +1,5 @@
 import React from 'react';
-import { ShieldOff, Eye, MessageCircle, UserCheck, AlertCircle, FileText, ScrollText, ExternalLink, ImageIcon, Smartphone, Search } from 'lucide-react';
+import { ShieldOff, Eye, MessageCircle, UserCheck, AlertCircle, ExternalLink, ImageIcon, Smartphone, Search } from 'lucide-react';
 import { type PrivacySettingsHook, type ImageAutoLoadMode } from '../hooks/usePrivacySettings';
 import type { ScreenLockHook } from '../hooks/useScreenLock';
 import type { KeybindHook } from '../hooks/useKeybinds';
@@ -45,9 +45,9 @@ const PrivacySettings: React.FC<PrivacySettingsProps> = ({ privacy, screenLock, 
         <>
             <ScreenLockSettings screenLock={screenLock} keybinds={keybinds} />
 
-            {/* Messaging */}
+            {/* Messaging + reachability */}
             <div className="sd-card">
-                <h3>Messaging</h3>
+                <h3>What others see</h3>
                 <p className="sd-sub">Receipts and typing are routed device-to-device — the server never sees either.</p>
                 <div className="sd-row" style={{ borderTop: 'none' }}>
                     <span className={`sd-tile${settings.showReadReceipts ? '' : ' sd-tile--dim'}`}><Eye size={16} /></span>
@@ -69,12 +69,9 @@ const PrivacySettings: React.FC<PrivacySettingsProps> = ({ privacy, screenLock, 
                         <ClToggle checked={settings.showTypingIndicators} onChange={setShowTypingIndicators} />
                     </div>
                 </div>
-            </div>
-
-            {/* Social */}
-            <div className="sd-card">
-                <h3>Reachability</h3>
-                <div className="sd-row" style={{ borderTop: 'none' }}>
+                {/* Reachability (was its own card): who can find you sits with
+                    what you reveal, one card for "what other people see". */}
+                <div className="sd-row" data-labels="Reachability">
                     <span className={`sd-tile${settings.allowFriendRequests ? '' : ' sd-tile--dim'}`}><UserCheck size={16} /></span>
                     <div className="sd-rl">
                         <b>Allow friend requests</b>
@@ -142,9 +139,9 @@ const PrivacySettings: React.FC<PrivacySettingsProps> = ({ privacy, screenLock, 
                 </div>
             </div>
 
-            {/* App Security */}
+            {/* App security + content */}
             <div className="sd-card">
-                <h3>This window</h3>
+                <h3>This window &amp; content</h3>
                 <div className="sd-row" style={{ borderTop: 'none' }}>
                     <span className={`sd-tile${settings.screenCaptureProtection ? '' : ' sd-tile--dim'}`}><ShieldOff size={16} /></span>
                     <div className="sd-rl">
@@ -158,44 +155,7 @@ const PrivacySettings: React.FC<PrivacySettingsProps> = ({ privacy, screenLock, 
                         <ClToggle checked={settings.screenCaptureProtection} onChange={setScreenCaptureProtection} />
                     </div>
                 </div>
-            </div>
-
-            {/* Content & Safety */}
-            {/* Policies — the privacy policy and terms, one click from the app
-                (Google's app-verification bar: "prominently displayed in your
-                app interface"). Opened through the validated external-link path. */}
-            <div className="sd-card">
-                <h3>Policies</h3>
-                <p className="sd-sub">What we can see, what we can’t, and what you agreed to. The same text as on cipherline.chat.</p>
-                <div className="sd-row" style={{ borderTop: 'none' }}>
-                    <span className="sd-tile"><FileText size={16} /></span>
-                    <div className="sd-rl">
-                        <b>Privacy Policy</b>
-                        <span>How Cipherline handles your data — including the optional Google Drive backups.</span>
-                    </div>
-                    <div className="sd-rc">
-                        <ClButton size="sm" variant="ghost" onClick={() => { openExternalLink('https://cipherline.chat/privacy'); }}>
-                            <ExternalLink size={13} /> Open
-                        </ClButton>
-                    </div>
-                </div>
                 <div className="sd-row">
-                    <span className="sd-tile"><ScrollText size={16} /></span>
-                    <div className="sd-rl">
-                        <b>Terms of Service</b>
-                        <span>The agreement between you and Cipherline LLC.</span>
-                    </div>
-                    <div className="sd-rc">
-                        <ClButton size="sm" variant="ghost" onClick={() => { openExternalLink('https://cipherline.chat/terms'); }}>
-                            <ExternalLink size={13} /> Open
-                        </ClButton>
-                    </div>
-                </div>
-            </div>
-
-            <div className="sd-card">
-                <h3>Content</h3>
-                <div className="sd-row" style={{ borderTop: 'none' }}>
                     <span className="sd-tile sd-tile--warm"><AlertCircle size={16} /></span>
                     <div className="sd-rl">
                         <b>Show age-restricted content <span style={{ color: 'var(--cl-glow)', fontWeight: 700, fontSize: 11 }}>coming soon</span></b>
@@ -203,6 +163,24 @@ const PrivacySettings: React.FC<PrivacySettingsProps> = ({ privacy, screenLock, 
                     </div>
                     <div className="sd-rc">
                         <ClToggle checked={false} onChange={() => {}} disabled />
+                    </div>
+                </div>
+            </div>
+
+            {/* Policies — the privacy policy and terms, one click from the app
+                (Google's app-verification bar: "prominently displayed in your
+                app interface"). Opened through the validated external-link path.
+                A quiet footer rather than a card of rows: two links, one line. */}
+            <div className="sd-card sd-card--bare" data-labels="Policies">
+                <div className="flex items-center justify-between gap-4 flex-wrap">
+                    <p className="sd-sub" style={{ margin: 0, maxWidth: '44ch' }}>What we can see, what we can’t, and what you agreed to. The same text as on cipherline.chat.</p>
+                    <div className="sx-links">
+                        <ClButton size="sm" variant="ghost" onClick={() => { openExternalLink('https://cipherline.chat/privacy'); }}>
+                            <ExternalLink size={13} /> Privacy Policy
+                        </ClButton>
+                        <ClButton size="sm" variant="ghost" onClick={() => { openExternalLink('https://cipherline.chat/terms'); }}>
+                            <ExternalLink size={13} /> Terms of Service
+                        </ClButton>
                     </div>
                 </div>
             </div>

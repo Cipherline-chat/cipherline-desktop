@@ -1,0 +1,132 @@
+/* "You played yourself." — components/moments/views/SelfFriendMoment.tsx.
+   9 s, transform/opacity only. Phases (utils/moments.ts): notice 0–0.5,
+   main 0.5–4.9, read 4.9–7.4, hold 7.4–8.4, exit 8.4–9.0. */
+.mo-sf-all {
+  position: absolute; left: -130px; top: 20px; width: 260px; height: 168px;
+  animation: mo-sf-away var(--mo-exit-dur, .6s) cubic-bezier(.45, 0, .55, 1) var(--mo-exit, 8.4s) forwards;
+}
+@keyframes mo-sf-away {
+  from { transform: none; }
+  to   { transform: translateY(-36px) scale(.94); }
+}
+/* Notice (0–0.5 s): a soft glint where the envelope will come from. */
+.mo-sf .mo-notice { left: -36vw; top: 32vh; }
+
+/* 0.5–1.75 the flight: a long, readable arc (travel = ease-in-out). */
+.mo-sf-fx { animation: mo-sf-fx 1.25s cubic-bezier(.45, 0, .4, 1) .5s both; }
+@keyframes mo-sf-fx { from { transform: translateX(-78vw); } to { transform: none; } }
+.mo-sf-fy { animation: mo-sf-fy 1.25s .5s both; }
+@keyframes mo-sf-fy {
+  0%   { transform: translateY(52vh); animation-timing-function: cubic-bezier(.3, .7, .6, 1); }
+  50%  { transform: translateY(-14vh); animation-timing-function: cubic-bezier(.45, 0, .7, .6); }
+  100% { transform: none; }
+}
+.mo-sf-flutter { animation: mo-sf-flutter 1.25s ease-out .5s both; }
+@keyframes mo-sf-flutter {
+  0%   { transform: rotate(-30deg) rotateY(50deg) scale(.5); }
+  25%  { transform: rotate(12deg) rotateY(-26deg) scale(.7); }
+  50%  { transform: rotate(-8deg) rotateY(16deg) scale(.86); }
+  75%  { transform: rotate(4deg) rotateY(-6deg) scale(.98); }
+  100% { transform: none; }
+}
+/* 1.75–2.1 lands with a squash. */
+.mo-sf-land { transform-origin: 50% 100%; animation: mo-sf-land .35s ease-out 1.75s both; }
+@keyframes mo-sf-land {
+  0% { transform: none; } 40% { transform: scale(1.05, .92); } 75% { transform: scale(.99, 1.02); } 100% { transform: none; }
+}
+
+.mo-sf-env { position: relative; width: 260px; height: 168px; perspective: 800px; }
+.mo-sf-env > svg, .mo-sf-env > div, .mo-sf-env > span { position: absolute; }
+.mo-sf-back, .mo-sf-front { left: 0; top: 0; }
+
+/* 2.05–2.45 the seal pops; 2.3–2.55 the flap closes over, 2.5–2.8 it stands open. */
+.mo-sf-seal {
+  left: 110px; top: 80px; width: 40px; height: 40px;
+  animation: mo-sf-seal .4s ease-out 2.05s both;
+}
+@keyframes mo-sf-seal {
+  0% { transform: none; opacity: 1; } 40% { transform: scale(1.3); opacity: 1; } 100% { transform: scale(1.7); opacity: 0; }
+}
+.mo-sf-bit {
+  left: 127px; top: 97px; width: 7px; height: 7px; border-radius: 50%;
+  background: #FF6B5E;
+  animation: mo-sf-bit .6s ease-out 2.1s both;
+}
+@keyframes mo-sf-bit {
+  0%   { transform: rotate(var(--a)) translateX(0); opacity: 0; }
+  5%   { opacity: 1; }
+  100% { transform: rotate(var(--a)) translateX(52px) scale(.4); opacity: 0; }
+}
+.mo-sf-flap {
+  left: 0; top: 0; transform-origin: 50% 0;
+  animation: mo-sf-flap .25s ease-in 2.3s both;
+}
+@keyframes mo-sf-flap {
+  0% { transform: none; opacity: 1; }
+  99% { transform: rotateX(88deg); opacity: 1; }
+  100% { transform: rotateX(90deg); opacity: 0; }
+}
+.mo-sf-flap-open {
+  left: 0; top: -92px; transform-origin: 50% 100%;
+  animation: mo-sf-flap-open .3s ease-out 2.55s both;
+}
+@keyframes mo-sf-flap-open {
+  from { transform: rotateX(90deg); opacity: 0; }
+  to   { transform: none; opacity: 1; }
+}
+
+/* 2.8–3.4 the letter rises; 3.35–3.85 its top panel unfolds. Then it sits
+   there to be read (From: you / To: you) until the stamp at 4.4. */
+.mo-sf-letter {
+  left: 22px; top: 16px; width: 216px; height: 104px;
+  transform-style: preserve-3d;
+  animation: mo-sf-rise .6s cubic-bezier(.2, .8, .3, 1) 2.8s both;
+}
+@keyframes mo-sf-rise { from { transform: none; } to { transform: translateY(-150px); } }
+.mo-sf-panel {
+  position: absolute; left: 0; width: 216px; height: 104px;
+  font-family: var(--cl-font-sans, 'Nunito', sans-serif); color: #0B0F1E;
+}
+.mo-sf-panel-bottom {
+  top: 0; background: #F6F1E4; border-radius: 0 0 6px 6px;
+  padding: 14px 20px; box-sizing: border-box;
+}
+.mo-sf-panel-top {
+  top: -104px; transform-origin: 50% 100%; transform-style: preserve-3d;
+  animation: mo-sf-unfold .5s cubic-bezier(.3, .7, .4, 1) 3.35s both;
+}
+@keyframes mo-sf-unfold { from { transform: rotateX(-180deg); } to { transform: none; } }
+.mo-sf-face {
+  position: absolute; inset: 0; backface-visibility: hidden;
+  background: #F6F1E4; border-radius: 6px 6px 0 0; padding: 16px 20px; box-sizing: border-box;
+}
+.mo-sf-face-back { transform: rotateX(180deg); background: #EFE8D7; border-radius: 0 0 6px 6px; }
+.mo-sf-kicker {
+  font-size: 11px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase;
+  color: #5B6788; margin-bottom: 14px;
+}
+.mo-sf-row { font-size: 22px; font-weight: 600; }
+.mo-sf-row span { color: #5B6788; font-size: 16px; font-weight: 700; margin-right: 4px; }
+.mo-sf-row b { font-family: var(--cl-font-display, 'Fredoka', sans-serif); font-weight: 600; color: #0E8F80; }
+
+/* Keys waits below the pocket's rim and peeks over it (3.95–4.45). */
+.mo-sf-keysclip { left: 0; right: 0; top: -70px; bottom: 0; overflow: hidden; }
+.mo-sf-keys {
+  position: absolute; left: 86px; top: 133px;
+  animation: mo-sf-peek .5s cubic-bezier(.2, .8, .3, 1.15) 3.95s both;
+}
+@keyframes mo-sf-peek { from { transform: translateY(84px); } to { transform: none; } }
+
+/* 4.4–4.9 the stamp lands; it then stays put through read + hold. */
+.mo-sf-stamp {
+  position: absolute; left: 0; top: -22px;
+  font-size: 44px; color: var(--cl-lume, #25E0C8);
+  background: var(--cl-deep, #131A30); border: 3px solid var(--cl-lume, #25E0C8);
+  border-radius: 16px; padding: 4px 22px;
+  animation: mo-sf-slam .5s cubic-bezier(.2, .8, .3, 1.15) 4.4s both;
+}
+@keyframes mo-sf-slam {
+  0%   { transform: translate(-50%, -50%) scale(2.2) rotate(-14deg); opacity: 0; }
+  60%  { transform: translate(-50%, -50%) scale(.96) rotate(-5deg); opacity: 1; }
+  100% { transform: translate(-50%, -50%) rotate(-6deg); opacity: 1; }
+}

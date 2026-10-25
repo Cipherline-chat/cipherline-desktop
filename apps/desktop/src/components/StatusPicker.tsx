@@ -1,28 +1,40 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { X, Pencil } from 'lucide-react';
 import ClButton from './ClButton';
-import { ClSlider } from './ClSlider';
 import { GameControllerIcon } from './GameControllerIcon';
+import { CustomStatusInline } from './CustomStatusInline';
+import { activeCustom, type CustomStatusPayload } from '../utils/customStatus';
 import { StatusDot, StatusIcon } from './StatusIcon';
 // Re-exported: most of the app imports the status dot from here.
 export { StatusDot, StatusIcon } from './StatusIcon';
 import { EncryptedAvatar } from './EncryptedAvatar';
+import { AvatarDecoration } from './ProfileCosmetics';
 import { type UserStatus, STATUS_CONFIG } from '../hooks/useUserStatus';
 import { useDismissOnOutsideClick } from '../hooks/useDismissOnOutsideClick';
 import { useEscape } from '../hooks/useEscape';
 import { useClTooltip } from './cl/useClTooltip';
+import { claimEggNow, eggCountNow } from '../hooks/useEasterEggs';
+import { recordEggFound } from '../utils/eggProgress';
+import { STATUS_FLAP_COOLDOWN_MS, STATUS_FLAP_EGG, STATUS_FLAP_SHOW_MS, flapLine, flapNow, flapStep } from '../utils/statusFlap';
 
 interface StatusPickerProps {
     myStatus: UserStatus;
-    /** No text/emoji arg — the picker no longer edits custom status. Called
-     *  with just the status; useUserStatus's setStatus preserves whatever
-     *  custom text/emoji is already on the account unchanged. */
+    /** Just the status — useUserStatus's setStatus preserves whatever custom
+     *  text/emoji (and its expiry) is already on the account unchanged. */
     onSetStatus: (status: UserStatus) => void;
+    /** The user's own custom status, for the inline editor. Omit
+     *  `onSetCustomStatus` to hide the editor. */
+    customText?: string;
+    customEmoji?: string;
+    customExpiresAt?: string | null;
+    onSetCustomStatus?: (payload: CustomStatusPayload) => void;
     username: string;
     currentGame?: string | null;
     onDismissGame?: () => void;
     /** Current user's avatar attachment id (for the trigger avatar). */
     avatarAttachmentId?: string | null;
+    /** Current user's avatar decoration id (drawn around the trigger avatar). */
+    avatarDecoration?: string | null;
     /** Current user's user_id — drives the deterministic-color fallback avatar. */
     userId?: string | null;
     /** Auth token for avatar decryption. */
@@ -31,6 +43,7 @@ interface StatusPickerProps {
      *  "Edit Profile" row appears at the bottom of the status dropdown. */
     onEditProfile?: () => void;
 }
+
 
 const STATUS_OPTIONS: UserStatus[] = ['online', 'away', 'dnd', 'offline'];
 
@@ -54,20 +67,55 @@ export const StatusPicker: React.FC<StatusPickerProps> = ({
     currentGame,
     onDismissGame,
     avatarAttachmentId = null,
+    avatarDecoration = null,
     userId = null,
     token = null,
     onEditProfile,
+    customText = '',
+    customEmoji = '',
+    customExpiresAt = null,
+    onSetCustomStatus,
 }) => {
     const [open, setOpen] = useState(false);
-    const [awayMin, setAwayMin] = useState(15);
+    const activeCurrent = activeCustom(customText, customEmoji, customExpiresAt);
     const containerRef = useRef<HTMLDivElement>(null);
 
-    useDismissOnOutsideClick(containerRef, open, () => setOpen(false));
+    // The editor's emoji picker and "Clear after" menu are portaled to <body>,
+    // so a click in them is "outside" the container unless we say otherwise.
+    const insidePopover = useCallback(
+        (t: Node) => !!containerRef.current?.contains(t)
+            || !!(t as Element).closest?.('.cl-portal, [data-cl-emoji-picker]'),
+        [],
+    );
+    useDismissOnOutsideClick(insidePopover, open, () => setOpen(false));
     // TASK 2: this popover had no Escape-to-close at all before.
     useEscape(() => setOpen(false), open);
 
+    // Egg: six status CHANGES inside a minute → the "Status" label asks if you're
+    // still deciding for a few seconds (utils/statusFlap.ts). Only the label
+    // text changes; the buttons and the change itself are untouched.
+    const flips = useRef<number[]>([]);
+    const [flapMsg, setFlapMsg] = useState<string | null>(null);
+    const flapTimer = useRef(0);
+    useEffect(() => () => window.clearTimeout(flapTimer.current), []);
+
     // Every status change applies immediately — no text to commit separately.
-    const handleSetStatus = (status: UserStatus) => onSetStatus(status);
+    const handleSetStatus = (status: UserStatus) => {
+        if (status !== myStatus) {
+            const step = flapStep(flips.current, flapNow());
+            flips.current = step.times;
+            if (step.fire) {
+                const before = eggCountNow(STATUS_FLAP_EGG);
+                if (claimEggNow(STATUS_FLAP_EGG, { cooldownMs: STATUS_FLAP_COOLDOWN_MS })) {
+                    setFlapMsg(flapLine(before));
+                    recordEggFound('status-flap');
+                    window.clearTimeout(flapTimer.current);
+                    flapTimer.current = window.setTimeout(() => setFlapMsg(null), STATUS_FLAP_SHOW_MS);
+                }
+            }
+        }
+        onSetStatus(status);
+    };
 
     const cfg = STATUS_CONFIG[myStatus];
 
@@ -93,6 +141,7 @@ export const StatusPicker: React.FC<StatusPickerProps> = ({
             <div className="relative" ref={statusTipRef as React.Ref<HTMLDivElement>} {...statusTipHandlers} data-ob-anchor="rail-me">
                 {/* Plain button so the avatar fills — ClButton's icon cap is a fixed
                     46px circle that would float the image inside the 40px frame. */}
+                <AvatarDecoration decoration={avatarDecoration} block className="w-10 h-10">
                 <button
                     type="button"
                     onClick={() => setOpen(v => !v)}
@@ -108,6 +157,7 @@ export const StatusPicker: React.FC<StatusPickerProps> = ({
                         disableClickProfile
                     />
                 </button>
+                </AvatarDecoration>
                 <span
                     className={`absolute bottom-0 right-0 z-10 flex items-center justify-center pointer-events-none${
                         currentGame && myStatus !== 'offline' ? '' : ' rounded-full border-[2px] border-cl-abyss'
@@ -120,9 +170,10 @@ export const StatusPicker: React.FC<StatusPickerProps> = ({
 
             {/* Popover panel */}
             <div
+                inert={!open}
                 className={`
                     absolute left-full ml-3 bottom-0
-                    w-64 bg-cl-deep border border-white/[0.08] rounded-2xl shadow-2xl z-[200]
+                    w-72 bg-cl-deep border border-white/[0.08] rounded-2xl shadow-2xl z-[200]
                     transition-all duration-200 ease-out origin-bottom-left
                     ${open
                         ? 'opacity-100 scale-100 translate-y-0 pointer-events-auto'
@@ -149,7 +200,7 @@ export const StatusPicker: React.FC<StatusPickerProps> = ({
                     status color when active. Offline lives here as a peer status
                     rather than a separate "Appear Offline" row below. */}
                 <div className="p-3">
-                    <p className="text-[10px] font-bold text-cl-faint uppercase tracking-widest mb-2">Status</p>
+                    <p className="text-[10px] font-bold text-cl-faint uppercase tracking-widest mb-2">{flapMsg ?? 'Status'}</p>
                     <div className="grid grid-cols-2 gap-1.5">
                         {STATUS_OPTIONS.map(s => {
                             const active = myStatus === s;
@@ -178,16 +229,19 @@ export const StatusPicker: React.FC<StatusPickerProps> = ({
                     </div>
                 </div>
 
-                <div className="mx-3 border-t border-white/[0.06]" />
-
-                {/* Auto-away slider */}
-                <div className="px-3 pt-3 pb-2">
-                    <div className="flex items-baseline justify-between mb-2">
-                        <span className="text-[10px] font-bold text-cl-faint uppercase tracking-widest">Auto-away after</span>
-                        <span className="font-mono text-[11px] font-bold text-cl-lume">{awayMin} min</span>
-                    </div>
-                    <ClSlider min={5} max={60} step={5} value={awayMin} onChange={setAwayMin} />
-                </div>
+                {onSetCustomStatus && (
+                    <>
+                        <div className="mx-3 border-t border-white/[0.06]" />
+                        <CustomStatusInline
+                            current={activeCurrent
+                                ? { text: activeCurrent.text ?? '', emoji: activeCurrent.emoji ?? '', expiresAt: activeCurrent.expiresAt }
+                                : null}
+                            open={open}
+                            onSave={onSetCustomStatus}
+                            onSaved={() => setOpen(false)}
+                        />
+                    </>
+                )}
 
                 <div className="mx-3 border-t border-white/[0.06]" />
 
@@ -202,6 +256,7 @@ export const StatusPicker: React.FC<StatusPickerProps> = ({
                     <ClButton onClick={() => setOpen(false)} className="ml-auto">Done</ClButton>
                 </div>
             </div>
+
         </div>
     );
 };

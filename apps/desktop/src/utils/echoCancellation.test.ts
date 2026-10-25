@@ -50,18 +50,18 @@ function walk(dir: string, out: string[] = []): string[] {
 }
 
 describe('the setting and its default', () => {
-    it('echoCancellation defaults to ON', () => {
-        expect(DEFAULT_VOICE_SETTINGS.echoCancellation).toBe(true);
+    it('echoCancellation defaults to OFF', () => {
+        expect(DEFAULT_VOICE_SETTINGS.echoCancellation).toBe(false);
     });
 
-    it('nothing stored → ON', () => {
-        expect(loadVoiceSettings().echoCancellation).toBe(true);
+    it('nothing stored → OFF', () => {
+        expect(loadVoiceSettings().echoCancellation).toBe(false);
     });
 
-    it('settings saved before this existed (no field) → ON, and everything else is kept', () => {
+    it('settings saved before this existed (no field) → OFF, and everything else is kept', () => {
         secureLocalStore.setItem(VOICE_SETTINGS_STORAGE_KEY, JSON.stringify({ noiseSuppression: false, micVolume: 130 }));
         const s = loadVoiceSettings();
-        expect(s.echoCancellation).toBe(true);
+        expect(s.echoCancellation).toBe(false);
         expect(s.noiseSuppression).toBe(false);
         expect(s.micVolume).toBe(130);
     });
@@ -71,10 +71,17 @@ describe('the setting and its default', () => {
         expect(loadVoiceSettings().echoCancellation).toBe(false);
     });
 
-    it('a corrupt (non-boolean) saved value falls back to ON rather than a truthy/falsy accident', () => {
-        for (const bad of ['false', 0, null, {}]) {
+    it('an explicit ON is honoured too: a user who has saved settings keeps their choice, the new default never overrides it', () => {
+        secureLocalStore.setItem(VOICE_SETTINGS_STORAGE_KEY, JSON.stringify({ ...DEFAULT_VOICE_SETTINGS, noiseSuppression: false, echoCancellation: true }));
+        const s = loadVoiceSettings();
+        expect(s.echoCancellation).toBe(true);
+        expect(s.noiseSuppression).toBe(false);
+    });
+
+    it('a corrupt (non-boolean) saved value falls back to the default (OFF) rather than a truthy/falsy accident', () => {
+        for (const bad of ['false', 'true', 0, 1, null, {}]) {
             secureLocalStore.setItem(VOICE_SETTINGS_STORAGE_KEY, JSON.stringify({ echoCancellation: bad }));
-            expect(loadVoiceSettings().echoCancellation).toBe(true);
+            expect(loadVoiceSettings().echoCancellation).toBe(false);
         }
     });
 });
@@ -181,9 +188,13 @@ describe('the Settings row', () => {
     const t = read('components', 'VoiceVideoSettings.tsx');
 
     it('is labelled "Echo cancellation" with the agreed hint, wired to the setter', () => {
-        expect(t).toContain('<b>Echo cancellation</b>');
-        expect(t).toContain('Stops others from hearing themselves when you use speakers. Turn off if you use headphones and want the most natural sound.');
-        expect(t).toMatch(/<ClToggle checked=\{echoCancellationSetting\} onChange=\{voice\.setEchoCancellation\} \/>/);
+        // A settings Row: the "speakers only" line is on the page (note) AND in
+        // the row's info tip ("i" next to the label). Owner copy 2026-10-20.
+        expect(t).toContain('label="Echo cancellation"');
+        expect(t).toContain("const ECHO_NOTE = 'Only recommended when using speakers — leave it off with headphones.';");
+        expect(t).toContain('note={ECHO_NOTE}');
+        expect(t).toMatch(/info=\{`Stops people hearing themselves when your mic picks up your speakers\. \$\{ECHO_NOTE\} Off by default\./);
+        expect(t).toMatch(/<ClToggle checked=\{echoCancellationSetting\} onChange=\{voice\.setEchoCancellation\} aria-label="Echo cancellation" \/>/);
     });
 
     it('the hook exposes setEchoCancellation (returned and in the memo deps)', () => {

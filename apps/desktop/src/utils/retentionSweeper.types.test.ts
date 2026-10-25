@@ -42,7 +42,7 @@ describe('retentionRuleFor', () => {
         }
     });
     it('keeps control rows and rows with no readable type', () => {
-        for (const t of ['edit', 'delete', 'reaction', 'pin', 'profile_update', 'group_update', 'channel_key', 'channel_message']) {
+        for (const t of ['edit', 'delete', 'reaction', 'pin', 'profile_update', 'group_update', 'channel_key', 'channel_message', 'call_key_request']) {
             expect(retentionRuleFor(t)).toBe('keep');
         }
         expect(retentionRuleFor(undefined)).toBe('keep');
@@ -94,7 +94,7 @@ describe('sweepRetention — every visible row type expires', () => {
     });
 
     it('never touches control rows, however old', () => {
-        const ctl = ['edit', 'delete', 'reaction', 'pin', 'profile_update', 'group_update', 'channel_key', 'channel_message']
+        const ctl = ['edit', 'delete', 'reaction', 'pin', 'profile_update', 'group_update', 'channel_key', 'channel_message', 'call_key_request']
             .map((t, i) => row(`ctl${i}`, t, 400 * DAY));
         const out = sweepRetention({ c: ctl }, policy(), NOW);
         expect(out.prunedState.c).toHaveLength(ctl.length);

@@ -72,6 +72,7 @@ describe('worklet sources stay one-byte (renderer memory)', () => {
         ['rnnoiseInWorkletSource.ts', 'export const RNNOISE_INLINE_WORKLET_SOURCE'],
         ['rnnoiseWorkletSource.ts', 'export const RNNOISE_WORKLET_SOURCE'],
         ['agcWorkletSource.ts', 'export const AGC_WORKLET_SOURCE'],
+        ['speexLightWorkletSource.ts', 'export const SPEEX_LIGHT_WORKLET_SOURCE'],
     ])('%s: the worklet template text itself is ASCII', (file, marker) => {
         // The kernels are escaped at build time (vite.config.ts), but the
         // template around them is ours — one em dash in a comment inside it

@@ -8,8 +8,19 @@
  *   ctrl+wheel           the same (macOS trackpad pinch arrives this way)
  *   drag                 pan, once past 1x — left button, or middle button
  *                        / space+drag when the annotation tool owns the left
- *   double-click         reset to fit, but only while zoomed
+ *   double-click         while zoomed: below fill -> jump to fill (bars gone,
+ *                        cursor-anchored), at/past fill -> back to fit
  *   focus change         reset (the tile remounts, and we reset defensively)
+ *
+ * ── Zoom operates on the STAGE, not the fitted picture ──────────────────
+ * The picture is object-contain inside the tile, so a wide share has bars.
+ * The fit-shaped clip window that rounds the picture's corners used to be
+ * fixed to that fitted rect, so a zoomed picture was still clipped to its own
+ * original box: you zoomed into "the window of the screen". The hook now owns
+ * that clip (`clipRef`): it is the visible part of the transformed picture
+ * (transformed fit rect intersected with the stage), so as you zoom the picture
+ * grows past its fitted box and the bars go; at fit it is exactly the old
+ * fit-shaped clip. See utils/videoZoomPan.ts for fit/fill and the clamps.
  *
  * ── Why the state lives in refs ─────────────────────────────────────────
  * A wheel gesture fires dozens of events and a pan fires one per mouse move.
@@ -43,9 +54,11 @@ import {
 import {
     IDENTITY,
     clampState,
+    doubleClickTarget,
     fullRect,
     isZoomed,
     panBy,
+    visibleRect,
     wheelZoomFactor,
     zoomAt,
     type Rect,
@@ -57,6 +70,20 @@ export interface UseVideoZoomPanOptions {
     rootRef: React.RefObject<HTMLElement | null>;
     /** The wrapper that gets the transform (video + annotation canvas). */
     layerRef: React.RefObject<HTMLElement | null>;
+    /**
+     * The untransformed clip window around `layerRef`. The hook writes its
+     * `clip-path` (the visible picture, rounded) so the clip follows the zoom.
+     * Callers must NOT also set clip-path in a React style on this element.
+     */
+    clipRef: React.RefObject<HTMLElement | null>;
+    /** Corner radius of the clip, px. */
+    clipRadiusPx?: number;
+    /**
+     * The visible picture rect (tile-box CSS px) once a zoom has SETTLED, or
+     * null at fit. Debounced, never per pointer move: it is for placing
+     * corner chrome on visible picture, not for painting.
+     */
+    onViewChange?: (rect: Rect | null) => void;
     videoRef: React.RefObject<HTMLVideoElement | null>;
     /** Must mirror the object-fit the <video> actually has. */
     fit: FitMode;
@@ -105,7 +132,7 @@ export interface UseVideoZoomPanOptions {
 }
 
 export function useVideoZoomPan({
-    rootRef, layerRef, videoRef, fit, enabled, allowLeftDrag, resetKey,
+    rootRef, layerRef, clipRef, clipRadiusPx = 0, onViewChange, videoRef, fit, enabled, allowLeftDrag, resetKey,
     requireModifierForWheelZoom = false,
 }: UseVideoZoomPanOptions): void {
     const stateRef = useRef<ZoomState>(IDENTITY);
@@ -129,16 +156,23 @@ export function useVideoZoomPan({
     // so updating them after commit is equivalent here.
     const allowLeftRef = useRef(allowLeftDrag);
     const fitRef = useRef(fit);
+    const onViewChangeRef = useRef(onViewChange);
     useEffect(() => {
         allowLeftRef.current = allowLeftDrag;
         fitRef.current = fit;
+        onViewChangeRef.current = onViewChange;
     });
 
     useEffect(() => {
         if (!enabled) return;
         const root = rootRef.current;
         const layer = layerRef.current;
+        const clip = clipRef.current;
         if (!root || !layer) return;
+        const reducedMotion = () =>
+            typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        let viewTimer: ReturnType<typeof setTimeout> | null = null;
+        let viewReported = false;
 
         // ── geometry ────────────────────────────────────────────────────
         /** The untransformed tile box. `getBoundingClientRect` is safe here
@@ -157,10 +191,44 @@ export function useVideoZoomPan({
                 ?? fullRect(box);
         };
 
+        /** Null until the frame has an intrinsic size (nothing to clip to). */
+        const contentOrNull = (v: { width: number; height: number }): Rect | null => {
+            const video = videoRef.current;
+            if (!video) return null;
+            return contentRect({ width: v.width, height: v.height }, { width: video.videoWidth, height: video.videoHeight }, fitRef.current);
+        };
+
         // ── painting ────────────────────────────────────────────────────
+        const reportView = () => {
+            viewTimer = null;
+            const cb = onViewChangeRef.current;
+            if (!cb) return;
+            const v = viewport();
+            const c = contentOrNull(v);
+            if (!isZoomed(stateRef.current) || !c) {
+                if (viewReported) { viewReported = false; cb(null); }
+                return;
+            }
+            viewReported = true;
+            cb(visibleRect(stateRef.current, v, c));
+        };
         const paint = () => {
             rafRef.current = null;
             const s = stateRef.current;
+            if (clip) {
+                const v = viewport();
+                const c = contentOrNull(v);
+                if (c) {
+                    const r = visibleRect(s, v, c);
+                    const right = Math.max(0, v.width - r.x - r.width);
+                    const bottom = Math.max(0, v.height - r.y - r.height);
+                    clip.style.clipPath = `inset(${r.y}px ${right}px ${bottom}px ${r.x}px round ${clipRadiusPx}px)`;
+                } else {
+                    clip.style.clipPath = '';
+                }
+            }
+            if (viewTimer != null) clearTimeout(viewTimer);
+            viewTimer = setTimeout(reportView, isZoomed(s) ? 140 : 0);
             // Identity gets an empty transform so an un-zoomed tile is not
             // needlessly promoted to its own compositor layer.
             layer.style.transform = isZoomed(s)
@@ -187,7 +255,12 @@ export function useVideoZoomPan({
             stateRef.current = next;
             schedule();
         };
-        const reset = () => commit(IDENTITY);
+        /** Gesture-driven changes are immediate; discrete jumps ease. */
+        const setTransition = (on: boolean) => {
+            const ease = on && !reducedMotion();
+            layer.style.transition = ease ? 'transform 160ms ease-out' : '';
+            if (clip) clip.style.transition = ease ? 'clip-path 160ms ease-out' : '';
+        };
 
         // ── wheel: zoom, anchored on the cursor ─────────────────────────
         // Non-passive so we can preventDefault the page/browser zoom, and
@@ -205,6 +278,7 @@ export function useVideoZoomPan({
             e.stopPropagation();
             const v = viewport();
             if (!(v.width > 0) || !(v.height > 0)) return;
+            setTransition(false);
             commit(zoomAt(
                 stateRef.current,
                 { x: e.clientX - v.left, y: e.clientY - v.top },
@@ -242,6 +316,7 @@ export function useVideoZoomPan({
             dragRef.current = r.state;
             if (!r.pan) return;
             const v = viewport();
+            setTransition(false);
             commit(panBy(stateRef.current, r.pan.dx, r.pan.dy, v, content(v)));
         };
 
@@ -283,16 +358,25 @@ export function useVideoZoomPan({
         };
 
         // ── double-click: the one escape hatch ──────────────────────────
-        // The tile already uses double-click for fullscreen, so this only
-        // claims the gesture while zoomed — where "get me back to normal" is
-        // unambiguously what a double-click means, and where the user has no
-        // other way out because there is no chrome. At 1x it passes straight
-        // through and fullscreen behaves exactly as it always has.
+        // The tile's own click already toggles focus, so a double-click is
+        // only claimed while zoomed — where it is unambiguously "change the
+        // zoom", and where the user has no other way out because there is no
+        // chrome. At 1x it passes straight through, exactly as before.
+        // Zoomed below fill (bars still showing): fill, anchored on the
+        // cursor. At/past fill: back to fit. Eased unless reduced-motion.
         const onDoubleClickCapture = (e: MouseEvent) => {
             if (!isZoomed(stateRef.current)) return;
             e.stopPropagation();
             e.preventDefault();
-            reset();
+            const v = viewport();
+            if (!(v.width > 0) || !(v.height > 0)) return;
+            setTransition(true);
+            commit(doubleClickTarget(
+                stateRef.current,
+                { x: e.clientX - v.left, y: e.clientY - v.top },
+                v,
+                content(v),
+            ));
         };
 
         // ── space: the pan modifier while annotation owns the left button ──
@@ -318,6 +402,9 @@ export function useVideoZoomPan({
             const v = viewport();
             if (!(v.width > 0) || !(v.height > 0)) return;
             commit(clampState(stateRef.current, v, content(v)));
+            // The clip tracks the stage and the frame size even when the
+            // transform itself did not change (resize at fit, new metadata).
+            schedule();
         };
         const ro = new ResizeObserver(reclamp);
         ro.observe(root);
@@ -325,6 +412,7 @@ export function useVideoZoomPan({
         video?.addEventListener('loadedmetadata', reclamp);
         video?.addEventListener('resize', reclamp);
 
+        paint();
         root.addEventListener('wheel', onWheel, { passive: false });
         root.addEventListener('pointerdown', onPointerDown);
         window.addEventListener('pointermove', onPointerMove);
@@ -358,6 +446,10 @@ export function useVideoZoomPan({
             window.removeEventListener('blur', onBlur);
             if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
             rafRef.current = null;
+            if (viewTimer != null) clearTimeout(viewTimer);
+            if (viewReported) onViewChangeRef.current?.(null);
+            layer.style.transition = '';
+            if (clip) { clip.style.clipPath = ''; clip.style.transition = ''; }
             dragRef.current = IDLE_DRAG;
             // Never leave the window-level suppressor armed past unmount — it
             // would eat the first click anywhere in the app.
@@ -367,7 +459,7 @@ export function useVideoZoomPan({
             root.style.cursor = '';
         };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- requireModifierForWheelZoom is read when the wheel handler runs; toggling it must not tear down and re-attach the gesture listeners and reset zoom state
-    }, [enabled, rootRef, layerRef, videoRef]);
+    }, [enabled, rootRef, layerRef, clipRef, videoRef]);
 
     // Focus moved to a different person's stream (the sibling auto-advance on
     // staging does this when a stream ends). The keyed VideoTile remounts, but

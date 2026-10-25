@@ -34,6 +34,15 @@
  *      terminate the running app (rule 1 again, for the copy that predates
  *      this module). See crashFromLeftoverMarker in ./diagnostics.ts.
  *
+ *   5. Windows negotiates a shutdown / restart / log-off BEFORE it ends it
+ *      (WM_QUERYENDSESSION → window 'query-session-end'), and it kills the
+ *      child processes on its own clock — a process that dies with the
+ *      log-off exit code (STATUS_DLL_INIT_FAILED_LOGOFF) is proof the session
+ *      is ending. The negotiation drops the marker and silences crash events
+ *      (suspectSessionEnd) until it is either confirmed (session-end / that
+ *      exit code → beginQuit) or evidently cancelled (resumeAfterSuspectedEnd
+ *      after a timeout); that exit code is never a crash on its own.
+ *
  * Real crashes are still caught: a renderer / GPU / utility crash while
  * running, a main-process JS exception while running, and a main process that
  * dies without being asked to quit (native crash, taskkill /F, power loss)
@@ -45,7 +54,7 @@
  */
 import {
     clearSessionMarker, crashFromChildGone, crashFromMainError, crashFromRenderGone, crashFromRendererReport,
-    rotateSessionMarker, writeSessionMarker, type CrashInfoLike, type MarkerFs,
+    isOsSessionEndExit, isTransientNetError, rotateSessionMarker, writeSessionMarker, type CrashInfoLike, type MarkerFs,
 } from './diagnostics';
 import type { Scrubber } from './diagnostics-scrub';
 
@@ -70,16 +79,25 @@ export interface CrashContext {
  *   quitting → never;
  *   process-gone events → only Electron's abnormal reasons (CRASH_REASONS:
  *     crashed / oom / launch-failed / integrity-failure / abnormal-exit —
- *     never clean-exit, killed or memory-eviction);
- *   main exceptions → always (while running);
+ *     never clean-exit, killed or memory-eviction), and never the Windows
+ *     "user is logging off" exit code (STATUS_DLL_INIT_FAILED_LOGOFF), which
+ *     can reach main BEFORE the window's session-end does;
+ *   main exceptions → always (while running), except a bare Chromium
+ *     `net::ERR_*` unhandled rejection (a flaky connection, not a crash);
  *   renderer report → when it carries something (name / message / stack).
  */
 export function crashRecordFor(event: CrashEvent, quitting: boolean, ctx: CrashContext): CrashInfoLike | null {
     if (quitting) return null;
     switch (event.source) {
-        case 'render-process-gone': return crashFromRenderGone(event.details, ctx.now, ctx.appVersion);
-        case 'child-process-gone': return crashFromChildGone(event.details, ctx.now, ctx.appVersion);
-        case 'main-exception': return crashFromMainError(event.thrown, event.origin, ctx.now, ctx.appVersion, ctx.scrubber());
+        case 'render-process-gone':
+            if (isOsSessionEndExit(event.details)) return null;
+            return crashFromRenderGone(event.details, ctx.now, ctx.appVersion);
+        case 'child-process-gone':
+            if (isOsSessionEndExit(event.details)) return null;
+            return crashFromChildGone(event.details, ctx.now, ctx.appVersion);
+        case 'main-exception':
+            if (event.origin === 'unhandledRejection' && isTransientNetError(event.thrown)) return null;
+            return crashFromMainError(event.thrown, event.origin, ctx.now, ctx.appVersion, ctx.scrubber());
         case 'renderer-report': return crashFromRendererReport(event.payload, ctx.now, ctx.appVersion, ctx.scrubber());
         default: return null;
     }
@@ -103,17 +121,27 @@ export class SessionLifecycle {
     private startedAt = 0;
     private quitting = false;
     private trigger: QuitTrigger | null = null;
+    /** Windows asked whether the session may end (query-session-end); not yet decided. */
+    private sessionEndSuspected = false;
 
     constructor(private readonly d: SessionLifecycleDeps) {}
 
     /** Has a quit been asked for (and not cancelled)? */
     get isQuitting(): boolean { return this.quitting; }
 
+    /**
+     * Should crash events be ignored right now: a quit was asked for, or
+     * Windows is asking whether the session may end (and so is about to tear
+     * the child processes down). This — not isQuitting — is what the crash
+     * gate takes.
+     */
+    get ignoresCrashes(): boolean { return this.quitting || this.sessionEndSuspected; }
+
     /** What first asked for the current quit, for the log; null when not quitting. */
     get quitTrigger(): QuitTrigger | null { return this.quitting ? this.trigger : null; }
 
     /** Is the marker on disk on behalf of this process? (tests / logging) */
-    get armed(): boolean { return this.path !== null && !this.quitting; }
+    get armed(): boolean { return this.path !== null && !this.quitting && !this.sessionEndSuspected; }
 
     /**
      * This instance is THE live one now (it holds the loopback port, or loaded
@@ -128,7 +156,7 @@ export class SessionLifecycle {
         this.path = this.d.markerPath();
         this.startedAt = this.d.now();
         const leftover = rotateSessionMarker(this.d.fs, this.path, this.d.appVersion(), this.startedAt);
-        if (this.quitting) clearSessionMarker(this.d.fs, this.path);
+        if (this.quitting || this.sessionEndSuspected) clearSessionMarker(this.d.fs, this.path);
         return leftover;
     }
 
@@ -139,7 +167,35 @@ export class SessionLifecycle {
     beginQuit(trigger: QuitTrigger): void {
         this.trigger ??= trigger;
         this.quitting = true;
+        this.sessionEndSuspected = false;
         if (this.path) clearSessionMarker(this.d.fs, this.path);
+    }
+
+    /**
+     * Windows sent WM_QUERYENDSESSION (BrowserWindow 'query-session-end'): a
+     * shutdown / restart / log-off is being negotiated. Unlike session-end it
+     * can still be vetoed by another app and cancelled by the user, so this is
+     * not a quit — close-to-tray must keep hiding the window — but the next
+     * thing Windows does is kill the child processes and, if nothing objects,
+     * the app itself, and the session-end for that may never be dispatched
+     * (report 5f888d8a: a session that ran for hours ended "unclean" on a
+     * machine whose sibling reports 8034b4a1 / b40df5f4 show child processes
+     * dying of the log-off exit code BEFORE any session-end reached main). So
+     * the marker goes NOW and child deaths stop counting;
+     * resumeAfterSuspectedEnd() undoes both if the session turns out to
+     * continue.
+     */
+    suspectSessionEnd(): void {
+        if (this.quitting) return;
+        this.sessionEndSuspected = true;
+        if (this.path) clearSessionMarker(this.d.fs, this.path);
+    }
+
+    /** The suspected session end did not happen (cancelled): re-arm, as cancelQuit does. */
+    resumeAfterSuspectedEnd(): void {
+        if (!this.sessionEndSuspected) return;
+        this.sessionEndSuspected = false;
+        if (this.path && !this.quitting) writeSessionMarker(this.d.fs, this.path, this.d.appVersion(), this.startedAt);
     }
 
     /**

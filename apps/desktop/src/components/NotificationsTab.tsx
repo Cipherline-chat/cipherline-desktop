@@ -11,15 +11,16 @@ import {
     Mic, MicOff, Headphones, HeadphoneOff, Video, VideoOff, Fish, PenLine,
     SlidersHorizontal, ChevronRight, Eye, EyeOff, ArrowRightLeft,
 } from 'lucide-react';
-import { useNotificationPrefs } from '../contexts/NotificationContext';
+import { useNotificationPrefs, DEFAULT_PREFS } from '../contexts/NotificationContext';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
 import { useNudgeOffSwitch } from '../hooks/useNudgeOffSwitch';
 import type { NotificationPrefs, SoundCategoryPrefs } from '../contexts/NotificationContext';
 import type { SoundCategory, CollapsedSoundGroup, SoundGroupPrefs } from '../utils/notificationSounds';
-import { playSound, previewSound, soundGroupOf, categoriesInGroup } from '../utils/notificationSounds';
+import { playSound, previewSound, soundGroupOf, categoriesInGroup, DEFAULT_SOUND_PREFS } from '../utils/notificationSounds';
 import { ClToggle, ClButton, ClInput, ClSelect, ClSlider } from './cl';
 import type { ClSelectOption } from './cl';
+import { SettingsDisclosure } from './settings/SettingsDisclosure';
 
 const reveal = {
     initial:    { height: 0, opacity: 0 },
@@ -124,10 +125,11 @@ const Section: React.FC<{
     title:    string;
     badge?:   React.ReactNode;
     children: React.ReactNode;
-}> = ({ icon, title, badge, children }) => (
+}> = ({ title, badge, children }) => (
     <div className="sd-card" style={{ padding: '0 6px' }}>
-        <div className="flex items-center gap-3 pt-[18px] pb-1" style={{ padding: '18px 16px 4px' }}>
-            <span className="sd-tile" style={{ width: 30, height: 30, borderRadius: 9 }}>{icon}</span>
+        {/* Plain card heading, same as every other pane — the pane header
+            already carries this section's glyph, so no icon tile here. */}
+        <div className="flex items-center gap-3" style={{ padding: '20px 16px 4px' }}>
             <h3 style={{ margin: 0, fontFamily: 'var(--cl-font-display)', fontWeight: 500, fontSize: 16.5, color: 'var(--cl-text)' }}>{title}</h3>
             {badge}
         </div>
@@ -144,8 +146,9 @@ const Row: React.FC<{
 }> = ({ label, desc, right, indent, className }) => (
     <div className={`flex items-center justify-between gap-4 px-4 py-3.5 ${indent ? 'pl-9' : ''} ${className ?? ''}`}>
         <div className="min-w-0">
-            <p className="text-[13.5px] font-medium leading-snug" style={{ color: indent ? 'var(--cl-muted)' : 'var(--cl-text)' }}>{label}</p>
-            {desc && <p className="text-[11.5px] mt-0.5 leading-relaxed" style={{ color: 'var(--cl-faint)' }}>{desc}</p>}
+            {/* Type matches the shared .sd-row vocabulary: 14/800 label, 12.5 muted line. */}
+            <p className="text-[14px] font-extrabold leading-snug" style={{ color: indent ? 'var(--cl-muted)' : 'var(--cl-text)' }}>{label}</p>
+            {desc && <p className="text-[12.5px] mt-0.5 leading-snug" style={{ color: 'var(--cl-muted)' }}>{desc}</p>}
         </div>
         {right && <div className="shrink-0">{right}</div>}
     </div>
@@ -311,6 +314,7 @@ export const NotificationsTab: React.FC = () => {
                                             min={0} max={100} step={5}
                                             value={Math.round(prefs.master_volume * 100)}
                                             onChange={v => set('master_volume', v / 100)}
+                                            resetValue={Math.round(DEFAULT_PREFS.master_volume * 100)}
                                             formatLabel={v => `${v}%`}
                                         />
                                     </div>
@@ -338,48 +342,97 @@ export const NotificationsTab: React.FC = () => {
                         />
                     }
                 />
-                <Divider />
-                <Row
-                    label="Show profile pictures"
-                    desc="Use the sender's picture as the notification icon. Only when message preview is set to Full message."
-                    right={
-                        <ClToggle
-                            checked={prefs.show_sender_avatar !== false}
-                            onChange={v => set('show_sender_avatar', v)}
-                            disabled={prefs.show_preview !== 'full'}
-                        />
-                    }
-                />
-                <Divider />
-                <Row
-                    label="Quick reply from notification"
-                    desc="Reply inline without opening the app (macOS)"
-                    right={
-                        <ClToggle
-                            checked={prefs.quick_reply_enabled}
-                            onChange={v => set('quick_reply_enabled', v)}
-                            disabled={prefs.show_preview === 'hidden'}
-                        />
-                    }
-                />
-                <Divider />
-                <Row
-                    label="Suppress when chat is open"
-                    desc="No toast if you're already viewing that conversation"
-                    right={<ClToggle checked={prefs.suppress_when_active_conv} onChange={v => set('suppress_when_active_conv', v)} />}
-                />
-                <Divider />
-                <Row
-                    label="Suppress when app is focused"
-                    desc="No toast when Cipherline is in the foreground"
-                    right={<ClToggle checked={prefs.suppress_when_window_focused} onChange={v => set('suppress_when_window_focused', v)} />}
-                />
-                <Divider />
-                <Row
-                    label="Getting-started tips"
-                    desc="A gentle hint now and then during your first week, only while you're here. In-app only, never an email."
-                    right={<ClToggle checked={tipsOn} onChange={setTipsOn} />}
-                />
+                <div className="px-4">
+                    <SettingsDisclosure
+                        id="notifications.more"
+                        title="More options"
+                        summary="Profile pictures, quick reply, when to stay quiet, the taskbar badge and tips."
+                        icon={<SlidersHorizontal size={15} />}
+                        labels={['Quick reply', 'Badge count', 'Flash taskbar', 'Getting-started tips', 'Show profile pictures']}
+                    >
+                        <div className="-mx-4">
+                            <Row
+                                label="Show profile pictures"
+                                desc="Use the sender's picture as the notification icon. Only when message preview is set to Full message."
+                                right={
+                                    <ClToggle
+                                        checked={prefs.show_sender_avatar !== false}
+                                        onChange={v => set('show_sender_avatar', v)}
+                                        disabled={prefs.show_preview !== 'full'}
+                                    />
+                                }
+                            />
+                            <Divider />
+                            <Row
+                                label="Quick reply from notification"
+                                desc="Reply inline without opening the app (macOS)"
+                                right={
+                                    <ClToggle
+                                        checked={prefs.quick_reply_enabled}
+                                        onChange={v => set('quick_reply_enabled', v)}
+                                        disabled={prefs.show_preview === 'hidden'}
+                                    />
+                                }
+                            />
+                            <Divider />
+                            <Row
+                                label="Suppress when chat is open"
+                                desc="No toast if you're already viewing that conversation"
+                                right={<ClToggle checked={prefs.suppress_when_active_conv} onChange={v => set('suppress_when_active_conv', v)} />}
+                            />
+                            <Divider />
+                            <Row
+                                label="Suppress when app is focused"
+                                desc="No toast when Cipherline is in the foreground"
+                                right={<ClToggle checked={prefs.suppress_when_window_focused} onChange={v => set('suppress_when_window_focused', v)} />}
+                            />
+                            <Divider />
+                            <Row
+                                label="Getting-started tips"
+                                desc="A gentle hint now and then during your first week, only while you're here. In-app only, never an email."
+                                right={<ClToggle checked={tipsOn} onChange={setTipsOn} />}
+                            />
+                            <Divider />
+                            <Row
+                                label="Show unread badge"
+                                desc="Red dot or number on the taskbar / dock icon"
+                                right={<ClToggle checked={prefs.show_badge_count} onChange={v => set('show_badge_count', v)} />}
+                            />
+                            <AnimatePresence initial={false}>
+                                {prefs.show_badge_count && (
+                                    <motion.div {...reveal} className="overflow-hidden">
+                                        <div>
+                                            <Divider />
+                                            <Row
+                                                label="Mentions only"
+                                                desc="Only count messages that directly @ping you"
+                                                indent
+                                                right={<ClToggle checked={prefs.badge_only_mentions} onChange={v => set('badge_only_mentions', v)} />}
+                                            />
+                                            <Divider />
+                                            <Row
+                                                label="Include muted conversations"
+                                                desc="Count unread messages from muted chats too"
+                                                indent
+                                                right={<ClToggle checked={prefs.badge_includes_muted} onChange={v => set('badge_includes_muted', v)} />}
+                                            />
+                                        </div>
+                                    </motion.div>
+                                )}
+                            </AnimatePresence>
+                            {isWindows && (
+                                <>
+                                    <Divider />
+                                    <Row
+                                        label="Flash taskbar on new message"
+                                        desc="Blinks the taskbar button until you open the app"
+                                        right={<ClToggle checked={prefs.flash_taskbar} onChange={v => set('flash_taskbar', v)} />}
+                                    />
+                                </>
+                            )}
+                        </div>
+                    </SettingsDisclosure>
+                </div>
             </Section>
 
             {/* ── 2. Do Not Disturb ─────────────────────────────────────────────── */}
@@ -396,86 +449,98 @@ export const NotificationsTab: React.FC = () => {
                     right={<ClToggle checked={prefs.dnd_manual} onChange={v => set('dnd_manual', v)} />}
                 />
 
-                <Divider />
-                <SubLabel>Quiet hours schedule</SubLabel>
-                <Row
-                    label="Enable schedule"
-                    indent
-                    right={<ClToggle checked={prefs.dnd_schedule.enabled} onChange={v => setSchedule({ enabled: v })} />}
-                />
-                <AnimatePresence initial={false}>
-                    {prefs.dnd_schedule.enabled && (
-                        <motion.div {...reveal} className="overflow-hidden">
-                            <div className="px-9 pb-4 space-y-3">
-                                <div className="flex items-center gap-3">
-                                    <span className="text-[12px] w-8" style={{ color: 'var(--cl-faint)' }}>From</span>
-                                    <TimePicker value={prefs.dnd_schedule.start_minute} onChange={v => setSchedule({ start_minute: v })} />
-                                    <span className="text-[12px]" style={{ color: 'var(--cl-faint)' }}>to</span>
-                                    <TimePicker value={prefs.dnd_schedule.end_minute} onChange={v => setSchedule({ end_minute: v })} />
-                                </div>
-                                <div className="flex items-center gap-1.5">
-                                    {DAY_LABELS.map((lbl, i) => (
-                                        <ClButton
-                                            key={i}
-                                            type="button"
-                                            tooltip={DAY_NAMES[i]}
-                                            onClick={() => toggleDay(i)}
-                                            active={prefs.dnd_schedule.days.includes(i)}
-                                            variant="ghost"
-                                            className="w-8 h-8 rounded-full text-[12px] font-semibold"
-                                        >
-                                            {lbl}
-                                        </ClButton>
-                                    ))}
-                                </div>
-                            </div>
-                        </motion.div>
-                    )}
-                </AnimatePresence>
-
-                <Divider />
-                <SubLabel>Auto-pause when…</SubLabel>
-                {([
-                    { key: 'when_in_call',       icon: <Phone size={14} />,       label: 'In a voice or video call', locked: false },
-                    { key: 'when_screensharing', icon: <ScreenShare size={14} />,  label: 'Sharing your screen', locked: false },
-                    { key: 'when_in_game',       icon: <Gamepad2 size={14} />,     label: 'Playing a game', locked: false },
-                    { key: 'when_status_dnd',    icon: <BellOff size={14} />,      label: 'Status is Do Not Disturb', locked: true },
-                    { key: 'when_status_away',   icon: <Clock size={14} />,        label: 'Status is Idle / Away', locked: false },
-                ] as const).map(({ key, icon, label, locked }, idx) => (
-                    <React.Fragment key={key}>
-                        {idx > 0 && <Divider />}
-                        <div className="flex items-center justify-between gap-4 px-4 py-3.5">
-                            <div className="flex items-center gap-2.5 min-w-0">
-                                <div className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0" style={{ background: 'rgba(255,255,255,.04)', color: 'var(--cl-faint)' }}>
-                                    {icon}
-                                </div>
-                                <span className="text-[13.5px] font-medium" style={{ color: 'var(--cl-text)' }}>{label}</span>
-                                {locked && (
-                                    <span title="Always active when status is DND" style={{ display: 'inline-flex', flexShrink: 0 }}>
-                                        <Info size={12} style={{ color: 'var(--cl-faint)' }} />
-                                    </span>
+                <div className="px-4">
+                    <SettingsDisclosure
+                        id="notifications.dnd-auto"
+                        title="Schedule & auto-pause"
+                        summary="Quiet hours, pausing during calls, screen share or games, and letting @mentions through."
+                        icon={<Clock size={15} />}
+                        badge={prefs.dnd_schedule.enabled ? 'Schedule on' : null}
+                        labels={['DND schedule']}
+                    >
+                        <div className="-mx-4">
+                            <SubLabel>Quiet hours schedule</SubLabel>
+                            <Row
+                                label="Enable schedule"
+                                indent
+                                right={<ClToggle checked={prefs.dnd_schedule.enabled} onChange={v => setSchedule({ enabled: v })} />}
+                            />
+                            <AnimatePresence initial={false}>
+                                {prefs.dnd_schedule.enabled && (
+                                    <motion.div {...reveal} className="overflow-hidden">
+                                        <div className="px-9 pb-4 space-y-3">
+                                            <div className="flex items-center gap-3">
+                                                <span className="text-[12px] w-8" style={{ color: 'var(--cl-faint)' }}>From</span>
+                                                <TimePicker value={prefs.dnd_schedule.start_minute} onChange={v => setSchedule({ start_minute: v })} />
+                                                <span className="text-[12px]" style={{ color: 'var(--cl-faint)' }}>to</span>
+                                                <TimePicker value={prefs.dnd_schedule.end_minute} onChange={v => setSchedule({ end_minute: v })} />
+                                            </div>
+                                            <div className="flex items-center gap-1.5">
+                                                {DAY_LABELS.map((lbl, i) => (
+                                                    <ClButton
+                                                        key={i}
+                                                        type="button"
+                                                        tooltip={DAY_NAMES[i]}
+                                                        onClick={() => toggleDay(i)}
+                                                        active={prefs.dnd_schedule.days.includes(i)}
+                                                        variant="ghost"
+                                                        className="w-8 h-8 rounded-full text-[12px] font-semibold"
+                                                    >
+                                                        {lbl}
+                                                    </ClButton>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    </motion.div>
                                 )}
-                            </div>
-                            <ClToggle
-                                checked={prefs.dnd_auto[key as keyof typeof prefs.dnd_auto]}
-                                // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
-                                onChange={v => setAuto({ [key]: v } as any)}
-                                disabled={locked}
+                            </AnimatePresence>
+
+                            <Divider />
+                            <SubLabel>Auto-pause when…</SubLabel>
+                            {([
+                                { key: 'when_in_call',       icon: <Phone size={14} />,       label: 'In a voice or video call', locked: false },
+                                { key: 'when_screensharing', icon: <ScreenShare size={14} />,  label: 'Sharing your screen', locked: false },
+                                { key: 'when_in_game',       icon: <Gamepad2 size={14} />,     label: 'Playing a game', locked: false },
+                                { key: 'when_status_dnd',    icon: <BellOff size={14} />,      label: 'Status is Do Not Disturb', locked: true },
+                                { key: 'when_status_away',   icon: <Clock size={14} />,        label: 'Status is Idle / Away', locked: false },
+                            ] as const).map(({ key, icon, label, locked }, idx) => (
+                                <React.Fragment key={key}>
+                                    {idx > 0 && <Divider />}
+                                    <div className="flex items-center justify-between gap-4 px-4 py-3.5">
+                                        <div className="flex items-center gap-2.5 min-w-0">
+                                            <div className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0" style={{ background: 'rgba(255,255,255,.04)', color: 'var(--cl-faint)' }}>
+                                                {icon}
+                                            </div>
+                                            <span className="text-[13.5px] font-medium" style={{ color: 'var(--cl-text)' }}>{label}</span>
+                                            {locked && (
+                                                <span title="Always active when status is DND" style={{ display: 'inline-flex', flexShrink: 0 }}>
+                                                    <Info size={12} style={{ color: 'var(--cl-faint)' }} />
+                                                </span>
+                                            )}
+                                        </div>
+                                        <ClToggle
+                                            checked={prefs.dnd_auto[key as keyof typeof prefs.dnd_auto]}
+                                            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
+                                            onChange={v => setAuto({ [key]: v } as any)}
+                                            disabled={locked}
+                                        />
+                                    </div>
+                                </React.Fragment>
+                            ))}
+
+                            <Divider />
+                            <Row
+                                label="Let @mentions through"
+                                desc="@pings and keyword matches still notify you during DND"
+                                right={<ClToggle checked={prefs.dnd_let_mentions_through} onChange={v => set('dnd_let_mentions_through', v)} />}
                             />
                         </div>
-                    </React.Fragment>
-                ))}
-
-                <Divider />
-                <Row
-                    label="Let @mentions through"
-                    desc="@pings and keyword matches still notify you during DND"
-                    right={<ClToggle checked={prefs.dnd_let_mentions_through} onChange={v => set('dnd_let_mentions_through', v)} />}
-                />
+                    </SettingsDisclosure>
+                </div>
             </Section>
 
             {/* ── 3. Mention Keywords ───────────────────────────────────────────── */}
-            <Section icon={<AtSign size={13} />} title="Mention Keywords">
+            <Section icon={<AtSign size={13} />} title="Mention keywords">
                 <div className="px-4 pt-2 pb-4 space-y-3">
                     <p className="text-[12px] leading-relaxed" style={{ color: 'var(--cl-faint)' }}>
                         Words that trigger a mention notification even without a direct @ping.
@@ -531,9 +596,19 @@ export const NotificationsTab: React.FC = () => {
                 </div>
             </Section>
 
-            {/* ── 4. Sounds ─────────────────────────────────────────────────────── */}
-            <Section icon={<Volume2 size={13} />} title="Sounds">
-                <div className="px-4 pt-2 pb-4 space-y-2">
+            {/* ── 4. Sounds ─────────────────────────────────────────────────────────
+                Per-event sounds were a wall of five cards + app sounds + custom
+                uploads. The master switch and volume live in General; the
+                per-event tuning folds into one card. */}
+            <SettingsDisclosure
+                id="notifications.sounds"
+                variant="card"
+                title="Sound for each event"
+                summary="Pick, test and balance the sounds for messages, mentions, calls and in-app cues, or upload your own."
+                icon={<Volume2 size={15} />}
+                labels={['Per-sound settings']}
+            >
+                <div className="pt-2 space-y-2">
                     {PRIMARY_CATEGORIES.map(({ cat, label, icon }) => {
                         const s = prefs.sounds[cat];
                         const catEnabled = s.enabled && prefs.sounds_enabled;
@@ -576,6 +651,7 @@ export const NotificationsTab: React.FC = () => {
                                                             min={0} max={100} step={5}
                                                             value={Math.round(s.volume * 100)}
                                                             onChange={v => setSound(cat, { volume: v / 100 })}
+                                                            resetValue={Math.round(DEFAULT_SOUND_PREFS[cat].volume * 100)}
                                                         />
                                                     </div>
                                                     <Volume2 size={12} style={{ color: 'var(--cl-faint)', flexShrink: 0 }} />
@@ -635,6 +711,7 @@ export const NotificationsTab: React.FC = () => {
                                                             min={0} max={100} step={5}
                                                             value={Math.round(grp.volume * 100)}
                                                             onChange={v => setSoundGroup('app', { volume: v / 100 })}
+                                                            resetValue={Math.round(DEFAULT_PREFS.sound_groups.app.volume * 100)}
                                                         />
                                                     </div>
                                                     <Volume2 size={12} style={{ color: 'var(--cl-faint)', flexShrink: 0 }} />
@@ -780,48 +857,7 @@ export const NotificationsTab: React.FC = () => {
                         </div>
                     )}
                 </div>
-            </Section>
-
-            {/* ── 5. Taskbar & Dock ─────────────────────────────────────────────── */}
-            <Section icon={<Monitor size={13} />} title="Taskbar & Dock">
-                <Row
-                    label="Show unread badge"
-                    desc="Red dot or number on the taskbar / dock icon"
-                    right={<ClToggle checked={prefs.show_badge_count} onChange={v => set('show_badge_count', v)} />}
-                />
-                <AnimatePresence initial={false}>
-                    {prefs.show_badge_count && (
-                        <motion.div {...reveal} className="overflow-hidden">
-                            <div>
-                                <Divider />
-                                <Row
-                                    label="Mentions only"
-                                    desc="Only count messages that directly @ping you"
-                                    indent
-                                    right={<ClToggle checked={prefs.badge_only_mentions} onChange={v => set('badge_only_mentions', v)} />}
-                                />
-                                <Divider />
-                                <Row
-                                    label="Include muted conversations"
-                                    desc="Count unread messages from muted chats too"
-                                    indent
-                                    right={<ClToggle checked={prefs.badge_includes_muted} onChange={v => set('badge_includes_muted', v)} />}
-                                />
-                            </div>
-                        </motion.div>
-                    )}
-                </AnimatePresence>
-                {isWindows && (
-                    <>
-                        <Divider />
-                        <Row
-                            label="Flash taskbar on new message"
-                            desc="Blinks the taskbar button until you open the app"
-                            right={<ClToggle checked={prefs.flash_taskbar} onChange={v => set('flash_taskbar', v)} />}
-                        />
-                    </>
-                )}
-            </Section>
+            </SettingsDisclosure>
 
             {/* ── 6. Reset ──────────────────────────────────────────────────────── */}
             <div className="flex justify-end pt-1 pb-2">

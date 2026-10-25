@@ -6,6 +6,8 @@ import '../src/index.css';
 import '../src/styles/home-deck.css';
 import { HomeKeys, type PlayVerdict } from '../src/components/mascot/HomeKeys';
 import { homeGameVerdict } from '../src/utils/keysBurst';
+import { writeSpamBag } from '../src/utils/keysSpamStore';
+import { applyMotionState } from '../src/utils/idleMotion';
 import { FirewallOverlay } from '../src/components/FirewallOverlay';
 import { canUseWorker } from '../src/components/loadingWorkerHost';
 
@@ -19,11 +21,21 @@ import { canUseWorker } from '../src/components/loadingWorkerHost';
  * window.__egg: { played, verdicts[], close() } for the driver
  * (harness/keys-egg-drive.mjs).
  */
-const egg = { played: 0, verdicts: [] as PlayVerdict[], close: () => {} };
+const egg = {
+    played: 0, verdicts: [] as PlayVerdict[], close: () => {},
+    /** true = answer as if a call were live (the show ends on its PAYOFF). ?call=1 sets it. */
+    inCall: new URLSearchParams(location.search).get('call') === '1',
+    /** The next streak gets this show. */
+    /** true = the window rests (what a hidden / blurred window does): payoffs pause. */
+    rest: (resting: boolean) => applyMotionState(!resting),
+    lineUp: (id: string) => writeSpamBag('harness', { bag: [id as any], last: null }),
+};
 (window as any).__egg = egg;
+const qShow = new URLSearchParams(location.search).get('show');
+if (qShow) egg.lineUp(qShow);
 
 const canPlay = (): PlayVerdict => {
-    const v = homeGameVerdict(false, () => canUseWorker(document.createElement('canvas')));
+    const v = homeGameVerdict(egg.inCall, () => canUseWorker(document.createElement('canvas')));
     egg.verdicts.push(v);
     return v;
 };

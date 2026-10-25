@@ -1,0 +1,38 @@
+/* "11:11. Make a wish." — components/moments/views/WishMoment.tsx.
+   6.7 s, transform/opacity only. Phases: notice 0–0.5, main 0.5–2.6,
+   read 2.6–5.1, hold 5.1–6.1, exit 6.1–6.7. */
+.mo-wish-star {
+  position: absolute; left: 0; top: 0;
+  animation: mo-wish-fly 2.5s both;
+}
+/* 0–0.5 it twinkles on where it starts; 0.5–2.5 a streak down-right across
+   the upper screen, ~10° below horizontal (one ease-in-out trip). */
+@keyframes mo-wish-fly {
+  0%   { transform: translate(-48vw, -34vh) rotate(10deg) scale(.3); opacity: 0; animation-timing-function: ease-out; }
+  20%  { transform: translate(-48vw, -34vh) rotate(10deg); opacity: 1; animation-timing-function: cubic-bezier(.45, 0, .55, 1); }
+  90%  { opacity: 1; }
+  100% { transform: translate(44vw, -12vh) rotate(10deg); opacity: 0; }
+}
+.mo-wish-head { position: absolute; left: -34px; top: -34px; animation: mo-wish-spin 2.5s linear both; }
+@keyframes mo-wish-spin { from { transform: rotate(0); } to { transform: rotate(300deg); } }
+.mo-wish-tail {
+  position: absolute; right: 10px; top: -5px; width: 460px; height: 10px; border-radius: 5px;
+  background: linear-gradient(90deg, rgba(255, 201, 77, 0), rgba(255, 233, 170, .55) 60%, #FFF6D6);
+  transform-origin: 100% 50%;
+  animation: mo-wish-tail 2s ease-out .5s both;
+}
+@keyframes mo-wish-tail { 0% { transform: scaleX(.05); } 30% { transform: scaleX(1); } 100% { transform: scaleX(.6); } }
+.mo-wish-glint {
+  position: absolute; width: 12px; height: 12px; margin: -6px; border-radius: 50%;
+  background: #FFE9AA; opacity: 0;
+  animation: mo-wish-glint 1.8s ease-out both;
+}
+@keyframes mo-wish-glint {
+  0% { transform: scale(.2); opacity: 0; } 15% { transform: scale(1.4); opacity: 1; }
+  50% { transform: scale(.7) translateY(10px); opacity: .8; } 100% { transform: scale(.2) translateY(26px); opacity: 0; }
+}
+.mo-wish .mo-wish-pill {
+  top: -4vh; font-size: 26px; padding: 12px 28px;
+  animation: mo-pill-in .5s cubic-bezier(.2, .8, .3, 1) 2.1s both;
+}
+.mo-wish-pill b { color: var(--cl-glow, #FFC94D); }

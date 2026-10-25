@@ -15,7 +15,7 @@ import { getGroupRowPosition, getGroupRowRoundingClass, type GroupRowPosition } 
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import axios from 'axios';
-import { Volume2, MoreVertical, ChevronDown, ChevronRight, User, MessageSquare, PhoneCall, UserMinus, UserPlus, Ban, Flag, Link as LinkIcon, LogOut, Radio, Edit3, Folder, Plus, Pencil, Trash2, Crown, Shield, VolumeX, Gavel, Lock, Pin, X, Search, MicOff, VideoOff, MonitorOff, HeadphoneOff, PencilOff, PenLine, PhoneOff } from 'lucide-react';
+import { Volume2, MoreVertical, ChevronDown, ChevronRight, User, MessageSquare, PhoneCall, UserMinus, UserPlus, Ban, Flag, Link as LinkIcon, LogOut, Radio, Edit3, Folder, Plus, Pencil, Trash2, Crown, Shield, VolumeX, Gavel, Lock, Pin, X, Search, MicOff, VideoOff, MonitorOff, HeadphoneOff, PencilOff, PenLine, PhoneOff, Music } from 'lucide-react';
 import {
     annotationStore, ownedGrantTracks, selectCanGrantAnnotation, selectGrantTarget, isScreenShareTrack,
 } from '../../utils/annotationStore';
@@ -41,6 +41,7 @@ import { apiUrl } from '../../utils/apiPath';
 import { EncryptedAvatar } from '../EncryptedAvatar';
 import { StatusIcon } from '../StatusPicker';
 import { GameControllerIcon } from '../GameControllerIcon';
+import { StatusLine } from '../StatusLine';
 import { STATUS_CONFIG, type UserStatus, type FriendStatusEntry } from '../../hooks/useUserStatus';
 import { resolvePresence } from '../../utils/presenceState';
 import { useContextMenu } from '../../hooks/useContextMenu';
@@ -52,6 +53,7 @@ import { ChannelMessageSearch, type SearchableMessage } from './ChannelMessageSe
 import { CategoryFormDialog } from './CategoryFormDialog';
 import { ChannelSettingsDialog } from './ChannelSettingsDialog';
 import { ConfirmDialog, type ConfirmOptions } from '../primitives/ConfirmDialog';
+import { MemberActionDialog, type MemberActionKind } from './MemberActionDialog';
 import {
     canOfferDisconnect, disconnectConfirmCopy, disconnectErrorToast, hasManageCallMembers, hasModerateCallMedia,
     requestDisconnect, type DisconnectTarget,
@@ -60,6 +62,7 @@ import { Permissions, hasPermission } from '@cipherline/shared';
 import { getHighestRoleColor, getTopHoistedRole } from '../../utils/roleColor';
 import { useCallContextSafe, useCallTelemetrySafe } from '../../contexts/CallContext';
 import { SpeakingRing } from '../call/SpeakingRing';
+import { getEntrancePrefs, setEntranceMuted } from '../../utils/entrancePrefs';
 import { PopoverMenu, calcPopoverPos } from '../call/PopoverMenu';
 import { usePersistentVolume, usePersistentNsEnabled } from '../call/VideoTile';
 import { ParticipantStatusIcons } from './ParticipantStatusIcons';
@@ -84,6 +87,9 @@ import { useIncrementalRows } from '../../hooks/useIncrementalRows';
 import { allocateRows, ROW_PX_ESTIMATE } from '../../utils/incrementalRows';
 import { canStartCallsIn, isJoinOnlyIn } from '../../utils/startCallsGate';
 import { endsWhenNotice } from '../../utils/endCallOnLeave';
+import { requestMoment } from '../../utils/moments';
+import { listMoveDestinations } from '../../utils/callMoveDestinations';
+import { noteGuestMove } from '../../utils/guestCallKey';
 
 // ── Sortable wrappers for Huddle DnD ────────────────────────────────────────
 
@@ -261,13 +267,15 @@ interface Props {
     voiceParticipants: Record<string, string[]>;
 
     // Status / presence
-    friendStatuses: Record<string, { status: string; current_game?: string | null; on_mobile?: boolean }>;
+    friendStatuses: Record<string, { status: string; current_game?: string | null; on_mobile?: boolean; custom_status_text?: string | null; custom_status_emoji?: string | null; custom_status_expires_at?: string | null }>;
     /** True once a complete presence snapshot has been applied: from then on
      *  a member absent from `friendStatuses` is offline, not whatever the
      *  roster said when it was fetched (see utils/presenceState.ts). */
     presenceAuthoritative?: boolean;
     myStatus: string;
     myCurrentGame: string | null;
+    /** The user's own custom status (the member list shows it under their name). */
+    myCustom?: { text: string; emoji: string; expiresAt: string | null };
 
     // Social graph
     globalFriends: { accepted: Array<{ user_id: string; username: string; avatar_url?: string }> } | null;
@@ -396,6 +404,7 @@ export const ServerContextPanel: React.FC<Props> = ({
     presenceAuthoritative = false,
     myStatus,
     myCurrentGame,
+    myCustom,
     globalFriends,
     sentFriendRequests,
     setSentFriendRequests,
@@ -530,6 +539,10 @@ export const ServerContextPanel: React.FC<Props> = ({
     const [huddleSettings, setHuddleSettings] = useState<ChannelInfo | null>(null);
     /** Pending destructive action awaiting styled confirmation. */
     const [pendingConfirm, setPendingConfirm] = useState<ConfirmOptions | null>(null);
+    /** Kick / ban awaiting confirmation (its own dialog — it names the server and explains the consequence). */
+    const [memberAction, setMemberAction] = useState<{
+        kind: MemberActionKind; userId: string; displayName: string; avatarUrl: string | null; onConfirm: () => void;
+    } | null>(null);
     /** Nickname-change dialog target. Null = closed. */
     const [nicknameDialog, setNicknameDialog] = useState<{ userId: string; currentNickname: string | null; displayName: string } | null>(null);
     const [nicknameInput, setNicknameInput] = useState('');
@@ -702,7 +715,7 @@ export const ServerContextPanel: React.FC<Props> = ({
      *  double-apply when the echo lands a moment later. */
     const commitMove = React.useCallback(async (
         targetUserId: string,
-        dest: { kind: 'call'; callId: string } | { kind: 'huddle'; huddleId: string },
+        dest: { kind: 'call'; callId: string; huddleId?: string } | { kind: 'huddle'; huddleId: string },
     ) => {
         if (!token) return;
         const url = dest.kind === 'call'
@@ -716,6 +729,15 @@ export const ServerContextPanel: React.FC<Props> = ({
                 setLandedCallId(landed);
                 window.setTimeout(() => setLandedCallId(prev => (prev === landed ? null : prev)), 500);
             }
+            // They cannot see that channel, so they cannot derive its call key:
+            // as a key holder, hand them the room key (utils/guestCallKey). The
+            // Dashboard owns the crypto; this just says who, where.
+            const destHuddleId = dest.kind === 'huddle'
+                ? dest.huddleId
+                : dest.huddleId ?? Object.values(huddleCalls).flat().find(c => c.call_id === dest.callId)?.huddle_id;
+            if (res.data?.target_lacks_access === true && typeof landed === 'string' && destHuddleId) {
+                noteGuestMove({ callId: landed, huddleId: destHuddleId, serverId: server.server_id, guestUserId: targetUserId });
+            }
         // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (err: any) {
             const msg = err?.response?.data?.message;
@@ -727,51 +749,38 @@ export const ServerContextPanel: React.FC<Props> = ({
                     : 'The move was rejected — they may have left the call already.',
             });
         }
-    }, [token, toast]);
+    }, [token, toast, huddleCalls, server.server_id]);
 
     /** "Move to ▸" submenu for a participant — the keyboard/right-click
      *  equivalent of dragging them onto another call. Returns [] when the
      *  action doesn't apply (no permission, it's you, they aren't in a call,
      *  or there's nowhere else to put them) so callers can spread it
-     *  unconditionally. Destinations mirror the drop targets exactly: any
-     *  other live call the viewer can reach, plus any Calls channel with no
-     *  call running.
-     *
-     *  Reads huddles from `allChannels` rather than the optimistic-reorder
-     *  copy further down — menu ordering doesn't need the in-flight drag
-     *  state, and depending on it would force this above its own declaration. */
+     *  unconditionally. Destinations mirror the drop targets exactly, and
+     *  come from utils/callMoveDestinations: every other live call the VIEWER
+     *  can join, plus any Calls channel with no call running where the viewer
+     *  may start one — never filtered by the target's own access (a member
+     *  without it lands as a guest of that call). Private channels say so. */
     const buildMoveToSubmenu = React.useCallback(
         (uid: string): import('../primitives/ContextMenu').ContextMenuItem[] => {
             if (!canMoveMembers || uid === userId) return [];
-            const allCalls = Object.values(huddleCalls).flat();
-            const sourceCall = allCalls.find(c => c.participants.includes(uid));
-            if (!sourceCall) return [];
-
-            const huddles = allChannels.filter(c => c.kind === 'huddle');
-            const huddleName = (hid: string) =>
-                huddles.find(h => h.channel_id === hid)?.name ?? 'Calls';
-
-            const targets: import('../primitives/ContextMenu').ContextMenuItem[] = [];
-            for (const c of allCalls) {
-                if (c.call_id === sourceCall.call_id) continue;
-                if (!canConnect(c.huddle_id)) continue;
-                targets.push({
+            const targets: import('../primitives/ContextMenu').ContextMenuItem[] = listMoveDestinations({
+                targetUserId: uid,
+                calls: Object.values(huddleCalls).flat(),
+                channels: allChannels,
+                callsByChannel: huddleCalls,
+                canConnect,
+                canStartCalls,
+            }).map(d => d.kind === 'call'
+                ? {
                     icon: <PhoneCall />,
-                    label: `${c.name} · ${huddleName(c.huddle_id)}`,
-                    onSelect: () => void commitMove(uid, { kind: 'call', callId: c.call_id }),
-                });
-            }
-            for (const h of huddles) {
-                if ((huddleCalls[h.channel_id] ?? []).length > 0) continue;
-                // A move onto an empty Calls channel STARTS a call (the actor
-                // is its spawner), so it needs START_CALLS there too.
-                if (!canConnect(h.channel_id) || !canStartCalls(h.channel_id)) continue;
-                targets.push({
+                    label: d.label,
+                    onSelect: () => void commitMove(uid, { kind: 'call', callId: d.callId, huddleId: d.huddleId }),
+                }
+                : {
                     icon: <Radio />,
-                    label: `New call in ${h.name}`,
-                    onSelect: () => void commitMove(uid, { kind: 'huddle', huddleId: h.channel_id }),
+                    label: d.label,
+                    onSelect: () => void commitMove(uid, { kind: 'huddle', huddleId: d.huddleId }),
                 });
-            }
             if (targets.length === 0) return [];
             return [
                 { divider: true },
@@ -831,6 +840,14 @@ export const ServerContextPanel: React.FC<Props> = ({
                     onSelect: () => onOpenProfile(uid, { x: window.innerWidth / 2, y: window.innerHeight / 2 }, { roleIds: [], roles: [], serverId: server.server_id }),
                 },
             ];
+            if (uid !== userId) {
+                const entranceMuted = getEntrancePrefs().muted.includes(uid);
+                items.push({
+                    icon: <Music />, label: 'Mute Entrance Sound',
+                    checked: entranceMuted,
+                    onSelect: () => setEntranceMuted(uid, !entranceMuted),
+                });
+            }
             items.push(...buildMoveToSubmenu(uid));
             items.push(...buildDisconnectItems(uid, displayName));
             // Server-side moderation block — only when caller has MODERATE_CALL_MEDIA
@@ -1486,10 +1503,8 @@ export const ServerContextPanel: React.FC<Props> = ({
                     icon: <Gavel />,
                     label: `Kick ${displayName}`,
                     danger: true,
-                    onSelect: () => setPendingConfirm({
-                        title: `Kick ${displayName}?`,
-                        message: `${displayName} will be removed from the server but can rejoin with an invite.`,
-                        confirmLabel: 'Kick',
+                    onSelect: () => setMemberAction({
+                        kind: 'kick', userId: m.user_id, displayName, avatarUrl: m.avatar_url ?? null,
                         onConfirm: async () => {
                             try { await axios.post(apiUrl`/servers/${server.server_id}/members/${m.user_id}/kick`, {}, { headers: { Authorization: `Bearer ${token}` } }); loadMembers(); }
                             catch { /* non-fatal */ }
@@ -1500,12 +1515,11 @@ export const ServerContextPanel: React.FC<Props> = ({
                     icon: <Ban />,
                     label: `Ban ${displayName}`,
                     danger: true,
-                    onSelect: () => setPendingConfirm({
-                        title: `Ban ${displayName}?`,
-                        message: `${displayName} will be permanently banned and cannot rejoin unless unbanned.`,
-                        confirmLabel: 'Ban',
+                    onSelect: () => setMemberAction({
+                        kind: 'ban', userId: m.user_id, displayName, avatarUrl: m.avatar_url ?? null,
                         onConfirm: async () => {
-                            try { await axios.post(apiUrl`/servers/${server.server_id}/members/${m.user_id}/ban`, {}, { headers: { Authorization: `Bearer ${token}` } }); loadMembers(); }
+                            // Moment after a successful ban: your first ever (ledger: once). The fact only — never who.
+                            try { await axios.post(apiUrl`/servers/${server.server_id}/members/${m.user_id}/ban`, {}, { headers: { Authorization: `Bearer ${token}` } }); loadMembers(); requestMoment('first-ban'); }
                             catch { /* non-fatal */ }
                         },
                     }),
@@ -1621,8 +1635,15 @@ export const ServerContextPanel: React.FC<Props> = ({
                         )}
                         {isMe && <span className="text-[10px] text-cl-faint font-normal shrink-0">(you)</span>}
                     </div>
-                    {game && status !== 'offline' && (
-                        <p className="text-[12px] text-white/45 truncate leading-tight mt-0.5">{game}</p>
+                    {status !== 'offline' && (
+                        <StatusLine
+                            entry={isMe
+                                ? { status, custom_status_text: myCustom?.text ?? null, custom_status_emoji: myCustom?.emoji ?? null, custom_status_expires_at: myCustom?.expiresAt ?? null, current_game: game }
+                                : { status, custom_status_text: friendStatuses[m.user_id]?.custom_status_text ?? null, custom_status_emoji: friendStatuses[m.user_id]?.custom_status_emoji ?? null, custom_status_expires_at: friendStatuses[m.user_id]?.custom_status_expires_at ?? null, current_game: game, on_mobile: onMobile }}
+                            userId={m.user_id}
+                            renderGame={g => g}
+                            className="text-[12px] text-white/45 leading-tight mt-0.5"
+                        />
                     )}
                 </div>
 
@@ -1900,7 +1921,7 @@ export const ServerContextPanel: React.FC<Props> = ({
                                                     disabled={!canMoveMembers && !isMe}
                                                 >
                                                 <div
-                                                    className="flex items-center gap-2.5 px-2 py-1.5 hover:bg-white/[0.04] transition-colors w-full cursor-pointer"
+                                                    className="flex items-center gap-2.5 px-2 py-1.5 hover:bg-white/[0.04] transition-colors w-full cursor-pointer relative isolate"
                                                     onClick={(e) => onOpenProfile(uid, { x: e.clientX, y: e.clientY }, { roleIds: [], roles: [], serverId: server.server_id })}
                                                     onContextMenu={(e) => {
                                                         e.preventDefault();
@@ -1942,12 +1963,14 @@ export const ServerContextPanel: React.FC<Props> = ({
                                                         }
                                                     }}
                                                 >
+                                                    
                                                     {/* Speaking ring subscribes per identity (SpeakingRing) so a
                                                         speaking flip doesn't re-render this whole panel. */}
                                                     <SpeakingRing
                                                         uid={uid}
                                                         className="w-8 h-8 rounded-full overflow-hidden bg-cl-surface flex items-center justify-center shrink-0 transition-[box-shadow] duration-150"
-                                                        speakingClassName="ring-2 ring-green-500 shadow-[0_0_6px_rgba(34,197,94,0.5)]"
+                                                        glow={6}
+                                                        glowAlpha={0.5}
                                                         idleClassName="ring-1 ring-white/10"
                                                     >
                                                         <EncryptedAvatar
@@ -2450,7 +2473,7 @@ export const ServerContextPanel: React.FC<Props> = ({
                                                         return (
                                                             <div
                                                                 key={uid}
-                                                                className="flex items-center gap-2 px-2 py-1.5 hover:bg-white/[0.03] transition-colors cursor-pointer group"
+                                                                className="flex items-center gap-2 px-2 py-1.5 hover:bg-white/[0.03] transition-colors cursor-pointer group relative isolate"
                                                                 onClick={(e) => onOpenProfile(uid, { x: e.clientX, y: e.clientY })}
                                                                 onContextMenu={(e) => callParticipantMenu.open(
                                                                     e,
@@ -2458,11 +2481,13 @@ export const ServerContextPanel: React.FC<Props> = ({
                                                                     pName,
                                                                 )}
                                                             >
+                                                                
                                                                 <div className="relative w-8 h-8 shrink-0">
                                                                     <SpeakingRing
                                                                         uid={uid}
                                                                         className="w-full h-full rounded-full overflow-hidden transition-[box-shadow] duration-150"
-                                                                        speakingClassName="ring-2 ring-green-500 shadow-[0_0_6px_rgba(34,197,94,0.5)]"
+                                                                        glow={6}
+                                                        glowAlpha={0.5}
                                                                     >
                                                                         <EncryptedAvatar
                                                                             attachmentId={pm?.avatar_url ?? null}
@@ -2696,6 +2721,18 @@ export const ServerContextPanel: React.FC<Props> = ({
                 )}
             </ClModal>
 
+            {memberAction && (
+                <MemberActionDialog
+                    kind={memberAction.kind}
+                    serverName={server.name}
+                    memberId={memberAction.userId}
+                    memberName={memberAction.displayName}
+                    avatarUrl={memberAction.avatarUrl}
+                    token={token}
+                    onConfirm={memberAction.onConfirm}
+                    onClose={() => setMemberAction(null)}
+                />
+            )}
             {/* Styled confirmation dialog — replaces window.confirm() for
                 destructive actions (delete huddle, delete category). */}
             {pendingConfirm && (

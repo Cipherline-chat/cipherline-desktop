@@ -1,0 +1,114 @@
+/* ============================================================================
+   Dialog pattern — additions for form-style dialogs (components/dialog/DialogExtras.tsx).
+
+   dialog-frame.css owns the card / header / body / footer. This file adds the
+   pieces a dialog with FIELDS needs on top of that, so every migrated dialog
+   shares one set of spacings instead of re-inventing them inline:
+
+     .dlg-form        a <form> that sits between card and pieces without
+                      breaking the card's flex column (Enter submits)
+     .dlg-body--scroll  the body is what scrolls, never the card (the footer
+                      must not scroll away)
+     .dlg-stack       vertical rhythm for the body's children
+     .dlg-field-*     label / helper / inline error under a field
+     .dlg-note        callout (info / warn / danger / ok)
+     .dlg-linkbtn     a quiet text action inside the body
+     .dlg-tone-*      tints the header icon tile for a warning / danger dialog
+
+   UNSCOPED like dialog-frame.css (see there); every selector that competes
+   with a kit rule carries an extra class.
+
+   Motion: nothing here animates on its own. The only transitions are colour
+   fades from an already-correct resting state, so prefers-reduced-motion needs
+   no special case (and the kit's @scope already zeroes them inside .cl-kit).
+   ============================================================================ */
+
+.dlg-form{display:flex;flex-direction:column;flex:1 1 auto;min-height:0;margin:0}
+
+/* The body is the scroll container for tall dialogs. Header and footer are
+   flex:none, so a capped card keeps its actions on screen. */
+.dlg-body.dlg-body--scroll{overflow-y:auto;overscroll-behavior:contain;padding-bottom:2px}
+.dlg-body.dlg-body--center{align-items:center;text-align:center}
+
+.dlg-stack{display:flex;flex-direction:column;gap:14px;min-width:0}
+.dlg-stack--tight{gap:10px}
+.dlg-stack--center{align-items:center;text-align:center}
+
+/* ── fields ── */
+.dlg-field{display:flex;flex-direction:column;gap:6px;min-width:0}
+.dlg-label{
+  display:flex;align-items:baseline;justify-content:space-between;gap:10px;
+  font-size:12px;font-weight:800;letter-spacing:.02em;color:var(--cl-muted, #A7B3D4);
+}
+.dlg-label small{font-size:11.5px;font-weight:700;color:var(--cl-faint, #5E6B8F)}
+.dlg-help{font-size:12.5px;line-height:1.45;font-weight:600;color:var(--cl-faint, #5E6B8F)}
+.dlg-help strong,.dlg-help b{color:var(--cl-text, #F4F7FF);font-weight:800}
+.dlg-field-error{min-height:18px;font-size:12.5px;font-weight:700;line-height:1.4;color:var(--cl-flash, #FF6B5E)}
+.dlg-field-error:empty{min-height:0}
+.dlg-copy{font-size:13.5px;line-height:1.55;font-weight:600;color:var(--cl-muted, #A7B3D4);margin:0}
+.dlg-copy strong,.dlg-copy b{color:var(--cl-text, #F4F7FF);font-weight:800}
+.dlg-section{
+  font-size:11px;font-weight:800;letter-spacing:.09em;text-transform:uppercase;color:var(--cl-faint, #5E6B8F);
+}
+
+/* ── notes ── */
+.dlg-note{
+  display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border-radius:12px;
+  font-size:13px;line-height:1.5;font-weight:600;color:var(--cl-muted, #A7B3D4);
+  background:rgba(37,224,200,.07);box-shadow:inset 0 0 0 1px rgba(37,224,200,.18);
+}
+.dlg-note > svg{flex:none;margin-top:2px;color:var(--cl-lume, #25E0C8)}
+.dlg-note > div,.dlg-note > span{min-width:0;flex:1}
+.dlg-note strong,.dlg-note b{color:var(--cl-text, #F4F7FF);font-weight:800}
+.dlg-note--warn{background:rgba(255,201,77,.08);box-shadow:inset 0 0 0 1px rgba(255,201,77,.24)}
+.dlg-note--warn > svg{color:var(--cl-glow, #FFC94D)}
+.dlg-note--danger{background:var(--cl-flash-tint, rgba(255,107,94,.12));box-shadow:inset 0 0 0 1px rgba(255,107,94,.24);color:var(--cl-text, #F4F7FF)}
+.dlg-note--danger > svg{color:var(--cl-flash, #FF6B5E)}
+.dlg-note--ok{background:rgba(74,222,128,.08);box-shadow:inset 0 0 0 1px rgba(74,222,128,.22)}
+.dlg-note--ok > svg{color:var(--cl-ok, #4ADE80)}
+
+/* ── quiet text action ── */
+.dlg-linkbtn{
+  display:inline-flex;align-items:center;gap:6px;padding:3px 2px;border:0;background:none;cursor:pointer;
+  font:inherit;font-size:12.5px;font-weight:800;color:var(--cl-lume, #25E0C8);
+  border-radius:6px;transition:color .15s ease, opacity .15s ease;
+}
+.dlg-linkbtn:hover:not(:disabled){color:var(--cl-lume-hi, #3BEAD6);text-decoration:underline;text-underline-offset:3px}
+.dlg-linkbtn:focus-visible{outline:2px solid var(--cl-lume, #25E0C8);outline-offset:2px}
+.dlg-linkbtn:disabled{cursor:default;color:var(--cl-faint, #5E6B8F)}
+.dlg-linkrow{display:flex;flex-wrap:wrap;align-items:center;justify-content:center;gap:4px 16px}
+
+/* ── key / value list (device details, summaries) ── */
+.dlg-kv{
+  display:grid;grid-template-columns:auto 1fr;column-gap:18px;row-gap:8px;margin:0;
+  padding:12px 14px;border-radius:12px;font-size:13px;
+  background:var(--cl-sink, #0A1120);box-shadow:inset 0 0 0 1px var(--cl-border, #2A3558);
+}
+.dlg-kv dt{color:var(--cl-faint, #5E6B8F);font-weight:700}
+.dlg-kv dd{margin:0;text-align:right;color:var(--cl-text, #F4F7FF);font-weight:700;min-width:0;word-break:break-word}
+
+/* ── inline code (secrets, codes) ── */
+.dlg-code{
+  display:block;padding:9px 12px;border-radius:10px;text-align:center;word-break:break-all;
+  font-family:var(--cl-font-mono, 'JetBrains Mono', monospace);font-size:12.5px;letter-spacing:.06em;
+  color:var(--cl-muted, #A7B3D4);background:var(--cl-sink, #0A1120);box-shadow:inset 0 0 0 1px var(--cl-border, #2A3558);
+}
+
+/* ── header icon tone (put on the card: cardClassName="dlg-card dlg-tone-warn") ── */
+.dlg-tone-warn .dlg-head-icon{background:rgba(255,201,77,.12);color:var(--cl-glow, #FFC94D);box-shadow:inset 0 0 0 1px rgba(255,201,77,.28)}
+.dlg-tone-danger .dlg-head-icon{background:var(--cl-flash-tint, rgba(255,107,94,.12));color:var(--cl-flash, #FF6B5E);box-shadow:inset 0 0 0 1px rgba(255,107,94,.28)}
+.dlg-tone-ok .dlg-head-icon{background:rgba(74,222,128,.12);color:var(--cl-ok, #4ADE80);box-shadow:inset 0 0 0 1px rgba(74,222,128,.26)}
+
+/* ── step dots in the footer hint ── */
+.dlg-steps{display:inline-flex;align-items:center;gap:5px}
+.dlg-steps i{width:6px;height:6px;border-radius:50%;background:var(--cl-border, #2A3558);transition:background .2s ease}
+.dlg-steps i.on{background:var(--cl-lume, #25E0C8)}
+
+/* ── centered hero (success / waiting states) ── */
+.dlg-hero{display:flex;flex-direction:column;align-items:center;text-align:center;gap:10px;padding:8px 4px 4px}
+.dlg-hero-badge{
+  width:52px;height:52px;border-radius:16px;display:flex;align-items:center;justify-content:center;
+  background:var(--cl-lume-tint, rgba(37,224,200,.12));color:var(--cl-lume, #25E0C8);
+  box-shadow:inset 0 0 0 1px rgba(37,224,200,.22);
+}
+.dlg-hero-title{margin:0;font-family:var(--cl-font-display, 'Fredoka', sans-serif);font-weight:600;font-size:17px;color:var(--cl-text, #F4F7FF)}

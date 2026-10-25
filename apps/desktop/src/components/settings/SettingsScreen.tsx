@@ -3,12 +3,16 @@ import { X } from 'lucide-react';
 import { ClButton } from '../cl';
 import { APP_VERSION } from '../../constants';
 import { SeaBackdrop } from './SeaBackdrop';
-import { DepthGauge, ZONES, zoneOf } from './DepthGauge';
+import { DepthGauge, ZONES, zoneOf, zoneLabel } from './DepthGauge';
+import { useEggCalendar } from '../../hooks/useEasterEggs';
+import { revealSetting } from './revealSetting';
 import { ProfilePane } from './panes/ProfilePane';
+import { ConnectionsPane } from '../integrations/ConnectionsPane';
 import { useUnsavedChangesGuard } from '../../hooks/useUnsavedChangesGuard';
 import { useEscape } from '../../hooks/useEscape';
 import { setOccluded } from '../../utils/idleMotion';
 import { AppearancePane } from './panes/AppearancePane';
+import { PersonalizePane } from './panes/PersonalizePane';
 import { DevicesPane } from './panes/DevicesPane';
 import { DangerPane } from './panes/DangerPane';
 import AdvancedSettings from '../AdvancedSettings';
@@ -47,14 +51,16 @@ import type { GifSettingsHook } from '../../hooks/useGifSettings';
  * exits fast and plain, reduced-motion strips everything (CSS layer).
  */
 export type PaneId =
-    | 'profile' | 'appearance'
+    | 'profile' | 'connections' | 'appearance' | 'personalize'
     | 'devices' | 'voice' | 'notifications' | 'keybinds' | 'activity'
     | 'privacy' | 'storage' | 'billing'
     | 'advanced' | 'danger';
 
 const PANE_META: Record<PaneId, { title: string; desc: string }> = {
     profile:       { title: 'Profile',          desc: 'How you show up to the people who can actually see you.' },
+    connections:   { title: 'Connections',      desc: 'Steam, what you\u2019re listening to, and the playlists on your profile.' },
     appearance:    { title: 'Appearance',       desc: 'The window, the tray, and how the app behaves around your OS.' },
+    personalize:   { title: 'Personalize',    desc: 'Make it yours. Your own emojis now, more to come.' },
     devices:       { title: 'Devices',          desc: 'Every device carries its own keys. This is the list, and the axe.' },
     voice:         { title: 'Voice & Video',    desc: 'Tuned on-device. Encrypted per frame on the way out.' },
     notifications: { title: 'Notifications',    desc: 'What’s allowed to glow, and when.' },
@@ -151,6 +157,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
     const mainRef = useRef<HTMLDivElement>(null);
     const switchTimer = useRef(0);
 
+    const eggCalendar = useEggCalendar();
     const zone = Math.max(0, zoneOf(pane));
     const isAbyss = ZONES[zone]?.abyss === true;
     const depth = useDepthCounter(ZONES[zone]?.depth ?? 0);
@@ -222,8 +229,21 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
     // from below (plunge when jumping 2+ zones), ascend = drop from above,
     // same-zone = lateral drift toward the item you moved to.
     const [entryFx, setEntryFx] = useState<{ pane: string; title: string }>({ pane: '', title: '' });
-    const go = useCallback((next: PaneId) => {
+    // A search hit names a SETTING, not just a pane: once the pane has
+    // mounted (and its cards have mostly arrived), scroll to that setting,
+    // open whatever disclosure it is folded into, and flash it once.
+    const revealAfterSwitch = useRef<string | null>(null);
+    useEffect(() => {
+        const label = revealAfterSwitch.current;
+        if (!label) return;
+        revealAfterSwitch.current = null;
+        const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        const t = window.setTimeout(() => { if (mainRef.current) revealSetting(mainRef.current, label); }, reduced ? 0 : 380);
+        return () => window.clearTimeout(t);
+    }, [pane]);
+    const go = useCallback((next: PaneId, setting?: string) => {
         if (next === pane || leaving) return;
+        revealAfterSwitch.current = setting ?? null;
         const from = zoneOf(pane), to = zoneOf(next);
         let fx: { pane: string; title: string };
         if (to > from) {
@@ -248,9 +268,12 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
         }, reduced ? 0 : 100);
     }, [pane, leaving]);
     useEffect(() => () => window.clearTimeout(switchTimer.current), []);
-    const goGuarded = useCallback((next: PaneId) => {
-        if (next === pane) return;
-        unsaved.guard(() => go(next));
+    const goGuarded = useCallback((next: PaneId, setting?: string) => {
+        if (next === pane) {
+            if (setting && mainRef.current) revealSetting(mainRef.current, setting);
+            return;
+        }
+        unsaved.guard(() => go(next, setting));
     }, [pane, go, unsaved.guard]); // eslint-disable-line react-hooks/exhaustive-deps
 
     const meta = PANE_META[pane];
@@ -274,9 +297,12 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
 
                     <main className={`sd-main${leaving ? ' sd-leaving' : ''}`} ref={mainRef}>
                         <div className="sd-col">
+                            {/* Depth label, title, one line. No section glyph: the rail
+                                already carries each pane's icon, and a header icon is
+                                not a pattern anywhere else in the app. */}
                             <header className="sd-chead">
                                 <div className="sd-eyebrow">
-                                    <b>{ZONES[zone]?.name}</b>
+                                    <b>{zoneLabel(ZONES[zone]?.name ?? '', eggCalendar.halloween)}</b>
                                     <span className="sd-depth">{formatDepth(depth)}</span>
                                 </div>
                                 <h1 key={pane} className={`sd-pop${entryFx.title}`}>{meta.title}</h1>
@@ -285,7 +311,9 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
 
                             <section key={`pane-${pane}`} className={`sd-pane${entryFx.pane}`}>
                                 {pane === 'profile' && <ProfilePane onDirtyChange={unsaved.setDirty} />}
+                                {pane === 'connections' && <ConnectionsPane />}
                                 {pane === 'appearance' && <AppearancePane gif={gif} />}
+                                {pane === 'personalize' && <PersonalizePane />}
                                 {pane === 'devices' && <DevicesPane />}
                                 {pane === 'voice' && <VoiceVideoSettings voice={voice} />}
                                 {pane === 'notifications' && <NotificationsTab />}

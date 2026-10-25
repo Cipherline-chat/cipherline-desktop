@@ -26,12 +26,16 @@ function block(src: string, marker: string, open = '{', close = '}'): string {
 
 describe('crash-vs-quit wiring in main.ts', () => {
     it('every crash source goes through recordCrash(event) → crashRecordFor with the quitting state', () => {
-        expect(CODE).toContain("recordCrash({ source: 'main-exception', thrown: err, origin: 'uncaughtException' })");
-        expect(CODE).toContain("recordCrash({ source: 'main-exception', thrown: reason, origin: 'unhandledRejection' })");
+        // main-process exceptions: via net-error.ts's handler, whose fatal path is this recordCrash
+        expect(CODE).toContain("recordCrash({ source: 'main-exception', thrown, origin })");
+        expect(CODE).toContain("process.on('uncaughtException', createMainErrorHandler('uncaughtException', mainErrorDeps))");
+        expect(CODE).toContain("process.on('unhandledRejection', createMainErrorHandler('unhandledRejection', mainErrorDeps))");
+        // …and nothing registers a bare, unclassified handler next to it
+        expect(CODE.match(/process\.on\('(uncaughtException|unhandledRejection)'/g)).toHaveLength(2);
         expect(CODE).toContain("recordCrash({ source: 'render-process-gone', details })");
         expect(CODE).toContain("recordCrash({ source: 'child-process-gone', details })");
         expect(CODE).toContain("recordCrash({ source: 'renderer-report', payload })");
-        expect(block(CODE, 'const recordCrash = ')).toContain('crashRecordFor(event, sessionLifecycle.isQuitting,');
+        expect(block(CODE, 'const recordCrash = ')).toContain('crashRecordFor(event, sessionLifecycle.ignoresCrashes,');
         // No path builds a record without the gate.
         expect(CODE).not.toMatch(/pendingCrashes\.add\(crashFrom/);
         expect(CODE).not.toMatch(/\bcrashFrom(RenderGone|ChildGone|MainError|RendererReport)\(/);
@@ -96,6 +100,36 @@ describe('crash-vs-quit wiring in main.ts', () => {
         expect(guard).toBeGreaterThan(-1);
         expect(gone.indexOf('dialog.showErrorBox')).toBeGreaterThan(guard);
         expect(gone.indexOf('webContents.reload()')).toBeGreaterThan(guard);
+    });
+
+    it('a Windows shutdown negotiation (query-session-end) suspects the end, never quits, never holds the OS up', () => {
+        const q = block(CODE, "mainWindow.on('query-session-end'", '(', ')');
+        expect(q).toContain('sessionLifecycle.suspectSessionEnd()');
+        expect(q).toContain('sessionLifecycle.resumeAfterSuspectedEnd()');
+        expect(q).not.toContain('beginQuit');         // cancellable: close-to-tray must keep hiding the window
+        expect(q).not.toContain('preventDefault');    // never delay a shutdown
+        expect(CODE).toMatch(/const SESSION_END_SUSPECT_MS = \d/);
+    });
+
+    it('the log-off exit code is a quit signal, handled before the crash record (and the GPU-restart signal ignores it)', () => {
+        expect(block(CODE, 'const noteOsSessionEndExit = ')).toContain("beginQuit('session-end')");
+        const childGone = block(CODE, "app.on('child-process-gone', (_e, details) => {", '(', ')');
+        expect(childGone.indexOf('noteOsSessionEndExit(details)')).toBeGreaterThan(-1);
+        expect(childGone.indexOf('noteOsSessionEndExit(details)')).toBeLessThan(childGone.indexOf('recordCrash('));
+        const gone = block(CODE, "mainWindow.webContents.on('render-process-gone'", '(', ')');
+        expect(gone.indexOf('noteOsSessionEndExit(details)')).toBeGreaterThan(-1);
+        expect(gone.indexOf('noteOsSessionEndExit(details)')).toBeLessThan(gone.indexOf('recordCrash('));
+    });
+
+    it('a transient net::ERR rejection is logged as a diagnostics event, not recorded as a crash', () => {
+        // The classification + "event, not crash" branch live in net-error.ts's
+        // createMainErrorHandler (unit-tested in net-error.test.ts); main.ts must
+        // route BOTH global handlers through it, with the freezeMonitor event sink.
+        expect(CODE).toContain("process.on('unhandledRejection', createMainErrorHandler('unhandledRejection', mainErrorDeps))");
+        expect(CODE).toContain("process.on('uncaughtException', createMainErrorHandler('uncaughtException', mainErrorDeps))");
+        const deps = block(CODE, 'const mainErrorDeps = ');
+        expect(deps).toContain('event: (name: string, ms: number, detail: string) => freezeMonitor.event(name, ms, detail)');
+        expect(deps).toContain("source: 'main-exception'");
     });
 
     it('the marker stays off under the smoke test (no startup disk writes)', () => {

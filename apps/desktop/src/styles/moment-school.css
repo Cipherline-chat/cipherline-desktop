@@ -1,0 +1,36 @@
+/* "100 friends. That’s officially a school." — components/moments/views/SchoolMoment.tsx.
+   8.5 s, transform/opacity only. Phases: notice 0–0.5, main 0.5–3.2,
+   read 3.2–6.8, hold 6.8–7.8, exit 7.8–8.5. */
+/* The school circles slowly and eases to a stop exactly when the hold begins. */
+.mo-school-spin { position: absolute; left: 0; top: 0; animation: mo-school-spin var(--mo-hold, 6.8s) cubic-bezier(.3, .4, .4, 1) both; }
+@keyframes mo-school-spin { from { transform: rotate(-50deg); } to { transform: rotate(70deg); } }
+.mo-fish {
+  position: absolute; left: -9px; top: -4px; width: 18px; height: 9px; border-radius: 50%;
+  background: var(--c); opacity: 0;
+  animation:
+    mo-fish-in 1.9s cubic-bezier(.2, .7, .3, 1) var(--d, .5s) both,
+    mo-fish-out var(--mo-exit-dur, .7s) cubic-bezier(.5, 0, .75, 0) var(--mo-exit, 7.8s) forwards;
+}
+.mo-fish::after {
+  content: ''; position: absolute; left: -7px; top: 1px;
+  border-right: 8px solid var(--c); border-top: 3.5px solid transparent; border-bottom: 3.5px solid transparent;
+}
+/* Facing along the ring's tangent (the trailing rotate). Same function list in every keyframe. */
+@keyframes mo-fish-in {
+  0%   { transform: rotate(calc(var(--a) - 120deg)) translateX(900px) rotate(-90deg) scale(var(--s)); opacity: 0; }
+  12%  { opacity: 1; }
+  100% { transform: rotate(var(--a)) translateX(var(--r)) rotate(-90deg) scale(var(--s)); opacity: 1; }
+}
+@keyframes mo-fish-out {
+  from { transform: rotate(var(--a)) translateX(var(--r)) rotate(-90deg) scale(var(--s)); opacity: 1; }
+  to   { transform: rotate(calc(var(--a) + 30deg)) translateX(1100px) rotate(-90deg) scale(var(--s)); opacity: 0; }
+}
+.mo-school .mo-school-count {
+  position: absolute; left: 0; top: -60px; font-size: 104px; line-height: 1; color: var(--cl-lume, #25E0C8);
+  animation: mo-school-pop .5s cubic-bezier(.2, .8, .3, 1.2) 2.4s both;
+}
+.mo-school .mo-school-line {
+  position: absolute; left: 0; top: 52px; font-size: 22px;
+  animation: mo-school-pop .5s cubic-bezier(.2, .8, .3, 1) 2.7s both;
+}
+@keyframes mo-school-pop { from { transform: translateX(-50%) scale(.6); opacity: 0; } to { transform: translateX(-50%); opacity: 1; } }

@@ -34,9 +34,17 @@ const MAX_RETRIES = 6;
 export interface TransferProgress { done: number; total: number }
 type GetToken = () => Promise<string>;
 
-interface HttpResponse { status: number; headers: Record<string, string | string[] | undefined>; body: Buffer }
+export interface HttpResponse { status: number; headers: Record<string, string | string[] | undefined>; body: Buffer }
+/** The transport every Drive call goes through (injectable for tests). */
+export type DriveHttp = (
+    url: string,
+    opts: { method: string; headers?: Record<string, string | number>; body?: Buffer },
+) => Promise<HttpResponse>;
 
-function request(
+/** Largest backup file the app will move to or from Drive. */
+export const MAX_DRIVE_BACKUP_BYTES = 8 * 1024 * 1024 * 1024;
+
+export function request(
     url: string,
     opts: { method: string; headers?: Record<string, string | number>; body?: Buffer },
 ): Promise<HttpResponse> {
@@ -102,6 +110,7 @@ export async function uploadFileResumable(opts: {
     const stat = await fs.promises.stat(filePath);
     const total = stat.size;
     if (total === 0) throw new Error('Refusing to upload an empty backup file');
+    if (total > MAX_DRIVE_BACKUP_BYTES) throw new Error('Refusing to upload: backup file is larger than the supported maximum');
 
     // Local checksum, computed as the file is read for upload.
     const md5 = crypto.createHash('md5');
@@ -237,9 +246,12 @@ export async function downloadFileToPath(opts: {
     getToken: GetToken;
     fileId: string;
     destPath: string;
+    /** Abort (and delete the partial file) once more than this many bytes arrive. */
+    maxBytes?: number;
     onProgress?: (p: TransferProgress) => void;
 }): Promise<{ size: number }> {
     const { getToken, fileId, destPath, onProgress } = opts;
+    const maxBytes = opts.maxBytes ?? MAX_DRIVE_BACKUP_BYTES;
     const token = await getToken();
     let url = `https://${API_HOST}/drive/v3/files/${encodeURIComponent(fileId)}?alt=media`;
     for (let hop = 0; hop < 3; hop++) {
@@ -261,9 +273,25 @@ export async function downloadFileToPath(opts: {
                     return;
                 }
                 const total = Number(res.headers['content-length'] ?? 0);
+                if (total > maxBytes) {
+                    res.resume();
+                    reject(new Error('Drive download refused: file is larger than the supported maximum'));
+                    return;
+                }
                 let done = 0;
                 const out = fs.createWriteStream(destPath, { mode: 0o600 });
-                res.on('data', (c: Buffer) => { done += c.length; onProgress?.({ done, total: total || done }); });
+                res.on('data', (c: Buffer) => {
+                    done += c.length;
+                    if (done > maxBytes) {
+                        // Content-Length lied (or was absent): stop and discard.
+                        res.destroy();
+                        out.destroy();
+                        fs.promises.unlink(destPath).catch(() => {});
+                        reject(new Error('Drive download refused: file is larger than the supported maximum'));
+                        return;
+                    }
+                    onProgress?.({ done, total: total || done });
+                });
                 res.on('error', reject);
                 out.on('error', reject);
                 out.on('finish', () => resolve({ size: done }));

@@ -49,16 +49,21 @@ describe('send / edit carry channel_refs (server channels only)', () => {
         expect(chatPane).toContain('channelRefNameMap(msg.content.channel_refs)');
     });
     it('every channel edit-apply site passes the edit\'s refs', () => {
-        expect(dashboard.match(/editedContent\(thread\[idx\]\.content, content\.text, content\.channel_refs\)/g)).toHaveLength(2);
+        // The own-send path inline; the live receive path and the history
+        // fold both go through applyChannelEditDelete (F3 authorization).
+        expect(dashboard.match(/editedContent\(thread\[idx\]\.content, content\.text, content\.channel_refs\)/g)).toHaveLength(1);
+        expect(dashboard).toContain('applyChannelEditDelete(thread, liveAction, { moderatorDeleteTargets })');
         expect(dashboard).not.toMatch(/editedContent\([^)]*content\.text\)/);
-        expect(historyMerge).toContain('editedContent(folded[idx].content, text, channel_refs)');
+        expect(historyMerge).toContain('editedContent(next[idx].content, c.text, c.channel_refs)');
     });
 });
 
 describe('rendering + navigation', () => {
     it('message text renders ChannelRefPill for validated refs, server channels only', () => {
         expect(chatPane).toContain('isServerChannel && msg.content.channel_refs');
-        expect(chatPane).toContain('findChannelRefSpans(rawText, sanitizeChannelRefs(msg.content.channel_refs))');
+        // one renderer (renderBody) draws the row, the collapsed preview and the reader
+        expect(chatPane).toContain('sanitizeChannelRefs(msg.content.channel_refs)');
+        expect(chatPane).toContain('spans: findChannelRefSpans(t, channelRefs)');
         expect(chatPane).toContain('<ChannelRefPill key={key} channelRef={ref} visibleChannels={linkChannels} onNavigate={navigateToChannel} />');
     });
     it('rows re-render when the channel list changes (rename shows at once)', () => {

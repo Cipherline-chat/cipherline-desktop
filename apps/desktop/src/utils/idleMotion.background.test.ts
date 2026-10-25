@@ -7,6 +7,8 @@ import {
     MOTION_ACTIVE,
     MOTION_IDLE,
     INPUT_IDLE_MS,
+    WINDOW_ACTIVE,
+    WINDOW_INACTIVE,
 } from './idleMotion';
 
 /**
@@ -202,5 +204,32 @@ describe('installIdleMotionGate — rests after a stretch with no input', () => 
         installIdleMotionGate(win);
         win.__listeners.pointermove[0]();
         expect(doc.__attrs['data-cl-motion']).toBe(MOTION_IDLE);
+    });
+});
+
+describe('installIdleMotionGate — the window bit (profile cosmetics)', () => {
+    afterEach(() => { vi.useRealTimers(); });
+
+    it('stays active through a stretch with no input: only focus / visibility end it', () => {
+        vi.useFakeTimers();
+        const doc = makeDoc({ focused: true });
+        const win = makeWin(doc);
+        const stop = installIdleMotionGate(win);
+        expect(doc.__attrs['data-cl-window']).toBe(WINDOW_ACTIVE);
+        vi.advanceTimersByTime(INPUT_IDLE_MS + 5000);
+        // The rest of the app's decoration rests...
+        expect(doc.__attrs['data-cl-motion']).toBe(MOTION_IDLE);
+        // ...a profile someone is reading keeps playing.
+        expect(doc.__attrs['data-cl-window']).toBe(WINDOW_ACTIVE);
+        stop();
+    });
+
+    it('goes inactive when the window is blurred or hidden', () => {
+        const blurred = makeDoc({ focused: false });
+        installIdleMotionGate(makeWin(blurred))();
+        expect(blurred.__attrs['data-cl-window']).toBe(WINDOW_INACTIVE);
+        const hidden = makeDoc({ hidden: true, focused: true });
+        installIdleMotionGate(makeWin(hidden))();
+        expect(hidden.__attrs['data-cl-window']).toBe(WINDOW_INACTIVE);
     });
 });

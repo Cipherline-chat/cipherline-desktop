@@ -64,6 +64,7 @@ import {
 } from './loadingWait';
 import { acquireWorker, canUseWorker, markBroken, releaseWorker, type WorkerLike } from './loadingWorkerHost';
 import { useEscape } from '../hooks/useEscape';
+import { LoadingTip } from './LoadingTip';
 import { readLoadingGameBest, saveLoadingGameBest } from '../utils/loadingGameBest';
 import type { FromWorker } from '../workers/loadingScreenProtocol';
 
@@ -396,6 +397,10 @@ export const AppLoadingScreen: React.FC<Props> = ({ phase = 'loading', onSurface
                 </div>
                 <div className="lo-slow">{offline ? OFFLINE_SUB : SLOW_LABEL}</div>
             </div>
+
+            {/* A short tip or dry line, changing every few seconds (not on the
+                offline screen, whose copy is its own). */}
+            {!offline && !inGame && <LoadingTip t0={wait.t0} running={!loaded} reduced={reduced} />}
 
             {playable && !inGame && !leaving && !autoPlay && (
                 <div className="lo-hint" style={{ animationDelay: `${hintDelay.toFixed(3)}s` }} aria-hidden="true">

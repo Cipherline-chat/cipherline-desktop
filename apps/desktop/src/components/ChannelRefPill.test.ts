@@ -7,8 +7,11 @@ import { UNAVAILABLE_CHANNEL_LABEL, type LinkableChannel } from '../utils/channe
 // .ts (not .tsx): vitest here only collects *.test.ts, so no JSX.
 const h = React.createElement;
 const html = (p: ChannelRefPillProps) => renderToStaticMarkup(h(ChannelRefPill, p));
-/** Text a reader sees / a selection copies (tags stripped). */
-const text = (p: ChannelRefPillProps) => html(p).replace(/<[^>]+>/g, '');
+/** Text a reader sees / a selection copies: the markup with its tags dropped.
+ *  (Assertion helper on our own renderToStaticMarkup output, not a sanitiser;
+ *  React has already escaped every `<` in text content.) */
+const stripTags = (markup: string) => markup.split(/<[^>]+>/).join('');
+const text = (p: ChannelRefPillProps) => stripTags(html(p));
 
 const base = { server_id: 's', topic: null, icon_emoji: null, icon_name: null, position: 0, parent_category_id: null };
 const memes: LinkableChannel = { ...base, channel_id: 'c-memes', kind: 'text', name: 'memes', topic: 'dank only' };
@@ -45,7 +48,7 @@ describe('ChannelRefPill rendering states', () => {
         expect(hidden).not.toContain('secret');
         expect(hidden).not.toContain('role="link"');
         expect(hidden).not.toContain('tabindex');
-        expect(hidden.replace(/<[^>]+>/g, '')).toBe(`#${UNAVAILABLE_CHANNEL_LABEL}`);
+        expect(stripTags(hidden)).toBe(`#${UNAVAILABLE_CHANNEL_LABEL}`);
     });
 
     it('call channel: speaker icon, copy text still "#lounge"', () => {

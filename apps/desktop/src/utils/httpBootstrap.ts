@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { APP_VERSION } from '../constants';
+import { dispatchSuspended, dispatchUpgradeRequired, isSuspendedResponse, toNotice } from './clientControl';
 
 /**
  * Side-effect module. Imported once from `main.tsx` before any component
@@ -28,17 +29,22 @@ axios.interceptors.request.use(async (config) => {
 });
 
 // Catch HTTP 426 Upgrade Required globally and broadcast a window event.
-// <UpgradeRequiredOverlay /> listens and renders a blocking modal.
+// <UpgradeRequiredOverlay /> listens and renders a blocking screen.
+//
+// Same for the admin kill switch: a 503 whose body says `code: APP_SUSPENDED`
+// (and ONLY that — a bare 503 from a proxy or a rolling deploy is just an
+// error) broadcasts the notice; <ClientControlGate /> shows the blocking
+// "shut down" screen and polls for the switch to lift. Nothing here ever
+// signs out or clears anything: a shutdown is temporary by definition.
 axios.interceptors.response.use(
     (response) => response,
     (error) => {
-        if (error?.response?.status === 426) {
+        const status = error?.response?.status as number | undefined;
+        if (status === 426) {
             const minVersion = error.response?.data?.min_version as string | undefined;
-            window.dispatchEvent(
-                new CustomEvent('cipherline:upgrade-required', {
-                    detail: { minVersion },
-                }),
-            );
+            dispatchUpgradeRequired(minVersion);
+        } else if (isSuspendedResponse(status, error?.response?.data)) {
+            dispatchSuspended(toNotice(error.response.data));
         }
         return Promise.reject(error);
     },

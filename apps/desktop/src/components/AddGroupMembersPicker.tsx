@@ -41,22 +41,22 @@ interface AddGroupMembersPickerProps {
 }
 
 /**
- * Friend picker + staged multi-select + "Add N Members" for an existing group.
- * Extracted from GroupSettingsModal so the right-hand panel's "+" can reuse it.
- *
- * Staged multi-select + confirm, styled to match CreateGroupModal's member
- * picker (ClSearch + persistent checkbox list). Invites go out one
- * `POST /conversations/:id/invite` per person (the endpoint takes a single
- * `user_id`), settled together, and the outcome is reported as added/failed
- * counts. Only mutual friends are offered because the server rejects anyone
- * else; the 200-member cap is mirrored for UX (the server stays authoritative).
+ * State + invite logic shared by the inline picker (GroupSettingsModal) and the
+ * "Add people" dialog (AddGroupMembersModal): the friends fetch, the staged
+ * selection, the 200-member cap and the one-invite-per-person fan-out.
  */
-export const AddGroupMembersPicker: React.FC<AddGroupMembersPickerProps> = ({
-    conversationId, memberIds, membersLoading = false, showLabel = true, autoFocusSearch = false, onResult,
-}) => {
+// eslint-disable-next-line react-refresh/only-export-components -- co-located hook shared with AddGroupMembersModal; splitting the file would only affect dev Fast Refresh
+export function useGroupMemberInvites({ conversationId, memberIds, membersLoading = false, onResult }: {
+    conversationId: string;
+    memberIds: ReadonlySet<string>;
+    membersLoading?: boolean;
+    onResult?: (result: AddGroupMembersResult) => void;
+}) {
     const { token } = useAuth();
     const [friends, setFriends] = useState<FriendRow[]>([]);
     const [friendsLoading, setFriendsLoading] = useState(true);
+    const [friendsFailed, setFriendsFailed] = useState(false);
+    const [reloadKey, setReloadKey] = useState(0);
     const [friendSearch, setFriendSearch] = useState('');
     const [selectedToAdd, setSelectedToAdd] = useState<Set<string>>(new Set());
     const [isAddingMembers, setIsAddingMembers] = useState(false);
@@ -68,15 +68,17 @@ export const AddGroupMembersPicker: React.FC<AddGroupMembersPickerProps> = ({
         (async () => {
             try {
                 const res = await axios.get(`${API_BASE}/friends`, { headers: { Authorization: `Bearer ${token}` } });
-                if (!cancelled) setFriends(res.data.accepted || []);
+                if (!cancelled) { setFriends(res.data.accepted || []); setFriendsFailed(false); }
             } catch (err) {
                 console.error('Failed to fetch friends:', err);
+                if (!cancelled) setFriendsFailed(true);
             } finally {
                 if (!cancelled) setFriendsLoading(false);
             }
         })();
         return () => { cancelled = true; };
-    }, [token]);
+    }, [token, reloadKey]);
+    const reloadFriends = () => { setFriendsLoading(true); setFriendsFailed(false); setReloadKey(k => k + 1); };
 
     const loading = friendsLoading || membersLoading;
     const remaining = remainingGroupSlots(memberIds.size);
@@ -94,6 +96,12 @@ export const AddGroupMembersPicker: React.FC<AddGroupMembersPickerProps> = ({
             else if (next.size < remaining) next.add(friendUserId);
             return next;
         });
+        setError(null);
+    };
+
+    /** Replace the staged selection (the dialog's picker owns toggling); clears a stale error like a toggle does. */
+    const setSelection = (ids: readonly string[]) => {
+        setSelectedToAdd(new Set(ids.slice(0, remaining)));
         setError(null);
     };
 
@@ -124,6 +132,33 @@ export const AddGroupMembersPicker: React.FC<AddGroupMembersPickerProps> = ({
             failedCount: failed,
         });
     };
+
+    return {
+        token, friends, loading, friendsFailed, reloadFriends,
+        remaining, atCap, filteredFriends, friendSearch, setFriendSearch,
+        selectedToAdd, setSelection, toggleSelectedToAdd, isAddingMembers,
+        error, success, handleAddSelectedMembers,
+    };
+}
+
+/**
+ * Friend picker + staged multi-select + "Add N Members" for an existing group.
+ * Extracted from GroupSettingsModal so the right-hand panel's "+" can reuse it.
+ *
+ * Staged multi-select + confirm, styled to match CreateGroupModal's member
+ * picker (ClSearch + persistent checkbox list). Invites go out one
+ * `POST /conversations/:id/invite` per person (the endpoint takes a single
+ * `user_id`), settled together, and the outcome is reported as added/failed
+ * counts. Only mutual friends are offered because the server rejects anyone
+ * else; the 200-member cap is mirrored for UX (the server stays authoritative).
+ */
+export const AddGroupMembersPicker: React.FC<AddGroupMembersPickerProps> = ({
+    conversationId, memberIds, membersLoading = false, showLabel = true, autoFocusSearch = false, onResult,
+}) => {
+    const {
+        token, friends, loading, remaining, atCap, filteredFriends, friendSearch, setFriendSearch,
+        selectedToAdd, toggleSelectedToAdd, isAddingMembers, error, success, handleAddSelectedMembers,
+    } = useGroupMemberInvites({ conversationId, memberIds, membersLoading, onResult });
 
     return (
         <div className="flex flex-col gap-2">

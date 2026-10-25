@@ -53,3 +53,47 @@ describe('Windows taskbar overlay — only real changes reach Explorer', () => {
         expect(created.length - before).toBeLessThanOrEqual(2);  // nativeImage per apply, PNG cached
     });
 });
+
+describe('Windows taskbar overlay — one glyph, mention > deafened > muted > unread', () => {
+    it('walks the whole priority ladder, one Explorer call per real change', () => {
+        const { win, calls } = fakeWin();
+        setTrayCallState(false, false, false, false);
+        setBadgeCount(win as never, 0, false);                       // clean slate
+        calls.length = 0;
+
+        setTrayCallState(true, false, true, true);                   // in call, deafened (and muted)
+        applyWindowsCallOverlay(win);
+        setBadgeCount(win as never, 2, false);                       // unread arrives: deafened still wins
+        setTrayCallState(true, false, true, false);                  // undeafen: muted
+        applyWindowsCallOverlay(win);
+        setBadgeCount(win as never, 2, true);                        // @mention: outranks the call state
+        setTrayCallState(true, true, false, true);                   // deafen again: still the mention
+        applyWindowsCallOverlay(win);
+        setBadgeCount(win as never, 2, false);                       // mention read: deafened returns
+        setTrayCallState(false, false, false, false);                // leave the call: unread dot
+        applyWindowsCallOverlay(win);
+        setBadgeCount(win as never, 0, false);                       // all read: cleared
+
+        expect(calls).toEqual(['Deafened', 'Muted', 'You were mentioned', 'Deafened', '2 unread', null]);
+    });
+
+    it('a count-only push (older renderer / other IPC path) does not clear a pending mention', () => {
+        const { win, calls } = fakeWin();
+        setTrayCallState(false, false, false, false);
+        setBadgeCount(win as never, 5, true);
+        calls.length = 0;
+        setBadgeCount(win as never, 6);                              // hasMention omitted
+        expect(calls).toEqual([]);                                   // still the same glyph: nothing re-sent
+        setBadgeCount(win as never, 0, false);
+        expect(calls).toEqual([null]);
+    });
+
+    it('the mention glyph is encoded once and unchanged repeats are not re-set', () => {
+        const { win, calls } = fakeWin();
+        setTrayCallState(false, false, false, false);
+        setBadgeCount(win as never, 0, false);
+        calls.length = 0;
+        for (let i = 0; i < 10; i++) setBadgeCount(win as never, 1, true);
+        expect(calls).toEqual(['You were mentioned']);
+    });
+});

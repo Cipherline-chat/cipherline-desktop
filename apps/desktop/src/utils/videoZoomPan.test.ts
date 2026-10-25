@@ -5,6 +5,11 @@ import {
     MIN_SCALE,
     clampScale,
     clampState,
+    doubleClickTarget,
+    fillScale,
+    maxScaleFor,
+    visibleRect,
+    zoomTo,
     fullRect,
     isZoomed,
     panBy,
@@ -305,5 +310,145 @@ describe('degenerate inputs', () => {
         const s = zoomAt(IDENTITY, { x: 10, y: 10 }, 2, VIEWPORT, { x: 0, y: 0, width: 0, height: 0 });
         expect(Number.isFinite(s.tx)).toBe(true);
         expect(Number.isFinite(s.ty)).toBe(true);
+    });
+});
+
+// ── Zoom works on the STAGE: fit -> fill -> beyond ─────────────────────────
+// The owner's case: a 32:9 (5120x1440) share fitted into a 16:9 stage.
+const STAGE: Size = { width: 1600, height: 900 };
+/** 32:9 contain-fitted: 1600 x 450, centred, 225px bars top and bottom. */
+const SUPERWIDE: Rect = { x: 0, y: 225, width: 1600, height: 450 };
+/** 9:16 portrait window contain-fitted: 506.25 x 900, big side bars. */
+const PORTRAIT: Rect = { x: 546.875, y: 0, width: 506.25, height: 900 };
+
+describe('fillScale / maxScaleFor', () => {
+    it('is 1 when the frame already matches the stage', () => {
+        expect(fillScale(STAGE, fullRect(STAGE))).toBe(1);
+    });
+
+    it('is the factor that removes the bars: 2x for 32:9 in 16:9, ~3.16x for portrait', () => {
+        expect(fillScale(STAGE, SUPERWIDE)).toBeCloseTo(2, 6); // 900 / 450
+        expect(fillScale(STAGE, PORTRAIT)).toBeCloseTo(1600 / 506.25, 6);
+    });
+
+    it('never drops below 1, and survives degenerate input', () => {
+        expect(fillScale(STAGE, { x: 0, y: 0, width: 2000, height: 2000 })).toBe(1);
+        expect(fillScale(STAGE, { x: 0, y: 0, width: 0, height: 0 })).toBe(1);
+        expect(fillScale({ width: 0, height: 0 }, SUPERWIDE)).toBe(1);
+    });
+
+    it('keeps the ordinary 5x ceiling, but gives a barred frame headroom past fill', () => {
+        expect(maxScaleFor(STAGE, fullRect(STAGE))).toBe(MAX_SCALE);
+        const tall = { x: 0, y: 337.5, width: 1600, height: 225 }; // 64:9, fill 4
+        expect(maxScaleFor(STAGE, tall)).toBe(8);
+        expect(clampScale(99, maxScaleFor(STAGE, tall))).toBe(8);
+    });
+});
+
+describe('zoom grows the picture past its fitted box (no bars once at fill)', () => {
+    const fill = fillScale(STAGE, SUPERWIDE);
+
+    it('at 1x is exactly the fit: bars top and bottom, no translation', () => {
+        const s = clampState(IDENTITY, STAGE, SUPERWIDE);
+        expect(s).toEqual({ scale: 1, tx: 0, ty: 0 });
+        expect(visibleRect(s, STAGE, SUPERWIDE)).toEqual({ x: 0, y: 225, width: 1600, height: 450 });
+    });
+
+    it('below fill the picture is taller than fit but the short axis stays centred', () => {
+        const s = zoomAt(IDENTITY, { x: 400, y: 100 }, 1.5, STAGE, SUPERWIDE);
+        const v = visibleRect(s, STAGE, SUPERWIDE);
+        expect(v.height).toBeCloseTo(450 * 1.5, 6);
+        expect(v.y).toBeCloseTo((900 - v.height) / 2, 6);
+        expect(v.width).toBe(1600);
+    });
+
+    it('at fill the visible picture covers the whole stage', () => {
+        const s = zoomTo(IDENTITY, { x: 400, y: 100 }, fill, STAGE, SUPERWIDE);
+        expect(s.scale).toBeCloseTo(fill, 9);
+        const v = visibleRect(s, STAGE, SUPERWIDE);
+        expect(v.x).toBeCloseTo(0, 6);
+        expect(v.y).toBeCloseTo(0, 6);
+        expect(v.width).toBeCloseTo(1600, 6);
+        expect(v.height).toBeCloseTo(900, 6);
+    });
+
+    it('keeps the cursor point fixed on the long axis while the bars grow away', () => {
+        const anchor = { x: 1200, y: 450 };
+        const before = toLocal(IDENTITY, anchor);
+        const s = zoomTo(IDENTITY, anchor, fill, STAGE, SUPERWIDE);
+        expect(toScreen(s, before).x).toBeCloseTo(anchor.x, 6);
+    });
+
+    it('keeps the cursor point fixed on both axes once past fill', () => {
+        let s = zoomTo(IDENTITY, { x: 800, y: 450 }, fill * 1.5, STAGE, SUPERWIDE);
+        const anchor = { x: 900, y: 400 };
+        const local = toLocal(s, anchor);
+        s = zoomAt(s, anchor, 1.1, STAGE, SUPERWIDE);
+        expect(toScreen(s, local).x).toBeCloseTo(anchor.x, 6);
+        expect(toScreen(s, local).y).toBeCloseTo(anchor.y, 6);
+    });
+
+    it('past fill, panning is clamped so the stage is always full of picture (wide)', () => {
+        const s = zoomTo(IDENTITY, { x: 800, y: 450 }, fill * 2, STAGE, SUPERWIDE);
+        for (const [dx, dy] of [[9999, 9999], [-9999, -9999], [9999, -9999], [-9999, 9999]]) {
+            const v = visibleRect(panBy(s, dx, dy, STAGE, SUPERWIDE), STAGE, SUPERWIDE);
+            expect(v).toEqual({ x: 0, y: 0, width: 1600, height: 900 });
+        }
+    });
+
+    it('past fill, panning is clamped the same way for a tall frame', () => {
+        const f = fillScale(STAGE, PORTRAIT);
+        const s = zoomTo(IDENTITY, { x: 800, y: 450 }, f * 1.7, STAGE, PORTRAIT);
+        for (const [dx, dy] of [[9999, 9999], [-9999, -9999]]) {
+            const v = visibleRect(panBy(s, dx, dy, STAGE, PORTRAIT), STAGE, PORTRAIT);
+            expect(v.x).toBeCloseTo(0, 6);
+            expect(v.y).toBeCloseTo(0, 6);
+            expect(v.width).toBeCloseTo(1600, 6);
+            expect(v.height).toBeCloseTo(900, 6);
+        }
+    });
+
+    it('is capped at the extended ceiling for a barred frame', () => {
+        const s = zoomAt(IDENTITY, { x: 800, y: 450 }, 1000, STAGE, SUPERWIDE);
+        expect(s.scale).toBe(maxScaleFor(STAGE, SUPERWIDE));
+    });
+
+    it('zooming out returns to the exact fit, with no leftover pan', () => {
+        let s = zoomTo(IDENTITY, { x: 1500, y: 100 }, fill * 1.5, STAGE, SUPERWIDE);
+        s = panBy(s, -400, 300, STAGE, SUPERWIDE);
+        for (let i = 0; i < 40; i++) s = zoomAt(s, { x: 300, y: 700 }, 1 / 1.2, STAGE, SUPERWIDE);
+        expect(s).toEqual({ scale: 1, tx: 0, ty: 0 });
+    });
+});
+
+describe('doubleClickTarget: fit <-> fill', () => {
+    const fill = fillScale(STAGE, SUPERWIDE);
+
+    it('below fill, jumps to fill about the cursor', () => {
+        const z = zoomAt(IDENTITY, { x: 800, y: 450 }, 1.3, STAGE, SUPERWIDE);
+        const anchor = { x: 1300, y: 450 };
+        const s = doubleClickTarget(z, anchor, STAGE, SUPERWIDE);
+        expect(s.scale).toBeCloseTo(fill, 6);
+        expect(toScreen(s, toLocal(z, anchor)).x).toBeCloseTo(anchor.x, 6);
+    });
+
+    it('at or past fill, returns to fit', () => {
+        const atFill = zoomTo(IDENTITY, { x: 800, y: 450 }, fill, STAGE, SUPERWIDE);
+        expect(doubleClickTarget(atFill, { x: 5, y: 5 }, STAGE, SUPERWIDE)).toEqual(IDENTITY);
+        const past = zoomTo(IDENTITY, { x: 800, y: 450 }, fill * 1.7, STAGE, SUPERWIDE);
+        expect(doubleClickTarget(past, { x: 5, y: 5 }, STAGE, SUPERWIDE)).toEqual(IDENTITY);
+    });
+
+    it('a frame with no bars (fill = 1) just resets', () => {
+        const z = zoomAt(IDENTITY, { x: 800, y: 450 }, 2.5, STAGE, FULL);
+        expect(doubleClickTarget(z, { x: 100, y: 100 }, STAGE, FULL)).toEqual(IDENTITY);
+    });
+});
+
+describe('visibleRect', () => {
+    it('is the transformed content intersected with the viewport', () => {
+        expect(visibleRect(IDENTITY, VIEWPORT, LETTERBOXED)).toEqual(LETTERBOXED);
+        const s = zoomAt(IDENTITY, { x: 800, y: 450 }, 4, VIEWPORT, LETTERBOXED);
+        expect(visibleRect(s, VIEWPORT, LETTERBOXED)).toEqual({ x: 0, y: 0, width: 1600, height: 900 });
     });
 });

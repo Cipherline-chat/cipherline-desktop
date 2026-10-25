@@ -24,6 +24,7 @@ import { StorageRow } from './StorageRow';
 import { StorageConvAvatar } from './StorageConvAvatar';
 import { ServerStorageSection, type ServerStorageData } from './ServerStorageSection';
 import { formatBytes } from '../utils/formatBytes';
+import { SettingsDisclosure } from './settings/SettingsDisclosure';
 
 const ATTACHMENT_OPTIONS: AttachmentRetention[] = ['never', '1y', '6mo', '3mo', '1mo', '1wk', '24h'];
 const MESSAGE_OPTIONS: MessageRetention[]       = ['never', '1y', '6mo', '3mo', '1mo', '1wk'];
@@ -329,77 +330,89 @@ export const StorageSettings: React.FC<StorageSettingsProps> = ({
                 })()}
             </div>
 
-            {/* Section D — Conversation Storage Breakdown */}
-            <div className={sectionCls} style={sectionStyle}>
-                <div className="flex items-center justify-between mb-4">
-                    <div className="flex items-center gap-3">
-                        <BarChart2 className="w-5 h-5" style={{ color: 'var(--cl-lume)' }} />
-                        <h3 className="text-base" style={{ color: 'var(--cl-text)', fontFamily: 'var(--cl-font-display)', fontWeight: 500, margin: 0 }}>Conversation storage</h3>
+            {/* Sections D + D2 fold into one card: the per-chat and per-server
+                breakdowns are for the occasional clean-up, not every visit. */}
+            <SettingsDisclosure
+                id="storage.breakdown"
+                variant="card"
+                title="Space used on this device"
+                summary="See which chats and servers take the most room, and clear old history."
+                icon={<BarChart2 size={15} />}
+                badge={formatBytes(totalStats.totalBytes)}
+                labels={['Clear history', 'Server storage', 'Conversation storage']}
+            >
+                {/* Section D — Conversation Storage Breakdown */}
+                <div className={sectionCls} style={sectionStyle}>
+                    <div className="flex items-center justify-between mb-4">
+                        <div className="flex items-center gap-3">
+                            <BarChart2 className="w-5 h-5" style={{ color: 'var(--cl-lume)' }} />
+                            <h3 className="text-base" style={{ color: 'var(--cl-text)', fontFamily: 'var(--cl-font-display)', fontWeight: 500, margin: 0 }}>Conversation storage</h3>
+                        </div>
+                        <span className="text-[11px]" style={{ color: 'var(--cl-faint)' }}>
+                            {formatBytes(totalStats.totalBytes)} · {totalStats.messageCount.toLocaleString()} msgs
+                        </span>
                     </div>
-                    <span className="text-[11px]" style={{ color: 'var(--cl-faint)' }}>
-                        {formatBytes(totalStats.totalBytes)} · {totalStats.messageCount.toLocaleString()} msgs
-                    </span>
+
+                    {top10.length === 0 ? (
+                        <div className="text-xs italic py-4 text-center rounded-lg" style={{ color: 'var(--cl-faint)', background: 'rgba(0,0,0,.2)', border: '1px solid var(--cl-border)' }}>
+                            No messages stored locally yet.
+                        </div>
+                    ) : (
+                        <div className="flex flex-col gap-3">
+                            {top10.map(stats => {
+                                const title = convTitleMap[stats.conversationId] || 'Unknown Chat';
+                                const isOrphaned = !knownIds.has(stats.conversationId);
+                                const barPct = maxBytes > 0 ? Math.round((stats.totalBytes / maxBytes) * 100) : 0;
+                                return (
+                                    <StorageRow
+                                        key={stats.conversationId}
+                                        title={title}
+                                        lead={<StorageConvAvatar conv={convById.get(stats.conversationId)} token={avatarToken} />}
+                                        badge={isOrphaned ? 'deleted' : undefined}
+                                        sizeLabel={formatBytes(stats.totalBytes)}
+                                        barPct={barPct}
+                                        countLabel={`${stats.messageCount.toLocaleString()} msgs`}
+                                        attachmentCount={stats.attachmentCount}
+                                        purge={
+                                            <PurgeDropdown
+                                                messages={messagesState[stats.conversationId]}
+                                                onSelect={(ms, label) => {
+                                                    const count = countMessagesToPurge(messagesState[stats.conversationId], ms);
+                                                    setPendingPurge({
+                                                        count, label,
+                                                        convTitle: title,
+                                                        commit: () => onPurgeConversation(stats.conversationId, ms),
+                                                    });
+                                                }}
+                                            />
+                                        }
+                                    />
+                                );
+                            })}
+                        </div>
+                    )}
+
+                    <div className="mt-4">
+                        <ClButton
+                            variant="danger"
+                            fullWidth
+                            onClick={() => {
+                                setPendingPurge({
+                                    count: totalStats.messageCount,
+                                    label: 'Everything',
+                                    commit: onClearAllMessages,
+                                });
+                            }}
+                        >
+                            <Trash2 className="w-4 h-4" />
+                            Clear All Local Messages
+                        </ClButton>
+                    </div>
                 </div>
 
-                {top10.length === 0 ? (
-                    <div className="text-xs italic py-4 text-center rounded-lg" style={{ color: 'var(--cl-faint)', background: 'rgba(0,0,0,.2)', border: '1px solid var(--cl-border)' }}>
-                        No messages stored locally yet.
-                    </div>
-                ) : (
-                    <div className="flex flex-col gap-3">
-                        {top10.map(stats => {
-                            const title = convTitleMap[stats.conversationId] || 'Unknown Chat';
-                            const isOrphaned = !knownIds.has(stats.conversationId);
-                            const barPct = maxBytes > 0 ? Math.round((stats.totalBytes / maxBytes) * 100) : 0;
-                            return (
-                                <StorageRow
-                                    key={stats.conversationId}
-                                    title={title}
-                                    lead={<StorageConvAvatar conv={convById.get(stats.conversationId)} token={avatarToken} />}
-                                    badge={isOrphaned ? 'deleted' : undefined}
-                                    sizeLabel={formatBytes(stats.totalBytes)}
-                                    barPct={barPct}
-                                    countLabel={`${stats.messageCount.toLocaleString()} msgs`}
-                                    attachmentCount={stats.attachmentCount}
-                                    purge={
-                                        <PurgeDropdown
-                                            messages={messagesState[stats.conversationId]}
-                                            onSelect={(ms, label) => {
-                                                const count = countMessagesToPurge(messagesState[stats.conversationId], ms);
-                                                setPendingPurge({
-                                                    count, label,
-                                                    convTitle: title,
-                                                    commit: () => onPurgeConversation(stats.conversationId, ms),
-                                                });
-                                            }}
-                                        />
-                                    }
-                                />
-                            );
-                        })}
-                    </div>
-                )}
-
-                <div className="mt-4">
-                    <ClButton
-                        variant="danger"
-                        fullWidth
-                        onClick={() => {
-                            setPendingPurge({
-                                count: totalStats.messageCount,
-                                label: 'Everything',
-                                commit: onClearAllMessages,
-                            });
-                        }}
-                    >
-                        <Trash2 className="w-4 h-4" />
-                        Clear All Local Messages
-                    </ClButton>
-                </div>
-            </div>
-
-            {/* Section D2 — Server Storage (same rows, same purge menu as above) */}
-            {serverStorage && <ServerStorageSection data={serverStorage} />}
+                {/* Section D2 — Server Storage (same rows, same purge menu as above) */}
+                {serverStorage && <ServerStorageSection data={serverStorage} />}
+            </SettingsDisclosure>
 
             {/* Section E — Orphaned Chats */}
             {orphaned.length > 0 && (

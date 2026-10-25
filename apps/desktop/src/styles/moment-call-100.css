@@ -1,0 +1,62 @@
+/* "100 calls. Somebody was on mute." — components/moments/views/Call100Moment.tsx.
+   8.2 s, transform/opacity only. Phases: notice 0–0.5, main 0.5–3.4,
+   read 3.4–6.6, hold 6.6–7.6, exit 7.6–8.2.
+   Layout (from the centre): a 3-digit counter panel (216 x 112) ~110 px above
+   the middle, the muted mic to its right, the words below and above. */
+.mo-hundred-cap {
+  position: absolute; left: 0; top: -214px; transform: translateX(-50%);
+  font: 700 14px var(--cl-font-sans, 'Nunito', sans-serif); letter-spacing: .08em; text-transform: uppercase;
+  color: var(--cl-muted, #9AA6C8); white-space: nowrap;
+  animation: mo-hundred-fade .6s ease-out 2.3s both;
+}
+@keyframes mo-hundred-fade { from { opacity: 0; } to { opacity: 1; } }
+.mo-hundred-scene { position: absolute; left: 0; top: -110px; width: 0; height: 0; }
+.mo-hundred-panel {
+  position: absolute; left: -108px; top: -56px; width: 216px; height: 112px;
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  background: var(--cl-deep, #131A30); border: 1px solid var(--cl-border, #2A3558); border-radius: 22px;
+  animation: mo-hundred-in .45s cubic-bezier(.2, .8, .3, 1.15) .1s both;
+}
+@keyframes mo-hundred-in { from { transform: scale(.8); opacity: 0; } to { transform: none; opacity: 1; } }
+.mo-hundred-col { width: 56px; height: 84px; overflow: hidden; border-radius: 12px; background: rgba(5, 8, 20, .55); }
+.mo-hundred-strip { display: flex; flex-direction: column; }
+.mo-hundred-strip span {
+  flex: 0 0 84px; height: 84px; display: block; text-align: center; line-height: 84px;
+  font: 600 66px/84px var(--cl-font-display, 'Fredoka', sans-serif); color: var(--cl-lume, #25E0C8);
+}
+.mo-hundred-strip .mo-hundred-gold { color: var(--cl-glow, #FFC94D); }
+/* 097 → 098 → 099 → 100. The ones column ticks three times; on the last tick
+   the tens and hundreds roll over with it. */
+.mo-hundred-o { animation: mo-hundred-ones 1.8s cubic-bezier(.3, 0, .2, 1) .7s both; }
+@keyframes mo-hundred-ones {
+  0%, 11% { transform: translateY(0); }
+  28%, 39% { transform: translateY(-84px); }
+  56%, 67% { transform: translateY(-168px); }
+  83%, 100% { transform: translateY(-252px); }
+}
+.mo-hundred-t, .mo-hundred-h { animation: mo-hundred-roll .4s cubic-bezier(.3, 0, .2, 1.2) 1.9s both; }
+@keyframes mo-hundred-roll { from { transform: translateY(0); } to { transform: translateY(-84px); } }
+.mo-hundred-ring {
+  position: absolute; left: -60px; top: -60px; width: 120px; height: 120px; border-radius: 50%;
+  border: 3px solid var(--cl-glow, #FFC94D); opacity: 0;
+  animation: mo-hundred-ring .9s ease-out 2.3s both;
+}
+@keyframes mo-hundred-ring { 0% { transform: scale(.7); opacity: 0; } 20% { opacity: .9; } 100% { transform: scale(2.3); opacity: 0; } }
+.mo-hundred-speck {
+  position: absolute; left: -4px; top: -4px; width: 8px; height: 8px; border-radius: 50%; opacity: 0;
+  animation: mo-hundred-speck 1.1s cubic-bezier(.2, .7, .3, 1) 2.3s both;
+}
+@keyframes mo-hundred-speck {
+  0%   { transform: rotate(var(--a)) translateX(40px) scale(.6); opacity: 0; }
+  15%  { opacity: 1; }
+  100% { transform: rotate(var(--a)) translateX(150px) scale(.3); opacity: 0; }
+}
+/* The muted mic drops in beside the counter and shakes its head (ends level). */
+.mo-hundred-mic { position: absolute; left: 134px; top: -30px; animation: mo-hundred-mic .5s cubic-bezier(.2, .8, .3, 1.3) 2.55s both; }
+@keyframes mo-hundred-mic { from { transform: translateY(-36px) scale(.5); opacity: 0; } to { transform: none; opacity: 1; } }
+.mo-hundred-shake { transform-origin: 50% 90%; animation: mo-hundred-shake .6s ease-in-out 3.05s 1 both; }
+@keyframes mo-hundred-shake { 0%, 100% { transform: rotate(0); } 17% { transform: rotate(-9deg); } 50% { transform: rotate(9deg); } 83% { transform: rotate(-5deg); } }
+.mo-hundred .mo-hundred-pill {
+  top: -20px; font-size: 21px; padding: 10px 24px;
+  animation: mo-pill-in .5s cubic-bezier(.2, .8, .3, 1) 2.7s both;
+}

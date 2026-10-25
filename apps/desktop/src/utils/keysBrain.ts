@@ -71,8 +71,11 @@ export type PokeReaction = 'wiggle' | 'hop' | 'flail' | 'spin' | 'squish' | 'sti
 
 /** A face the host holds for a while, over the mood's own brows: happy, or
  *  'blank' (no brows drawn: the host draws his eyes itself, e.g. the Home
- *  deck's spam shows, utils/keysSpam.ts). */
-export type KeysFace = 'happy' | 'blank';
+ *  deck's spam shows, utils/keysSpam.ts). The Home deck's mirror
+ *  (utils/keysMirror.ts) adds: 'closed' (napping / behind the DND mask),
+ *  'focus' (gaming: determined slants), 'worried' (no signal: the downcast
+ *  sag, without the tear) and 'wide' (startled by the paper plane). */
+export type KeysFace = 'happy' | 'blank' | 'closed' | 'focus' | 'worried' | 'wide';
 export function pokeReaction(pokes: number): PokeReaction {
     if (pokes >= ASLEEP_AT) return 'none';
     if (pokes >= SLEEPY_AT) return 'stir';
@@ -110,4 +113,20 @@ export const BROWS = {
     closedR: 'M61.5 39 q7.5 4 15 0',
     sadL: 'M33.5 37 Q40 43.5 46.5 37',
     sadR: 'M61.5 37 Q68 43.5 74.5 37',
+    wideL: browPath(33.5, 39, 8),
+    wideR: browPath(61.5, 39, 8),
+    focusL: 'M34 35 L48 39.5',
+    focusR: 'M62 39.5 L76 35',
 } as const;
+
+/** The brows a held face draws (null = the mood decides). */
+export function heldBrows(face: KeysFace | null): { l: string; r: string } | null {
+    switch (face) {
+        case 'happy': return { l: BROWS.happyL, r: BROWS.happyR };
+        case 'closed': return { l: BROWS.closedL, r: BROWS.closedR };
+        case 'focus': return { l: BROWS.focusL, r: BROWS.focusR };
+        case 'worried': return { l: BROWS.sadL, r: BROWS.sadR };
+        case 'wide': return { l: BROWS.wideL, r: BROWS.wideR };
+        default: return null;
+    }
+}

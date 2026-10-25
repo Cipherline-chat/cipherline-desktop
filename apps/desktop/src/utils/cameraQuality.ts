@@ -328,9 +328,14 @@ export interface CameraCodecDecision {
     hardware?: boolean;
 }
 
+/** NVIDIA is the primary adapter (the first real GPU listed) — the one
+ *  Chromium opens Media Foundation encoders on. Same rule as the screen
+ *  share's screenShare.nvidiaIsPrimary: on the owner's NVIDIA + AMD box a CB
+ *  share that probed "hardware" ran on OpenH264 (2026-10-24), i.e. the second
+ *  vendor's encoder did NOT take CB over. */
 function nvidiaOnly(gpus: readonly GpuVendorLike[] | null | undefined): boolean {
     const real = (gpus ?? []).filter(g => !/^Microsoft/i.test(g.vendor));
-    return real.length > 0 && real.every(g => g.vendor === 'NVIDIA');
+    return real.length > 0 && real[0].vendor === 'NVIDIA';
 }
 
 /**

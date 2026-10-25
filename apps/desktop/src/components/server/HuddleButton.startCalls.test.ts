@@ -87,6 +87,20 @@ describe('HuddleButton — START_CALLS', () => {
         expect(el().textContent).toContain("you can't start one here");
     });
 
+    it("the truncating status line owns the grey colour, so its '…' is grey too (not white)", () => {
+        // text-overflow:ellipsis paints the "…" in the colour of the element that
+        // truncates. The grey used to sit on an inner span, leaving a white "…".
+        for (const over of [{ canStart: false }, { canStart: true }]) {
+            render(over);
+            const statusText = [...el().querySelectorAll('span')].find(s => /start one here|Click to start/.test(s.textContent ?? ''))!;
+            const owner = statusText.closest('.truncate') as HTMLElement;
+            expect(owner.className).toContain('text-cl-faint');
+        }
+        render({ canStart: true, cooldownSecs: 3 });
+        const hold = [...el().querySelectorAll('span')].find(s => /Hold on/.test(s.textContent ?? ''))!;
+        expect((hold.closest('.truncate') as HTMLElement).className).toContain('text-amber-400');
+    });
+
     it('join-only with a running call: the call list (Join buttons) still renders, and a row click opens it instead of spawning', () => {
         const p = render({
             canStart: false, activeCallCount: 1, activeParticipantCount: 2, expanded: true,

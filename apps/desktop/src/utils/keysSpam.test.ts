@@ -161,3 +161,123 @@ describe('keysSpam: the rotation is kept per account', () => {
         expect(classifyKvKey(spamBagKey('acct-a'), 'acct-a')).toBe('exclude');
     });
 });
+
+describe('keysSpam: each show ends on an action-matched payoff (no call refusal)', () => {
+    /** What each payoff is made of: the props that make it that show's own. */
+    const SIGNATURE: Record<Personality, string[]> = {
+        dance: ['ball', 'discoA', 'discoB', 'note0', 'spark0'],      // a disco
+        glitch: ['scan', 'ghostA', 'ghostB'],                         // a reboot
+        dodge: ['streak0', 'streak1', 'dust'],                        // a victory lap
+        charge: ['ring0', 'ring1', 'fill', 'spark0'],                 // a power-up
+        camo: ['sheen', 'stripes', 'eyesLight'],                      // a reveal
+    };
+
+    it('every show has a payoff line of its own, none of them about the call', () => {
+        const others = PERSONALITIES.flatMap(id => [...SHOWS[id].lines, SHOWS[id].finaleLine, SHOWS[id].recoveredLine]);
+        const lines = PERSONALITIES.map(id => SHOWS[id].payoffLine);
+        expect(new Set(lines).size).toBe(5);
+        for (const l of lines) {
+            expect(l.length).toBeGreaterThan(0);
+            expect(others).not.toContain(l);
+            expect(l).not.toMatch(/call|after|later|busy/i);
+        }
+        for (const id of PERSONALITIES) expect(JSON.stringify(SHOWS[id])).not.toMatch(/after your call/i);
+    });
+
+    it.each(PERSONALITIES)('%s: the payoff is built from its own props (the mapping)', (id) => {
+        const targets = new Set(SHOWS[id].payoff().moves.map(m => m.target));
+        for (const t of SIGNATURE[id]) expect(targets.has(t as never), `${id} payoff animates ${t}`).toBe(true);
+        // and no two shows share a signature prop (a disco is not a reboot)
+        for (const other of PERSONALITIES) {
+            if (other === id) continue;
+            const mine = SIGNATURE[id].filter(t => !['spark0', 'ghostA', 'ghostB', 'stripes'].includes(t));
+            for (const t of mine) expect(SIGNATURE[other].includes(t), `${id} vs ${other}: ${t}`).toBe(false);
+        }
+    });
+
+    it.each(PERSONALITIES)('%s: 3-5 s, finite, animates only transform and opacity, one animation per target', (id) => {
+        const po = SHOWS[id].payoff();
+        expect(po.ms).toBeGreaterThanOrEqual(3000);
+        expect(po.ms).toBeLessThanOrEqual(5000);
+        const seen = new Set<string>();
+        for (const m of po.moves) {
+            expect(seen.has(m.target), `${id} animates ${m.target} twice`).toBe(false);
+            seen.add(m.target);
+            expect(m.ms, `${id} ${m.target}`).toBeLessThanOrEqual(po.ms);
+            for (const f of m.frames) for (const k of Object.keys(f)) {
+                expect(['transform', 'opacity', 'offset', 'easing'], `${id} ${m.target} ${k}`).toContain(k);
+            }
+        }
+        expect(Math.max(...po.moves.map(m => m.ms))).toBe(po.ms);
+    });
+
+    it.each(PERSONALITIES)('%s: no skew in the payoff (measured: skewX on his body drops the animation off the compositor)', (id) => {
+        expect(JSON.stringify(SHOWS[id].payoff().moves)).not.toMatch(/skew/i);
+    });
+
+    it.each(PERSONALITIES)('%s: every target ends back at rest, so nothing is left on screen', (id) => {
+        for (const m of SHOWS[id].payoff().moves) {
+            const last = m.frames[m.frames.length - 1];
+            for (const [k, v] of Object.entries(last)) {
+                if (k === 'offset' || k === 'easing') continue;
+                expect(v, `${id} ${m.target}.${k}`).toEqual(REST[m.target][k]);
+            }
+            expect(last.offset, `${id} ${m.target} ends at 1`).toBe(1);
+        }
+    });
+
+    it.each(PERSONALITIES)('%s: keyframe offsets are in order, and stay inside the slot (< 40 px of travel, scale < 1.6)', (id) => {
+        for (const m of SHOWS[id].payoff().moves) {
+            let prev = 0;
+            for (const f of m.frames) {
+                if (typeof f.offset === 'number') {
+                    expect(f.offset).toBeGreaterThanOrEqual(prev);
+                    expect(f.offset).toBeLessThanOrEqual(1);
+                    prev = f.offset;
+                }
+                const t = String(f.transform ?? '');
+                for (const n of t.matchAll(/translate\(([-\d.]+)px/g)) expect(Math.abs(Number(n[1])), `${id} ${m.target}`).toBeLessThan(40);
+                for (const n of t.matchAll(/translateY\(([-\d.]+)px\)/g)) expect(Math.abs(Number(n[1])), `${id} ${m.target}`).toBeLessThan(40);
+                if (m.target !== 'body') continue;
+                for (const n of t.matchAll(/scale\(([\d.]+)/g)) expect(Number(n[1])).toBeLessThan(1.6);
+            }
+        }
+    });
+
+    /** Large-area light changes (the washes, rays, the scan, the stripes): how
+     *  many distinct brightening peaks fall in any one second. */
+    const peaksPerSecond = (id: Personality, targets: string[]) => {
+        const times: number[] = [];
+        for (const m of SHOWS[id].payoff().moves.filter(x => targets.includes(x.target))) {
+            const pts = m.frames.filter(f => typeof f.offset === 'number').map(f => ({ t: (f.offset as number) * m.ms, o: Number(f.opacity ?? 0) }));
+            for (let i = 1; i < pts.length - 1; i++) if (pts[i].o >= 0.3 && pts[i].o >= pts[i - 1].o && pts[i].o > pts[i + 1].o) times.push(pts[i].t);
+        }
+        times.sort((a, b) => a - b);
+        // layers that peak together (the two RGB ghosts) are ONE flash to the eye
+        const flashes = times.filter((t, i) => i === 0 || t - times[i - 1] > 150);
+        let worst = 0;
+        for (const t of flashes) worst = Math.max(worst, flashes.filter(x => x >= t && x < t + 1000).length);
+        return { worst, count: flashes.length };
+    };
+
+    it('no strobe: the disco washes and rays peak less than 3 times in any second (and they do flash)', () => {
+        const r = peaksPerSecond('dance', ['discoA', 'discoB']);
+        expect(r.count).toBeGreaterThanOrEqual(4);     // positive control: the detector sees the flashes
+        expect(r.worst).toBeLessThan(3);
+    });
+    it.each(PERSONALITIES)('%s: every large-area light layer peaks under 3 times a second', (id) => {
+        expect(peaksPerSecond(id, ['discoA', 'discoB', 'scan', 'stripes', 'ghostA', 'ghostB', 'sheen']).worst).toBeLessThan(3);
+    });
+    it('the detector counts a strobe: control with a 5 Hz flasher', () => {
+        const fake: Move = { target: 'discoA', ms: 1000, frames: Array.from({ length: 11 }, (_, i) => ({ opacity: i % 2 ? 0.8 : 0, offset: i / 10 })) };
+        const times = fake.frames.filter((f, i) => i > 0 && i < 10 && Number(f.opacity) >= 0.3).length;
+        expect(times).toBe(5);
+    });
+
+    it('the disco peaks the washes with the bob: eight beats at 120 bpm then a bow', () => {
+        const body = SHOWS.dance.payoff().moves.find(m => m.target === 'body')!;
+        const ups = body.frames.filter(f => /translateY\(-(5|8|15)/.test(String(f.transform)));
+        expect(ups).toHaveLength(8);                    // a hop on every beat
+        expect(SHOWS.dance.payoff().ms).toBeGreaterThanOrEqual(4500); // the owner's "5 second disco"
+    });
+});

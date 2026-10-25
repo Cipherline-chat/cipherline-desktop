@@ -12,7 +12,7 @@
  * On completion calls onDone() so the parent can refresh its TOTP-status state.
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { motion } from 'framer-motion';
+import { motion, useReducedMotion } from 'framer-motion';
 import axios from 'axios';
 import { Mail, Smartphone, Copy, Download, CheckCheck, ShieldCheck, RefreshCw, AlertTriangle } from 'lucide-react';
 import { API_BASE } from '../../constants';
@@ -21,6 +21,8 @@ import { ClModal, ClButton, ClCheckbox } from '../cl';
 import SlottedCodeInput from '../SlottedCodeInput';
 import { Keys } from '../mascot/Keys';
 import { writeToClipboard } from '../../utils/clipboard';
+import { DialogHeader, DialogBody, DialogFooter, DialogError } from '../dialog/DialogFrame';
+import { DialogStack, DialogNote, DialogLinkButton, DialogSteps } from '../dialog/DialogExtras';
 
 interface Props {
     onClose: () => void;
@@ -29,6 +31,7 @@ interface Props {
 
 export const TotpSetupModal: React.FC<Props> = ({ onClose, onDone }) => {
     const { token, user } = useAuth();
+    const reduceMotion = useReducedMotion();
 
     type Step = 'email-verify' | 'setup' | 'verify' | 'warning' | 'codes';
     const [step, setStep] = useState<Step>('email-verify');
@@ -204,37 +207,48 @@ export const TotpSetupModal: React.FC<Props> = ({ onClose, onDone }) => {
         }
     };
 
-    // ── Shared error banner ───────────────────────────────────────────────────
-
-    const ErrorBanner = error ? (
-        <div style={{ marginBottom: 14, padding: '10px 14px', background: 'rgba(239,68,68,.1)', border: '1px solid rgba(239,68,68,.25)', borderRadius: 12, color: 'var(--cl-flash)', fontSize: 13, textAlign: 'center' }}>
-            {error}
-        </div>
-    ) : null;
-
     // ─────────────────────────────────────────────────────────────────────────
+    // Layout: the shared dialog pattern (components/dialog) — one header per
+    // step, a body for that step's content, the inline error between body and
+    // footer, and a footer whose hint tracks progress. Presentation only: every
+    // handler above is unchanged.
+
+    const STEP_INDEX: Record<Step, number> = { 'email-verify': 0, setup: 1, verify: 2, warning: 3, codes: 4 };
+    const emailAddress = user?.email ?? 'your email';
+
+    const head: { icon: React.ReactNode; title: string; subtitle: React.ReactNode; tone: string } =
+        step === 'email-verify' ? {
+            icon: <Mail size={19} strokeWidth={2.2} />, tone: '',
+            title: "Confirm it's you",
+            subtitle: codeSent
+                ? <>We sent a 6-digit code to <strong style={{ color: 'var(--cl-text)' }}>{emailAddress}</strong>.</>
+                : 'Sending a verification code to your email…',
+        } : step === 'setup' ? {
+            icon: <Smartphone size={19} strokeWidth={2.2} />, tone: '',
+            title: 'Scan with your authenticator',
+            subtitle: 'Open Google Authenticator, Authy, or 1Password and scan this QR code.',
+        } : step === 'verify' ? {
+            icon: <ShieldCheck size={19} strokeWidth={2.2} />, tone: '',
+            title: 'Enter the code from your app',
+            subtitle: 'Type the 6-digit code your authenticator shows for Cipherline.',
+        } : step === 'warning' ? {
+            icon: <AlertTriangle size={19} strokeWidth={2.2} />, tone: ' dlg-tone-warn',
+            title: 'Read this before continuing',
+            subtitle: "Next you'll see 10 backup codes. Save them somewhere safe before closing.",
+        } : {
+            icon: <CheckCheck size={19} strokeWidth={2.2} />, tone: ' dlg-tone-ok',
+            title: 'Save your backup codes',
+            subtitle: <>Each code works <strong style={{ color: 'var(--cl-text)' }}>once</strong> if you lose your authenticator.</>,
+        };
 
     return (
-        <ClModal open onClose={onClose} width={420}>
+        <ClModal open onClose={onClose} width={440} label="Set up authenticator app" cardClassName={`dlg-card${head.tone}`}>
+            <DialogHeader icon={head.icon} title={head.title} subtitle={head.subtitle} />
 
-            {/* ── Step 1: email verification ───────────────────────────────── */}
-            {step === 'email-verify' && (
-                <>
-                    <div style={{ textAlign: 'center', marginBottom: 20 }}>
-                        <div style={{ width: 56, height: 56, borderRadius: 16, background: 'rgba(37,224,200,.1)', border: '1px solid rgba(37,224,200,.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 16px' }}>
-                            <Mail size={28} style={{ color: 'var(--cl-lume)' }} />
-                        </div>
-                        <h4>Confirm it's you</h4>
-                        <p>
-                            {codeSent
-                                ? <>We sent a 6-digit code to <strong style={{ color: 'var(--cl-text)' }}>{user?.email ?? 'your email'}</strong>. Enter it below to reveal your QR code.</>
-                                : 'Sending a verification code to your email…'}
-                        </p>
-                    </div>
-
-                    {ErrorBanner}
-
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+            <DialogBody className="dlg-body--scroll">
+                {/* ── Step 1: email verification ───────────────────────────────── */}
+                {step === 'email-verify' && (
+                    <DialogStack center>
                         <SlottedCodeInput
                             value={emailCode}
                             onChange={setEmailCode}
@@ -242,73 +256,27 @@ export const TotpSetupModal: React.FC<Props> = ({ onClose, onDone }) => {
                             disabled={loading || sendingCode || !codeSent}
                             error={emailCodeError}
                         />
-
-                        <ClButton
-                            fullWidth
-                            disabled={emailCode.length < 6 || loading || sendingCode}
-                            loading={loading}
-                            onClick={() => handleEmailCodeSubmit(emailCode)}
-                        >
-                            Continue
-                        </ClButton>
-
-                        <button
-                            type="button"
-                            disabled={sendingCode || resendCooldown > 0}
-                            onClick={() => sendCode()}
-                            style={{
-                                background: 'none', border: 'none', cursor: sendingCode || resendCooldown > 0 ? 'default' : 'pointer',
-                                color: sendingCode || resendCooldown > 0 ? 'var(--cl-faint)' : 'var(--cl-lume)',
-                                fontSize: 13, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '4px 0',
-                            }}
-                        >
+                        <DialogLinkButton disabled={sendingCode || resendCooldown > 0} onClick={() => sendCode()}>
                             <RefreshCw size={13} />
                             {resendCooldown > 0 ? `Resend in ${resendCooldown}s` : sendingCode ? 'Sending…' : 'Resend code'}
-                        </button>
-                    </div>
-                </>
-            )}
+                        </DialogLinkButton>
+                    </DialogStack>
+                )}
 
-            {/* ── Step 2: QR code ──────────────────────────────────────────── */}
-            {step === 'setup' && (
-                <>
-                    <div style={{ textAlign: 'center', marginBottom: 20 }}>
-                        <div style={{ width: 56, height: 56, borderRadius: 16, background: 'rgba(37,224,200,.1)', border: '1px solid rgba(37,224,200,.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 16px' }}>
-                            <Smartphone size={28} style={{ color: 'var(--cl-lume)' }} />
-                        </div>
-                        <h4>Scan with your authenticator</h4>
-                        <p>Open Google Authenticator, Authy, or 1Password and scan this QR code.</p>
-                    </div>
+                {/* ── Step 2: QR code ──────────────────────────────────────────── */}
+                {step === 'setup' && (
+                    <DialogStack center>
+                        <img src={qrDataUrl} alt="TOTP QR code" style={{ width: 188, height: 188, borderRadius: 12, background: 'white', padding: 8 }} />
+                        <DialogStack tight>
+                            <div className="dlg-help">Can&rsquo;t scan? Enter this secret manually:</div>
+                            <code className="dlg-code">{secretB32}</code>
+                        </DialogStack>
+                    </DialogStack>
+                )}
 
-                    {ErrorBanner}
-
-                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }}>
-                        <img src={qrDataUrl} alt="TOTP QR code" style={{ width: 200, height: 200, borderRadius: 12, background: 'white', padding: 8 }} />
-                        <div style={{ width: '100%', textAlign: 'center' }}>
-                            <p style={{ fontSize: 11, color: 'var(--cl-faint)', marginBottom: 6 }}>Can't scan? Enter this secret manually:</p>
-                            <code style={{ display: 'block', padding: '8px 12px', background: 'rgba(0,0,0,.3)', borderRadius: 8, fontSize: 12, color: 'var(--cl-muted)', fontFamily: 'var(--cl-font-mono)', wordBreak: 'break-all' }}>{secretB32}</code>
-                        </div>
-                        <ClButton fullWidth onClick={() => { setError(''); setTotpCode(''); setStep('verify'); }}>
-                            I scanned it — continue
-                        </ClButton>
-                    </div>
-                </>
-            )}
-
-            {/* ── Step 3: confirm TOTP code ─────────────────────────────────── */}
-            {step === 'verify' && (
-                <>
-                    <div style={{ textAlign: 'center', marginBottom: 20 }}>
-                        <div style={{ width: 56, height: 56, borderRadius: 16, background: 'rgba(37,224,200,.1)', border: '1px solid rgba(37,224,200,.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 16px' }}>
-                            <ShieldCheck size={28} style={{ color: 'var(--cl-lume)' }} />
-                        </div>
-                        <h4>Enter the code from your app</h4>
-                        <p>Open your authenticator and enter the 6-digit code shown for Cipherline.</p>
-                    </div>
-
-                    {ErrorBanner}
-
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                {/* ── Step 3: confirm TOTP code ─────────────────────────────────── */}
+                {step === 'verify' && (
+                    <DialogStack center>
                         <SlottedCodeInput
                             value={totpCode}
                             onChange={setTotpCode}
@@ -317,124 +285,103 @@ export const TotpSetupModal: React.FC<Props> = ({ onClose, onDone }) => {
                             error={totpError}
                             noAutoPaste
                         />
+                    </DialogStack>
+                )}
 
-                        <ClButton
-                            fullWidth
-                            disabled={totpCode.length < 6 || loading}
-                            loading={loading}
-                            onClick={() => handleEnable(totpCode)}
+                {/* ── Step 4: warning ──────────────────────────────────────────── */}
+                {step === 'warning' && (
+                    <DialogStack center>
+                        <motion.div
+                            initial={reduceMotion ? false : { scale: 0.7, opacity: 0 }}
+                            animate={{ scale: 1, opacity: 1 }}
+                            transition={{ type: 'spring', stiffness: 220, damping: 16 }}
                         >
-                            Enable authenticator
-                        </ClButton>
-
-                        <ClButton type="button" variant="ghost" fullWidth onClick={() => { setError(''); setStep('setup'); }}>
-                            ← Back to QR
-                        </ClButton>
-                    </div>
-                </>
-            )}
-
-            {/* ── Step 4: warning ──────────────────────────────────────────── */}
-            {step === 'warning' && (
-                <motion.div
-                    key="warning"
-                    initial={{ opacity: 0, scale: 0.96, y: 12 }}
-                    animate={{ opacity: 1, scale: 1, y: 0 }}
-                    transition={{ duration: 0.3, ease: [0.22, 1, 0.36, 1] }}
-                    style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 0 }}
-                >
-                    <motion.div
-                        initial={{ scale: 0.6, opacity: 0 }}
-                        animate={{ scale: 1, opacity: 1 }}
-                        transition={{ type: 'spring', stiffness: 220, damping: 14, delay: 0.1 }}
-                        style={{ marginBottom: 16 }}
-                    >
-                        <Keys size={90} signal="alert" interactive={false} waveOnMount={false} />
-                    </motion.div>
-
-                    <motion.h4
-                        initial={{ opacity: 0, y: 6 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        transition={{ delay: 0.2, duration: 0.25 }}
-                        style={{ margin: '0 0 10px', textAlign: 'center' }}
-                    >
-                        Important — read before continuing
-                    </motion.h4>
-
-                    <motion.div
-                        initial={{ opacity: 0, y: 8 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        transition={{ delay: 0.28, duration: 0.25 }}
-                        style={{
-                            background: 'rgba(251,191,36,.08)',
-                            border: '1px solid rgba(251,191,36,.28)',
-                            borderRadius: 14,
-                            padding: '16px 18px',
-                            marginBottom: 20,
-                            width: '100%',
-                        }}
-                    >
-                        <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
-                            <AlertTriangle size={18} style={{ color: '#FBB024', flexShrink: 0, marginTop: 1 }} />
-                            <p style={{ margin: 0, fontSize: 14, lineHeight: 1.55, color: 'var(--cl-text)' }}>
-                                If you <strong>lose your authenticator app</strong> and <strong>don't have backup codes</strong>, your account is <strong style={{ color: '#FBB024' }}>permanently unrecoverable</strong>.
-                            </p>
+                            <Keys size={76} signal="alert" interactive={false} waveOnMount={false} />
+                        </motion.div>
+                        <div style={{ width: '100%', textAlign: 'left' }}>
+                            <DialogNote tone="warn" icon={<AlertTriangle size={16} aria-hidden />}>
+                                If you <strong>lose your authenticator app</strong> and <strong>don't have backup codes</strong>, your account is <strong style={{ color: 'var(--cl-glow)' }}>permanently unrecoverable</strong>.
+                            </DialogNote>
                         </div>
-                    </motion.div>
+                    </DialogStack>
+                )}
 
-                    <motion.div
-                        initial={{ opacity: 0, y: 6 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        transition={{ delay: 0.36, duration: 0.25 }}
-                        style={{ width: '100%' }}
-                    >
-                        <p style={{ fontSize: 13, color: 'var(--cl-muted)', textAlign: 'center', marginBottom: 16 }}>
-                            On the next screen you'll see 10 backup codes. Save them somewhere safe before closing.
-                        </p>
-                        <ClButton fullWidth onClick={() => setStep('codes')}>
-                            I understand — show me my backup codes
-                        </ClButton>
-                    </motion.div>
-                </motion.div>
-            )}
-
-            {/* ── Step 5: backup codes ─────────────────────────────────────── */}
-            {step === 'codes' && (
-                <>
-                    <div style={{ textAlign: 'center', marginBottom: 20 }}>
-                        <div style={{ width: 56, height: 56, borderRadius: 16, background: 'rgba(34,197,94,.1)', border: '1px solid rgba(34,197,94,.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 16px' }}>
-                            <CheckCheck size={28} className="text-emerald-400" />
+                {/* ── Step 5: backup codes ─────────────────────────────────────── */}
+                {step === 'codes' && (
+                    <DialogStack>
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                            {backupCodes.map((c, i) => (
+                                <code key={i} className="dlg-code" style={{ padding: '8px 10px', letterSpacing: '0.1em' }}>{c}</code>
+                            ))}
                         </div>
-                        <h4>Save your backup codes</h4>
-                        <p>Each code works <strong style={{ color: 'var(--cl-text)' }}>once</strong> if you lose your authenticator. Save them somewhere safe — we won't show them again.</p>
-                    </div>
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 16 }}>
-                        {backupCodes.map((c, i) => (
-                            <code key={i} style={{ padding: '8px 12px', background: 'rgba(0,0,0,.3)', borderRadius: 8, fontSize: 12, color: 'var(--cl-muted)', fontFamily: 'var(--cl-font-mono)', textAlign: 'center', letterSpacing: '0.1em' }}>
-                                {c}
-                            </code>
-                        ))}
-                    </div>
-                    <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
-                        <ClButton variant="ghost" size="sm" fullWidth onClick={copyBackupCodes}>
-                            <Copy size={13} /> {copied ? 'Copied' : 'Copy all'}
-                        </ClButton>
-                        <ClButton variant="ghost" size="sm" fullWidth onClick={downloadBackupCodes}>
-                            <Download size={13} /> Download
-                        </ClButton>
-                    </div>
-                    <div style={{ marginBottom: 16 }}>
+                        <div style={{ display: 'flex', gap: 8 }}>
+                            <ClButton variant="ghost" size="sm" fullWidth onClick={copyBackupCodes}>
+                                <Copy size={13} /> {copied ? 'Copied' : 'Copy all'}
+                            </ClButton>
+                            <ClButton variant="ghost" size="sm" fullWidth onClick={downloadBackupCodes}>
+                                <Download size={13} /> Download
+                            </ClButton>
+                        </div>
                         <ClCheckbox
                             checked={acknowledged}
                             onChange={setAcknowledged}
                             label="I've saved my backup codes somewhere safe."
                         />
-                    </div>
-                    <ClButton fullWidth disabled={!acknowledged} onClick={() => { onDone(); onClose(); }}>
+                    </DialogStack>
+                )}
+            </DialogBody>
+
+            {error && <DialogError>{error}</DialogError>}
+
+            <DialogFooter hint={step === 'codes'
+                ? <>We won&rsquo;t show these again</>
+                : <DialogSteps index={STEP_INDEX[step]} count={5} label={`${STEP_INDEX[step] + 1} of 5`} />}
+            >
+                {step === 'email-verify' && (
+                    <>
+                        <ClButton variant="ghost" size="sm" onClick={onClose}>Cancel</ClButton>
+                        <ClButton
+                            size="sm"
+                            disabled={emailCode.length < 6 || loading || sendingCode}
+                            loading={loading}
+                            onClick={() => handleEmailCodeSubmit(emailCode)}
+                        >
+                            Continue
+                        </ClButton>
+                    </>
+                )}
+                {step === 'setup' && (
+                    <>
+                        <ClButton variant="ghost" size="sm" onClick={onClose}>Cancel</ClButton>
+                        <ClButton size="sm" onClick={() => { setError(''); setTotpCode(''); setStep('verify'); }}>
+                            I scanned it
+                        </ClButton>
+                    </>
+                )}
+                {step === 'verify' && (
+                    <>
+                        <ClButton type="button" variant="ghost" size="sm" onClick={() => { setError(''); setStep('setup'); }}>← Back</ClButton>
+                        <ClButton
+                            size="sm"
+                            disabled={totpCode.length < 6 || loading}
+                            loading={loading}
+                            onClick={() => handleEnable(totpCode)}
+                        >
+                            Enable
+                        </ClButton>
+                    </>
+                )}
+                {step === 'warning' && (
+                    <ClButton size="sm" onClick={() => setStep('codes')}>
+                        I understand — show my codes
+                    </ClButton>
+                )}
+                {step === 'codes' && (
+                    <ClButton size="sm" disabled={!acknowledged} onClick={() => { onDone(); onClose(); }}>
                         Done
                     </ClButton>
-                </>
-            )}
+                )}
+            </DialogFooter>
         </ClModal>
     );
 };

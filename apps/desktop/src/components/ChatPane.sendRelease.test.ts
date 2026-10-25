@@ -52,7 +52,14 @@ describe('handleSendAll — plain text is instant', () => {
     });
 
     it('does not clear the composer a second time when the send lands (that would wipe the NEXT message)', () => {
-        expect(send).toContain('if (!earlyReleased) {\n                    setInputText(\'\');');
+        // The late clear is guarded by !earlyReleased. It clears to '' — except
+        // after an EDIT, which hands the box back to the pre-edit draft (never
+        // to anything typed since, so it still cannot wipe the NEXT message).
+        const late = send.indexOf('if (!earlyReleased) {\n');
+        expect(late).toBeGreaterThan(-1);
+        const lateBlock = send.slice(late, late + 700);
+        expect(lateBlock).toContain("const resumeDraft = editingId ? preEditDraftRef.current : '';");
+        expect(lateBlock).toContain('setInputText(resumeDraft);');
     });
 
     it('the rate limiter counts an instant send immediately, and only once', () => {

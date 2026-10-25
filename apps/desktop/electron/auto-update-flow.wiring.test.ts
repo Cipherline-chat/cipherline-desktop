@@ -33,7 +33,7 @@ describe('automatic update flow wiring', () => {
     it('the schedule starts right after the window exists, and only in a real install', () => {
         const create = CODE.indexOf('await createWindow(csp, showInstaller);');
         expect(create).toBeGreaterThan(-1);
-        expect(CODE.slice(create, create + 200)).toContain('void startUpdateSchedule();');
+        expect(CODE.slice(create, create + 200)).toContain('startUpdateSchedule().catch(');
         const start = block(CODE, 'const startUpdateSchedule = async');
         expect(start).toMatch(/if \(!UPDATER_ENABLED\) return;/);
         expect(start).toContain('installCoordinator.settleAtBoot()');

@@ -19,6 +19,18 @@
  *             which is exactly what `transform-origin: 0 0` gives us — the
  *             reason we pin the origin to the top-left rather than centre.
  *
+ * ── Fit, fill, and what 1x means ─────────────────────────────────────────
+ * 1x is FIT: the whole frame visible, letterbox/pillarbox bars and all. Zoom
+ * is a plain scale of the frame about the cursor; it is NOT bounded by the
+ * fitted box. The scale at which the frame exactly covers the viewport is
+ * FILL (`fillScale`): 1 for a frame that already matches the stage's aspect,
+ * 2 for a 32:9 share in a 16:9 stage. Below fill an axis that is still
+ * smaller than the viewport is pinned centred (bars on that axis only); at or
+ * past fill the viewport is entirely picture and every pan is clamped to the
+ * frame's edges. The ceiling is MAX_SCALE for ordinary shares but scales with
+ * fill, otherwise a 32:9 share would spend most of its range just reaching
+ * fill (see `maxScaleFor`).
+ *
  * The transform this produces is `translate(tx px, ty px) scale(scale)` with
  * `transform-origin: 0 0`. Applied to ONE wrapper element, so it stays on the
  * compositor: no width/height/left/top anywhere in this feature.
@@ -77,12 +89,36 @@ const PAGE_HEIGHT_PX = 400;
 const WHEEL_RATE = 0.0015;
 const PINCH_RATE = 0.01;
 
-export function clampScale(scale: number): number {
+export function clampScale(scale: number, max: number = MAX_SCALE): number {
     // NaN has no magnitude to clamp toward, so it falls back to the safe,
     // un-zoomed floor. +/-Infinity does have one, and Math.min/max resolve it
     // to the right end of the range on their own.
     if (Number.isNaN(scale)) return MIN_SCALE;
-    return Math.min(MAX_SCALE, Math.max(MIN_SCALE, scale));
+    return Math.min(max, Math.max(MIN_SCALE, scale));
+}
+
+/**
+ * The scale at which the frame exactly covers the viewport on its tighter
+ * axis (CSS "cover"). 1 when the frame already fills the viewport; > 1 when
+ * bars exist. Never below 1: fit is the floor.
+ */
+export function fillScale(viewport: Size, content: Rect): number {
+    if (!(content.width > 0) || !(content.height > 0)) return 1;
+    if (!(viewport.width > 0) || !(viewport.height > 0)) return 1;
+    return Math.max(1, viewport.width / content.width, viewport.height / content.height);
+}
+
+/** Headroom past fill, as a multiple of fill. */
+const FILL_HEADROOM = 2;
+
+/**
+ * The zoom ceiling for this viewport + frame: MAX_SCALE, or FILL_HEADROOM x
+ * fill when that is larger. A 32:9 share needs 2x just to cover a 16:9 stage
+ * (leaving 2.5x of real magnification under a flat 5x), and a portrait window
+ * or a 64:9 strip needs 3-4x; this keeps at least 2x of range past fill.
+ */
+export function maxScaleFor(viewport: Size, content: Rect): number {
+    return Math.max(MAX_SCALE, fillScale(viewport, content) * FILL_HEADROOM);
 }
 
 export function isZoomed(state: ZoomState): boolean {
@@ -128,7 +164,7 @@ function clampAxis(
 
 /** Clamp a whole state: scale into range, then translation into the content. */
 export function clampState(state: ZoomState, viewport: Size, content: Rect): ZoomState {
-    const scale = clampScale(state.scale);
+    const scale = clampScale(state.scale, maxScaleFor(viewport, content));
     return {
         scale,
         tx: clampAxis(state.tx, scale, viewport.width, content.x, content.width),
@@ -152,7 +188,7 @@ export function zoomAt(
     viewport: Size,
     content: Rect,
 ): ZoomState {
-    const scale = clampScale(state.scale * factor);
+    const scale = clampScale(state.scale * factor, maxScaleFor(viewport, content));
     const localX = (anchor.x - state.tx) / state.scale;
     const localY = (anchor.y - state.ty) / state.scale;
     return clampState(
@@ -160,6 +196,50 @@ export function zoomAt(
         viewport,
         content,
     );
+}
+
+/** Set an absolute scale about `anchor` (same anchoring invariant as zoomAt). */
+export function zoomTo(
+    state: ZoomState,
+    anchor: Point,
+    scale: number,
+    viewport: Size,
+    content: Rect,
+): ZoomState {
+    return zoomAt(state, anchor, scale / state.scale, viewport, content);
+}
+
+/**
+ * Where a double-click sends the view.
+ *  - Below fill (bars still showing on some axis): jump to FILL about the
+ *    cursor, so the bars go and the point clicked stays put.
+ *  - At or past fill: back to FIT.
+ * A frame whose fill is 1 has no bars to remove, so this is just "reset".
+ */
+export function doubleClickTarget(
+    state: ZoomState,
+    anchor: Point,
+    viewport: Size,
+    content: Rect,
+): ZoomState {
+    const fill = fillScale(viewport, content);
+    if (fill > MIN_SCALE + 1e-3 && state.scale < fill * 0.98) {
+        return zoomTo(state, anchor, fill, viewport, content);
+    }
+    return IDENTITY;
+}
+
+/**
+ * The part of the frame that is actually on screen: the transformed content
+ * rect intersected with the viewport, in viewport CSS px. Used to clip the
+ * picture (rounded corners) and to place corner chrome on visible picture.
+ */
+export function visibleRect(state: ZoomState, viewport: Size, content: Rect): Rect {
+    const x0 = Math.max(0, state.tx + state.scale * content.x);
+    const y0 = Math.max(0, state.ty + state.scale * content.y);
+    const x1 = Math.min(viewport.width, state.tx + state.scale * (content.x + content.width));
+    const y1 = Math.min(viewport.height, state.ty + state.scale * (content.y + content.height));
+    return { x: x0, y: y0, width: Math.max(0, x1 - x0), height: Math.max(0, y1 - y0) };
 }
 
 /** Pan by a screen-space delta (CSS px), clamped to the content. */

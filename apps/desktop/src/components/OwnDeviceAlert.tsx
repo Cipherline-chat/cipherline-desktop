@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
-import { AlertTriangle, Laptop, X } from 'lucide-react';
+import { AlertTriangle, Laptop } from 'lucide-react';
 import { ClButton } from './ClButton';
+import { ClBanner } from './ClBanner';
 import type { OwnDeviceAlert as Alert } from '../utils/ownDeviceLedger';
 
 /**
@@ -54,64 +55,54 @@ export const OwnDeviceAlert: React.FC<Props> = ({
 
     if (!danger) {
         return (
-            <div
-                className="w-full px-4 py-2.5 border-b text-sm flex flex-col gap-2"
-                style={{ background: 'rgba(120,170,255,0.08)', borderColor: 'rgba(120,170,255,0.25)' }}
-                role="status"
-                data-testid="own-device-review"
-            >
-                <div className="flex items-start gap-2">
-                    <Laptop size={15} className="shrink-0 mt-0.5" />
-                    <span>
-                        Cipherline now alerts you when a device is added to your account. These are the{' '}
-                        {unreviewedBaseline.length + 1} devices on it today: this device,{' '}
-                        {unreviewedBaseline.map(id => label(id, names)).join(', ')}. If one isn't yours, remove it
-                        and change your password.
-                    </span>
-                </div>
-                <div className="flex items-center gap-2 justify-end">
-                    <ClButton size="sm" variant="ghost" onClick={onManage}>Manage devices</ClButton>
-                    <ClButton size="sm" onClick={onReviewed}>Looks right</ClButton>
-                </div>
-            </div>
+            <ClBanner
+                id="own-device-review"
+                tone="info"
+                priority={45}
+                testId="own-device-review"
+                icon={<Laptop size={15} />}
+                title="Cipherline now alerts you when a device is added to your account."
+                description={<>
+                    These are the {unreviewedBaseline.length + 1} devices on it today: this device,{' '}
+                    {unreviewedBaseline.map(id => label(id, names)).join(', ')}. If one isn't yours, remove it
+                    and change your password.
+                </>}
+                actions={[
+                    { key: 'manage', label: 'Manage devices', variant: 'ghost', onClick: onManage },
+                    { key: 'reviewed', label: 'Looks right', variant: 'primary', onClick: onReviewed },
+                ]}
+            />
         );
     }
 
+    const alertsHead = alerts.length === 1
+        ? 'A device on your account needs your attention.'
+        : `${alerts.length} devices on your account need your attention.`;
+    const alertsBody = "A device receives every message you send and receive. If one isn't yours, remove it and change your password.";
+
     return (
-        <div
-            className="w-full px-4 py-2.5 border-b text-sm flex flex-col gap-2"
-            style={{ background: 'var(--cl-flash-tint)', borderColor: 'var(--cl-flash)', color: 'var(--cl-flash)' }}
-            role="alert"
-            data-testid="own-device-alert"
+        <ClBanner
+            id="own-device-alert"
+            tone="danger"
+            priority={100}
+            testId="own-device-alert"
+            icon={<AlertTriangle size={15} />}
+            title={selfKeyMismatch ? 'The server is publishing a key for this device that this device does not hold.' : alertsHead}
+            description={selfKeyMismatch
+                ? "Messages sent to that key are not reaching this device, and could be read by whoever holds it. Don't share your verification code or send anything sensitive until this is resolved."
+                : alertsBody}
+            dismissLabel="Hide until next launch"
+            onDismiss={() => setHidden(true)}
         >
-            {selfKeyMismatch && (
-                <div className="flex items-start gap-2">
-                    <AlertTriangle size={15} className="shrink-0 mt-0.5" />
-                    <span>
-                        <strong>The server is publishing a key for this device that this device does not hold.</strong>{' '}
-                        Messages sent to that key are not reaching this device, and could be read by whoever holds it.
-                        Don't share your verification code or send anything sensitive until this is resolved.
-                    </span>
-                </div>
-            )}
-            {alerts.length > 0 && (
-                <div className="flex items-start gap-2">
-                    <AlertTriangle size={15} className="shrink-0 mt-0.5" />
-                    <span>
-                        <strong>
-                            {alerts.length === 1
-                                ? 'A device on your account needs your attention.'
-                                : `${alerts.length} devices on your account need your attention.`}
-                        </strong>{' '}
-                        A device receives every message you send and receive. If one isn't yours, remove it and change
-                        your password.
-                    </span>
-                </div>
+            {selfKeyMismatch && alerts.length > 0 && (
+                <p className="m-0 mb-2">
+                    <strong className="text-cl-text">{alertsHead}</strong> {alertsBody}
+                </p>
             )}
             {alerts.map(a => (
-                <div key={a.device_id} className="flex items-center justify-between gap-3 pl-6" data-testid="own-device-alert-row">
-                    <span className="min-w-0 truncate">
-                        <strong>{label(a.device_id, names)}</strong>
+                <div key={a.device_id} className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 py-1" data-testid="own-device-alert-row">
+                    <span className="min-w-0">
+                        <strong className="text-cl-text">{label(a.device_id, names)}</strong>
                         {' · '}
                         {a.kind === 'key_changed'
                             ? 'now presents a different key'
@@ -132,11 +123,6 @@ export const OwnDeviceAlert: React.FC<Props> = ({
                     </span>
                 </div>
             ))}
-            <div className="flex justify-end">
-                <ClButton size="sm" variant="ghost" icon tooltip="Hide until next launch" onClick={() => setHidden(true)}>
-                    <X size={13} />
-                </ClButton>
-            </div>
-        </div>
+        </ClBanner>
     );
 };

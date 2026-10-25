@@ -196,6 +196,15 @@ describe('enforcement and the embedded configuration', () => {
         }
     });
 
+    it('both channels require a signature on every platform (owner decision 2026-10-15)', () => {
+        // Flipping back to 'grace' re-opens unsigned updates; only ever do it to recover from a lost key.
+        expect(REQUIRE_MANIFEST_SIG).toEqual({ latest: 'all', staging: 'all' });
+        for (const p of ['linux', 'win32', 'darwin'] as NodeJS.Platform[]) {
+            expect(isManifestSignatureRequired(REQUIRE_MANIFEST_SIG.latest, p), p).toBe(true);
+            expect(isManifestSignatureRequired(REQUIRE_MANIFEST_SIG.staging, p), p).toBe(true);
+        }
+    });
+
     it('the CI signer parses the same key lists out of update-manifest-keys.ts', async () => {
         // @ts-expect-error — plain .mjs script, no type declarations
         const script = await import('../scripts/sign-update-manifest.mjs');
@@ -206,6 +215,10 @@ describe('enforcement and the embedded configuration', () => {
         // and copes with the populated shape (one key per line, comments)
         const populated = src.replace(/latest: \[[^\]]*\]/, `latest: [\n        '${STABLE.pub}', // 2026-10 stable\n        // '${OTHER.pub}', retired\n    ]`);
         expect(script.allowlistedKeys('latest', populated)).toEqual([STABLE.pub]);
+        // base64 may contain adjacent slashes; they are not a comment (random keys hit this ~1% of the time)
+        const slashy = 'ab//cdefghijklmnopqrstuvwxyz0123456789ABCDEFG=';
+        const withSlashes = src.replace(/latest: \[[^\]]*\]/, `latest: [\n        '${slashy}', // a comment\n    ]`);
+        expect(script.allowlistedKeys('latest', withSlashes)).toEqual([slashy]);
     });
 });
 

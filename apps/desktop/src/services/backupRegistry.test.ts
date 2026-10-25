@@ -25,7 +25,10 @@ describe('backupRegistry — classification', () => {
         inc(`cipherline_notif_prefs_${UID}`);
         inc(`cipherline_home_pins_${UID}`);
         inc(`cipherline_ignored_${UID}_srv-1`);
-        inc(`kv_verify_v2_${UID}_peer-7`);
+        // F2: trust state is never in a backup / transfer.
+        exc(`kv_verify_v2_${UID}_peer-7`);
+        exc(`kv_warn_v1_${UID}`);
+        exc(`kv_own_devices_v1_${UID}`);
         inc('cipherline_privacy_settings');
         inc('cipherline_ambient_motion');
         inc('cipherline_vol_mic_someone');

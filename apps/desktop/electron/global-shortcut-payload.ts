@@ -49,6 +49,39 @@ export function isValidAccelerator(accelerator: unknown): accelerator is string 
         && ACCELERATOR_RE.test(accelerator);
 }
 
+/** F1-F24: fine to claim bare — no text entry depends on them. */
+const FUNCTION_KEY_RE = /^F(?:[1-9]|1\d|2[0-4])$/;
+
+/**
+ * System-wide editing / window-management chords. Registering one of these
+ * globally would take copy, paste, undo, select-all or task switching away
+ * from every other application on the machine.
+ */
+const RESERVED_GLOBAL_ACCELERATORS: ReadonlySet<string> = new Set([
+    'CmdOrCtrl+C', 'CmdOrCtrl+V', 'CmdOrCtrl+X', 'CmdOrCtrl+A', 'CmdOrCtrl+Z', 'CmdOrCtrl+Y',
+    'CmdOrCtrl+Shift+Z', 'CmdOrCtrl+S', 'CmdOrCtrl+Shift+S', 'CmdOrCtrl+F', 'CmdOrCtrl+W', 'CmdOrCtrl+Q', 'CmdOrCtrl+Tab',
+    'CmdOrCtrl+Escape', 'Alt+Tab', 'Alt+Shift+Tab', 'Alt+F4', 'Alt+Space', 'Alt+Escape',
+]);
+
+/**
+ * May this accelerator be registered as an OS-wide shortcut? A global
+ * registration swallows the key in EVERY application, so — on top of the
+ * vocabulary check — it must carry Ctrl/Cmd or Alt, or be a function key, and
+ * must not be one of the reserved system chords. A bare letter, Space, Enter
+ * or Shift+letter would otherwise disappear from every other app's typing.
+ * Push-to-talk is not affected: it is a focused-window listener in the
+ * renderer and never goes through this channel. A binding refused here is
+ * reported as failed, so the renderer serves it while the window is focused.
+ */
+export function isSafeGlobalAccelerator(accelerator: unknown): accelerator is string {
+    if (!isValidAccelerator(accelerator)) return false;
+    if (RESERVED_GLOBAL_ACCELERATORS.has(accelerator)) return false;
+    const parts = accelerator.split('+');
+    const key = parts[parts.length - 1];
+    if (FUNCTION_KEY_RE.test(key)) return true;
+    return parts.slice(0, -1).some(m => m === 'CmdOrCtrl' || m === 'Alt');
+}
+
 export type GlobalShortcutMapResult =
     | { ok: true; map: Record<string, string>; rejected: string[] }
     | { ok: false; reason: string };
@@ -70,7 +103,7 @@ export function validateGlobalShortcutMap(raw: unknown): GlobalShortcutMapResult
             rejected.push('unknown-action');
             continue;
         }
-        if (!isValidAccelerator(accelerator) || seenActions.has(actionId)) {
+        if (!isSafeGlobalAccelerator(accelerator) || seenActions.has(actionId)) {
             rejected.push(actionId);
             continue;
         }

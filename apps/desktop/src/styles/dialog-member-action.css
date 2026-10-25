@@ -1,0 +1,35 @@
+/* ============================================================================
+   Kick / ban dialog (components/server/MemberActionDialog.tsx).
+   Builds on dialog-frame.css; adds only the danger accent and the two body
+   blocks. No motion of its own (the card entrance is ClModal's).
+   ============================================================================ */
+
+/* Danger accent — the header tile reads as a warning, not as "lume = action". */
+.dlg-card--danger .dlg-head-icon{
+  background:var(--cl-flash-tint, rgba(255,107,94,.12));
+  color:var(--cl-flash, #FF6B5E);
+  box-shadow:inset 0 0 0 1px rgba(255,107,94,.26);
+}
+.dlg-card--danger .dlg-head .dlg-title{overflow-wrap:anywhere}
+
+/* Who it's about. */
+.mact-member{
+  display:flex;align-items:center;gap:12px;
+  padding:10px 12px;border-radius:12px;
+  background:rgba(255,255,255,.03);
+  box-shadow:inset 0 0 0 1px var(--cl-border, #2A3558);
+}
+.mact-member > :first-child{border-radius:50%;overflow:hidden}
+.mact-member-text{min-width:0}
+.mact-member-name{font-size:14px;font-weight:800;line-height:1.3;color:var(--cl-text, #F4F7FF);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mact-member-sub{font-size:12px;font-weight:600;color:var(--cl-muted, #A7B3D4);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* What happens. */
+.mact-list{list-style:none;margin:12px 0 0;padding:0;display:flex;flex-direction:column;gap:8px}
+.mact-list li{display:flex;align-items:center;gap:10px;font-size:13px;font-weight:600;line-height:1.4;color:var(--cl-muted, #A7B3D4)}
+.mact-list li strong{color:var(--cl-text, #F4F7FF);font-weight:800}
+.mact-ico{
+  flex:none;width:28px;height:28px;border-radius:9px;
+  display:flex;align-items:center;justify-content:center;
+  background:rgba(255,255,255,.04);color:var(--cl-muted, #A7B3D4);
+}

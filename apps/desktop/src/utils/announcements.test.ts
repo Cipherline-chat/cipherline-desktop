@@ -14,6 +14,7 @@ import {
     recordDismissal,
     resolveAnnouncementColor,
     resolveAnnouncementIcon,
+    resolveAnnouncementTone,
 } from './announcements';
 
 function banner(id: string, overrides: Partial<BannerView> = {}): BannerView {
@@ -270,6 +271,27 @@ describe('client presets cover the SERVER allowlist', () => {
     it('maps every server icon to a real component', () => {
         for (const i of SERVER_ICONS) {
             expect(resolveAnnouncementIcon(i), `icon "${i}" is unmapped`).toBeTruthy();
+        }
+    });
+});
+
+describe('resolveAnnouncementTone (ClBanner tone for a colour preset)', () => {
+    it('maps the four server colours onto banner tones', () => {
+        expect(resolveAnnouncementTone('neutral')).toBe('neutral');
+        expect(resolveAnnouncementTone('info')).toBe('info');
+        expect(resolveAnnouncementTone('warn')).toBe('warning');
+        expect(resolveAnnouncementTone('danger')).toBe('danger');
+    });
+
+    it('NEGATIVE: an unknown, empty or null colour is neutral, never a prototype key', () => {
+        for (const c of ['purple', '', null, undefined, 'constructor', '__proto__', 'toString']) {
+            expect(resolveAnnouncementTone(c as string | null | undefined)).toBe('neutral');
+        }
+    });
+
+    it('stays in step with the colour allowlist: every non-neutral preset gets a non-neutral tone', () => {
+        for (const c of Object.keys(ANNOUNCEMENT_COLOR_TOKENS)) {
+            if (c !== 'neutral') expect(resolveAnnouncementTone(c), c).not.toBe('neutral');
         }
     });
 });

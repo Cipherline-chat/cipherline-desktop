@@ -58,7 +58,8 @@ describe('single-screen (cropped) publish', () => {
 
     it('is only taken for a slice layout on a runtime that has the breakout box; otherwise the whole display is shared', () => {
         expect(SC).toContain("const sliceLayout = wantsSlice && supportsCropPipeline() ? wantsSlice : null;");
-        expect(SC).toMatch(/if \(sliceLayout\) \{\s*await publishCroppedShare\(sliceLayout\);\s*\} else \{\s*await localParticipant\.setScreenShareEnabled\(true,/);
+        // (between them: the HDR screen branch, which publishes its own generated track - hdrSharePipeline.ts)
+        expect(SC).toMatch(/if \(sliceLayout\) \{\s*await publishCroppedShare\(sliceLayout\);\s*\} else if \(hdrPipe\) \{[\s\S]{0,1500}?\} else \{\s*await localParticipant\.setScreenShareEnabled\(true,/);
     });
 
     it('asks the capturer for the display at native size (box far above any display) at the paced capture rate', () => {
@@ -75,11 +76,11 @@ describe('single-screen (cropped) publish', () => {
     });
 
     it('a pipeline never goes through the hot swap or the in-place retune (they cannot rebuild it)', () => {
-        expect(SC).toContain("if (cropPipelineRef.current || options.layout?.kind === 'slice') return false;");
+        expect(SC).toContain("if (cropPipelineRef.current || hdrPipelineRef.current || options.layout?.kind === 'slice') return false;");
         // The retune (Adjust quality, and a same-source picker selection) refuses a crop pipeline
         // in retuneLiveShare, which is the only caller of the in-place retune.
         expect(SC).toContain('if (await retuneLiveShare(liveShareApplier(), current, resolution, frameRate)) return;');
-        expect(SC).toContain('cropActive: () => !!cropPipelineRef.current,');
+        expect(SC).toContain('cropActive: () => !!cropPipelineRef.current || !!hdrPipelineRef.current,');
         expect(src('../utils/shareLiveRetune.ts')).toContain('if (applier.cropActive()) return false;');
     });
 
@@ -142,7 +143,7 @@ describe('instrumentation', () => {
     });
 
     it('the capture rate it reports is the capturer\'s (the display track\'s, not the generated one\'s)', () => {
-        expect(SC).toContain('cropPipelineRef.current?.captureSettings() ?? track?.mediaStreamTrack?.getSettings()');
+        expect(SC).toContain('cropPipelineRef.current?.captureSettings() ?? hdrPipelineRef.current?.captureSettings() ?? track?.mediaStreamTrack?.getSettings()');
     });
 });
 

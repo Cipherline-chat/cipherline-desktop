@@ -7,6 +7,7 @@
  */
 import { logCallEvent } from './callEventLog';
 import { ANNEXB_STATS_KIND, type AnnexBStats } from './e2eeAnnexB';
+import { audioLagStatsFromMessage } from './e2eeAudioLag';
 
 const n = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
 
@@ -74,4 +75,18 @@ export function decryptErrorReason(err: unknown): 'invalid_key' | 'missing_key' 
     if (/^MissingKey\b/.test(msg)) return 'missing_key';
     if (/^InternalError\b/.test(msg)) return 'internal';
     return 'other';
+}
+
+/**
+ * The E2EE worker's audio-lag windows (utils/e2eeAudioLag.ts) → `e2ee_audio_lag`
+ * call events: direction, frames, frames dropped to stay inside the cap, the
+ * worst lag seen (ms) and re-bases. Counts only.
+ */
+export function attachAudioLagLog(worker: Pick<Worker, 'addEventListener'>): void {
+    worker.addEventListener('message', (ev: MessageEvent) => {
+        const s = audioLagStatsFromMessage(ev.data);
+        if (!s) return;
+        logCallEvent('e2ee_audio_lag', { dir: s.dir, frames: s.frames, dropped: s.dropped, max_ms: s.maxMs, rebases: s.rebases });
+        if (s.dropped > 0) console.warn(`[E2EE] ${s.dir} audio fell ${s.maxMs} ms behind in the E2EE worker; dropped ${s.dropped} late frame(s) to catch up`);
+    });
 }

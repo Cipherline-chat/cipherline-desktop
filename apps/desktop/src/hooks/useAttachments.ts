@@ -1,4 +1,6 @@
 import { useState } from 'react';
+import { beginKeysActivity } from '../utils/keysBeats';
+import { BIG_TRANSFER_BYTES } from '../utils/keysMirror';
 import axios from 'axios';
 import { API_BASE } from '../constants';
 import { generateAesGcmKey, encryptBlob, exportKeyToBase64 } from '../utils/crypto';
@@ -60,11 +62,19 @@ export function useAttachments(token: string | null) {
 
         // 3. Perform PUT upload with progress tracking
         const uploadId = crypto.randomUUID();
-        const clearProgress = () => setUploadProgress(prev => {
-            const next = { ...prev };
-            delete next[uploadId];
-            return next;
-        });
+        // Keys on Home carries a box while a BIG upload is in flight (a flag
+        // only: no name, size or destination leaves this function). Started
+        // right at send(), so every path that started it ends through
+        // clearProgress (load / error / abort).
+        let endKeysCarry = () => {};
+        const clearProgress = () => {
+            endKeysCarry();
+            setUploadProgress(prev => {
+                const next = { ...prev };
+                delete next[uploadId];
+                return next;
+            });
+        };
 
         await new Promise<void>((resolve, reject) => {
             const xhr = new XMLHttpRequest();
@@ -97,6 +107,7 @@ export function useAttachments(token: string | null) {
                 signal.addEventListener('abort', () => xhr.abort(), { once: true });
             }
 
+            if (encryptedBlob.size >= BIG_TRANSFER_BYTES) endKeysCarry = beginKeysActivity('transfer');
             xhr.send(encryptedBlob);
         });
 

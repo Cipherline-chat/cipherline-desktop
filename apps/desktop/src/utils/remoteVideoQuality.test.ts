@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { VideoQuality } from 'livekit-client';
 import {
     displayedPixels, pickTileLayer, capForCount, normaliseLayers,
-    claimRemoteQuality, prewarmRemoteQuality, appliedQuality, msSinceUpgrade,
+    claimRemoteQuality, prewarmRemoteQuality, appliedQuality, msSinceUpgrade, setQualityCeiling, claimedQuality,
     DOWNGRADE_DELAY_MS, PREWARM_HOLD_MS, type LayerDims, type TileRole,
     chooseDecodedSet, parseIncomingVideoMode, DECODE_CAP, pickShareLayer,
 } from './remoteVideoQuality';
@@ -401,5 +401,60 @@ describe('pickShareLayer — the screen share\'s lighter copy', () => {
     it('Reduced → copy unless focused; Data saver → copy always', () => {
         expect(pickShareLayer({ layers: SHARE, role: 'grid', need: 1400, mode: 'reduced' })).toBe(LOW);
         expect(pickShareLayer({ layers: SHARE, role: 'focus', need: 1400, mode: 'datasaver' })).toBe(LOW);
+    });
+});
+
+describe('arbiter ceiling — the screen-share loss fallback (shareLossFallback.ts)', () => {
+    beforeEach(() => vi.useFakeTimers());
+    afterEach(() => vi.useRealTimers());
+    const pub = () => {
+        const calls: VideoQuality[] = [];
+        return { calls, setVideoQuality: (q: VideoQuality) => { calls.push(q); } };
+    };
+
+    it('a focused share on its full layer drops to the lower layer AT ONCE (no downgrade delay), and back up at once', () => {
+        const p = pub();
+        const focus = claimRemoteQuality(p);
+        focus.set(MEDIUM);                     // a two-layer share's full layer (rid h)
+        setQualityCeiling(p, LOW);
+        expect(p.calls).toEqual([MEDIUM, LOW]);
+        expect(claimedQuality(p)).toBe(MEDIUM); // the tile's own ask is untouched
+        setQualityCeiling(p, null);
+        expect(p.calls).toEqual([MEDIUM, LOW, MEDIUM]);
+    });
+
+    it('tiles re-asking for the top layer while capped stay capped', () => {
+        const p = pub();
+        const focus = claimRemoteQuality(p);
+        focus.set(MEDIUM);
+        setQualityCeiling(p, LOW);
+        const prewarm = claimRemoteQuality(p);
+        prewarm.set(HIGH);
+        focus.set(HIGH);
+        vi.advanceTimersByTime(DOWNGRADE_DELAY_MS * 2);
+        expect(appliedQuality(p)).toBe(LOW);
+        expect(p.calls).toEqual([MEDIUM, LOW]);
+    });
+
+    it('a ceiling above what the tiles ask for changes nothing; ordinary downgrades still wait', () => {
+        const p = pub();
+        const c = claimRemoteQuality(p);
+        c.set(LOW);
+        setQualityCeiling(p, MEDIUM);
+        expect(p.calls).toEqual([LOW]);
+        c.set(MEDIUM);
+        setQualityCeiling(p, null);
+        c.set(LOW);
+        expect(p.calls).toEqual([LOW, MEDIUM]);  // delayed
+        vi.advanceTimersByTime(DOWNGRADE_DELAY_MS);
+        expect(p.calls).toEqual([LOW, MEDIUM, LOW]);
+    });
+
+    it('nobody showing it: the ceiling is remembered, nothing is requested until a tile claims', () => {
+        const p = pub();
+        setQualityCeiling(p, LOW);
+        expect(p.calls).toEqual([]);
+        claimRemoteQuality(p).set(MEDIUM);
+        expect(p.calls).toEqual([LOW]);
     });
 });

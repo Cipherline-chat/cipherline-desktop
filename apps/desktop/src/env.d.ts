@@ -3,6 +3,16 @@
 export {};
 
 declare global {
+    /** A Drive backup file as the main process reports it (electron/drive-api.ts). */
+    interface DriveBackupFile {
+        id: string;
+        name: string;
+        createdTime?: string;
+        modifiedTime?: string;
+        size?: string;
+        parents?: string[];
+        canEdit?: boolean;
+    }
     // Mirrors electron/updater-state.ts's UpdateState — see that file's
     // module doc for what each phase means (updates complete in-app; 'manual'
     // is Linux-only). src/utils/updaterState.test.ts pins the two together
@@ -26,7 +36,9 @@ declare global {
         /** Machine hostname (from the main process), used as a friendly device label. */
         getDeviceName: () => Promise<string>;
         getDesktopSources: (types?: Array<'window' | 'screen'>, opts?: { thumbnails?: boolean }) => Promise<Array<{ id: string, name: string, thumbnailDataUrl: string }>>;
-        resolveDesktopSource: (sourceId: string | null, withAudio?: boolean) => Promise<void>;
+        /** One-time capture grant for the source the user just picked (electron/capture-consent.ts). */
+        captureMintGrant: (sourceId: string, audio: boolean) => Promise<{ token: string }>;
+        resolveDesktopSource: (sourceId: string | null, withAudio?: boolean, grantToken?: string) => Promise<void>;
         onShowScreensharePicker: (callback: () => void) => () => void;
         /** Desktop annotation overlay for the local screen / window share
          *  (docs/video-annotation-design.md, Phase 5). Resolves to the show
@@ -51,6 +63,8 @@ declare global {
         perfRecord?: (rows: Array<{ at: number; ms: number; activity: string }>) => Promise<number>;
         perfGetLog?: () => Promise<Array<{ at: number; source: 'main' | 'renderer' | 'event' | 'metrics'; ms: number; activity: string }>>;
         perfClear?: () => Promise<void>;
+        /** Call-engine breadcrumb kept by main (survives a renderer crash). */
+        perfBreadcrumb?: (name: string, detail: string) => void;
         /** Lower main's stall threshold to 100 ms and sample per-process
          *  CPU/memory every 2 s for `ms` (default 60 s). */
         perfStartCapture?: (ms?: number) => Promise<void>;
@@ -73,6 +87,16 @@ declare global {
          *  it field by field (parseMainDiagnostics), so an older/newer main
          *  process can never feed the overlay a shape it trusts blindly. */
         getScreenShareDiagnostics?: (sourceId: string) => Promise<unknown>;
+        /** HDR screen shares (Windows, electron/hdr-share.ts). Results are
+         *  `unknown` on purpose: src/utils/hdrSharePipeline.ts narrows them. */
+        hdrShare?: {
+            probe: (sourceId: string) => Promise<unknown>;
+            start: (sourceId: string, grantToken: string | undefined, opts: { width: number; height: number; maxFps: number }) => Promise<unknown>;
+            stop: (session?: number) => Promise<void>;
+            stats: () => Promise<unknown>;
+            setFrameReceiver: (cb: ((frame: VideoFrame, session: number) => void) | null) => void;
+            onEnded: (cb: ((session: number, reason: string) => void) | null) => void;
+        };
         /** Chromium's per-frame capture timing (only while the capture timing
          *  log is on; otherwise resolves null). Narrowed by parseCaptureTiming.
          *  `frames`: summarise only the newest N polls (integer 10–300; main
@@ -109,6 +133,10 @@ declare global {
          *  `sourceId` = the share's capture source id (lets main say whether the
          *  foreground window is on the shared screen). Optional: older mains. */
         getShareForegroundInfo?: (sourceId?: string) => Promise<unknown>;
+        /** Quick Screen Share: source id of the window that was in front when the
+         *  global shortcut was pressed (read by main at that moment), null = fall
+         *  back. Takes no arguments. Optional: older mains. */
+        getQuickShareForegroundSource?: () => Promise<string | null>;
         /** Which of these `window:` source ids is the running program `exe`
          *  (null = none). Optional: older mains. */
         findWindowSourceByExe?: (exe: string, windowSourceIds: string[]) => Promise<string | null>;
@@ -168,7 +196,7 @@ declare global {
          *  (Windows only). Renderer should gate native capture on this, not on the mere
          *  presence of startWindowAudioCapture (which is always exposed by preload). */
         isAudioCaptureSupported: () => Promise<boolean>;
-        startWindowAudioCapture: (pid: number, mode?: 'include' | 'exclude') => Promise<boolean>;
+        startWindowAudioCapture: (pid: number, mode?: 'include' | 'exclude', grantToken?: string) => Promise<boolean>;
         stopWindowAudioCapture: () => Promise<void>;
         onWindowAudioChunk: (
             callback: (chunk: { sampleRate: number; channels: number; data: ArrayBuffer }) => void
@@ -214,6 +242,20 @@ declare global {
         backupStat: (filePath: string) => Promise<{ size: number; mtimeMs: number } | null>;
         backupReadRange: (filePath: string, offset: number, length: number) => Promise<ArrayBuffer>;
         backupStagingDir: () => Promise<string>;
+        // Drive REST lives in the main process (no token ever reaches the
+        // renderer) — see electron/drive-api.ts for what each call validates.
+        gdriveResolveFolder: (storedFolderId: string | null | undefined, create: boolean) => Promise<{ folderId: string | null; recovered: boolean }>;
+        gdriveEnsureFolder: () => Promise<{ folderId: string }>;
+        gdriveResolveBackupTarget: (storedFolderId: string | null | undefined, fileName: string) => Promise<
+            | { kind: 'folder'; folderId: string; recovered: boolean }
+            | { kind: 'file'; folderId: string; file: DriveBackupFile }>;
+        gdriveLocateBackup: (storedFolderId: string | null | undefined, fileBase: string | null | undefined) => Promise<{
+            file: DriveBackupFile | null; folderId: string | null; recovered: boolean; inFolder: boolean;
+        }>;
+        gdriveStatFile: (fileId: string) => Promise<{ size: number; modifiedTime?: string } | null>;
+        gdriveFindFile: (folderId: string, fileName: string) => Promise<DriveBackupFile | null>;
+        gdriveListFolder: (folderId: string) => Promise<DriveBackupFile[]>;
+        gdriveDeleteFolderFiles: (folderId: string, names: string[]) => Promise<{ deleted: number; failed: number }>;
         gdriveUploadFile: (folderId: string, fileName: string, filePath: string, existingFileId?: string) => Promise<{ id: string; size: number; md5Checksum: string }>;
         gdriveDownloadFile: (fileId: string, fileName: string) => Promise<{ path: string; size: number }>;
         onGdriveTransferProgress: (cb: (p: { kind: 'upload' | 'download'; done: number; total: number }) => void) => (() => void);
@@ -470,7 +512,7 @@ declare global {
             /** Sender avatar, 96x96 PNG data URL; main validates it and falls back to the app icon. */
             iconDataUrl?: string;
         }) => Promise<void>;
-        notifSetBadge: (count: number) => Promise<void>;
+        notifSetBadge: (count: number, hasMention?: boolean) => Promise<void>;
         notifFlashTaskbar: () => Promise<void>;
         notifCloseAll: () => Promise<void>;
         uploadCustomSound: (filename: string, data: Uint8Array) => Promise<{ name: string; file: string }>;
@@ -480,7 +522,7 @@ declare global {
         onNotificationClicked: (cb: (conv_id: string) => void) => (() => void);
         onNotificationReplied: (cb: (data: { conv_id: string; text: string }) => void) => (() => void);
         notifReplyReady: () => Promise<{ pending: number }>;
-        trayUpdateState: (state: { unreadCount: number; dndActive: boolean; dndManual: boolean; status: string; screenLockAvailable?: boolean }) => Promise<void>;
+        trayUpdateState: (state: { unreadCount: number; hasMention?: boolean; dndActive: boolean; dndManual: boolean; status: string; screenLockAvailable?: boolean }) => Promise<void>;
         traySetCallSpeaking: (inCall: boolean, isSpeaking: boolean, isMuted: boolean, isDeafened: boolean) => Promise<void>;
         onTraySetStatus: (cb: (status: 'online' | 'away' | 'dnd' | 'offline') => void) => (() => void);
         onTrayToggleDnd: (cb: (enabled: boolean) => void) => (() => void);
@@ -493,7 +535,6 @@ declare global {
         gdriveAuthStart: () => Promise<{ email: string; name: string }>;
         gdriveAuthStatus: () => Promise<{ linked: boolean; email?: string; name?: string }>;
         gdriveDisconnect: () => Promise<void>;
-        gdriveGetToken: () => Promise<string | null>;
     }
 
     interface Window {

@@ -4,8 +4,9 @@
       "target_name": "audio_capture",
       # share_power.cc is platform-neutral (its Win32 half is #ifdef _WIN32; elsewhere
       # every export is a no-op), so it stays in the list on mac too (the mac
-      # block below only swaps audio_capture.cc / window_geometry.cc).
-      "sources": [ "src-native/audio_capture.cc", "src-native/window_geometry.cc", "src-native/share_power.cc" ],
+      # block below only swaps audio_capture.cc / window_geometry.cc). The same
+      # holds for hdr_capture.cc (HDR screen capture + tone map; no-op off Windows).
+      "sources": [ "src-native/audio_capture.cc", "src-native/window_geometry.cc", "src-native/share_power.cc", "src-native/hdr_capture.cc" ],
       "conditions": [
         [
           "OS=='win'",
@@ -18,14 +19,17 @@
               "-ldwmapi.lib",
               "-lwinmm.lib",
               "-lshell32.lib",
-              "-ldelayimp.lib"
+              "-ldelayimp.lib",
+              "-ld3d11.lib",
+              "-ldxgi.lib",
+              "-ld3dcompiler.lib"
             ],
             "msvs_settings": {
               "VCCLCompilerTool": {
                 "ExceptionHandling": 1
               },
               "VCLinkerTool": {
-                "DelayLoadDLLs": ["mmdevapi.dll", "audioses.dll", "dwmapi.dll"]
+                "DelayLoadDLLs": ["mmdevapi.dll", "audioses.dll", "dwmapi.dll", "d3d11.dll", "dxgi.dll", "d3dcompiler_47.dll"]
               }
             }
           }

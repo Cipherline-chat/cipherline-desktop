@@ -158,6 +158,10 @@ const ALLOWED_KEYS = new Set([
     'res', 'lighter_copy', 'on', 'viewers',
     // share_codec: which OS capturer is in use and its fixed frame-rate ceiling (0 = none).
     'backend', 'ceiling',
+    // h265_caps: whether H.265 may be used, and a reason enum when not.
+    'allowed', 'blocked',
+    // e2ee_audio_lag: direction enum, worst lag ms, re-base count (frames/dropped listed elsewhere).
+    'dir', 'max_ms', 'rebases',
     'track', 'prev_seconds', 'ms', 'quality', 'role', 'size',
     'cap', 'decoded', 'avatars',
     'encode', 'decode', 'network', 'sources', 'decoding', 'drop_pct', 'decode_ms',
@@ -170,6 +174,8 @@ const ALLOWED_KEYS = new Set([
     // A/V sync (avSyncMonitor.ts, SidebarConference share-audio ring). `slot`
     // is a per-call placeholder (remote-av-N) built in avSyncMonitor, never an identity.
     'slot', 'stream', 'path', 'chain', 'offset_ms', 'uncertainty_ms', 'audio_path_ms', 'video_path_ms',
+    // av_sync_applied: the share-video jitter-buffer target set to meet the share audio.
+    'target_ms',
     'web_audio_extra_ms', 'base_latency_ms', 'output_latency_ms', 'sample_rate', 'dropped_ms', 'trims',
     // E2EE frame health (e2eeWorkerStats.ts): frame counts only.
     'frames', 'rewritten', 'short_sc', 'leading', 'key_rewritten', 'delta_rewritten',
@@ -198,6 +204,11 @@ const ALLOWED_KEYS = new Set([
     // "WxH", a scale factor, a layout enum, booleans.
     'cap_fps', 'src_fps', 'enc_fps', 'sent_fps', 'limit', 'enc', 'hw', 'focus', 'vis',
     'cap_res', 'scale', 'layout', 'over',
+    // HDR screen shares (SidebarConference tryStartHdrShare): the display's HDR
+    // state, nits, a knee, an input-format enum, sizes as "WxH", a start
+    // duration, and the tone map's GPU cost / frame counters.
+    'hdr', 'bits', 'white', 'peak', 'knee', 'in_fmt', 'src', 'start_ms', 'stage',
+    'dropped', 'gpu_us_avg', 'gpu_us_max', 'wait_us_avg', 'redup', 'written', 'enc_drop',
     // What had the screen during a share (foregroundInfo.ts -> share_fps, share_background):
     // a Windows notification-state enum, the foreground PROGRAM's basename (never a
     // window title or path), a boolean. Share power-throttling opt-out
@@ -212,6 +223,13 @@ const ALLOWED_KEYS = new Set([
     // count, and the top script's file basename / function name / char offset /
     // invoker kind — code identifiers reduced by longFrameAttribution.ts.
     'blocking_ms', 'render_ms', 'layout_ms', 'script_ms', 'scripts', 'file', 'fn', 'char', 'invoker', 'invoker_type',
+    // Receive-side video health + share loss fallback (CallEventMonitor →
+    // rx_layer / rx_video_health / share_rx_fallback): a direction enum,
+    // loss %, RTCP counts, a hold and a window in seconds, a boolean.
+    'action', 'loss_pct', 'hold_s', 'pli', 'kf', 'nack', 'window_s', 'capped',
+    // Audio render-thread load (CallPane ← nsLoadGuard.ts → audio_render /
+    // ns_load_fallback): underrun ms and event counts, an NS engine enum.
+    'underrun_ms', 'underrun_events', 'ns',
 ]);
 const FORBIDDEN = /[iI]dentity|^sid$|Sid|[nN]ame|[lL]abel|[dD]evice|[rR]oom|[uU]ser|[eE]mail|^ip$|^ip[A-Z]|IP|[aA]ddr|[tT]ext|[tT]itle|[mM]essage|[mM]etadata/;
 

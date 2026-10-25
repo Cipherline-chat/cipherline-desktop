@@ -4,6 +4,7 @@ import { ClToggle } from '../cl';
 import { useAuth } from '../../contexts/AuthContext';
 import { openReportProblem } from '../../utils/diagnostics/reportRequest';
 import { setAutoSendEnabled, useAutoSendEnabled, AUTO_SEND_DAILY_CAP } from '../../utils/diagnostics/autoSend';
+import { BetaDiagnosticsSetting } from './BetaDiagnosticsSetting';
 import './reportProblem.css';
 
 /**
@@ -59,6 +60,9 @@ export const ReportProblemCard: React.FC = () => {
                     />
                 </div>
             </div>
+
+            {/* Closed beta only: shown while the server has beta diagnostics on. */}
+            <BetaDiagnosticsSetting userId={userId} />
         </div>
     );
 };

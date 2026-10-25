@@ -74,10 +74,13 @@ const SELF_STACKING = [
 const divTags = (src: string): string[] => [...src.matchAll(/<div\b[\s\S]*?>/g)].map(m => m[0]);
 const styleOf = (tag: string): string => /style=\{\{([\s\S]*?)\}\}/.exec(tag)?.[1] ?? '';
 
-/** The one `<div>` wrapper that carries the focused view's rounded clip. */
+/** The one `<div>` wrapper that carries the focused view's rounded clip. Its
+ *  clip-path is written by useVideoZoomPan through `zoomClipRef` (so it can
+ *  follow the zoom), not in a React style; the wrapper is `position:absolute`
+ *  with a z-index, so it is a stacking context whether or not a clip is set. */
 function clipWindowTag(src: string): string {
-    const hits = divTags(src).filter(t => /clipPath:\s*fitClipPath/.test(t));
-    expect(hits.length, 'no <div> wrapper carries fitClipPath any more — re-derive this rule').toBe(1);
+    const hits = divTags(src).filter(t => /ref=\{zoomClipRef\}/.test(t));
+    expect(hits.length, 'no <div> wrapper carries zoomClipRef any more — re-derive this rule').toBe(1);
     return hits[0];
 }
 

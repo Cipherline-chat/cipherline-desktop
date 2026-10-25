@@ -17,7 +17,7 @@
  */
 import React, { useEffect, useMemo, useState } from 'react';
 import { ShieldAlert } from 'lucide-react';
-import { ClButton } from './ClButton';
+import { ClBanner, ClBannerOverlay } from './ClBanner';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import {
@@ -71,34 +71,31 @@ export const DeviceResetBanner: React.FC<Props> = ({ requests, onResolved }) => 
     };
 
     return (
-        <div
-            role="alert"
-            aria-live="assertive"
-            data-testid="device-reset-banner"
-            style={{
-                position: 'fixed', top: 32, left: 0, right: 0, zIndex: 9997,
-                background: 'var(--cl-flash, #b91c1c)', color: '#fff',
-                padding: '10px 16px', fontSize: 13, fontFamily: 'var(--cl-font-body, sans-serif)',
-                display: 'flex', flexDirection: 'column', gap: 8,
-            }}
-        >
+        <ClBannerOverlay testId="device-reset-banner" live="assertive">
             {resets.map(req => (
-                <div key={req.device_id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12, flexWrap: 'wrap' }}>
-                    <ShieldAlert size={18} aria-hidden style={{ flexShrink: 0 }} />
-                    <span style={{ textAlign: 'center' }}>
-                        <b>A device reset was requested</b> by {req.device_name} ({platformLabel(req.platform)}). If you do nothing, all your
+                <ClBanner
+                    key={req.device_id}
+                    inline
+                    live="off"
+                    tone="danger"
+                    icon={<ShieldAlert size={15} />}
+                    title="A device reset was requested"
+                    description={<>
+                        by {req.device_name} ({platformLabel(req.platform)}). If you do nothing, all your
                         other devices are signed out on {whenLabel(req.reset_due_at)}.
-                    </span>
-                    <ClButton
-                        variant="primary" size="sm" loading={busy === req.device_id} disabled={!ctx || !!busy}
-                        onClick={() => cancel(req)}
-                    >
-                        Cancel reset
-                    </ClButton>
-                </div>
+                    </>}
+                    actions={[{
+                        key: 'cancel-reset',
+                        label: 'Cancel reset',
+                        variant: 'primary',
+                        loading: busy === req.device_id,
+                        disabled: !ctx || !!busy,
+                        onClick: () => cancel(req),
+                    }]}
+                />
             ))}
-            {error && <div style={{ textAlign: 'center' }} data-testid="device-reset-error">{error}</div>}
-        </div>
+            {error && <ClBanner inline live="off" tone="danger" testId="device-reset-error" title={error} />}
+        </ClBannerOverlay>
     );
 };
 

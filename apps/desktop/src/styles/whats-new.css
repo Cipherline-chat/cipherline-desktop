@@ -1,0 +1,126 @@
+/* "What's new" dialog (components/WhatsNewDialog.tsx).
+   Animations are transform and opacity only. Under reduced motion (the
+   media query at the bottom, and .is-still set from JS) the box is already
+   open and Keys is already out: nothing moves. */
+
+.wn-art {
+  position: relative;
+  height: 118px;
+  margin: 0 auto 10px;
+  width: 168px;
+}
+
+/* The box: a back wall, then Keys, then the front wall in front of him so he
+   rises from INSIDE it. */
+.wn-box-back,
+.wn-box-front {
+  position: absolute;
+  left: 22px;
+  width: 124px;
+  border: 2px solid var(--cl-lume);
+  box-sizing: border-box;
+}
+.wn-box-back {
+  bottom: 6px;
+  height: 52px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--cl-lume) 14%, var(--cl-deep));
+}
+.wn-box-front {
+  bottom: 6px;
+  height: 36px;
+  border-radius: 6px 6px 10px 10px;
+  background: var(--cl-surface);
+  z-index: 2;
+}
+.wn-box-front::after {            /* a strip of tape */
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 0;
+  width: 18px;
+  height: 100%;
+  margin-left: -9px;
+  background: color-mix(in srgb, var(--cl-lume) 28%, transparent);
+}
+.wn-lid {
+  position: absolute;
+  left: 18px;
+  bottom: 52px;
+  width: 132px;
+  height: 14px;
+  border: 2px solid var(--cl-lume);
+  border-radius: 5px;
+  background: var(--cl-raise, var(--cl-surface));
+  box-sizing: border-box;
+  z-index: 3;
+  transform-origin: 8% 100%;
+  transform: translate(-14px, -16px) rotate(-26deg);
+  animation: wn-lid 700ms cubic-bezier(.3, 1.4, .5, 1) 320ms backwards;
+}
+@keyframes wn-lid {
+  0%   { transform: translate(0, 0) rotate(0); }
+  100% { transform: translate(-14px, -16px) rotate(-26deg); }
+}
+
+.wn-keys {
+  position: absolute;
+  left: 50%;
+  bottom: 46px;
+  width: 64px;
+  margin-left: -32px;
+  z-index: 1;
+  animation: wn-rise 780ms cubic-bezier(.2, .9, .3, 1.15) 560ms backwards;
+}
+@keyframes wn-rise {
+  0%   { transform: translateY(46px) scale(.8); opacity: 0; }
+  35%  { opacity: 1; }
+  100% { transform: none; opacity: 1; }
+}
+
+.wn-card .wn-scroll {
+  max-height: min(46vh, 380px);
+  overflow-y: auto;
+  padding: 3px 8px 3px 4px;
+  margin-right: -6px;
+  outline: none;
+}
+.wn-card .wn-scroll:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--cl-lume);
+  border-radius: 10px;
+}
+.wn-group + .wn-group { margin-top: 14px; }
+.wn-gtitle {
+  margin: 0 0 6px;
+  font-family: var(--cl-font-display);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--cl-lume);
+  letter-spacing: .02em;
+}
+.wn-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 9px; }
+.wn-item {
+  position: relative;
+  padding-left: 16px;
+  font-size: 13.5px;
+  font-weight: 600;
+  line-height: 1.45;
+  color: var(--cl-muted);
+}
+.wn-item::before {
+  content: '';
+  position: absolute;
+  left: 2px;
+  top: .62em;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--cl-lume);
+}
+.wn-ititle { color: var(--cl-text); font-weight: 800; margin-right: 6px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .wn-lid, .wn-keys { animation: none; }
+}
+.wn-art.is-still .wn-lid,
+.wn-art.is-still .wn-keys { animation: none; }

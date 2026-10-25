@@ -194,8 +194,40 @@
   to   { opacity: 1; }
 }
 
+/* The tip line (LoadingTip.tsx): one short line low on the screen, each line
+   fading in and out over its own 3 s (TIP_MS). A fresh element per line, so
+   this is a single finite animation, never a loop. The delay (a custom
+   property, delay only) lets a handoff remount join the line mid-fade. Under
+   reduced motion the line is static (the media query below). */
+.lo-tip {
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  bottom: 15vh;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+}
+.lo-tip-line {
+  max-width: 560px;
+  text-align: center;
+  font-weight: 600;
+  font-size: clamp(14px, 1.7vmin, 17px);
+  line-height: 1.35;
+  color: rgba(167, 179, 212, .85);
+  animation: lo-tip 3s ease-in-out both;
+  animation-delay: calc(0s - var(--lo-tip-el, 0s));
+}
+@keyframes lo-tip {
+  0%   { opacity: 0; transform: translateY(4px); }
+  14%  { opacity: 1; transform: none; }
+  86%  { opacity: 1; transform: none; }
+  100% { opacity: 0; transform: translateY(-2px); }
+}
+
 /* In the game the loading copy steps aside. */
 .lo-root.is-game .lo-text { opacity: 0; transform: translateY(10px); }
+.lo-root.is-game .lo-tip { display: none; }
 
 /* Game over: one clean line, on a quiet backing so it reads over the pillars. */
 .lo-over {
@@ -342,6 +374,7 @@
   to   { opacity: 0; transform: scale(1.22); }
 }
 .lo-root.is-surfacing:not(.is-game) .lo-text,
+.lo-root.is-surfacing .lo-tip,
 .lo-root.is-surfacing .lo-hint,
 .lo-root.is-surfacing .lo-hud { animation: lo-fade-out 200ms ease-out forwards; }
 @keyframes lo-fade-out {

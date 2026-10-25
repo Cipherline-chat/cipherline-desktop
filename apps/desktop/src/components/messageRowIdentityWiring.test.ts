@@ -32,7 +32,9 @@ describe('ChatPane keys and animates message rows by their stable identity', () 
         expect(src).toMatch(/entrance\.finish\(rowKey\)/);
         // …and is reset per conversation.
         expect(src).toMatch(/entrance\.reset\(\);/);
-        expect(src).toMatch(/entering \? \(isMe \? 'cl-msg-enter-sent' : 'cl-msg-enter-recv'\) : ''/);
+        // (The big-room impact landing is an alternative ENTRANCE for one own row —
+        // still gated on `entering`, see composerFun.wiring.test.ts.)
+        expect(src).toMatch(/entering \? \(impacting \? 'cl-msg-enter-impact' : isMe \? 'cl-msg-enter-sent' : 'cl-msg-enter-recv'\) : ''/);
         // The old id-keyed bookkeeping is gone.
         expect(src).not.toMatch(/seenMsgIdsRef|animateIds/);
     });

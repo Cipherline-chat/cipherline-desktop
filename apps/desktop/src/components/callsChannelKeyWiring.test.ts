@@ -109,8 +109,10 @@ describe('the CallPane mount gate stays fail-closed', () => {
         // and the write inside recordCallKey itself.
         // `=` not followed by another `=`, so the guard's own
         // `if (store[id] === key) return;` comparison isn't counted as a write.
-        const directWrites = dashboard.match(/callKeyStoreRef\.current\[[^\]]+\]\s*=(?!=)/g) ?? [];
-        expect(directWrites.length).toBe(1);
+        // F11: CallKeyStore writes happen only inside recordCallKey (local)
+        // and acceptRemoteCallKey (decrypted call_key), both of which bump.
+        const directWrites = dashboard.match(/callKeyStoreRef\.current\.record(Local|Remote)\(/g) ?? [];
+        expect(directWrites.length).toBe(2);
     });
 
     it('only treats a ready key as usable when it was derived for THIS channel', () => {

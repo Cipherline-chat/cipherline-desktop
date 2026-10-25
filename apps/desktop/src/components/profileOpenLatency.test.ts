@@ -135,6 +135,11 @@ vi.mock('../utils/crypto', () => ({
 }));
 
 vi.mock('../contexts/HydrationContext', () => ({ useHydrationGeneration: () => 0 }));
+vi.mock('../hooks/useMostPlayed', () => ({ useMostPlayed: () => ({ games: [], loading: false }) }));
+vi.mock('../hooks/useUserAchievements', () => ({
+    useUserAchievements: () => ({ data: null, loading: false, error: false, reload: () => {} }),
+    useAchievementProgress: () => null,
+}));
 
 const kv = new Map<string, string>();
 vi.mock('../utils/secureLocalStore', () => {
@@ -185,7 +190,7 @@ interface Measurement {
 }
 
 const container = () => document.body.querySelector('#root') as HTMLElement;
-const avatarImg = () => container().querySelector('button[aria-label="View avatar"] img') as HTMLImageElement | null;
+const avatarImg = () => container().querySelector('button.ppo-avatar-btn img') as HTMLImageElement | null;
 const bannerImg = () => container().querySelector('.cipherline-banner-img') as HTMLImageElement | null;
 const rowAvatar = (uid: string) => container().querySelector(`[data-row="${uid}"] > *`) as HTMLElement;
 

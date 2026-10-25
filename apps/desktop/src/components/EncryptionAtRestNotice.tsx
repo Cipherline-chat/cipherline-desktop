@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
-import { ShieldAlert, X } from 'lucide-react';
-import { ClButton } from './cl';
+import { ShieldAlert } from 'lucide-react';
+import { ClBanner } from './ClBanner';
 import { secureLocalStore } from '../utils/secureLocalStore';
 
 /**
@@ -8,7 +8,7 @@ import { secureLocalStore } from '../utils/secureLocalStore';
  * (the secureLocalStore KV) is kept unencrypted on disk. It used to be a
  * `position: fixed` bar in App.tsx that sat ON TOP of the app and covered the
  * title area and whatever banner was beneath it. It now lives in the Dashboard's
- * in-flow banner stack, is one slim line, and can be dismissed for this session
+ * in-flow banner stack, and can be dismissed for this session
  * (it comes back on the next launch — the condition is real and persists).
  *
  * Distinct from KeyProtectionNotice (G8), which covers the weaker case where a
@@ -20,21 +20,17 @@ export const EncryptionAtRestNotice: React.FC = () => {
     if (dismissed || secureLocalStore.masterKeyStatus() !== 'absent') return null;
 
     return (
-        <div
-            role="status"
-            data-testid="encryption-at-rest-notice"
-            className="w-full px-3 py-1.5 bg-amber-600/90 text-white text-xs flex items-center justify-between gap-3"
-        >
-            <div className="flex items-center gap-2 min-w-0">
-                <ShieldAlert size={13} className="shrink-0" />
-                <span className="truncate" title="Install a keyring (libsecret / GNOME Keyring) to enable it.">
-                    No system keyring — local data on this computer is stored unencrypted. Install a keyring (libsecret / GNOME Keyring) to enable encryption.
-                </span>
-            </div>
-            <ClButton type="button" icon variant="ghost" size="sm" tooltip="Dismiss until next launch" onClick={() => setDismissed(true)}>
-                <X size={12} />
-            </ClButton>
-        </div>
+        <ClBanner
+            id="encryption-at-rest"
+            tone="warning"
+            priority={62}
+            testId="encryption-at-rest-notice"
+            icon={<ShieldAlert size={15} />}
+            title="No system keyring"
+            description="Local data on this computer is stored unencrypted. Install a keyring (libsecret / GNOME Keyring) to enable encryption."
+            dismissLabel="Dismiss until next launch"
+            onDismiss={() => setDismissed(true)}
+        />
     );
 };
 

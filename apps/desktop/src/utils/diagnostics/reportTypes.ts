@@ -247,8 +247,14 @@ export interface InboundTrackStats {
     bitrate_kbps?: number;
     packets_lost_pct?: number;
     jitter_ms?: number;
+    /** Audio only: average jitter-buffer delay over the last interval, ms. */
+    jb_ms?: number;
     frames_dropped?: number;
     freeze_count?: number;
+    /** Cumulative RTCP counts this RECEIVER sent / decoded: keyframe requests (PLI + FIR), NACKs, keyframes decoded. */
+    pli_count?: number;
+    nack_count?: number;
+    key_frames?: number;
 }
 
 export interface WebrtcSample {

@@ -10,6 +10,8 @@ import { useNotificationPrefsSafe } from '../contexts/NotificationContext';
 import { LockPreviewSuggestion } from './LockPreviewSuggestion';
 import { HIDDEN_PREVIEW, previewShowsMessageText } from '../utils/lockPreviewSuggestion';
 import { ClNote } from './cl/ClNote';
+import { DialogHeader, DialogBody, DialogFooter, DialogError } from './dialog/DialogFrame';
+import '../styles/dialog-extras.css';
 
 type Flow =
     | { kind: 'none' }
@@ -131,6 +133,36 @@ const ScreenLockSettings: React.FC<{ screenLock: ScreenLockHook; keybinds: Keybi
         flow.kind === 'disable'                          ? submitDisable :
         undefined;
 
+    const isChooseStep = (flow.kind === 'setup' || flow.kind === 'change') && flow.step === 'choose';
+
+    const modalSubtitle =
+        isChooseStep                                      ? '4 digits is quicker to type; 6 is harder to guess over your shoulder.' :
+        flow.kind === 'setup' && flow.step === 'enter'    ? "Pick digits you'll remember — there's no PIN recovery beyond signing out." :
+        flow.kind === 'setup' && flow.step === 'confirm'  ? 'Type the same PIN once more.' :
+        flow.kind === 'change' && flow.step === 'current' ? 'We need your current PIN before you can change it.' :
+        flow.kind === 'change' && flow.step === 'new'     ? "Pick digits you'll remember." :
+        flow.kind === 'disable'                           ? 'Enter your PIN to stop requiring it.' :
+        undefined;
+
+    const continueLabel =
+        flow.kind === 'setup' && flow.step === 'confirm' ? 'Set PIN' :
+        flow.kind === 'change' && flow.step === 'new'    ? 'Change PIN' :
+        flow.kind === 'disable'                          ? 'Turn off' :
+        'Continue';
+
+    // The keypad auto-submits when its last digit lands; this button is the same
+    // action for anyone who prefers to press it (and the only way forward from
+    // the length picker, where the highlighted length is taken as it stands).
+    const onContinue = () => {
+        if (isChooseStep) {
+            const len = (flow as { pinLength: 4 | 6 }).pinLength;
+            if (flow.kind === 'setup') submitSetupChoose(len);
+            else submitChangeChoose(len);
+            return;
+        }
+        if (pin.length === activeStepLength) void modalOnSubmit?.(pin);
+    };
+
     // Length to show in the active step's SlottedCodeInput: the *current*
     // stored length when verifying an existing PIN (disable; change's
     // 'current' step, whose flow.pinLength is seeded from settings.pinLength
@@ -236,35 +268,23 @@ const ScreenLockSettings: React.FC<{ screenLock: ScreenLockHook; keybinds: Keybi
                 )}
             </div>
 
-            <ClModal open={flow.kind !== 'none'} onClose={closeFlow} width={380} label={modalTitle}>
-                <div style={{ padding: '28px 24px', textAlign: 'center' }}>
-                    <h2 style={{ fontSize: 17, fontWeight: 800, color: 'var(--cl-text)', margin: '0 0 6px' }}>{modalTitle}</h2>
-                    {(flow.kind === 'setup' || flow.kind === 'change') && flow.step === 'choose' && (
-                        <p style={{ fontSize: 12.5, color: 'var(--cl-faint)', margin: '0 0 20px' }}>
-                            4 digits is quicker to type; 6 is harder to guess over your shoulder.
-                        </p>
-                    )}
-                    {flow.kind === 'setup' && flow.step === 'enter' && (
-                        <p style={{ fontSize: 12.5, color: 'var(--cl-faint)', margin: '0 0 20px' }}>
-                            Pick digits you'll remember — there's no PIN recovery beyond signing out.
-                        </p>
-                    )}
-                    {error && (
-                        <div style={{
-                            margin: '0 0 16px', padding: '9px 12px', borderRadius: 10, fontSize: 12.5,
-                            background: 'rgba(255,77,79,0.08)', border: '1px solid rgba(255,77,79,0.28)',
-                            color: 'var(--cl-flash)',
-                        }}>
-                            {error}
-                        </div>
-                    )}
-                    <div style={{ margin: '20px 0' }}>
-                        {(flow.kind === 'setup' || flow.kind === 'change') && flow.step === 'choose' ? (
+            <ClModal open={flow.kind !== 'none'} onClose={closeFlow} width={420} label={modalTitle} cardClassName="dlg-card">
+                <DialogHeader
+                    icon={flow.kind === 'disable' ? <LockKeyholeOpen size={19} strokeWidth={2.2} /> : <Lock size={19} strokeWidth={2.2} />}
+                    title={flow.kind === 'disable' ? 'Turn off Screen Lock' : modalTitle}
+                    subtitle={modalSubtitle}
+                />
+                <DialogBody className="dlg-body--center">
+                    <div style={{ margin: '6px 0 4px', width: '100%', display: 'flex', justifyContent: 'center' }}>
+                        {isChooseStep ? (
                             // Picking a length advances the flow immediately — no separate
                             // confirm button, same as how SlottedCodeInput's onAutoSubmit
-                            // already auto-advances every other step in this modal.
+                            // already auto-advances every other step in this modal. The
+                            // Continue button below takes the highlighted length as-is (the
+                            // default 6 can't be "picked" by clicking it, since ClSegment
+                            // only fires on a change).
                             <ClSegment<'4' | '6'>
-                                value={String(flow.pinLength) as '4' | '6'}
+                                value={String((flow as { pinLength: 4 | 6 }).pinLength) as '4' | '6'}
                                 onChange={v => {
                                     const len = Number(v) as 4 | 6;
                                     if (flow.kind === 'setup') submitSetupChoose(len);
@@ -288,8 +308,19 @@ const ScreenLockSettings: React.FC<{ screenLock: ScreenLockHook; keybinds: Keybi
                             />
                         )}
                     </div>
-                    <ClButton fullWidth variant="ghost" onClick={closeFlow} disabled={busy}>Cancel</ClButton>
-                </div>
+                </DialogBody>
+                {error && <DialogError>{error}</DialogError>}
+                <DialogFooter hint={<><Lock size={13} aria-hidden /> Stays on this device</>}>
+                    <ClButton variant="ghost" size="sm" onClick={closeFlow} disabled={busy}>Cancel</ClButton>
+                    <ClButton
+                        size="sm"
+                        loading={busy}
+                        disabled={busy || (!isChooseStep && pin.length !== activeStepLength)}
+                        onClick={onContinue}
+                    >
+                        {continueLabel}
+                    </ClButton>
+                </DialogFooter>
             </ClModal>
         </>
     );

@@ -3,12 +3,13 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 /**
  * Worklet registration cost on the mic processor:
  *  - a mic device switch (restart() on the SAME retained context) must not
- *    re-register the three processors: re-evaluating the RNNoise module on the
+ *    re-register the four processors: re-evaluating the RNNoise module on the
  *    real-time audio thread is an audible hitch on every switch.
  */
 
 // The real module is ~4.8 MB of vendored WASM glue; a stub keeps this fast.
 vi.mock('./rnnoiseInWorkletSource', () => ({ RNNOISE_INLINE_WORKLET_SOURCE: 'registerProcessor("rnnoise-inline-worklet", class {})' }));
+vi.mock('./speexLightWorkletSource', () => ({ SPEEX_LIGHT_WORKLET_SOURCE: 'registerProcessor("speex-light-worklet", class {})' }));
 
 const param = () => ({ value: 0, cancelScheduledValues() {}, setValueAtTime() {}, setTargetAtTime() {} });
 const node = () => ({ connect() {}, disconnect() {}, gain: param(), frequency: param(), Q: param(), threshold: param(), knee: param(), ratio: param(), attack: param(), release: param(), fftSize: 0, smoothingTimeConstant: 0, type: '' });
@@ -20,7 +21,7 @@ class FakeCtx {
     registered = new Set<string>();
     addModule = vi.fn(async () => {
         // Every module registers the processor its test case asks for.
-        for (const n of ['gate-worklet', 'rnnoise-inline-worklet', 'agc-worklet']) if (!this.registered.has(n)) { this.registered.add(n); return; }
+        for (const n of ['gate-worklet', 'rnnoise-inline-worklet', 'speex-light-worklet', 'agc-worklet']) if (!this.registered.has(n)) { this.registered.add(n); return; }
     });
     audioWorklet = { addModule: this.addModule };
     resume() { return Promise.resolve(); }
@@ -41,7 +42,7 @@ class FakeWorkletNode {
 
 const track = () => ({ applyConstraints: async () => {} }) as unknown as MediaStreamTrack;
 const settings = {
-    noiseSuppression: true, volumeNormalization: true, voiceGate: false, voiceGateThreshold: -50,
+    noiseSuppression: true, noiseSuppressionMode: 'strong', volumeNormalization: true, voiceGate: false, voiceGateThreshold: -50,
     pushToTalk: false, pushToTalkKey: '', micDeviceId: '', speakerDeviceId: '', cameraDeviceId: '',
     micVolume: 100, speakerVolume: 100, eqEnabled: false, eqBands: [0, 0, 0, 0, 0],
     cameraBrightness: 100, cameraContrast: 100, cameraSaturation: 100,
@@ -53,12 +54,12 @@ beforeEach(() => {
 });
 
 describe('CipherlineVoiceProcessor worklet registration', () => {
-    it('registers all three processors on first init', async () => {
+    it('registers all four processors on first init', async () => {
         const { CipherlineVoiceProcessor } = await import('./voiceProcessor');
         const ctx = new FakeCtx();
         const vp = new CipherlineVoiceProcessor(settings);
         await vp.init({ track: track(), audioContext: ctx as unknown as AudioContext });
-        expect(ctx.addModule).toHaveBeenCalledTimes(3);
+        expect(ctx.addModule).toHaveBeenCalledTimes(4);
         expect(vp.processedTrack).toBeTruthy();
         await vp.destroy();
     });
@@ -71,7 +72,7 @@ describe('CipherlineVoiceProcessor worklet registration', () => {
         // livekit-client calls restart() with NO audioContext on switchActiveDevice.
         await vp.restart({ track: track() });
         await vp.restart({ track: track() });
-        expect(ctx.addModule).toHaveBeenCalledTimes(3);
+        expect(ctx.addModule).toHaveBeenCalledTimes(4);
         expect(vp.processedTrack).toBeTruthy();
         await vp.destroy();
     });
@@ -84,8 +85,8 @@ describe('CipherlineVoiceProcessor worklet registration', () => {
         await vp.init({ track: track(), audioContext: a as unknown as AudioContext });
         await vp.destroy();
         await vp.init({ track: track(), audioContext: b as unknown as AudioContext });
-        expect(a.addModule).toHaveBeenCalledTimes(3);
-        expect(b.addModule).toHaveBeenCalledTimes(3);
+        expect(a.addModule).toHaveBeenCalledTimes(4);
+        expect(b.addModule).toHaveBeenCalledTimes(4);
         await vp.destroy();
     });
 });

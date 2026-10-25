@@ -34,6 +34,8 @@ const CONTROL_TYPES: ReadonlySet<string> = new Set([
     'edit', 'delete', 'reaction', 'pin',
     'profile_update', 'group_update',
     'channel_key', 'channel_message',
+    // A request for a call's media key: handled when it arrives, never a row.
+    'call_key_request',
 ]);
 
 /**

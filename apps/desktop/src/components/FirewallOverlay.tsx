@@ -1,6 +1,8 @@
 /**
- * FirewallOverlay: the loading screen's easter-egg game, opened on Home by
- * spamming Keys (components/mascot/HomeKeys.tsx, utils/keysBurst.ts).
+ * FirewallOverlay: the loading screen's easter-egg game, opened by spamming
+ * Keys: left-click on Home (components/mascot/HomeKeys.tsx, utils/keysBurst.ts)
+ * or right-click on the rail's mark from anywhere (components/rail/RailKeys.tsx,
+ * utils/railKeysGame.ts). Dashboard mounts the one instance (hooks/useFirewallGame.ts).
  *
  * It is the SAME game: the loading screen's worker module
  * (workers/loadingScreen.worker.ts) drawing WebGL into an OffscreenCanvas,
@@ -41,6 +43,10 @@ import '../styles/firewall.css';
 export interface FirewallOverlayProps {
     userId: string;
     onClose: () => void;
+    /** 'pane' (default): fills its positioned parent. 'shell': fixed to the app
+     *  shell's content area (right of the rail, below the titlebar), for the
+     *  single instance Dashboard mounts so it opens from any view. */
+    placement?: 'pane' | 'shell';
 }
 
 type Gl = 'starting' | 'ok' | 'failed';
@@ -53,7 +59,7 @@ const isEditable = (t: EventTarget | null): boolean => {
 
 const Kbd: React.FC<{ children: React.ReactNode }> = ({ children }) => <kbd className="fw-kbd">{children}</kbd>;
 
-export const FirewallOverlay: React.FC<FirewallOverlayProps> = ({ userId, onClose }) => {
+export const FirewallOverlay: React.FC<FirewallOverlayProps> = ({ userId, onClose, placement = 'pane' }) => {
     const rootRef = useRef<HTMLDivElement>(null);
     const stageRef = useRef<HTMLDivElement>(null);
     const workerRef = useRef<WorkerLike | null>(null);
@@ -202,7 +208,7 @@ export const FirewallOverlay: React.FC<FirewallOverlayProps> = ({ userId, onClos
     return (
         <div
             ref={rootRef}
-            className={`fw-root${playing ? ' is-game' : ''}${ready ? ' is-ready' : ''}`}
+            className={`fw-root${placement === 'shell' ? ' fw-root--shell' : ''}${playing ? ' is-game' : ''}${ready ? ' is-ready' : ''}`}
             role="dialog"
             aria-label="Firewall, a game"
             tabIndex={-1}

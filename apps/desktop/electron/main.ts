@@ -1,8 +1,20 @@
-import { app, BrowserWindow, ipcMain, desktopCapturer, session, dialog, net, powerMonitor, shell, globalShortcut, Menu, MenuItem, clipboard, nativeImage, systemPreferences, screen, powerSaveBlocker } from 'electron';
+import { app, BrowserWindow, ipcMain, desktopCapturer, session, dialog, net, powerMonitor, shell, globalShortcut, Menu, MenuItem, clipboard, nativeImage, systemPreferences, screen, sharedTexture, powerSaveBlocker } from 'electron';
+import {
+  createHdrShareController, decideHdrShare, parseHdrDisplays, parseHdrSharePref, parseNumberEnv,
+  screenIndexFromSourceId, type HdrNative, type SharedTextureLike,
+} from './hdr-share';
 import * as http from 'http';
 import * as https from 'https';
-import { assertPublicHttpUrl, pinnedLookup } from './net-guard';
+import { assertPublicHttpUrl, assertRemoteImageUrlShape, pinnedLookup } from './net-guard';
+import { appOriginsFor, decidePermissionRequest } from './permission-policy';
 import { isPathInside } from './path-containment';
+import { writePrivatePage } from './private-page-file';
+import { parseInviteUrl, parseReferralUrl, extractDeepLinkFromArgv, externalUrlToOpen } from './deep-link';
+import { decideSmokeTestMode } from './smoke-mode';
+import { stripDebugSwitches } from './debug-switches';
+import { installSmokeReporter } from './smoke-report';
+import { assertRendererPath, parsePickedDirs, PICKED_DIRS_STORE_KEY, type RendererFsOp } from './fs-confinement';
+import { devUploadTrustedCas } from './dev-upload-tls';
 import type { AppUpdater } from 'electron-updater';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -11,6 +23,7 @@ import * as os from 'os';
 import * as nodeCrypto from 'crypto';
 import { getLocalIdentityPub, migrateSpkPubIfMissing, ensureSignalIdentity, signIdentityMessage, generateRotationBundle, lowestHeldOtpId, type StatusAwareRotationOptions } from './signal-identity';
 import { SpkCandidateOrder } from './spk-candidates';
+import { MediaSessionReader } from './media-session';
 import { detectCurrentGame, getCurrentGameCached, getRunningProcessList, setCustomGames, setIgnoredProcesses, resetHeuristicSessions, nextGamePollDelayMs, GAME_POLL_MS, GAME_POLL_SETTLE_MS } from './game-detector';
 import { secureStore } from './storage';
 import { shouldShowKeyProtectionNotice, keyProtectionNoticeToken } from './key-protection';
@@ -21,9 +34,14 @@ import {
   recoveryCommitMessage, recoveryProofMessage,
 } from './device-approval-keys';
 import { createRecoveryKeyGate } from './recovery-key-gate';
+import { createVaultGate, type VaultConfirmKind } from './vault-reset-gate';
 import { createApprovalSignGate, approvalQuestion } from './device-approval-sign-gate';
-import { startOAuth, getAccessToken, revokeTokens, getLinkedAccount } from './googleDriveAuth';
-import { uploadFileResumable, downloadFileToPath } from './driveTransfer';
+import { startOAuth, getAccessToken, revokeTokens, getLinkedAccount, getCachedFolderId, setCachedFolderId } from './googleDriveAuth';
+import { createDriveApi } from './drive-api';
+import { checkUploadUrl, devUploadHosts } from './upload-host-policy';
+import { createCaptureConsent, describePrompt, isCaptureSourceId, type ConsentPrompt } from './capture-consent';
+import { createQuickShareForegroundStore, hasForegroundCandidate, resolveForegroundSource } from './quick-share-foreground';
+import { uploadFileResumable, downloadFileToPath, request as driveRequest } from './driveTransfer';
 import { showAnnotationOverlay, hideAnnotationOverlay, pushAnnotationOverlayDelta, setAnnotationOverlayNative, annotationOverlayPrecheck, type OverlayDelta, type OverlayShowResult } from './annotation-overlay';
 import { thumbnailJpegDataUrl } from './thumbnailDataUrl';
 import { createDesktopSourcesBroker } from './desktop-sources';
@@ -98,6 +116,8 @@ import { UpdateInstallCoordinator, INSTALL_ATTEMPT_FILE } from './update-install
 import { createAuthenticodeVerifier } from './authenticode-verify';
 import { UPDATE_MANIFEST_PUBLIC_KEYS, REQUIRE_MANIFEST_SIG, type ManifestChannel } from './update-manifest-keys';
 import { isManifestSignatureRequired, ManifestVerificationError } from './update-manifest-signature';
+import { createMainErrorHandler, networkErrorCode, updaterErrorCode } from './net-error';
+import { createHandledUpdateCheck } from './update-check';
 import { withManifestSignatureCheck, describeManifestReport, type GenericProviderCtor } from './signed-update-provider';
 import { syncKdeGlobalShortcuts, teardownKdeGlobalShortcuts } from './kde-global-shortcuts';
 import { validateGlobalShortcutMap } from './global-shortcut-payload';
@@ -139,6 +159,7 @@ import { powChallengeToHash } from './pow-challenge';
 import {
   PendingCrashStore, mainScrubber, parseSignatures, buildSystemInfo,
   reportChannel, validateReportFile, defaultReportFileName, UNCLEAN_EXIT_MARKER_FILE,
+  isOsSessionEndExit,
   type GpuInfoLike,
 } from './diagnostics';
 import { SessionLifecycle, crashRecordFor, type CrashEvent, type QuitTrigger } from './session-lifecycle';
@@ -156,7 +177,7 @@ import {
 // Every dev-vs-prod security decision in this file used to key off the
 // presence of `VITE_DEV_SERVER_URL`: IPC sender trust, navigation pinning,
 // redirect pinning, the CSP's `unsafe-eval`/`unsafe-inline`, upload TLS
-// verification (`rejectUnauthorized: false`), the updater, and DevTools.
+// verification (since replaced by a verifying dev trust store), the updater, and DevTools.
 // Setting a user-level environment variable on Windows needs no elevation, so
 // one `setx VITE_DEV_SERVER_URL ...` turned all six off at once in a shipped
 // build. `app.isPackaged` cannot be set from the environment — it is derived
@@ -175,7 +196,13 @@ import {
 const IS_PACKAGED = app.isPackaged;
 const DEV_SERVER_URL: string | undefined =
   IS_PACKAGED ? undefined : (process.env.VITE_DEV_SERVER_URL || undefined);
-const IS_SMOKE_TEST = !!process.env.CIPHERLINE_SMOKE_TEST;
+// E-7: the env var alone does not select smoke mode in a packaged build — see
+// smoke-mode.ts. storage.ts makes the same decision with the same function.
+const IS_SMOKE_TEST = decideSmokeTestMode(process.env, process.argv, IS_PACKAGED);
+// E-6: a packaged build ignores --remote-debugging-port/-pipe (and --inspect*);
+// the CI smoke run reports through smoke-report.ts instead. See debug-switches.ts.
+stripDebugSwitches(app.commandLine, IS_PACKAGED);
+if (IS_SMOKE_TEST) installSmokeReporter(app);
 // The updater only exists in a real install. Previously each of the four
 // updater call sites made this decision for itself off the dev URL, and they
 // had already drifted (`set-channel` and `quit-and-install` checked only the
@@ -240,7 +267,7 @@ let audioCaptureAddon: {
   getWindowExe?(hwnd: string): unknown;
   getWindowInfo?(hwnd: string): unknown;
   getScreenRectFromDeviceIndex?(index: number): unknown;
-} | null = null;
+} & HdrNative | null = null;
 
 /** True when the native addon is loaded AND this OS can actually run it. */
 function nativeAudioCaptureAvailable(): boolean {
@@ -282,7 +309,7 @@ const sessionLifecycle = new SessionLifecycle({
 const recordCrash = (event: CrashEvent): void => {
   // A crash handler must never throw — that would turn one crash into two.
   try {
-    pendingCrashes.add(crashRecordFor(event, sessionLifecycle.isQuitting, {
+    pendingCrashes.add(crashRecordFor(event, sessionLifecycle.ignoresCrashes, {
       now: Date.now(), appVersion: app.getVersion(), scrubber: diagScrubber,
     }));
   } catch (e) { console.error('[Main] could not record crash:', e); }
@@ -295,6 +322,23 @@ const startSessionMarker = (): void => {
 const beginQuit = (trigger: QuitTrigger): void => {
   setIsQuitting(true);
   try { sessionLifecycle.beginQuit(trigger); } catch { /* never block a quit */ }
+};
+/**
+ * How long a negotiated-but-unconfirmed shutdown ('query-session-end') keeps
+ * the marker off and crash events silenced. Windows follows a unanimous yes
+ * with session-end within moments; this only has to outlast a user deciding
+ * about another app's "save your work?" prompt, and a cancelled shutdown
+ * loses nothing worse than a crash being unreported for this long.
+ */
+const SESSION_END_SUSPECT_MS = 60_000;
+let sessionEndResumeTimer: ReturnType<typeof setTimeout> | null = null;
+/**
+ * A child/renderer process died of the Windows log-off exit code
+ * (STATUS_DLL_INIT_FAILED_LOGOFF): the user's session IS ending, and that
+ * cannot be cancelled. Same as session-end, and it can arrive first.
+ */
+const noteOsSessionEndExit = (details: unknown): void => {
+  if (isOsSessionEndExit(details)) beginQuit('session-end');
 };
 
 // A GPU process death (electron/gpu-restart.ts): Chromium starts a new one by
@@ -317,14 +361,37 @@ const signalGpuRestart = (details: unknown): void => {
 };
 
 // Catch any main-process crash before Electron's own error handling swallows it.
-process.on('uncaughtException', (err) => {
-  console.error('[Main] uncaughtException:', err);
-  recordCrash({ source: 'main-exception', thrown: err, origin: 'uncaughtException' });
-});
-process.on('unhandledRejection', (reason) => {
-  console.error('[Main] unhandledRejection:', reason);
-  recordCrash({ source: 'main-exception', thrown: reason, origin: 'unhandledRejection' });
-});
+//
+// A Chromium network failure (`net::ERR_HTTP2_PROTOCOL_ERROR`, …) that nothing
+// caught is NOT a crash — the app is alive and the network comes back. It is
+// logged as a `net:*` event in the Performance log instead of becoming a
+// "Cipherline closed unexpectedly" record on the next boot (1.0.20, user
+// 1998a718). Anything else is recorded exactly as before. electron/net-error.ts
+// holds the (deliberately narrow) classification.
+const mainErrorDeps = {
+  record: (thrown: unknown, origin: 'uncaughtException' | 'unhandledRejection') =>
+    recordCrash({ source: 'main-exception', thrown, origin }),
+  event: (name: string, ms: number, detail: string) => freezeMonitor.event(name, ms, detail),
+  log: (level: 'warn' | 'error', line: string, thrown: unknown) => (level === 'warn' ? console.warn : console.error)(line, thrown),
+};
+process.on('uncaughtException', createMainErrorHandler('uncaughtException', mainErrorDeps));
+process.on('unhandledRejection', createMainErrorHandler('unhandledRejection', mainErrorDeps));
+
+/**
+ * `win.loadURL()` / `loadFile()` return a promise that REJECTS with the same
+ * failure the window's `did-fail-load` listener already handles (retry with
+ * backoff, then the one "Load Failure" dialog) — `ERR_CONNECTION_REFUSED (-102)
+ * loading '…'`, `ERR_ABORTED (-3)` when a navigation is superseded. Calling it
+ * bare left a second, unhandled copy of every such failure, i.e. a recorded
+ * crash. Use this for every load whose promise nothing awaits.
+ */
+const loadHandled = (what: string, load: Promise<void>): void => {
+  load.catch((e: unknown) => {
+    const code = networkErrorCode(e);
+    console.warn(`[Main] ${what} failed (handled by did-fail-load): ${code ?? (e as Error)?.message ?? e}`);
+    if (code) freezeMonitor.event('net:load-failed', 0, `code=${code}`);
+  });
+};
 
 // Dev mode: treat the Vite dev server origin as a secure context so that
 // window.crypto.subtle (WebCrypto) is available over plain HTTP.
@@ -771,6 +838,77 @@ if (process.platform === 'linux') {
 
 let mainWindow: BrowserWindow | null = null;
 
+// Who may start a screen / window / app-audio capture. See capture-consent.ts:
+// our picker mints a one-time grant, the capture presents it, and anything
+// without a valid grant gets this native (non-renderer-forgeable) dialog.
+const captureConsent = createCaptureConsent({
+  confirm: async (prompt: ConsentPrompt): Promise<boolean> => {
+    const text = describePrompt(prompt);
+    const opts: Electron.MessageBoxOptions = {
+      type: 'warning',
+      // "Don't allow" is index 0 AND the default AND the dismiss result, so a
+      // stray Enter, a synthetic key event or closing the dialog all deny.
+      buttons: ["Don't allow", 'Allow'],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true,
+      title: 'Cipherline',
+      message: text.message,
+      detail: text.detail,
+    };
+    const { response } = mainWindow && !mainWindow.isDestroyed()
+      ? await dialog.showMessageBox(mainWindow, opts)
+      : await dialog.showMessageBox(opts);
+    return response === 1;
+  },
+});
+
+// HDR screen shares (electron/hdr-share.ts): `CIPHERLINE_HDR_SHARE` = off
+// (DEFAULT since 2026-10-24 - unverified native path, see parseHdrSharePref)
+// | auto (our tone-mapped capture for a screen in HDR mode) | force (also
+// for an SDR screen - exercises the whole pipeline on any PC).
+const HDR_SHARE_PREF = parseHdrSharePref(process.env.CIPHERLINE_HDR_SHARE);
+const hdrShare = createHdrShareController({
+  // Resolved lazily: the addon loads after app.whenReady().
+  native: {
+    hdrCaptureStart: (o, cb) => audioCaptureAddon?.hdrCaptureStart?.(o, cb),
+    hdrCaptureRelease: (slot, generation) => audioCaptureAddon?.hdrCaptureRelease?.(slot, generation),
+    hdrCaptureStop: () => audioCaptureAddon?.hdrCaptureStop?.(),
+    hdrCaptureStats: () => audioCaptureAddon?.hdrCaptureStats?.(),
+  },
+  sharedTexture: sharedTexture as unknown as SharedTextureLike,
+  notifyEnded: (target, sessionId, reason) => {
+    try {
+      const frame = target as Electron.WebFrameMain;
+      if (!frame.isDestroyed()) frame.send('share:hdr-ended', sessionId, reason);
+    } catch { /* the window is gone */ }
+  },
+  log: (m) => console.log(m),
+});
+
+// Quick Screen Share: what was in front at the moment of the key press
+// (quick-share-foreground.ts). Captured HERE, in the shortcut callback, before
+// Cipherline or the renderer can take focus; the renderer never supplies it.
+const quickShareForeground = createQuickShareForegroundStore();
+
+/**
+ * Every OS-delivered global-shortcut press (Electron's globalShortcut AND the
+ * KDE path) goes through here: it is trusted input for capture-consent.ts, and
+ * for the Quick Screen Share action it also records the foreground window.
+ * Windows only - elsewhere the capture is "unknown" and the renderer falls back
+ * to its game / primary-screen choice (no cheap foreground-window API in the
+ * addon on macOS, none on Linux/Wayland: share-platform.ts).
+ */
+function noteGlobalShortcutPress(actionId: string): void {
+  captureConsent.notePresence(null); // an OS-delivered key press, not renderer code
+  if (actionId !== 'quick-screenshare') return;
+  let raw: unknown = null;
+  if (process.platform === 'win32' && audioCaptureAddon && typeof audioCaptureAddon.getForegroundInfo === 'function') {
+    try { raw = audioCaptureAddon.getForegroundInfo(); } catch { raw = null; }
+  }
+  quickShareForeground.capture(raw);
+}
+
 // Fixed port (not 0/random) so the renderer's origin is stable across launches.
 // Random ports would give a different origin every run, wiping localStorage
 // (auth tokens, keys) and IndexedDB (message/attachment caches) each time —
@@ -1135,6 +1273,21 @@ async function createWindow(csp: string, startHidden = false) {
   // Also lets the close through: with minimize-to-tray on (the default), a
   // close that hides instead of closing must never stall a log-off.
   mainWindow.on('session-end', () => beginQuit('session-end'));
+  // Windows is NEGOTIATING a shutdown / restart / log-off (WM_QUERYENDSESSION).
+  // It can still be cancelled, so this is not a quit (the window must keep
+  // hiding to the tray), but Windows kills the child processes next and may
+  // end this one without ever dispatching session-end: drop the marker and
+  // stop counting deaths now; re-arm if the session is still here afterwards.
+  // No preventDefault: we never hold up the OS.
+  mainWindow.on('query-session-end', () => {
+    sessionLifecycle.suspectSessionEnd();
+    if (sessionEndResumeTimer) clearTimeout(sessionEndResumeTimer);
+    sessionEndResumeTimer = setTimeout(() => {
+      sessionEndResumeTimer = null;
+      sessionLifecycle.resumeAfterSuspectedEnd();
+    }, SESSION_END_SUSPECT_MS);
+    sessionEndResumeTimer.unref?.();
+  });
   mainWindow.on('close', (e) => {
     if (_saveStateTimer) { clearTimeout(_saveStateTimer); _saveStateTimer = null; }
     saveWindowState(mainWindow!);
@@ -1194,6 +1347,21 @@ async function createWindow(csp: string, startHidden = false) {
     }
   });
 
+  // Real user input, as seen by the browser process. 'input-event' is emitted
+  // for input the OS delivered to this window (mouse buttons, keys, touch) and
+  // is unreachable from page JavaScript - a synthetic dispatchEvent()/click()
+  // never produces one. It is what lets a capture grant mean "the user just
+  // chose this" (capture-consent.ts); mouse-move / wheel / hover do not count.
+  const REAL_INPUT_TYPES = new Set(['mouseDown', 'mouseUp', 'keyDown', 'rawKeyDown', 'touchStart', 'touchEnd', 'gestureTap', 'gestureTapDown']);
+  const mainContentsId = mainWindow.webContents.id;
+  mainWindow.webContents.on('input-event', (_event, input) => {
+    if (REAL_INPUT_TYPES.has(input.type)) captureConsent.notePresence(mainContentsId);
+  });
+  mainWindow.webContents.once('destroyed', () => {
+    captureConsent.forgetSender(mainContentsId);
+    hdrShare.stop('renderer_gone');
+  });
+
   // HIGH-16: DevTools in dev only. In production, block the shortcut and close
   // DevTools if somehow opened (e.g. via remote debugging).
   if (DEV_SERVER_URL) {
@@ -1225,7 +1393,7 @@ async function createWindow(csp: string, startHidden = false) {
     // Dev: no port to win — the single-instance lock is the only gate.
     startSessionMarker();
     console.log(`[Main] Attempting to load URL: ${url}`);
-    mainWindow.loadURL(url);
+    loadHandled('loadURL', mainWindow.loadURL(url));
     // Dev only (this branch never runs packaged). DevTools no longer opens by
     // itself: measured with the freeze harness against the Tier-1 dev setup,
     // an open DevTools roughly doubled the app's own freezes (time to
@@ -1239,7 +1407,7 @@ async function createWindow(csp: string, startHidden = false) {
     // this process already serves the port. Binding it again would hit
     // EADDRINUSE, "hand off" to ITSELF and app.exit(0) — the app silently
     // vanished, skipping the quit, so the next launch said it had crashed.
-    mainWindow.loadURL(`http://127.0.0.1:${CIPHERLINE_PROD_PORT}/`);
+    loadHandled('loadURL', mainWindow.loadURL(`http://127.0.0.1:${CIPHERLINE_PROD_PORT}/`));
   } else {
     // Production — serve the bundled dist/ folder via a local HTTP server on a
     // random loopback port.  This gives the renderer an http://127.0.0.1:PORT
@@ -1324,7 +1492,16 @@ async function createWindow(csp: string, startHidden = false) {
         'X-Content-Type-Options': 'nosniff',
         'Referrer-Policy': 'no-referrer',
       });
-      fs.createReadStream(abs).pipe(res);
+      // An 'error' with no listener is an uncaughtException in main (no JS
+      // stack, recorded as a crash): a file that vanished between the
+      // existsSync above and this open (an update replacing the bundle, an
+      // ejected/translocated volume) must only end this one response.
+      const body = fs.createReadStream(abs);
+      body.on('error', (err: NodeJS.ErrnoException) => {
+        console.warn(`[Main] static server could not read an app file (${err.code ?? 'error'})`);
+        res.destroy();
+      });
+      body.pipe(res);
     });
     try {
       await new Promise<void>((resolve, reject) => {
@@ -1387,7 +1564,7 @@ async function createWindow(csp: string, startHidden = false) {
     // This instance holds the port, so it IS the live one: take over the
     // unclean-exit marker (once per launch).
     startSessionMarker();
-    mainWindow.loadURL(`http://127.0.0.1:${CIPHERLINE_PROD_PORT}/`);
+    loadHandled('loadURL', mainWindow.loadURL(`http://127.0.0.1:${CIPHERLINE_PROD_PORT}/`));
   }
 
   // Diagnostic listeners
@@ -1441,7 +1618,7 @@ async function createWindow(csp: string, startHidden = false) {
       console.warn(`[Main] shell load failed — retry ${shellRetries}/${SHELL_RETRY_LIMIT} in ${delay}ms`);
       setTimeout(() => {
         if (!mainWindow || mainWindow.isDestroyed()) return;
-        mainWindow.loadURL(appShellUrl);
+        loadHandled('shell reload', mainWindow.loadURL(appShellUrl));
       }, delay);
       return;
     }
@@ -1487,7 +1664,9 @@ async function createWindow(csp: string, startHidden = false) {
   mainWindow.webContents.on('did-navigate', () => syncCallPriority({ inCall: false, sharing: false }));
   mainWindow.webContents.on('render-process-gone', (event, details) => {
     console.error(`[Main] Renderer process gone: ${details.reason} (${details.exitCode})`);
+    noteOsSessionEndExit(details);
     syncCallPriority({ inCall: false, sharing: false });
+    hdrShare.stop('renderer_gone'); // its frames had nowhere to go
     // Crash reporter: a pending record the reloaded renderer offers to send.
     // Recording only — the recovery behaviour below is unchanged.
     recordCrash({ source: 'render-process-gone', details });
@@ -1623,48 +1802,8 @@ async function createWindow(csp: string, startHidden = false) {
 
 // ── Deep-link helpers ─────────────────────────────────────────────────────────
 
-/**
- * Parse `cipherline://invite/<CODE>` from a URL string.
- * Returns the invite code, or null if the URL doesn't match.
- */
-function parseInviteUrl(url: string): string | null {
-  try {
-    const u = new URL(url);
-    if (u.protocol !== 'cipherline:') return null;
-    if (u.host !== 'invite') return null;
-    const code = u.pathname.replace(/^\/+/, '').trim();
-    return code || null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Parse `cipherline://ref/<CODE>` from a URL string.
- * Returns the referral code, or null if the URL doesn't match.
- */
-function parseReferralUrl(url: string): string | null {
-  try {
-    const u = new URL(url);
-    if (u.protocol !== 'cipherline:') return null;
-    if (u.host !== 'ref') return null;
-    const code = u.pathname.replace(/^\/+/, '').trim().toUpperCase();
-    return code || null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Extract the first `cipherline://` deep-link URL from a process.argv array.
- * Electron includes the URL as the last argument on Windows/Linux cold starts.
- */
-function extractDeepLinkFromArgv(argv: string[]): string | null {
-  for (const arg of argv) {
-    if (arg.startsWith('cipherline://')) return arg;
-  }
-  return null;
-}
+// parseInviteUrl / parseReferralUrl / extractDeepLinkFromArgv live in
+// ./deep-link (validated code charset and length; unit-tested there).
 
 /**
  * Cold-start / race-condition buffer: if the renderer hasn't mounted its
@@ -1814,6 +1953,11 @@ installIpcSenderGuard();
 ipcMain.handle('perf:record', (_event, rows: unknown) => freezeMonitor.recordFromRenderer(rows));
 ipcMain.handle('perf:get-log', () => freezeMonitor.snapshot());
 ipcMain.handle('perf:clear', () => { freezeMonitor.clear(); });
+// Call-engine breadcrumbs from the renderer (src/utils/crashBreadcrumbs.ts),
+// kept HERE so an auto crash report built after a renderer crash still says
+// what the call and the share were doing. Validated + rate-limited in
+// FreezeMonitor.breadcrumb.
+ipcMain.on('perf:breadcrumb', (_e, name: unknown, detail: unknown) => { freezeMonitor.breadcrumb(name, detail); });
 
 // ── Crash / issue reporter IPC (electron/diagnostics.ts) ─────────────────
 // Every channel is origin-checked by installIpcSenderGuard() above. Nothing
@@ -2110,14 +2254,16 @@ function createInstallerSplash(isUpdate: boolean): BrowserWindow {
   // Write to a temp file so the page loads with a file:// origin — loading as a
   // data: URL gives it a null opaque origin, which Chromium blocks @import
   // requests from (Google Fonts never load, breaking the design).
-  const tmpPath = path.join(os.tmpdir(), `cipherline-installer-${process.pid}.html`);
-  fs.writeFileSync(tmpPath, html, 'utf8');
-  splash.loadFile(tmpPath);
+  // E-8: a private mkdtemp directory (0700, exclusive 0600 file), not a
+  // predictable name in the shared temp dir — see private-page-file.ts.
+  const page = writePrivatePage('cl-splash', html);
+  loadHandled('splash loadFile', splash.loadFile(page.filePath));
   splash.webContents.on('did-finish-load', () => {
     splashReady = true;
     splashSendProgress(splashLatestPct);
-    fs.unlink(tmpPath, () => {});
+    page.cleanup();
   });
+  splash.on('closed', () => page.cleanup());
   return splash;
 }
 
@@ -2265,6 +2411,8 @@ app.whenReady().then(async () => {
   // A GPU / network / audio service process dying is invisible to the user
   // except as a freeze or a black window — record it (type + reason only).
   app.on('child-process-gone', (_e, details) => {
+    // A log-off exit code is the OS ending the session: quit first, record after.
+    noteOsSessionEndExit(details);
     freezeMonitor.event('process:gone', 0, describeChildProcessGone(details));
     sampleMetrics('process-gone', 0);
     // Crash reporter: GPU / Utility / … deaths with a crash reason only.
@@ -2461,17 +2609,25 @@ app.whenReady().then(async () => {
     // for the rest of the call.
     // blob: needed so FileViewer.tsx can fetch(objectUrl) to parse xlsx/mammoth
     // — Chromium classifies fetch() on a blob: URL as a connect-src check.
-    // *.googleapis.com — Google Drive REST: backup upload/download plus the
-    // in-app folder browser's files.list / files.create calls.
-    // accounts.google.com — Google auth handshake.
+    // No Google origin: the renderer holds no Drive token and makes no Drive
+    // REST call. Every Drive operation (folder lookup, backup stat/list/delete,
+    // upload, download) runs in the main process behind purpose-specific IPC
+    // (electron/drive-api.ts, driveTransfer.ts), so neither www.googleapis.com
+    // nor *.googleapis.com (storage.googleapis.com accepts writes to any
+    // public bucket) may appear here - connect-src stays a real exfiltration
+    // boundary. Google OAuth runs in the system browser against a main-
+    // process loopback listener (electron/googleDriveAuth.ts), so
+    // accounts.google.com is not needed either. Tenor is gone (KLIPY).
     // api.stripe.com / m.stripe.network — Stripe.js client API + metrics for the
     // in-app Payment Element.
     // link.com / *.link.com — Link (card + Link is the desktop checkout's method
     // set): its authentication UI and API are served from Stripe-owned link.com
     // subdomains (Stripe's CSP guide, "Link").
-    `connect-src 'self' blob: https://api.cipherline.chat wss://api.cipherline.chat https://api-staging.cipherline.chat wss://api-staging.cipherline.chat https://media.cipherline.chat https://rtc.cipherline.chat wss://rtc.cipherline.chat https://tenor.googleapis.com https://www.googleapis.com https://*.googleapis.com https://accounts.google.com https://api.stripe.com https://m.stripe.network https://link.com https://*.link.com https://challenges.cloudflare.com ${KLIPY_CSP_CONNECT}${connectExtra}`,
-    // Images: own attachments via media subdomain + Google Picker
-    // thumbnails/icons + Stripe brand glyphs.
+    `connect-src 'self' blob: https://api.cipherline.chat wss://api.cipherline.chat https://api-staging.cipherline.chat wss://api-staging.cipherline.chat https://media.cipherline.chat https://rtc.cipherline.chat wss://rtc.cipherline.chat https://api.stripe.com https://m.stripe.network https://link.com https://*.link.com https://challenges.cloudflare.com ${KLIPY_CSP_CONNECT}${connectExtra}`,
+    // Images: own attachments via media subdomain + Stripe brand glyphs.
+    // No Google image hosts: they were for the Google Picker widget, which is
+    // gone, and *.googleusercontent.com would let an <img> beacon reach
+    // user-hosted content.
     // https://*.stripe.com — card-brand / Link glyphs in the Payment Element.
     // https://*.link.com — Link's own static assets.
     //
@@ -2492,7 +2648,7 @@ app.whenReady().then(async () => {
     // automatically (vs. requiring a click) is host-based and lives in
     // src/utils/imageHosts.ts + usePrivacySettings' `imageAutoLoad` — a CSP
     // change is neither necessary nor sufficient for it.
-    `img-src 'self' data: blob: https://media.cipherline.chat https://*.googleusercontent.com https://*.gstatic.com https://ssl.gstatic.com https://*.stripe.com https://*.link.com ${KLIPY_CSP_IMG}`,
+    `img-src 'self' data: blob: https://media.cipherline.chat https://*.stripe.com https://*.link.com ${KLIPY_CSP_IMG}`,
     "media-src 'self' blob:",
     "font-src 'self' https://fonts.googleapis.com https://fonts.gstatic.com data:",
     // Inline PDF preview uses <embed type="application/pdf" src="blob:…"> in
@@ -2509,7 +2665,8 @@ app.whenReady().then(async () => {
     // previews fail with "Refused to frame 'blob:…'" despite object-src allowing blob:.
     // docs/drive.google.com are NOT listed: nothing frames Google any more now
     // that the backup folder browser is our own UI rather than the Google
-    // Picker widget. accounts.google.com stays for the OAuth handshake.
+    // Picker widget, and accounts.google.com is not framed either: OAuth runs
+    // in the system browser (electron/googleDriveAuth.ts).
     // js.stripe.com — Payment Element iframe; hooks.stripe.com — 3DS challenge frame.
     // *.js.stripe.com / link.com / *.link.com — sibling element frames and Link's
     // authentication UI (Link works inside the iframe: it needs no browser wallet
@@ -2518,7 +2675,7 @@ app.whenReady().then(async () => {
     // the sign-up form embeds; Cloudflare rejects 127.0.0.1 as a widget hostname, so the
     // widget runs there (components/TurnstileFrame.tsx). challenges.cloudflare.com — the
     // widget's own iframe.
-    "frame-src https://www.youtube-nocookie.com blob: https://accounts.google.com https://js.stripe.com https://*.js.stripe.com https://hooks.stripe.com https://link.com https://*.link.com https://challenges.cloudflare.com https://cipherline.chat",
+    "frame-src https://www.youtube-nocookie.com blob: https://js.stripe.com https://*.js.stripe.com https://hooks.stripe.com https://link.com https://*.link.com https://challenges.cloudflare.com https://cipherline.chat",
     "frame-ancestors 'none'",
     "base-uri 'self'",
     "form-action 'self'",
@@ -3004,8 +3161,9 @@ app.whenReady().then(async () => {
   ipcMain.handle('notif:show', (_e, payload) => {
     if (mainWindow) showNotification(mainWindow, payload);
   });
-  ipcMain.handle('notif:set-badge', (_e, count: number) => {
-    if (mainWindow) setBadgeCount(mainWindow, count);
+  ipcMain.handle('notif:set-badge', (_e, count: number, hasMention?: boolean) => {
+    // hasMention is optional so an older renderer (count only) leaves the flag alone.
+    if (mainWindow) setBadgeCount(mainWindow, count, typeof hasMention === 'boolean' ? hasMention : undefined);
   });
   ipcMain.handle('notif:flash-taskbar', () => {
     if (mainWindow) flashTaskbar(mainWindow);
@@ -3018,14 +3176,14 @@ app.whenReady().then(async () => {
   ipcMain.handle('tray:update-state', (_e, state: TrayMenuState) => {
     trayState = { ...trayState, ...state };
     if (mainWindow) updateTrayMenu(trayState, mainWindow, isQuittingRef);
-    if (mainWindow) setBadgeCount(mainWindow, trayState.unreadCount);
+    if (mainWindow) setBadgeCount(mainWindow, trayState.unreadCount, typeof state.hasMention === 'boolean' ? state.hasMention : undefined);
   });
 
   // Call + voice state — renderer pushes on every speaking/mute/deafen change.
   // Priority: deafened > muted > speaking > silent > unread > clean.
   ipcMain.handle('tray:call-speaking', (_e, inCall: boolean, isSpeaking: boolean, isMuted: boolean, isDeafened: boolean) => {
     setTrayCallState(inCall, isSpeaking, isMuted, isDeafened);
-    // Update the Windows taskbar overlay to show muted/deafened icons.
+    // Update the Windows taskbar overlay (muted / deafened glyph; an @mention outranks both).
     // setTrayCallState runs first so getCallState() reflects the new values.
     if (mainWindow) applyWindowsCallOverlay(mainWindow);
   });
@@ -3482,6 +3640,12 @@ app.whenReady().then(async () => {
       const b64 = secureStore.getMasterKeyB64();
       return b64 ? Buffer.from(b64, 'base64') : null;
     },
+  }, {
+    // E-2: never act as a decryption oracle for the keystore's own entries
+    // (same key, same AES-GCM shape). See KvCrypto.open.
+    reservedIvs: () => secureStore.entryIvs(),
+    // Authenticated home for the one-shot legacy TAG_RAW migration flag.
+    rawMigrationFlags: { get: (k) => secureStore.get(k), set: (k, v) => secureStore.set(k, v) },
   });
 
   /** Decrypt stored records. Per-record soft failure; see KvCrypto.open. */
@@ -3624,27 +3788,81 @@ app.whenReady().then(async () => {
   // (2026-10-05): the key is shown only from Settings, through the gate
   // above. See the UPDATE notice at the top of electron/recovery-key-gate.ts.
 
+  // E-3: "unlock with recovery key" and "start fresh" both replace the master
+  // key, so they are only available while the keystore is actually unusable
+  // (locked / corrupt — the two boot screens that offer them), a factory reset
+  // needs a main-process confirmation, and a recovery key that cannot be
+  // checked against an existing entry needs one too. See vault-reset-gate.ts.
+  const vaultConfirm = async (kind: VaultConfirmKind): Promise<boolean> => {
+    const opts: Electron.MessageBoxOptions = kind === 'factory-reset'
+      ? {
+          type: 'warning',
+          // Cancel is index 0 AND the default, so a stray Enter or a
+          // synthetic key event dismisses rather than approves.
+          buttons: ['Cancel', 'Erase and start fresh'],
+          defaultId: 0,
+          cancelId: 0,
+          noLink: true,
+          title: 'Start fresh',
+          message: 'Erase all Cipherline data on this device?',
+          detail:
+            "This deletes this device's identity keys, settings and local message history. It cannot be undone; " +
+            'anything in an encrypted backup can be restored afterwards.\n\nOnly continue if you just chose "Start fresh".',
+        }
+      : {
+          type: 'warning',
+          buttons: ['Cancel', 'Use this key'],
+          defaultId: 0,
+          cancelId: 0,
+          noLink: true,
+          title: 'Use recovery key',
+          message: 'Use the recovery key you entered?',
+          detail:
+            "There is nothing on this device to check the key against, so Cipherline cannot confirm it is yours. Everything this device saves from now on will be encrypted with it.\n\n" +
+            'Only continue if you just entered your own recovery key. Cipherline will never ask you to paste a key someone sent you.',
+        };
+    const { response } = mainWindow
+      ? await dialog.showMessageBox(mainWindow, opts)
+      : await dialog.showMessageBox(opts);
+    return response === 1;
+  };
+  const vaultGate = createVaultGate({
+    status: () => secureStore.status(),
+    isCorrupt: () => secureStore.corruptionInfo() !== null,
+    isEmpty: () => secureStore.entryCount() === 0,
+    confirm: vaultConfirm,
+    factoryReset: () => secureStore.factoryReset(),
+    recoverWithKey: (k) => secureStore.recoverWithKey(k),
+  });
+
   // Adopt a user-supplied recovery key on a locked device. Validates against an
   // existing encrypted entry and re-wraps it with this device's keystore.
   ipcMain.handle('secure:recover-with-key', async (event, keyB64: string) => {
     await secureStore.initialize();
-    if (typeof keyB64 !== 'string') return false;
-    const ok = secureStore.recoverWithKey(keyB64.trim());
+    const res = await vaultGate.recoverWithKey(keyB64);
+    if (!res.ok) {
+      if (res.reason !== 'wrong-key') console.warn('[secure] recover-with-key refused:', res.reason);
+      return false;
+    }
     // recoverWithKey may write a canary into an empty vault.
-    if (ok) await secureStore.whenDurable();
+    await secureStore.whenDurable();
     // Both recovery paths replace the master key underneath a live KvCrypto.
     // Its cache self-heals on a key-fingerprint change, but drop it explicitly
     // too: a stale per-account subkey here fails every read AND every write for
     // that account, silently, until the next launch.
-    if (ok) kvCrypto.resetSubkeyCache();
-    return ok;
+    kvCrypto.resetSubkeyCache();
+    return true;
   });
 
   // Destroy all local secrets and re-key ("start fresh"). The renderer wipes
-  // its encrypted IndexedDB separately.
+  // its encrypted IndexedDB separately — and only when this returns true.
   ipcMain.handle('secure:factory-reset', async () => {
     await secureStore.initialize();
-    secureStore.factoryReset();
+    const res = await vaultGate.factoryReset();
+    if (!res.ok) {
+      console.warn('[secure] factory reset refused:', res.reason);
+      return false;
+    }
     kvCrypto.resetSubkeyCache();
     return true;
   });
@@ -3658,7 +3876,7 @@ app.whenReady().then(async () => {
   //
   // MED-6: what the user consented to is THIS FILE, not the folder it happens
   // to live in. `dialog:save` used to add `path.dirname()` of the chosen path
-  // to the PERSISTED `userPickedDirs`, and `assertInsideUserData` prefix-matches
+  // to the PERSISTED `userPickedDirs`, and the old userData-or-picked-dir check prefix-matched
   // recursively — so saving one recovery-key .txt to ~/Documents permanently
   // handed the renderer fs:read-file, fs:read-dir and fs:unlink over that whole
   // tree, forever, across restarts. Saving to the home directory or a Desktop
@@ -3674,7 +3892,7 @@ app.whenReady().then(async () => {
   // actually uses.
   const userPickedSaveFiles = new Set<string>();
   const admitSaveTarget = (filePath: string): void => {
-    // Store the same shape assertInsideUserData will compute, so a file that
+    // Store the same shape the fs confinement check (rendererPath) computes, so a file that
     // does not exist yet (resolveReal falls back to realpath(dir) + basename)
     // still matches on the write that follows.
     userPickedSaveFiles.add(normalizePath(resolveReal(path.resolve(filePath))));
@@ -3689,7 +3907,7 @@ app.whenReady().then(async () => {
     return result;
   });
   // Combined save-dialog + write handler.  The file path stays inside the main
-  // process — the renderer only sends data, never a path — so assertInsideUserData
+  // process — the renderer only sends data, never a path — so the fs confinement check
   // is not needed for this call's own write.
   ipcMain.handle('fs:save-file-as', async (event, opts: Electron.SaveDialogOptions, data: Uint8Array) => {
     const result = mainWindow
@@ -3706,21 +3924,48 @@ app.whenReady().then(async () => {
     return { canceled: false, filePath: result.filePath, size: stat.size };
   });
 
-  // L3: persist user-picked dirs to disk so fs:register-dir cannot be abused — the
-  // renderer can only re-admit paths previously approved via a system dialog, never
-  // grant itself access to arbitrary filesystem paths.
-  const pickedDirsFile = path.join(app.getPath('userData'), 'picked-dirs.json');
-  function persistPickedDirs(dirs: Set<string>): void {
-    try { fs.writeFileSync(pickedDirsFile, JSON.stringify([...dirs]), { mode: 0o600 }); }
-    catch { /* non-fatal */ }
-  }
-  const userPickedDirs: Set<string> = (() => {
+  // L3 / E-1: folders the user picked in the native directory dialog persist
+  // across launches so the backup folder keeps working. They used to persist in
+  // a plaintext `userData/picked-dirs.json` — inside the directory renderer fs
+  // channels could write, so renderer code could author its own grant list.
+  // They now live in SecureStore under a key the renderer cannot name
+  // (secure-store-policy.ts), and the ONLY writer is dialog:open below, i.e.
+  // a folder a human chose in an OS dialog. The legacy file is imported once
+  // and deleted; renderer channels can no longer reach the top level of
+  // userData at all (fs-confinement.ts), so it cannot be planted again.
+  const legacyPickedDirsFile = path.join(app.getPath('userData'), 'picked-dirs.json');
+  const userPickedDirs = new Set<string>();
+  let pickedDirsLoad: Promise<void> | null = null;
+  function persistPickedDirs(): void {
     try {
-      const arr = JSON.parse(fs.readFileSync(pickedDirsFile, 'utf8'));
-      if (Array.isArray(arr)) return new Set(arr.filter((s): s is string => typeof s === 'string'));
-    } catch { /* first run */ }
-    return new Set<string>();
-  })();
+      if (secureStore.status() !== 'ok') return;
+      secureStore.set(PICKED_DIRS_STORE_KEY, JSON.stringify([...userPickedDirs]));
+    } catch (e) { console.warn('[fs] could not persist picked folders', e); }
+  }
+  function ensurePickedDirsLoaded(): Promise<void> {
+    if (!pickedDirsLoad) {
+      pickedDirsLoad = (async () => {
+        await secureStore.initialize();
+        if (secureStore.status() !== 'ok') {
+          // Locked: nothing to read yet. Try again after a recovery.
+          pickedDirsLoad = null;
+          return;
+        }
+        let raw: string | null = null;
+        try { raw = secureStore.get(PICKED_DIRS_STORE_KEY); } catch { raw = null; }
+        if (raw === null) {
+          let legacy: string[] = [];
+          try { legacy = parsePickedDirs(fs.readFileSync(legacyPickedDirsFile, 'utf8')); } catch { /* none */ }
+          for (const d of legacy) userPickedDirs.add(path.resolve(d));
+          persistPickedDirs();
+        } else {
+          for (const d of parsePickedDirs(raw)) userPickedDirs.add(path.resolve(d));
+        }
+        try { fs.unlinkSync(legacyPickedDirsFile); } catch { /* absent */ }
+      })();
+    }
+    return pickedDirsLoad;
+  }
 
   // Session-only allowlist for fs:encrypt-to-temp (attachment uploads pick
   // arbitrary files anywhere on disk, e.g. ~/Downloads/photo.jpg — outside
@@ -3756,8 +4001,9 @@ app.whenReady().then(async () => {
 
   // fs:register-dir: re-admit previously persisted dirs on startup (e.g. restore backup path).
   // Refusing paths not in the persisted set is the key security invariant.
-  ipcMain.handle('fs:register-dir', (_event, dirPath: string) => {
+  ipcMain.handle('fs:register-dir', async (_event, dirPath: string) => {
     if (typeof dirPath !== 'string' || !dirPath) return { ok: false };
+    await ensurePickedDirsLoaded();
     const resolved = path.resolve(dirPath);
     if (!userPickedDirs.has(resolved)) return { ok: false };
     return { ok: true };
@@ -3770,9 +4016,10 @@ app.whenReady().then(async () => {
     const result = mainWindow
       ? await dialog.showOpenDialog(mainWindow, opts)
       : await dialog.showOpenDialog(opts);
-    if (!result.canceled && opts.properties?.includes('openDirectory')) {
+    if (!result.canceled && opts?.properties?.includes('openDirectory')) {
+      await ensurePickedDirsLoaded();
       result.filePaths.forEach(p => userPickedDirs.add(path.resolve(p)));
-      persistPickedDirs(userPickedDirs);
+      persistPickedDirs();
     } else if (!result.canceled) {
       // A picked FILE admits exactly that file for backup:stat/read-range —
       // not its directory. "Restore from file" used to go through
@@ -3787,75 +4034,73 @@ app.whenReady().then(async () => {
 
   // Open a URL in the system default browser.
   // L2: restricted to https and mailto only — http removed to prevent MITM downgrade.
+  // E-11: launch the PARSED href, so what was validated is what is opened.
   ipcMain.handle('shell:open-external', (_event, url: string) => {
-    let parsed: URL;
-    try { parsed = new URL(url); } catch { return; }
-    if (parsed.protocol !== 'https:' && parsed.protocol !== 'mailto:') return;
-    shell.openExternal(url);
+    const href = externalUrlToOpen(url);
+    if (!href) return;
+    shell.openExternal(href);
   });
   // CRIT-9: Confine all renderer-controlled fs operations to the app's userData
   // directory. Without this any path (e.g. ~/.ssh/id_ed25519) can be read or deleted.
   function resolveReal(p: string): string {
     // Resolve symlinks so a symlink into /etc (etc.) can't bypass the prefix check.
-    // Falls back to the parent if the leaf doesn't exist yet (new file being written).
-    try { return fs.realpathSync(p); } catch { /* best-effort filesystem operation; failure is non-fatal */ }
-    try { return path.join(fs.realpathSync(path.dirname(p)), path.basename(p)); } catch { /* best-effort filesystem operation; failure is non-fatal */ }
+    // For a path that does not exist yet (a new file, or a new file in a
+    // directory the write will create), realpath the deepest existing
+    // ancestor and re-append the rest.
+    let head = p;
+    const tail: string[] = [];
+    for (let i = 0; i < 64; i++) {
+      try {
+        const real = fs.realpathSync(head);
+        return tail.length ? path.join(real, ...[...tail].reverse()) : real;
+      } catch { /* not there yet — walk up */ }
+      const parent = path.dirname(head);
+      if (parent === head) break;
+      tail.push(path.basename(head));
+      head = parent;
+    }
     return p;
   }
 
-  function assertInsideUserData(filePath: string): void {
-    const resolved = resolveReal(path.resolve(filePath));
-    const userData = app.getPath('userData');
-    // Windows NTFS is case-insensitive; realpathSync returns NTFS-canonical casing
-    // which can differ from what dialog:open stored — normalise before comparison.
-    const isWin = process.platform === 'win32';
-    const norm = (p: string) => isWin ? p.toLowerCase() : p;
-    const resolvedN = norm(resolved);
-    if (isPathInside(norm(userData), resolvedN, { allowEqual: true })) return;
-    // Also allow any directory the user explicitly selected via the OS file picker.
-    for (const dir of userPickedDirs) {
-      const dirN = norm(path.resolve(dir));
-      if (isPathInside(dirN, resolvedN, { allowEqual: true })) return;
-    }
-    throw new Error(`Path outside allowed root: ${filePath}`);
-  }
-
   /**
-   * MED-6: writes are additionally allowed to EXACTLY the path the user named
-   * in a `dialog:save` / `fs:save-file-as` picker this launch (see
-   * `userPickedSaveFiles`). One file, write only, no directory, not persisted.
-   *
-   * Deliberately NOT wired into fs:read-file / fs:read-dir / fs:unlink: the
-   * user consented to putting a file somewhere, which is not consent to read
-   * it back or delete it later, and those three are what made the old
-   * parent-directory grant a confinement bypass.
+   * CRIT-9 / E-1: every renderer-named path goes through fs-confinement.ts,
+   * which grants per OPERATION: the app's own scratch subdirectories of
+   * userData (GIF library, backup staging) — never userData's top level,
+   * where the keystore and main's control files live; `.enc` backup files in
+   * a folder the user picked; and exactly the file named in an open/save
+   * dialog this launch (MED-6: a save is write-only, an open is read-only).
+   * Returns the resolved path, which is what the handler then operates on.
    */
-  function assertWritable(filePath: string): void {
-    const resolved = normalizePath(resolveReal(path.resolve(filePath)));
-    if (userPickedSaveFiles.has(resolved)) return;
-    assertInsideUserData(filePath);
+  async function rendererPath(op: RendererFsOp, p: unknown): Promise<string> {
+    await ensurePickedDirsLoaded();
+    return assertRendererPath({
+      userData: app.getPath('userData'),
+      pickedDirs: userPickedDirs,
+      pickedFiles: userPickedFiles,
+      saveFiles: userPickedSaveFiles,
+      platform: process.platform,
+      resolveReal,
+    }, op, p);
   }
 
   ipcMain.handle('fs:write-file', async (event, filePath: string, data: Uint8Array) => {
-    assertWritable(filePath);
-    await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
-    await fs.promises.writeFile(filePath, Buffer.from(data));
-    const stat = await fs.promises.stat(filePath);
+    const target = await rendererPath('write', filePath);
+    await fs.promises.mkdir(path.dirname(target), { recursive: true });
+    await fs.promises.writeFile(target, Buffer.from(data));
+    const stat = await fs.promises.stat(target);
     return { ok: true, size: stat.size };
   });
   ipcMain.handle('fs:read-file', async (event, filePath: string) => {
-    assertInsideUserData(filePath);
-    const buf = await fs.promises.readFile(filePath);
+    const target = await rendererPath('read', filePath);
+    const buf = await fs.promises.readFile(target);
     // Return an ArrayBuffer-compatible Uint8Array.
     return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
   });
   ipcMain.handle('fs:read-dir', async (event, dirPath: string) => {
-    assertInsideUserData(dirPath);
-    return fs.promises.readdir(dirPath);
+    return fs.promises.readdir(await rendererPath('list', dirPath));
   });
   ipcMain.handle('fs:unlink', async (event, filePath: string) => {
-    assertInsideUserData(filePath);
-    await fs.promises.unlink(filePath);
+    await fs.promises.unlink(await rendererPath('unlink', filePath));
     return { ok: true };
   });
 
@@ -3875,8 +4120,7 @@ app.whenReady().then(async () => {
     if (/[/\\]/.test(filename) || filename.includes('..') || !filename.endsWith('.enc')) {
       throw new Error('Invalid backup filename — must end in .enc with no path separators');
     }
-    assertInsideUserData(dir);
-    const resolvedDir = path.resolve(dir);
+    const resolvedDir = await rendererPath('backup-dir', dir);
     const stat = await fs.promises.stat(resolvedDir).catch(() => null);
     if (!stat?.isDirectory()) throw new Error(`Backup directory does not exist: ${dir}`);
     const fullPath = path.join(resolvedDir, filename);
@@ -3923,8 +4167,7 @@ app.whenReady().then(async () => {
     if (typeof dir !== 'string' || !dir) throw new Error('Invalid backup dir');
     if (mode !== 'fresh' && mode !== 'update') throw new Error('Invalid backup write mode');
     assertBackupFilename(filename);
-    assertInsideUserData(dir);
-    const resolvedDir = path.resolve(dir);
+    const resolvedDir = await rendererPath('backup-dir', dir);
     const stat = await fs.promises.stat(resolvedDir).catch(() => null);
     if (!stat?.isDirectory()) throw new Error(`Backup directory does not exist: ${dir}`);
     reapBackupWriteSessions();
@@ -3984,24 +4227,18 @@ app.whenReady().then(async () => {
     // is reclaimed by the next compaction. Only a fresh .partial is removed.
     if (s.mode === 'fresh') await fs.promises.unlink(s.tmpPath).catch(() => {});
   });
-  // Restore reads: allowed inside userData / a picked directory (the
-  // configured backup folder) OR for a file the user just picked in the OS
-  // dialog (userPickedFiles) — never anywhere else.
-  const assertBackupReadable = (filePath: string): string => {
-    if (typeof filePath !== 'string' || !filePath) throw new Error('Invalid path');
-    const resolved = path.resolve(filePath);
-    if (userPickedFiles.has(normalizePath(resolved))) return resolved;
-    assertInsideUserData(resolved);
-    return resolved;
-  };
+  // Restore reads: a `.enc` file in a picked directory (the configured backup
+  // folder), the Drive staging copy, or a file the user just picked in the
+  // OS dialog (userPickedFiles) — never anywhere else.
+  const assertBackupReadable = (filePath: string): Promise<string> => rendererPath('backup-read', filePath);
   ipcMain.handle('backup:stat', async (event, filePath: string) => {
-    const resolved = assertBackupReadable(filePath);
+    const resolved = await assertBackupReadable(filePath);
     const st = await fs.promises.stat(resolved).catch(() => null);
     if (!st?.isFile()) return null;
     return { size: st.size, mtimeMs: st.mtimeMs };
   });
   ipcMain.handle('backup:read-range', async (event, filePath: string, offset: number, length: number) => {
-    const resolved = assertBackupReadable(filePath);
+    const resolved = await assertBackupReadable(filePath);
     if (!Number.isInteger(offset) || !Number.isInteger(length) || offset < 0 || length < 0 || length > 256 * 1024 * 1024) {
       throw new Error('Invalid read range');
     }
@@ -4044,12 +4281,14 @@ app.whenReady().then(async () => {
     const cipher = nodeCrypto.createCipheriv('aes-256-gcm', key, iv);
 
     // Write to a temp file in the system temp directory.
+    // Get file size once upfront so we can report fractional progress — BEFORE
+    // opening the temp file, so a source that has vanished rejects here
+    // instead of leaving an open, never-ended temp write stream behind.
+    const { size: fileSize } = await fs.promises.stat(filePath);
+
     const tempName = `cl-enc-${nodeCrypto.randomBytes(8).toString('hex')}`;
     const tempPath = path.join(app.getPath('temp'), tempName);
     const writeStream = fs.createWriteStream(tempPath);
-
-    // Get file size once upfront so we can report fractional progress.
-    const { size: fileSize } = await fs.promises.stat(filePath);
     let bytesRead = 0;
 
     // Stream through the cipher in 64 MB chunks with backpressure (P2-ELEC-11):
@@ -4115,14 +4354,32 @@ app.whenReady().then(async () => {
     contentType: string;
     size: number;
   }): Promise<void> => {
+    if (!params || typeof params !== 'object') throw new Error('Invalid upload request');
     const { url, filePath, contentType, size } = params;
+    if (typeof filePath !== 'string' || typeof contentType !== 'string' || contentType.length > 200
+        || typeof size !== 'number' || !Number.isSafeInteger(size) || size < 0) {
+      throw new Error('Invalid upload request');
+    }
     // R1: confine the upload source to our own encryption temp files.
     assertUploadableTempFile(filePath);
+    // The declared size must be the file's real size (it is what the PUT's
+    // Content-Length claims; a mismatch is a malformed or doctored request).
+    if (fs.statSync(filePath).size !== size) throw new Error('Upload size does not match the file');
 
-    const parsed = new URL(url);
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-      throw new Error('Only http/https upload URLs are allowed');
+    // E-4: the destination is NOT renderer-chosen. Attachments go to the media
+    // host the API's presigned URLs are signed against (upload-host-policy.ts);
+    // anything else - including any other public host - is refused, so this
+    // handler cannot be used as an exfiltration channel around the CSP.
+    const isDev = !app.isPackaged && !!DEV_SERVER_URL;
+    const verdict = checkUploadUrl(url, {
+      allowDev: isDev,
+      devHosts: isDev ? devUploadHosts(DEV_SERVER_URL, process.env.VITE_API_HOST) : [],
+    });
+    if (!verdict.ok) {
+      console.warn(`[Upload] refused upload URL (${verdict.reason})`);
+      throw new Error('Refusing to upload to a host that is not the Cipherline media host');
     }
+    const parsed = verdict.url;
     const useHttps = parsed.protocol === 'https:';
 
     // In dev, presigned URLs resolve to the local Caddy dev server (private LAN IP
@@ -4134,22 +4391,21 @@ app.whenReady().then(async () => {
     //      certificate". Only the Chromium renderer (net.fetch) uses the Windows store.
     // In production the presigned URL resolves to a real public IP (SSRF passes) and
     // Caddy uses a Let's Encrypt cert that OpenSSL trusts — no special handling needed.
-    // ACCEPTED RISK (CodeQL js/disabling-certificate-validation): TLS
-    // verification is switched off ONLY here, ONLY for the dev stack's
-    // self-signed Caddy cert, and ONLY when this is an unpackaged build AND the
-    // dev server URL is set. `app.isPackaged` is derived from the executable, so
-    // no environment variable can turn this on in a shipped install (and
-    // DEV_SERVER_URL is already forced to undefined when packaged, MED-3: this
-    // second guard keeps the property true locally even if that ever changes).
-    // Production always takes the SSRF-guarded, certificate-verified branch.
-    const isDev = !app.isPackaged && !!DEV_SERVER_URL;
+    // Certificate verification is NEVER switched off, dev included. For (2) the
+    // dev agent trusts Node's default roots PLUS the OS trust store (where the
+    // Caddy local root is imported), see ./dev-upload-tls. The dev branch is
+    // only taken in an unpackaged build with the dev server URL set:
+    // `app.isPackaged` is derived from the executable, so no environment
+    // variable can select it in a shipped install (and DEV_SERVER_URL is
+    // already forced to undefined when packaged, MED-3).
+    // Production always takes the SSRF-guarded branch with Node's default CAs.
     const uploadOpts: Parameters<typeof https.request>[1] & Parameters<typeof http.request>[1] = {
       method: 'PUT',
       headers: { 'Content-Type': contentType, 'Content-Length': size },
     };
     if (isDev) {
       if (useHttps) {
-        uploadOpts.agent = new https.Agent({ rejectUnauthorized: false });
+        uploadOpts.agent = new https.Agent({ ca: devUploadTrustedCas() });
       }
     } else {
       // SSRF guard: reject non-public targets; pin the IP to prevent DNS-rebind (R4).
@@ -4240,6 +4496,12 @@ app.whenReady().then(async () => {
     const tempName = `cl-enc-${nodeCrypto.randomBytes(8).toString('hex')}`;
     const tempPath = path.join(app.getPath('temp'), tempName);
     const writeStream = fs.createWriteStream(tempPath);
+    // The write/end callbacks below already reject the IPC call on failure;
+    // without a listener the same 'error' (e.g. the temp file cannot be
+    // opened) would ALSO surface as a main-process uncaughtException.
+    writeStream.on('error', (err: NodeJS.ErrnoException) => {
+      console.warn(`[Main] chunk-encrypt temp file error (${err.code ?? 'error'})`);
+    });
 
     const sessionId = nodeCrypto.randomBytes(16).toString('hex');
     chunkEncryptSessions.set(sessionId, { key, iv, cipher, writeStream, tempPath, createdAt: Date.now() });
@@ -4267,6 +4529,8 @@ app.whenReady().then(async () => {
 
     // Finalise cipher, append auth tag, flush and close the write stream.
     await new Promise<void>((resolve, reject) => {
+      // Already failed (its 'error' fired earlier): 'finish' will never come.
+      if (session.writeStream.errored) { reject(session.writeStream.errored); return; }
       const finalBuf = session.cipher.final();
       const authTag  = session.cipher.getAuthTag();
       if (finalBuf.length > 0) session.writeStream.write(finalBuf);
@@ -4317,11 +4581,12 @@ app.whenReady().then(async () => {
   // private/loopback target between the check and the connect. Uses Node http/https
   // (not net.fetch) so the resolver can be pinned via `lookup`. Enforces the image
   // content-type allowlist + 25 MiB cap and refuses non-image bodies.
-  async function fetchImagePinned(rawUrl: string, redirectsLeft = 3): Promise<{ b64: string; mimeType: string }> {
+  async function fetchImagePinned(requestedUrl: string, redirectsLeft = 3): Promise<{ b64: string; mimeType: string }> {
+    // E-4 (partial): https only and a bounded URL, on every hop — see net-guard.
+    const rawUrl = assertRemoteImageUrlShape(requestedUrl);
     const target = await assertPublicHttpUrl(rawUrl);
-    const useHttps = new URL(rawUrl).protocol === 'https:';
     return await new Promise((resolve, reject) => {
-      const req = (useHttps ? https : http).request(rawUrl, {
+      const req = https.request(rawUrl, {
         method: 'GET',
         lookup: pinnedLookup(target),
         timeout: 15000,
@@ -4407,6 +4672,7 @@ app.whenReady().then(async () => {
     for (const [accelerator, actionId] of Object.entries(map)) {
       try {
         const ok = globalShortcut.register(accelerator, () => {
+          noteGlobalShortcutPress(actionId);
           mainWindow?.webContents.send('global-shortcut-fired', actionId);
         });
         if (ok) {
@@ -4431,6 +4697,7 @@ app.whenReady().then(async () => {
     // a KDE-side failure affect what's reported as `failed` above — the
     // renderer's focused-window listener is the real safety net either way.
     const kdeSync = kdeSyncChain.then(() => syncKdeGlobalShortcuts(map, (actionId) => {
+      noteGlobalShortcutPress(actionId); // KDE delivered the key press, not renderer code
       mainWindow?.webContents.send('global-shortcut-fired', actionId);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     })).catch((err: any) => {
@@ -4587,6 +4854,9 @@ app.whenReady().then(async () => {
   // from the renderer with no link back to anything the user picked — any
   // JS running in the renderer could request another process's audio by PID.
   const capturedApprovedPids = new Set<number>();
+  // ...and which offered source each came from, so a consent prompt can name
+  // the app (main's own list, never a renderer-supplied label).
+  const approvedPidSourceId = new Map<number, string>();
 
   ipcMain.handle('desktop-capturer-get-sources', async (
     event,
@@ -4735,7 +5005,29 @@ app.whenReady().then(async () => {
   // If we call askForMediaAccess proactively in the handler the TCC prompt
   // fires at exactly the right moment — when the user actually tries to join
   // a call — rather than at an unexpected time or not at all.
+  //
+  // Every grant below is first gated on WHO is asking (permission-policy.ts):
+  // the window's top-level page and the requesting frame must be the app's own
+  // origin (main frame only for media / speaker-selection), so an embedded
+  // third-party frame cannot inherit the app's mic/camera/fullscreen grants.
+  const permissionAppOrigins = appOriginsFor(DEV_SERVER_URL, CIPHERLINE_PROD_PORT);
   session.defaultSession.setPermissionRequestHandler(async (webContents, permission, callback, details) => {
+    const d = details as { requestingUrl?: string; isMainFrame?: boolean; securityOrigin?: string } | undefined;
+    let topLevelUrl: string | undefined;
+    try { topLevelUrl = webContents?.getURL(); } catch { topLevelUrl = undefined; }
+    if (!decidePermissionRequest({
+      permission,
+      requestingUrl: d?.requestingUrl,
+      isMainFrame: d?.isMainFrame,
+      securityOrigin: d?.securityOrigin,
+      topLevelUrl,
+    }, permissionAppOrigins)) {
+      if (permission === 'media' || permission === 'speaker-selection' || permission === 'fullscreen') {
+        console.warn(`[Permissions] denied ${permission} for ${d?.requestingUrl ? (() => { try { return new URL(d.requestingUrl).origin; } catch { return '?'; } })() : '?'}`);
+      }
+      callback(false);
+      return;
+    }
     if (permission === 'media') {
       if (process.platform === 'darwin') {
         // Proactively ask macOS for TCC access. askForMediaAccess is a no-op
@@ -4795,9 +5087,9 @@ app.whenReady().then(async () => {
     // in-app overlay (CallContext.isFullscreen), not the browser API. The only
     // consumers of the real API are Chromium's own media controls.
     //
-    // Granting it is safe here: the renderer only ever loads our own origin
-    // (navigation and redirects are pinned in this file), there is no untrusted
-    // embedded content, and Escape exits. The main window is `fullscreenable`
+    // Granting it is safe here: the origin gate above admits only the app's own
+    // frames and the whitelisted video embed (permission-policy.ts), and Escape
+    // exits. The main window is `fullscreenable`
     // by default — the one window that sets `fullscreenable: false` is the
     // installer splash, which has no video and no preload bridge.
     if (permission === 'fullscreen') {
@@ -4813,18 +5105,52 @@ app.whenReady().then(async () => {
   let currentScreenshareCallback: ((response: any) => void) | null = null;
 
   session.defaultSession.setDisplayMediaRequestHandler((request, callback) => {
+    // Only our own page may ask. (Embedded frames are not delegated the
+    // display-capture permission, so this is belt-and-braces.)
+    if (!isTrustedSenderUrl(request.frame?.url ?? request.securityOrigin, DEV_SERVER_URL, CIPHERLINE_PROD_PORT)) {
+      console.warn('[Capture] getDisplayMedia from an untrusted frame - denied');
+      (callback as (streams: unknown) => void)(null); // null rejects the request
+      return;
+    }
+    // A request that arrives while another is still waiting for the picker
+    // answer (or the consent dialog) replaces it; settle the old one so its
+    // getDisplayMedia() rejects instead of hanging for the page's lifetime.
+    const superseded = currentScreenshareCallback;
     currentScreenshareCallback = callback;
+    if (superseded) { try { superseded(null); } catch { /* already settled */ } }
     if (mainWindow) {
       mainWindow.webContents.send('show-screenshare-picker');
     }
   });
 
-  ipcMain.handle('desktop-capturer-resolve', async (event, sourceId: string | null, withAudio?: boolean) => {
-    if (!currentScreenshareCallback) return;
+  // The picker's choice has been made (our picker, in the renderer). The
+  // renderer mints a grant for exactly that pick - main answers with an opaque
+  // token that the later capture must present (capture-consent.ts). Whether
+  // the grant is trusted (silent) or must be confirmed in a native dialog is
+  // decided HERE from real input main observed, not from anything the
+  // renderer says.
+  ipcMain.handle('capture:mint-grant', (event, sourceId: unknown, audio: unknown): { token: string } => {
+    const minted = captureConsent.mint(event.sender.id, sourceId, audio);
+    if (!minted.ok) throw new Error('Invalid capture request');
+    return { token: minted.token };
+  });
+
+  ipcMain.handle('desktop-capturer-resolve', async (event, sourceId: string | null, withAudio?: boolean, grantToken?: unknown) => {
+    // Take ownership of the pending callback up front: the consent dialog can
+    // sit open for a long time, and a newer request must not be answered (or
+    // nulled) by this one.
+    const cb = currentScreenshareCallback;
+    if (!cb) return;
+    currentScreenshareCallback = null;
     try {
       if (!sourceId) {
         // User cancelled
-        currentScreenshareCallback(null);
+        cb(null);
+        return;
+      }
+      if (typeof sourceId !== 'string' || !isCaptureSourceId(sourceId)) {
+        console.error('[IPC] Refusing a malformed source id');
+        cb(null);
         return;
       }
       // Use cached sources first to avoid race with windows opening/closing
@@ -4836,6 +5162,21 @@ app.whenReady().then(async () => {
         match = fresh.find(s => s.id === sourceId);
       }
       if (match) {
+        // Consent. A valid grant for exactly this source (minted from a real
+        // click in our picker) passes silently; anything else - no grant, a
+        // replayed / expired / other-window / other-source grant, or a grant
+        // minted with no real input behind it - asks the user in a native
+        // dialog that names the source from main's OWN list. The audio the
+        // renderer asks for here is part of the same decision.
+        const decision = await captureConsent.authorizeVideo(
+          event.sender.id, grantToken, { id: match.id, name: match.name }, withAudio === true,
+        );
+        if (!decision.allowed) {
+          console.warn(`[Capture] screen capture denied (${decision.why}, grant=${decision.grant})`);
+          cb(null);
+          return;
+        }
+        if (decision.via === 'dialog') console.log(`[Capture] screen capture allowed by the user (grant=${decision.grant})`);
         // This branch only runs for the Chromium getDisplayMedia fallback path —
         // on Windows with the native WASAPI addon loaded, the renderer calls
         // setScreenShareEnabled with audio:false and handles audio out-of-band.
@@ -4866,16 +5207,14 @@ app.whenReady().then(async () => {
         console.log(`[IPC] desktop-capturer-resolve: sourceId=${sourceId} withAudio=${withAudio} effectiveWithAudio=${effectiveWithAudio} audioMode=${audioMode} addonLoaded=${!!audioCaptureAddon} nativeAvailable=${nativeAudioCaptureAvailable()}`);
         // Electron reads only `id` and `name` here (electron_browser_context.cc
         // DisplayMediaDeviceChosen); a helper-listed source works the same.
-        currentScreenshareCallback({ video: { id: match.id, name: match.name }, audio: audioMode });
+        cb({ video: { id: match.id, name: match.name }, audio: audioMode });
       } else {
         console.error('[IPC] Source not found:', sourceId);
-        currentScreenshareCallback(null);
+        cb(null);
       }
     } catch (err) {
       console.error('[IPC] Failed to resolve source:', err);
-      currentScreenshareCallback(null);
-    } finally {
-      currentScreenshareCallback = null;
+      cb(null);
     }
   });
 
@@ -4933,7 +5272,7 @@ app.whenReady().then(async () => {
     // offered — mirrors desktop-capturer-resolve's same check for video.
     if (!cachedDesktopSources.some(s => s.id === sourceId)) return null;
     const pid = audioCaptureAddon.getPidFromSourceId(sourceId);
-    if (typeof pid === 'number') capturedApprovedPids.add(pid);
+    if (typeof pid === 'number') { capturedApprovedPids.add(pid); approvedPidSourceId.set(pid, sourceId); }
     return pid;
   });
 
@@ -4982,6 +5321,74 @@ app.whenReady().then(async () => {
   // GPU blocklist left hardware video encode on. Read-only; same source
   // admission rule as desktop-capturer-resolve — an unknown sourceId gets no
   // display lookup.
+  // ── HDR screen shares (Windows): our own tone-mapped capture ─────────────
+  // Chromium's capturers clip an HDR desktop to 8-bit at 80 nits (blown-out
+  // shares); for a screen in HDR mode the renderer publishes frames from
+  // src-native/hdr_capture.cc instead. See electron/hdr-share.ts.
+  const hdrDisplays = () => {
+    try { return parseHdrDisplays(audioCaptureAddon?.hdrGetDisplays?.()); } catch { return []; }
+  };
+  // Read-only: is this source's display in HDR mode, and would we capture it
+  // ourselves? Display metadata only - admits nothing.
+  ipcMain.handle('share:hdr-probe', (_event, sourceId: unknown) => {
+    const decision = decideHdrShare({
+      platform: process.platform,
+      pref: HDR_SHARE_PREF,
+      sourceId,
+      nativeAvailable: !!audioCaptureAddon?.hdrCaptureStart,
+      displays: process.platform === 'win32' ? hdrDisplays() : [],
+    });
+    const d = decision.display;
+    return {
+      use: decision.use,
+      reason: decision.reason,
+      hdr: decision.hdr,
+      display: d ? {
+        width: d.width, height: d.height, sdrWhiteNits: Math.round(d.sdrWhiteNits),
+        maxLuminance: Math.round(d.maxLuminance), bitsPerColor: d.bitsPerColor,
+      } : null,
+    };
+  });
+  ipcMain.handle('share:hdr-start', async (event, sourceId: unknown, grantToken: unknown, opts: unknown) => {
+    const o = (opts && typeof opts === 'object' ? opts : {}) as Record<string, unknown>;
+    const n = (v: unknown, lo: number, hi: number, d: number) =>
+      (typeof v === 'number' && Number.isFinite(v) ? Math.min(hi, Math.max(lo, Math.round(v))) : d);
+    if (!isCaptureSourceId(sourceId) || screenIndexFromSourceId(sourceId) === null) return { ok: false, error: 'bad_source' };
+    const decision = decideHdrShare({
+      platform: process.platform, pref: HDR_SHARE_PREF, sourceId,
+      nativeAvailable: !!audioCaptureAddon?.hdrCaptureStart, displays: hdrDisplays(),
+    });
+    if (!decision.use || !decision.display) return { ok: false, error: decision.reason };
+    // The same consent as desktop-capturer-resolve: a grant for exactly this
+    // source, or the native dialog naming it from main's own list.
+    let match = cachedDesktopSources.find(s => s.id === sourceId);
+    if (!match) {
+      const fresh = await desktopSources.request({ types: ['screen'], thumbnailSize: { width: 0, height: 0 } });
+      match = fresh.find(s => s.id === sourceId);
+    }
+    if (!match) return { ok: false, error: 'source_not_found' };
+    const consent = await captureConsent.authorizeVideo(event.sender.id, grantToken, { id: match.id, name: match.name }, false);
+    if (!consent.allowed) {
+      console.warn(`[Capture] HDR screen capture denied (${consent.why}, grant=${consent.grant})`);
+      return { ok: false, error: 'denied' };
+    }
+    return hdrShare.start({
+      target: event.sender.mainFrame,
+      index: decision.display.index,
+      width: n(o.width, 2, 16384, 0),
+      height: n(o.height, 2, 16384, 0),
+      maxFps: n(o.maxFps, 1, 240, 60),
+      force: HDR_SHARE_PREF === 'force',
+      sdrWhiteNits: parseNumberEnv(process.env.CIPHERLINE_HDR_SDR_WHITE, 80, 1000),
+      peakNits: parseNumberEnv(process.env.CIPHERLINE_HDR_PEAK, 100, 10000),
+      knee: parseNumberEnv(process.env.CIPHERLINE_HDR_KNEE, 0.1, 0.95),
+    });
+  });
+  ipcMain.handle('share:hdr-stop', (_event, sessionId: unknown) => {
+    hdrShare.stop('renderer', typeof sessionId === 'number' ? sessionId : undefined);
+  });
+  ipcMain.handle('share:hdr-stats', () => hdrShare.stats());
+
   ipcMain.handle('screenshare:get-diagnostics', async (_event, sourceId: unknown) => {
     const id = typeof sourceId === 'string' ? sourceId : '';
     const sourceKind: 'screen' | 'window' | 'unknown' =
@@ -5117,6 +5524,29 @@ app.whenReady().then(async () => {
     }
     return describeForeground({ raw, sourceId: id, sharedScreenRect, displayCount: screen.getAllDisplays().length });
   });
+  // Quick Screen Share: the window that was in front when the shortcut was
+  // pressed, as a capture source id from THIS process's own window list.
+  // Takes NO arguments (nothing for a renderer to forge): the foreground was
+  // read natively in the shortcut callback (noteGlobalShortcutPress), is
+  // single-use and expires after a few seconds. null = fall back (nothing
+  // captured / not Windows / old addon / Cipherline itself / desktop / window
+  // not in the capturer's list). The matched source is put in the admission
+  // list so audio:get-pid-from-source-id and the grant flow accept it like a
+  // picker pick; the capture itself still needs a grant (capture:mint-grant).
+  ipcMain.handle('share:quick-share-foreground', async (): Promise<string | null> => {
+    const fg = quickShareForeground.take();
+    if (!hasForegroundCandidate(fg)) return null;
+    try {
+      const sources = await desktopSources.request({ types: ['window'], thumbnailSize: { width: 0, height: 0 } });
+      const id = resolveForegroundSource(fg, sources);
+      if (id === null) return null;
+      cachedDesktopSources = sources;
+      return id;
+    } catch (err) {
+      console.warn('[QuickShare] foreground window lookup failed:', err instanceof Error ? err.message : err);
+      return null;
+    }
+  });
   // Which of these window sources is the running program `exe`? (The picker
   // pre-selects the game's window.) Reads each window's process basename and
   // size natively; the renderer never learns anything but the winning id.
@@ -5211,17 +5641,41 @@ app.whenReady().then(async () => {
     }
   });
 
-  ipcMain.handle('audio:start-window-capture', (event, pid: number, mode: 'include' | 'exclude' = 'include') => {
+  ipcMain.handle('audio:start-window-capture', async (event, pid: number, mode: 'include' | 'exclude' = 'include', grantToken?: unknown) => {
     if (!audioCaptureAddon || !nativeAudioCaptureAvailable()) {
       console.warn('[Main/Audio] start-window-capture called but the native addon is not loaded/supported');
       return false;
     }
-    // Confine capture to the app's own process (the 'screen'/exclude-self
-    // path always targets process.pid) or a PID resolved from a picker-
-    // offered source (the 'window'/include path, via get-pid-from-source-id
-    // above) — never an arbitrary renderer-supplied PID.
-    if (pid !== process.pid && !capturedApprovedPids.has(pid)) {
-      console.warn(`[Main/Audio] Refusing capture of unapproved pid=${pid}`);
+    if (!Number.isInteger(pid) || pid <= 0 || (mode !== 'include' && mode !== 'exclude')) {
+      console.warn('[Main/Audio] Refusing a malformed capture request');
+      return false;
+    }
+    // Confine capture to exactly the two shapes the app uses, and never an
+    // arbitrary renderer-supplied PID:
+    //   'exclude' + our own pid  - a screen share's system audio minus Cipherline
+    //   'include' + a picker-offered app's pid (resolved by
+    //             audio:get-pid-from-source-id above; may be our own window)
+    // 'exclude' of anyone else's tree would be whole-system audio too.
+    const shapeOk = mode === 'exclude' ? pid === process.pid : capturedApprovedPids.has(pid);
+    if (!shapeOk) {
+      console.warn(`[Main/Audio] Refusing capture of unapproved pid=${pid} mode=${mode}`);
+      return false;
+    }
+    // Consent: the grant minted when the user picked this share covers its
+    // audio start (once); without a valid one the user is asked, natively,
+    // and the dialog names the app from main's own source list.
+    const approvedSourceId = approvedPidSourceId.get(pid);
+    const appName = (approvedSourceId && cachedDesktopSources.find(s => s.id === approvedSourceId)?.name) || `process ${pid}`;
+    const decision = await captureConsent.authorizeAudio(
+      event.sender.id, grantToken,
+      (sourceId) => {
+        if (mode === 'exclude') return sourceId.startsWith('screen:');
+        try { return audioCaptureAddon?.getPidFromSourceId(sourceId) === pid; } catch { return false; }
+      },
+      mode === 'exclude' ? { kind: 'audio-system' } : { kind: 'audio-app', name: appName },
+    );
+    if (!decision.allowed) {
+      console.warn(`[Capture] audio capture denied (${decision.why}, grant=${decision.grant})`);
       return false;
     }
     let chunkCount = 0;
@@ -5401,18 +5855,24 @@ app.whenReady().then(async () => {
    * failed download — already delivered to the 'error' listener below — ALSO
    * surfaced as a main-process unhandledRejection, which the crash reporter
    * records as a crash ("Cipherline closed unexpectedly" on the next boot).
-   * Every check goes through here; updater.wiring.test.ts pins that.
+   * Every check goes through here; updater.wiring.test.ts pins that
+   * (behaviour: update-check.test.ts).
    */
-  const checkForUpdatesHandled = async () => {
-    if (!manifestCheckInstalled && isManifestSignatureRequired(REQUIRE_MANIFEST_SIG[manifestChannel()], process.platform)) {
-      const err = new ManifestVerificationError('verifier-unavailable', `${manifestChannel()}.yml`);
-      autoUpdater.emit('error', err); // same path as a rejected manifest: failed(verify) in the UI
-      throw err;
-    }
-    const result = await autoUpdater.checkForUpdates();
-    result?.downloadPromise?.catch(() => { /* reported via the 'error' listener */ });
-    return result;
-  };
+  const checkForUpdatesHandled = createHandledUpdateCheck({
+    blocked: () => (!manifestCheckInstalled && isManifestSignatureRequired(REQUIRE_MANIFEST_SIG[manifestChannel()], process.platform)
+      ? new ManifestVerificationError('verifier-unavailable', `${manifestChannel()}.yml`)
+      : null),
+    emitError: (err) => { autoUpdater.emit('error', err); }, // same path as a rejected manifest: failed(verify) in the UI
+    check: () => autoUpdater.checkForUpdates(),
+    onDownloadRejected: (e) => {
+      // The 'error' listener has already logged it and chosen the next step
+      // (backoff retry); this breadcrumb says the download promise itself was
+      // the one that rejected, and that it was handled.
+      const net = networkErrorCode(e);
+      console.warn(`[Main/Updater] auto-download rejected (handled)${net ? ` ${net}` : ''}`);
+      freezeMonitor.event('updater:download-rejected', 0, toDiagnosticDetail(`code=${updaterErrorCode(e)}`));
+    },
+  });
 
   /**
    * Delete electron-updater's `pending/` download directory, so the next
@@ -5486,10 +5946,8 @@ app.whenReady().then(async () => {
   // Policy and the reasons for it: update-check-scheduler.ts and
   // update-install.ts (read their module docs first). This is only wiring.
   let sawDownloadProgress = false; // reset per `update-available`; false at `update-downloaded` = served from the cache
-  const updaterErrorCode = (e: unknown): string => {
-    const c = (e as { code?: unknown } | null)?.code;
-    return typeof c === 'string' && /^[A-Z][A-Z0-9_]{2,63}$/.test(c) ? c : 'none';
-  };
+  // (updaterErrorCode: net-error.ts — a `net::ERR_*` carries no `.code`, so it
+  // used to log as `code=none`; now it names the net error.)
   const updateScheduler = new UpdateCheckScheduler({
     now: () => Date.now(),
     isOnline: () => net.isOnline(),
@@ -5582,9 +6040,14 @@ app.whenReady().then(async () => {
     // manifest itself is signed: see the update-manifest signature provider
     // installed below, which is what closes this on Linux. electron-updater's
     // Windows integrity check IS Authenticode publisher verification and needs
-    // BOTH a signed binary and `build.win.publisherName` (now configured in
-    // package.json — the signing half is procurement, see
-    // docs/launch-checklist.md → Code signing).
+    // BOTH a signed binary and a publisherName in the installer's
+    // app-update.yml. That name is deliberately NOT in package.json: signed
+    // builds get it from `--config.win.azureSignOptions.publisherName` at
+    // package time (release-stable.yml always; release-desktop.yml only when
+    // the Azure signing secrets are present), which electron-builder copies
+    // into app-update.yml. An unsigned build carries none and is not pinned —
+    // a publisherName on an unsigned build bricks its auto-update (see
+    // src/utils/electronBuilderConfig.test.ts).
     //
     // None of the three lines below substitutes for that. They remove the
     // easiest things a hostile `latest.yml` can ask this client to do.
@@ -5789,7 +6252,7 @@ app.whenReady().then(async () => {
         console.log(`[Main/Updater] retry ${updateFailures}/${RETRY_DELAYS_MS.length} in ${Math.round(decision.retryInMs / 1000)}s`);
         retryTimer = setTimeout(() => {
           retryTimer = null;
-          void runUpdateRetry('auto');
+          runUpdateRetry('auto').catch((e) => console.warn('[Main/Updater] automatic retry failed to start:', (e as Error)?.message || e));
         }, decision.retryInMs);
         retryTimer.unref?.();
       }
@@ -5984,7 +6447,7 @@ app.whenReady().then(async () => {
       // Re-check immediately so a switch from latest → staging surfaces a
       // staging build right away (or vice versa). Errors are logged by the
       // 'error' listener registered above; don't crash the IPC.
-      void updateScheduler.check('channel');
+      updateScheduler.check('channel').catch((e) => console.warn('[Main/Updater] channel re-check failed:', (e as Error)?.message || e));
     }
   }
 
@@ -6044,7 +6507,7 @@ app.whenReady().then(async () => {
 
   console.log('[Main] all IPC handlers registered — creating window');
   await createWindow(csp, showInstaller);
-  void startUpdateSchedule();
+  startUpdateSchedule().catch((e) => console.warn('[Main/Updater] could not start the update schedule:', (e as Error)?.message || e));
 
   // When the installer splash is up, the main window starts hidden. Treat its
   // first paint ('ready-to-show') as the final startup milestone, then let the
@@ -6248,6 +6711,16 @@ app.whenReady().then(async () => {
     else { if (gamePollTimer) { clearTimeout(gamePollTimer); gamePollTimer = null; } lastDetectedGame = null; resetHeuristicSessions(); }
   });
 
+  // "Listening to ..." (electron/media-session.ts): the OS media session,
+  // read only when the renderer asks — which it does only while the user has
+  // switched sharing on and is using the app. `includeBrowser` must be a
+  // literal boolean; anything else reads as false.
+  const mediaSession = new MediaSessionReader();
+  ipcMain.handle('media:now-playing', (_e, opts: unknown) =>
+    mediaSession.read(!!opts && typeof opts === 'object' && (opts as { includeBrowser?: unknown }).includeBrowser === true));
+  ipcMain.on('media:stop', () => mediaSession.stop());
+  app.on('will-quit', () => mediaSession.stop());
+
   // Game settings — custom games and ignored processes from renderer
   ipcMain.handle('game:get-processes', () => getRunningProcessList());
   ipcMain.on('game:set-custom-games', (_e, games: { processName: string; displayName: string }[]) => {
@@ -6266,15 +6739,11 @@ app.whenReady().then(async () => {
   // disconnect. Token storage and refresh are handled entirely in the main
   // process (SecureStore) so the renderer never sees raw tokens.
 
-  // Hardening follow-up (backups audit): these three were missing the
-  // isTrustedSender check gdrive:get-token already had — inconsistent with
-  // this file's IPC trust-boundary convention (every fs:*/other privileged
-  // handler checks it). auth-start triggers a real OAuth flow (opens a
-  // browser window); auth-status leaks the linked email; disconnect can
-  // force-revoke the user's Drive link — none of them return raw tokens
-  // (that's get-token's job, already gated), but all three are still
-  // privileged side effects an untrusted sender should never reach directly
-  // via ipcRenderer.invoke, bypassing the contextBridge wrapper.
+  // Every channel here is origin-checked centrally by installIpcSenderGuard()
+  // (ipc-guard.ts). auth-start triggers a real OAuth flow (opens a browser
+  // window); auth-status leaks the linked email; disconnect can force-revoke
+  // the user's Drive link. None of them return raw tokens - nothing does.
+
   ipcMain.handle('gdrive:auth-start', async () => {
     return startOAuth();
   });
@@ -6287,22 +6756,45 @@ app.whenReady().then(async () => {
     await revokeTokens();
   });
 
-  // Returns a fresh (auto-refreshed) access token for Drive API calls that
-  // are initiated from the renderer side (e.g. backup orchestrator).
-  ipcMain.handle('gdrive:get-token', async () => {
-    try {
-      return await getAccessToken();
-    } catch {
-      return null;
-    }
+  // There is deliberately NO channel that returns the Drive access token. Every
+  // Drive REST call the renderer used to make with it now runs here, behind the
+  // narrow operations below (electron/drive-api.ts): the renderer can ask for
+  // "the backup folder", "this backup file's info", "delete these old backup
+  // files in the backup folder" - and nothing else. File ids are format-checked,
+  // folders must be the app's own backup folder, files must be `*.enc` backups.
+  const driveApi = createDriveApi({
+    http: driveRequest,
+    getToken: getAccessToken,
+    getTrustedFolderId: getCachedFolderId,
+    setTrustedFolderId: setCachedFolderId,
   });
+  const driveOptStr = (v: unknown, what: string): string | null => {
+    if (v === undefined || v === null) return null;
+    if (typeof v !== 'string') throw new Error(`Invalid ${what}`);
+    return v;
+  };
+  ipcMain.handle('gdrive:resolve-folder', async (_e, storedFolderId?: unknown, create?: unknown) => {
+    if (typeof create !== 'boolean') throw new Error('Invalid arguments');
+    return driveApi.resolveFolder(driveOptStr(storedFolderId, 'Drive folder id'), create);
+  });
+  ipcMain.handle('gdrive:ensure-folder', async () => ({ folderId: await driveApi.ensureFolder() }));
+  ipcMain.handle('gdrive:resolve-backup-target', async (_e, storedFolderId?: unknown, fileName?: unknown) => {
+    return driveApi.resolveBackupTarget(driveOptStr(storedFolderId, 'Drive folder id'), fileName);
+  });
+  ipcMain.handle('gdrive:locate-backup', async (_e, storedFolderId?: unknown, fileBase?: unknown) => {
+    return driveApi.locateBackup(driveOptStr(storedFolderId, 'Drive folder id'), driveOptStr(fileBase, 'backup file name'));
+  });
+  ipcMain.handle('gdrive:stat-file', async (_e, fileId?: unknown) => driveApi.statFile(fileId));
+  ipcMain.handle('gdrive:find-file', async (_e, folderId?: unknown, fileName?: unknown) => driveApi.findFile(folderId, fileName));
+  ipcMain.handle('gdrive:list-folder', async (_e, folderId?: unknown) => driveApi.listFolder(folderId));
+  ipcMain.handle('gdrive:delete-folder-files', async (_e, folderId?: unknown, names?: unknown) => driveApi.deleteFolderFiles(folderId, names));
 
   // ── Drive file transfers (single-file backup) ──────────────────────────────
   // Upload/download run here so the backup is streamed from/to disk with
   // Drive's resumable protocol and verified by checksum — see driveTransfer.ts.
   // Source/destination paths are confined to the backup staging dir (under
   // userData) or a user-picked backup folder; the filename must be a plain
-  // `.enc` name.
+  // `.enc` name; the Drive side must be the app's backup folder / a backup file.
   const backupStagingDir = () => path.join(app.getPath('userData'), 'backup-staging');
   ipcMain.handle('backup:staging-dir', async () => {
     await fs.promises.mkdir(backupStagingDir(), { recursive: true, mode: 0o700 });
@@ -6317,9 +6809,10 @@ app.whenReady().then(async () => {
       throw new Error('Invalid backup filename');
     }
     if (typeof filePath !== 'string' || !filePath) throw new Error('Invalid path');
-    assertInsideUserData(filePath);
+    const source = await rendererPath('drive-upload', filePath);
+    await driveApi.checkUpload(folderId, fileName, existingFileId);
     return uploadFileResumable({
-      getToken: getAccessToken, folderId, fileName, filePath, existingFileId,
+      getToken: getAccessToken, folderId, fileName, filePath: source, existingFileId,
       onProgress: (p) => event.sender.send('gdrive:transfer-progress', { kind: 'upload', ...p }),
     });
   });
@@ -6328,6 +6821,7 @@ app.whenReady().then(async () => {
     if (typeof fileName !== 'string' || /[/\\]/.test(fileName) || fileName.includes('..') || !fileName.endsWith('.enc')) {
       throw new Error('Invalid backup filename');
     }
+    await driveApi.checkDownload(fileId, fileName);
     await fs.promises.mkdir(backupStagingDir(), { recursive: true, mode: 0o700 });
     const destPath = path.join(backupStagingDir(), fileName);
     const { size } = await downloadFileToPath({
