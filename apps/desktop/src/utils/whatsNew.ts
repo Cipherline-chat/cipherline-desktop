@@ -13,7 +13,8 @@
  *   - Same version as last time: never again. The version is recorded at the
  *     moment the dialog opens (not when it is dismissed), so a crash, a quit or
  *     a second window cannot show it twice.
- *   - A downgrade: never.
+ *   - A downgrade: never. Except the launch renumbering: lastSeen 1.x and
+ *     current 0.1+ is the update onto the public line, and shows its notes.
  *   - A newer version with notes written for exactly that version: show.
  *   - A newer version with no notes: record it silently and show nothing.
  *   - A pre-release (a staging build, `1.0.23-staging.7`) is just another
@@ -76,7 +77,10 @@ export function decideWhatsNew(current: string, lastSeen: string | null, data: W
     if (!lastSeen || !VERSION_RE.test(lastSeen)) return { action: 'record' };   // first install
     if (lastSeen === current) return { action: 'none' };
     const order = compareVersions(current, lastSeen);
-    if (order === null || order <= 0) return { action: 'record' };               // a downgrade
+    // The launch renumbering (1.0.x -> 0.1.x) ranks as a downgrade but is the
+    // biggest update anyone on the beta line gets: treat crossing it as newer.
+    const renumbered = /^1\./.test(lastSeen) && /^0\.[1-9]/.test(current);
+    if (!renumbered && (order === null || order <= 0)) return { action: 'record' };   // a downgrade
     const notes = data.releases[current];
     return countItems(notes) > 0 ? { action: 'show', notes } : { action: 'record' };
 }

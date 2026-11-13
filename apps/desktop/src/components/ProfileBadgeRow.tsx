@@ -1,7 +1,7 @@
 import React, { useCallback, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { BadgeCheck, Crown } from 'lucide-react';
-import { eggBadgeCount, resolveProfileBadgeColor, resolveProfileBadgeIcon, sortProfileBadges, type ProfileBadge } from '../utils/profileBadges';
+import { EARLY_ADOPTER_BADGE_ID, eggBadgeCount, resolveProfileBadgeColor, resolveProfileBadgeIcon, sortProfileBadges, type ProfileBadge } from '../utils/profileBadges';
 import { useClTooltip } from './cl/useClTooltip';
 import { EggTierIcon } from './EggTierIcon';
 import { EGG_IDS, parseEggTierIcon } from '../utils/eggProgress';
@@ -60,7 +60,7 @@ export const ProfileBadgeStrip: React.FC<{
     /** Month ("YYYY-MM") the Pro period began, for the tooltip. */
     proSince?: string | null;
     level?: number;
-    /** Level ring pressed: open the achievements. Absent = the ring only has its tooltip. */
+    /** Level ring pressed: open the achievement progress (level, points, unlocked / locked). Absent = the ring only has its tooltip. */
     onLevel?: () => void;
     /** A verified Steam account to show (and open). */
     steam?: { label: string; onOpen: () => void } | null;
@@ -191,9 +191,19 @@ const BadgeMedallion: React.FC<{ badge: ProfileBadge; size: 'sm' | 'md'; index: 
     const count = eggBadgeCount(badge);
     const shownCount = size === 'md' && eggTier ? count : undefined;
     // Egg hunter: how many, of how many - never which (that would spoil them).
+    // Founder (wire id stays 'early-adopter'): one of the first 10,000 subscribers, for good (it outlives
+    // the founding price). No number is ever shown, to anyone.
     const popover = !interactive ? undefined : eggTier ? {
         title: badge.label,
         body: <EggProgress found={count ?? 0} total={EGG_IDS.length} />,
+    } : badge.badge_id === EARLY_ADOPTER_BADGE_ID ? {
+        title: 'Founder',
+        body: (
+            <>
+                <p>One of Cipherline's first 10,000 subscribers.</p>
+                <p className="pbm-pop-faint">A permanent badge.</p>
+            </>
+        ),
     } : {
         title: badge.label,
         body: <p>A badge from the Cipherline team.</p>,
@@ -251,7 +261,7 @@ export const LevelMedallion: React.FC<{ level: number; index?: number; onActivat
     const fill = levelFill(level, MAX_LEVEL);
     const label = level >= MAX_LEVEL ? `Profile level ${level} (max)` : `Profile level ${level} of ${MAX_LEVEL}`;
     return (
-        <Medallion label={onActivate ? `${label}. Show achievements` : label} tip={onActivate ? `${label}. Click for achievements` : label}
+        <Medallion label={onActivate ? `${label}. Show achievement progress` : label} tip={onActivate ? `${label}. Click for achievement progress` : label}
             box={24} index={index} testId="profile-level" className="pbm-level" onActivate={onActivate}>
             <svg viewBox="0 0 26 26" aria-hidden="true" focusable="false">
                 <circle cx="13" cy="13" r={r} fill="none" stroke="rgba(255,255,255,.12)" strokeWidth="2" />

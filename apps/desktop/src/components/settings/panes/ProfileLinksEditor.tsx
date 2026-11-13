@@ -1,7 +1,8 @@
 import React, { useId, useRef, useState } from 'react';
-import { BadgeCheck, ChevronDown, CornerDownLeft } from 'lucide-react';
+import { ChevronDown, CornerDownLeft } from 'lucide-react';
 import { ProfileLinkIcon } from '../../ProfileLinkIcon';
 import { ReorderChips } from './ReorderChips';
+import { SteamLinkRow, type SteamLinkRowProps } from './SteamLinkRow';
 import { moveItem } from '../../../utils/moveItem';
 import {
     LINK_PLATFORMS, PLATFORM_RULES, PROFILE_LINKS_MAX, checkLinkInput, detectPlatform, displayHandle, platformLabel,
@@ -11,12 +12,14 @@ import {
 /**
  * Links editor (round 2, owner: "the UI just kinda sucks"): one combined
  * control. The platform is an icon attached to the front of the input (press
- * it for the closed list of platforms - there is no website option); paste a
+ * it for the closed list of platforms - there is no website option, and no
+ * Steam option either); paste a
  * profile link and the platform switches itself and the handle is pulled
  * out; a valid entry shows as a chip preview inside the field and Enter adds
  * it. The links are chips (platform icon + handle) you drag, or move with
- * Alt + arrows, and remove with ×. A verified Steam account leads the list
- * with a tick (managed in the Steam section, not here).
+ * Alt + arrows, and remove with ×. Steam is never a pasted link: a Steam row
+ * leads the list - "Connect Steam" (sign in with Steam, the same verified flow
+ * as Settings > Steam) or the verified account with Unlink.
  *
  * Pure UI over utils/profileLinks.ts: `onChange` only ever gets a list the
  * server will accept (it re-checks everything). The caller saves at once.
@@ -25,10 +28,10 @@ export const ProfileLinksEditor: React.FC<{
     links: ProfileLink[];
     disabled?: boolean;
     onChange: (next: ProfileLink[]) => void;
-    /** A verified Steam account (from the server), shown first with a tick. */
-    verifiedSteam?: { label: string } | null;
-}> = ({ links, disabled, onChange, verifiedSteam }) => {
-    const [platform, setPlatform] = useState<LinkPlatform>(links.some((l) => l.platform === 'steam') || verifiedSteam ? 'x' : 'steam');
+    /** The verified-Steam row at the top (connect / verified + unlink). Omit to hide it. */
+    steam?: SteamLinkRowProps;
+}> = ({ links, disabled, onChange, steam }) => {
+    const [platform, setPlatform] = useState<LinkPlatform>('x');
     const [draft, setDraft] = useState('');
     const [picking, setPicking] = useState(false);
     const [tried, setTried] = useState(false);
@@ -60,25 +63,18 @@ export const ProfileLinksEditor: React.FC<{
     };
     const pick = (p: LinkPlatform) => { setPlatform(p); setPicking(false); setTried(false); inputRef.current?.focus(); };
 
-    const chips = [
-        ...(verifiedSteam ? [{
-            key: 'steam:verified', name: `Steam, verified: ${verifiedSteam.label}`, locked: true,
-            icon: <ProfileLinkIcon platform="steam" size={14} />, label: verifiedSteam.label,
-            trailing: <BadgeCheck size={13} strokeWidth={2.4} className="ps-verified" aria-label="Verified" />,
-        }] : []),
-        ...links.map((l) => ({
-            key: `${l.platform}:${l.handle}`, name: `${platformLabel(l.platform)} link ${displayHandle(l)}`,
-            icon: <ProfileLinkIcon platform={l.platform} size={14} />, label: displayHandle(l),
-        })),
-    ];
-    const offset = verifiedSteam ? 1 : 0;
+    const chips = links.map((l) => ({
+        key: `${l.platform}:${l.handle}`, name: `${platformLabel(l.platform)} link ${displayHandle(l)}`,
+        icon: <ProfileLinkIcon platform={l.platform} size={14} />, label: displayHandle(l),
+    }));
 
     return (
         <div className="ps-linked" data-testid="links-editor">
+            {steam && <SteamLinkRow {...steam} disabled={disabled || steam.disabled} />}
             <ReorderChips
                 items={chips} disabled={disabled} label={`Your links, ${links.length} of ${PROFILE_LINKS_MAX}`}
-                onMove={(a, b) => onChange(moveItem(links, a - offset, b - offset))}
-                onRemove={(i) => onChange(links.filter((_, k) => k !== i - offset))}
+                onMove={(a, b) => onChange(moveItem(links, a, b))}
+                onRemove={(i) => onChange(links.filter((_, k) => k !== i))}
             />
             <div className="ps-combo" data-invalid={error ? 'true' : undefined} data-disabled={disabled || full ? 'true' : undefined}>
                 <button
@@ -116,7 +112,7 @@ export const ProfileLinksEditor: React.FC<{
                 </div>
             )}
             <p id={msgId} className={error ? 'ps-inline-err' : 'ps-inline-hint'} role={error ? 'alert' : undefined}>
-                {error || (links.length === 0 && !verifiedSteam ? 'Paste a profile link or type a handle. Links show as unverified.' : ' ')}
+                {error || (links.length === 0 ? 'Paste a profile link or type a handle. Links show as unverified.' : ' ')}
             </p>
         </div>
     );

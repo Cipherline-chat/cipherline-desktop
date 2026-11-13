@@ -130,6 +130,23 @@ const DEFAULT_EXCLUDED_PROCESSES = new Set([
     'wallpaperservice32', 'wallpaperservice64',
 ]);
 
+/**
+ * Names that are a game on one platform and an everyday program on another.
+ * `dolphin` is Dolphin Emulator's executable on Windows / macOS, but on Linux
+ * it is KDE's file manager (open on most Plasma desktops all day), so a KDE
+ * user always showed as playing Dolphin Emulator. The emulator's Linux
+ * binaries are `dolphin-emu*` (GAME_DB). Like the list above, a custom game
+ * outranks this.
+ */
+const PLATFORM_EXCLUDED_PROCESSES: Partial<Record<NodeJS.Platform, ReadonlySet<string>>> = {
+    linux: new Set(['dolphin']),
+};
+
+/** Pure; exported for tests. */
+export function isPlatformExcludedProcess(proc: string, platform: NodeJS.Platform): boolean {
+    return PLATFORM_EXCLUDED_PROCESSES[platform]?.has(proc) ?? false;
+}
+
 /** Steam appids / install folders whose executables never identify a game. */
 const DEFAULT_EXCLUDED_STEAM_APPIDS = new Set(['431960']); // Wallpaper Engine
 const DEFAULT_EXCLUDED_STEAM_INSTALLDIRS = new Set(['wallpaper_engine']);
@@ -380,8 +397,20 @@ async function steamLibraryStamp(): Promise<string> {
     return parts.join('|');
 }
 
+/**
+ * Installed Steam game name -> its app id, from the same appmanifests the
+ * library scan reads. Lets the profile row ask for the game's Steam picture by
+ * id the moment it is detected, instead of waiting for Steam's own "now
+ * playing" to come back through the API. A name two apps share is dropped.
+ */
+let steamAppIds: Map<string, number> = new Map();
+export function getSteamAppId(name: string): number | null {
+    return steamAppIds.get(name) ?? null;
+}
+
 async function buildSteamCache(): Promise<Map<string, string>> {
     const owners = new Map<string, Set<string>>();
+    const appIds = new Map<string, number | null>();
     // Display names of default-excluded apps (Wallpaper Engine). Their folders
     // are still walked so a name they share with a real game stays ambiguous
     // (dropped) exactly as before; the entries they solely own are removed
@@ -411,6 +440,10 @@ async function buildSteamCache(): Promise<Map<string, string>> {
 
                     const manifestAppId = String(appState?.appid ?? '') || (manifest.match(/^appmanifest_(\d+)\.acf$/)?.[1] ?? '');
                     if (isDefaultExcludedSteamApp(manifestAppId, String(installDir))) excludedNames.add(gameName);
+                    const idNum = Number(manifestAppId);
+                    if (Number.isInteger(idNum) && idNum > 0) {
+                        appIds.set(gameName, appIds.has(gameName) && appIds.get(gameName) !== idNum ? null : idNum);
+                    }
 
                     const gameDir = join(steamappsDir, 'common', installDir);
                     if (await fileExists(gameDir)) {
@@ -424,6 +457,7 @@ async function buildSteamCache(): Promise<Map<string, string>> {
     for (const [exe, game] of Array.from(cache)) {
         if (excludedNames.has(game)) cache.delete(exe);
     }
+    steamAppIds = new Map([...appIds].filter((e): e is [string, number] => e[1] !== null));
     return cache;
 }
 
@@ -925,7 +959,10 @@ const GAME_DB: Record<string, string | null> = {
 
     // ── Emulators ──────────────────────────────────────────────────────
     'retroarch':                        'RetroArch',
-    'dolphin':                          'Dolphin Emulator',
+    'dolphin':                          'Dolphin Emulator', // Windows / macOS only: on Linux this is KDE's file manager
+    'dolphin-emu':                      'Dolphin Emulator',
+    'dolphin-emu-qt2':                  'Dolphin Emulator',
+    'dolphin-emu-nogui':                'Dolphin Emulator',
     'yuzu':                             'Yuzu',
     'ryujinx':                          'Ryujinx',
     'pcsx2':                            'PCSX2',
@@ -1291,6 +1328,11 @@ export function detectCurrentGame(): Promise<DetectedGame | null> {
     return inFlight;
 }
 
+/** What the last scan found, without scanning (null = nothing / never scanned). */
+export function peekDetectedGame(): DetectedGame | null {
+    return lastResult?.game ?? null;
+}
+
 /**
  * The most recent scan's answer if it is at most `maxAgeMs` old, else a fresh
  * scan. For on-demand callers (the screen-share picker, the renderer's mount
@@ -1306,6 +1348,7 @@ export function __resetGameDetectorForTests(): void {
     inFlight = null;
     lastResult = null;
     steamCache = new Map();
+    steamAppIds = new Map();
     steamCacheTime = 0;
     steamDirStamp = '';
     suspendedVerdicts.clear();
@@ -1355,6 +1398,7 @@ async function detectCurrentGameOnce(): Promise<DetectedGame | null> {
         // Built-in default exclusions (after Layer 1 so a custom game can opt
         // back in; independent of the user's ignored list).
         if (DEFAULT_EXCLUDED_PROCESSES.has(proc)) continue;
+        if (isPlatformExcludedProcess(proc, process.platform)) continue;
 
         // Curated exclusions outrank the Steam-folder heuristic: a shared
         // runtime sitting in a game's install dir must never be that game.

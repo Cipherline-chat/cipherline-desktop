@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+    hasCustomProfile,
     addCallTime, addGameTime, addMessage, addVerified, computeTotals, emptyState, longestStreak, markDay, mergeState,
     notePeople, parseState, sameState, sanitizeState, setMostPlayedPref, unlockIds, type AchievementsState,
 } from './state';
@@ -162,5 +163,24 @@ describe('sanitizeState (storage / remote input is untrusted)', () => {
         expect(s.verified).toEqual([]);
         expect(s.unlocked).toEqual({ fleet: '2026-10' });
         expect(s.prefs).toEqual({ mostPlayed: false, at: 0 });
+    });
+});
+
+describe('starter totals', () => {
+    it('voiceMinutes mirrors voiceHours; profileCustom is 0/1 from the context and defaults to 0', () => {
+        const s = addCallTime(emptyState(), 'd', { dtMs: 90_000, people: 2, isHost: false, sessionMs: 90_000, hour: 12, day: '2026-10-23' });
+        expect(computeTotals(s, CTX).voiceMinutes).toBeCloseTo(1.5, 6);
+        expect(computeTotals(s, CTX).profileCustom).toBe(0);
+        expect(computeTotals(s, { ...CTX, profileCustom: true }).profileCustom).toBe(1);
+    });
+
+    it('hasCustomProfile: a banner, theme, decoration or effect counts; an avatar or About me alone does not', () => {
+        expect(hasCustomProfile(null)).toBe(false);
+        expect(hasCustomProfile({})).toBe(false);
+        expect(hasCustomProfile({ avatar_url: 'a', bio: 'hello', profile_theme: null, avatar_decoration: null, profile_effect: null } as never)).toBe(false);
+        expect(hasCustomProfile({ banner_url: 'b' })).toBe(true);
+        expect(hasCustomProfile({ profile_theme: { primary: '#fff', accent: '#000' } })).toBe(true);
+        expect(hasCustomProfile({ avatar_decoration: 'halo' })).toBe(true);
+        expect(hasCustomProfile({ profile_effect: 'snow' })).toBe(true);
     });
 });

@@ -277,7 +277,7 @@ export const InviteStep: React.FC<StepProps> = ({ deps, flow, setFlow, reducedMo
         const rm = live.current.reducedMotion;
         if (!F) {
             // No field (yet): the shell creates it after this step mounts, and
-            // it stays null when WebGL is unavailable. The step still works
+            // it stays null only when not even a 2D canvas works. The step still works
             // without the sculpture; reveal the chip unless the field turns up.
             if (!referrer) return undefined;
             const t = window.setTimeout(() => setChip(rm ? 'quiet' : 'pop'), 400);

@@ -114,6 +114,31 @@ describe('the Style studio', () => {
         expect(patch).toHaveBeenCalledWith(expect.any(String), { avatar_decoration: 'kelp' }, expect.anything());
     });
 
+    it('an item equipped before its rule got stricter stays on: not shown as locked, re-picking it is a no-op (no try-on, no PATCH)', () => {
+        // Manta now needs 30 eggs and Sonar level 2; this account has no eggs and is level 0, but has both on its card.
+        const onPreview = render({ level: 0, saved: { profile_theme: null, avatar_decoration: 'manta', profile_effect: 'sonar', cosmetic_options: { d: { p: 1 } } } });
+        const manta = q('.pst-tile[aria-label="Manta"]') as HTMLButtonElement;
+        expect(manta.getAttribute('aria-checked')).toBe('true');
+        expect(manta.getAttribute('data-locked')).toBeNull();
+        expect(q('[data-testid="style-inspector"]')!.getAttribute('data-state')).toBe('on');
+        expect(q('[data-testid="style-inspector"]')!.textContent).toMatch(/Yours while it stays on/);
+        act(() => manta.click());
+        expect(patch).not.toHaveBeenCalled();
+        expect(q('[data-testid="style-inspector"]')!.getAttribute('data-state')).toBe('on');
+        expect(onPreview.mock.calls.at(-1)![0]).toMatchObject({ decoration: 'manta', decorationOptions: { p: 1 } });
+        // Its options still apply (the server checks only a change of item, never its knobs).
+        expect(qa('.pst-opt-label').map((e) => e.textContent)).toEqual(optionSpecsFor('decoration', 'manta').map((s) => s.label));
+        act(() => (q('[data-testid="style-tab-effect"]') as HTMLButtonElement).click());
+        const sonar = q('.pst-tile[aria-label="Sonar"]') as HTMLButtonElement;
+        expect([sonar.getAttribute('aria-checked'), sonar.getAttribute('data-locked')]).toEqual(['true', null]);
+    });
+
+    it('a retired id on the card reads as None (viewers are served none for it)', () => {
+        render({ saved: { profile_theme: null, avatar_decoration: 'vampire-squid', profile_effect: 'whale-song', cosmetic_options: null } });
+        expect(q('[data-testid="style-tab-decoration"]')!.textContent).toContain('None');
+        expect(q('[data-testid="style-tab-effect"]')!.textContent).toContain('None');
+    });
+
     it('Theme: presets apply, "Custom colors" opens the picker on demand, Match is offered', () => {
         render();
         act(() => (q('[data-testid="style-tab-theme"]') as HTMLButtonElement).click());

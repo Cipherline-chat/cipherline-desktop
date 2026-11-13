@@ -110,6 +110,16 @@ export const ReportProblemModal: React.FC<ReportProblemModalProps> = ({
     // moment the user opened the reporter, not every later re-render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [prepare, prepareNonce]);
+    // The share snapshot (~10 s of 1 s samples) fills in while the user types: rebuild
+    // the report once when it is complete, so the preview, Save and Send carry all of it.
+    const [snapshotTick, setSnapshotTick] = useState(0);
+    useEffect(() => {
+        const h = prepared?.shareSnapshot;
+        if (!h) return;
+        let alive = true;
+        void h.done.then(() => { if (alive) setSnapshotTick(n => n + 1); });
+        return () => { alive = false; };
+    }, [prepared]);
     const retryPrepare = () => {
         setPrepareFailed(false);
         setPrepared(null);
@@ -124,6 +134,7 @@ export const ReportProblemModal: React.FC<ReportProblemModalProps> = ({
     // preview, the raw view, Save and Send all use this one object.
     const built = useMemo(() => {
         if (!prepared || !category || step !== 'preview') return null;
+        void snapshotTick; // a dependency only: buildFromPrepared reads the live share-snapshot handle
         return buildFromPrepared(prepared, {
             category,
             trigger: request.trigger,
@@ -131,7 +142,7 @@ export const ReportProblemModal: React.FC<ReportProblemModalProps> = ({
             replyEmail: replyEmail.trim() || undefined,
             crash: category === 'crash' ? crashEntry?.crash ?? null : null,
         });
-    }, [prepared, category, step, request.trigger, description, replyEmail, crashEntry]);
+    }, [prepared, category, step, request.trigger, description, replyEmail, crashEntry, snapshotTick]);
 
     // Focus follows the step, so keyboard and screen-reader users land at the
     // top of the new content rather than on a button that just disappeared.

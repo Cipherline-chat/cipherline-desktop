@@ -103,11 +103,12 @@ describe('slider default wiring', () => {
             ['components/call/ControlBar.tsx', /DEFAULT_VOICE_SETTINGS\.(mic|speaker)Volume,/g, 2],
             ['components/call/ControlBar.tsx', /resetValue=\{resetValue\}/g, 1],
             // Per-participant mic + screen-share audio
-            ['components/call/PopoverMenu.tsx', /resetValue=\{DEFAULT_PER_USER_VOLUME\}/g, 2],
+            // One shared PerUserVolumeSlider row renders both the mic and screen-audio sliders.
+            ['components/call/PopoverMenu.tsx', /resetValue=\{DEFAULT_PER_USER_VOLUME\}/g, 1],
+            ['components/call/PopoverMenu.tsx', /<PerUserVolumeSlider /g, 2],
             // Notification sounds
             ['components/NotificationsTab.tsx', /resetValue=\{Math\.round\(DEFAULT_PREFS\.master_volume \* 100\)\}/g, 1],
-            ['components/NotificationsTab.tsx', /resetValue=\{Math\.round\(DEFAULT_SOUND_PREFS\[cat\]\.volume \* 100\)\}/g, 1],
-            ['components/NotificationsTab.tsx', /resetValue=\{Math\.round\(DEFAULT_PREFS\.sound_groups\.app\.volume \* 100\)\}/g, 1],
+            ['components/NotificationsTab.tsx', /resetValue=\{Math\.round\(DEFAULT_SOUND_PREFS\[RING_VOLUME_CATEGORY\]\.volume \* 100\)\}/g, 1],
             // Other
             ['components/cl/ClImageCropper.tsx', /resetValue=\{IDENTITY_CROP\.scale\}/g, 1],
         ];
@@ -119,7 +120,8 @@ describe('slider default wiring', () => {
 
     it('custom (non-ClSlider) sliders reset too: gate threshold and every EQ band', () => {
         const vv = read('components/VoiceVideoSettings.tsx');
-        expect(vv).toMatch(/onDoubleClick=\{\(\) => \{ if \(!disabled\) onChange\(GATE_DEFAULT_THRESHOLD\); \}\}/);
+        // Manual only: in Automatic the gate has no slider to reset (voice-gate-auto-toggle, owner 2026-11-11).
+        expect(vv).toMatch(/onDoubleClick=\{\(\) => \{ if \(!disabled && !locked\) onChange\(GATE_DEFAULT_THRESHOLD\); \}\}/);
         expect(vv).toMatch(/const GATE_DEFAULT_THRESHOLD = DEFAULT_VOICE_SETTINGS\.voiceGateThreshold;/);
         expect(vv).toMatch(/onDoubleClick=\{\(\) => onChange\(EQ_BAND_DEFAULT_GAIN\)\}/);
         expect(vv).toMatch(/const EQ_BAND_DEFAULT_GAIN = DEFAULT_VOICE_SETTINGS\.eqBands\[0\];/);
@@ -129,6 +131,7 @@ describe('slider default wiring', () => {
 
     it('every role="slider" in the app is accounted for', () => {
         const KNOWN: Record<string, string> = {
+            'components/cl/ClSlideConfirm.tsx': 'slide-to-confirm (founder cancel): a one-way confirmation gesture, not a value - no default to reset to, by design',
             'components/ClSlider.tsx': 'the shared slider: resetValue',
             'components/settings/ui/ColourPicker.tsx':
                 'the color picker (2D saturation/brightness area + hue): a color is chosen, not tuned from a default; the hex field and swatches are its reset',

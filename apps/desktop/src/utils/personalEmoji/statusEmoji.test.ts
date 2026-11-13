@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
     STATUS_EMOJI_LEDGER_TTL_MS, ledgerHas, ledgerRecord, parseStatusEmojiLedger, personalIdOfStatusEmoji,
-    shareStatusEmoji, statusEmojiFromSelection, statusEmojiRef, statusEmojiTargets, takeStatusEmoji,
+    shareStatusEmoji, statusEmojiFromSelection, statusEmojiRef, statusEmojiTargets, takeStatusEmoji, releaseParkedStatusEmoji, clearParkedStatusEmoji,
     type ShareDeps, type ShareSendResult, type StatusEmojiLedger, type StatusEmojiShareContent,
 } from './statusEmoji';
 import { b64ToBytes, bytesToB64, personalEmojiIdFromBytes, PERSONAL_EMOJI_MAX_BYTES } from './token';
@@ -328,5 +328,48 @@ describe('a complete round trip', () => {
         const r = takeStatusEmoji(wireJson, { senderUserId: 'alice', myUserId: 'bob', isFriend: u => u === 'alice', store: { put } });
         expect(await r.stored).toBe(id);
         expect(put).toHaveBeenCalledWith(id, expect.any(Uint8Array), expect.objectContaining({ mime: 'image/webp' }));
+    });
+});
+
+describe('a status emoji that arrives before the friends list has loaded', () => {
+    const wire = async (bytes: Uint8Array, userId = 'f1') => ({
+        client_msg_id: 'm1', type: 'profile_update', user_id: userId,
+        status_emoji: { id: await personalEmojiIdFromBytes(bytes), mime: 'image/png', animated: false, bytes_b64: bytesToB64(bytes) },
+    });
+    const early = (put = vi.fn(async () => undefined)) => ({ put, c: { senderUserId: 'f1', myUserId: 'me', isFriend: () => false, friendsLoaded: () => false, store: { put } } });
+
+    it('is parked, not dropped: filed once the list loads and shows the sender as a friend', async () => {
+        clearParkedStatusEmoji();
+        const { put, c } = early();
+        const r = takeStatusEmoji(await wire(png(1)), c);
+        expect(r.content).not.toHaveProperty('status_emoji');
+        expect(await r.stored).toBeNull();
+        expect(put).not.toHaveBeenCalled();
+        expect(await releaseParkedStatusEmoji('me', id => id === 'f1', { put })).toEqual([await personalEmojiIdFromBytes(png(1))]);
+        expect(put).toHaveBeenCalledTimes(1);
+    });
+
+    it('a parked item from someone who turns out not to be a friend is discarded; tampered bytes are refused on release', async () => {
+        clearParkedStatusEmoji();
+        const { put, c } = early();
+        await takeStatusEmoji(await wire(png(1)), c).stored;
+        expect(await releaseParkedStatusEmoji('me', () => false, { put })).toEqual([]);
+        expect(await releaseParkedStatusEmoji('me', () => true, { put })).toEqual([]); // gone for good
+        const w = await wire(png(1));
+        w.status_emoji.bytes_b64 = bytesToB64(png(2));
+        await takeStatusEmoji(w, c).stored;
+        expect(await releaseParkedStatusEmoji('me', () => true, { put })).toEqual([]);
+        expect(put).not.toHaveBeenCalled();
+    });
+
+    it('a loaded list still refuses a non-friend outright; a wrong claimed sender is never parked; another account never gets it', async () => {
+        clearParkedStatusEmoji();
+        const { put, c } = early();
+        await takeStatusEmoji(await wire(png(1)), { ...c, friendsLoaded: () => true }).stored;
+        await takeStatusEmoji(await wire(png(1), 'mallory'), c).stored;
+        expect(await releaseParkedStatusEmoji('me', () => true, { put })).toEqual([]);
+        await takeStatusEmoji(await wire(png(1)), c).stored;
+        expect(await releaseParkedStatusEmoji('other', () => true, { put })).toEqual([]);
+        expect(put).not.toHaveBeenCalled();
     });
 });

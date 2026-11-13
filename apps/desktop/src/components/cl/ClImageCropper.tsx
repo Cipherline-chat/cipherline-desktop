@@ -7,6 +7,11 @@ import {
     type CropTransform, IDENTITY_CROP, MAX_ZOOM, CROP_JPEG_QUALITY,
     clampCrop, zoomAbout, loadImageElement, renderCroppedBlob,
 } from '../../utils/imageCrop';
+import { isAnimatedFile } from '../../utils/animatedImage';
+import {
+    cropAnimatedImage, supportsAnimatedCrop, AnimatedCropFailure, type AnimatedCropHandle,
+} from '../../utils/animatedCrop/client';
+import { ANIM_CROP_MAX_DURATION_MS } from '../../utils/animatedCrop/protocol';
 
 /**
  * Image cropper — drag to reposition, pinch/wheel/slider to zoom, then export
@@ -25,6 +30,12 @@ import {
  *     preview cannot disagree with the saved result.
  *   • The image can never be panned off the frame (see `clampCrop`), so there
  *     is no empty-gutter state to design around.
+ *   • `allowAnimated` (opt-in per surface): a GIF / animated WebP pick keeps
+ *     its animation. The preview already plays (it is a plain <img>), and
+ *     Apply crops EVERY frame to the framed rectangle in a worker and hands
+ *     back one animated WebP (`blob.type === 'image/webp'`) - so callers must
+ *     upload with `blob.type`, not a hard-coded 'image/jpeg'. Without the flag
+ *     (the default) an animated pick flattens to its first frame as before.
  */
 
 interface ClImageCropperProps {
@@ -46,8 +57,18 @@ interface ClImageCropperProps {
      * kit's `.mod` (z-index 50) — see the nested-modal note below.
      */
     overlayStyle?: React.CSSProperties;
+    /**
+     * Keep a GIF / animated WebP animated: every frame is cropped and the
+     * result is an animated WebP. Only for surfaces that render animated
+     * images (avatars, profile banners, server icons and banners).
+     */
+    allowAnimated?: boolean;
     onCancel: () => void;
-    /** Receives the cropped JPEG. The cropper does not upload anything itself. */
+    /**
+     * Receives the cropped image: a JPEG, or (with `allowAnimated`, for an
+     * animated pick) an animated WebP. Check `blob.type` when uploading. The
+     * cropper does not upload anything itself.
+     */
     onConfirm: (blob: Blob) => void;
 }
 
@@ -71,7 +92,7 @@ const NUDGE_FAST = 32;
 export const ClImageCropper: React.FC<ClImageCropperProps> = ({
     open, file, outputWidth, outputHeight, shape = 'rect',
     title = 'Adjust your image', hint, confirmLabel = 'Apply',
-    quality = CROP_JPEG_QUALITY, overlayStyle, onCancel, onConfirm,
+    quality = CROP_JPEG_QUALITY, overlayStyle, allowAnimated = false, onCancel, onConfirm,
 }) => {
     const aspect = outputWidth / outputHeight;
     const frameW = frameWidthFor(aspect);
@@ -85,6 +106,11 @@ export const ClImageCropper: React.FC<ClImageCropperProps> = ({
     const [displayUrl, setDisplayUrl] = useState('');
     const [error, setError] = useState('');
     const [busy, setBusy] = useState(false);
+    // Animated pick (only ever true with `allowAnimated`), and the progress of
+    // its per-frame crop.
+    const [animated, setAnimated] = useState(false);
+    const [progress, setProgress] = useState(0);
+    const jobRef = useRef<AnimatedCropHandle | null>(null);
     const [dragging, setDragging] = useState(false);
     const [t, setT] = useState<CropTransform>(IDENTITY_CROP);
 
@@ -105,7 +131,11 @@ export const ClImageCropper: React.FC<ClImageCropperProps> = ({
         let cancelled = false;
         setImg(null);
         setError('');
+        setAnimated(false);
         setT(IDENTITY_CROP);
+        if (allowAnimated && supportsAnimatedCrop()) {
+            void isAnimatedFile(file).then((a) => { if (!cancelled) setAnimated(a); });
+        }
         const url = URL.createObjectURL(file);
         setDisplayUrl(url);
         loadImageElement(file)
@@ -113,10 +143,11 @@ export const ClImageCropper: React.FC<ClImageCropperProps> = ({
             .catch(() => { if (!cancelled) setError('That image could not be opened.'); });
         return () => {
             cancelled = true;
+            jobRef.current?.cancel();
             URL.revokeObjectURL(url);
             setDisplayUrl('');
         };
-    }, [open, file]);
+    }, [open, file, allowAnimated]);
 
     const applyCrop = useCallback((next: CropTransform) => {
         if (!img) return;
@@ -239,7 +270,28 @@ export const ClImageCropper: React.FC<ClImageCropperProps> = ({
     const handleConfirm = async () => {
         if (!img || busy) return;
         setBusy(true);
+        setProgress(0);
         try {
+            if (animated && file) {
+                const job = cropAnimatedImage(
+                    file, t, frameW, frameH, img.naturalWidth, img.naturalHeight,
+                    outputWidth, outputHeight, setProgress,
+                );
+                jobRef.current = job;
+                try {
+                    const r = await job.result;
+                    onConfirm(r.blob);
+                    return;
+                } catch (e) {
+                    if (e instanceof AnimatedCropFailure) {
+                        if (e.code === 'CANCELLED') return;
+                        // Not actually animated (a one-frame GIF): crop it as a still, below.
+                        if (e.code !== 'NOT_ANIMATED') { setError(e.message); return; }
+                    } else { throw e; }
+                } finally {
+                    jobRef.current = null;
+                }
+            }
             const blob = await renderCroppedBlob(
                 img, t, frameW, frameH, outputWidth, outputHeight, quality,
             );
@@ -249,6 +301,12 @@ export const ClImageCropper: React.FC<ClImageCropperProps> = ({
         } finally {
             setBusy(false);
         }
+    };
+
+    /** Cancel / Escape / backdrop: while an animation is being cropped this stops the job instead of being ignored. */
+    const handleCancel = () => {
+        if (jobRef.current) { jobRef.current.cancel(); return; }
+        onCancel();
     };
 
     // Displayed image box, derived from the same cover-fit baseline the export
@@ -263,7 +321,7 @@ export const ClImageCropper: React.FC<ClImageCropperProps> = ({
     return (
         <ClModal
             open={open}
-            onClose={busy ? () => {} : onCancel}
+            onClose={busy ? (animated ? handleCancel : () => {}) : onCancel}
             width={frameW + 56}
             label={title}
             overlayStyle={{ zIndex: CROPPER_Z, ...overlayStyle }}
@@ -271,6 +329,12 @@ export const ClImageCropper: React.FC<ClImageCropperProps> = ({
             <h4 style={{ margin: '0 0 4px', fontFamily: 'var(--cl-font-display)' }}>{title}</h4>
             <p style={{ margin: '0 0 16px', fontSize: 12.5, color: 'var(--cl-muted)' }}>
                 {hint ?? 'Drag to reposition, scroll or pinch to zoom.'}
+                {animated && (
+                    <>
+                        {' '}Animated: every frame is cropped, and it plays below.
+                        {` Anything past ${ANIM_CROP_MAX_DURATION_MS / 1000} seconds is trimmed.`}
+                    </>
+                )}
             </p>
 
             {error && (
@@ -350,11 +414,11 @@ export const ClImageCropper: React.FC<ClImageCropperProps> = ({
             </div>
 
             <div className="clcrop-actions">
-                <ClButton variant="ghost" fullWidth disabled={busy} onClick={onCancel}>
+                <ClButton variant="ghost" fullWidth disabled={busy && !animated} onClick={handleCancel}>
                     Cancel
                 </ClButton>
                 <ClButton fullWidth disabled={!img || busy} loading={busy} onClick={handleConfirm}>
-                    {confirmLabel}
+                    {busy && animated ? `Cropping ${Math.round(progress * 100)}%` : confirmLabel}
                 </ClButton>
             </div>
         </ClModal>

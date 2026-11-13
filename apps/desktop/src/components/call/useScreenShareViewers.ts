@@ -1,7 +1,10 @@
 import React from 'react';
 import { useMaybeRoomContext } from '@livekit/components-react';
 import { RoomEvent } from 'livekit-client';
-import { viewersOf, type ViewerRosterEntry } from '../../utils/screenShareViewers';
+import {
+    viewersOf, describeViewers,
+    type ViewerRosterEntry, type NamedRosterEntry, type ViewerPerson,
+} from '../../utils/screenShareViewers';
 
 /**
  * useScreenShareViewers — who is watching `publisher`'s screenshare, live.
@@ -70,4 +73,50 @@ export function useScreenShareViewers(publisher: string | undefined): string[] {
 /** Convenience wrapper — the count is all any tile chrome actually renders. */
 export function useScreenShareViewerCount(publisher: string | undefined): number {
     return useScreenShareViewers(publisher).length;
+}
+
+const NO_PEOPLE: ViewerPerson[] = [];
+
+const samePeople = (a: readonly ViewerPerson[], b: readonly ViewerPerson[]) =>
+    a.length === b.length && a.every((v, i) =>
+        v.identity === b[i].identity && v.name === b[i].name && v.avatar === b[i].avatar && v.isSelf === b[i].isSelf);
+
+/**
+ * useScreenShareViewerList — the same viewers as `useScreenShareViewers`, each
+ * with the display name (`participant.name`, the field every call tile
+ * prints), avatar id and "is this me". Read from the room roster the count is
+ * already read from, so it adds no data: the roster, the names and the watch
+ * metadata are in every participant's LiveKit view of the room.
+ *
+ * Also listens for `ParticipantNameChanged`, which a count does not need but a
+ * name does.
+ */
+export function useScreenShareViewerList(publisher: string | undefined): ViewerPerson[] {
+    const room = useMaybeRoomContext();
+    const [people, setPeople] = React.useState<ViewerPerson[]>(NO_PEOPLE);
+
+    React.useEffect(() => {
+        if (!room || !publisher) {
+            setPeople(prev => (prev.length === 0 ? prev : NO_PEOPLE));
+            return;
+        }
+        const recompute = () => {
+            const roster = [room.localParticipant, ...room.remoteParticipants.values()].filter(Boolean) as NamedRosterEntry[];
+            const next = describeViewers(roster, publisher, room.localParticipant?.identity);
+            setPeople(prev => (samePeople(prev, next) ? prev : next));
+        };
+        recompute();
+        const events = [
+            RoomEvent.ParticipantMetadataChanged,
+            RoomEvent.ParticipantNameChanged,
+            RoomEvent.ParticipantConnected,
+            RoomEvent.ParticipantDisconnected,
+            RoomEvent.ConnectionStateChanged,
+            RoomEvent.Reconnected,
+        ];
+        for (const ev of events) room.on(ev, recompute);
+        return () => { for (const ev of events) room.off(ev, recompute); };
+    }, [room, publisher]);
+
+    return people;
 }

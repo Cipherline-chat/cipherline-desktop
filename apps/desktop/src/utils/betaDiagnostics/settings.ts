@@ -1,7 +1,13 @@
 /**
  * Beta diagnostics — the user's side: the "Share beta diagnostics" toggle
- * (default ON), whether the one-time notice was seen, and the rating card's
- * frequency bookkeeping.
+ * (OPT-IN: default OFF), whether the one-time consent ask was answered, and
+ * the rating card's frequency bookkeeping.
+ *
+ * Why opt-in: these reports are account-linked (sent with the user's token and
+ * device id). Until 2026-11 the toggle defaulted ON with an after-the-fact
+ * notice; that is not acceptable for a public release whose privacy policy
+ * does not describe this data. Nothing is sent unless the user explicitly
+ * said yes on this device. A user who never answered is OFF.
  *
  * STORAGE: per account, in secureLocalStore (encrypted at rest), like the
  * crash-report auto-send opt-in next to it. All three keys are EXCLUDED from
@@ -17,10 +23,10 @@ const listeners = new Set<() => void>();
 const emit = () => { for (const l of [...listeners]) { try { l(); } catch { /* isolate */ } } };
 const subscribe = (l: () => void) => { listeners.add(l); return () => { listeners.delete(l); }; };
 
-/** Default ON: only an explicit '0' turns it off. */
+/** Opt-in: only an explicit '1' (the user said yes) turns it on. Unreadable store → off. */
 export function getBetaDiagEnabled(userId: string | null | undefined): boolean {
     if (!userId) return false;
-    try { return secureLocalStore.getItem(`cipherline_beta_diag_${userId}`) !== '0'; } catch { return true; }
+    try { return secureLocalStore.getItem(`cipherline_beta_diag_${userId}`) === '1'; } catch { return false; }
 }
 
 export function setBetaDiagEnabled(userId: string | null | undefined, on: boolean): void {
@@ -37,14 +43,21 @@ export function subscribeBetaDiagSetting(cb: () => void): () => void {
     return subscribe(cb);
 }
 
+/**
+ * Whether the one-time consent ask was answered (yes or no) on this device.
+ * A NEW key, not the old `cipherline_beta_diag_notice_*`: that one recorded
+ * "saw the it-is-already-on notice", which is not consent, so everyone is
+ * asked once under the opt-in rule. Unreadable store → treat as answered, so
+ * a locked store never nags.
+ */
 export function getBetaNoticeSeen(userId: string | null | undefined): boolean {
     if (!userId) return true;
-    try { return secureLocalStore.getItem(`cipherline_beta_diag_notice_${userId}`) === '1'; } catch { return true; }
+    try { return secureLocalStore.getItem(`cipherline_beta_diag_ask_${userId}`) === '1'; } catch { return true; }
 }
 
 export function markBetaNoticeSeen(userId: string | null | undefined): void {
     if (!userId) return;
-    try { secureLocalStore.setItem(`cipherline_beta_diag_notice_${userId}`, '1'); } catch { /* locked store */ }
+    try { secureLocalStore.setItem(`cipherline_beta_diag_ask_${userId}`, '1'); } catch { /* locked store */ }
     emit();
 }
 
@@ -52,8 +65,8 @@ export function markBetaNoticeSeen(userId: string | null | undefined): void {
 
 /** Calls shorter than this never get the card (contract). */
 export const RATING_MIN_CALL_S = 30;
-/** At most once per this many eligible calls… */
-export const RATING_EVERY_N_CALLS = 3;
+/** At most once per this many eligible calls (the 25th, 50th, … — never the first)… */
+export const RATING_EVERY_N_CALLS = 25;
 /** …and never twice within this window. */
 export const RATING_MIN_GAP_MS = 10 * 60_000;
 
@@ -68,13 +81,15 @@ export const FRESH_LEDGER: RatingLedger = { since: 0, lastShownAt: 0 };
 
 /**
  * Decide whether THIS call (just ended) gets the card, and the ledger after.
- * The first eligible call shows it; then every RATING_EVERY_N_CALLS-th
- * eligible call, never inside RATING_MIN_GAP_MS of the last one.
+ * Every RATING_EVERY_N_CALLS-th eligible call (counted from the ledger's
+ * `since`, so a ledger stored by an older build keeps counting where it was),
+ * never inside RATING_MIN_GAP_MS of the last time the card showed. A fresh
+ * ledger does NOT show on the first call any more.
  */
 export function decideRatingPrompt(ledger: RatingLedger, callSeconds: number, nowMs: number): { show: boolean; next: RatingLedger } {
     if (!(callSeconds >= RATING_MIN_CALL_S)) return { show: false, next: ledger };
     const tooSoon = ledger.lastShownAt > 0 && nowMs - ledger.lastShownAt < RATING_MIN_GAP_MS;
-    const due = ledger.lastShownAt === 0 || ledger.since + 1 >= RATING_EVERY_N_CALLS;
+    const due = ledger.since + 1 >= RATING_EVERY_N_CALLS;
     if (due && !tooSoon) return { show: true, next: { since: 0, lastShownAt: nowMs } };
     return { show: false, next: { since: ledger.since + 1, lastShownAt: ledger.lastShownAt } };
 }

@@ -80,3 +80,54 @@ export function decidePermissionRequest(facts: PermissionRequestFacts, appOrigin
             return false;
     }
 }
+
+/**
+ * Permission CHECKS from a third-party frame that are allowed. Everything else
+ * a cross-origin frame (Stripe, Cloudflare Turnstile, the YouTube player, the
+ * website) asks about is answered "no".
+ *   - fullscreen:  the YouTube embed only (mirrors FULLSCREEN_EMBED_ORIGINS).
+ *   - clipboard-sanitized-write: write-only; payment/challenge widgets use it
+ *     for "copy" buttons. Reading the clipboard is never allowed to a frame.
+ *   - storage-access / top-level-storage-access: Stripe Link and Turnstile may
+ *     ask for their own first-party storage inside our page; denying it can
+ *     break checkout without protecting anything of ours.
+ */
+const THIRD_PARTY_CHECKS_ALLOWED: ReadonlySet<string> = new Set([
+    'clipboard-sanitized-write',
+    'storage-access',
+    'top-level-storage-access',
+]);
+
+export interface PermissionCheckFacts {
+    permission: string;
+    /** The origin Electron passes as `requestingOrigin`. */
+    requestingOrigin?: string;
+    /** details.embeddingOrigin — the top-level origin a subframe is embedded in. */
+    embeddingOrigin?: string;
+    /** details.isMainFrame. */
+    isMainFrame?: boolean;
+    /** webContents.getURL(), or undefined when Electron passes no webContents. */
+    topLevelUrl?: string;
+}
+
+/**
+ * setPermissionCheckHandler policy. Without a handler Electron answers every
+ * synchronous permission check "yes" for every frame, including third-party
+ * iframes (navigator.permissions.query, device-label access, clipboard).
+ *
+ * The app's own origin keeps that behaviour (it is what the app was built
+ * against; its prompts are governed by decidePermissionRequest). A
+ * third-party frame inside the app gets only THIRD_PARTY_CHECKS_ALLOWED (plus
+ * fullscreen for the YouTube embed). Anything outside an app page gets nothing.
+ */
+export function decidePermissionCheck(facts: PermissionCheckFacts, appOrigins: readonly string[]): boolean {
+    const isApp = (o: string | null) => o !== null && appOrigins.includes(o);
+    const requester = originOf(facts.requestingOrigin);
+    // With no webContents, fall back to the embedding origin; neither known → deny.
+    const top = originOf(facts.topLevelUrl) ?? originOf(facts.embeddingOrigin);
+    if (!isApp(top)) return false;
+    if (isApp(requester)) return true;
+    if (requester === null) return false;
+    if (facts.permission === 'fullscreen') return FULLSCREEN_EMBED_ORIGINS.includes(requester);
+    return THIRD_PARTY_CHECKS_ALLOWED.has(facts.permission);
+}

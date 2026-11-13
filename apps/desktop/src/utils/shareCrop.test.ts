@@ -2,7 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
     createCropTransformer, runCropPipe, cropVideoFrame, type CropFrame, type CropSize,
 } from './shareCropTransform';
-import { createCropPipeline, supportsCropPipeline, type CropWorkerLike } from './shareCrop';
+import { createCropPipeline, supportsCropPipeline, WORKER_READY_TIMEOUT_MS, type CropWorkerLike } from './shareCrop';
 import type { CropRect, ShareLayout } from './shareLayout';
 import { codecPinMessage } from './e2eeSenderCodec';
 
@@ -250,6 +250,7 @@ function fakeTrack() {
         id: 'src-1', kind: 'video', readyState: 'live', contentHint: '',
         stop: vi.fn(() => { t.readyState = 'ended'; }),
         getSettings: () => ({ width: 7680, height: 1440, frameRate: 90 }),
+        clone: vi.fn(() => ({ id: 'src-1-clone', kind: 'video', readyState: 'live' })),
         addEventListener: (n: string, cb: () => void) => { (listeners.get(n) ?? listeners.set(n, new Set()).get(n)!).add(cb); },
         removeEventListener: (n: string, cb: () => void) => { listeners.get(n)?.delete(cb); },
         fire: (n: string) => { for (const cb of [...(listeners.get(n) ?? [])]) cb(); },
@@ -332,6 +333,31 @@ describe('createCropPipeline - main-thread mode', () => {
         expect(pipe.captureSettings()).toEqual({ width: 7680, height: 1440, frameRate: 90 });
     });
 
+    it('cloneSource hands out a clone of the display capture while it runs, and nothing once it is stopped or gone', () => {
+        const bb = fakeBreakoutBox([]);
+        const src = fakeTrack();
+        const pipe = createCropPipeline(src as never, SLICE(1), { Processor: bb.Processor as never, Generator: bb.Generator as never, createWorker: null, cropFrame: crop as never });
+        const clone = pipe.cloneSource();
+        expect(clone).toMatchObject({ id: 'src-1-clone' });
+        expect(src.clone).toHaveBeenCalledTimes(1);
+        pipe.stop();
+        expect(src.stop).toHaveBeenCalledTimes(1);
+        // the clone is a separate track: stopping the pipeline never touches it
+        expect((clone as unknown as { readyState: string }).readyState).toBe('live');
+        expect(pipe.cloneSource()).toBeNull();
+        const src2 = fakeTrack();
+        const bb2 = fakeBreakoutBox([]);
+        const pipe2 = createCropPipeline(src2 as never, SLICE(1), { Processor: bb2.Processor as never, Generator: bb2.Generator as never, createWorker: null, cropFrame: crop as never });
+        src2.readyState = 'ended';
+        expect(pipe2.cloneSource()).toBeNull();
+        const src3 = fakeTrack();
+        src3.clone.mockImplementation(() => { throw new Error('gone'); });
+        const bb3 = fakeBreakoutBox([]);
+        const pipe3 = createCropPipeline(src3 as never, SLICE(1), { Processor: bb3.Processor as never, Generator: bb3.Generator as never, createWorker: null, cropFrame: crop as never });
+        expect(pipe3.cloneSource()).toBeNull();
+        pipe2.stop(); pipe3.stop();
+    });
+
     it('throws a clear error when the breakout-box APIs are missing', () => {
         expect(() => createCropPipeline(fakeTrack() as never, SLICE(0), { createWorker: null })).toThrow(/MediaStreamTrackProcessor/);
     });
@@ -348,7 +374,7 @@ describe('createCropPipeline - main-thread mode', () => {
 describe('createCropPipeline - worker mode', () => {
     function fakeWorker(opts: { throwOnStart?: boolean } = {}) {
         const posted: Array<{ msg: Record<string, unknown>; transfer?: unknown[] }> = [];
-        const w: CropWorkerLike & { terminated: number } = {
+        const w: CropWorkerLike & { terminated: number; ready(): void; fail(msg?: string): void } = {
             terminated: 0,
             postMessage(msg, transfer) {
                 if (opts.throwOnStart && (msg as { type: string }).type === 'start') throw new Error('DataCloneError');
@@ -356,39 +382,61 @@ describe('createCropPipeline - worker mode', () => {
             },
             terminate() { w.terminated++; },
             onmessage: null, onerror: null,
+            ready() { w.onmessage?.({ data: { type: 'ready' } } as MessageEvent); },
+            fail(msg = 'boom') { w.onerror?.({ message: msg } as ErrorEvent); },
         };
         return { w, posted };
     }
 
-    it('transfers the processor\'s readable and the generator\'s writable to the worker and starts it on the chosen screen', () => {
+    it('holds the streams until the worker says it is ready, then transfers them and starts it on the chosen screen', () => {
         const bb = fakeBreakoutBox([]);
         const { w, posted } = fakeWorker();
         const pipe = createCropPipeline(fakeTrack() as never, SLICE(1), { Processor: bb.Processor as never, Generator: bb.Generator as never, createWorker: () => w });
+        expect(pipe.mode).toBe('starting');
+        expect(posted).toHaveLength(0); // nothing handed to a worker that may never load
+        w.ready();
         expect(pipe.mode).toBe('worker');
+        expect(pipe.diag()).toEqual({ mode: 'worker' });
         expect(posted).toHaveLength(1);
         expect(posted[0].msg.type).toBe('start');
         expect(posted[0].msg.readable).toBe(bb.processorReadable);
         expect(posted[0].msg.writable).toBe(bb.generatorWritable);
         expect(posted[0].msg.layout).toEqual(SLICE(1));
         expect(posted[0].transfer).toEqual([bb.processorReadable, bb.generatorWritable]);
+        w.ready(); // a duplicate ready transfers nothing twice
+        expect(posted).toHaveLength(1);
+        pipe.stop();
+    });
+
+    it('a layout picked before the worker was ready is the one it starts with', () => {
+        const bb = fakeBreakoutBox([]);
+        const { w, posted } = fakeWorker();
+        const pipe = createCropPipeline(fakeTrack() as never, SLICE(0), { Processor: bb.Processor as never, Generator: bb.Generator as never, createWorker: () => w });
+        pipe.setLayout(SLICE(2));
+        w.ready();
+        expect(posted.find(p => p.msg.type === 'start')!.msg.layout).toEqual(SLICE(2));
+        pipe.stop();
     });
 
     it('setLayout posts the new layout (no republish, no new worker)', () => {
         const bb = fakeBreakoutBox([]);
         const { w, posted } = fakeWorker();
         const pipe = createCropPipeline(fakeTrack() as never, SLICE(0), { Processor: bb.Processor as never, Generator: bb.Generator as never, createWorker: () => w });
+        w.ready();
         pipe.setLayout(SLICE(2));
         pipe.setLayout({ kind: 'whole' });
         expect(posted.slice(1).map(p => p.msg)).toEqual([
             { type: 'layout', layout: SLICE(2) },
             { type: 'layout', layout: { kind: 'whole' } },
         ]);
+        pipe.stop();
     });
 
     it('relays size and stats reports from the worker', () => {
         const bb = fakeBreakoutBox([]);
         const { w } = fakeWorker();
         const pipe = createCropPipeline(fakeTrack() as never, SLICE(0), { Processor: bb.Processor as never, Generator: bb.Generator as never, createWorker: () => w });
+        w.ready();
         const sizes: CropSize[] = [];
         pipe.onSize(s => sizes.push(s));
         w.onmessage!({ data: { type: 'size', sourceWidth: 7680, sourceHeight: 1440, outWidth: 2560, outHeight: 1440 } } as MessageEvent);
@@ -397,23 +445,43 @@ describe('createCropPipeline - worker mode', () => {
         w.onmessage!({ data: { type: 'size', sourceWidth: 'x' } } as MessageEvent);
         expect(sizes[0]).toEqual({ sourceWidth: 7680, sourceHeight: 1440, outWidth: 2560, outHeight: 1440 });
         expect(pipe.stats()).toEqual({ framesIn: 900, framesOut: 899, errors: 1 });
+        pipe.stop();
     });
 
     it('stop() tells the worker, then terminates it, and stops the capture', () => {
         vi.useFakeTimers();
-        const bb = fakeBreakoutBox([]);
-        const { w, posted } = fakeWorker();
-        const src = fakeTrack();
-        const pipe = createCropPipeline(src as never, SLICE(0), { Processor: bb.Processor as never, Generator: bb.Generator as never, createWorker: () => w });
-        pipe.stop();
-        expect(posted[posted.length - 1].msg).toEqual({ type: 'stop' });
-        expect(src.stop).toHaveBeenCalledTimes(1);
-        vi.advanceTimersByTime(600);
-        expect(w.terminated).toBe(1);
-        pipe.stop();
-        expect(w.terminated).toBe(1);
-        pipe.setLayout(SLICE(1)); // ignored after stop
-        expect(posted.filter(p => p.msg.type === 'layout')).toHaveLength(0);
+        try {
+            const bb = fakeBreakoutBox([]);
+            const { w, posted } = fakeWorker();
+            const src = fakeTrack();
+            const pipe = createCropPipeline(src as never, SLICE(0), { Processor: bb.Processor as never, Generator: bb.Generator as never, createWorker: () => w });
+            w.ready();
+            pipe.stop();
+            expect(posted[posted.length - 1].msg).toEqual({ type: 'stop' });
+            expect(src.stop).toHaveBeenCalledTimes(1);
+            vi.advanceTimersByTime(600);
+            expect(w.terminated).toBe(1);
+            pipe.stop();
+            expect(w.terminated).toBe(1);
+            pipe.setLayout(SLICE(1)); // ignored after stop
+            expect(posted.filter(p => p.msg.type === 'layout')).toHaveLength(0);
+        } finally { vi.useRealTimers(); }
+    });
+
+    it('stop() before the worker was ready still terminates it, and a late ready transfers nothing', () => {
+        vi.useFakeTimers();
+        try {
+            const bb = fakeBreakoutBox([]);
+            const { w, posted } = fakeWorker();
+            const pipe = createCropPipeline(fakeTrack() as never, SLICE(0), { Processor: bb.Processor as never, Generator: bb.Generator as never, createWorker: () => w });
+            pipe.stop();
+            vi.advanceTimersByTime(600);
+            expect(w.terminated).toBe(1);
+            w.ready();
+            expect(posted.filter(p => p.msg.type === 'start')).toHaveLength(0);
+            vi.advanceTimersByTime(10_000); // and no ready-timeout fallback fires after stop
+            expect(pipe.mode).toBe('starting');
+        } finally { vi.useRealTimers(); }
     });
 
     it('falls back to the main thread when the streams cannot be transferred, using the SAME streams', async () => {
@@ -423,10 +491,66 @@ describe('createCropPipeline - worker mode', () => {
         const pipe = createCropPipeline(fakeTrack() as never, SLICE(2), {
             Processor: bb.Processor as never, Generator: bb.Generator as never, createWorker: () => w, cropFrame: crop as never,
         });
+        w.ready();
         expect(pipe.mode).toBe('main');
+        expect(pipe.diag()).toEqual({ mode: 'main', fallback: 'transfer' });
         expect(w.terminated).toBe(1);
         await new Promise(r => setTimeout(r, 20));
         expect(bb.sink.map(f => f.rect!.x)).toEqual([5120]);
+        pipe.stop();
+    });
+
+    // The 1.0.23 Surround black share: the worker script never loaded (the
+    // bundle shipped raw TypeScript), so it errored asynchronously - after the
+    // old code had already transferred the streams into it.
+    it('a worker that fails to load before ready: the crop runs on the main thread with the untouched streams', async () => {
+        const frames = [new FakeFrame(7680, 1440), new FakeFrame(7680, 1440)];
+        const bb = fakeBreakoutBox(frames);
+        const { w, posted } = fakeWorker();
+        const pipe = createCropPipeline(fakeTrack() as never, SLICE(1), {
+            Processor: bb.Processor as never, Generator: bb.Generator as never, createWorker: () => w, cropFrame: crop as never,
+        });
+        w.fail('Failed to load module script: non-JavaScript MIME type video/mp2t');
+        expect(posted.filter(p => p.msg.type === 'start')).toHaveLength(0);
+        expect(w.terminated).toBe(1);
+        expect(pipe.diag()).toEqual({ mode: 'main', fallback: 'worker_error' });
+        await new Promise(r => setTimeout(r, 20));
+        expect(bb.sink.map(f => f.rect!.x)).toEqual([2560, 2560]); // frames reach the published track
+        w.ready(); // a zombie ready after the fallback changes nothing
+        expect(posted.filter(p => p.msg.type === 'start')).toHaveLength(0);
+        pipe.stop();
+    });
+
+    it('a worker that never says ready within the timeout: main thread', async () => {
+        vi.useFakeTimers();
+        let pipe: ReturnType<typeof createCropPipeline> | null = null;
+        const frames = [new FakeFrame(7680, 1440)];
+        const bb = fakeBreakoutBox(frames);
+        const { w, posted } = fakeWorker();
+        try {
+            pipe = createCropPipeline(fakeTrack() as never, SLICE(0), {
+                Processor: bb.Processor as never, Generator: bb.Generator as never, createWorker: () => w, cropFrame: crop as never,
+            });
+            vi.advanceTimersByTime(WORKER_READY_TIMEOUT_MS - 1);
+            expect(pipe.mode).toBe('starting');
+            vi.advanceTimersByTime(1);
+            expect(pipe.diag()).toEqual({ mode: 'main', fallback: 'ready_timeout' });
+            expect(w.terminated).toBe(1);
+            expect(posted.filter(p => p.msg.type === 'start')).toHaveLength(0);
+        } finally { vi.useRealTimers(); }
+        await new Promise(r => setTimeout(r, 20));
+        expect(bb.sink.map(f => f.rect!.x)).toEqual([0]);
+        pipe!.stop();
+    });
+
+    it('an error from a RUNNING worker is recorded (its streams cannot be taken back)', () => {
+        const bb = fakeBreakoutBox([]);
+        const { w } = fakeWorker();
+        const pipe = createCropPipeline(fakeTrack() as never, SLICE(0), { Processor: bb.Processor as never, Generator: bb.Generator as never, createWorker: () => w });
+        w.ready();
+        w.fail();
+        expect(pipe.diag()).toEqual({ mode: 'worker', workerError: true });
+        expect(w.terminated).toBe(0);
         pipe.stop();
     });
 
@@ -437,6 +561,7 @@ describe('createCropPipeline - worker mode', () => {
             createWorker: () => { throw new Error('worker-src blocked'); },
         });
         expect(pipe.mode).toBe('main');
+        expect(pipe.diag()).toEqual({ mode: 'main', fallback: 'no_worker' });
         pipe.stop();
     });
 });

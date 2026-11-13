@@ -138,6 +138,9 @@ const NO_RING_PAINT: Record<string, string> = {
     'components/call/JoiningCallView.tsx': 'passes speaking={false} to the shells (nobody is "speaking" while joining)',
     'components/settings/panes/CallPersonalizeCard.tsx': 'the colour PICKER (its preview ring is the resolver output)',
     'components/VoiceVideoSettings.tsx': 'mic test copy ("speaking" in user-facing text)',
+    'components/EncryptedAvatar.tsx': 'its `speaking` prop only decides whether an animated avatar PLAYS (held through pauses between words); no ring, no colour',
+    'components/call/BetaCallMonitor.tsx': 'renders null; reads the SFU speaking flag only as a boolean on the inbound-audio stall diagnostic (sfu_hears)',
+    'components/settings/settingsSearchIndex.ts': 'search labels/keywords ("Speaking ring") that point Settings search at CallPersonalizeCard; plain strings, no pixels',
 };
 const NO_RING_PAINT_PREFIXES: Record<string, string> = {
     'components/mascot/': 'Keys mascot mirror (data-speaking drives a mic/eq animation, never the participant ring)',
@@ -247,12 +250,15 @@ describe('speaking sweep: nothing paints a speaking colour behind the resolver\'
         expect(offenders).toEqual([]);
     });
 
-    it('a `speaking` prop is only ever false (joining), fed by the real state inside ParticipantCard, or the Keys mascot data attribute', () => {
+    it('a `speaking` prop is only ever false (joining), fed by the real state inside ParticipantCard, the Keys mascot data attribute, or an <EncryptedAvatar> play signal', () => {
         const offenders: string[] = [];
         for (const f of logicFiles) {
             const src = code(f);
             for (const m of src.matchAll(/\bspeaking=\{([^}]*)\}/g)) {
-                const ok = m[1].trim() === 'false' || rel(f) === 'components/call/ParticipantCard.tsx' || rel(f).startsWith('components/mascot/');
+                // The JSX element this attribute sits on: the last `<Name` before it.
+                const tag = [...src.slice(0, m.index).matchAll(/<([A-Z][\w.]*)/g)].pop()?.[1];
+                const ok = m[1].trim() === 'false' || rel(f) === 'components/call/ParticipantCard.tsx' || rel(f).startsWith('components/mascot/')
+                    || tag === 'EncryptedAvatar';
                 if (!ok) offenders.push(`${rel(f)}: speaking={${m[1].trim()}}`);
             }
         }
@@ -278,7 +284,7 @@ describe('entrance sounds wiring', () => {
     it('the hook gates through the listener rules and reads the joiner\'s current sound', () => {
         const src = read('call/useEntranceSounds.ts');
         expect(src).toMatch(/createEntranceGate/);
-        expect(src).toMatch(/freshCallPersonalization/);
+        expect(src).toMatch(/readCallPersonalizationStrict/);
         expect(src).toMatch(/prefs\.muted\.includes\(id\)/);
     });
 

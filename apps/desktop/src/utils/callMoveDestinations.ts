@@ -72,13 +72,17 @@ export function listMoveDestinations(input: MoveDestinationInput): MoveDestinati
     for (const c of input.calls) {
         if (c.call_id === source.call_id) continue;
         if (!input.canConnect(c.huddle_id)) continue;
+        // Only channels this panel lists. `calls` can also hold a call in a
+        // channel the viewer cannot see (their own, as a moved-in guest), and
+        // canConnect is optimistic about a channel it has no permissions for.
         const ch = byId.get(c.huddle_id);
-        const restricted = ch?.view_scope === 'restricted';
+        if (!ch) continue;
+        const restricted = ch.view_scope === 'restricted';
         out.push({
             kind: 'call',
             callId: c.call_id,
             huddleId: c.huddle_id,
-            label: withHint(`${c.name} · ${ch?.name ?? 'Calls'}`, restricted),
+            label: withHint(`${c.name} · ${ch.name}`, restricted),
             restricted,
         });
     }

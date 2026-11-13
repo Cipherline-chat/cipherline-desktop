@@ -70,6 +70,23 @@ describe('computeBackupNudge', () => {
         });
     });
 
+    describe('a destination only the user can fix (Drive sign-in gone / folder not allowed)', () => {
+        it('says so even when the last backup is fresh, or none ran yet, with a matching button', () => {
+            const d = computeBackupNudge(daysAgo(0), { configured: true, issue: 'drive', now: NOW });
+            expect(d).toMatchObject({ critical: true, chip: 'Action needed', title: 'Google Drive backups are paused', cta: 'Reconnect' });
+            const l = computeBackupNudge(null, { configured: true, issue: 'local', now: NOW });
+            expect(l).toMatchObject({ critical: true, title: "Cipherline can't use your backup folder", cta: 'Choose folder' });
+        });
+        it('a missing passphrase still outranks it (that stalls every destination)', () => {
+            expect(computeBackupNudge(null, { configured: true, blocked: 'no-passphrase', issue: 'drive', now: NOW })?.title)
+                .toBe("Automatic backups aren't running");
+        });
+        it('no issue, no change: healthy stays silent and the default button is untouched', () => {
+            expect(computeBackupNudge(daysAgo(0), { configured: true, issue: null, now: NOW })).toBeNull();
+            expect(computeBackupNudge(null, { configured: false, now: NOW })?.cta).toBeUndefined();
+        });
+    });
+
     it('defaults to the un-configured reading when no options are passed', () => {
         expect(computeBackupNudge(null)?.title).toBe('You have no backup yet');
     });

@@ -28,7 +28,7 @@ describe('searchSettingsIndex', () => {
     it('finds settings by synonym keywords', () => {
         expect(searchSettingsIndex('ptt').keybinds).toContain('Mute keybind');
         expect(searchSettingsIndex('autostart').appearance).toContain('Start with Windows');
-        expect(searchSettingsIndex('2fa').profile).toContain('Two-factor authentication');
+        expect(searchSettingsIndex('2fa').devices).toContain('Two-factor authentication');
         expect(searchSettingsIndex('gdpr').danger).toContain('Delete account');
     });
 

@@ -5,9 +5,11 @@ export interface ClInputProps extends React.InputHTMLAttributes<HTMLInputElement
     error?: boolean;
 }
 export const ClInput = React.forwardRef<HTMLInputElement, ClInputProps>(
-    ({ className, ...rest }, ref) => (
+    ({ className, error, ...rest }, ref) => (
         <span className="cl-kit" style={{ display: 'contents' }}>
-            <input ref={ref} className={['inp', className ?? ''].filter(Boolean).join(' ')} {...rest} />
+            {/* `error` is a component prop, never a DOM attribute: spreading it
+                made React warn "Received `false` for a non-boolean attribute". */}
+            <input ref={ref} className={['inp', className ?? ''].filter(Boolean).join(' ')} aria-invalid={error ? true : undefined} {...rest} />
         </span>
     ),
 );
@@ -18,9 +20,9 @@ export interface ClTextareaProps extends React.TextareaHTMLAttributes<HTMLTextAr
     error?: boolean;
 }
 export const ClTextarea = React.forwardRef<HTMLTextAreaElement, ClTextareaProps>(
-    ({ className, ...rest }, ref) => (
+    ({ className, error, ...rest }, ref) => (
         <span className="cl-kit" style={{ display: 'contents' }}>
-            <textarea ref={ref} className={['inp', className ?? ''].filter(Boolean).join(' ')} {...rest} />
+            <textarea ref={ref} className={['inp', className ?? ''].filter(Boolean).join(' ')} aria-invalid={error ? true : undefined} {...rest} />
         </span>
     ),
 );

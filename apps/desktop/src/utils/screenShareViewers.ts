@@ -162,6 +162,94 @@ export function buildViewerIndex(
     return index;
 }
 
+// ── Who, by name (the eye's hover list) ─────────────────────────────────────
+
+/**
+ * What the call UI already shows for a participant with no name
+ * (`p.name || 'Unknown'` on VideoTile / ScreenShareGate / ParticipantCard).
+ * The viewer list uses the same word, so the same person is never "Unknown"
+ * on a tile and something else here.
+ */
+export const UNNAMED_VIEWER = 'Unknown';
+
+/** A roster entry that also carries LiveKit's `participant.name`. */
+export interface NamedRosterEntry extends ViewerRosterEntry {
+    name?: string | null;
+}
+
+export interface ViewerPerson {
+    identity: string;
+    /** Display name; never empty and never the raw identity. */
+    name: string;
+    /** `avatar_url` out of the participant's own metadata, when it has one. */
+    avatar: string | undefined;
+    /** This client's own participant (shown as "(you)"). */
+    isSelf: boolean;
+}
+
+/** `avatar_url` from a participant's raw metadata blob; total, like `parseWatchedShares`. */
+export function avatarOfMetadata(raw: string | null | undefined): string | undefined {
+    if (!raw) return undefined;
+    try {
+        const obj = JSON.parse(raw);
+        const v = typeof obj === 'object' && obj !== null ? (obj as Record<string, unknown>).avatar_url : undefined;
+        return typeof v === 'string' && v !== '' ? v : undefined;
+    } catch {
+        return undefined;
+    }
+}
+
+/**
+ * The people currently watching `publisher`, with names, sorted by name.
+ *
+ * Derived from the SAME roster fold as `viewersOf`, so it can only ever name
+ * someone the count already counts: a viewer who has left the call is not in
+ * the roster and is not here. A name that is missing, blank, or merely the raw
+ * identity falls back to `UNNAMED_VIEWER` - an id is never shown.
+ */
+export function describeViewers(
+    roster: readonly NamedRosterEntry[],
+    publisher: string,
+    localIdentity?: string,
+): ViewerPerson[] {
+    const ids = new Set(viewersOf(roster, publisher));
+    const out: ViewerPerson[] = [];
+    for (const entry of roster) {
+        if (!entry || !ids.has(entry.identity)) continue;
+        ids.delete(entry.identity); // a duplicate roster row is described once
+        const raw = typeof entry.name === 'string' ? entry.name.trim() : '';
+        out.push({
+            identity: entry.identity,
+            name: raw && raw !== entry.identity ? raw : UNNAMED_VIEWER,
+            avatar: avatarOfMetadata(entry.metadata),
+            isSelf: !!localIdentity && entry.identity === localIdentity,
+        });
+    }
+    return out.sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()) || (a.identity < b.identity ? -1 : 1));
+}
+
+/** How many names the hover list shows before collapsing the rest into "+N more". */
+export const VIEWER_LIST_CAP = 8;
+
+/** The names shown and the number folded into "+N more". */
+export function capViewers<T>(people: readonly T[], cap: number = VIEWER_LIST_CAP): { shown: T[]; more: number } {
+    const shown = people.slice(0, Math.max(0, cap));
+    return { shown, more: people.length - shown.length };
+}
+
+/** One row's label: "Ana", or "Ana (you)". */
+export function viewerLabel(p: Pick<ViewerPerson, 'name' | 'isSelf'>): string {
+    return p.isSelf ? `${p.name} (you)` : p.name;
+}
+
+/** What a screen reader gets for the eye. Names are capped like the list. */
+export function viewerAriaLabel(people: readonly ViewerPerson[], cap: number = VIEWER_LIST_CAP): string {
+    if (people.length === 0) return 'No one is watching yet';
+    const { shown, more } = capViewers(people, cap);
+    const names = shown.map(viewerLabel).join(', ') + (more > 0 ? ` and ${more} more` : '');
+    return `${people.length === 1 ? '1 viewer' : `${people.length} viewers`}: ${names}`;
+}
+
 // ── Cue tracking for the streamer ───────────────────────────────────────────
 
 export type ViewerCue = 'start' | 'stop';
@@ -172,18 +260,27 @@ export type ViewerCue = 'start' | 'stop';
  * Covers the two "cue storm" cases the feature has to survive, both of which
  * are a 0 → N transition that is NOT N separate decisions by N people:
  *
- *  - You start sharing into a call where everyone is already waiting for it,
- *    and three people click Watch within a second of the track appearing.
+ *  - You change source or quality, and the track is republished while every
+ *    watcher's subscription catches up.
  *  - You reconnect. LiveKit rebuilds the roster, every watcher's metadata
  *    arrives fresh, and from this tracker's point of view they all "just"
  *    started watching a share that has in fact been running for ten minutes.
  *
  * In both, the honest reading is "this is the starting state", not "N events
- * happened". So the first `graceMs` of every epoch is absorbed into the
- * baseline silently. Genuine watchers who arrive later are past the window and
- * cue normally.
+ * happened". So the first `graceMs` of those epochs is absorbed into the
+ * baseline silently. A share genuinely starting has no such rebuild: nobody is
+ * watching it yet, so the first person to click Watch is news however fast they
+ * were ("I still don't hear someone join if they click watch right after I start
+ * sharing", owner, 2026-11-02). VIEWER_CUE_COALESCE_MS keeps a crowd to one cue.
  */
 export const VIEWER_CUE_GRACE_MS = 2500;
+
+/**
+ * A share starting this soon after the last one ended is the same share being
+ * rebuilt, not a new one. Outlasts the slowest republish (shareHold's
+ * HOLD_TIMEOUT_MS is 6 s), so its watchers coming back cannot read as new ones.
+ */
+export const VIEWER_CUE_RESTART_MS = 10_000;
 
 /**
  * Minimum gap between two cues of the SAME kind.
@@ -212,12 +309,14 @@ export interface ViewerCueState {
     viewers: readonly string[];
     /** When the current epoch was armed (ms, from the caller's clock). */
     armedAt: number;
+    /** When the last run ended (ms); 0 if none has. Tells a restart from a new share. */
+    stoppedAt: number;
     lastStartAt: number;
     lastStopAt: number;
 }
 
 export function initialViewerCueState(): ViewerCueState {
-    return { epoch: '', viewers: [], armedAt: 0, lastStartAt: 0, lastStopAt: 0 };
+    return { epoch: '', viewers: [], armedAt: 0, stoppedAt: 0, lastStartAt: 0, lastStopAt: 0 };
 }
 
 export interface ViewerCueInput {
@@ -265,7 +364,7 @@ export function reduceViewerCues(
     if (!input.epoch) {
         return prev.epoch === '' && prev.viewers.length === 0
             ? { state: prev, cues: [] }
-            : { state: initialViewerCueState(), cues: [] };
+            : { state: { ...initialViewerCueState(), stoppedAt: input.now }, cues: [] };
     }
 
     const viewers = [...new Set(input.viewers)].sort();
@@ -284,8 +383,14 @@ export function reduceViewerCues(
     // New epoch (share started, restarted, or the connection came back):
     // adopt whatever is on screen as the baseline, silently.
     if (prev.epoch !== input.epoch) {
+        const newShare = prev.epoch === ''
+            && (prev.stoppedAt === 0 || input.now - prev.stoppedAt >= VIEWER_CUE_RESTART_MS);
         return {
-            state: { epoch: input.epoch, viewers, armedAt: input.now, lastStartAt: 0, lastStopAt: 0 },
+            state: {
+                epoch: input.epoch, viewers, stoppedAt: 0, lastStartAt: 0, lastStopAt: 0,
+                // A new share has nothing to rebuild, so it is past its grace from the start.
+                armedAt: newShare ? input.now - graceMs : input.now,
+            },
             cues: [],
         };
     }

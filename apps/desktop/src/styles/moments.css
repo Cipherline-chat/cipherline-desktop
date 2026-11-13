@@ -33,14 +33,17 @@
 }
 @keyframes mo-view-out { from { opacity: 1; transform: none; } to { opacity: 0; transform: translateY(12px); } }
 
-/* The stage backdrop: it dims during the notice beat. */
-.mo-dim {
-  position: absolute; inset: 0;
-  background: rgba(5, 8, 20, .66);
-  opacity: 0;
-  animation: mo-dim-in var(--mo-main, .5s) ease-out both;
+/* The backdrop: the shared egg scrim (components/EggScrim.tsx, styles/egg-scrim.css)
+   that MomentHost puts under EVERY moment. It dims over the notice beat and fades
+   out with the scene (.mo-view's exit), off the same phase numbers. A moment
+   whose button stays has its exit at 86400s, so its scrim stays with it. */
+.mo-root > .egg-scrim {
+  --egg-scrim-in: var(--mo-main, .5s);
+  --egg-scrim-out-at: var(--mo-exit, 86400s);
+  --egg-scrim-out: var(--mo-exit-dur, .6s);
 }
-@keyframes mo-dim-in { from { opacity: 0; } to { opacity: 1; } }
+/* Reduced motion: the still card stands on a scrim that is simply there. */
+.mo-reduced > .egg-scrim { animation: none; }
 
 /* The notice beat's default cue: a soft Lume ripple where the action is about
    to happen ("look here"), over before anything travels. */
@@ -73,9 +76,9 @@
   font-size: 15px; color: var(--cl-text, #F4F7FF); white-space: nowrap;
 }
 
-/* ── Reduced motion: the still card. No animation at all. ── */
-.mo-still-wrap { position: absolute; inset: 0; background: rgba(5, 8, 20, .5); }
-.mo-passive .mo-still-wrap { background: none; }
+/* ── Reduced motion: the still card. No animation at all. (Its backdrop is the
+   shared egg scrim the host puts under every moment.) ── */
+.mo-still-wrap { position: absolute; inset: 0; }
 .mo-still {
   position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
   display: flex; align-items: center; gap: 16px;

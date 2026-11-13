@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, it, expect } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -20,6 +22,7 @@ import {
     encodeBoolPref,
     wasLaunchedAtLogin,
     shouldStartMinimized,
+    keepLoginWindowUnmapped,
     shouldHideToTrayOnClose,
     DEFAULT_START_MINIMIZED,
     DEFAULT_MINIMIZE_TO_TRAY,
@@ -345,5 +348,38 @@ describe('minimize to tray never strands the window', () => {
         expect(shouldHideToTrayOnClose({ isQuitting: false, minimizeToTray: true, trayExists: false })).toBe(false);
         expect(shouldHideToTrayOnClose({ isQuitting: true, minimizeToTray: true, trayExists: true })).toBe(false);
         expect(shouldHideToTrayOnClose({ isQuitting: false, minimizeToTray: false, trayExists: true })).toBe(false);
+    });
+});
+
+describe('keepLoginWindowUnmapped - a minimized Linux login launch maps no window (GNOME: "Cipherline" is ready)', () => {
+    const linuxLogin = ['/opt/Cipherline/cipherline', '--autostart'];
+    const decide = (platform: string, argv: string[], stored: string | null, macOpened = false) =>
+        keepLoginWindowUnmapped(platform, shouldStartMinimized({
+            launchedAtLogin: wasLaunchedAtLogin(argv, platform, macOpened),
+            showInstaller: false, storeOk: true, startMinimizedStored: stored,
+        }));
+    it('a Linux login launch with start-minimized (stored on, or never chosen) stays unmapped', () => {
+        expect(decide('linux', linuxLogin, 'true')).toBe(true);
+        expect(decide('linux', linuxLogin, null)).toBe(true);
+    });
+    it('negative controls: start-minimized OFF, a click on the icon, Windows and macOS map the window as before', () => {
+        expect(decide('linux', linuxLogin, 'false')).toBe(false);
+        expect(decide('linux', ['/opt/Cipherline/cipherline'], 'true')).toBe(false);
+        expect(decide('win32', ['C:\\x\\Cipherline.exe', '--autostart'], 'true')).toBe(false);
+        expect(decide('darwin', ['x'], 'true', true)).toBe(false);
+    });
+    it('the installer flow and an unreadable store never leave the window unmapped', () => {
+        expect(keepLoginWindowUnmapped('linux', shouldStartMinimized({ launchedAtLogin: true, showInstaller: true, storeOk: true, startMinimizedStored: 'true' }))).toBe(false);
+        expect(keepLoginWindowUnmapped('linux', shouldStartMinimized({ launchedAtLogin: true, showInstaller: false, storeOk: false, startMinimizedStored: 'true' }))).toBe(false);
+    });
+    it('main.ts decides before the window is built, builds it hidden, and never calls showInactive', () => {
+        const src = readFileSync(join(__dirname, 'main.ts'), 'utf8');
+        expect(src).not.toMatch(/showInactive\(/);
+        expect(src).toMatch(/show: !startHidden && !unmapped,/);
+        const decideAt = src.indexOf('const loginWindowUnmapped = keepLoginWindowUnmapped(');
+        const build = src.indexOf('await createWindow(csp, showInstaller, loginWindowUnmapped);');
+        expect(decideAt).toBeGreaterThan(0);
+        expect(build).toBeGreaterThan(decideAt);
+        expect(src).toMatch(/if \(startMinimizedNow && !loginWindowUnmapped\) \{\s+mainWindow\?\.minimize\(\);/);
     });
 });

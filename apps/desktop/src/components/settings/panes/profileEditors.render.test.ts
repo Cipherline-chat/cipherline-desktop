@@ -20,6 +20,8 @@ vi.mock('../../../contexts/ToastContext', () => ({ useToast: () => ({ push: vi.f
 
 import { ProfileGamesEditor } from './ProfileGamesEditor';
 import { SteamConnect } from './SteamConnect';
+import { SteamLinkRow } from './SteamLinkRow';
+import { ProfileLinksEditor } from './ProfileLinksEditor';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 const h = React.createElement as (...a: any[]) => React.ReactElement;
@@ -80,5 +82,75 @@ describe('SteamConnect', () => {
         expect(del).toHaveBeenCalledTimes(1);
         expect(onChanged).toHaveBeenCalled();
         expect(JSON.stringify(post.mock.calls)).not.toMatch(/7656119/);
+    });
+});
+
+describe('Links editor Steam row (verify-only)', () => {
+    const steamProps = (over: Record<string, unknown> = {}) => ({
+        token: 't', userId: 'u', linked: false, card: null, onChanged: vi.fn(), ...over,
+    });
+    const btn = (label: string) => [...host.querySelectorAll('button')].find((b) => b.textContent === label)!;
+
+    it('is the first thing in the editor, ahead of the link chips and the input', () => {
+        act(() => root.render(h(ProfileLinksEditor, { links: [{ platform: 'x', handle: 'jack' }], onChange: vi.fn(), steam: steamProps() })));
+        const editor = host.querySelector('[data-testid="links-editor"]')!;
+        expect(editor.firstElementChild!.getAttribute('data-testid')).toBe('steam-link-row');
+    });
+    it('not connected: a keyboard-reachable Connect Steam button with the sign-in copy, no text field for Steam', () => {
+        act(() => root.render(h(SteamLinkRow, steamProps())));
+        expect(host.textContent).toMatch(/Sign in with Steam to show your verified account\./);
+        expect(btn('Connect Steam').tagName).toBe('BUTTON');
+        expect(btn('Connect Steam').hasAttribute('disabled')).toBe(false);
+        expect(host.querySelector('input')).toBeNull();
+    });
+    it('Connect runs the same flow as the Steam section: one-time link, system browser, then waits (and can cancel)', async () => {
+        post.mockResolvedValue({ data: { url: 'https://api.cipherline.chat/v1/steam/openid/start?state=abc' } });
+        act(() => root.render(h(SteamLinkRow, steamProps())));
+        await act(async () => { btn('Connect Steam').click(); });
+        expect(post).toHaveBeenCalledWith(expect.stringMatching(/\/steam\/link$/), {}, expect.any(Object));
+        expect(opened).toEqual(['https://api.cipherline.chat/v1/steam/openid/start?state=abc']);
+        expect(host.textContent).toMatch(/Finish in your browser/);
+        expect(host.querySelector('[data-testid="steam-link-row"]')!.getAttribute('data-state')).toBe('waiting');
+        act(() => btn('Cancel').click());
+        expect(host.querySelector('[data-testid="steam-link-row"]')!.getAttribute('data-state')).toBe('connect');
+    });
+    it('a failed start shows an inline error and the button stays usable', async () => {
+        post.mockRejectedValue(new Error('down'));
+        act(() => root.render(h(SteamLinkRow, steamProps())));
+        await act(async () => { btn('Connect Steam').click(); });
+        expect(host.querySelector('[role="alert"]')!.textContent).toMatch(/unavailable right now/);
+        expect(opened).toEqual([]);
+        expect(btn('Connect Steam').hasAttribute('disabled')).toBe(false);
+    });
+    it('no session: Connect is disabled instead of firing a request', () => {
+        act(() => root.render(h(SteamLinkRow, steamProps({ token: null }))));
+        expect(btn('Connect Steam').hasAttribute('disabled')).toBe(true);
+    });
+    it('verified: shows the persona and a tick, and Unlink asks first (never sends a SteamID)', async () => {
+        del.mockResolvedValue({ data: { ok: true } });
+        const onChanged = vi.fn();
+        const card = { steam_id: '76561197960287930', persona_name: 'gabe', avatar: null };
+        act(() => root.render(h(ProfileLinksEditor, { links: [], onChange: vi.fn(), steam: steamProps({ linked: true, card, onChanged }) })));
+        const row = host.querySelector('[data-testid="steam-link-row"]')!;
+        expect(row.getAttribute('data-state')).toBe('verified');
+        expect(row.textContent).toContain('gabe');
+        expect(row.textContent).toMatch(/Steam, verified/);
+        expect(row.querySelector('input')).toBeNull();
+        act(() => btn('Unlink').click());
+        expect(del).not.toHaveBeenCalled();
+        expect(host.textContent).toMatch(/Unlink\?/);
+        await act(async () => { [...host.querySelectorAll('button')].filter((b) => b.textContent === 'Unlink').pop()!.click(); });
+        expect(del).toHaveBeenCalledTimes(1);
+        expect(onChanged).toHaveBeenCalled();
+        expect(JSON.stringify(post.mock.calls)).not.toMatch(/7656119/);
+    });
+    it('the verified row is not one of the removable link chips', () => {
+        const card = { steam_id: '76561197960287930', persona_name: 'gabe', avatar: null };
+        act(() => root.render(h(ProfileLinksEditor, { links: [{ platform: 'x', handle: 'jack' }], onChange: vi.fn(), steam: steamProps({ linked: true, card }) })));
+        expect(host.querySelectorAll('[data-chip]')).toHaveLength(1);
+    });
+    it('disabled (a save in flight) disables Connect', () => {
+        act(() => root.render(h(ProfileLinksEditor, { links: [], disabled: true, onChange: vi.fn(), steam: steamProps() })));
+        expect(btn('Connect Steam').hasAttribute('disabled')).toBe(true);
     });
 });

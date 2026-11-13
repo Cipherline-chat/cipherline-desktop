@@ -234,7 +234,55 @@ export interface TakeStatusEmojiCtx {
     myUserId: string;
     /** Accepted friends only: a stranger's bytes are never filed. */
     isFriend(userId: string): boolean;
+    /**
+     * Whether the accepted-friends list has loaded. A device that was closed
+     * when the emoji was sent pulls it at start-up, usually BEFORE /friends has
+     * answered: `isFriend` is then false for everyone, and the image (already
+     * acked; the sender's ledger says delivered) would be thrown away for good.
+     * While this says false the (still unverified) item is PARKED in memory and
+     * filed by releaseParkedStatusEmoji once the list is known. Omitted = known.
+     */
+    friendsLoaded?(): boolean;
     store: Pick<EmojiBlobStore, 'put'>;
+}
+
+interface ParkedEmoji { myUserId: string; sender: string; raw: object }
+const MAX_PARKED = 32;
+let parked: ParkedEmoji[] = [];
+
+/** Sign-out / account switch. */
+export function clearParkedStatusEmoji(): void { parked = []; }
+
+/** Verify and file one wire emoji from `sender` (the sender is already known to be a friend). */
+async function fileWire(raw: object, store: Pick<EmojiBlobStore, 'put'>): Promise<string | null> {
+    const v = await validateWireEmoji({ ...raw, name: 'status' });
+    if ('rejected' in v || !STATUS_EMOJI_MIMES.includes(v.mime)) return null;
+    try {
+        await store.put(v.id, v.bytes, { mime: v.mime, animated: v.animated, name: 'status' });
+    } catch { return null; }
+    return v.id;
+}
+
+/**
+ * Items that arrived before the friends list was known: file those from
+ * accepted friends, drop the rest. Call whenever the friends list changes.
+ * Resolves to the ids filed. Never rejects.
+ */
+export async function releaseParkedStatusEmoji(
+    myUserId: string, isFriend: (id: string) => boolean, store: Pick<EmojiBlobStore, 'put'>,
+): Promise<string[]> {
+    if (parked.length === 0) return [];
+    const mine = parked.filter(k => k.myUserId === myUserId);
+    parked = parked.filter(k => k.myUserId !== myUserId);
+    const out: string[] = [];
+    for (const k of mine) {
+        try {
+            if (!isFriend(k.sender)) continue;
+            const id = await fileWire(k.raw, store);
+            if (id) out.push(id);
+        } catch { /* one bad item never blocks the rest */ }
+    }
+    return out;
 }
 
 type AnyContent = Record<string, unknown>;
@@ -263,15 +311,16 @@ export function takeStatusEmoji<T>(content: T, ctx: TakeStatusEmojiCtx): TakeSta
     const { status_emoji: raw, ...rest } = content as AnyContent;
     const stored = (async (): Promise<string | null> => {
         const sender = ctx.senderUserId;
-        if (!sender || sender === ctx.myUserId || !ctx.isFriend(sender)) return null;
+        if (!sender || sender === ctx.myUserId) return null;
         if (rest.user_id !== undefined && rest.user_id !== null && rest.user_id !== sender) return null;
         if (!raw || typeof raw !== 'object') return null;
-        const v = await validateWireEmoji({ ...(raw as object), name: 'status' });
-        if ('rejected' in v || !STATUS_EMOJI_MIMES.includes(v.mime)) return null;
-        try {
-            await ctx.store.put(v.id, v.bytes, { mime: v.mime, animated: v.animated, name: 'status' });
-        } catch { return null; }
-        return v.id;
+        if (ctx.friendsLoaded && !ctx.friendsLoaded()) {
+            // Cannot tell yet whether the sender is a friend: hold it (verified on release).
+            parked = [...parked.filter(k => !(k.myUserId === ctx.myUserId && k.sender === sender)), { myUserId: ctx.myUserId, sender, raw: raw as object }].slice(-MAX_PARKED);
+            return null;
+        }
+        if (!ctx.isFriend(sender)) return null;
+        return fileWire(raw as object, ctx.store);
     })().catch(() => null);
     return { content: rest as T, stored };
 }

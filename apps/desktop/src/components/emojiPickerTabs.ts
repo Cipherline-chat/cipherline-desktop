@@ -56,7 +56,7 @@ export const MY_EMOJI_TAB: EmojiTabDef = {
     label: 'My Emojis',
     placeholder: 'cl-empty-mine',
     emptyTitle: 'No emojis of your own yet',
-    emptyBody: 'Save emojis with right-click or add your own in Settings → Personalize.',
+    emptyBody: 'Save emojis with right-click or add your own in Settings → Activity & Style.',
     iconSvg: svg(dot(10.5, 13.5, 8.5)
         + dot(7.6, 11.2, 1.35) + dot(13.4, 11.2, 1.35)
         + 'M6.9 14.6q3.6 4.4 7.2 0q-3.6 2.2-7.2 0z'
@@ -110,3 +110,13 @@ export function emptyTabForLabel(label: string | null | undefined, emptyTabs: re
 
 /** Shadow-root CSS: keep the placeholder tile invisible. */
 export const PLACEHOLDER_HIDE_CSS = EMOJI_TABS.map(t => `button[title="${t.placeholder}"]`).join(', ') + ' { display: none !important; }';
+
+/** The "+" that adds a personal emoji from the picker: enabled until My Emojis is full. */
+export function addEmojiButtonState(count: number, max: number): { disabled: boolean; label: string; tooltip: string } {
+    const disabled = count >= max;
+    return {
+        disabled,
+        label: 'Add an emoji',
+        tooltip: disabled ? `My Emojis is full (${max}). Remove one to add another.` : 'Add an emoji to My Emojis',
+    };
+}

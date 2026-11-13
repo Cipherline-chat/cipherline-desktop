@@ -19,17 +19,25 @@ import e2eeWorkerUrl from '../../src/workers/e2eeWorker?worker&url';
 import { stableE2EEOptions } from '../../src/utils/e2eeRoomOptions';
 import { installE2EESenderCodecPin, type CodecPinRoom } from '../../src/utils/e2eeSenderCodec';
 import { installE2EEKey } from '../../src/utils/e2eeActivation';
-import { buildScreenSharePublishOptions, applyScreenShareSenderParams, type ScreenShareCodec } from '../../src/utils/screenShare';
+import { buildScreenSharePublishOptions, applyScreenShareSenderParams, installH264HighPreference, type ScreenShareCodec } from '../../src/utils/screenShare';
+import { attachAnnexBStatsLog, attachDataPacketErrorLog } from '../../src/utils/e2eeWorkerStats';
 import { installShareLowLayerControl, type ShareTrackLike } from '../../src/utils/shareLowLayer';
 import { claimRemoteQuality, pickShareLayer, normaliseLayers, displayedPixels, appliedQuality, claimedQuality, type QualityClaim } from '../../src/utils/remoteVideoQuality';
 import { CallEventMonitor } from '../../src/components/call/CallEventMonitor';
 import { setCallEventTap, logCallEvent } from '../../src/utils/callEventLog';
+import { createCropPipeline, type CropPipeline } from '../../src/utils/shareCrop';
+import { ShareCodecDriftWatch, readSentCodecs } from '../../src/utils/shareCodecDrift';
+import { readSourceFrames } from '../../src/utils/shareHealth';
+
+// A "before" build can drop the previous shareCrop.ts in as shareCrop.legacy.ts
+// (README, --crop legacy); absent otherwise, and this is then an empty object.
+const legacyCrop = import.meta.glob('../../src/utils/shareCrop.legacy.ts', { eager: true }) as Record<string, { createCropPipeline: typeof createCropPipeline }>;
 
 type Row = Record<string, unknown>;
 const samples: Row[] = [];
 const events: Row[] = [];
 setCallEventTap((kind, detail) => { events.push({ t: Date.now(), kind, ...(detail ?? {}) }); });
-const log = (m: string) => { events.push({ t: Date.now(), kind: 'harness_log', m }); console.info(m); };
+const log = (m: string) => { events.push({ t: Date.now(), kind: 'harness_log', m }); console.info(`harness: ${m}`); };
 
 /** The app's room options (CallPane.tsx roomOptions), minus device ids. */
 function roomOptions(keyProvider: ExternalE2EEKeyProvider | null, worker: Worker | null): RoomOptions {
@@ -55,6 +63,10 @@ async function joinRoom(url: string, token: string, keyB64: string | null, befor
     beforeConnect?.(room);
     await room.connect(url, token, { rtcConfig: { iceServers: [] } });
     if (keyB64) await room.setE2EEEnabled(true);
+    // What the E2EE worker saw (Annex-B start-code habits of THIS encoder, data-packet failures) and any
+    // frame decryption error, as call events: counts and reason words only.
+    if (worker) { attachAnnexBStatsLog(worker); attachDataPacketErrorLog(worker); }
+    room.on(RoomEvent.EncryptionError, e => log(`encryption error: ${String((e as Error)?.message ?? e).slice(0, 120)}`));
     room.on(RoomEvent.Disconnected, r => log(`disconnected ${String(r)}`));
     room.on(RoomEvent.Reconnecting, () => log('reconnecting'));
     room.on(RoomEvent.Reconnected, () => log('reconnected'));
@@ -100,7 +112,9 @@ void main(){
     const loc = gl.getAttribLocation(prog, 'p'); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
     const ut = gl.getUniformLocation(prog, 't'); const ur = gl.getUniformLocation(prog, 'r');
     gl.uniform2f(ur, w, h); gl.viewport(0, 0, w, h);
-    return { canvas, draw: (t: number) => { gl.uniform1f(ut, t); gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4); } };
+    // `probe`: a few pixels read back (slow, so called once a second at most) - proves the picture really changes.
+    const probe = () => { const px = new Uint8Array(4); const out: number[] = []; for (const [fx, fy] of [[0.3, 0.3], [0.5, 0.5], [0.7, 0.4]]) { gl.readPixels(Math.floor(w * fx), Math.floor(h * fy), 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px); out.push(px[0] + px[1] + px[2]); } return out; };
+    return { canvas, probe, draw: (t: number) => { gl.uniform1f(ut, t); gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4); } };
 }
 
 /** A 440 Hz tone with a slow tremolo, published as the microphone (the "voice" a viewer hears). */
@@ -122,26 +136,45 @@ const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : u
 
 // ── Publisher ──────────────────────────────────────────────────────────────
 
-interface PubOpts { url: string; token: string; keyB64: string | null; codec: ScreenShareCodec; fps: number; width: number; height: number; resolution: '1440p' | '1080p' | 'source'; viewers: number; simulateHardware: boolean; source: 'canvas' | 'file'; gate: boolean }
+interface PubOpts {
+    url: string; token: string; keyB64: string | null; codec: ScreenShareCodec; fps: number; width: number; height: number; resolution: '1440p' | '1080p' | 'source'; viewers: number; simulateHardware: boolean; source: 'canvas' | 'file'; gate: boolean;
+    /** Publish the CENTER screen of the canvas through the app's crop pipeline (shareCrop.ts); 'legacy' = shareCrop.legacy.ts. */
+    crop?: 'new' | 'legacy' | null;
+    /** At this many seconds, hand the sender a driftW x driftH track it cannot encode (libwebrtc then falls back to another codec). */
+    driftAtS?: number; driftW?: number; driftH?: number;
+    /** Run the app's ShareCodecDriftWatch and, on a drift, republish as `recoverCodec` (what the app's fresh republish does). */
+    driftWatch?: boolean; recoverCodec?: ScreenShareCodec;
+    /** H.264 High on the share's transceiver (the app's preferH264HighOnSender, installed before the publish). */
+    high?: boolean;
+    /** Hold an idle (fake) camera open so getStats reports the encoder implementation (needs --use-fake-device-for-media-stream). */
+    exposeEncoder?: boolean;
+}
 
 async function startPublisher(o: PubOpts) {
     const { room, worker } = await joinRoom(o.url, o.token, o.keyB64);
     installE2EESenderCodecPin(room as unknown as CodecPinRoom, worker as unknown as { postMessage(m: unknown): void } | null, log);
     let vtrack: MediaStreamTrack;
     let drawn = 0;
+    let canvasProbe: (() => number[]) | null = null;
+    let lastPix = '';
+    // Chromium only reports encoderImplementation / powerEfficientEncoder to a page that is capturing; the app's share is a
+    // screen capture, this page publishes a canvas, so (with the fake-device switches) hold one idle camera open.
+    if (o.exposeEncoder) { try { (window as unknown as { __idleCam?: MediaStream }).__idleCam = await navigator.mediaDevices.getUserMedia({ video: { width: 320, height: 180 } }); } catch (e) { log(`exposeEncoder failed: ${String(e)}`); } }
     if (o.source === 'file') {
         // Chromium's fake capture device playing a Y4M clip (--use-file-for-fake-video-capture):
         // frames arrive in CPU memory at the clip's rate, like a desktop capturer.
         const s = await navigator.mediaDevices.getUserMedia({ video: { width: o.width, height: o.height, frameRate: o.fps } });
         vtrack = s.getVideoTracks()[0];
     } else {
-        const { canvas, draw } = makeCanvas(o.width, o.height);
+        const { canvas, draw, probe } = makeCanvas(o.width, o.height);
+        canvasProbe = probe;
         vtrack = canvas.captureStream().getVideoTracks()[0];
         // Paced draw loop at the target rate (drift-corrected).
         const t0 = performance.now(); let frame = 0;
         const tick = () => {
             draw((performance.now() - t0) / 1000); drawn++;
             frame++;
+            if (frame % 60 === 0 && canvasProbe) lastPix = canvasProbe().join('/'); // right after the draw: the buffer is cleared once presented
             setTimeout(tick, Math.max(0, t0 + (frame * 1000) / o.fps - performance.now()));
         };
         tick();
@@ -149,12 +182,74 @@ async function startPublisher(o: PubOpts) {
     vtrack.contentHint = 'motion';
     log(`capture ${JSON.stringify(vtrack.getSettings())}`);
 
+    // A single screen of an ultra-wide "display": the app's crop pipeline
+    // (default worker - bundled by THIS build exactly as the app's is).
+    let pipe: CropPipeline | null = null;
+    if (o.crop) {
+        const make = o.crop === 'legacy' ? Object.values(legacyCrop)[0]?.createCropPipeline : createCropPipeline;
+        if (!make) throw new Error('crop=legacy needs src/utils/shareCrop.legacy.ts in the build');
+        pipe = make(vtrack, { kind: 'slice', count: 3, index: 1 });
+        vtrack = pipe.track;
+        log(`crop pipeline (${o.crop}) mode=${pipe.mode}`);
+    }
+
     // Exactly the app's publish path (SidebarConference.handleScreenShareSelect):
+    if (o.high) installH264HighPreference(room.localParticipant as never, () => true, log);
     const publishOptions = buildScreenSharePublishOptions(o.resolution, o.fps, o.codec, { lowerLayer: true });
     log(`publish options ${JSON.stringify(publishOptions)}`);
-    const lv = new LocalVideoTrack(vtrack, undefined, true);
+    let lv = new LocalVideoTrack(vtrack, undefined, true);
     const pub = await room.localParticipant.publishTrack(lv, { ...publishOptions, source: Track.Source.ScreenShare, name: 'screen' });
-    const sender = (pub.track as unknown as { sender?: RTCRtpSender }).sender!;
+    let sender = (pub.track as unknown as { sender?: RTCRtpSender }).sender!;
+    let publishedCodec: ScreenShareCodec = o.codec;
+    // The oversized drift source is drawn at 10 fps only (a few frames are enough to fail the encoder) and stopped as soon as the drift is seen.
+    let stopBig: () => void = () => {};
+
+    if (o.driftAtS) {
+        setTimeout(() => {
+            const big = makeCanvas(o.driftW ?? 8192, o.driftH ?? 4320);
+            const t0 = performance.now();
+            const bigTimer = setInterval(() => big.draw((performance.now() - t0) / 1000), 100);
+            const bigTrack = big.canvas.captureStream().getVideoTracks()[0];
+            stopBig = () => { clearInterval(bigTimer); bigTrack.stop(); big.canvas.remove(); };
+            bigTrack.contentHint = 'motion';
+            // The app's hot swap (LocalVideoTrack.replaceTrack), onto a source the encoder cannot reopen at.
+            void lv.replaceTrack(bigTrack, { userProvidedTrack: true }).then(() => log(`drift: sender handed ${o.driftW ?? 8192}x${o.driftH ?? 4320}`));
+        }, o.driftAtS * 1000);
+    }
+    if (o.driftWatch) {
+        const arm = () => {
+            const s = sender;
+            void new ShareCodecDriftWatch({
+                getStats: () => s.getStats() as never,
+                published: publishedCodec,
+                onDrift: d => {
+                    stopBig();
+                    logCallEvent('share_codec_drift', { published: d.published, sent: d.sent, layers: d.layers, enc: d.encoder ?? '', action: 'republish' });
+                    void (async () => {
+                        // The app's fresh republish: a new publication, codec decided again.
+                        const codec = o.recoverCodec ?? 'vp8';
+                        log(`republish: start (${codec})`);
+                        const fresh = makeCanvas(1920, 1080);
+                        const t0 = performance.now();
+                        setInterval(() => fresh.draw((performance.now() - t0) / 1000), 1000 / o.fps);
+                        const t = fresh.canvas.captureStream().getVideoTracks()[0];
+                        t.contentHint = 'motion';
+                        await room.localParticipant.unpublishTrack(lv, true);
+                        stopBig();
+                        const opts = buildScreenSharePublishOptions('1080p', o.fps, codec, { lowerLayer: true });
+                        lv = new LocalVideoTrack(t, undefined, true);
+                        const p2 = await room.localParticipant.publishTrack(lv, { ...opts, source: Track.Source.ScreenShare, name: 'screen' });
+                        sender = (p2.track as unknown as { sender?: RTCRtpSender }).sender!;
+                        publishedCodec = codec;
+                        await applyScreenShareSenderParams(sender, o.fps, opts.screenShareEncoding.maxBitrate, { codec });
+                        log(`republished as ${codec}`);
+                        arm();
+                    })();
+                },
+            }).start();
+        };
+        arm();
+    }
     await applyScreenShareSenderParams(sender, o.fps, publishOptions.screenShareEncoding.maxBitrate, { codec: o.codec });
     log(`sender params ${JSON.stringify(sender.getParameters().encodings)}`);
     if (!o.gate) {
@@ -213,15 +308,21 @@ async function startPublisher(o: PubOpts) {
                     kbps: Math.round(((cur.bytes - (p.bytes ?? cur.bytes)) * 8) / 1000),
                     encMs: dF > 0 ? Math.round(((cur.enc - (p.enc ?? cur.enc)) / dF) * 10000) / 10 : undefined,
                     pli: cur.pli - (p.pli ?? cur.pli), nack: cur.nack - (p.nack ?? cur.nack),
-                    qlr: s.qualityLimitationReason, impl: s.encoderImplementation, target: num(s.targetBitrate),
+                    qlr: s.qualityLimitationReason, impl: s.encoderImplementation, hw: s.powerEfficientEncoder, target: num(s.targetBitrate),
                 });
                 prev.set(rid, cur);
             }
             if (s.type === 'remote-inbound-rtp' && s.kind === 'video') rtt = num(s.roundTripTime);
             if (s.type === 'candidate-pair' && s.nominated && s.state === 'succeeded') outBw = num(s.availableOutgoingBitrate);
         });
+        row.pix = lastPix;
         row.layers = layers; row.rtt = rtt; row.outBwKbps = outBw ? Math.round(outBw / 1000) : undefined;
         row.enc = sender.getParameters().encodings.map(e => `${e.rid ?? '-'}:${e.active ? 1 : 0}`).join(',');
+        // What the sender REALLY sends vs. what it was published as; what the capture handed it.
+        row.sentCodecs = readSentCodecs(r as never).codecs.join(',');
+        row.published = publishedCodec;
+        row.srcFrames = readSourceFrames(r as never);
+        if (pipe) { row.crop = pipe.stats(); row.cropDiag = pipe.diag?.() ?? { mode: pipe.mode }; }
         samples.push(row);
     }, 1000);
     return { sid: pub.trackSid, encodings: sender.getParameters().encodings };
@@ -230,6 +331,43 @@ async function startPublisher(o: PubOpts) {
 // ── Viewer ─────────────────────────────────────────────────────────────────
 
 interface ViewOpts { url: string; token: string; keyB64: string | null }
+
+/**
+ * --mode stall: the decoder-behind stall (shareRxStall.ts) as the monitor sees it.
+ * This box has no D3D11 HEVC, so only the report is false: framesDecoded stands
+ * still while everything else stays real, and the app's own CallEventMonitor,
+ * recovery, SFU pause, keyframe and layer switch answer it.
+ *   drain: when the share is paused the last 10 frames come out after DRAIN_MS, and
+ *          the real counter is back once it resumes (the backlog is gone).
+ *   stuck: nothing comes out through the pause, real again HOLD_STUCK_MS after resume.
+ */
+type FakeStall = { kind: 'drain' | 'stuck'; dec: number | null; pausedAt: number | null; resumedAt: number | null };
+const DRAIN_MS = 1000;
+const HOLD_STUCK_MS = 1500;
+let fakeStall: FakeStall | null = null;
+const realStats = RemoteVideoTrack.prototype.getRTCStatsReport;
+RemoteVideoTrack.prototype.getRTCStatsReport = async function patched(this: RemoteVideoTrack) {
+    const r = await realStats.call(this);
+    const f = fakeStall;
+    if (!f || !r) return r;
+    const enabled = stallPub?.isEnabled !== false;
+    const now = Date.now();
+    if (!enabled && f.pausedAt === null) f.pausedAt = now;
+    if (enabled && f.pausedAt !== null && f.resumedAt === null) f.resumedAt = now;
+    if (f.kind === 'drain' && f.resumedAt !== null) { fakeStall = null; return r; }
+    if (f.kind === 'stuck' && f.resumedAt !== null && now - f.resumedAt >= HOLD_STUCK_MS) { fakeStall = null; return r; }
+    const out = new Map<string, unknown>();
+    r.forEach((s: Record<string, unknown>, k: string) => {
+        if (s.type === 'inbound-rtp' && s.kind === 'video') {
+            f.dec ??= num(s.framesDecoded) ?? 0;
+            const tail = f.kind === 'drain' && f.pausedAt !== null && now - f.pausedAt >= DRAIN_MS ? 10 : 0;
+            out.set(k, { ...s, framesDecoded: f.dec + tail });
+        } else out.set(k, s);
+    });
+    return out as unknown as RTCStatsReport;
+};
+let stallPub: RemoteTrackPublication | null = null;
+function fakeDecoderStall(kind: FakeStall['kind']) { fakeStall = { kind, dec: null, pausedAt: null, resumedAt: null }; log(`fake decoder stall: ${kind}`); }
 
 async function startViewer(o: ViewOpts) {
     let vpub: RemoteTrackPublication | null = null;
@@ -257,7 +395,7 @@ async function startViewer(o: ViewOpts) {
     };
     const onSub = (track: unknown, pub: RemoteTrackPublication) => {
         if (pub.source === Track.Source.ScreenShare && track instanceof RemoteVideoTrack) {
-            vpub = pub; vtrack = track; track.attach(video);
+            vpub = pub; vtrack = track; stallPub = pub; track.attach(video);
             claim = claimRemoteQuality(pub);
             pick();
             log(`subscribed share layers=${JSON.stringify(pub.trackInfo?.layers?.map(l => ({ q: l.quality, w: l.width, h: l.height })))}`);
@@ -276,9 +414,16 @@ async function startViewer(o: ViewOpts) {
     setInterval(async () => {
         const row: Row = { t: Date.now(), role: 'view' };
         if (vtrack && vpub) {
-            const r = await vtrack.getRTCStatsReport() as unknown as StatsLike | undefined;
+            const r = await realStats.call(vtrack) as unknown as StatsLike | undefined; // the harness's own rows stay true during a fake stall
+            row.enabled = vpub.isEnabled;
+            const mimes = new Map<string, string>();
+            r?.forEach(s => { if (s.type === 'codec' && typeof s.id === 'string') mimes.set(s.id, String(s.mimeType)); });
+            row.inbound = false;
             r?.forEach(s => {
                 if (s.type !== 'inbound-rtp' || s.kind !== 'video') return;
+                row.inbound = true;
+                row.codec = typeof s.codecId === 'string' ? mimes.get(s.codecId) : undefined;
+                row.pkts = num(s.packetsReceived);
                 const cur = {
                     dec: num(s.framesDecoded) ?? 0, rx: num(s.packetsReceived) ?? 0, lost: num(s.packetsLost) ?? 0,
                     pli: (num(s.pliCount) ?? 0) + (num(s.firCount) ?? 0), nack: num(s.nackCount) ?? 0,
@@ -334,5 +479,5 @@ function drain() {
     return out;
 }
 
-(window as unknown as { H: unknown }).H = { startPublisher, startViewer, drain };
+(window as unknown as { H: unknown }).H = { startPublisher, startViewer, drain, fakeDecoderStall };
 (window as unknown as { HREADY: boolean }).HREADY = true;

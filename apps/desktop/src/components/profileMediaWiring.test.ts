@@ -23,9 +23,10 @@ describe('profile media wiring', () => {
         expect(body).toContain('rememberUserAvatarId(f.user_id, f.avatar_url ?? null)');
     });
 
-    it('Dashboard hands the DM panel\'s profile response to the profile cache', () => {
-        const block = dashboard.slice(dashboard.indexOf('// Fetch DM partner public profile'));
-        expect(block.slice(0, block.indexOf('setDmPartnerProfile({'))).toContain('primeProfile(res.data)');
+    it('the DM panel\'s profile card reads through the profile cache (so opening the full profile paints from it)', () => {
+        const card = read('profile/DmProfileCard.tsx');
+        expect(card).toContain('peekProfile(userId)');
+        expect(card).toContain('fetchProfileCached(userId, token');
     });
 
     it('the warmer scopes the profile cache to the account and warms friends\' banners', () => {

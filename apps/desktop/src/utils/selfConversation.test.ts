@@ -186,7 +186,8 @@ describe('wiring (source-level)', () => {
 
     it('Dashboard: every place that replaces the conversation list from the server labels the self row', () => {
         const labelled = dash.match(/setConversations\(labelSelfConversations\(/g) ?? [];
-        expect(labelled.length).toBe(4);
+        // 5: the 4 list loaders + the Invite People dialog's send, which refreshes the list after DMing a friend.
+        expect(labelled.length).toBe(5);
         // positive control: the raw, unlabelled form really exists elsewhere only for local patches (functional updates)
         expect(dash).toMatch(/setConversations\(prev =>/);
         expect(dash).not.toMatch(/setConversations\((?:res|convsRes)\.data\)/);

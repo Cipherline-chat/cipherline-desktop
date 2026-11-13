@@ -49,6 +49,19 @@ describe('in-app update wiring in main.ts', () => {
         expect(block("ipcMain.handle('updater:quit-and-install'", '(', ')')).toContain('installRequested = true');
     });
 
+    it('a .deb install failure gets the .deb link (or "cancelled"); the link is never the AppImage, and only a .deb ever asks', () => {
+        // detection mirrors electron-updater's own: package-type in resources, $APPIMAGE
+        expect(MAIN).toMatch(/path\.join\(process\.resourcesPath, 'package-type'\)/);
+        expect(MAIN).toContain('linuxPackageKind(process.env.APPIMAGE, typeFile)');
+        // install step: classification + .deb link only when this IS a .deb
+        expect(ON_ERROR).toMatch(/const debInstall = readLinuxPackage\(\) === 'deb';/);
+        expect(ON_ERROR).toMatch(/onInstallError\(updateState, debInstall\s*\? \{ kind: classifyInstallError\(e\), manualDownloadUrl: debDownloadUrl\(lastKnownUpdateFiles, failedVersion, process\.arch\) \}\s*: undefined\)/);
+        // download step: a .deb gets debDownloadUrl, an AppImage pickDownloadUrl, any other Linux nothing
+        expect(ON_ERROR).toMatch(/if \(pkg === 'deb'\) return debDownloadUrl\(lastKnownUpdateFiles, version, process\.arch\);/);
+        expect(ON_ERROR).toMatch(/if \(pkg === 'appimage'\) return lastKnownUpdateFiles \? pickDownloadUrl\(lastKnownUpdateFiles, 'linux', process\.arch\) : null;/);
+        expect(ON_ERROR).toContain("linuxPackage: process.platform === 'linux' ? readLinuxPackage() : undefined");
+    });
+
     it('a retry clears the pending download BEFORE re-checking', () => {
         const clear = RETRY.indexOf('await clearPendingUpdateCache()');
         const check = RETRY.indexOf('checkForUpdatesHandled()');
@@ -79,6 +92,13 @@ describe('in-app update wiring in main.ts', () => {
         expect(CONFIGURE).toContain('autoUpdater.allowDowngrade = false');
         expect(CONFIGURE).toContain('autoUpdater.disableDifferentialDownload = true');
         expect(CONFIGURE).toContain('autoUpdater.disableWebInstaller = true');
+    });
+
+    it('the 1.0.x -> 0.1.x renumber bridge is installed right after the downgrade pin, on the real updater', () => {
+        const pin = CONFIGURE.indexOf('autoUpdater.allowDowngrade = false');
+        const bridge = CONFIGURE.indexOf('installRenumberBridge(autoUpdater, () => app.getVersion()');
+        expect(bridge).toBeGreaterThan(pin);
+        expect(MAIN).toContain("import { installRenumberBridge } from './renumber-bridge';");
     });
 
     it('the update-manifest signature provider is installed in configureUpdater, for every platform', () => {
@@ -147,5 +167,17 @@ describe('in-app update wiring in main.ts', () => {
 
     it('no SecureStore write was added to the updater path (smoke-test SecureStore trap)', () => {
         for (const src of [CONFIGURE, RETRY, ON_ERROR]) expect(src).not.toMatch(/secureStore\.set\(/);
+    });
+});
+
+describe('Linux manual download link: per package, never the wrong artifact', () => {
+    it('an AppImage gets the AppImage, a .deb gets the .deb, any other Linux install gets nothing', () => {
+        const fn = /buildDownloadUrl: \(version\) => \{[\s\S]*?\n {8}\},/.exec(MAIN)![0];
+        // the AppImage link is only ever picked for an AppImage ($APPIMAGE) install
+        expect(fn).toMatch(/if \(pkg === 'appimage'\) return lastKnownUpdateFiles \? pickDownloadUrl\(lastKnownUpdateFiles, 'linux', process\.arch\) : null;/);
+        expect(fn).toMatch(/if \(pkg === 'deb'\) return debDownloadUrl\(/);
+        expect(fn).toMatch(/\n {10}return null;\n/);
+        // ...and a .deb is never handed pickDownloadUrl('linux'), which would point it at the AppImage
+        expect(fn.indexOf("pkg === 'deb'")).toBeLessThan(fn.indexOf('pickDownloadUrl(lastKnownUpdateFiles, \'linux\''));
     });
 });

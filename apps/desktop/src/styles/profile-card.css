@@ -283,6 +283,52 @@ button.pcd-chip:active { transform: scale(.97); }
 .pcd-prog { height: 4px; border-radius: 999px; overflow: hidden; background: rgba(255, 255, 255, .08); margin-top: 4px; }
 .pcd-prog > i { display: block; height: 100%; border-radius: inherit; background: var(--cl-lume, #25E0C8); transform-origin: left center; }
 
+/* ── level, opened (LevelProgress: the top of the Achievements tab) ───────── */
+.plp {
+  display: flex; align-items: flex-start; gap: 16px; padding: 16px 18px; border-radius: 16px;
+  background: rgba(255, 255, 255, .045); outline: none;
+}
+.plp:focus-visible { box-shadow: 0 0 0 2px rgba(37, 224, 200, .45); }
+.plp-ring {
+  position: relative; flex: none; width: 60px; height: 60px; display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 50%; color: var(--cl-lume, #25E0C8); background: rgba(37, 224, 200, .08);
+}
+.plp[data-max="true"] .plp-ring { color: var(--cl-glow, #FFC94D); background: rgba(255, 201, 77, .1); }
+.plp-ring svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+.plp-ring b { position: relative; font: 600 24px/1 var(--cl-font-display, 'Fredoka', sans-serif); font-variant-numeric: tabular-nums; color: var(--cl-text, #F4F7FF); }
+.plp-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.plp-head { display: flex; align-items: baseline; gap: 10px; }
+.plp-title { margin: 0; flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; font: 600 18px/1.2 var(--cl-font-display, 'Fredoka', sans-serif); color: var(--cl-text, #F4F7FF); }
+.plp-max {
+  font: 800 10.5px/1 var(--cl-font-body, 'Nunito', sans-serif); letter-spacing: .4px; text-transform: uppercase;
+  padding: 4px 7px; border-radius: 999px; color: var(--cl-glow, #FFC94D); background: rgba(255, 201, 77, .12);
+}
+.plp-togo { flex: none; font-size: 12px; font-weight: 700; color: var(--cl-muted, #A7B3D4); font-variant-numeric: tabular-nums; }
+.plp-line { margin: 0; font-size: 13px; font-weight: 600; color: var(--pcd-body); font-variant-numeric: tabular-nums; }
+.plp-bar { height: 6px; margin-top: 6px; }
+.plp[data-max="true"] .plp-bar > i { background: var(--cl-glow, #FFC94D); }
+.plp-src { margin: 8px 0 0; padding: 0; list-style: none; display: flex; flex-wrap: wrap; gap: 6px; }
+.plp-src li {
+  display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px; border-radius: 999px;
+  background: rgba(255, 255, 255, .06); font-size: 12px; font-weight: 700; color: var(--pcd-body); font-variant-numeric: tabular-nums;
+}
+.plp-src svg { color: var(--cl-muted, #A7B3D4); }
+.plp-how { margin: 6px 0 0; font-size: 11.5px; color: var(--cl-faint, #5E6B8F); }
+.plp--hidden { align-items: center; }
+.plp-lock {
+  flex: none; width: 44px; height: 44px; display: inline-flex; align-items: center; justify-content: center; border-radius: 50%;
+  color: var(--cl-muted, #A7B3D4); background: rgba(255, 255, 255, .06);
+}
+.plp--hidden .plp-title { font-size: 15px; }
+/* Opening: the ring sweeps and the bar fills once (skipped under reduced motion). */
+.plp .plp-arc { animation: pcd-ring-in 800ms var(--pcd-ease-out, ease-out) both; }
+/* No `to`: it fills up to the element's own scaleX (the inline fraction), never past it. */
+@keyframes plp-bar-in { from { transform: scaleX(0); } }
+.plp .plp-bar > i { animation: plp-bar-in 700ms var(--pcd-ease-out, ease-out) 120ms backwards; }
+@media (prefers-reduced-motion: reduce) {
+  .plp .plp-arc, .plp .plp-bar > i { animation: none !important; }
+}
+
 /* ── high five ─────────────────────────────────────────────────────────────── */
 .pcd-hf { position: relative; flex: none; }
 .pcd-hf-btn {

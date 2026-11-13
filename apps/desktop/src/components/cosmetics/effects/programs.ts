@@ -669,100 +669,85 @@ const shoal: FxProgram<{ fs: Fish[]; n3: ReturnType<typeof simplex3> }> = {
     },
 };
 
-// ── Whale song ───────────────────────────────────────────────────────────────
-// A great whale far below, its body built along an undulating spine, rim-lit
-// from above, crossing the card every ~45 s; every few seconds its song rings
-// out as arcs from its head.
-interface Whale { n3: ReturnType<typeof simplex3>; flecks: Fleck[] }
-const whaleSong: FxProgram<Whale> = {
-    stock: '#7FB8FF',
-    fps: 40,
-    init(env, rand) {
-        return { n3: simplex3(8), flecks: Array.from({ length: count(env, 28) }, () => ({ x: rand() * env.w, y: rand() * env.h, z: 0.2 + rand() * 0.6, ph: 0 })) };
+// ── Harmonograph ─────────────────────────────────────────────────────────────
+// The voice-500h reward (replaced whale song). Two pendulums tuned to a
+// musical interval (a fifth 3:2, a fourth 4:3, an octave 2:1) draw a closed
+// Lissajous figure in light across the banner; their phases drift slowly and
+// never in step, so the figure keeps folding into new shapes and never
+// repeats on a visible period - a continuous function of time, no seam. Two
+// fainter echoes (the same figure a moment earlier) give it the depth of a
+// long exposure, and a pen of light runs along the newest one with a short
+// trail. One gradient keeps it bright in the banner and faint over the text.
+const INTERVALS: ReadonlyArray<readonly [number, number]> = [[3, 2], [4, 3], [2, 1]];
+const HG_N = 540;
+interface Harmono { pts: Float32Array; ph: Float32Array }
+function harmonoPoint(out: Float32Array, i: number, s: number, a: number, b: number, p: Float32Array, t: number, ax: number, ay: number, cx: number, cy: number): void {
+    out[i * 2] = cx + ax * (0.72 * Math.sin(a * s + p[0] + t * 0.11) + 0.28 * Math.sin(b * s + p[1] - t * 0.053));
+    out[i * 2 + 1] = cy + ay * (0.72 * Math.sin(b * s + p[2] + t * 0.071) + 0.28 * Math.sin(a * s + p[3] + t * 0.037));
+}
+const harmonograph: FxProgram<Harmono> = {
+    stock: '#B9A6FF',
+    fps: 30,
+    init(_env, rand) {
+        return { pts: new Float32Array((HG_N + 1) * 2), ph: Float32Array.from({ length: 4 }, () => rand() * TAU) };
     },
-    frame(g, s, t, dt, env) {
-        const blue = env.opts.p === 1;
-        const L = env.w * (blue ? 0.92 : 0.7);
-        const P = 46;
-        // Phase-shifted so a fresh card (and the reduced-motion still) already shows the whale.
-        const u = ((t + P * 0.42) % P) / P;
-        const hx = env.w + L * 0.15 - u * (env.w + L * 1.4);
-        const yc = env.h * 0.78 + 8 * Math.sin(t * 0.21);
-        const N = 26;
-        const top: Array<[number, number]> = [], bot: Array<[number, number]> = [];
-        let headY = yc;
-        for (let i = 0; i <= N; i++) {
-            const sN = i / N;
-            const x = hx + sN * L;
-            const y = yc + (blue ? 5 : 7) * sN * sN * Math.sin(TAU * t * 0.22 - sN * 3.2);
-            if (i === 0) headY = y;
-            // Thickness profile: a blunt head, the widest point a third back, a thin peduncle.
-            const th = (blue ? 0.085 : 0.14) * L * Math.pow(Math.sin(Math.PI * Math.min(1, sN * 1.08 + 0.04)), 0.75) * (1 - 0.55 * sN);
-            top.push([x, y - th * 0.95]);
-            bot.push([x, y + th * 1.05]);
+    frame(g, s, t, _dt, env) {
+        const [a, b] = INTERVALS[Math.max(0, Math.min(2, env.opts.p ?? 0))];
+        const drift = lvl(env.opts.s, 0.55, 1, 1.7);
+        const tiny = env.h < 200;
+        const cx = tiny ? env.w / 2 : env.w * 0.56;
+        const cy = tiny ? env.h / 2 : env.banner * 0.52;
+        const ax = tiny ? env.w * 0.42 : Math.min(150, env.w * 0.36);
+        const ay = tiny ? env.h * 0.4 : Math.min(70, env.banner * 0.42);
+        // a and b are coprime, so the figure closes after one turn of s.
+        const span = TAU;
+        const grad = g.createLinearGradient(0, cy - ay, 0, cy + ay * 1.6);
+        grad.addColorStop(0, shade(env.tint, 12, 1, 6));
+        grad.addColorStop(0.55, shade(env.tint, 4, 0.8, 6));
+        grad.addColorStop(1, shade(env.tint, 0, 0.18));
+        g.lineJoin = 'round';
+        g.lineCap = 'round';
+        const trace = (tt: number) => {
+            for (let i = 0; i <= HG_N; i++) harmonoPoint(s.pts, i, (i / HG_N) * span, a, b, s.ph, tt, ax, ay, cx, cy);
+            g.beginPath();
+            g.moveTo(s.pts[0], s.pts[1]);
+            for (let i = 1; i <= HG_N; i++) g.lineTo(s.pts[i * 2], s.pts[i * 2 + 1]);
+        };
+        g.strokeStyle = grad;
+        // Echoes first (older, fainter), then the figure itself: a soft pass and a crisp one.
+        for (const [lag, alpha] of [[3.2, 0.16], [1.6, 0.3]] as const) {
+            trace(t * drift - lag * drift);
+            g.globalAlpha = alpha;
+            g.lineWidth = 0.8;
+            g.stroke();
         }
-        const tailX = hx + L, tailY = yc + (blue ? 5 : 7) * Math.sin(TAU * t * 0.22 - 3.2);
-        const fl = 0.11 * L, flap = Math.sin(TAU * t * 0.22 - 3.6) * 0.5;
-        const path = new Path2D();
-        path.moveTo(top[0][0], top[0][1]);
-        for (let i = 1; i <= N; i++) path.lineTo(top[i][0], top[i][1]);
-        path.lineTo(tailX + fl * 0.5, tailY - fl * (0.75 + flap));
-        path.quadraticCurveTo(tailX + fl * 0.2, tailY, tailX + fl * 0.5, tailY + fl * (0.75 - flap));
-        for (let i = N; i >= 0; i--) path.lineTo(bot[i][0], bot[i][1]);
-        path.closePath();
-        const body = g.createLinearGradient(0, yc - 0.1 * L, 0, yc + 0.1 * L);
-        body.addColorStop(0, shade(env.tint, 18, 0.2));
-        body.addColorStop(0.5, shade(env.tint, 0, 0.08));
-        body.addColorStop(1, shade(env.tint, -10, 0.03));
-        g.fillStyle = body;
-        g.fill(path);
-        // Rim light along the back.
-        g.beginPath();
-        for (let i = 0; i <= N; i++) { if (i === 0) g.moveTo(top[i][0], top[i][1]); else g.lineTo(top[i][0], top[i][1]); }
-        g.strokeStyle = shade(env.tint, 26, 0.5); g.lineWidth = 1.2; g.stroke();
-        // Pectoral fin (long on a humpback).
-        const pi = Math.round(N * 0.3);
-        const [px, py] = bot[pi];
-        const fa = 0.7 + 0.25 * Math.sin(t * 0.5);
-        const pl = (blue ? 0.12 : 0.3) * L;
-        g.beginPath();
-        g.moveTo(px - 4, py - 2);
-        g.quadraticCurveTo(px + pl * 0.3, py + pl * Math.sin(fa) * 0.6, px + pl * Math.cos(fa), py + pl * Math.sin(fa));
-        g.quadraticCurveTo(px + pl * 0.45, py + pl * Math.sin(fa) * 0.4, px + 8, py);
-        g.fillStyle = shade(env.tint, 10, 0.14); g.fill();
-        g.strokeStyle = shade(env.tint, 22, 0.3); g.lineWidth = 0.8; g.stroke();
-        if (!blue) {
-            g.strokeStyle = shade(env.tint, 20, 0.12); g.lineWidth = 0.7;
-            for (let k = 1; k <= 4; k++) {
-                g.beginPath();
-                for (let i = 1; i <= Math.round(N * 0.45); i++) { const yy = bot[i][1] - k * 2.2; if (i === 1) g.moveTo(bot[i][0], yy); else g.lineTo(bot[i][0], yy); }
-                g.stroke();
+        trace(t * drift);
+        g.globalAlpha = 0.14;
+        g.lineWidth = 4;
+        g.stroke();
+        g.globalAlpha = 0.62;
+        g.lineWidth = 1;
+        g.stroke();
+        // The pen: a bright point running along the newest figure with a short, tapering trail.
+        const head = ((t * 0.07) % 1) * HG_N;
+        // Drawn as 8 runs that brighten and thicken towards the pen (8 strokes, not one per segment).
+        const TR = 48, RUNS = 8, per = TR / RUNS;
+        g.strokeStyle = shade(env.tint, 30, 1, -30);
+        for (let r = 0; r < RUNS; r++) {
+            g.globalAlpha = ((r + 1) / RUNS) * 0.9;
+            g.lineWidth = 0.6 + ((r + 1) / RUNS) * 1.6;
+            g.beginPath();
+            for (let k = 0; k <= per; k++) {
+                const i = Math.floor(head - TR + r * per + k);
+                const j = ((i % HG_N) + HG_N) % HG_N;
+                if (k === 0) g.moveTo(s.pts[j * 2], s.pts[j * 2 + 1]); else g.lineTo(s.pts[j * 2], s.pts[j * 2 + 1]);
             }
+            g.stroke();
         }
-        // Eye.
-        g.globalAlpha = 0.9;
-        g.drawImage(glowSprite(env.tint, 16, 0.25, 36), top[2][0] - 3, headY - 3, 6, 6);
-        g.globalAlpha = 1;
-        // Song: arcs from the head every 6.5 s.
-        const S = 6.5;
-        for (let k = Math.floor((t - 4) / S); k <= Math.floor(t / S); k++) {
-            const age = t - k * S;
-            if (age < 0 || age > 4) continue;
-            for (let r = 0; r < 3; r++) {
-                const a2 = age - r * 0.35;
-                if (a2 < 0) continue;
-                const rad = 10 + a2 * 46;
-                const al = Math.pow(1 - a2 / 4, 2) * 0.45;
-                g.strokeStyle = shade(env.tint, 20, al); g.lineWidth = 1.2;
-                g.beginPath(); g.arc(hx - 4, headY, rad, Math.PI * 0.8, Math.PI * 1.35); g.stroke();
-            }
-        }
-        const spr = glowSprite(hsl('#DCE8FF'), 12, 0.25, 20);
-        for (const f of s.flecks) {
-            f.y = wrap(f.y + (3 + 6 * f.z) * dt, -4, env.h + 4);
-            g.globalAlpha = 0.15 + 0.35 * f.z;
-            g.drawImage(spr, f.x - 1.5, f.y - 1.5, 3, 3);
-        }
+        const j = ((Math.floor(head) % HG_N) + HG_N) % HG_N;
+        const spr = glowSprite(env.tint, 32, 0.12, 36);
+        g.globalAlpha = 0.95;
+        g.drawImage(spr, s.pts[j * 2] - 9, s.pts[j * 2 + 1] - 9, 18, 18);
         g.globalAlpha = 1;
     },
 };
@@ -978,7 +963,7 @@ export const EFFECT_PROGRAMS: Readonly<Record<string, FxProgram<any>>> = {
     'shooting-stars': shootingStars,
     'aurora': aurora,
     'shoal': shoal,
-    'whale-song': whaleSong,
+    'harmonograph': harmonograph,
     'web-of-trust': webOfTrust,
     'ghost-lights': ghostLights,
     'first-snow': firstSnow,

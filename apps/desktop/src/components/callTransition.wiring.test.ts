@@ -159,8 +159,8 @@ describe('self-mute / self-deafen persist across a switch or a move (no hot mic)
 
     it('SidebarConference publishes the user\'s own intent while in a call', () => {
         expect(conf).toContain('selfCallIntent.set(deriveSelfIntent({');
-        // Moderator-applied state is passed as "forced", never as the user's choice.
-        expect(conf).toContain('serverForcedMute: localServerMutedAudio || baseServerDeafened');
+        // A moderator's server MUTE is passed as "forced", never as the user's choice (a server deafen does not touch the mic, so it is not part of it).
+        expect(conf).toContain('serverForcedMute: localServerMutedAudio,');
     });
 
     it('a real leave clears it, so a join from nothing starts clean', () => {

@@ -111,7 +111,7 @@ describe('hand-over does not re-animate', () => {
     it('SidebarConference skips its entrance animations on the hand-over mount', () => {
         expect(conf).toContain('initialMuted, initialDeafened, instantEnter,');
         expect(conf.match(/initial=\{instantEnter \? false : \{ opacity: 0 \}\}/g)?.length).toBe(2);
-        expect(conf).toContain('<AnimatePresence mode="popLayout" initial={!instantEnter}>');
+        expect(conf).toContain('<AnimatePresence mode="popLayout" initial={!instantEnter} custom={presenceExit}>');
         expect(pane).toContain('instantEnter={!!sidebarSeed}');
     });
 });

@@ -76,10 +76,18 @@ describe('achievementsFor: the View all sheet', () => {
     it('your own locked ones sort closest-to-done first; secret ones go last and never by progress', () => {
         const progress = { 'streak-30': { current: 29, target: 30 }, 'msgs-5000': { current: 10, target: 5000 }, 'night-shift': { current: 10, target: 10 } };
         const got = achievementsFor('locked', [], progress);
-        expect(got[0].id).toBe('streak-30');
+        const starters = ACHIEVEMENTS.filter((d) => d.starter).map((d) => d.id);
+        expect(got.slice(0, starters.length).map((d) => d.id)).toEqual(starters); // first-day steps lead
+        expect(got[starters.length].id).toBe('streak-30');
         const firstSecret = got.findIndex((d) => d.secret);
         expect(got.slice(firstSecret).every((d) => d.secret)).toBe(true);
         expect(got.slice(firstSecret).map((d) => d.id)).toEqual(ACHIEVEMENTS.filter((d) => d.secret).map((d) => d.id));
+    });
+    it('a starter already done drops out of Locked; the rest still lead even with less progress than others', () => {
+        const progress = { 'verify-1': { current: 0, target: 1 }, 'host-8': { current: 7, target: 8 } };
+        const got = achievementsFor('locked', [{ id: 'msgs-10', month: '2026-11' }], progress).map((d) => d.id);
+        expect(got).not.toContain('msgs-10');
+        expect(got.indexOf('verify-1')).toBeLessThan(got.indexOf('host-8'));
     });
     it('without progress (someone else\'s card) the locked ones keep catalogue order', () => {
         expect(achievementsFor('locked', []).map((d) => d.id)).toEqual(ACHIEVEMENTS.map((d) => d.id));

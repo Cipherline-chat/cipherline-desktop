@@ -110,7 +110,7 @@ describe('BillingTab wiring', () => {
         expect(src).toContain('useOwnedServersOverFreeStorage(confirmCancel, token, userId)');
     });
     it('renders the line inside the confirmation block', () => {
-        const block = src.slice(src.indexOf('{confirmCancel && ('), src.indexOf('Yes, cancel at period end'));
+        const block = src.slice(src.indexOf('// What every cancel confirmation tells you'), src.indexOf('Yes, cancel at period end'));
         expect(block).toContain('<CancelServerStorageNotice overCount={serversOverFree} />');
     });
     it('no longer promises that everything already saved is kept', () => {

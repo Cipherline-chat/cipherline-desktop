@@ -24,11 +24,14 @@ import {
     useScreenShareCodecPref, setScreenShareCodecPref,
     useAllowHevc, setAllowHevc, useShareLowLayerEnabled, setShareLowLayerEnabled,
 } from '../utils/streamDiagnosticsPrefs';
+import { fetchVideoEncodeDriverStatus, requestVideoEncodeDriverInstall, videoEncodeDriverOutcomeText, type VideoEncodeDriverOutcome, type VideoEncodeDriverStatus } from '../utils/videoEncodeDriver';
+import { fetchNvidiaVaapiStatus, requestNvidiaVaapiInstall, nvidiaVaapiOutcomeText, type NvidiaVaapiOutcome, type NvidiaVaapiStatus } from '../utils/nvidiaVaapi';
+import { useNativeShareEnabled, setNativeShareEnabled } from '../utils/nativeSharePrefs';
 import { useCameraCodecPref, setCameraCodecPref } from '../utils/cameraQualityPrefs';
 import type { CameraCodecPref } from '../utils/cameraQuality';
 import type { ScreenShareCodecPref } from '../utils/screenShare';
 import {
-    parseStartupFlagsState, restartPending,
+    parseStartupFlagsState, restartPending, linuxHwEncodeStatusLine, linuxHwDecodeStatusLine,
     type StartupFlagsState, type StartupFlagValues, type ScreenCapturerChoice,
 } from '../utils/startupFlags';
 import {
@@ -319,6 +322,93 @@ const CODEC_OPTIONS: { value: ScreenShareCodecPref; title: string; description: 
 ];
 
 /**
+ * Settings -> Advanced (Linux + NVIDIA): status of the VA-API video driver that hardware decode needs, with the same
+ * one-click install and copyable command as the one-time card. Renders nothing unless there is something to say.
+ */
+const NvidiaVaapiRow: React.FC<{ ready: boolean }> = ({ ready }) => {
+    const [status, setStatus] = useState<NvidiaVaapiStatus | null>(null);
+    const [busy, setBusy] = useState(false);
+    const [outcome, setOutcome] = useState<NvidiaVaapiOutcome | null>(null);
+    useEffect(() => {
+        let alive = true;
+        void fetchNvidiaVaapiStatus().then(s => { if (alive) setStatus(s); });
+        return () => { alive = false; };
+    }, []);
+    if (!status || (status.state === 'none' && !ready)) return null;
+    const install = () => {
+        setBusy(true);
+        void requestNvidiaVaapiInstall().then(r => { setBusy(false); setOutcome(r.outcome); setStatus(r.status); });
+    };
+    const line = outcome ? nvidiaVaapiOutcomeText(outcome, status)
+        : status.state === 'none' ? 'Installed and in use this session.'
+        : status.state === 'install' ? 'Not installed. Hardware decoding on your NVIDIA card needs it.'
+        : status.state === 'modeset' ? (status.modesetNote ?? '')
+        : 'Installed. Restart Cipherline to use it.';
+    const showCommand = status.state === 'install';
+    return (
+        <div className="sd-row" data-testid="nvidia-vaapi-row">
+            <div className="sd-rl">
+                <b>NVIDIA video driver</b>
+                <span>
+                    {line}
+                    {showCommand && <> <code className="sd-mono">{status.command}</code></>}
+                    {status.state === 'install' && status.modesetNote && <> {status.modesetNote}</>}
+                    {' '}A restart of Cipherline is needed after installing, and a reboot after changing the kernel setting.
+                </span>
+            </div>
+            <div className="sd-rc">
+                {status.state === 'install' && status.canInstall && (
+                    <ClButton variant="primary" size="sm" loading={busy} onClick={install}>Install</ClButton>
+                )}
+            </div>
+        </div>
+    );
+};
+
+/**
+ * Settings -> Advanced (Linux + Intel/AMD): status of the VA-API video ENCODER driver (screen-share hardware encoding), with the same
+ * one-click install and copyable command as the one-time card. Renders nothing unless there is something to say.
+ */
+const VideoEncodeDriverRow: React.FC = () => {
+    const [status, setStatus] = useState<VideoEncodeDriverStatus | null>(null);
+    const [busy, setBusy] = useState(false);
+    const [outcome, setOutcome] = useState<VideoEncodeDriverOutcome | null>(null);
+    useEffect(() => {
+        let alive = true;
+        void fetchVideoEncodeDriverStatus().then(s => { if (alive) setStatus(s); });
+        return () => { alive = false; };
+    }, []);
+    if (!status || status.state === 'none') return null;
+    const install = () => {
+        setBusy(true);
+        void requestVideoEncodeDriverInstall().then(r => { setBusy(false); setOutcome(r.outcome); setStatus(r.status); });
+    };
+    const who = status.vendor === 'amd' ? 'AMD' : 'Intel';
+    const line = outcome ? videoEncodeDriverOutcomeText(outcome, status)
+        : status.state === 'install' ? `Not installed. Hardware encoding of screen shares on your ${who} graphics needs it.`
+        : 'Installed. Restart Cipherline to use it.';
+    const showCommand = status.state === 'install' && outcome !== 'installed';
+    return (
+        <div className="sd-row" data-testid="video-encode-driver-row">
+            <div className="sd-rl">
+                <b>{who} video encoder driver</b>
+                <span>
+                    {line}
+                    {showCommand && status.repoHint && outcome !== 'not_found' && <> {status.repoHint}</>}
+                    {showCommand && <> <code className="sd-mono">{status.command}</code></>}
+                    {' '}A restart of Cipherline is needed after installing.
+                </span>
+            </div>
+            <div className="sd-rc">
+                {status.state === 'install' && status.canInstall && outcome !== 'installed' && (
+                    <ClButton variant="primary" size="sm" loading={busy} onClick={install}>Install</ClButton>
+                )}
+            </div>
+        </div>
+    );
+};
+
+/**
  * Screen share & stream diagnostics — the stats overlay and the codec
  * override. Both exist so a frame-rate problem can be located and A/B tested
  * on the machine that has it; see utils/streamDiagnosticsPrefs.ts.
@@ -329,6 +419,9 @@ const StreamDiagnosticsCard: React.FC = () => {
     const cameraCodec = useCameraCodecPref();
     const allowHevc = useAllowHevc();
     const shareLow = useShareLowLayerEnabled();
+    const nativeHw = useNativeShareEnabled();
+    // Linux only, and only where the preload bridge exists: nothing about it is shown on Windows/macOS.
+    const nativeHwAvailable = window.electronAPI?.platform === 'linux' && !!window.nativeShare;
     return (
         <SettingsDisclosure
             id="advanced.stream"
@@ -336,7 +429,7 @@ const StreamDiagnosticsCard: React.FC = () => {
             title="Screen share & stream stats"
             summary="For testing call video quality on this device: encoders, H.265 and a live stats overlay. Not included in backups."
             icon={<MonitorUp size={15} />}
-            labels={['Show stream stats', 'Screen share encoder', 'Camera encoder']}
+            labels={['Show stream stats', 'Screen share encoder', 'Camera encoder', 'Hardware screen share']}
         >
             <div className="sd-row">
 
@@ -385,6 +478,19 @@ const StreamDiagnosticsCard: React.FC = () => {
                 </div>
                 <ClToggle checked={shareLow} onChange={setShareLowLayerEnabled} />
             </div>
+            {nativeHwAvailable && (
+                <div className="sd-row">
+                    <div className="sd-rl">
+                        <b>Hardware screen share (Linux)</b>
+                        <span>
+                            Encodes your screen on your graphics card (NVIDIA, AMD or Intel) instead of in software, for smooth high frame rates.
+                            On by default. If this computer has no graphics card that can do it, or anything goes wrong, Cipherline uses the normal
+                            screen share instead. Still end-to-end encrypted. Applies to the next screen share you start.
+                        </span>
+                    </div>
+                    <ClToggle checked={nativeHw} onChange={setNativeShareEnabled} />
+                </div>
+            )}
             <div className="sd-row">
                 <div className="sd-rl">
                     <b>Camera encoder</b>
@@ -530,6 +636,66 @@ const CaptureStartupSettings: React.FC = () => {
                     />
                 </div>
             </div>
+
+            {state.platform === 'linux' && state.linuxHwEncode && (
+                <div className="sd-row">
+                    <div className="sd-rl">
+                        <b>Hardware video encoding</b>
+                        <span>
+                            Lets your graphics card encode screen shares and camera video (VA-API) where this computer supports it, which is
+                            much lighter on the CPU. Where it doesn’t, Cipherline encodes on the CPU exactly as before. If the hardware encoder
+                            fails on this computer, Cipherline switches to the CPU for the rest of the session and, after repeated failures,
+                            stays on the CPU. Takes effect after a restart.
+                            {' '}{linuxHwEncodeStatusLine(state)}
+                            {state.envOverride.linuxHwEncode && (
+                                <> This launch is using <code className="sd-mono">CIPHERLINE_LINUX_HW_ENCODE</code>, which overrides this setting.</>
+                            )}
+                        </span>
+                    </div>
+                    <div className="sd-rc">
+                        <ClToggle
+                            checked={state.saved.linuxHwEncode && (!state.linuxHwEncode.lockedOut || state.linuxHwEncode.lockoutCleared)}
+                            disabled={saving}
+                            onChange={v => { void save({ linuxHwEncode: v }); }}
+                            aria-label="Hardware video encoding"
+                        />
+                    </div>
+                </div>
+            )}
+
+            {state.platform === 'linux' && state.linuxHwDecode && (
+                <div className="sd-row">
+                    <div className="sd-rl">
+                        <b>Hardware video decoding</b>
+                        <span>
+                            Lets your graphics card decode other people’s screen shares and cameras (VA-API), which keeps the CPU free and
+                            the picture smooth when many videos are on screen. Where this computer can’t, Cipherline decodes on the CPU as
+                            before. If the graphics process crashes repeatedly, it switches itself off. Takes effect after a restart.
+                            {' '}{linuxHwDecodeStatusLine(state)}
+                            {state.linuxHwDecode.hint?.install && (
+                                <> <code className="sd-mono">{state.linuxHwDecode.hint.install}</code></>
+                            )}
+                            {state.envOverride.linuxHwDecode && (
+                                <> This launch is using <code className="sd-mono">CIPHERLINE_LINUX_HW_DECODE</code>, which overrides this setting.</>
+                            )}
+                        </span>
+                    </div>
+                    <div className="sd-rc">
+                        <ClToggle
+                            checked={state.saved.linuxHwDecode && (!state.linuxHwDecode.lockedOut || state.linuxHwDecode.lockoutCleared)}
+                            disabled={saving}
+                            onChange={v => { void save({ linuxHwDecode: v }); }}
+                            aria-label="Hardware video decoding"
+                        />
+                    </div>
+                </div>
+            )}
+
+            {state.platform === 'linux' && state.linuxHwDecode && (
+                <NvidiaVaapiRow ready={state.linuxHwDecode.nvidia === 'ready'} />
+            )}
+
+            {state.platform === 'linux' && <VideoEncodeDriverRow />}
 
             {pending && (
                 <div className="mt-3">

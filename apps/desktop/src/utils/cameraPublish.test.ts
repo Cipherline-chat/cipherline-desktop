@@ -2,10 +2,13 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { Track, type TrackPublishOptions, type VideoPreset } from 'livekit-client';
 import {
     startCamera, settleCaptureMode, retuneCamera, applyCameraTier, watchHardwareCamera, restartOptions, recoverStalledCamera,
+    handleCameraDrift, type CameraDriftGate,
     toLiveKitPublishOptions, getCameraPublishState, hasHwCameraFailed, readCameraEncoderInfo,
     __resetCameraPublishForTests, type CameraTrackLike, type CameraParticipantLike, type StartCameraOptions,
 } from './cameraPublish';
 import { cameraPublishPlan, cameraLayerBitrate } from './cameraQuality';
+import { DRIFT_REPUBLISH_COOLDOWN_MS, type CodecDrift } from './shareCodecDrift';
+import { hasHevcFailed, __resetHevcForTests } from './hevcNegotiation';
 
 /**
  * A fake camera: `modes` is what the device can deliver; a request picks the
@@ -69,7 +72,7 @@ const quiet = () => {};
 
 const layerSizes = (o: TrackPublishOptions) => (o.videoSimulcastLayers ?? []).map((p: VideoPreset) => `${p.width}x${p.height}`);
 
-beforeEach(() => __resetCameraPublishForTests());
+beforeEach(() => { __resetCameraPublishForTests(); __resetHevcForTests(); });
 
 describe('startCamera — capture at the camera\'s best native mode, ladder from what it delivers', () => {
     it('Auto on a 720p-only camera publishes a 720p top layer (never upscaled)', async () => {
@@ -388,5 +391,77 @@ describe('toLiveKitPublishOptions / readCameraEncoderInfo', () => {
         const info = await readCameraEncoderInfo(lp);
         expect(info).toMatchObject({ codec: 'video/VP8', encoderImplementation: 'libvpx', hardware: false, tier: 'auto' });
         expect(info!.layers.map(l => `${l.rid}:${l.active}`)).toEqual(['q:true', 'f:false']);
+    });
+});
+
+
+describe('handleCameraDrift - the sender silently switched codec, viewers get a blank tile', () => {
+    const drift: CodecDrift = { published: 'h264', sent: 'vp8', layers: 3, encoder: 'SimulcastEncoderAdapter (libvpx, libvpx)' };
+    const setup = async () => {
+        const cam = fakeCamera([{ width: 1920, height: 1080, frameRate: 30 }]);
+        // clone() is what the make-before-break republish captures from
+        (cam.mediaStreamTrack as unknown as { clone: () => MediaStreamTrack }).clone = () => cam.mediaStreamTrack;
+        const lp = fakeParticipant(cam);
+        await startCamera(lp, { tier: 'auto', codec: hwH264, log: quiet, watchHardware: false });
+        const opts: StartCameraOptions = { tier: 'auto', codec: hwH264, log: quiet, sleep: async () => {}, makeTrack: () => fakeCamera([{ width: 1920, height: 1080, frameRate: 30 }]) };
+        return { cam, lp, opts, gate: { at: null } as CameraDriftGate };
+    };
+
+    it('republishes the camera FRESH as the next codec, marks H.264 failed for the session, tells the user', async () => {
+        const { cam, lp, opts, gate } = await setup();
+        const notes: string[] = [];
+        expect(await handleCameraDrift(lp, cam, drift, gate, opts, 1_000, t => notes.push(t))).toBe('republish');
+        // a NEW publication (new track = new sender) replaced the old one: never a hot swap
+        expect(lp.published).toHaveLength(2);
+        expect(lp.published[1].opts.videoCodec).toBe('vp8');
+        expect(lp.unpublished).toEqual([cam]);
+        expect(hasHwCameraFailed()).toBe(true);
+        expect(gate.at).toBe(1_000);
+        expect(notes).toEqual(['Camera encoder stopped working \u2014 restarting your camera.']);
+    });
+
+    it('rate limit: a second drift inside the cooldown marks the codec but does not republish again', async () => {
+        const { cam, lp, opts, gate } = await setup();
+        gate.at = 1_000;
+        const notes: string[] = [];
+        expect(await handleCameraDrift(lp, cam, drift, gate, opts, 1_000 + DRIFT_REPUBLISH_COOLDOWN_MS - 1, t => notes.push(t))).toBe('none');
+        expect(lp.published).toHaveLength(1);
+        expect(lp.unpublished).toHaveLength(0);
+        expect(hasHwCameraFailed()).toBe(true);
+        expect(notes).toEqual([]);
+        // ...and once the cooldown has passed it may act again
+        expect(await handleCameraDrift(lp, cam, drift, gate, opts, 1_000 + DRIFT_REPUBLISH_COOLDOWN_MS)).toBe('republish');
+        expect(lp.published).toHaveLength(2);
+    });
+
+    it('an H.265 camera that drifts marks H.265 failed (not the H.264 flag)', async () => {
+        const { cam, lp, opts, gate } = await setup();
+        cam.publishOptions = { ...cam.publishOptions, videoCodec: 'h265' };
+        expect(await handleCameraDrift(lp, cam, { ...drift, published: 'h265', sent: 'h264' }, gate, opts, 5)).toBe('republish');
+        expect(hasHevcFailed()).toBe(true);
+        expect(hasHwCameraFailed()).toBe(false);
+    });
+
+    it('stands down while the camera is muted / off / another track: nothing judged, nothing marked', async () => {
+        const { cam, lp, opts, gate } = await setup();
+        (lp.getTrackPublication(Track.Source.Camera) as { isMuted?: boolean }).isMuted = true;
+        expect(await handleCameraDrift(lp, cam, drift, gate, opts, 1)).toBe('gone');
+        (lp.getTrackPublication(Track.Source.Camera) as { isMuted?: boolean }).isMuted = false;
+        expect(await handleCameraDrift(lp, fakeCamera([{ width: 640, height: 480, frameRate: 30 }]), drift, gate, opts, 1)).toBe('gone');
+        await lp.unpublishTrack(cam as never);
+        expect(await handleCameraDrift(lp, cam, drift, gate, opts, 1)).toBe('gone');
+        expect(lp.published).toHaveLength(1);
+        expect(hasHwCameraFailed()).toBe(false);
+        expect(gate.at).toBeNull();
+    });
+
+    it('a software (VP8) camera has no better encoder: left alone', async () => {
+        const cam = fakeCamera([{ width: 1280, height: 720, frameRate: 30 }]);
+        const lp = fakeParticipant(cam);
+        await startCamera(lp, { tier: 'auto', codec: vp8Only, log: quiet, watchHardware: false });
+        const gate: CameraDriftGate = { at: null };
+        expect(await handleCameraDrift(lp, cam, { published: 'vp8', sent: 'h264', layers: 1 }, gate, { tier: 'auto', codec: vp8Only, log: quiet }, 1)).toBe('none');
+        expect(lp.published).toHaveLength(1);
+        expect(hasHwCameraFailed()).toBe(false);
     });
 });

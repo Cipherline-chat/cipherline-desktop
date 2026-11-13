@@ -4,6 +4,7 @@ import { Sparkles, Upload, Video, MonitorUp } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { ClModal, ClButton } from '../cl';
 import { useSubscription } from '../../contexts/SubscriptionContext';
+import { yearlyUpsellLabel } from './planInterval';
 import { FREE_UPLOAD_LIMIT_LABEL, PRO_UPLOAD_LIMIT_LABEL } from '../../utils/uploadLimitCopy';
 
 /**
@@ -77,7 +78,9 @@ function perkContent(text: string): React.ReactNode {
  * primary is the auto-focused default rather than the dismiss action.
  */
 export const UpgradePromptModal: React.FC<Props> = ({ open, reason, detail, onClose }) => {
-    const { openInAppCheckout } = useSubscription();
+    const { openInAppCheckout, status } = useSubscription();
+    // "$30.00/yr + tax", only when the API offers yearly (older API: null).
+    const yearly = yearlyUpsellLabel(status);
     const reduced = useReducedMotion();
     const { Icon, title, subtitle } = COPY[reason];
 
@@ -143,6 +146,11 @@ export const UpgradePromptModal: React.FC<Props> = ({ open, reason, detail, onCl
                     <ClButton fullWidth onClick={handleUpgrade}>
                         Upgrade — $2.50/mo + tax
                     </ClButton>
+                    {yearly && (
+                        <div className="text-[12.5px] text-cl-muted text-center m-0 leading-snug" data-testid="upgrade-yearly">
+                            or {yearly}
+                        </div>
+                    )}
                     <ClButton fullWidth variant="ghost" onClick={onClose}>
                         Maybe later
                     </ClButton>

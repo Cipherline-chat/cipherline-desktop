@@ -8,11 +8,16 @@ import { useEscape } from '../hooks/useEscape';
 import { useServerEmojiUrls } from '../hooks/useServerEmojiUrl';
 import type { ServerEmoji } from '../hooks/useServerEmojis';
 import { usePersonalEmojiLibrary } from '../hooks/usePersonalEmojis';
+import { CUSTOM_EMOJI_PLACEHOLDER_SRC, placeholderSrcFor, useFillResolvedPlaceholders } from './emojiPickerPlaceholders';
 import { personalEmojis } from '../utils/personalEmoji/service';
 import { PLACEHOLDER_HIDE_CSS, buildEmojiTabCategories, isEmptyPlaceholderId } from './emojiPickerTabs';
 import { useEmptyTabOverlay } from './useEmptyTabOverlay';
 import EmojiPickerEmptyState from './EmojiPickerEmptyState';
 import { useMyEmojiContextMenu } from './useMyEmojiContextMenu';
+import { useHoverShortcodePlaceholder } from './useHoverShortcodePlaceholder';
+import { useAddMyEmoji } from './useAddMyEmoji';
+import { ADD_BUTTON_CSS, useMyEmojiAddButton } from './useMyEmojiAddButton';
+import { MY_EMOJI_TAB } from './emojiPickerTabs';
 
 // Initialise the picker's own index once at module load (used by the
 // <Picker> component below).
@@ -76,16 +81,6 @@ export type { EmojiSuggestion } from './emojiSearch';
  *  with no resolver needed. */
 export type CustomEmojiInput = Pick<ServerEmoji, 'emoji_id' | 'name' | 'attachment_id' | 'key_b64' | 'nonce_b64'>
     & Partial<Pick<ServerEmoji, 'server_id'>>;
-
-/** Stand-in `src` for a custom emoji whose image has not resolved yet, so the
- *  server's category shows every emoji (in its final position) from the first
- *  frame instead of growing one emoji at a time. A neutral rounded tile —
- *  inline SVG data URI (CSP img-src allows data:), no network. */
-const CUSTOM_EMOJI_PLACEHOLDER_SRC =
-    'data:image/svg+xml,' + encodeURIComponent(
-        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">' +
-        '<rect x="2" y="2" width="20" height="20" rx="6" fill="#ffffff" fill-opacity="0.10"/></svg>',
-    );
 
 /** Payload emoji-mart's onEmojiSelect hands back. For a native pick, `native`
  *  is the unicode character and `id`/`src` describe emoji-mart's own dataset
@@ -164,6 +159,8 @@ const SHADOW_OVERRIDES = `
     /* The placeholder that keeps an EMPTY Server emojis / My Emojis tab on the
        bar — see emojiPickerTabs.ts. */
     ${PLACEHOLDER_HIDE_CSS}
+    /* The "+ Add" in the My Emojis section header (useMyEmojiAddButton). */
+    ${ADD_BUTTON_CSS}
 `;
 
 const EmojiPickerPopover: React.FC<PickerProps> = ({ onEmojiSelect, onClose, anchorEl, customEmojis, serverContext = false, token }) => {
@@ -217,8 +214,8 @@ const EmojiPickerPopover: React.FC<PickerProps> = ({ onEmojiSelect, onClose, anc
         // ids is a no-op) and touches no React state, only an external
         // library's own global — see scopeCustomEmojis's own comment.
         const built = buildEmojiTabCategories(
-            list.map(e => ({ id: e.emoji_id, name: e.name, src: resolvedUrls[e.attachment_id] ?? CUSTOM_EMOJI_PLACEHOLDER_SRC })),
-            myEmojis.map(e => ({ id: e.id, name: e.name, src: myUrls[e.id] ?? CUSTOM_EMOJI_PLACEHOLDER_SRC })),
+            list.map(e => ({ id: e.emoji_id, name: e.name, src: resolvedUrls[e.attachment_id] ?? placeholderSrcFor(e.emoji_id) })),
+            myEmojis.map(e => ({ id: e.id, name: e.name, src: myUrls[e.id] ?? placeholderSrcFor(e.id) })),
             CUSTOM_EMOJI_PLACEHOLDER_SRC,
             serverContext,
         );
@@ -228,10 +225,49 @@ const EmojiPickerPopover: React.FC<PickerProps> = ({ onEmojiSelect, onClose, anc
         return { customCategories: built.categories, emptyTabs: built.emptyTabs };
     }, [customEmojis, resolvedUrls, myEmojis, myUrls, serverContext]);
 
+    // A new `src` does not reach a tile already on screen, like the Frequently Used row.
+    const urlById = useMemo(() => {
+        const out: Record<string, string> = { ...myUrls };
+        for (const e of customEmojis ?? []) {
+            const url = resolvedUrls[e.attachment_id];
+            if (url) out[e.emoji_id] = url;
+        }
+        return out;
+    }, [customEmojis, resolvedUrls, myUrls]);
+    useFillResolvedPlaceholders(ref, urlById);
+
     const { overlay: emptyOverlay, dismiss: dismissEmpty } = useEmptyTabOverlay(ref, emptyTabs);
     // Right-click a My Emojis emoji -> Remove (with Undo). The menu is a portal
     // to <body>, so the outside-click check below has to count it as "inside".
     const { menu: myEmojiMenu } = useMyEmojiContextMenu(ref, myEmojis, myUrls);
+    // Hovering an emoji shows its :shortcode: in the search box's placeholder.
+    useHoverShortcodePlaceholder(ref);
+
+    // "+" to add a personal emoji without leaving the picker: the SAME dialog
+    // Settings -> Activity & Style -> My Emojis uses (AddEmojiDialog), opened over the picker.
+    // The library is live (usePersonalEmojiLibrary), so the new emoji appears
+    // in My Emojis by itself; we only bring that section into view.
+    const showMyEmojis = useCallback(() => {
+        const root = (ref.current?.querySelector('em-emoji-picker') as (Element & { shadowRoot: ShadowRoot | null }) | null)?.shadowRoot;
+        root?.querySelector<HTMLElement>(`#nav button[aria-label="${MY_EMOJI_TAB.label}"]`)?.click();
+    }, []);
+    const addEmoji = useAddMyEmoji({
+        onAdded: () => {
+            // The empty-state panel (if it was up) is no longer true; then scroll to the section.
+            // Deferred a beat so the tab bar has re-read the (now non-empty) library.
+            dismissEmpty();
+            window.setTimeout(() => { showMyEmojis(); addButton.focus(); }, 120);
+        },
+        // Whatever the outcome, focus returns to the "+" (after the dialog's own focus restore).
+        onSettled: () => {
+            window.setTimeout(() => {
+                if (addButton.focus()) return;
+                // Empty My Emojis: the panel's own button.
+                ref.current?.querySelector<HTMLElement>('[data-testid="emoji-picker-empty-add"]')?.focus();
+            }, 0);
+        },
+    });
+    const addButton = useMyEmojiAddButton(ref, addEmoji.state, addEmoji.open);
 
     // Two-pass positioning: first render off-screen (invisible) so we can measure
     // the picker's actual rendered height, then snap to the correct position.
@@ -283,7 +319,9 @@ const EmojiPickerPopover: React.FC<PickerProps> = ({ onEmojiSelect, onClose, anc
     useDismissOnOutsideClick(
         useCallback(
             (t: Node) => !!(ref.current?.contains(t)) || !!(anchorEl?.contains(t))
-                || !!(t as Element).closest?.('.ctxm'),
+                || !!(t as Element).closest?.('.ctxm')
+                // The Add-an-emoji dialog opens over the picker (a portal to <body>).
+                || !!(t as Element).closest?.('.mod'),
             [anchorEl],
         ),
         true,
@@ -387,7 +425,8 @@ const EmojiPickerPopover: React.FC<PickerProps> = ({ onEmojiSelect, onClose, anc
         >
             {pickerEl}
             {myEmojiMenu}
-            {emptyOverlay && <EmojiPickerEmptyState overlay={emptyOverlay} onClose={onClose} onDismiss={dismissEmpty} />}
+            {addEmoji.node}
+            {emptyOverlay && <EmojiPickerEmptyState overlay={emptyOverlay} onClose={onClose} onDismiss={dismissEmpty} onAddEmoji={addEmoji.open} addState={addEmoji.state} />}
             {/*
               * Override emoji-mart's web-component (em-emoji-picker) CSS variables.
               * CSS custom properties cross the shadow-DOM boundary, so --rgb-background

@@ -103,7 +103,7 @@ export const FirstWeekNudges: React.FC<Props> = ({
         : (() => { const c = nudgeCopy(card.nudge); return { ...c, decline: 'Not now' }; })();
 
     return (
-        <div className="fixed top-14 right-4 z-[9500] w-[340px] max-w-[calc(100vw-2rem)] pointer-events-none">
+        <div data-corner-card className="fixed top-14 right-4 z-[9500] w-[340px] max-w-[calc(100vw-2rem)] pointer-events-none">
             <div
                 key={card.id}
                 role="status"

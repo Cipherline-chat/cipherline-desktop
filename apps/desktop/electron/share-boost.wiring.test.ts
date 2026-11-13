@@ -87,9 +87,11 @@ describe('screen-share boost runtime wiring', () => {
         expect(MAIN.match(/powerSaveBlocker\.start\(/g)?.length).toBe(1);
     });
 
-    it('the process list handed to the booster carries the Electron process type (GPU and main get HIGH)', () => {
+    it('the process list handed to the booster carries the Electron process type (GPU, main and renderer get HIGH)', () => {
         expect(MAIN).toContain('listProcesses: () => app.getAppMetrics().map(m => ({ pid: m.pid, type: m.type }))');
-        expect(GAMING).toContain("(type === 'GPU' || type === 'Browser') ? PRIORITY_HIGH : PRIORITY_ABOVE_NORMAL");
+        expect(GAMING).toContain("(type === 'GPU' || type === 'Browser' || type === 'Tab') ? PRIORITY_HIGH : PRIORITY_ABOVE_NORMAL");
+        // ...and what was applied reaches the Performance log.
+        expect(MAIN).toContain("report: (detail) => freezeMonitor.event('share:priority', 0, detail),");
     });
 
     it('share:set-active is a guarded handler that validates before acting', () => {
@@ -125,12 +127,12 @@ describe('screen-share boost runtime wiring', () => {
     });
 
     it('the boost is released on renderer navigation, renderer crash and quit', () => {
-        expect(MAIN).toMatch(/webContents\.on\('did-navigate', \(\) => syncCallPriority\(\{ inCall: false, sharing: false \}\)\)/);
+        expect(MAIN).toMatch(/webContents\.on\('did-navigate', \(\) => syncCallPriority\(\{ inCall: false, sharing: false, cameraLive: false \}\)\)/);
         const gone = MAIN.indexOf("mainWindow.webContents.on('render-process-gone', (event, details) => {");
-        expect(MAIN.slice(gone, gone + 400)).toContain('syncCallPriority({ inCall: false, sharing: false })');
+        expect(MAIN.slice(gone, gone + 400)).toContain('syncCallPriority({ inCall: false, sharing: false, cameraLive: false })');
         const quit = MAIN.indexOf("app.on('before-quit', () => {\n  // Gaming-video priority boost");
         expect(quit).toBeGreaterThan(-1);
-        expect(MAIN.slice(quit, quit + 250)).toContain('syncCallPriority({ inCall: false, sharing: false })');
+        expect(MAIN.slice(quit, quit + 250)).toContain('syncCallPriority({ inCall: false, sharing: false, cameraLive: false })');
     });
 
     it('the preload bridge is one narrow boolean channel', () => {

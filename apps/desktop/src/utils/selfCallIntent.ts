@@ -53,7 +53,8 @@ export interface DeriveSelfIntentInput {
     /** Was the mic already off when they deafened? (deafen force-mutes; undeafen restores only if not.) */
     wasMutedBeforeDeafen: boolean;
     pushToTalk: boolean;
-    /** A moderator has server-muted / server-deafened them: the mic is off, but not by choice. */
+    /** A moderator has server-muted them: the mic is off, but not by choice. (A server
+     *  DEAFEN does not touch the mic, so it is not part of this.) */
     serverForcedMute: boolean;
     /** They may speak here at all; a listen-only member's mic is off by permission. */
     canSpeak: boolean;

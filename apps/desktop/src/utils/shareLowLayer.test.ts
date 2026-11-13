@@ -208,3 +208,73 @@ describe('installShareLowLayerControl', () => {
         expect(seen).toEqual(['false:0 viewer(s) — needs 1']); // 90 fps = heavy
     });
 });
+
+describe('installShareLowLayerControl with native deps (the Linux hardware share)', () => {
+    beforeEach(() => vi.useFakeTimers());
+    afterEach(() => vi.useRealTimers());
+    // The sender stats describe the tiny dummy track: SOFTWARE-looking encoder, 240p. Only the native facts may decide hardware / size.
+    const dummyStats = (lowActive: boolean) => [
+        { rid: 'q', active: lowActive, frameWidth: 240, frameHeight: 135, encoderImplementation: 'OpenH264' },
+        { rid: 'h', active: true, frameWidth: 480, frameHeight: 270, framesPerSecond: 60, encoderImplementation: 'OpenH264', framesEncoded: 0, totalEncodeTime: 0 },
+    ];
+    function setup(facts: () => { hardware: boolean; topShort?: number; topEncodeMs?: number; blocked?: string | null }, viewers: () => number, targetFps = 60) {
+        const calls: QualityLike[][] = []; const lows: boolean[] = [];
+        const track = {
+            sender: { getParameters: () => ({ encodings: [{ rid: 'q' }, { rid: 'h' }] }), getStats: async () => new Map(dummyStats(lows[lows.length - 1] === true).map((s, i) => [String(i), { type: 'outbound-rtp', kind: 'video', ...s }])) } as unknown as RTCRtpSender,
+            setPublishingLayers: vi.fn(async (_s: boolean, q: QualityLike[]) => { calls.push(q); }),
+        };
+        const dispose = installShareLowLayerControl(track, { settingOn: () => true, viewers, gameRunning: () => false, targetFps, log: () => {}, native: { facts, setLow: (on) => { lows.push(on); } } });
+        return { calls, lows, dispose };
+    }
+    it('uses the native facts: a "software" dummy encoder does not block the copy; same viewer rule (1 on a 60 fps share)', async () => {
+        let viewers = 0;
+        const { calls, lows, dispose } = setup(() => ({ hardware: true, topShort: 1080 }), () => viewers);
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(lows).toEqual([]);                                                    // no viewers: the helper's second session is never opened
+        viewers = 1;
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(lows).toEqual([true]);
+        expect(calls[calls.length - 1].find((q) => q.quality === 0)?.enabled).toBe(true);
+        dispose();
+    });
+    it('an ordinary share (30 fps, 1080p) needs 2 viewers, exactly like the Chromium share', async () => {
+        let viewers = 1;
+        const { lows, dispose } = setup(() => ({ hardware: true, topShort: 1080 }), () => viewers, 30);
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(lows).toEqual([]);
+        viewers = 2; await vi.advanceTimersByTimeAsync(1000);
+        expect(lows).toEqual([true]);
+        dispose();
+    });
+    it('turning off closes the helper session AFTER the layer is switched off', async () => {
+        let viewers = 1; const order: string[] = [];
+        const track = {
+            sender: { getParameters: () => ({ encodings: [{ rid: 'q' }, { rid: 'h' }] }), getStats: async () => new Map(dummyStats(true).map((s, i) => [String(i), { type: 'outbound-rtp', kind: 'video', ...s }])) } as unknown as RTCRtpSender,
+            setPublishingLayers: vi.fn(async (_s: boolean, q: QualityLike[]) => { order.push(`layer:${q.find((x) => x.quality === 0)?.enabled}`); }),
+        };
+        const d = installShareLowLayerControl(track, { settingOn: () => true, viewers: () => viewers, gameRunning: () => false, targetFps: 60, log: () => {}, native: { facts: () => ({ hardware: true, topShort: 1080 }), setLow: (on) => { order.push(`helper:${on}`); } } });
+        await vi.advanceTimersByTimeAsync(1000);
+        viewers = 0; await vi.advanceTimersByTimeAsync(1000);
+        expect(order.slice(-4)).toEqual(['helper:true', 'layer:true', 'layer:false', 'helper:false']);
+        d();
+    });
+    it('NEGATIVE: a helper that could not run the copy (blocked) keeps it off for the rest of the share, however many viewers', async () => {
+        let blocked: string | null = null; const seen: string[] = [];
+        const { lows, dispose } = setup(() => ({ hardware: true, topShort: 1440, blocked }), () => 9);
+        blocked = 'lighter copy failed (low_session_limit)';
+        await vi.advanceTimersByTimeAsync(3000);
+        expect(lows).toEqual([]);
+        void seen; dispose();
+    });
+    it('NEGATIVE CONTROL: without native deps the same dummy-looking stats DO block it (software encoder) - the facts are what changes it', async () => {
+        const calls: QualityLike[][] = [];
+        const track = {
+            sender: { getParameters: () => ({ encodings: [{ rid: 'q' }, { rid: 'h' }] }), getStats: async () => new Map(dummyStats(false).map((s, i) => [String(i), { type: 'outbound-rtp', kind: 'video', ...s }])) } as unknown as RTCRtpSender,
+            setPublishingLayers: vi.fn(async (_s: boolean, q: QualityLike[]) => { calls.push(q); }),
+        };
+        const d = installShareLowLayerControl(track, { settingOn: () => true, viewers: () => 9, gameRunning: () => false, targetFps: 60, log: () => {} });
+        await vi.advanceTimersByTimeAsync(2000);
+        expect(calls.every((q) => q.find((x) => x.quality === 0)?.enabled === false)).toBe(true);
+        d();
+    });
+});

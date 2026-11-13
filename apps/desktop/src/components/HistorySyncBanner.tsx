@@ -39,6 +39,8 @@ interface Props {
     clearHistoryDelivered: () => void;
     historyDeclined: { device_id: string; reason: string | null } | null;
     setHistoryDeclined: (v: null) => void;
+    /** A call is live: don't reload under it after a sync (see `finishSync`). */
+    inCall?: boolean;
 }
 
 interface DeviceInfo {
@@ -97,6 +99,7 @@ export const HistorySyncBanner: React.FC<Props> = ({
     clearHistoryDelivered,
     historyDeclined,
     setHistoryDeclined,
+    inCall = false,
 }) => {
     const [open, setOpen] = useState(false);
     const [state, setState] = useState<ModalState>('idle');
@@ -179,6 +182,30 @@ export const HistorySyncBanner: React.FC<Props> = ({
         clearHistoryDelivered();
         setOpen(false);
     }, [userId, clearHistoryDelivered]);
+
+    /** A history transfer also carries settings, My Emojis, sounds and pins.
+     *  Most settings are read ONCE when the app starts (notification prefs,
+     *  keybinds, voice, privacy…), so a running app would keep showing — and
+     *  on the next change, re-save — what it had before the import. Reload,
+     *  exactly as Settings → Backup → Restore does, once every restored value
+     *  is on disk. Never under a live call: offer the reload instead. */
+    const [needsReload, setNeedsReload] = useState(false);
+    const reloadNow = useCallback(async () => {
+        try { await secureLocalStore.flushNow(); } catch { /* reload anyway: the debounce flush already ran or will on unload */ }
+        window.location.reload();
+    }, []);
+    const finishSync = useCallback(async () => {
+        // Mark the banner done FIRST, so the reloaded app does not ask again
+        // (a transfer with settings but zero messages would otherwise re-prompt).
+        if (userId) secureLocalStore.setItem(`cipherline_sync_dismissed_${userId}`, '1');
+        if (inCall) {
+            setStatusText('History synced. Reload Cipherline after your call to finish applying your settings, emojis and sounds.');
+            setNeedsReload(true);
+            return;
+        }
+        setStatusText('History synced. Reloading to apply your settings, emojis and sounds…');
+        setTimeout(() => { void reloadNow(); }, 1500);
+    }, [userId, inCall, reloadNow]);
 
     const startCountdown = useCallback(() => {
         setCountdown(TIMEOUT_SECS);
@@ -405,8 +432,7 @@ export const HistorySyncBanner: React.FC<Props> = ({
                 await importLocalHistory(userId!, new Blob([decryptedBuffer], { type: 'application/json' }));
                 clearHistoryDelivered();
                 setState('done');
-                setStatusText('History synced successfully.');
-                setTimeout(dismiss, 2500);
+                await finishSync();
             } catch (err) {
                 console.warn('[HistorySyncModal] import failed:', err);
                 const impStatus = httpStatusOf(err);
@@ -430,8 +456,7 @@ export const HistorySyncBanner: React.FC<Props> = ({
         };
 
         doImport();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [historyDelivered, userId, token, clearHistoryDelivered]);
+    }, [historyDelivered, userId, token, clearHistoryDelivered, finishSync]);
 
     const cancelImport = useCallback(() => {
         pendingKeyRef.current = null;
@@ -711,10 +736,18 @@ export const HistorySyncBanner: React.FC<Props> = ({
 
                 {/* done */}
                 {state === 'done' && (
-                    <div>
-                        <h2 style={{ margin: '0 0 6px', fontSize: 17, fontWeight: 700, color: '#22c55e' }}>History synced</h2>
-                        <p style={{ margin: 0, fontSize: 13, color: 'var(--cl-muted)' }}>{statusText}</p>
-                    </div>
+                    <>
+                        <div>
+                            <h2 style={{ margin: '0 0 6px', fontSize: 17, fontWeight: 700, color: '#22c55e' }}>History synced</h2>
+                            <p style={{ margin: 0, fontSize: 13, color: 'var(--cl-muted)' }}>{statusText}</p>
+                        </div>
+                        {needsReload && (
+                            <div style={{ display: 'flex', gap: 10, width: '100%' }}>
+                                <ClButton fullWidth variant="ghost" style={{ flex: 1 }} onClick={dismiss}>Later</ClButton>
+                                <ClButton fullWidth style={{ flex: 1 }} onClick={() => { void reloadNow(); }}>Reload now</ClButton>
+                            </div>
+                        )}
+                    </>
                 )}
             </div>
         </ClModal>

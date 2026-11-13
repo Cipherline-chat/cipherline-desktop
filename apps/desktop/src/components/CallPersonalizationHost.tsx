@@ -28,7 +28,8 @@ export const CallPersonalizationHost = () => {
         const headers = () => ({ Authorization: `Bearer ${tokenRef.current ?? ''}` });
         const transport: PersonalizationTransport = {
             async read(ids) {
-                if (!tokenRef.current) return {};
+                // Reject (not `{}`): `{}` reads as "everyone is on defaults" and would be cached as such.
+                if (!tokenRef.current) throw new Error('no token');
                 const res = await axios.get(`${API_BASE}/personalization`, { params: { ids: ids.join(',') }, headers: headers(), timeout: 15000 });
                 return res.data ?? {};
             },

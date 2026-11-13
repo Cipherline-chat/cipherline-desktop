@@ -27,6 +27,8 @@ export interface ProfilePreviewData {
     games: string[];
     links: ProfileLink[];
     level?: number;
+    /** The points behind `level` (/auth/me profile_level.points). */
+    levelPoints?: number | null;
     /** About blocks in the owner's order (default: the legacy three). */
     blocks?: readonly ShowcaseBlock[];
     topAchievements?: readonly string[];
@@ -57,6 +59,7 @@ export function previewCardData(data: ProfilePreviewData, seen: Record<Visibilit
         proSince: data.proSince,
         badges: data.badges,
         level: data.level,
+        levelPoints: data.levelPoints ?? null,
         bio: seen.bio ? data.bio : null,
         bioFriendsOnly: locked('bio'),
         timeZone: seen.local_time ? data.timeZone.trim() || null : null,

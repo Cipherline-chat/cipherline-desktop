@@ -1,0 +1,341 @@
+{
+  "code": "BX8jqYy8vu3y",
+  "template": {
+    "name": "Fusion",
+    "description": "Bettington"
+  },
+  "blueprint": {
+    "server": {
+      "name": "Fusion",
+      "description": "It's called we do a little trolling.",
+      "default_notification_level": "mentions",
+      "system_channel_ref": "c:18"
+    },
+    "everyone_permissions": "2948268608",
+    "roles": [
+      {
+        "ref": "r:4",
+        "name": "Bots",
+        "color": 3447003,
+        "hoisted": true,
+        "mentionable": false,
+        "permissions": "2399141889",
+        "position": 1000
+      },
+      {
+        "ref": "r:6",
+        "name": "Admin",
+        "color": 16536403,
+        "hoisted": true,
+        "mentionable": true,
+        "permissions": "2684305279",
+        "position": 2000
+      }
+    ],
+    "categories": [
+      {
+        "ref": "k:2:text",
+        "name": "Primary Channels",
+        "kind": "text",
+        "position": 1000,
+        "overrides": [],
+        "private": false
+      },
+      {
+        "ref": "k:6:text",
+        "name": "Media",
+        "kind": "text",
+        "position": 2000,
+        "overrides": [],
+        "private": false
+      },
+      {
+        "ref": "k:10:text",
+        "name": "Special Channels",
+        "kind": "text",
+        "position": 3000,
+        "overrides": [],
+        "private": false
+      },
+      {
+        "ref": "k:13:text",
+        "name": "Voice Channels",
+        "kind": "text",
+        "position": 4000,
+        "overrides": [],
+        "private": false
+      },
+      {
+        "ref": "k:13:huddle",
+        "name": "Voice Channels",
+        "kind": "huddle",
+        "position": 1000,
+        "overrides": [],
+        "private": false
+      },
+      {
+        "ref": "k:16:text",
+        "name": "Admin stuff",
+        "kind": "text",
+        "position": 5000,
+        "overrides": [
+          {
+            "role_ref": "r:0",
+            "allow": "0",
+            "deny": "2164326400"
+          }
+        ],
+        "private": true
+      },
+      {
+        "ref": "k:16:huddle",
+        "name": "Admin stuff",
+        "kind": "huddle",
+        "position": 2000,
+        "overrides": [
+          {
+            "role_ref": "r:0",
+            "allow": "0",
+            "deny": "2164326400"
+          }
+        ],
+        "private": true
+      }
+    ],
+    "channels": [
+      {
+        "ref": "c:1",
+        "name": "join_and_leave",
+        "kind": "text",
+        "topic": "These are the logs for who joins and leaves this server",
+        "icon_name": null,
+        "position": 1000,
+        "category_ref": null,
+        "member_limit": null,
+        "overrides": [
+          {
+            "role_ref": "r:0",
+            "allow": "65536",
+            "deny": "10092544"
+          }
+        ],
+        "private": false
+      },
+      {
+        "ref": "c:15",
+        "name": "New Channel",
+        "kind": "huddle",
+        "topic": null,
+        "icon_name": "Sparkles",
+        "position": 1000,
+        "category_ref": "k:13:huddle",
+        "member_limit": null,
+        "overrides": [],
+        "private": false
+      },
+      {
+        "ref": "c:3",
+        "name": "general_chat",
+        "kind": "text",
+        "topic": "Main chat",
+        "icon_name": "MessageSquare",
+        "position": 1000,
+        "category_ref": "k:2:text",
+        "member_limit": null,
+        "overrides": [
+          {
+            "role_ref": "r:0",
+            "allow": "0",
+            "deny": "1048576"
+          }
+        ],
+        "private": false
+      },
+      {
+        "ref": "c:4",
+        "name": "files_pictures",
+        "kind": "text",
+        "topic": "Post screen-shots in here.",
+        "icon_name": "Image",
+        "position": 2000,
+        "category_ref": "k:2:text",
+        "member_limit": null,
+        "overrides": [],
+        "private": false
+      },
+      {
+        "ref": "c:19",
+        "name": "Private Voice",
+        "kind": "huddle",
+        "topic": null,
+        "icon_name": "Lock",
+        "position": 1000,
+        "category_ref": "k:16:huddle",
+        "member_limit": null,
+        "overrides": [],
+        "private": true
+      },
+      {
+        "ref": "c:5",
+        "name": "bot_commands",
+        "kind": "text",
+        "topic": null,
+        "icon_name": "Cpu",
+        "position": 3000,
+        "category_ref": "k:2:text",
+        "member_limit": null,
+        "overrides": [
+          {
+            "role_ref": "r:0",
+            "allow": "2097152",
+            "deny": "5767168"
+          }
+        ],
+        "private": false
+      },
+      {
+        "ref": "c:7",
+        "name": "self_promotion",
+        "kind": "text",
+        "topic": null,
+        "icon_name": "Megaphone",
+        "position": 1000,
+        "category_ref": "k:6:text",
+        "member_limit": null,
+        "overrides": [],
+        "private": false
+      },
+      {
+        "ref": "c:8",
+        "name": "game_clips",
+        "kind": "text",
+        "topic": "Medal, twitch, or any other games clips go here.",
+        "icon_name": "Gamepad2",
+        "position": 2000,
+        "category_ref": "k:6:text",
+        "member_limit": null,
+        "overrides": [],
+        "private": false
+      },
+      {
+        "ref": "c:9",
+        "name": "yt_videos",
+        "kind": "text",
+        "topic": "Any interesting YouTube videos you'd like to share",
+        "icon_name": "Film",
+        "position": 3000,
+        "category_ref": "k:6:text",
+        "member_limit": null,
+        "overrides": [],
+        "private": false
+      },
+      {
+        "ref": "c:11",
+        "name": "car_discussions",
+        "kind": "text",
+        "topic": "🏎️",
+        "icon_name": null,
+        "position": 1000,
+        "category_ref": "k:10:text",
+        "member_limit": null,
+        "overrides": [],
+        "private": false
+      },
+      {
+        "ref": "c:12",
+        "name": "memes",
+        "kind": "text",
+        "topic": "Post your gay memes here. Not #general_chat",
+        "icon_name": "Smile",
+        "position": 2000,
+        "category_ref": "k:10:text",
+        "member_limit": null,
+        "overrides": [],
+        "private": false
+      },
+      {
+        "ref": "c:14",
+        "name": "music_commands",
+        "kind": "text",
+        "topic": "/play *song name* | If you have issues refer to the slash commands for more help.",
+        "icon_name": "Music",
+        "position": 1000,
+        "category_ref": "k:13:text",
+        "member_limit": null,
+        "overrides": [
+          {
+            "role_ref": "r:0",
+            "allow": "0",
+            "deny": "1572864"
+          }
+        ],
+        "private": false
+      },
+      {
+        "ref": "c:17",
+        "name": "private_chat",
+        "kind": "text",
+        "topic": null,
+        "icon_name": "MessageSquare",
+        "position": 1000,
+        "category_ref": "k:16:text",
+        "member_limit": null,
+        "overrides": [],
+        "private": true
+      },
+      {
+        "ref": "c:18",
+        "name": "logs",
+        "kind": "text",
+        "topic": null,
+        "icon_name": "FileText",
+        "position": 2000,
+        "category_ref": "k:16:text",
+        "member_limit": null,
+        "overrides": [],
+        "private": true
+      }
+    ],
+    "skipped": [
+      {
+        "item": "Verification level",
+        "reason": "Cipherline has no member verification gate; anyone you invite can take part"
+      },
+      {
+        "item": "Explicit media content filter",
+        "reason": "Cipherline never scans messages: they are end-to-end encrypted"
+      },
+      {
+        "item": "System message options",
+        "reason": "Cipherline posts join and leave messages only; there are no per-type toggles"
+      },
+      {
+        "item": "Server language (en-US)",
+        "reason": "Cipherline follows each member’s own language"
+      },
+      {
+        "item": "#self_promotion: slowmode (6h)",
+        "reason": "Cipherline has no slowmode"
+      },
+      {
+        "item": "@everyone permissions",
+        "reason": "No Cipherline equivalent: Use External Emojis, Use Voice Activity, Use Application Commands, Request to Speak, Create Public Threads, Create Private Threads, Send Messages in Threads, Use Activities, Use Soundboard, Use External Sounds, Send Voice Messages, Use Clyde AI, Set Voice Channel Status, Create Polls, Use External Apps"
+      },
+      {
+        "item": "Role “Bots” permissions",
+        "reason": "No Cipherline equivalent: Use Voice Activity, Use Activities, Use Soundboard, Use External Sounds"
+      },
+      {
+        "item": "Role “Admin” permissions",
+        "reason": "No Cipherline equivalent: Send Text-to-Speech Messages, Use External Emojis, View Server Insights, Use Voice Activity, Manage Webhooks, Use Application Commands, Request to Speak, Manage Threads, Create Public Threads, Create Private Threads, Use External Stickers, Send Messages in Threads, Create Expressions"
+      },
+      {
+        "item": "Channel permission overrides",
+        "reason": "No Cipherline equivalent: Create Public Threads, Create Private Threads, Send Messages in Threads, Send Text-to-Speech Messages, Use Application Commands, Manage Threads"
+      }
+    ],
+    "warnings": [
+      "“Bots”, “Admin” have Administrator: anyone you give these roles gets full control of the server."
+    ]
+  }
+}

@@ -14,13 +14,28 @@ export const isArtRef = (v: unknown): v is string => typeof v === 'string' && v.
 
 export interface SteamGameArt { capsule: string | null; header: string | null; portrait: string | null; icon: string | null }
 export interface SteamRecentGame { appId: number; name: string; minutes2w: number; minutesTotal: number; art: SteamGameArt }
+export interface SteamTopGame { appId: number; name: string; minutesTotal: number; art: SteamGameArt }
 export interface SteamNowPlaying { appId: number | null; name: string; art: SteamGameArt | null }
+export interface SteamXp { intoLevel: number; levelSpan: number; toNext: number }
+export interface SteamAchievement { name: string; description: string | null; unlockedOn: string | null; icon: string | null }
+export interface SteamGameAchievements { appId: number; game: string; unlocked: number; total: number; recent: SteamAchievement[] }
 export interface SteamActivity {
+    /** The Steam PROFILE is private. */
     private: boolean;
+    /** The profile is public, but its "Game details" are not: no games, hours or achievements. */
+    gamesPrivate: boolean;
     level: number | null;
+    xp: SteamXp | null;
+    badgeCount: number | null;
+    /** 'YYYY-MM' the Steam account was created. */
+    memberSince: string | null;
     gameCount: number | null;
+    /** All-time minutes over the library (0 with games = Steam keeps the playtime private). */
+    totalMinutes: number | null;
+    topGames: SteamTopGame[];
     nowPlaying: SteamNowPlaying | null;
     recent: SteamRecentGame[];
+    achievements: SteamGameAchievements | null;
 }
 
 const text = (v: unknown, max: number): string | null => {
@@ -31,6 +46,7 @@ const text = (v: unknown, max: number): string | null => {
 const count = (v: unknown, max = 1e9): number | null => (typeof v === 'number' && Number.isInteger(v) && v >= 0 && v <= max ? v : null);
 const appId = (v: unknown): number | null => (typeof v === 'number' && Number.isInteger(v) && v > 0 && v <= 0xffffffff ? v : null);
 const obj = (v: unknown): Record<string, unknown> | null => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : null);
+const NO_ART: SteamGameArt = { capsule: null, header: null, portrait: null, icon: null };
 
 function readArt(v: unknown, id: number | null): SteamGameArt | null {
     const o = obj(v);
@@ -40,15 +56,47 @@ function readArt(v: unknown, id: number | null): SteamGameArt | null {
     return { capsule: mine(o.capsule), header: mine(o.header), portrait: mine(o.portrait), icon: mine(o.icon) };
 }
 
+const month = (v: unknown): string | null => (typeof v === 'string' && /^(20\d\d)-(0[1-9]|1[0-2])$/.test(v) ? v : null);
+const day = (v: unknown): string | null => (typeof v === 'string' && /^20\d\d-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/.test(v) ? v : null);
+
+function readXp(v: unknown): SteamXp | null {
+    const o = obj(v);
+    const into = count(o?.into_level, 1_000_000);
+    const span = count(o?.level_span, 1_000_000);
+    const next = count(o?.to_next, 1_000_000);
+    return into !== null && span !== null && next !== null && span > 0 && into <= span ? { intoLevel: into, levelSpan: span, toNext: next } : null;
+}
+
+function readAchievements(v: unknown): SteamGameAchievements | null {
+    const o = obj(v);
+    const id = appId(o?.app_id);
+    const game = text(o?.game, 100);
+    const unlocked = count(o?.unlocked, 100_000);
+    const total = count(o?.total, 100_000);
+    if (!o || id === null || !game || unlocked === null || total === null || total === 0 || unlocked > total) return null;
+    const recent: SteamAchievement[] = [];
+    for (const a of Array.isArray(o.recent) ? o.recent : []) {
+        const r = obj(a);
+        const name = text(r?.name, 120);
+        if (!r || !name) continue;
+        const icon = isArtRef(r.icon) && r.icon.startsWith(`steam:${id}:icon:`) ? r.icon : null;
+        recent.push({ name, description: text(r.description, 200), unlockedOn: day(r.unlocked_on), icon });
+        if (recent.length >= 3) break;
+    }
+    return { appId: id, game, unlocked, total, recent };
+}
+
 export function readSteamActivity(raw: unknown): SteamActivity | null {
     const o = obj(raw);
     if (!o) return null;
     const isPrivate = o.private === true;
+    const gamesPrivate = !isPrivate && o.games_private === true;
+    const hidden = isPrivate || gamesPrivate;
     const np = obj(o.now_playing);
     const npName = text(np?.name, 100);
     const npId = appId(np?.app_id);
     const recent: SteamRecentGame[] = [];
-    if (!isPrivate && Array.isArray(o.recent)) {
+    if (!hidden && Array.isArray(o.recent)) {
         for (const g of o.recent) {
             const r = obj(g);
             const id = appId(r?.app_id);
@@ -58,18 +106,74 @@ export function readSteamActivity(raw: unknown): SteamActivity | null {
                 appId: id, name,
                 minutes2w: count(r.minutes_2w, 20_160) ?? 0,
                 minutesTotal: count(r.minutes_total) ?? 0,
-                art: readArt(r.art, id) ?? { capsule: null, header: null, portrait: null, icon: null },
+                art: readArt(r.art, id) ?? NO_ART,
             });
             if (recent.length >= 5) break;
         }
     }
+    const topGames: SteamTopGame[] = [];
+    if (!hidden && Array.isArray(o.top_games)) {
+        for (const g of o.top_games) {
+            const r = obj(g);
+            const id = appId(r?.app_id);
+            const name = text(r?.name, 100);
+            const mins = count(r?.minutes_total);
+            if (!r || id === null || !name || mins === null) continue;
+            topGames.push({ appId: id, name, minutesTotal: mins, art: readArt(r.art, id) ?? NO_ART });
+            if (topGames.length >= 3) break;
+        }
+    }
     return {
         private: isPrivate,
+        gamesPrivate,
         level: count(o.level, 10_000),
-        gameCount: isPrivate ? null : count(o.game_count, 1_000_000),
+        xp: isPrivate ? null : readXp(o.xp),
+        badgeCount: isPrivate ? null : count(o.badge_count, 100_000),
+        memberSince: month(o.member_since),
+        gameCount: hidden ? null : count(o.game_count, 1_000_000),
+        totalMinutes: hidden ? null : count(o.total_minutes, 1e9),
+        topGames,
         nowPlaying: !isPrivate && npName ? { appId: npId, name: npName, art: readArt(np!.art, npId) } : null,
         recent,
+        achievements: hidden ? null : readAchievements(o.achievements),
     };
+}
+
+/** Whole years since a 'YYYY-MM' month (0 in the first year). */
+export function yearsSince(memberSince: string | null, now: Date = new Date()): number | null {
+    if (!memberSince) return null;
+    const [y, m] = memberSince.split('-').map(Number);
+    const months = (now.getUTCFullYear() - y) * 12 + (now.getUTCMonth() + 1 - m);
+    return months >= 0 ? Math.floor(months / 12) : null;
+}
+
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+/** 'YYYY-MM' -> "Mar 2012". */
+export const formatMonth = (ym: string): string => `${MONTHS[Number(ym.slice(5, 7)) - 1] ?? ''} ${ym.slice(0, 4)}`.trim();
+/** 'YYYY-MM-DD' -> "Oct 21". */
+export const formatDay = (d: string): string => `${MONTHS[Number(d.slice(5, 7)) - 1] ?? ''} ${Number(d.slice(8, 10))}`;
+
+/** What Steam is hiding, as one line; null when nothing is. */
+export function steamPrivacyText(a: SteamActivity, isSelf: boolean): string | null {
+    if (a.private) {
+        return isSelf
+            ? 'Your Steam profile is private, so only your level can show. In Steam, open your profile, Edit Profile > Privacy Settings, and set My profile to Public and Game details to Public.'
+            : 'Their Steam profile is private.';
+    }
+    if (a.gamesPrivate) {
+        return isSelf
+            ? 'Your Steam game details are private, so games, hours and achievements cannot show. In Steam: Edit Profile > Privacy Settings > Game details: Public.'
+            : 'Their Steam game details are private.';
+    }
+    if (isSelf && a.totalMinutes === 0 && (a.gameCount ?? 0) > 0) {
+        return 'Steam hides your playtime. In Steam: Edit Profile > Privacy Settings, untick "Always keep my total playtime private".';
+    }
+    return null;
+}
+
+/** "1,840 h" for all-time totals (whole hours; under an hour reads in minutes). */
+export function formatHours(minutes: number): string {
+    return minutes < 60 ? `${minutes} min` : `${Math.round(minutes / 60).toLocaleString('en-US')} h`;
 }
 
 /** Steam's level ring colour bands (by tens; the hundreds repeat the cycle). Same order as Steam's own badges. */

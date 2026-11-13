@@ -8,8 +8,9 @@
  *     track being subscribed → the call summary, and call_first_audio_slow
  *     when it took FIRST_AUDIO_SLOW_MS or more;
  *   - one-way audio, inbound (we can't hear them): an unmuted, subscribed
- *     remote mic whose inbound packet count stays flat for 15 s
- *     (callSummary.InboundAudioStallDetector) → call_one_way_audio {in};
+ *     remote mic whose inbound packet count stays flat for 15 s of continuous
+ *     observation (callSummary.InboundAudioStallDetector) → call_one_way_audio
+ *     {in, cause, sfu_hears, other_flowing} + the audio_in_stall call event;
  *   - peers_max: remote participant COUNT;
  *   - mic / camera acquisition failures (LiveKit's MediaDevicesError) →
  *     mic_failed / camera_failed with the DOMException name.
@@ -24,10 +25,33 @@ import { isBetaActive, reportBeta } from '../../utils/betaDiagnostics/reporter';
 import { getActiveCallSummary, noteBetaPeers } from '../../utils/betaDiagnostics/callSession';
 import { InboundAudioStallDetector, type InboundAudioReading } from '../../utils/betaDiagnostics/callSummary';
 import { errorNameOf } from '../../utils/betaDiagnostics/sanitize';
+import { logCallEvent } from '../../utils/callEventLog';
 
 export const FIRST_AUDIO_SLOW_MS = 3_000;
 const STALL_POLL_MS = 5_000;
 const MAX_STALL_TRACKS = 8;
+const MAX_OTHER_TRACKS = 3;
+
+/**
+ * Packets received on a peer's OTHER subscribed tracks (camera, share video,
+ * share audio), summed, or undefined when it has none. Only ever compared with
+ * itself across polls: "did anything else from this peer keep arriving while the
+ * mic's packets stood still". Capped so a busy peer cannot make the poll heavy.
+ */
+async function otherPacketsOf(p: RemoteParticipant, mic: RemoteTrackPublication): Promise<number | undefined> {
+    let sum: number | undefined;
+    let n = 0;
+    for (const pub of p.trackPublications.values()) {
+        if (pub === mic || !pub.isSubscribed || !pub.track || n >= MAX_OTHER_TRACKS) continue;
+        n++;
+        try {
+            (await (pub.track as RemoteTrack).getRTCStatsReport())?.forEach((s: Record<string, unknown>) => {
+                if (s.type === 'inbound-rtp' && typeof s.packetsReceived === 'number') sum = (sum ?? 0) + s.packetsReceived;
+            });
+        } catch { /* closing */ }
+    }
+    return sum;
+}
 
 export function BetaCallMonitor(): null {
     const room = useRoomContext();
@@ -40,7 +64,7 @@ export function BetaCallMonitor(): null {
         const heardFrom = new WeakSet<object>();
         let firstAudioDone = false;
         let slowReported = false;
-        const stall = new InboundAudioStallDetector();
+        const detector = new InboundAudioStallDetector();
 
         const onConnected = () => { if (connectedAt === null) connectedAt = now(); noteBetaPeers(room.remoteParticipants.size); };
         const onParticipant = (p: RemoteParticipant) => {
@@ -99,9 +123,19 @@ export function BetaCallMonitor(): null {
                             if (s.type === 'inbound-rtp' && s.kind === 'audio' && typeof s.packetsReceived === 'number') packets = s.packetsReceived;
                         });
                     } catch { continue; }
-                    readings.push({ ref: track, unmuted: !pub.isMuted, packetsReceived: packets });
+                    readings.push({
+                        ref: track,
+                        unmuted: !pub.isMuted,
+                        packetsReceived: packets,
+                        sfuSpeaking: !!p.isSpeaking,
+                        otherPackets: await otherPacketsOf(p, pub),
+                    });
                 }
-                if (stall.update(readings, now())) reportBeta('call_one_way_audio', { direction: 'in' });
+                const stalled = detector.update(readings, now());
+                if (stalled) {
+                    reportBeta('call_one_way_audio', { direction: 'in', cause: 'rtp_flat', sfu_hears: stalled.sfuHears, other_flowing: stalled.otherFlowing });
+                    logCallEvent('audio_in_stall', { cause: 'rtp_flat', sfu_hears: stalled.sfuHears, other_flowing: stalled.otherFlowing });
+                }
             } catch { /* diagnostics only */ } finally {
                 busy = false;
             }

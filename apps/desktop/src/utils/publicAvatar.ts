@@ -70,6 +70,35 @@ function currentAccessToken(): string | null {
     }
 }
 
+/** Longest side of the still sent for an animated / oversized avatar (the server serves a smaller WebP). */
+export const PUBLIC_AVATAR_STILL_PX = 512;
+
+/** Draws an image blob into a canvas no larger than `maxPx` and encodes it; injectable for tests. */
+export type StillRasterizer = (blob: Blob, maxPx: number) => Promise<Blob | null>;
+
+const canvasRasterizer: StillRasterizer = async (blob, maxPx) => {
+    try {
+        const bmp = await createImageBitmap(blob); // first frame of a GIF / animated WebP
+        const k = Math.min(1, maxPx / Math.max(bmp.width, bmp.height, 1));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round(bmp.width * k));
+        canvas.height = Math.max(1, Math.round(bmp.height * k));
+        canvas.getContext('2d')?.drawImage(bmp, 0, 0, canvas.width, canvas.height);
+        bmp.close?.();
+        const png: Blob | null = await new Promise((res) => canvas.toBlob(res, 'image/png'));
+        if (png && png.size <= PUBLIC_AVATAR_MAX_BYTES) return png;
+        return await new Promise((res) => canvas.toBlob(res, 'image/jpeg', 0.9));
+    } catch {
+        return null;
+    }
+};
+
+/** A still (first frame, ≤ PUBLIC_AVATAR_STILL_PX) of an avatar blob for the public copy, or null. */
+export async function publicAvatarStill(blob: Blob, rasterize: StillRasterizer = canvasRasterizer): Promise<Blob | null> {
+    const still = await rasterize(blob, PUBLIC_AVATAR_STILL_PX);
+    return still && still.size > 0 && still.size <= PUBLIC_AVATAR_MAX_BYTES ? still : null;
+}
+
 /**
  * Upload `blob` (the plaintext, already-cropped avatar) as the public copy of
  * the encrypted avatar `sourceAttachmentId`. Throws on failure; callers that
@@ -79,10 +108,23 @@ export async function publishPublicAvatar(
     blob: Blob,
     sourceAttachmentId: string,
     token: string | null = currentAccessToken(),
+    rasterize: StillRasterizer = canvasRasterizer,
 ): Promise<PublicAvatarStatus | null> {
     if (!token) return null;
     if (!UUID_RE.test(sourceAttachmentId)) return null;
-    if (blob.size === 0 || blob.size > PUBLIC_AVATAR_MAX_BYTES) return null;
+    if (blob.size === 0) return null;
+    // An animated avatar (GIF / WebP, up to 10 MB) usually exceeds the public
+    // copy's 2 MB cap, and the public copy is a still anyway (the server keeps
+    // frame 0). Send a downscaled first frame instead of skipping the upload,
+    // which left the referral page on the initial circle (owner 2026-10-28).
+    const sniffed = sniffImageMime(new Uint8Array(await blob.slice(0, 16).arrayBuffer()));
+    if (!sniffed) return null;
+    if (sniffed === 'image/gif' || sniffed === 'image/webp' || blob.size > PUBLIC_AVATAR_MAX_BYTES) {
+        const still = await publicAvatarStill(blob, rasterize);
+        if (!still) return null;
+        blob = still;
+    }
+    if (blob.size > PUBLIC_AVATAR_MAX_BYTES) return null;
     const head = new Uint8Array(await blob.slice(0, 16).arrayBuffer());
     const mime = sniffImageMime(head);
     if (!mime) return null;

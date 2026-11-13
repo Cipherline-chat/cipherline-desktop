@@ -1,0 +1,83 @@
+<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline'"></head><body><canvas id="c" width="400" height="200"></canvas><video id="v" muted autoplay></video><script>
+const log = (...a) => console.log(a.map(x => typeof x === 'string' ? x : JSON.stringify(x)).join(' '));
+const check = (name, ok, detail = '') => log(`CHECK ${ok ? 'PASS' : 'FAIL'} ${name}`, detail);
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const race = (p, ms, what) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error(`${what} did not settle in ${ms / 1000}s`)), ms))]);
+const frames = (track, ms) => new Promise(res => {
+    const v = document.getElementById('v'); v.srcObject = new MediaStream([track]); let n = 0;
+    const cb = () => { n++; v.requestVideoFrameCallback(cb); }; v.requestVideoFrameCallback(cb);
+    setTimeout(() => res(n), ms);
+});
+const asVideo = { video: { width: { max: 1920 }, height: { max: 1080 }, frameRate: { max: 30 } } };
+
+(async () => {
+    try {
+        // something moving on the screen so the capture has frames to deliver
+        const g = document.getElementById('c').getContext('2d'); let k = 0;
+        setInterval(() => { g.fillStyle = `hsl(${k * 9 % 360},80%,50%)`; g.fillRect((k * 11) % 380, (k * 5) % 180, 20, 20); k++; }, 16);
+        log('INFO ua', navigator.userAgent.match(/Electron\/\S+/)?.[0] ?? '?');
+
+        // 1. video capture, and what the track says
+        log('MODE none'); await sleep(300);
+        const t0 = performance.now();
+        const s = await race(navigator.mediaDevices.getDisplayMedia({ ...asVideo, audio: false }), 90_000, 'getDisplayMedia(video)');
+        const orig = s.getVideoTracks()[0];
+        check('video capture', !!orig, `${Math.round(performance.now() - t0)} ms ${JSON.stringify({ w: orig?.getSettings().width, h: orig?.getSettings().height, fps: orig?.getSettings().frameRate })}`);
+        if (!orig) return;
+
+        // 2. what a republish through the portal relies on: a clone outlives the original and can be re-sized
+        const clone = orig.clone();
+        orig.stop(); await sleep(300);
+        check('clone survives stopping the original', clone.readyState === 'live', `orig=${orig.readyState} clone=${clone.readyState}`);
+        const n1 = await frames(clone, 2000);
+        check('clone delivers frames', n1 > 10, `${n1} frames in 2 s`);
+        await clone.applyConstraints({ width: { max: 960 }, height: { max: 540 }, frameRate: { max: 15 } });
+        await sleep(500);
+        const st = clone.getSettings();
+        check('applyConstraints re-targets the live capture', st.width <= 960 && st.height <= 540, JSON.stringify({ w: st.width, h: st.height, fps: st.frameRate }));
+        const n2 = await frames(clone, 2000);
+        check('frames still flow after re-sizing', n2 > 5, `${n2} frames in 2 s`);
+
+        // 3. encoders and decoders really used (loopback peer connection)
+        const caps = [...new Set(RTCRtpSender.getCapabilities('video').codecs.map(c => c.mimeType))];
+        log('INFO sender_codecs', caps);
+        check('VP8 and H.264 can be sent', caps.includes('video/VP8') && caps.includes('video/H264'));
+        check('H.265 is NOT offered (no software HEVC)', !caps.includes('video/H265'), 'if this fails, hevcNegotiation/cl.vdec need a Linux look');
+        for (const codec of ['video/VP8', 'video/H264', 'video/VP9']) {
+            const pc1 = new RTCPeerConnection(), pc2 = new RTCPeerConnection();
+            pc1.onicecandidate = e => e.candidate && pc2.addIceCandidate(e.candidate);
+            pc2.onicecandidate = e => e.candidate && pc1.addIceCandidate(e.candidate);
+            const c2 = clone.clone(); c2.contentHint = 'motion';
+            const tr = pc1.addTransceiver(c2, { direction: 'sendonly', sendEncodings: [{ maxBitrate: 6e6, maxFramerate: 30 }] });
+            const all = RTCRtpSender.getCapabilities('video').codecs;
+            const pick = all.filter(c => c.mimeType === codec);
+            tr.setCodecPreferences([...pick, ...all.filter(c => !pick.includes(c))]);
+            pc2.ontrack = e => { const v = document.createElement('video'); v.muted = true; v.autoplay = true; v.srcObject = new MediaStream([e.track]); document.body.appendChild(v); };
+            await pc1.setLocalDescription(await pc1.createOffer()); await pc2.setRemoteDescription(pc1.localDescription);
+            await pc2.setLocalDescription(await pc2.createAnswer()); await pc1.setRemoteDescription(pc2.localDescription);
+            await sleep(5000);
+            let o, i; (await tr.sender.getStats()).forEach(r => { if (r.type === 'outbound-rtp' && r.kind === 'video') o = r; });
+            (await pc2.getStats()).forEach(r => { if (r.type === 'inbound-rtp' && r.kind === 'video') i = r; });
+            log('INFO codec', { codec, enc: o?.encoderImplementation, hwEnc: o?.powerEfficientEncoder, sent: o?.framesSent, dec: i?.decoderImplementation, hwDec: i?.powerEfficientDecoder, decoded: i?.framesDecoded });
+            check(`${codec} encodes and decodes`, (o?.framesSent ?? 0) > 20 && (i?.framesDecoded ?? 0) > 20, `${o?.encoderImplementation} -> ${i?.decoderImplementation}`);
+            pc1.close(); pc2.close(); c2.stop();
+        }
+        clone.stop();
+
+        // 4. system audio: what the Linux share must NOT ask for, and what would work
+        log('MODE loopback'); await sleep(300);
+        const a = await race(navigator.mediaDevices.getDisplayMedia({ video: true, audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } }), 25_000, 'getDisplayMedia(audio: loopback)')
+            .then(st => { const n = st.getAudioTracks().length; st.getTracks().forEach(t => t.stop()); return n; }, e => e.message);
+        check("audio 'loopback' settles with an audio track", a === 1, String(a));
+        log('MODE loopbackWithMute'); await sleep(300);
+        const b = await race(navigator.mediaDevices.getDisplayMedia({ video: true, audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } }), 25_000, 'getDisplayMedia(audio: loopbackWithMute)')
+            .then(st => { const n = st.getAudioTracks().length; st.getTracks().forEach(t => t.stop()); return `settled with ${n} audio track(s)`; }, e => e.message);
+        log('INFO loopbackWithMute', b);
+        // Informational: on Linux (Electron 43.2) this did not settle in 25 s on a fresh process (or failed with
+        // 'Could not start audio source'), which is why main.ts never asks Linux for it.
+    } catch (e) {
+        check('probe ran', false, `${e.name}: ${e.message}`);
+    }
+    log('DONE');
+})();
+</script></body></html>

@@ -203,6 +203,6 @@ describe('FullscreenOverlay wiring (source-level: the overlay needs a live room 
     });
 
     it('still renders the stage as a focused view (zoom / annotation / high layer)', () => {
-        expect(src).toMatch(/<VideoTile[\s\S]{0,200}isFocusedView=\{true\}/);
+        expect(src).toMatch(/<CallStreamTile[\s\S]{0,200}isFocusedView=\{true\}/);
     });
 });

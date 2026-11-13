@@ -45,12 +45,38 @@ LK_KEY=<key> LK_SECRET=<secret> DIST=$S/dist PUB_IP=<pub-net ip> VIEW_IP=<view-n
 node run.mjs --summarize $S/a.jsonl
 ```
 
+Share-failure reproductions (2026-10-25, reports e951243d / 83da3af8), with `--mode probe --secs N`:
+
+- `--crop new` — publish the CENTER screen of a `--w 7680 --h 1440` canvas through
+  the app's crop pipeline (`shareCrop.ts`, its real bundled worker). Pub rows carry
+  `crop` (frames in / out) and `cropDiag` (where it runs). `--crop legacy` uses
+  `src/utils/shareCrop.legacy.ts` if you drop a previous version in for a
+  before/after build (`git show <rev>:apps/desktop/src/utils/shareCrop.ts`; delete it after).
+- `--drift-at S [--drift-w 8192 --drift-h 4320]` — at S seconds hand the sender a
+  track its encoder cannot open: libwebrtc silently switches the SENDER to the next
+  negotiated codec. Pub rows: `published` vs `sentCodecs`; viewer rows: `pkts`,
+  `codec`, `fps`. Add `--drift-watch true [--recover-codec vp8]` to run the app's
+  `ShareCodecDriftWatch` and republish fresh on a drift, as the app does.
+
 Modes: `incident` (clean 3 min → throttle 3 min → clean 3 min → 20 % loss /
 jitter bursts 10 s on / 10 s off for 3 min → clean 3 min), `baseline`
 (`--secs`, unimpaired), `quick`, `probe`. `--gate off` skips the
 lighter-copy gate (LiveKit dynacast alone = a sharer whose gate allows the
 copy); with the gate on, `--hw false` stops stamping the share's encoder as
 hardware (the gate never runs the copy on a software encoder).
+
+Decoder-behind stall (`utils/shareRxStallRecovery.ts`, reports cd4f4ce5 / c704ba3e), with `--mode stall` and no
+sidecar needed (`TC_SIDECAR=none`, one docker network, `PUB_IP` = `VIEW_IP`):
+
+```sh
+node run.mjs --mode stall --out $S/s.jsonl --codec h264 --fps 15 --res 1080p --w 1920 --h 1080 --viewers 2 --clip $S/clip.y4m [--stall-kind stuck]
+```
+
+Only the viewer's `framesDecoded` reading is false (the page's `fakeDecoderStall`; this box has no D3D11 HEVC), so
+the backlog itself is not reproduced. The monitor, the recovery, the SFU pause, the keyframe and the layer switch are
+real. Expect `share_rx_stall` start, `share_rx_flush` attempts 1 / 2 / 3, `share_rx_fallback` reason `decoder_stall`
+from attempt 2, and `drained: false` at `FLUSH_MAX_MS` with `stuck`. The H.264 step cannot run here (no H.265). A
+1440p canvas source on a loaded box sends about 1 fps, under the detector's 5 fps floor: use the clip.
 
 ## Limits
 

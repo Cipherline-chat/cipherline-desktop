@@ -45,9 +45,9 @@
  * must never read as green; this file only renders the answer.
  */
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import axios from 'axios';
-import { ShieldCheck, ShieldAlert, ShieldQuestion, Fingerprint } from 'lucide-react';
+import { Check, ShieldCheck, ShieldAlert, ShieldQuestion, Fingerprint, Send } from 'lucide-react';
 import { apiUrl } from '../utils/apiPath';
 import { ClButton } from './ClButton';
 import { TrustBadge } from './TrustBadge';
@@ -63,6 +63,7 @@ import { trustExplanation } from '../utils/contactTrust';
 import { verdictMessage, type SenderVerdict } from '../utils/senderTrust';
 import { markVerified, getKnownDevices } from '../utils/keyVerification';
 import { isLegacyVerified } from '../utils/verificationStrength';
+import type { ShareOwnCodeOutcome } from '../utils/ownContactCode';
 
 interface Props {
     /** `content.code` exactly as it arrived. */
@@ -88,6 +89,14 @@ interface Props {
      * would otherwise have said.
      */
     contactVerdict?: SenderVerdict | null;
+    /**
+     * Sends the viewer's own safety code into this conversation. Called from a
+     * click and nowhere else. Absent where sharing does not apply (outside a 1:1
+     * DM). Sending changes no trust state: nothing here touches `markVerified`.
+     */
+    onShareBack?: () => Promise<ShareOwnCodeOutcome>;
+    /** The conversation already shows this card answered (`settledSafetyCardIds`). */
+    alreadySharedBack?: boolean;
 }
 
 /** How long the match flourish stays mounted — matches the CSS sequence. */
@@ -135,7 +144,7 @@ function allComparedPubsVerified(myUserId: string, theirUserId: string, pubs: st
 
 export const SafetyNumberEmbed: React.FC<Props> = ({
     code: rawCode, claimedUserId, deviceCount, senderUserId, myUserId, senderName, token, onVerified,
-    contactVerdict = null,
+    contactVerdict = null, onShareBack, alreadySharedBack = false,
 }) => {
     // Defensive even though ChatPane re-validates the row: the payload is
     // sender-controlled, and a non-string code used to throw in the useMemo
@@ -157,6 +166,10 @@ export const SafetyNumberEmbed: React.FC<Props> = ({
     /** Bumped after a write to the pin store so `resting` is re-derived from
      *  the store rather than from the local `attested` flag. */
     const [storeEpoch, setStoreEpoch] = useState(0);
+    const [shareBack, setShareBack] = useState<'idle' | 'sending' | 'sent' | 'failed'>('idle');
+    const shareRowRef = useRef<HTMLDivElement | null>(null);
+    /** Set when focus was on the share button as it went busy, and so has to be put back. */
+    const restoreShareFocus = useRef(false);
 
     const isMine = !!senderUserId && senderUserId === myUserId;
     const groups = useMemo(() => formatCode(code.toUpperCase()).split(' '), [code]);
@@ -252,6 +265,30 @@ export const SafetyNumberEmbed: React.FC<Props> = ({
         onVerified?.(senderUserId);
     }, [senderUserId, myUserId, localPubs, onVerified, senderName]);
 
+    const handleShareBack = useCallback(async () => {
+        if (!onShareBack) return;
+        restoreShareFocus.current = !!shareRowRef.current?.contains(document.activeElement);
+        setShareBack('sending');
+        try {
+            const outcome = await onShareBack();
+            // `needs_review` opened the Safety verification modal, which owns
+            // focus now and says why the code was withheld. Back to the plain
+            // button, so the user can try again once it is resolved.
+            if (outcome === 'needs_review') restoreShareFocus.current = false;
+            setShareBack(outcome === 'sent' ? 'sent' : 'idle');
+        } catch {
+            setShareBack('failed');
+        }
+    }, [onShareBack]);
+
+    /** The busy button is disabled and the sent one is replaced, and either drops
+     *  keyboard focus to the page. Put it back on what is there now. */
+    useEffect(() => {
+        if (shareBack === 'sending' || !restoreShareFocus.current) return;
+        restoreShareFocus.current = false;
+        shareRowRef.current?.querySelector<HTMLElement>('button, [tabindex="-1"]')?.focus({ preventScroll: true });
+    }, [shareBack]);
+
     const verdict = phase.s === 'done' ? phase.verdict : null;
 
     /**
@@ -298,6 +335,15 @@ export const SafetyNumberEmbed: React.FC<Props> = ({
         : verdict ? 'neutral'
         : restTone;
 
+    /**
+     * Not beside an alarm. The code is public and the modal can still send it,
+     * but a friendly one-click reply under "someone may be intercepting your
+     * messages" would pull against what that warning is asking the user to do.
+     * No sender on the envelope means this could be the user's own card.
+     */
+    const offerShareBack = !!onShareBack && !!senderUserId && !isMine && tone !== 'bad' && !contactVerdict;
+    const sharedBack = alreadySharedBack || shareBack === 'sent';
+
     if (!code) {
         // Unusable payload (see the `code` normalisation at the top). Rendered
         // as a quiet card rather than thrown on — a thrown render here is an
@@ -323,7 +369,7 @@ export const SafetyNumberEmbed: React.FC<Props> = ({
         >
             <div className="cl-sn-eyebrow">
                 <Fingerprint size={12} aria-hidden="true" />
-                {isMine ? 'You shared your safety code' : 'Safety code'}
+                {isMine ? 'You shared your safety code' : 'Compare safety codes'}
             </div>
 
             <div className="cl-sn-body">
@@ -341,10 +387,15 @@ export const SafetyNumberEmbed: React.FC<Props> = ({
                     {isMine ? (
                         <>Your identity fingerprint{typeof deviceCount === 'number' && deviceCount > 0
                             ? <> across {deviceCount} device{deviceCount === 1 ? '' : 's'}</> : null}.
-                            {' '}They can check it against what their app shows for you.</>
+                            {' '}They can check it against what their app shows for you, then share theirs back.</>
                     ) : (
-                        <><strong className="text-cl-muted">{senderName}</strong>'s identity fingerprint. Check it
-                            against the keys this device holds for them.</>
+                        <><strong className="text-cl-muted">{senderName}</strong> shared their safety code so you can
+                            compare.{' '}
+                            {offerShareBack && !sharedBack
+                                ? (phase.s === 'idle'
+                                    ? 'Check theirs, then share yours so they can check you too.'
+                                    : 'Share yours so they can check you too.')
+                                : phase.s === 'idle' && 'Check it against the keys this device holds for them.'}</>
                     )}
                 </p>
             </div>
@@ -574,6 +625,35 @@ export const SafetyNumberEmbed: React.FC<Props> = ({
                             <ShieldQuestion size={14} className="shrink-0" aria-hidden="true" />
                             <span>{verdict.reason}</span>
                             <button type="button" className="cl-sn-retry" onClick={handleCheck}>Retry</button>
+                        </div>
+                    )}
+
+                    {offerShareBack && (
+                        <div ref={shareRowRef} className="cl-sn-share">
+                            {sharedBack ? (
+                                <div className="cl-sn-shared" role="status" tabIndex={-1}>
+                                    <Check size={13} className="shrink-0" aria-hidden="true" />
+                                    <span>You shared yours, so {senderName} can check it too.</span>
+                                </div>
+                            ) : (
+                                <>
+                                    <ClButton
+                                        size="sm"
+                                        variant="ghost"
+                                        fullWidth
+                                        pressAnim="send"
+                                        loading={shareBack === 'sending'}
+                                        onClick={handleShareBack}
+                                    >
+                                        <Send size={14} className="ico" /> Share mine back
+                                    </ClButton>
+                                    {shareBack === 'failed' && (
+                                        <span className="cl-sn-share-error" role="alert">
+                                            Could not send. Check your connection and try again.
+                                        </span>
+                                    )}
+                                </>
+                            )}
                         </div>
                     )}
                 </div>

@@ -117,9 +117,15 @@ export interface PublicProfile {
      *  cosmetic-only. `showcase` lists only the blocks YOU may see, in order; `interests`
      *  is present only when that block is shown. `friends_since` is 'YYYY-MM' (friends only). */
     level?: number;
+    /** The points behind `level` (public, same inputs); absent on an older server. */
+    level_points?: number;
     /** Unlocked achievements (public); absent on an older server. */
     achievement_count?: number;
     high_five_count?: number;
+    /** VIEWER-specific (absent on your own card and on an older server): you already high-fived them inside the 24 h window. */
+    high_fived_today?: boolean;
+    /** ISO time that window reopens; present only with `high_fived_today`. */
+    high_five_again_at?: string | null;
     showcase?: { blocks: string[]; top_achievements: string[] };
     interests?: string[] | null;
     friends_since?: string | null;

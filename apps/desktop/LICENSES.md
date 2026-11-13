@@ -29,6 +29,8 @@ The following packages are distributed under the MIT License:
 - **electron-log** — Copyright (c) Alexey Prokhorov (transitive via electron-updater)
 - **exceljs** — Copyright (c) Guyon Morée
 - **obscenity** — Copyright (c) Joseph Liu (via @cipherline/shared: the username profanity filter)
+- **PipeWire / SPA headers** (vendored subset, compile-time declarations only; the library itself is loaded from the user's system at run time and is not distributed) — Copyright (c) Wim Taymans and the PipeWire contributors. See `src-native/third_party/pipewire/LICENSE`.
+- **Wayland protocol descriptions** (vendored XML, `src-native/wayland_overlay/protocols/`, used only to write and cross-check the hand-written protocol tables of the Wayland annotation-overlay helper; `harness/wayland-annotation/check-protocol-tables.sh` compares them with `wayland-scanner`'s output): `xdg-output-unstable-v1.xml` — Copyright (c) 2017 Red Hat Inc., MIT; `wlr-layer-shell-unstable-v1.xml` — Copyright (c) 2017 Drew DeVault, under the permissive licence in the file's own header (an MIT-style "permission to use, copy, modify, distribute, and sell ... without fee" grant, SPDX HPND-sell-variant; no copyleft, no patent or attribution-advertising clause). The libwayland-client / Xlib / XShape / XRandR ABI declarations in `wl_min.h` and `x11_min.h` are written from those public interfaces (libwayland is MIT; the X11 libraries are MIT/X11); the helper loads all of those libraries from the user's system at run time (`dlopen`) and distributes none of them. `harness/wayland-annotation/lab/wlr-virtual-pointer-unstable-v1.xml` (Copyright (c) 2019 Josef Gajdusek, MIT) is a test-harness input only and is not shipped.
 
 > Permission is hereby granted, free of charge, to any person obtaining a copy
 > of this software and associated documentation files (the "Software"), to deal
@@ -192,6 +194,19 @@ The following data package requires attribution:
 - **caniuse-lite** — Browser compatibility data from https://caniuse.com, Copyright (c) Alexis Deveria
 
 Full license text: https://creativecommons.org/licenses/by/4.0/
+
+---
+
+## CC0 1.0 (public domain dedication)
+
+Not a dependency: SVG path data copied inline (no package, no network) into
+`src/components/integrations/platformLogoData.tsx`:
+
+- **Simple Icons** 16.36.0 (https://simpleicons.org) — the Spotify, Apple Music, YouTube Music, TIDAL, Deezer,
+  SoundCloud, YouTube, Netflix, Twitch, Crunchyroll and Jellyfin marks. CC0 covers the SVG data only; the logos
+  are trademarks of their owners and are used to identify the service a friend is listening on / watching.
+
+Full license text: https://creativecommons.org/publicdomain/zero/1.0/
 
 ---
 

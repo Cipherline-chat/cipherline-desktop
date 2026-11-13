@@ -170,3 +170,91 @@ describe('difficulty curve', () => {
         expect(seen[seen.length - 1]).toBeCloseTo(RULES.speed0 + 300 * RULES.speedPerPoint, 5);
     });
 });
+
+describe('Firewall: the best is live, the run is timed, and every refresh rate sees the same pillars', () => {
+    it('a point raises the best at once, so leaving a run mid-flight still counts', () => {
+        const g = newGame(3, 11);
+        startRun(g, HALF_W, 0);
+        g.score = 3; // the next wall passed makes 4
+        for (const w of g.walls) if (w.live) { w.x = keysX(HALF_W) - 1; w.passed = false; break; }
+        g.y = 0; g.vy = 0; g.thrust = 0;
+        step(g, 1 / 60, HALF_W);
+        expect(g.score).toBe(4);
+        expect(g.best).toBe(4);
+        quit(g); // Esc mid-run
+        expect(g.best).toBe(4);
+    });
+
+    it('a score that does not beat the best leaves it alone', () => {
+        const g = newGame(9, 11);
+        startRun(g, HALF_W, 0);
+        g.score = 1;
+        for (const w of g.walls) if (w.live) { w.x = keysX(HALF_W) - 1; w.passed = false; break; }
+        g.y = 0; g.vy = 0; g.thrust = 0;
+        step(g, 1 / 60, HALF_W);
+        expect(g.best).toBe(9);
+    });
+
+    it('runT is the game-clock length of the run and survives the crash that resets t', () => {
+        const g = newGame(0, 4);
+        startRun(g, HALF_W, 0);
+        expect(g.runT).toBe(0);
+        let died = false;
+        let steps = 0;
+        while (!died && steps < 2000) { died = step(g, 1 / 120, HALF_W).died; steps++; }
+        expect(died).toBe(true);
+        expect(g.t).toBe(0);
+        expect(g.runT).toBeCloseTo(steps / 120, 6);
+        // a new run starts the clock over
+        step(g, RULES.retryAfter, HALF_W);
+        act(g, HALF_W, 0);
+        expect(g.runT).toBe(0);
+    });
+
+    /**
+     * The worker advances the game in fixed 1/120 s sub-steps per drawn frame
+     * (loadingScreen.worker.ts), whatever the display's refresh. Drive it the
+     * way a 60 Hz panel, a 120 Hz ProMotion panel and a 144 Hz one would, with
+     * a simple autopilot, and require that there is always a pillar to see and
+     * that the pillars keep arriving on schedule.
+     */
+    const play = (hz: number, seconds: number) => {
+        const g = newGame(0, 21);
+        startRun(g, HALF_W, 0);
+        const dt = Math.min(1 / 20, 1 / hz);
+        const kx = keysX(HALF_W);
+        let respawns = 0, framesWithNoPillarOnScreen = 0, maxLive = 0;
+        for (let f = 0; f < seconds * hz && g.mode === 'playing'; f++) {
+            // autopilot: aim at the nearest pillar still ahead, flap when sinking below its gap centre
+            const ahead = g.walls.filter(w => w.live && w.x + RULES.wallW / 2 > kx - RULES.radius).sort((a, b) => a.x - b.x)[0];
+            const target = ahead ? ahead.gap - 0.08 : 0;
+            if (g.y < target && g.vy <= 0.2) act(g, HALF_W, 0);
+            let left = dt;
+            while (left > 1e-6) {
+                const h = Math.min(left, 1 / 120);
+                respawns += step(g, h, HALF_W).respawned.length;
+                left -= h;
+            }
+            const onScreen = g.walls.some(w => w.live && Math.abs(w.x) <= HALF_W + RULES.wallW);
+            if (!onScreen) framesWithNoPillarOnScreen++;
+            maxLive = Math.max(maxLive, g.walls.filter(w => w.live).length);
+        }
+        return { g, respawns, framesWithNoPillarOnScreen, maxLive };
+    };
+
+    it.each([60, 120, 144])('at %i Hz pillars are always alive and keep coming', (hz) => {
+        const r = play(hz, 25);
+        expect(r.g.mode).toBe('playing'); // the autopilot survives 25 s: the walls are where the rules say
+        expect(r.g.score).toBeGreaterThan(12);
+        expect(r.respawns).toBeGreaterThan(5);
+        expect(r.maxLive).toBeGreaterThanOrEqual(3);
+        // after the opening beat (the first pillar enters from off-screen right) there is nearly always one in view
+        expect(r.framesWithNoPillarOnScreen).toBeLessThan(hz * 1.5);
+    });
+
+    it('the refresh rate does not change how far a run gets in the same game time', () => {
+        const a = play(60, 20).g.score, b = play(120, 20).g.score, c = play(144, 20).g.score;
+        expect(Math.abs(a - b)).toBeLessThanOrEqual(1);
+        expect(Math.abs(a - c)).toBeLessThanOrEqual(1);
+    });
+});

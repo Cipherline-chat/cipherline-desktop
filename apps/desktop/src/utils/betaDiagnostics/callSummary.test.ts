@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-    CallSummaryAccumulator, InboundAudioStallDetector, INBOUND_STALL_MS, durationBucket, percentile, transportFromRoute,
+    CallSummaryAccumulator, InboundAudioStallDetector, INBOUND_STALL_MS, INBOUND_MAX_POLL_GAP_MS, durationBucket, percentile, transportFromRoute,
 } from './callSummary';
 import { WebrtcRing } from '../diagnostics/webrtcRing';
 
@@ -112,31 +112,102 @@ describe('CallSummaryAccumulator', () => {
 });
 
 describe('InboundAudioStallDetector', () => {
-    it('fires once when an unmuted remote mic gets no packets for 15 s', () => {
+    const POLL = 5000; // BetaCallMonitor's cadence
+    /** Poll every 5 s from `from` to `to` with the same reading; returns the first stall seen, with when. */
+    function pollUntil(d: InboundAudioStallDetector, mk: (t: number) => Parameters<InboundAudioStallDetector['update']>[0], from: number, to: number) {
+        for (let t = from; t <= to; t += POLL) {
+            const r = d.update(mk(t), t);
+            if (r) return { at: t, stall: r };
+        }
+        return null;
+    }
+
+    it('fires once when an unmuted remote mic gets no packets for 15 s of continuous polling', () => {
         const d = new InboundAudioStallDetector();
         const t = {};
-        expect(d.update([{ ref: t, unmuted: true, packetsReceived: 10 }], 0)).toBe(false);
-        expect(d.update([{ ref: t, unmuted: true, packetsReceived: 10 }], INBOUND_STALL_MS - 1)).toBe(false);
-        expect(d.update([{ ref: t, unmuted: true, packetsReceived: 10 }], INBOUND_STALL_MS)).toBe(true);
-        expect(d.update([{ ref: t, unmuted: true, packetsReceived: 10 }], INBOUND_STALL_MS * 3)).toBe(false); // once per call
+        const hit = pollUntil(d, () => [{ ref: t, unmuted: true, packetsReceived: 10 }], 0, 60_000);
+        expect(hit?.at).toBe(INBOUND_STALL_MS);
+        expect(d.update([{ ref: t, unmuted: true, packetsReceived: 10 }], 70_000)).toBeNull(); // once per call
     });
+
     it('a muted mic, or one whose packets keep moving, never fires', () => {
         const d = new InboundAudioStallDetector();
         const muted = {}; const live = {};
-        for (let i = 0; i <= 10; i++) {
+        for (let i = 0; i <= 40; i++) {
             expect(d.update([
                 { ref: muted, unmuted: false, packetsReceived: 0 },
                 { ref: live, unmuted: true, packetsReceived: i * 50 },
-            ], i * 5000)).toBe(false);
+            ], i * POLL)).toBeNull();
         }
     });
+
     it('unmuting restarts the clock', () => {
         const d = new InboundAudioStallDetector();
         const t = {};
         d.update([{ ref: t, unmuted: true, packetsReceived: 5 }], 0);
-        d.update([{ ref: t, unmuted: false, packetsReceived: 5 }], 10_000);
-        d.update([{ ref: t, unmuted: true, packetsReceived: 5 }], 12_000);
-        expect(d.update([{ ref: t, unmuted: true, packetsReceived: 5 }], 20_000)).toBe(false);
-        expect(d.update([{ ref: t, unmuted: true, packetsReceived: 5 }], 27_000)).toBe(true);
+        d.update([{ ref: t, unmuted: false, packetsReceived: 5 }], 5_000);
+        d.update([{ ref: t, unmuted: true, packetsReceived: 5 }], 10_000);
+        expect(d.update([{ ref: t, unmuted: true, packetsReceived: 5 }], 15_000)).toBeNull();
+        expect(d.update([{ ref: t, unmuted: true, packetsReceived: 5 }], 20_000)).toBeNull();
+        expect(d.update([{ ref: t, unmuted: true, packetsReceived: 5 }], 25_000)).not.toBeNull();
+    });
+
+    describe('a polling gap is not evidence (sleep/wake, frozen renderer)', () => {
+        it('a long pause between two polls with the same packet count does NOT fire', () => {
+            const d = new InboundAudioStallDetector();
+            const t = {};
+            d.update([{ ref: t, unmuted: true, packetsReceived: 400 }], 0);
+            d.update([{ ref: t, unmuted: true, packetsReceived: 400 }], POLL); // call went quiet right before the lid closed
+            // laptop asleep for an hour; first poll after wake sees the same counter
+            expect(d.update([{ ref: t, unmuted: true, packetsReceived: 400 }], 3_600_000)).toBeNull();
+        });
+
+        it('and observation restarts: a real stall after the wake still fires, 15 s later', () => {
+            const d = new InboundAudioStallDetector();
+            const t = {};
+            d.update([{ ref: t, unmuted: true, packetsReceived: 400 }], 0);
+            const wake = 3_600_000;
+            d.update([{ ref: t, unmuted: true, packetsReceived: 400 }], wake);
+            expect(pollUntil(d, () => [{ ref: t, unmuted: true, packetsReceived: 400 }], wake + POLL, wake + 60_000)?.at).toBe(wake + INBOUND_STALL_MS);
+        });
+
+        it('a gap at the limit is still continuous observation', () => {
+            const d = new InboundAudioStallDetector();
+            const t = {};
+            const r = { ref: t, unmuted: true, packetsReceived: 1 };
+            d.update([r], 0);
+            d.update([r], INBOUND_MAX_POLL_GAP_MS);
+            expect(d.update([r], INBOUND_MAX_POLL_GAP_MS * 2)).not.toBeNull();
+        });
+    });
+
+    describe('says which leg is dead (booleans only)', () => {
+        it('the SFU heard them speak while our packets stood still: sfuHears (our leg is the broken one)', () => {
+            const d = new InboundAudioStallDetector();
+            const t = {};
+            const hit = pollUntil(d, (n) => [{ ref: t, unmuted: true, packetsReceived: 9, sfuSpeaking: n === 5_000 }], 0, 60_000);
+            expect(hit?.stall).toEqual({ sfuHears: true, otherFlowing: false });
+        });
+
+        it('their camera/share packets kept arriving: otherFlowing (the connection is alive, only the mic stream stopped)', () => {
+            const d = new InboundAudioStallDetector();
+            const t = {};
+            const hit = pollUntil(d, (n) => [{ ref: t, unmuted: true, packetsReceived: 9, otherPackets: 1000 + n / 10 }], 0, 60_000);
+            expect(hit?.stall).toEqual({ sfuHears: false, otherFlowing: true });
+        });
+
+        it('nothing moved anywhere and the SFU never heard them: both false', () => {
+            const d = new InboundAudioStallDetector();
+            const t = {};
+            const hit = pollUntil(d, () => [{ ref: t, unmuted: true, packetsReceived: 9, otherPackets: 1000, sfuSpeaking: false }], 0, 60_000);
+            expect(hit?.stall).toEqual({ sfuHears: false, otherFlowing: false });
+        });
+
+        it('a peer with no other tracks (otherPackets undefined) reports otherFlowing false', () => {
+            const d = new InboundAudioStallDetector();
+            const t = {};
+            const hit = pollUntil(d, () => [{ ref: t, unmuted: true, packetsReceived: 9 }], 0, 60_000);
+            expect(hit?.stall?.otherFlowing).toBe(false);
+        });
     });
 });

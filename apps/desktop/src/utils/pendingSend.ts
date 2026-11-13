@@ -11,6 +11,7 @@
 
 import { repositionByServerOrder } from './messageOrder';
 import { markDelivered } from './undeliveredSend';
+import { BACKLOG_FULL_REASON, isBacklogFullError } from './backlogFull';
 
 export type SendState = 'sending' | 'failed';
 
@@ -155,6 +156,7 @@ export function sendFailureReason(err: unknown): string {
     const msg = err instanceof Error ? err.message : String(err ?? '');
     if (/No channel key|Channel key for epoch/.test(msg)) return "This channel's key hasn't arrived yet";
     if (isStaleEpochError(err)) return "This channel's newest key hasn't arrived yet";
+    if (isBacklogFullError(err)) return BACKLOG_FULL_REASON;
     if (status === 429) return 'Sending too fast';
     if (status === 403) return "You don't have permission to send here";
     if (status === 413) return 'Message too large';

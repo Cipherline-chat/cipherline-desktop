@@ -118,6 +118,27 @@ describe('Konami → Keys party', () => {
         expect(party()).toBeNull();
     });
 
+    it('plays on the shared egg scrim (the app dims), still or animated', () => {
+        press(KONAMI);
+        expect(party()?.firstElementChild?.getAttribute('data-testid')).toBe('egg-scrim');
+        act(() => { vi.advanceTimersByTime(KONAMI_COOLDOWN_MS + 50); });
+        reduced = true;
+        press(KONAMI);
+        expect(party()?.firstElementChild?.getAttribute('data-testid')).toBe('egg-scrim');
+    });
+
+    it('never traps anyone behind the dim: Escape or a click ends it early', () => {
+        press(KONAMI);
+        const esc = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+        act(() => { document.body.dispatchEvent(esc); });
+        expect(party()).toBeNull();
+        expect(esc.defaultPrevented).toBe(true); // the escape stack took it: no dialog underneath ALSO closes
+        act(() => { vi.advanceTimersByTime(KONAMI_COOLDOWN_MS + 50); });
+        press(KONAMI);
+        act(() => { document.body.dispatchEvent(new Event('pointerdown', { bubbles: true })); });
+        expect(party()).toBeNull();
+    });
+
     it('never intercepts the keys: it only listens', () => {
         const ev = new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true });
         act(() => { document.body.dispatchEvent(ev); });

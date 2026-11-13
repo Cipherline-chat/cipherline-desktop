@@ -47,6 +47,7 @@
  */
 
 import React from 'react';
+import { PresenceRoster } from './presenceMotion';
 import ReactDOM from 'react-dom';
 import { MicOff, Headphones, HeadphoneOff, Video, VideoOff, Monitor, MonitorOff } from 'lucide-react';
 import { HuddleButton } from '../server/HuddleButton';
@@ -201,6 +202,7 @@ const FloatingParticipantRow: React.FC<RowProps> = ({
                     bypassFriendGate
                     className="w-full h-full object-cover"
                     disableClickProfile
+                    speaking={isSpeaking}
                 />
             </div>
             <span className="flex-1 text-[13px] truncate text-white/80">
@@ -224,13 +226,14 @@ const FloatingParticipantRow: React.FC<RowProps> = ({
                     {pmeta?.serverDeafened && <HeadphoneOff className="w-3.5 h-3.5 text-red-500" />}
                     {pmeta?.serverMutedVideo && <VideoOff className="w-3.5 h-3.5 text-red-500" />}
                     {pmeta?.serverMutedScreenShare && <MonitorOff className="w-3.5 h-3.5 text-red-500" />}
-                    {pmeta?.deafened && !pmeta?.serverDeafened && (
+                    {pmeta?.deafened && (
                         <Headphones className="w-3.5 h-3.5 text-red-400" />
                     )}
-                    {ts?.isMuted && !pmeta?.serverMutedAudio && !pmeta?.serverDeafened && !pmeta?.deafened && (
+                    {/* Mute and deafen are independent: a server deafen says nothing about the mic. */}
+                    {ts?.isMuted && !pmeta?.serverMutedAudio && !pmeta?.deafened && (
                         <MicOff className="w-3.5 h-3.5 text-red-400" />
                     )}
-                    {!ts?.isMuted && !pmeta?.serverDeafened && !pmeta?.deafened && isLocalMutedByMe && (
+                    {!ts?.isMuted && !pmeta?.deafened && isLocalMutedByMe && (
                         <MicOff className="w-3.5 h-3.5 text-cl-faint" />
                     )}
                     {ts?.hasScreenShare && !pmeta?.serverMutedScreenShare && (
@@ -388,12 +391,15 @@ export const FloatingHuddleCard: React.FC<Props> = ({
                 onLeave={() => {}}
             />
             <div className="flex flex-col w-full">
-                {participantIds.map(uid => {
+                {/* Same join / leave rows as the server panel's list (presenceMotion). */}
+                <PresenceRoster
+                    ids={participantIds}
+                    rowClassName="w-full"
+                    renderRow={(uid) => {
                     const isMe = uid === userId;
                     const friend = friendNameMap[uid];
                     return (
                         <FloatingParticipantRow
-                            key={uid}
                             uid={uid}
                             isMe={isMe}
                             localIdentity={userId}
@@ -404,7 +410,8 @@ export const FloatingHuddleCard: React.FC<Props> = ({
                             onServerMuteTrack={onServerMuteTrack}
                         />
                     );
-                })}
+                    }}
+                />
             </div>
         </HuddleButton>
     );

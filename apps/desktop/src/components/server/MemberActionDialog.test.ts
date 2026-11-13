@@ -71,6 +71,13 @@ describe('MemberActionDialog', () => {
         expect(onClose).toHaveBeenCalledTimes(1);
     });
 
+    it('a second click during the exit animation does not kick/ban twice', async () => {
+        const { onConfirm } = await mount('ban');
+        const b = btn('Ban')!;
+        await act(async () => { b.click(); b.click(); });
+        expect(onConfirm).toHaveBeenCalledTimes(1);
+    });
+
     it('Cancel closes without confirming (control for the test above)', async () => {
         const { onConfirm, onClose } = await mount('ban');
         await act(async () => { btn('Cancel')!.click(); });

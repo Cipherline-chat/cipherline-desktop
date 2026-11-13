@@ -14,6 +14,7 @@ import { previewSnippet } from '../utils/longMessage';
 import { safeDisplayFilename } from '../utils/fileSafety';
 import { extractYouTubeId } from '../utils/youtubeLink';
 import KlipyGifEmbed from './KlipyGifEmbed';
+import type { ReportedMessageRef } from '../utils/franking';
 
 // ── URL helpers (mirrors ChatPane) ────────────────────────────────────────────
 
@@ -86,7 +87,7 @@ interface PinnedMessagesPanelProps {
      *  caller doesn't wire it, the row simply omits the action rather than
      *  crashing (matches ChatPane's own `onReport` being optional). Hidden
      *  for the viewer's own pinned messages. */
-    onReport?: (userId: string, username: string, snippet?: string) => void;
+    onReport?: (userId: string, username: string, snippet?: string, message?: ReportedMessageRef) => void;
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -420,7 +421,7 @@ const PinnedMessagesPanel: React.FC<PinnedMessagesPanelProps> = ({
                                             onClick={() => {
                                                 const snippet = textContent
                                                     ?? (filename ? `[Attachment: ${filename}, sent ${ts}]` : undefined);
-                                                onReport(msg.sender_user_id, senderName, snippet);
+                                                onReport(msg.sender_user_id, senderName, snippet, { content: msg.content, franking: msg.franking, sender_user_id: msg.sender_user_id, attachmentUrl: objUrl ?? null });
                                             }}
                                             tooltip="Report"
                                         >

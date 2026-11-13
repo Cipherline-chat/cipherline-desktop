@@ -19,6 +19,8 @@ import secureLocalStore from '../utils/secureLocalStore';
 import { trackActivity } from '../utils/freezeLog';
 import { useEffect, useRef } from 'react';
 import { useAuth } from '../contexts/AuthContext';
+import { reportBeta } from '../utils/betaDiagnostics/reporter';
+import { setBackupIssue, checkLocalFolderGrant } from '../services/backupIssues';
 import { runBackup, getCachedPassword, getLastBackupMs, getDestinationLastMs, DEFAULT_MAX_ATTACHMENT_BYTES, notifyBackupStateChanged } from '../services/driveBackup';
 
 const CHECK_EVERY_MS = 5 * 60 * 1000; // 5 minutes
@@ -163,11 +165,30 @@ export function useBackupAutoSchedule() {
             if (!cfg.enabled) return;
 
             // Build the destination set from config.
-            const wantLocal = cfg.localEnabled && !!cfg.localDir;
+            let wantLocal = cfg.localEnabled && !!cfg.localDir;
             let wantDrive = cfg.driveEnabled;
             if (wantDrive) {
                 const linked = await window.electronAPI?.gdriveAuthStatus?.().catch(() => null);
                 wantDrive = !!linked?.linked;
+                // Drive is switched on but the link is gone: the main process
+                // drops it when Google revokes the sign-in (invalid_grant).
+                // Skipping Drive here used to be silent, so backups quietly
+                // stopped going to Drive for good. Record it so Settings and
+                // Home say "reconnect"; BackupSection clears it on reconnect.
+                if (!wantDrive && linked && !linked.linked && setBackupIssue(userId, 'drive', 'reconnect')) notifyBackupStateChanged();
+            }
+            // A folder this install was never allowed into (a path that came
+            // back inside a restored backup, or a wiped profile) can only ever
+            // fail in main with "Path outside allowed root". Don't spend an
+            // export + encrypt pass finding that out every interval: say so once
+            // and skip the folder until the user picks it again.
+            if (wantLocal && cfg.localDir) {
+                const { grant, changed } = await checkLocalFolderGrant(userId, cfg.localDir);
+                if (changed) notifyBackupStateChanged();
+                if (grant === 'denied') {
+                    wantLocal = false;
+                    if (changed) reportBeta('backup_failed', { dest: 'local', stage: 'setup', part: 'dest', reason: 'path_not_allowed' });
+                }
             }
             if (!wantLocal && !wantDrive) return;
 

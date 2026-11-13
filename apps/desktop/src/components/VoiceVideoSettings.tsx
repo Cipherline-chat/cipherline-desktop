@@ -131,7 +131,16 @@ const GateSlider: React.FC<{
     open: boolean;
     onChange: (v: number) => void;
     disabled?: boolean;
-}> = ({ threshold, level, open, onChange, disabled }) => {
+    /** Automatic mode: the marker is the gate's own live threshold and is not draggable. */
+    auto?: boolean;
+    /** The auto threshold in force (dBFS), reported by the gate; null until it has reported. */
+    autoThreshold?: number | null;
+    /** Which part to draw: the draggable track (the Manual drop-down), the live readout (the row), or both. */
+    show?: 'track' | 'readout' | 'both';
+}> = ({ threshold: manualThreshold, level, open, onChange: onManualChange, disabled, auto, autoThreshold, show = 'both' }) => {
+    const threshold = auto ? (autoThreshold ?? GATE_DEFAULT_THRESHOLD) : manualThreshold;
+    const locked = !!auto;
+    const onChange = (v: number) => { if (!locked) onManualChange(v); };
     const trackRef = useRef<HTMLDivElement | null>(null);
     const dragging = useRef(false);
     const [grabbing, setGrabbing] = useState(false);
@@ -192,26 +201,27 @@ const GateSlider: React.FC<{
             {/* Kit slider chrome (.cls/.strk/.sfill/.sthw) — the fill is the LIVE
                 mic level rather than the value, so the meter stays built into the
                 track; the thumb marks the threshold. */}
-            <span className="cl-kit" style={{ display: 'contents' }}>
+            {/* Automatic: no slider at all (owner, 2026-11-11) - only the live readout below. */}
+            {!locked && show !== 'readout' && <span className="cl-kit" style={{ display: 'contents' }}>
                 <div
                     ref={setTrack}
                     {...hint.handlers}
                     aria-describedby={hint.describedBy}
-                    className={`cls vv-gate${grabbing ? ' grab' : ''}${disabled ? ' vv-off' : ''} select-none`}
+                    className={`cls vv-gate${grabbing ? ' grab' : ''}${disabled ? ' vv-off' : ''}${locked ? ' vv-auto' : ''} select-none`}
                     role="slider"
-                    tabIndex={disabled ? -1 : 0}
+                    tabIndex={disabled || locked ? -1 : 0}
                     aria-label="Activity threshold"
                     aria-valuemin={GATE_MIN}
                     aria-valuemax={GATE_MAX}
                     aria-valuenow={threshold}
-                    aria-valuetext={`${threshold} dBFS${disabled ? '' : open ? ', transmitting' : ', gated'}`}
-                    aria-disabled={disabled || undefined}
+                    aria-valuetext={`${locked ? 'about ' : ''}${threshold} dBFS${locked ? ', automatic' : ''}${disabled ? '' : open ? ', transmitting' : ', gated'}`}
+                    aria-disabled={disabled || locked || undefined}
                     onPointerDown={onPointerDown}
                     onPointerMove={onPointerMove}
                     onPointerUp={onPointerUp}
                     onPointerCancel={onPointerUp}
                     onKeyDown={onKeyDown}
-                    onDoubleClick={() => { if (!disabled) onChange(GATE_DEFAULT_THRESHOLD); }}
+                    onDoubleClick={() => { if (!disabled && !locked) onChange(GATE_DEFAULT_THRESHOLD); }}
                 >
                     <span className="sbody">
                         <span className="strk" />
@@ -223,19 +233,19 @@ const GateSlider: React.FC<{
                             <span className="ssh" />
                             <span className="sth" />
                         </span>
-                        <span className="sbub" style={{ left: `${thumbPct}%` }}>{threshold} dBFS</span>
+                        <span className="sbub" style={{ left: `${thumbPct}%` }}>{locked ? '≈' : ''}{threshold} dBFS</span>
                     </span>
                 </div>
                 {hint.tip}
-            </span>
+            </span>}
             {/* the dot is the gate's live state: green while you are transmitting */}
-            <span
+            {show !== 'track' && <span
                 className={`vv-val vv-gateval${!disabled && open ? ' vv-live' : ''}`}
                 title={disabled ? undefined : open ? 'Transmitting' : 'Gated'}
             >
                 {!disabled && <i className="vv-dot" aria-hidden="true" />}
-                {threshold} dB
-            </span>
+                {locked ? '≈' : ''}{threshold} dB
+            </span>}
         </>
     );
 };
@@ -420,6 +430,7 @@ const CameraPreview: React.FC<CameraPreviewProps> = ({ deviceId, brightness, con
                 ref={videoRef}
                 autoPlay
                 muted
+                data-local-preview="true"
                 playsInline
                 className="w-full h-full object-cover scale-x-[-1]"
                 style={{ filter: cssFilter }}
@@ -656,7 +667,7 @@ export const VoiceVideoSettings: React.FC<VoiceVideoSettingsProps> = ({ voice })
     // What the gate itself measures (its detector, before AGC/mic volume) and
     // whether it is open — the meter under the threshold slider. See
     // GATE_METER_REPORT_MS in utils/voiceChain.ts for why it is not localLevel.
-    const [gateLevel, setGateLevel] = useState<{ db: number; open: boolean }>({ db: -Infinity, open: false });
+    const [gateLevel, setGateLevel] = useState<{ db: number; open: boolean; thr: number | null }>({ db: -Infinity, open: false, thr: null });
 
     const monitorCtxRef       = useRef<AudioContext | null>(null);
     const monitorStreamRef    = useRef<MediaStream | null>(null);
@@ -685,7 +696,7 @@ export const VoiceVideoSettings: React.FC<VoiceVideoSettingsProps> = ({ voice })
         monitorCtxRef.current  = null;
         monitorStreamRef.current = null;
         setLocalLevel(-Infinity);
-        setGateLevel({ db: -Infinity, open: false });
+        setGateLevel({ db: -Infinity, open: false, thr: null });
     }, []);
 
     const startMicStream = useCallback(async (deviceId: string) => {
@@ -747,7 +758,7 @@ export const VoiceVideoSettings: React.FC<VoiceVideoSettingsProps> = ({ voice })
             // hold and release — plus the gate's own detector for the meter.
             const processor = new CipherlineVoiceProcessor(settingsRef.current, {
                 onInputLevel: (db) => setLocalLevel(db),
-                onGateLevel: (db, open) => setGateLevel({ db, open }),
+                onGateLevel: (db, open, thr) => setGateLevel({ db, open, thr }),
             }, { gateMeterMs: GATE_METER_REPORT_MS });
 
             const rawTrack = stream.getAudioTracks()[0];
@@ -1018,17 +1029,43 @@ export const VoiceVideoSettings: React.FC<VoiceVideoSettingsProps> = ({ voice })
                 <Row
                     label="Voice gate"
                     labels={['Activity threshold']}
-                    info="Only sends your mic when it is louder than the marker. Drag the marker against your live level: left is more sensitive (quieter speech gets through), right sends only loud speech. The dot lights up green while you are transmitting. Double-click the track to reset it. Remembered per microphone."
+                    info="Only sends your mic when it is louder than the threshold. With Automatic on, the threshold follows your room's background noise. With it off, drag the marker against your live level: left is more sensitive (quieter speech gets through), right sends only loud speech. The dot lights up green while you are transmitting. Double-click the track to reset it. Remembered per microphone."
                 >
+                    {/* Owner, 2026-11-11: automatic by default, no extra toggle row - a Manual button drops the slider down. */}
                     <GateSlider
+                        show="readout"
                         threshold={settings.voiceGateThreshold}
                         level={gateLevel.db}
                         open={gateLevel.open}
                         onChange={voice.setVoiceGateThreshold}
                         disabled={!settings.voiceGate}
+                        auto={settings.voiceGateAuto}
+                        autoThreshold={gateLevel.thr}
                     />
+                    <ClButton
+                        chip
+                        variant="ghost"
+                        size="sm"
+                        active={!settings.voiceGateAuto}
+                        onClick={() => voice.setVoiceGateAuto(!settings.voiceGateAuto)}
+                        tooltip={settings.voiceGateAuto ? 'Set the threshold yourself' : 'Back to automatic (follows your room noise)'}
+                    >
+                        Manual
+                    </ClButton>
                     <ClToggle checked={settings.voiceGate} onChange={voice.setVoiceGate} aria-label="Voice gate" />
                 </Row>
+                {!settings.voiceGateAuto && (
+                    <div className="vv-gate-drop" data-labels="Activity threshold">
+                        <GateSlider
+                            show="track"
+                            threshold={settings.voiceGateThreshold}
+                            level={gateLevel.db}
+                            open={gateLevel.open}
+                            onChange={voice.setVoiceGateThreshold}
+                            disabled={!settings.voiceGate}
+                        />
+                    </div>
+                )}
                 <Row label="Push to talk" info="Hold a key to transmit; you are silent otherwise. Click the key to change it. The same on every microphone.">
                     {settings.pushToTalk && (
                         <PttKeybind

@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { DIAGNOSTIC_VERBATIM_KEYS } from './reportTypes';
 import { randomBytes, randomUUID } from 'crypto';
 import {
     createScrubber, scrubDeep, reducePath, looksLikeEncodedBlob, normalizeText,
@@ -342,6 +343,12 @@ describe('stack()', () => {
 });
 
 describe('scrubDeep', () => {
+    it('keeps a Debian / Ubuntu kernel release in os_version verbatim, and still refuses free text there (Debian 13 reports showed <invalid>)', () => {
+        const out = (v: string) => (scrubDeep({ system: { os_version: v } }, plain, undefined, DIAGNOSTIC_VERBATIM_KEYS) as { system: { os_version: string } }).system.os_version;
+        for (const v of ['6.12.43+deb13-amd64', '6.8.0-142-generic', '5.15.0-1~rc1', '10.0.26200']) expect(out(v)).toBe(v);
+        expect(out('Debian GNU/Linux 13 (trixie)')).toBe('<invalid>');
+        expect(out('6.12;drop table')).toBe('<invalid>');
+    });
     it('scrubs every string, drops bad keys and prototype keys, caps sizes', () => {
         const input = JSON.parse(`{
             "ok": "alice@example.com",

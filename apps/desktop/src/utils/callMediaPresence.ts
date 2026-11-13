@@ -40,6 +40,9 @@ export const huddleCallMediaKey = (callId: string): string => callId;
 const media = new Map<string, Map<string, CallMediaState>>();
 const listeners = new Map<string, Set<() => void>>();
 const anyListeners = new Set<() => void>();
+/** Told when a participant's MODERATOR flags (server mute / server deafen) change,
+ *  so a moderator's "time left" list can refetch. See {@link onServerModerationPresenceChange}. */
+const moderationListeners = new Set<() => void>();
 let version = 0;
 
 function notify(key: string): void {
@@ -48,11 +51,24 @@ function notify(key: string): void {
     anyListeners.forEach(l => l());
 }
 
+function sameServerBits(a: Partial<CallMediaState> | undefined, b: Partial<CallMediaState> | undefined): boolean {
+    return (a?.server_muted ?? false) === (b?.server_muted ?? false)
+        && (a?.server_deafened ?? false) === (b?.server_deafened ?? false);
+}
+
 function sameState(a: Partial<CallMediaState> | undefined, b: Partial<CallMediaState> | undefined): boolean {
     return (a?.camera ?? false) === (b?.camera ?? false)
         && (a?.screen_share ?? false) === (b?.screen_share ?? false)
         && (a?.muted ?? false) === (b?.muted ?? false)
-        && (a?.deafened ?? false) === (b?.deafened ?? false);
+        && (a?.deafened ?? false) === (b?.deafened ?? false)
+        && sameServerBits(a, b);
+}
+
+/** Subscribe to "somebody's server mute / server deafen changed in presence".
+ *  Fires after the store is updated; cheap, no payload. */
+export function onServerModerationPresenceChange(l: () => void): () => void {
+    moderationListeners.add(l);
+    return () => { moderationListeners.delete(l); };
 }
 
 /** Set (or clear, when all-off) one participant's flags. A flag left out
@@ -63,10 +79,14 @@ export function setCallMedia(key: string, userId: string, input: Partial<CallMed
         screen_share: input.screen_share === true,
         muted: input.muted === true,
         deafened: input.deafened === true,
+        // Sparse, like the wire: only present when true.
+        ...(input.server_muted === true ? { server_muted: true } : {}),
+        ...(input.server_deafened === true ? { server_deafened: true } : {}),
     };
     const bucket = media.get(key);
     const prev = bucket?.get(userId);
     if (sameState(prev, state)) return;
+    if (!sameServerBits(prev, state)) moderationListeners.forEach(l => l());
     if (hasAnyCallMedia(state)) {
         const b = bucket ?? new Map<string, CallMediaState>();
         b.set(userId, state);
@@ -124,6 +144,9 @@ export function applyCallMediaSeed(entries: Map<string, unknown>, opts: { replac
         const unchanged = (prev?.size ?? 0) === nextIds.length
             && nextIds.every(uid => sameState(prev?.get(uid), next[uid]));
         if (unchanged) continue;
+        const bitsChanged = nextIds.some(uid => !sameServerBits(prev?.get(uid), next[uid]))
+            || [...(prev?.keys() ?? [])].some(uid => !next[uid] && (prev?.get(uid)?.server_muted || prev?.get(uid)?.server_deafened));
+        if (bitsChanged) moderationListeners.forEach(l => l());
         if (nextIds.length === 0) media.delete(key);
         else media.set(key, new Map(nextIds.map(uid => [uid, next[uid]])));
         touched.add(key);
@@ -204,8 +227,7 @@ export function resolveParticipantMedia(
  * Same rule for SELF mute / deafen. In this call: the live mic-track mute and
  * the participant's `deafened` metadata flag (what the in-call row has always
  * drawn). Not in it: the participant's own report via server presence.
- * Server-moderation badges are NOT here — they exist only in LiveKit
- * metadata, so they stay in-call-only.
+ * Server-moderation badges are {@link resolveServerModeration}.
  */
 export function resolveParticipantAudio(
     inThisCall: boolean,
@@ -215,6 +237,22 @@ export function resolveParticipantAudio(
 ): { muted: boolean; deafened: boolean } {
     if (inThisCall) return { muted: !!live?.isMuted, deafened: !!liveMeta?.deafened };
     return { muted: presence.muted, deafened: presence.deafened };
+}
+
+/**
+ * Server mute / server deafen (a moderator's restriction) for one participant.
+ * In this call: the LiveKit participant metadata the server wrote (what the
+ * in-call tile has always drawn). Not in it: the server's own presence overlay,
+ * so the badge is on the roster the moment the person (re)joins - the server
+ * never takes it from a client. Absent reads as false.
+ */
+export function resolveServerModeration(
+    inThisCall: boolean,
+    liveMeta: { serverMutedAudio?: boolean; serverDeafened?: boolean } | undefined,
+    presence: CallMediaState,
+): { serverMuted: boolean; serverDeafened: boolean } {
+    if (inThisCall) return { serverMuted: !!liveMeta?.serverMutedAudio, serverDeafened: !!liveMeta?.serverDeafened };
+    return { serverMuted: presence.server_muted === true, serverDeafened: presence.server_deafened === true };
 }
 
 /** Seed entries from a list of huddle calls (GET /huddles/:hid/calls, or a

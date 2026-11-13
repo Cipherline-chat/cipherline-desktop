@@ -84,8 +84,81 @@ const PROCS: Proc[] = [
 ];
 const NORMALS = { 10: PRIORITY_NORMAL, 11: PRIORITY_NORMAL, 12: PRIORITY_NORMAL, 13: PRIORITY_NORMAL };
 
+// Reports 4667c6fa / 14a5184a (1.0.24-staging.179): in CPU-heavy games the sharer's machine stalled
+// (rtt 281-534 ms, loss 36.7%, capture 3 fps) while the other end stayed at 27 ms. The renderer
+// hosts the WebRTC network / pacing / encoder-submission threads and was only ABOVE_NORMAL.
+describe('renderer (Tab) priority during a share', () => {
+    it('goes to HIGH on share start, together with GPU and Browser; Utility stays ABOVE_NORMAL', () => {
+        const os = fakeOs(PROCS, NORMALS);
+        const b = new CallPriorityBooster(os.deps);
+        b.setShareEnabled(true);
+        b.setSharing(true);
+        expect(os.prio.get(12)).toBe(PRIORITY_HIGH);
+        expect(os.prio.get(11)).toBe(PRIORITY_HIGH);
+        expect(os.prio.get(10)).toBe(PRIORITY_HIGH);
+        expect(os.prio.get(13)).toBe(PRIORITY_ABOVE_NORMAL);
+    });
+
+    it('is restored to exactly what it was when the share ends', () => {
+        const os = fakeOs(PROCS, { ...NORMALS, 12: PRIORITY_NORMAL });
+        const b = new CallPriorityBooster(os.deps);
+        b.setShareEnabled(true);
+        b.setSharing(true);
+        b.setSharing(false);
+        expect(os.prio.get(12)).toBe(PRIORITY_NORMAL);
+        expect(os.prio.get(11)).toBe(PRIORITY_NORMAL);
+        expect(b.raisedPids()).toEqual([]);
+    });
+
+    it('negative control: not sharing -> a call alone keeps the renderer at ABOVE_NORMAL, and setting-only changes nothing', () => {
+        const os = fakeOs(PROCS, NORMALS);
+        const b = new CallPriorityBooster(os.deps);
+        b.setShareEnabled(true);
+        expect(os.calls).toEqual([]);
+        b.setEnabled(true);
+        b.setInCall(true);
+        expect(os.prio.get(12)).toBe(PRIORITY_ABOVE_NORMAL);
+        b.setSharing(true);
+        expect(os.prio.get(12)).toBe(PRIORITY_HIGH);
+        b.setSharing(false);
+        expect(os.prio.get(12)).toBe(PRIORITY_ABOVE_NORMAL);   // the call boost stays
+    });
+
+    it('the restore line is reported when the share ends but a call boost stays', () => {
+        const os = fakeOs(PROCS, NORMALS);
+        const seen: string[] = [];
+        const b = new CallPriorityBooster({ ...os.deps, report: d => seen.push(d) });
+        b.setEnabled(true); b.setInCall(true); b.setShareEnabled(true);
+        b.setSharing(true);
+        b.setSharing(false);
+        expect(seen).toEqual(['apply tab=high gpu=high browser=high other=above_normal', 'restore']);
+    });
+
+    it('a renderer already above HIGH is never lowered', () => {
+        const os = fakeOs(PROCS, { ...NORMALS, 12: -15 });
+        const b = new CallPriorityBooster(os.deps);
+        b.setShareEnabled(true);
+        b.setSharing(true);
+        expect(os.prio.get(12)).toBe(-15);
+    });
+
+    it('reports the levels applied (for the Performance log): once on start, once on restore, nothing when idle', () => {
+        const os = fakeOs(PROCS, NORMALS);
+        const seen: string[] = [];
+        const b = new CallPriorityBooster({ ...os.deps, report: d => seen.push(d) });
+        b.setShareEnabled(true);
+        expect(seen).toEqual([]);
+        b.setSharing(true);
+        expect(seen).toEqual(['apply tab=high gpu=high browser=high other=above_normal']);
+        b.tick();
+        expect(seen).toHaveLength(1);                        // nothing new -> silent
+        b.setSharing(false);
+        expect(seen).toEqual(['apply tab=high gpu=high browser=high other=above_normal', 'restore']);
+    });
+});
+
 describe('screen-share priority boost (CallPriorityBooster, share mode)', () => {
-    it('raises the GPU and main (browser) processes to HIGH and every other process to ABOVE_NORMAL while a share is live', () => {
+    it('raises the GPU, main (browser) and renderer (Tab) processes to HIGH and every other process to ABOVE_NORMAL while a share is live', () => {
         const os = fakeOs(PROCS, NORMALS);
         const b = new CallPriorityBooster(os.deps);
         b.setShareEnabled(true);
@@ -94,7 +167,7 @@ describe('screen-share priority boost (CallPriorityBooster, share mode)', () => 
         expect(b.shareActive).toBe(true);
         expect(os.prio.get(11)).toBe(PRIORITY_HIGH);
         expect(os.prio.get(10)).toBe(PRIORITY_HIGH);
-        expect(os.prio.get(12)).toBe(PRIORITY_ABOVE_NORMAL);
+        expect(os.prio.get(12)).toBe(PRIORITY_HIGH);
         expect(os.prio.get(13)).toBe(PRIORITY_ABOVE_NORMAL);
     });
 

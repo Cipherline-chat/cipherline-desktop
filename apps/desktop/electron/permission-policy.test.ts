@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { appOriginsFor, decidePermissionRequest, type PermissionRequestFacts } from './permission-policy';
+import { appOriginsFor, decidePermissionCheck, decidePermissionRequest, type PermissionRequestFacts } from './permission-policy';
 
 const PROD = appOriginsFor(undefined, 42917);
 const DEV = appOriginsFor('https://cipherline.chat:5174/', 42917);
@@ -72,5 +72,72 @@ describe('wiring', () => {
         expect(gate).toBeGreaterThan(-1);
         expect(gate).toBeLessThan(firstGrant);
         expect(main).toMatch(/appOriginsFor\(DEV_SERVER_URL, CIPHERLINE_PROD_PORT\)/);
+    });
+});
+
+describe('decidePermissionCheck (setPermissionCheckHandler)', () => {
+    const APPO = ['http://127.0.0.1:42917'];
+    const APPU = 'http://127.0.0.1:42917/';
+    const check = (permission: string, requestingOrigin: string | undefined, topLevelUrl: string | undefined, embeddingOrigin?: string) =>
+        decidePermissionCheck({ permission, requestingOrigin, topLevelUrl, embeddingOrigin }, APPO);
+
+    it('keeps every check the app origin itself makes (unchanged behaviour)', () => {
+        for (const p of ['media', 'notifications', 'clipboard-read', 'clipboard-sanitized-write', 'fullscreen', 'storage-access']) {
+            expect(check(p, 'http://127.0.0.1:42917', APPU)).toBe(true);
+        }
+    });
+
+    it.each([
+        ['https://js.stripe.com', 'media'],
+        ['https://js.stripe.com', 'clipboard-read'],
+        ['https://challenges.cloudflare.com', 'notifications'],
+        ['https://challenges.cloudflare.com', 'geolocation'],
+        ['https://www.youtube-nocookie.com', 'media'],
+        ['https://www.youtube-nocookie.com', 'clipboard-read'],
+        ['https://cipherline.chat', 'hid'],
+        ['https://cipherline.chat', 'serial'],
+        ['https://cipherline.chat', 'usb'],
+    ])('denies third-party frame %s the %s check', (origin, permission) => {
+        expect(check(permission, origin, APPU)).toBe(false);
+    });
+
+    it('allows the YouTube embed fullscreen, and nobody else third-party', () => {
+        expect(check('fullscreen', 'https://www.youtube-nocookie.com', APPU)).toBe(true);
+        expect(check('fullscreen', 'https://js.stripe.com', APPU)).toBe(false);
+    });
+
+    it('allows third-party frames only write-only clipboard and their own storage access', () => {
+        for (const o of ['https://js.stripe.com', 'https://challenges.cloudflare.com']) {
+            expect(check('clipboard-sanitized-write', o, APPU)).toBe(true);
+            expect(check('storage-access', o, APPU)).toBe(true);
+            expect(check('top-level-storage-access', o, APPU)).toBe(true);
+        }
+    });
+
+    it('denies everything when the top-level page is not the app', () => {
+        expect(check('notifications', 'http://127.0.0.1:42917', 'https://evil.example/')).toBe(false);
+        expect(check('storage-access', 'https://js.stripe.com', 'https://evil.example/')).toBe(false);
+        // A different loopback port is not the app.
+        expect(check('media', 'http://127.0.0.1:42918', 'http://127.0.0.1:42918/')).toBe(false);
+    });
+
+    it('with no webContents, falls back to the embedding origin; neither known → deny', () => {
+        expect(check('notifications', 'http://127.0.0.1:42917', undefined, 'http://127.0.0.1:42917')).toBe(true);
+        expect(check('notifications', 'http://127.0.0.1:42917', undefined, undefined)).toBe(false);
+        expect(check('media', 'https://js.stripe.com', undefined, 'http://127.0.0.1:42917')).toBe(false);
+    });
+
+    it('denies an unparseable / opaque requester', () => {
+        expect(check('clipboard-sanitized-write', 'null', APPU)).toBe(false);
+        expect(check('clipboard-sanitized-write', undefined, APPU)).toBe(false);
+    });
+});
+
+describe('wiring (permission checks)', () => {
+    const main = readFileSync(join(__dirname, 'main.ts'), 'utf8');
+    it('main.ts installs a permission CHECK handler that returns decidePermissionCheck', () => {
+        const start = main.indexOf('setPermissionCheckHandler(');
+        expect(start).toBeGreaterThan(-1);
+        expect(main.slice(start, start + 800)).toMatch(/return decidePermissionCheck\(/);
     });
 });

@@ -26,7 +26,7 @@ describe('readShareEncoderSnapshot', () => {
             source({ framesPerSecond: 91 }),
         ), 5000)!;
         expect(snap).toEqual({
-            at: 5000, activeLayers: 2, framesEncoded: 500, sentFps: 88, width: 3840, height: 720,
+            at: 5000, activeLayers: 2, layerSet: '-|-', framesEncoded: 500, sentFps: 88, width: 3840, height: 720,
             limitation: 'cpu', encoder: 'NvEncoder', hardware: true, sourceFps: 91,
         });
     });
@@ -53,7 +53,7 @@ describe('share_fps payload', () => {
 
     it('carries capture fps, source fps, encode fps (counter delta), sent fps, limit, encoder, hardware, size, target and window state', () => {
         expect(buildShareFpsDetail(prev, cur, { captureFps: 112.5, targetFps: 90, focused: false, visible: true })).toEqual({
-            target: 90, focus: false, vis: 'visible',
+            target: 90, focus: false, vis: 'visible', act: 1,
             cap_fps: 112.5, src_fps: 89, enc_fps: 90, sent_fps: 87,
             limit: 'none', enc: 'ExternalEncoder', hw: true, res: '3840x720',
         });
@@ -65,9 +65,25 @@ describe('share_fps payload', () => {
         expect(d.vis).toBe('hidden');
     });
 
+    // Reports 4667c6fa / 14a5184a: enc_fps=646.2 / 662.7 / 765.9 on a 90 fps share, in the
+    // sample right after dynacast re-enabled the full layer (its cumulative frames, ~6600,
+    // landed in a single window because the previous sum did not include that layer).
+    it('a window across a change of the ACTIVE layer set gives no enc_fps (no 650 fps from a resumed layer)', () => {
+        const snap = (layers: string[], framesEncoded: number, at: number) => readShareEncoderSnapshot(report(
+            ...layers.map(rid => outbound({ rid, frameWidth: rid === 'q' ? 1280 : 2560, frameHeight: rid === 'q' ? 720 : 1440, framesEncoded: rid === 'q' ? 300 : framesEncoded })),
+        ), at)!;
+        const qOnly = snap(['q'], 0, 0);
+        const both = snap(['q', 'h'], 6600, 10_000);
+        const d = buildShareFpsDetail(qOnly, both, { targetFps: 90, focused: false, visible: true });
+        expect('enc_fps' in d).toBe(false);
+        // the next window, same layers both ends, is a real rate
+        const later = snap(['q', 'h'], 7500, 20_000);
+        expect(buildShareFpsDetail(both, later, { targetFps: 90, focused: false, visible: true }).enc_fps).toBe(90);
+    });
+
     it('omits what is unknown instead of inventing it; first sample has no enc_fps', () => {
         const d = buildShareFpsDetail(null, { at: 1, activeLayers: 1, framesEncoded: 0 }, { targetFps: 60, focused: true, visible: true });
-        expect(d).toEqual({ target: 60, focus: true, vis: 'visible' });
+        expect(d).toEqual({ target: 60, focus: true, vis: 'visible', act: 1 });
     });
 
     it('a counter that went backwards (a republished sender) gives no enc_fps rather than a negative one', () => {
@@ -75,8 +91,18 @@ describe('share_fps payload', () => {
         expect('enc_fps' in d).toBe(false);
     });
 
-    it('fits the call event log: <= 11 detail keys and every key is a valid, non-reserved name', () => {
-        const d = buildShareFpsDetail(prev, cur, { captureFps: 113, targetFps: 90, focused: true, visible: true });
+    it('act is the number of ACTIVE layers: 0 = dynacast paused them all (enc_fps 0 is then expected), >0 with enc_fps 0 = an encoder that stopped', () => {
+        const paused = buildShareFpsDetail(prev, { ...cur, activeLayers: 0, framesEncoded: 1000 }, { targetFps: 90, focused: true, visible: true });
+        expect(paused.act).toBe(0);
+        const stalled = buildShareFpsDetail(prev, { ...cur, framesEncoded: 1000 }, { targetFps: 90, focused: true, visible: true });
+        expect(stalled.act).toBe(1);
+        expect(stalled.enc_fps).toBe(0);
+    });
+
+    it('fits the call event log: the keys the call site logs (cap_fps / vis / res are not) are <= 11 valid, non-reserved names', () => {
+        const full = buildShareFpsDetail(prev, cur, { captureFps: 113, targetFps: 90, focused: true, visible: true });
+        const d = { ...full };
+        for (const k of ['cap_fps', 'vis', 'res']) delete d[k]; // SidebarConference does not log these (the fg_* trio took their slots)
         expect(Object.keys(d).length).toBeLessThanOrEqual(11);
         expect(CALL_EVENT_KINDS as readonly string[]).toContain('share_fps');
         expect(CALL_EVENT_KINDS as readonly string[]).toContain('share_clamp');
@@ -277,5 +303,108 @@ describe('what to do about a stall (encoder-stall fallback)', () => {
             step = action.step;
         }
         expect(outcomes).toEqual(['res1', 'res2', 'give_up']);
+    });
+});
+
+describe('ShareStatsSampler share_net (same report, no second stats call)', () => {
+    afterEach(() => { vi.useRealTimers(); });
+
+    it('reports the network side from the SAME getStats() result as share_fps, after a baseline, with cap + ref', async () => {
+        vi.useFakeTimers();
+        let clock = 0;
+        let bytes = 0;
+        let frames = 0;
+        let calls = 0;
+        const fps: Array<Record<string, string | number | boolean>> = [];
+        const nets: Array<Record<string, string | number | boolean>> = [];
+        const sampler = new ShareStatsSampler({
+            getStats: async () => {
+                calls++;
+                return report(
+                    outbound({ ssrc: 7, framesEncoded: frames, framesPerSecond: 90, bytesSent: bytes, totalEncodeTime: frames * 0.004, timestamp: clock }),
+                    { type: 'remote-inbound-rtp', kind: 'video', ssrc: 7, fractionLost: 0.02, roundTripTime: 0.03 },
+                    { type: 'transport', selectedCandidatePairId: 'P' },
+                    { type: 'candidate-pair', id: 'P', availableOutgoingBitrate: 30_000_000, localCandidateId: 'L1' },
+                    { type: 'local-candidate', id: 'L1', address: '192.168.1.20', port: 5555 },
+                );
+            },
+            getCaptureFps: () => 113, focused: () => true, visible: () => true, targetFps: 90,
+            report: d => fps.push(d),
+            reportNet: d => nets.push(d),
+            getCapKbps: () => 16_000,
+            getShareRef: () => 'a1b2c3d4',
+            now: () => clock,
+        });
+        sampler.start();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(nets).toHaveLength(0); // baseline
+        clock += SHARE_FPS_INTERVAL_MS; frames += 900; bytes += 12_500_000;
+        await vi.advanceTimersByTimeAsync(SHARE_FPS_INTERVAL_MS);
+        expect(fps).toHaveLength(1);
+        // Single layer here, so the top layer's own keys equal the sums; the lines below are the new ones.
+        expect(nets).toEqual([{ share_ref: 'a1b2c3d4', kbps: 10_000, cap_kbps: 16_000, avail_kbps: 30_000, rtt_ms: 30, loss_pct: 2, enc_ms: 4, top_kbps: 10_000, top_enc_ms: 4 }]);
+        expect(JSON.stringify(nets)).not.toContain('192.168');
+        expect(calls).toBe(2); // one baseline + one sample: share_net added no stats call
+        sampler.dispose();
+    });
+
+    it('a restarted sender (counters back to 0) skips share_net for that window instead of reporting a rate', async () => {
+        vi.useFakeTimers();
+        let clock = 0;
+        let bytes = 9_000_000;
+        const nets: Array<Record<string, string | number | boolean>> = [];
+        const sampler = new ShareStatsSampler({
+            getStats: async () => report(outbound({ framesEncoded: 500, bytesSent: bytes, totalEncodeTime: 2, timestamp: clock })),
+            getCaptureFps: () => 90, focused: () => true, visible: () => true, targetFps: 90,
+            report: () => {}, reportNet: d => nets.push(d), now: () => clock,
+        });
+        sampler.start();
+        await vi.advanceTimersByTimeAsync(0);
+        clock += SHARE_FPS_INTERVAL_MS; bytes = 4_000;
+        await vi.advanceTimersByTimeAsync(SHARE_FPS_INTERVAL_MS);
+        expect(nets).toEqual([]);
+        sampler.dispose();
+    });
+
+    it('onStats gets the raw report and what was in front when THAT sample was taken (null when nothing could say)', async () => {
+        vi.useFakeTimers();
+        let clock = 0;
+        let front: { state: string; exe: string; covers: boolean; isCipherline: boolean; onSharedScreen: boolean | null } | null = {
+            state: 'QUNS_BUSY', exe: 'a.exe', covers: true, isCipherline: false, onSharedScreen: true,
+        };
+        const seen: Array<[number, unknown]> = [];
+        const sampler = new ShareStatsSampler({
+            getStats: async () => report(outbound({ framesEncoded: clock })), getCaptureFps: () => 90, focused: () => false, visible: () => true,
+            targetFps: 90, report: () => {}, now: () => clock, getForeground: async () => front,
+            onStats: (_stats, at, fg) => seen.push([at, fg]),
+        });
+        sampler.start();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(seen).toEqual([]); // the baseline sample is not a reading
+        clock += SHARE_FPS_INTERVAL_MS;
+        await vi.advanceTimersByTimeAsync(SHARE_FPS_INTERVAL_MS);
+        front = null;
+        clock += SHARE_FPS_INTERVAL_MS;
+        await vi.advanceTimersByTimeAsync(SHARE_FPS_INTERVAL_MS);
+        expect(seen.map(([at]) => at)).toEqual([SHARE_FPS_INTERVAL_MS, 2 * SHARE_FPS_INTERVAL_MS]);
+        expect(seen[0][1]).toMatchObject({ exe: 'a.exe', covers: true });
+        expect(seen[1][1]).toBeNull();
+        sampler.dispose();
+    });
+
+    it('without reportNet nothing changes (existing callers)', async () => {
+        vi.useFakeTimers();
+        let clock = 0;
+        const fps: unknown[] = [];
+        const sampler = new ShareStatsSampler({
+            getStats: async () => report(outbound({ bytesSent: clock })), getCaptureFps: () => 90, focused: () => true, visible: () => true,
+            targetFps: 90, report: d => fps.push(d), now: () => clock,
+        });
+        sampler.start();
+        await vi.advanceTimersByTimeAsync(0);
+        clock += SHARE_FPS_INTERVAL_MS;
+        await vi.advanceTimersByTimeAsync(SHARE_FPS_INTERVAL_MS);
+        expect(fps).toHaveLength(1);
+        sampler.dispose();
     });
 });

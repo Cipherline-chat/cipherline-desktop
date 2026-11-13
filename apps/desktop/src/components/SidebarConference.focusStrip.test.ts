@@ -10,12 +10,13 @@ import { join } from 'node:path';
  * render harness, so the rule is pinned at the source level.
  */
 const src = readFileSync(join(__dirname, 'SidebarConference.tsx'), 'utf8');
+const presenceMotion = readFileSync(join(__dirname, 'call', 'presenceVariants.ts'), 'utf8');
 
 describe('voice-channel video strip mounts only when it has a tile to draw', () => {
     it('derives "has a tile" from the same focus test the tiles use', () => {
         expect(src).toContain('const hasPortalVideoTile = hasLocalShareTile || hasRemoteShareTile || hasCamStripTile;');
         for (const frag of [
-            'hasLocalShareTile = !!localScreenShare && !!localParticipant',
+            'hasLocalShareTile = !!localShareTile && !!localParticipant',
             'visibleScreenShareParticipants',
             'sortedVisibleRemoteCamParticipants.some(p => !isFocusedInSidebar(p.identity, Track.Source.Camera))',
         ]) expect(src).toContain(frag);
@@ -39,7 +40,11 @@ describe('voice-channel video strip mounts only when it has a tile to draw', () 
 
 describe('the tile strips glide instead of snapping when a tile leaves', () => {
     it('tiles exit by collapsing their height on the shared glide curve, in the strip and the inline list', () => {
-        expect(src).toContain('const SIDEBAR_GLIDE_S = 0.32;');
+        // The glide constants now live with the join / leave family (call/presenceMotion).
+        expect(src).toContain('const SIDEBAR_GLIDE_S = CALL_GLIDE_S;');
+        expect(src).toContain('const SIDEBAR_GLIDE_EASE = CALL_EASE_GLIDE;');
+        expect(presenceMotion).toContain('export const CALL_GLIDE_S = 0.32;');
+        expect(presenceMotion).toContain('export const CALL_EASE_GLIDE = [0.4, 0, 0.2, 1] as const;');
         expect(src).toContain('height: { duration: SIDEBAR_GLIDE_S, ease: SIDEBAR_GLIDE_EASE }');
         expect(src).toContain("overflow: 'hidden' as const");
         // the strip, the camera strip and the inline DM tiles all use it
@@ -72,7 +77,7 @@ describe('the tile strips glide instead of snapping when a tile leaves', () => {
 
     it('the camera strip\'s own tiles have an exit to animate (a nested tile with none vanished instantly)', () => {
         const strip = src.slice(src.indexOf('key="cam-strip"'));
-        expect(strip.slice(0, 4200)).toContain('<AnimatePresence initial={false}>');
-        expect(strip.slice(0, 4200)).toContain('key="local-cam-portal" className="w-full"\n                                    variants={camStripTileGlide}');
+        expect(strip.slice(0, 4200)).toContain('<AnimatePresence custom={presenceExit} initial={false}>');
+        expect(strip.slice(0, 4200)).toContain('key="local-cam-portal" pid={localParticipant!.identity} surface="cam" tracker={presenceTracker} className="w-full"\n                                    variants={camStripTileGlide}');
     });
 });

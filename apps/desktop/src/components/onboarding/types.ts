@@ -121,8 +121,9 @@ export interface StepProps {
     flow: OnboardingFlowState;
     setFlow: (patch: Partial<OnboardingFlowState>) => void;
     reducedMotion: boolean;
-    /** The shared full-window WebGL dot field (null when WebGL is unavailable,
-     *  or before it is created). Only privacy + invite + the ending use it;
+    /** The shared full-window dot field: WebGL, or the Canvas 2D fallback
+     *  where WebGL is unavailable (null before it is created, and when not
+     *  even a 2D canvas works). Only privacy + invite + the ending use it;
      *  the shell fades the canvas in/out via `showDots`. */
     dots: DotField | null;
     showDots: (on: boolean) => void;

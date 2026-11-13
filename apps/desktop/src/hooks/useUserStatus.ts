@@ -1,17 +1,20 @@
 import secureLocalStore from '../utils/secureLocalStore';
+import { noteOwnGame } from '../utils/integrations/ownGameEnd';
 import { useState, useEffect, useCallback, useRef } from 'react';
 import axios from 'axios';
 import { API_BASE } from '../constants';
 // Single source of truth lives in utils/idleThreshold.ts — the continuity
 // attention state machine (utils/attentionState.ts, wired into
-// useRealtime.ts's presence:heartbeat) imports the SAME constants from
-// there rather than inventing a second idle notion that could drift from
-// this one. Re-exported here too for existing/local readability.
-import { IDLE_THRESHOLD_SECONDS, IDLE_POLL_INTERVAL_MS } from '../utils/idleThreshold';
+// useRealtime.ts's presence:heartbeat) reads the SAME value (the user's
+// "Idle timeout" setting, via getIdleThresholdSeconds()) from there rather
+// than inventing a second idle notion that could drift from this one. The
+// default constant is re-exported here too for existing/local readability.
+import { getIdleThresholdSeconds, IDLE_POLL_INTERVAL_MS } from '../utils/idleThreshold';
 import { applyPresenceEvent, presenceBus } from '../utils/presenceState';
 import { activeCustom, nextCustomExpiry } from '../utils/customStatus';
 import { OwnStatusSync, selfPresenceBus, type OwnChoice, type PendingLocalChange } from '../utils/ownStatusSync';
 import { GameActivityReporter } from '../utils/gameActivityReporter';
+import { forgetOwnGameArt, loadOwnGameArt } from '../utils/gameArt';
 export { IDLE_THRESHOLD_SECONDS, IDLE_POLL_INTERVAL_MS } from '../utils/idleThreshold';
 
 // The status model (types, colours, restore rule) lives in a dependency-free
@@ -290,7 +293,7 @@ export function useUserStatus({ token, userId, acceptedFriends, showGameActivity
         const poll = setInterval(async () => {
             const idleSecs: number = await electronAPI.getSystemIdleTime();
             const wasIdle = idleRef.current;
-            const idle = wasIdle ? idleSecs >= IDLE_RETURN_SECONDS : idleSecs >= IDLE_THRESHOLD_SECONDS;
+            const idle = wasIdle ? idleSecs >= IDLE_RETURN_SECONDS : idleSecs >= getIdleThresholdSeconds();
             idleRef.current = idle;
             if (serverAutoAwayRef.current) {
                 if (idle !== wasIdle) sendIdleRef.current?.(idle);
@@ -349,6 +352,10 @@ export function useUserStatus({ token, userId, acceptedFriends, showGameActivity
         // Game changes set the ref synchronously so the PATCH (which reads it)
         // carries the new value; see pushAmbient.
         const setGame = (name: string | null, processName: string | null) => {
+            // Your own game's icon is read on this computer the moment the game is found, so it is
+            // already cached when a profile opens (utils/gameArt.ts). Nothing here is sent anywhere.
+            if (name) void loadOwnGameArt(name); else forgetOwnGameArt(myCurrentGameRef.current);
+            noteOwnGame(name, myCurrentGameRef.current);
             myCurrentGameRef.current = name;
             setMyCurrentGame(name);
             setMyCurrentGameProcess(processName);
@@ -449,6 +456,7 @@ export function useUserStatus({ token, userId, acceptedFriends, showGameActivity
     // Activity's "ignore this game" additionally adds it to ignoredProcesses
     // (permanent) and calls this to clear the live status immediately too.
     const clearGame = useCallback(() => {
+        noteOwnGame(null, myCurrentGameRef.current);
         myCurrentGameRef.current = null;
         setMyCurrentGame(null);
         setMyCurrentGameProcess(null);

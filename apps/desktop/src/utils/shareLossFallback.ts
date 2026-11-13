@@ -20,7 +20,16 @@
  *   top → fallback  after TRIP_TICKS consecutive bad ticks (loss ≥
  *                   LOSS_TRIP_PCT, or no frame decoded over the tick WITH
  *                   some loss or a keyframe request — a still screen is not
- *                   a freeze), or a single tick at ≥ LOSS_SEVERE_PCT;
+ *                   a freeze), or a single tick at ≥ LOSS_SEVERE_PCT. Stuck
+ *                   (frozen) ticks ALSO trip when STUCK_TRIP_TICKS of the
+ *                   last STUCK_WINDOW_TICKS are stuck, consecutive or not:
+ *                   a viewer's freezes alternate (frozen / ok / frozen / ok,
+ *                   window loss ~1 %, below LOSS_TRIP_PCT) because the picture
+ *                   thaws for a tick when a keyframe lands, and the
+ *                   consecutive counter alone reset on every thaw (2026-11
+ *                   report: three 2-4 s freezes, the drop to the lighter layer
+ *                   came only on the third). One isolated stuck tick still
+ *                   does not trip it; neither does a lossy-but-not-stuck one;
  *   fallback → top  once the hold has elapsed AND the last CLEAN_TICKS ticks
  *                   were clean (loss < CLEAN_LOSS_PCT, no stuck decoder);
  *   hysteresis      the hold starts at HOLD_MS_INITIAL and doubles (up to
@@ -46,6 +55,11 @@
  * Only acts on a share that publishes ≥ 2 layers (there is nothing to fall
  * back to otherwise) and only while the viewer actually wants the top layer.
  *
+ * The viewer can opt out ("Keep full quality" on the notice,
+ * ShareFallbackNotice.tsx): optOut() lifts any cap at once and the machine
+ * never caps again. One instance follows one publication, so the choice lasts
+ * for that share and a new share starts with the fallback on again.
+ *
  * Privacy: nothing here knows whose share it is; the caller logs by track
  * placeholder.
  */
@@ -53,6 +67,9 @@
 export const LOSS_TRIP_PCT = 4;
 export const LOSS_SEVERE_PCT = 10;
 export const TRIP_TICKS = 2;
+/** Stuck ticks that trip the fallback when they fall within the last STUCK_WINDOW_TICKS ticks, adjacent or not. */
+export const STUCK_TRIP_TICKS = 2;
+export const STUCK_WINDOW_TICKS = 4;
 export const CLEAN_LOSS_PCT = 1;
 export const CLEAN_TICKS = 3;
 export const HOLD_MS_INITIAL = 20_000;
@@ -85,9 +102,11 @@ export interface ShareRxTick {
     packets?: number;
     /** Short side (px) of the last decoded frame; undefined = unknown. */
     frameShort?: number;
+    /** Frames arrive and none is decoded (shareRxStall.ts): a frozen picture, whatever the loss says. */
+    decoderStalled?: boolean;
 }
 
-export type ShareRxReason = 'loss' | 'freeze' | 'recovered' | 'not_needed' | 'no_low_layer';
+export type ShareRxReason = 'loss' | 'freeze' | 'decoder_stall' | 'recovered' | 'not_needed' | 'no_low_layer' | 'opt_out';
 
 export interface ShareRxDecision {
     /** Hold the publication at its lowest layer. */
@@ -102,6 +121,8 @@ export interface ShareRxDecision {
 export class ShareLossFallback {
     private state: 'top' | 'fallback' = 'top';
     private bad = 0;
+    /** Whether each of the last STUCK_WINDOW_TICKS top-layer ticks was stuck (oldest first). */
+    private recentStuck: boolean[] = [];
     private clean = 0;
     private since = 0;
     private holdMs = HOLD_MS_INITIAL;
@@ -110,19 +131,60 @@ export class ShareLossFallback {
     private silent = 0;
     private stuckLow = 0;
     private lowDelivered = false;
+    /** Short side of the first decoded frame that proved the lower layer arrived (0 = not measured). */
+    private lowShortPx = 0;
     /** Decoded short side on the top layer (last seen), and when the cap went on. */
     private topShort = 0;
     private capShort = 0;
     /** No fallback before this time (the lower layer did not arrive last time). */
     private lowBlockedUntil = 0;
     private lowRetryMs = NO_LOW_RETRY_MS;
+    private off = false;
 
     get capped(): boolean { return this.state === 'fallback'; }
 
+    /**
+     * Capped, and the lower layer has been seen arriving (a smaller frame
+     * decoded since the cap, or any decoded frame when sizes are unknown). Until
+     * then the viewer is not yet looking at the lighter copy, and it may never
+     * come ('no_low_layer'), so nothing should tell them it is.
+     */
+    get lowShowing(): boolean { return this.state === 'fallback' && this.lowDelivered; }
+
+    /**
+     * The lower layer's short side (px) as decoded, when its arrival was proved
+     * by a frame smaller than the full layer's; null when it was not measured
+     * (the caller falls back to the advertised size, or says no number at all).
+     */
+    get lowShort(): number | null { return this.lowShowing && this.lowShortPx > 0 ? this.lowShortPx : null; }
+
+    /** The viewer chose full quality for this share. */
+    get optedOut(): boolean { return this.off; }
+
+    /**
+     * Turn the fallback off for good: lift any cap now and never cap again.
+     * Returns the decision for this moment, `changed` only when a cap came off.
+     */
+    optOut(): ShareRxDecision {
+        const was = this.state === 'fallback';
+        this.off = true;
+        this.state = 'top';
+        this.bad = 0;
+        this.recentStuck = [];
+        this.clean = 0;
+        this.silent = 0;
+        this.stuckLow = 0;
+        this.lowDelivered = false;
+        this.lowShortPx = 0;
+        return was ? { cap: false, changed: true, reason: 'opt_out' } : { cap: false, changed: false };
+    }
+
     observe(t: ShareRxTick): ShareRxDecision {
+        if (this.off) return { cap: false, changed: false };
         if (t.layers < 2 || !t.wantsTop) {
             // Nothing to fall back to, or the viewer is on the low layer anyway.
             this.bad = 0;
+            this.recentStuck = [];
             if (this.state === 'fallback') {
                 this.state = 'top';
                 this.clean = 0;
@@ -143,21 +205,14 @@ export class ShareLossFallback {
             // packets or had to ask for a keyframe.
             const stuck = t.frozen && (loss >= CLEAN_LOSS_PCT || t.keyframeAsked);
             const isBad = stuck || loss >= LOSS_TRIP_PCT;
-            this.bad = isBad && t.now >= this.lowBlockedUntil ? this.bad + 1 : 0;
-            if (t.now >= this.lowBlockedUntil && (this.bad >= TRIP_TICKS || loss >= LOSS_SEVERE_PCT)) {
-                if (this.restoredAt !== null && t.now - this.restoredAt < PROBE_WINDOW_MS) {
-                    this.holdMs = Math.min(HOLD_MS_MAX, this.holdMs * 2);
-                }
-                this.restoredAt = null;
-                this.state = 'fallback';
-                this.since = t.now;
-                this.bad = 0;
-                this.clean = 0;
-                this.silent = 0;
-                this.stuckLow = 0;
-                this.lowDelivered = false;
-                this.capShort = this.topShort;
-                return { cap: true, changed: true, reason: stuck && loss < LOSS_TRIP_PCT ? 'freeze' : 'loss', holdMs: this.holdMs };
+            const armed = t.now >= this.lowBlockedUntil;
+            this.bad = isBad && armed ? this.bad + 1 : 0;
+            // The window of stuck ticks: an alternating freeze trips it where
+            // the consecutive count above keeps resetting.
+            this.recentStuck = armed ? [...this.recentStuck, stuck].slice(-STUCK_WINDOW_TICKS) : [];
+            const stuckInWindow = this.recentStuck.filter(Boolean).length;
+            if (armed && (this.bad >= TRIP_TICKS || stuckInWindow >= STUCK_TRIP_TICKS || loss >= LOSS_SEVERE_PCT)) {
+                return this.trip(t.now, stuck && loss < LOSS_TRIP_PCT ? 'freeze' : 'loss');
             }
             return { cap: false, changed: false };
         }
@@ -171,7 +226,10 @@ export class ShareLossFallback {
             this.silent = 0;
             const sized = this.capShort > 0 && t.frameShort !== undefined && t.frameShort > 0;
             // A tick that decoded nothing proves nothing about the lower layer.
-            if (!t.frozen && (!sized || t.frameShort! < this.capShort)) this.lowDelivered = true;
+            if (!t.frozen && (!sized || t.frameShort! < this.capShort)) {
+                if (!this.lowDelivered && sized) this.lowShortPx = t.frameShort!;
+                this.lowDelivered = true;
+            }
         }
         // Packets arrive but NOTHING decodes and the decoder keeps asking for a
         // keyframe: the viewer's 2026-10-24 report (staging.174) — capped
@@ -191,19 +249,51 @@ export class ShareLossFallback {
             this.silent = 0;
             this.clean = 0;
             this.bad = 0;
+            this.recentStuck = [];
             return { cap: false, changed: true, reason: 'no_low_layer' };
         }
         // Clean = no loss and no decoder waiting on a keyframe (a still
         // screen that simply sends no frames is clean).
-        const isClean = loss < CLEAN_LOSS_PCT && !(t.frozen && t.keyframeAsked);
+        const isClean = loss < CLEAN_LOSS_PCT && !(t.frozen && t.keyframeAsked) && !t.decoderStalled;
         this.clean = isClean ? this.clean + 1 : 0;
         if (t.now - this.since >= this.holdMs && this.clean >= CLEAN_TICKS) {
             this.state = 'top';
             this.restoredAt = t.now;
             this.clean = 0;
+            this.recentStuck = [];
             return { cap: false, changed: true, reason: 'recovered' };
         }
         return { cap: true, changed: false };
+    }
+
+    /**
+     * The decoder fell behind on the full layer (shareRxStallRecovery.ts): a stall
+     * with no loss and no keyframe request, which observe() rightly cannot tell from
+     * a still screen. Same hold, same way back up, same limits as any other fall-back.
+     */
+    capForStall(t: { now: number; wantsTop: boolean; layers: number }): ShareRxDecision {
+        if (this.off || this.state !== 'top' || t.layers < 2 || !t.wantsTop || t.now < this.lowBlockedUntil) {
+            return { cap: this.state === 'fallback', changed: false };
+        }
+        return this.trip(t.now, 'decoder_stall');
+    }
+
+    private trip(now: number, reason: ShareRxReason): ShareRxDecision {
+        if (this.restoredAt !== null && now - this.restoredAt < PROBE_WINDOW_MS) {
+            this.holdMs = Math.min(HOLD_MS_MAX, this.holdMs * 2);
+        }
+        this.restoredAt = null;
+        this.state = 'fallback';
+        this.since = now;
+        this.bad = 0;
+        this.recentStuck = [];
+        this.clean = 0;
+        this.silent = 0;
+        this.stuckLow = 0;
+        this.lowDelivered = false;
+        this.lowShortPx = 0;
+        this.capShort = this.topShort;
+        return { cap: true, changed: true, reason, holdMs: this.holdMs };
     }
 }
 

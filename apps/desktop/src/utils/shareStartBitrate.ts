@@ -32,7 +32,7 @@
  * - Never LOWERS the estimate: when the connection already measures at least
  *   the target (a camera is on, a second share), nothing is changed.
  * - Leaves an existing x-google-start-bitrate alone (LiveKit's own VP9 munge).
- * - Start = half the share's maxBitrate, capped at 8 Mbps. It is only a
+ * - Start = half the share's maxBitrate, capped at 12 Mbps. It is only a
  *   starting point: GCC still backs off within a round trip or two if the
  *   uplink cannot carry it. (LiveKit's VP9 rule is 0.7 × maxBitrate with no
  *   cap — up to ~25 Mbps for a 1440p60 share.)
@@ -40,8 +40,14 @@
  *   exactly as before.
  */
 
-/** Never start above this (kbps). */
-export const SHARE_START_CAP_KBPS = 8_000;
+/**
+ * Never start above this (kbps). 12 Mbps = half of the largest ceilings a
+ * Windows/Mac share is given (4K / 1440p60 H.264/H.265, 18-25 Mbps), so those
+ * start at about half like every smaller preset instead of at 8 Mbps (a third
+ * or less). Owner 2026-11-13: "blocky then clears up" on Mac. It is only a
+ * starting point: GCC backs off within a round trip or two on a slow uplink.
+ */
+export const SHARE_START_CAP_KBPS = 12_000;
 /** Fraction of the share's maxBitrate to start at. */
 export const SHARE_START_FRACTION = 0.5;
 

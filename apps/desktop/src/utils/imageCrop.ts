@@ -150,6 +150,30 @@ export function loadImageElement(src: File | Blob | string): Promise<HTMLImageEl
 }
 
 /**
+ * The crop frame expressed in the SOURCE image's own pixels: the rectangle a
+ * canvas `drawImage(src, sx, sy, sw, sh, ...)` must read to reproduce exactly
+ * what the cropper shows. Shared by the still export (`renderCroppedBlob`) and
+ * the animated one (every frame is cropped with this same rectangle, see
+ * utils/animatedCrop), so the two can never disagree. null = no usable size.
+ */
+export function cropSourceRect(
+    naturalW: number, naturalH: number,
+    t: CropTransform,
+    frameW: number, frameH: number,
+): { sx: number; sy: number; sw: number; sh: number } | null {
+    const safe = clampCrop(t, naturalW, naturalH, frameW, frameH);
+    const s = coverScale(naturalW, naturalH, frameW, frameH) * safe.scale;
+    if (!s) return null;
+    const sw = frameW / s;
+    const sh = frameH / s;
+    return {
+        sx: (naturalW - sw) / 2 - safe.x / s,
+        sy: (naturalH - sh) / 2 - safe.y / s,
+        sw, sh,
+    };
+}
+
+/**
  * Render the framed region to a JPEG blob at the output preset's exact pixel
  * size. The frame and the output share an aspect ratio by construction (the
  * cropper derives its frame from these dimensions), so this is a straight
@@ -166,16 +190,9 @@ export function renderCroppedBlob(
     quality = CROP_JPEG_QUALITY,
 ): Promise<Blob> {
     return new Promise((resolve, reject) => {
-        const { naturalWidth: nw, naturalHeight: nh } = img;
-        const safe = clampCrop(t, nw, nh, frameW, frameH);
-        const s = coverScale(nw, nh, frameW, frameH) * safe.scale;
-        if (!s) { reject(new Error('Image has no usable dimensions')); return; }
-
-        // Frame rect expressed in the source image's own pixels.
-        const sw = frameW / s;
-        const sh = frameH / s;
-        const sx = (nw - sw) / 2 - safe.x / s;
-        const sy = (nh - sh) / 2 - safe.y / s;
+        const rect = cropSourceRect(img.naturalWidth, img.naturalHeight, t, frameW, frameH);
+        if (!rect) { reject(new Error('Image has no usable dimensions')); return; }
+        const { sx, sy, sw, sh } = rect;
 
         const canvas = document.createElement('canvas');
         canvas.width = outW;

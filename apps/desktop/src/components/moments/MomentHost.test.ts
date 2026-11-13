@@ -415,7 +415,7 @@ describe('MomentHost', () => {
             const m = moment();
             expect(m?.getAttribute('data-moment')).toBe(id);
             expect(live()).toBe(announcement(id));
-            const art = m!.firstElementChild!;
+            const art = m!.querySelector('.mo-view')!;
             expect(art.getAttribute('aria-hidden') ?? m!.getAttribute('aria-hidden')).toBe('true');
             act(() => { vi.advanceTimersByTime(MOMENTS[id].durationMs - 10); });
             expect(moment()).not.toBeNull();
@@ -431,6 +431,25 @@ describe('MomentHost', () => {
             reduced = true;
             play(id);
             expect(document.querySelector('[data-testid="moment-still"]')?.textContent).toContain(MOMENTS[id].line);
+        });
+        it.each(IDS)('%s sits on exactly one shared egg scrim, under the art, animated or still', (id) => {
+            for (const r of [false, true]) {
+                reduced = r;
+                play(id);
+                const m = moment()!;
+                const scrims = m.querySelectorAll('[data-testid="egg-scrim"]');
+                expect(scrims.length).toBe(1);
+                // First child: it paints under the art and never takes a click (pointer-events: none in CSS).
+                expect(m.firstElementChild).toBe(scrims[0]);
+                expect(scrims[0].getAttribute('aria-hidden')).toBe('true');
+                // No view draws a backdrop of its own any more (a second dim would double up).
+                expect(m.querySelector('.mo-dim')).toBeNull();
+                key('Escape');
+                expect(moment()).toBeNull();
+                // Past the ambient moments' quiet-keyboard wait, and a fresh ledger for the second pass.
+                act(() => { vi.advanceTimersByTime(10_000); });
+                kv.clear();
+            }
         });
     });
 });

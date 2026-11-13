@@ -6,26 +6,47 @@
  * apps/api/src/gateway/gateway.gateway.ts's onHeartbeat and
  * apps/api/src/gateway/dto/ws.dto.ts's HeartbeatEventDto) is what decides
  * whether an unread message suppresses or escalates to the owner's phone.
- * This module is the client's answer to "is the person actually in front of
- * THIS screen right now" — a pure, DOM/Electron-free function so the
- * decision is unit-testable without a real window or socket.
+ * This module is the client's answer to "is this PC in use right now" — a
+ * pure, DOM/Electron-free set of functions so the decision is unit-testable
+ * without a real window or socket.
  *
- * `active: true` must mean exactly one thing: a human is looking at this
- * window right now. Getting this wrong in the permissive direction (a
- * minimised/backgrounded window reporting true) is the precise bug this
- * feature exists to remove — it would silence the user's own phone while
- * nobody is actually reading the message. Getting it wrong in the
- * conservative direction (an attentive user occasionally reported false) is
- * merely an extra buzz. The rule below is deliberately asymmetric for that
- * reason: `focused` gates everything, unconditionally.
+ * ── What `active: true` means ───────────────────────────────────────────────
+ *
+ * The PC is demonstrably IN USE: the OS-wide input idle time is under the
+ * user's idle timeout AND the session is not locked, suspended or shutting
+ * down. Which window has focus is deliberately NOT part of the answer.
+ *
+ * Why not focus: the question this flag answers is "does the phone need to
+ * buzz", and a person typing in another app on this same PC does not. A PC
+ * that is in use shows its own OS notification for a new message, so the
+ * phone should stay quiet. The earlier rule ("`focused` gates everything,
+ * unconditionally") reported not-attentive the instant Cipherline lost focus,
+ * so working in a browser or an editor on the same machine made the phone buzz
+ * for every message, which is exactly what the owner does not want while at
+ * the PC. Input idle time is the honest signal of "someone is here";
+ * window focus only says which app they are in.
+ *
+ * ── What still reports `active: false` immediately ──────────────────────────
+ *
+ * Anything that means nobody can be at this screen, whatever the idle clock
+ * says: screen lock, suspend/sleep (lid close), shutdown/quit. The idle clock
+ * alone is too slow for those (it would have to run out first, and a locked
+ * session keeps counting while the user types a password), so they are
+ * reported off-cycle by the session power state below. Failure direction is
+ * asymmetric on purpose: an attentive user occasionally reported inactive is
+ * merely an extra buzz; an absent user reported active silences their phone
+ * while nobody reads the message. So an unknown/NaN/negative idle reading is
+ * never "recent input".
  */
 
 /**
  * Reused from the same source useUserStatus.ts's own-away detection reads —
  * see utils/idleThreshold.ts's doc comment. Attention does NOT invent a
- * separate idle notion; it imports these same constants so "away"
- * (self-reported status) and "not attentive" (continuity's
- * suppress/escalate signal) never disagree about how long is too long.
+ * separate idle notion; it takes the same threshold ("Idle timeout" in
+ * Settings > Notifications), so "away" (self-reported status) and "not
+ * attentive" (continuity's suppress/escalate signal) never disagree about how
+ * long is too long. The constant is only the DEFAULT; callers pass the user's
+ * live value (getIdleThresholdSeconds()).
  */
 import { IDLE_THRESHOLD_SECONDS, IDLE_POLL_INTERVAL_MS } from './idleThreshold';
 export { IDLE_THRESHOLD_SECONDS, IDLE_POLL_INTERVAL_MS };
@@ -33,72 +54,126 @@ export { IDLE_THRESHOLD_SECONDS, IDLE_POLL_INTERVAL_MS };
 /**
  * The state machine's one decision, as a pure function.
  *
- * @param focused      Window has OS focus right now (not minimised, not
- *                      behind another app, not screen-locked). Any `false`
- *                      here is decisive — idle time is irrelevant once the
- *                      window isn't even in front of the user.
- * @param idleSeconds  OS-wide idle time in seconds, from
+ * @param sessionInUse  The OS session is available to a person right now:
+ *                      not locked, not suspended. From isSessionInUse(). Any
+ *                      `false` here is decisive — idle time is irrelevant once
+ *                      the screen is locked or the machine is asleep. Window
+ *                      focus/blur/minimise are NOT inputs (see the module doc).
+ * @param idleSeconds   OS-wide idle time in seconds, from
  *                      `electronAPI.getSystemIdleTime()` (the SAME polled
  *                      value useUserStatus.ts uses for auto-away).
- * @param idleThresholdSeconds  Defaults to the real IDLE_THRESHOLD_SECONDS
- *                      constant (not a re-typed literal, so there is only
- *                      ever one 300 written down) — overridable only for
- *                      tests.
+ * @param idleThresholdSeconds  The user's idle timeout in seconds. Defaults to
+ *                      the real IDLE_THRESHOLD_SECONDS default (not a re-typed
+ *                      literal, so there is only ever one 300 written down).
  */
 export function computeIsAttentive(
-    focused: boolean,
+    sessionInUse: boolean,
     idleSeconds: number,
     idleThresholdSeconds: number = IDLE_THRESHOLD_SECONDS,
 ): boolean {
-    if (!focused) return false;
+    if (!sessionInUse) return false;
     // NaN/negative/unknown idle readings must never read as "recent input" —
     // fail toward not-attentive (see module doc: conservative direction is
     // the safe one).
     if (!Number.isFinite(idleSeconds) || idleSeconds < 0) return false;
+    // A nonsensical threshold (NaN, zero, negative) can never make anyone
+    // "recently active" either.
+    if (!Number.isFinite(idleThresholdSeconds) || idleThresholdSeconds <= 0) return false;
     return idleSeconds < idleThresholdSeconds;
 }
 
 /**
- * The reasons an off-cycle (immediate, outside the 15s heartbeat cadence)
- * `active: false` must be sent — see the spec: "without it the user waits
- * their full idle threshold plus 90s [server escalation]." Exported as a
- * union so callers (useRealtime.ts) and tests share one vocabulary for why
- * a transition fired, useful for logging/debugging without affecting the
- * wire payload (the server only ever sees `active: false`).
+ * The OS power/lock signals main forwards (powerMonitor 'lock-screen' /
+ * 'unlock-screen' / 'suspend' / 'resume'; on Linux the screensaver D-Bus
+ * signal stands in for the lock pair). One closed vocabulary shared by
+ * electron/main.ts, the preload bridge, and this reducer.
  */
-export type AttentionLostReason = 'blur' | 'minimize' | 'lock' | 'quit';
+export type OsPowerSignal = 'lock-screen' | 'unlock-screen' | 'suspend' | 'resume';
+
+export const OS_POWER_SIGNALS: readonly OsPowerSignal[] = ['lock-screen', 'unlock-screen', 'suspend', 'resume'];
 
 /**
- * Can a human be looking at this window RIGHT NOW? Every input must say yes.
- *
- * Read from the live window at the moment a heartbeat is sent, not from a
- * value cached when the last focus/blur event fired: a missed event (a tray
- * hide on a platform that fires no blur, a window hidden while it was already
- * unfocused) must not leave `active: true` on the wire from a window nobody
- * can see. The server's push routing reads that flag to decide whether to
- * wake the user's phone, and a hidden desktop claiming attention silences it.
- *
- *  - `focusedByEvent`   — the focus/blur/minimise/lock event stream's view;
- *  - `documentHasFocus` — `document.hasFocus()`, false for a minimised or
- *                         background window even when an event was missed;
- *  - `visibilityState`  — `document.visibilityState`; Chromium reports
- *                         `hidden` for a minimised or hidden window. Only
- *                         `visible` counts — anything else, or unknown, is no.
+ * Two independent facts, because the signals do not cancel each other:
+ * a laptop locked at the desk and then closed emits lock → suspend → resume,
+ * and after that resume the user is still looking at a lock screen. Folding
+ * both into one boolean would mark the PC "in use" at the lock screen the
+ * moment the lid opens; only the matching unlock clears the lock.
  */
-export function isWindowAttendable(w: {
-    focusedByEvent: boolean;
-    documentHasFocus: boolean;
-    visibilityState: string | undefined;
-}): boolean {
-    return w.focusedByEvent && w.documentHasFocus && w.visibilityState === 'visible';
+export interface SessionPowerState {
+    locked: boolean;
+    suspended: boolean;
 }
+
+/** Initial state: nothing has happened, so the session is presumed available.
+ *  Safe because the idle clock still has to say "recent input" on top. */
+export const SESSION_AVAILABLE: SessionPowerState = { locked: false, suspended: false };
+
+/** Fold one power signal into the state. Unknown signals change nothing. */
+export function reduceSessionPowerState(prev: SessionPowerState, signal: string): SessionPowerState {
+    switch (signal) {
+        case 'lock-screen': return { ...prev, locked: true };
+        case 'unlock-screen': return { ...prev, locked: false };
+        case 'suspend': return { ...prev, suspended: true };
+        case 'resume': return { ...prev, suspended: false };
+        default: return prev;
+    }
+}
+
+/** The session is available to a person: neither locked nor suspended. */
+export function isSessionInUse(s: SessionPowerState): boolean {
+    return !s.locked && !s.suspended;
+}
+
+/**
+ * How long to wait before reading the OS idle time again.
+ *
+ * The idle clock is the only thing that can END attention (or restore it)
+ * without an event, so how promptly it is read sets how precisely "wait until
+ * my idle timeout" is honoured:
+ *
+ *  - Attentive: sleep until just after the threshold would be crossed, capped
+ *    at `maxMs` (nothing can change sooner except a lock/suspend, which are
+ *    events, not polls). A 5-minute timeout therefore flips at ~5:00, not
+ *    somewhere in a 30 s polling slot after it.
+ *  - Already past the threshold (or unknown): poll every `idleMs`, so the
+ *    first keystroke after coming back is noticed in seconds. The phone
+ *    should go quiet again as soon as the user is back at the PC.
+ *
+ * Never below `minMs`, so a threshold that is about to elapse cannot turn
+ * into a hot loop.
+ */
+export function nextIdlePollDelayMs(
+    idleSeconds: number,
+    idleThresholdSeconds: number,
+    opts: { maxMs?: number; idleMs?: number; minMs?: number } = {},
+): number {
+    const maxMs = opts.maxMs ?? IDLE_POLL_INTERVAL_MS;
+    const idleMs = opts.idleMs ?? 10_000;
+    const minMs = opts.minMs ?? 1_000;
+    if (!Number.isFinite(idleSeconds) || idleSeconds < 0) return idleMs;
+    if (!Number.isFinite(idleThresholdSeconds) || idleThresholdSeconds <= 0) return idleMs;
+    const remainingMs = (idleThresholdSeconds - idleSeconds) * 1000;
+    if (remainingMs <= 0) return idleMs;
+    return Math.min(maxMs, Math.max(minMs, remainingMs + 250));
+}
+
+/**
+ * The reasons an off-cycle (immediate, outside the 15s heartbeat cadence)
+ * `active: false` must be sent. Exported as a union so callers
+ * (useRealtime.ts) and tests share one vocabulary for why a transition fired,
+ * useful for logging/debugging without affecting the wire payload (the server
+ * only ever sees `active: false`). Focus loss (blur/minimise/hide) is NOT a
+ * reason any more: see the module doc.
+ */
+export type AttentionLostReason = 'lock' | 'suspend' | 'idle' | 'quit';
 
 /**
  * The one `presence:heartbeat` frame this client sends, in every state:
  * `{"event":"presence:heartbeat","data":{"active":<boolean>}}`. The server
  * (gateway.gateway.ts onHeartbeat, HeartbeatEventDto) owns what it does with
- * `active`; this client only guarantees it is never `true` from a window that
- * is hidden, minimised, unfocused, locked, or idle past the threshold.
+ * `active`; this client only guarantees it is never `true` while the session
+ * is locked or suspended, or once input idle time has reached the user's
+ * idle timeout.
  */
 export function heartbeatPayload(active: boolean): string {
     return JSON.stringify({ event: 'presence:heartbeat', data: { active } });

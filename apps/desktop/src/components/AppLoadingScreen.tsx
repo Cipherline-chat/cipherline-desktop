@@ -66,6 +66,7 @@ import { acquireWorker, canUseWorker, markBroken, releaseWorker, type WorkerLike
 import { useEscape } from '../hooks/useEscape';
 import { LoadingTip } from './LoadingTip';
 import { readLoadingGameBest, saveLoadingGameBest } from '../utils/loadingGameBest';
+import { bestFor, recordRun, signedInUserId } from '../utils/flappyBest';
 import type { FromWorker } from '../workers/loadingScreenProtocol';
 
 export type { LoadingStage } from './loadingWait';
@@ -117,10 +118,12 @@ interface Props {
 /** 'static': no field (no worker/WebGL). 'starting' → 'ok' once the field has drawn. */
 type Gl = 'static' | 'starting' | 'ok';
 
-/** Best score on record. Seeded from the encrypted local store on first use, so
- *  it survives an app restart (see utils/loadingGameBest.ts). */
+/** Best score on record: the device's loading-screen best (seeded from the encrypted
+ *  local store, so it survives a restart: utils/loadingGameBest.ts) or, when someone is
+ *  signed in, that account's own best (utils/flappyBest.ts: the same number the Home
+ *  game shows, and the one synced to the leaderboard), whichever is higher. */
 let sessionBest: number | null = null;
-const currentBest = (): number => (sessionBest ??= readLoadingGameBest());
+const currentBest = (): number => Math.max((sessionBest ??= readLoadingGameBest()), bestFor(signedInUserId()));
 
 const isEditable = (t: EventTarget | null): boolean => {
     const el = t as HTMLElement | null;
@@ -158,6 +161,10 @@ export const AppLoadingScreen: React.FC<Props> = ({ phase = 'loading', onSurface
     const workerRef = useRef<WorkerLike | null>(null);
     /** When the last crash happened (performance.now), for the Enter/Esc guard. */
     const overAt = useRef(-Infinity);
+    /** The best when this run began, so the score card can tell a NEW best from a good run. */
+    const bestAtStart = useRef(0);
+    const wasPlaying = useRef(false);
+    const [newBest, setNewBest] = useState(false);
     const fired = useRef(false);
     const latest = useRef(onSurfaced);
     const latestIdle = useRef(onIdle);
@@ -218,6 +225,11 @@ export const AppLoadingScreen: React.FC<Props> = ({ phase = 'loading', onSurface
             if (m.type === 'ok') setGl('ok');
             else if (m.type === 'nogl') fail();
             else if (m.type === 'game') {
+                // Every point counts (the best is live in the worker), and it is the ACCOUNT's best too.
+                if (m.score > 0 && m.mode !== 'idle') recordRun(signedInUserId(), m.score, m.runMs ?? 0);
+                if (m.mode === 'playing' && !wasPlaying.current) { bestAtStart.current = currentBest(); setNewBest(false); }
+                wasPlaying.current = m.mode === 'playing';
+                if (m.mode === 'over') setNewBest(m.score > 0 && m.score > bestAtStart.current);
                 sessionBest = saveLoadingGameBest(Math.max(currentBest(), m.best));
                 if (m.mode === 'over') overAt.current = now();
                 setGame(m.mode);
@@ -412,6 +424,9 @@ export const AppLoadingScreen: React.FC<Props> = ({ phase = 'loading', onSurface
                 app is ready (then Enter goes in). Never continues on its own. */}
             {playable && game === 'over' && !leaving && (
                 <div className="lo-over" aria-hidden="true">
+                    {newBest && (
+                        <div className="lo-newbest" role="status" data-testid="lo-new-best">New best!</div>
+                    )}
                     <div className="lo-over-title">
                         Score {score.now} <span className="lo-sep">·</span> Best {score.best}
                     </div>

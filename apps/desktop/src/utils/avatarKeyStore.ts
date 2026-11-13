@@ -1,4 +1,5 @@
 import secureLocalStore from './secureLocalStore';
+import { isValidAvatarKeyRecord } from './avatarKeyValidation';
 
 // Fallback path (window.electronAPI unavailable) used to write avatar keys to
 // raw, PLAINTEXT localStorage — a real key-at-rest exposure, and one the
@@ -11,10 +12,18 @@ import secureLocalStore from './secureLocalStore';
 const FALLBACK_KEY_PREFIX = 'avatar_key_fallback_';
 
 export async function saveAvatarKey(attachmentId: string, keyB64: string, nonceB64: string): Promise<boolean> {
+    // Peers choose these values (profile_update / group_update): a malformed
+    // record never reaches the IPC or the fallback store. Resolves false; the
+    // avatar still renders from the authorised /attachments/:id/key fetch.
+    if (!isValidAvatarKeyRecord(attachmentId, keyB64, nonceB64)) {
+        console.warn('Ignoring a malformed avatar key record');
+        return false;
+    }
     try {
         if (window.electronAPI?.setAvatarKey) {
-            await window.electronAPI.setAvatarKey(attachmentId, keyB64, nonceB64);
-            return true;
+            // false = main refused it (entry cap). Do NOT fall through to the
+            // fallback store, which would sidestep the cap.
+            return (await window.electronAPI.setAvatarKey(attachmentId, keyB64, nonceB64)) !== false;
         }
     } catch (err) {
         console.warn('Failed to save avatar key via electron API, falling back to secureLocalStore', err);

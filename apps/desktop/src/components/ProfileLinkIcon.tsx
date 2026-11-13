@@ -1,6 +1,6 @@
 import React from 'react';
 import { Github, Twitch, Youtube, Instagram, Gamepad2 } from 'lucide-react';
-import type { LinkPlatform } from '../utils/profileLinks';
+import type { IconPlatform } from '../utils/profileLinks';
 
 /**
  * Platform glyphs for profile links. lucide has Github / Twitch / Youtube /
@@ -12,7 +12,7 @@ const SVG_PROPS = {
     strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const, 'aria-hidden': true, focusable: false,
 };
 
-export const ProfileLinkIcon: React.FC<{ platform: LinkPlatform; size?: number }> = ({ platform, size = 14 }) => {
+export const ProfileLinkIcon: React.FC<{ platform: IconPlatform; size?: number }> = ({ platform, size = 14 }) => {
     const common = { width: size, height: size, style: { flex: 'none' as const } };
     switch (platform) {
         case 'github': return <Github {...common} aria-hidden="true" />;

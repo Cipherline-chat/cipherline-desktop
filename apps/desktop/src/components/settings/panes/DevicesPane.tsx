@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useAuth } from '../../../contexts/AuthContext';
-import { Laptop, Monitor, Smartphone, RefreshCw, AlertTriangle } from 'lucide-react';
-import { ClButton, ClSkeleton } from '../../cl';
+import { Laptop, Monitor, Smartphone, RefreshCw, AlertTriangle, Lock } from 'lucide-react';
+import { ClButton, ClConfirm, ClSkeleton } from '../../cl';
 import axios from 'axios';
 import { API_BASE } from '../../../constants';
 import { apiUrl } from '../../../utils/apiPath';
@@ -10,6 +10,8 @@ import { useOwnDevicePresence } from '../../../hooks/useOwnDevicePresence';
 import { PhoneLinkPanel } from '../../link/PhoneLinkPanel';
 import { DeviceApprovalModal, DeviceRemovedNotice } from '../../DeviceApprovalModal';
 import { ChangePasswordModal } from '../../auth/ChangePasswordModal';
+import { TotpSettingsCard } from '../../auth/TotpSettingsCard';
+import RecoveryKeyCard from '../../RecoveryKeyCard';
 import {
     deviceApprovalBus, denyPendingDevice, describeApprovalError, fetchPendingRequests, formatCountdown, pruneExpired,
     platformLabel, removePending, secondsUntil, upsertPending, type PendingDeviceRequest,
@@ -18,7 +20,11 @@ import { formatLastActive, staleBadgeLabel, staleTierOf, type StaleTier } from '
 import '../../../styles/stale-devices.css';
 
 /**
- * Twilight · Devices — Descent redesign (phase 2).
+ * Twilight · Security & devices — Descent redesign (phase 2).
+ * Account security (2FA, recovery key, password) sits above the device list:
+ * both answer "who and what can get into this account". It used to be a
+ * Security tab under Profile.
+
  * Icon-tile rows with mono device ids + relative last-seen, skeletons while
  * loading (kit rule: never spinners for content), rows stagger in on load.
  */
@@ -77,6 +83,10 @@ export const DevicesPane: React.FC = () => {
     const [devicesError, setDevicesError] = useState('');
     const [revokingId, setRevokingId] = useState<string | null>(null);
     const [revokingOthers, setRevokingOthers] = useState(false);
+    // Confirmation prompts (ClConfirm). Native window.confirm is gone: it is an OS
+    // dialog that breaks Electron window-focus hooks and ignores the app's look.
+    const [confirmRevokeId, setConfirmRevokeId] = useState<string | null>(null);
+    const [confirmRevokeOthers, setConfirmRevokeOthers] = useState(false);
     // Continuity — GET /v1/devices/presence, seeded at boot and on every WS
     // reconnect (never polled — see the hook's own doc comment). A SEPARATE
     // fetch from the device LIST above (GET /v1/devices, used for the
@@ -149,7 +159,7 @@ export const DevicesPane: React.FC = () => {
 
     const handleRevokeDevice = async (targetId: string) => {
         if (!token || !myDeviceId) return;
-        if (!window.confirm('Remove this device? It will be signed out immediately and any pending messages for it will be deleted.')) return;
+        setConfirmRevokeId(null);
         setRevokingId(targetId);
         try {
             await axios.post(apiUrl`/devices/${targetId}/revoke`, {}, {
@@ -170,7 +180,7 @@ export const DevicesPane: React.FC = () => {
     // only; this was the one bulk action missing here.
     const handleRevokeOthers = async () => {
         if (!token || !myDeviceId) return;
-        if (!window.confirm('Sign out every other device on your account? This device stays signed in.')) return;
+        setConfirmRevokeOthers(false);
         setRevokingOthers(true);
         try {
             const res = await axios.post<{ ok: boolean; revoked: number; failed: number }>(
@@ -193,6 +203,25 @@ export const DevicesPane: React.FC = () => {
 
     return (
         <>
+            <div className="sd-card" data-testid="security-card">
+                <h3>Account security</h3>
+                <p className="sd-sub">Second factors and the keys that guard your account.</p>
+                <div className="flex flex-col gap-3">
+                    <TotpSettingsCard bare />
+                    <RecoveryKeyCard />
+                    <div className="sd-secrow" style={{ paddingBottom: 0 }}>
+                        <span className="sd-sic"><Lock size={16} /></span>
+                        <div className="sd-smeta">
+                            <b>Change password</b>
+                            <span>You will be signed out of all other sessions.</span>
+                        </div>
+                        <ClButton size="sm" variant="ghost" onClick={() => setChangePw(true)}>
+                            Change…
+                        </ClButton>
+                    </div>
+                </div>
+            </div>
+
             <div className="sd-card">
                 <h3>Your devices</h3>
                 <p className="sd-sub">Each device holds its own keys. Removing one signs it out instantly and deletes any messages still queued for it — nothing to “sync back.”</p>
@@ -303,7 +332,7 @@ export const DevicesPane: React.FC = () => {
                                                 variant="ghost"
                                                 size="sm"
                                                 disabled={revokingId === d.device_id}
-                                                onClick={() => handleRevokeDevice(d.device_id)}
+                                                onClick={() => setConfirmRevokeId(d.device_id)}
                                             >
                                                 {revokingId === d.device_id ? 'Removing…' : 'Remove'}
                                             </ClButton>
@@ -326,7 +355,7 @@ export const DevicesPane: React.FC = () => {
                                 variant="danger"
                                 size="sm"
                                 disabled={revokingOthers}
-                                onClick={handleRevokeOthers}
+                                onClick={() => setConfirmRevokeOthers(true)}
                             >
                                 {revokingOthers ? 'Signing out…' : 'Sign out others'}
                             </ClButton>
@@ -347,6 +376,24 @@ export const DevicesPane: React.FC = () => {
             {notMe && !changePw && (
                 <DeviceRemovedNotice deviceName={notMe.device_name} onLater={() => setNotMe(null)} onChangePassword={() => setChangePw(true)} />
             )}
+            <ClConfirm
+                open={confirmRevokeId !== null}
+                onClose={() => setConfirmRevokeId(null)}
+                onConfirm={() => { if (confirmRevokeId) void handleRevokeDevice(confirmRevokeId); }}
+                danger
+                title="Remove this device?"
+                message="It will be signed out immediately and any pending messages for it will be deleted."
+                confirmLabel="Remove device"
+            />
+            <ClConfirm
+                open={confirmRevokeOthers}
+                onClose={() => setConfirmRevokeOthers(false)}
+                onConfirm={() => { void handleRevokeOthers(); }}
+                danger
+                title="Sign out every other device?"
+                message="Every other device on your account is signed out. This device stays signed in."
+                confirmLabel="Sign out others"
+            />
             <ChangePasswordModal open={changePw} onClose={() => { setChangePw(false); setNotMe(null); }} />
 
             {/* docs/QR-LINKING.md, reverse flow: THIS desktop shows the QR, a

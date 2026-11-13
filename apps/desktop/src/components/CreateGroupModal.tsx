@@ -187,6 +187,7 @@ export const CreateGroupModal: React.FC<CreateGroupModalProps> = ({ onClose, onG
         // it later. Failure here is non-fatal: the group is real and the members
         // are in it, so losing the create flow over a flaky upload would be
         // worse than a group that starts without a photo (settable afterward).
+        let groupAvatar: string | undefined;
         if (avatarBlob && conversationId) {
             try {
                 const { attachmentId, keyB64, nonceB64 } = await uploadEncryptedFile(
@@ -200,6 +201,7 @@ export const CreateGroupModal: React.FC<CreateGroupModalProps> = ({ onClose, onG
                 await axios.patch(apiUrl`/conversations/${conversationId}`, {
                     avatar_attachment: attachmentId,
                 }, { headers: { Authorization: `Bearer ${token}` } });
+                groupAvatar = attachmentId;
             } catch {
                 toast.push({
                     kind: 'error',
@@ -209,10 +211,14 @@ export const CreateGroupModal: React.FC<CreateGroupModalProps> = ({ onClose, onG
             }
         }
 
+        // The photo goes along: the server's group:updated broadcast for it landed
+        // before this chat was open, so nothing else would tell the header or the
+        // right-hand panel until the chat was reopened.
         onGroupCreated({
             id: conversationId,
             title: groupName.trim(),
-            type: 'group'
+            type: 'group',
+            avatar_url: groupAvatar,
         });
         handleClose();
     };

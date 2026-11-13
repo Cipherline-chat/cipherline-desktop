@@ -20,6 +20,8 @@ export { computeReorderDropIndex, applyReorderDrop, DRAG_THRESHOLD_PX } from './
 export { ClModal } from './ClModal';
 export { ClImageCropper } from './ClImageCropper';
 export { ClConfirm } from './ClConfirm';
+export { ClSlideConfirm } from './ClSlideConfirm';
+export type { ClSlideConfirmProps } from './ClSlideConfirm';
 export { ClRadioGroup } from './ClRadioGroup';
 export type { ClRadioOption } from './ClRadioGroup';
 export { ClPill, ClRole, ClProgress, ClSkeleton, ClAvatar } from './ClMisc';

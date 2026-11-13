@@ -1,0 +1,386 @@
+{
+  "assertions": [
+    {
+      "name": "addon exports listApps",
+      "ok": true,
+      "detail": "getForegroundInfo, getGpuSchedulingPriority, getPidFromSourceId, getScreenRectFromDeviceIndex, getWindowExe, getWindowInfo, hdrCaptureRelease, hdrCaptureStart, hdrCaptureStats, hdrCaptureStop, hdrGetDisplays, isSupported, listApps, placeOverlayAbove, setGpuSchedulingPriority, setProcessPowerThrottling, setTimerResolution, startCapture, stopCapture"
+    },
+    {
+      "name": "isSupported() is true with a PipeWire daemon, a session manager and a sink",
+      "ok": true
+    },
+    {
+      "name": "S1  the list shows A (paplay, program pacat) and B (pw-cat)",
+      "ok": true,
+      "detail": "listed 2 application(s)"
+    },
+    {
+      "name": "S1  the list does NOT show \"self\" (a child of the excluded pid), by name or program",
+      "ok": true,
+      "detail": "raw=2 listed=2"
+    },
+    {
+      "name": "S1  exactly the two foreign applications, once each (de-duplicated)",
+      "ok": true,
+      "detail": "[\"pacat\",\"pw-cat\"]"
+    },
+    {
+      "name": "S1  what the renderer gets is {handle, name, binary} - no key, no pid",
+      "ok": true,
+      "detail": "[\"handle\",\"name\",\"binary\"]"
+    },
+    {
+      "name": "S1  the raw addon list has a stream count per application",
+      "ok": true,
+      "detail": "[1,1]"
+    },
+    {
+      "name": "S1  the same app keeps the same handle on the next list",
+      "ok": true
+    },
+    {
+      "name": "S2 include A  the start is authorized (issued handle + live window share grant)",
+      "ok": true,
+      "detail": "{\"ok\":true}"
+    },
+    {
+      "name": "S2 include A  440 Hz (pacat) is captured",
+      "ok": true,
+      "detail": "440=-12.4 1000=-119.4 2000=-180 dBFS"
+    },
+    {
+      "name": "S2 include A  1000 Hz (B) is absent",
+      "ok": true,
+      "detail": "440=-12.4 1000=-119.4 2000=-180 dBFS"
+    },
+    {
+      "name": "S2 include A  2000 Hz (self) is absent",
+      "ok": true,
+      "detail": "440=-12.4 1000=-119.4 2000=-180 dBFS"
+    },
+    {
+      "name": "S2 include A  stopCapture() removes our node and its links",
+      "ok": true,
+      "detail": "pw-dump has no cipherline-share-audio after stop"
+    },
+    {
+      "name": "S3 include B  the start is authorized (issued handle + live window share grant)",
+      "ok": true,
+      "detail": "{\"ok\":true}"
+    },
+    {
+      "name": "S3 include B  1000 Hz (pw-cat) is captured",
+      "ok": true,
+      "detail": "440=-180 1000=-12.7 2000=-180 dBFS"
+    },
+    {
+      "name": "S3 include B  440 Hz (A) is absent",
+      "ok": true,
+      "detail": "440=-180 1000=-12.7 2000=-180 dBFS"
+    },
+    {
+      "name": "S3 include B  2000 Hz (self) is absent",
+      "ok": true,
+      "detail": "440=-180 1000=-12.7 2000=-180 dBFS"
+    },
+    {
+      "name": "S3 include B  stopCapture() removes our node and its links",
+      "ok": true,
+      "detail": "pw-dump has no cipherline-share-audio after stop"
+    },
+    {
+      "name": "S4  start authorized",
+      "ok": true
+    },
+    {
+      "name": "S4  before the restart: A (440 Hz) is captured",
+      "ok": true,
+      "detail": "440=-12.4 1000=-119.4 2000=-180 dBFS"
+    },
+    {
+      "name": "S4  A's NEW stream after the restart is re-linked: 440 Hz is back",
+      "ok": true,
+      "detail": "440=-12.4 1000=-119.4 2000=-180 dBFS"
+    },
+    {
+      "name": "S4  B and self stay out, before and after",
+      "ok": true,
+      "detail": "440=-12.4 1000=-119.4 2000=-180 dBFS | 440=-12.4 1000=-119.4 2000=-180 dBFS"
+    },
+    {
+      "name": "S4  a restart that is quick is NOT reported as the app quitting",
+      "ok": true,
+      "detail": "[]"
+    },
+    {
+      "name": "S5  a handle for an app that has gone quiet still starts a capture",
+      "ok": true,
+      "detail": "{\"ok\":true,\"key\":\"pacat|paplay\"}"
+    },
+    {
+      "name": "S5  a stream that appears AFTER the capture started is picked up (440 Hz)",
+      "ok": true,
+      "detail": "440=-12.4 1000=-119.4 2000=-180 dBFS"
+    },
+    {
+      "name": "S5  while another app (B) plays, it stays out (1000 Hz absent)",
+      "ok": true,
+      "detail": "440=-12.4 1000=-119.4 2000=-180 dBFS"
+    },
+    {
+      "name": "S6  the app quitting is reported as { processExited } within ~4 s",
+      "ok": true,
+      "detail": "2001 ms after the kill"
+    },
+    {
+      "name": "S6  B (still playing) does not keep A alive",
+      "ok": true
+    },
+    {
+      "name": "S7  asking for our own player's key captures nothing of it (2000 Hz absent)",
+      "ok": true,
+      "detail": "440=-180 1000=-180 2000=-180 dBFS"
+    },
+    {
+      "name": "S7  NEGATIVE CONTROL: the same key with another \"own\" pid DOES capture 2000 Hz",
+      "ok": true,
+      "detail": "440=-180 1000=-180 2000=-12.7 dBFS"
+    },
+    {
+      "name": "S7  a missing or empty key captures nothing",
+      "ok": true,
+      "detail": "chunks=0"
+    },
+    {
+      "name": "S8  forged: a handle main did not issue is refused",
+      "ok": true,
+      "detail": "{\"ok\":false,\"why\":\"bad_handle\"}"
+    },
+    {
+      "name": "S8  rawKey: a handle main did not issue is refused",
+      "ok": true,
+      "detail": "{\"ok\":false,\"why\":\"bad_handle\"}"
+    },
+    {
+      "name": "S8  aPid: a handle main did not issue is refused",
+      "ok": true,
+      "detail": "{\"ok\":false,\"why\":\"bad_handle\"}"
+    },
+    {
+      "name": "S8  aBinaryName: a handle main did not issue is refused",
+      "ok": true,
+      "detail": "{\"ok\":false,\"why\":\"bad_handle\"}"
+    },
+    {
+      "name": "S8  otherWindow: a handle main did not issue is refused",
+      "ok": true,
+      "detail": "{\"ok\":false,\"why\":\"bad_handle\"}"
+    },
+    {
+      "name": "S8  no share grant: refused (consent)",
+      "ok": true,
+      "detail": "{\"ok\":false,\"why\":\"consent\",\"detail\":\"no_grant\"}"
+    },
+    {
+      "name": "S8  the real handle + the (unburned) grant still starts",
+      "ok": true,
+      "detail": "{\"ok\":true,\"key\":\"pacat|paplay\"}"
+    },
+    {
+      "name": "S8  and it captures A only",
+      "ok": true,
+      "detail": "440=-12.4 1000=-119.4 2000=-180 dBFS"
+    },
+    {
+      "name": "S8  the same grant cannot start a second capture",
+      "ok": true,
+      "detail": "{\"ok\":false,\"why\":\"consent\",\"detail\":\"no_grant\"}"
+    },
+    {
+      "name": "S8  a SCREEN share's grant does not start an app capture",
+      "ok": true,
+      "detail": "{\"ok\":false,\"why\":\"consent\",\"detail\":\"no_grant\"}"
+    },
+    {
+      "name": "S8  an unstarted handle expires",
+      "ok": true
+    },
+    {
+      "name": "S8  a started handle runs out SHARE_GAP_MS after its share ends",
+      "ok": true
+    },
+    {
+      "name": "S9  the addon's debug output exists (positive control) ...",
+      "ok": true,
+      "detail": "15 lines"
+    },
+    {
+      "name": "S9  ... and carries no application name, program name or pid of anything",
+      "ok": true,
+      "detail": "checked for paplay / pacat / pw-cat / selfplay / bash"
+    },
+    {
+      "name": "S10 listApps() is a short round trip (every call under 1 s)",
+      "ok": true,
+      "detail": "max 26 ms, median 20 ms"
+    },
+    {
+      "name": "S10 25 list + start/stop cycles do not crash or leak descriptors",
+      "ok": true,
+      "detail": "fds 22 -> 22"
+    }
+  ],
+  "scenarios": [
+    {
+      "name": "S1 list",
+      "listed": [
+        {
+          "name": "paplay",
+          "binary": "pacat"
+        },
+        {
+          "name": "pw-cat",
+          "binary": "pw-cat"
+        }
+      ],
+      "listMsFirst": 4
+    },
+    {
+      "name": "S2 include A",
+      "pick": "pacat",
+      "seconds": 3.03,
+      "spec": {
+        "at440": -12.4,
+        "at1000": -119.4,
+        "at2000": -180,
+        "peaks": [
+          {
+            "hz": 440,
+            "dbfs": -12.4
+          }
+        ],
+        "samples": 145440
+      },
+      "events": []
+    },
+    {
+      "name": "S3 include B",
+      "pick": "pw-cat",
+      "seconds": 3.03,
+      "spec": {
+        "at440": -180,
+        "at1000": -12.7,
+        "at2000": -180,
+        "peaks": [
+          {
+            "hz": 1000,
+            "dbfs": -12.7
+          }
+        ],
+        "samples": 145440
+      },
+      "events": []
+    },
+    {
+      "name": "S4 restart",
+      "before": {
+        "at440": -12.4,
+        "at1000": -119.4,
+        "at2000": -180,
+        "peaks": [
+          {
+            "hz": 440,
+            "dbfs": -12.4
+          }
+        ],
+        "samples": 102240
+      },
+      "after": {
+        "at440": -12.4,
+        "at1000": -119.4,
+        "at2000": -180,
+        "peaks": [
+          {
+            "hz": 440,
+            "dbfs": -12.4
+          }
+        ],
+        "samples": 106560
+      },
+      "events": []
+    },
+    {
+      "name": "S5 starts later",
+      "spec": {
+        "at440": -12.4,
+        "at1000": -119.4,
+        "at2000": -180,
+        "peaks": [
+          {
+            "hz": 440,
+            "dbfs": -12.4
+          }
+        ],
+        "samples": 106080
+      },
+      "events": []
+    },
+    {
+      "name": "S6 quit",
+      "events": [
+        {
+          "t": 4004,
+          "processExited": true
+        }
+      ],
+      "killAt": 2003
+    },
+    {
+      "name": "S7 self",
+      "excluded": {
+        "at440": -180,
+        "at1000": -180,
+        "at2000": -180,
+        "peaks": [],
+        "samples": 0
+      },
+      "control": {
+        "at440": -180,
+        "at1000": -180,
+        "at2000": -12.7,
+        "peaks": [
+          {
+            "hz": 2000,
+            "dbfs": -12.7
+          }
+        ],
+        "samples": 118560
+      }
+    },
+    {
+      "name": "S8 rules",
+      "tries": {
+        "forged": "bad_handle",
+        "rawKey": "bad_handle",
+        "aPid": "bad_handle",
+        "aBinaryName": "bad_handle",
+        "otherWindow": "bad_handle",
+        "noGrant": "consent"
+      }
+    },
+    {
+      "name": "S9 debug output",
+      "lines": 15
+    }
+  ],
+  "listMs": [
+    10,
+    26,
+    23,
+    9,
+    19,
+    20,
+    21,
+    15
+  ]
+}

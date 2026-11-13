@@ -1,0 +1,17 @@
+# LiveKit for the e2e lab. Keys come from the LIVEKIT_KEYS env (compose). Mirrors the prod/dev shape: congestion control
+# with allow_pause (prod), no external-IP discovery, node_ip = this container's lab-network address.
+port: 7880
+bind_addresses:
+    - ""
+rtc:
+    tcp_port: 7881
+    udp_port: 7882
+    use_external_ip: false
+    node_ip: 172.29.88.13
+    congestion_control:
+        enabled: true
+        allow_pause: true
+room:
+    auto_create: true
+logging:
+    level: info

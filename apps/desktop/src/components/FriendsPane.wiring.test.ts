@@ -70,14 +70,68 @@ describe('FriendsPane — single source of truth for the friends list', () => {
         expect(src).toContain('{!loaded && (');
     });
 
-    it('Dashboard hands the pane the SAME state the Active Now panel reads', () => {
+    it('Dashboard hands the pane the SAME state the right-hand activity panel reads', () => {
         const paneUse = dashboard.slice(dashboard.indexOf('<FriendsPane'));
         expect(paneUse.slice(0, 900)).toContain('friends={globalFriends}');
-        expect(dashboard).toContain('selectActiveFriends(globalFriends?.accepted || []');
+        // The activity panel (it replaced the old "Active Now" list) reads globalFriends' accepted list.
+        expect(dashboard).toMatch(/const acceptedFriendsForStatus = React\.useMemo\(\(\) =>\s*globalFriends\?\.accepted \?\? \[\]/);
+        const panelUse = dashboard.slice(dashboard.indexOf('<FriendsActivityPanel'));
+        expect(panelUse.slice(0, 600)).toContain('friends={acceptedFriendsForStatus}');
     });
 
     it('every refetch goes through the validated, order-safe sync (no raw setGlobalFriends(res.data))', () => {
         expect(dashboard).toContain('createFriendsSync({');
         expect(dashboard).not.toMatch(/setGlobalFriends\(\s*res\.data\s*\)/);
+    });
+});
+
+/**
+ * Animated avatars play while their row is hovered or focused, the same
+ * contract as the server member list (server/HoverPlayRow.tsx). Lists still
+ * never pass `animate` (profileCustomization.wiring.test.ts) — `playing` is the
+ * transient, row-scoped flag.
+ */
+describe('FriendsPane — animated avatars play on row hover', () => {
+    it('every row is a HoverPlayRow and every avatar takes its `playing` flag', () => {
+        expect(src).toContain("import { HoverPlayRow } from './server/HoverPlayRow';");
+        const avatars = src.match(/<EncryptedAvatar[\s\S]*?\/>/g) ?? [];
+        expect(avatars.length).toBe(4); // accepted, blocked, incoming, outgoing
+        for (const a of avatars) expect(a).toContain('playing={playing}');
+        expect((src.match(/<HoverPlayRow\b/g) ?? []).length).toBe(4);
+    });
+});
+
+/**
+ * Narrow-pane Pending rows. The pane is a flex child whose width depends on the
+ * window AND the rail/sidebar, so the layout answers to CONTAINER queries on
+ * `.fp-root` (not the viewport). Below COMPACT_PANE_PX the Accept/Decline labels
+ * collapse to icons — they stay in the DOM (screen-reader text + a tooltip) so
+ * the buttons never lose their names. Visual proof: harness/friends-narrow-*.
+ */
+describe('FriendsPane — Pending rows at narrow widths', () => {
+    const css = readFileSync(join(__dirname, '..', 'styles', 'friends-pane.css'), 'utf8');
+
+    it('request rows opt into the narrow-pane rules and their timing wraps instead of truncating', () => {
+        expect((src.match(/fp-row fp-row--static fp-row--req /g) ?? []).length).toBe(2); // incoming + sent
+        expect(src).not.toMatch(/className="truncate">\{age/);
+        expect(src).toContain('<span className="fp-subtext">');
+        expect(css).toMatch(/\.fp-subrow\s*\{[^}]*flex-wrap:\s*wrap[^}]*white-space:\s*normal/);
+    });
+
+    it('Accept/Decline keep an accessible name and get a tooltip when their label is hidden', () => {
+        expect(src).toContain('<span className="fp-btn-label">Accept</span>');
+        expect(src).toContain('<span className="fp-btn-label">Decline</span>');
+        expect(src).toContain("tooltip={compact ? 'Accept' : undefined}");
+        expect(src).toContain("tooltip={compact ? 'Decline' : undefined}");
+        // hidden visually, never display:none (that would drop the accessible name)
+        const hidden = css.match(/\.fp-btn-label\s*\{[^}]*\}/)?.[0] ?? '';
+        expect(hidden).toContain('clip: rect(0 0 0 0)');
+        expect(hidden).not.toContain('display: none');
+    });
+
+    it('the JS breakpoint matches the CSS container breakpoint', () => {
+        const px = src.match(/COMPACT_PANE_PX = (\d+)/)?.[1];
+        expect(px).toBeDefined();
+        expect(css).toContain(`@container fp (max-width: ${px}px) {\n  .fp-btn-label`);
     });
 });

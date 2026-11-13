@@ -26,7 +26,7 @@ export interface FriendStatusEntry {
 // update both.
 export const STATUS_CONFIG: Record<UserStatus, { label: string; color: string }> = {
     online:  { label: 'Online',  color: '#4ADE80' },
-    away:    { label: 'Away',    color: '#FFC94D' },
+    away:    { label: 'Idle',    color: '#FFC94D' },
     dnd:     { label: 'Do Not Disturb', color: '#FF6B5E' },
     offline: { label: 'Offline', color: '#5E6B8F' },
 };

@@ -74,6 +74,34 @@ describe('personal emoji sync', () => {
         expect(B.files.get(`emoji-${id}`)).not.toEqual(A.files.get(`emoji-${id}`));
     });
 
+    it('an emoji whose image was lost on this device comes back from the snapshot, even at the same revision', async () => {
+        const net = makeNet();
+        const A = net.device('A', ['A', 'B']), B = net.device('B', ['A', 'B']);
+        await A.lib.add(png(1), 'one');
+        await publishEmojis(A.env, 'A');
+        const first = await pullEmojis(B.env, null);
+        const id = await personalEmojiIdFromBytes(png(1));
+        expect(await B.lib.store.read(id)).toEqual(png(1));
+        // B loses the file but keeps listing it (the 2026-11-03 ghost emojis).
+        B.files.delete(`emoji-${id}`);
+        B.lib.store.resetSession();
+        expect(B.lib.load().entries.map(e => e.id)).toEqual([id]);
+        // Same slot revision as B's last pull: still fetched, and repaired.
+        await pullEmojis(B.env, first.view);
+        expect(await B.lib.store.read(id)).toEqual(png(1));
+    });
+
+    it('a key that no longer opens the file is repaired by the next copy of the bytes', async () => {
+        const net = makeNet();
+        const B = net.device('B', ['B']);
+        const r = await B.lib.add(png(3), 'three');
+        if (!r.ok) throw new Error();
+        B.kv.set(`cipherline_emoji_key_u_${r.entry.id}`, btoa(String.fromCharCode(...new Uint8Array(32))));
+        expect(await B.lib.store.read(r.entry.id)).toBeNull();
+        await B.lib.store.put(r.entry.id, png(3), { mime: 'image/png', animated: false, name: 'three' });
+        expect(await B.lib.store.read(r.entry.id)).toEqual(png(3));
+    });
+
     it('a deletion on one device reaches the other; pulling the same revision again is free', async () => {
         const net = makeNet();
         const A = net.device('A', ['A', 'B']), B = net.device('B', ['A', 'B']);

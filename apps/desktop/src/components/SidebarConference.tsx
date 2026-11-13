@@ -4,13 +4,19 @@ import React from 'react';
 import { setOwnCallMedia, OWN_MEDIA_OFF } from '../utils/keysBeats';
 import ReactDOM from 'react-dom';
 import { AnimatePresence, LayoutGroup, motion } from 'framer-motion';
+import { PresenceMotion } from './call/presenceMotion';
+import { presenceExitContext, CALL_EASE_ENTER, CALL_EASE_EXIT, CALL_EASE_GLIDE, CALL_GLIDE_S } from './call/presenceVariants';
+import { callPresenceTracker, presenceNow } from '../utils/callPresenceLifecycle';
+import { usePrefersReducedMotion } from '../hooks/usePrefersReducedMotion';
 import { useParticipants, useLocalParticipant, useRoomContext } from '@livekit/components-react';
 import { selfCallIntent, deriveSelfIntent } from '../utils/selfCallIntent';
+import { setLocalServerDeafened } from '../utils/localServerDeafen';
 import { Track, RoomEvent, ParticipantEvent, TrackEvent, RemoteParticipant, RemoteTrackPublication, LocalAudioTrack, LocalVideoTrack, ConnectionState } from 'livekit-client';
 import { PCM_RING_WORKLET_SOURCE } from '../utils/pcmRingWorkletSource';
-import { Mic, WifiOff, VideoOff } from 'lucide-react';
+import { Mic, WifiOff, VideoOff, PenOff } from 'lucide-react';
 import { ClButton } from './cl';
 import * as voiceProcessorManager from '../utils/voiceProcessorManager';
+import { liveProcessorSettingsKey } from '../utils/voiceChain';
 import { CipherlineCameraProcessor, isCameraProcessingNeeded } from '../utils/cameraProcessor';
 import type { VoiceSettingsHook } from '../hooks/useVoiceSettings';
 
@@ -18,6 +24,7 @@ import type { ScreenShareOptions } from './ScreenSharePickerModal';
 import {
     resolveSSResolution,
     computeSSBitrate,
+    senderCaptureSize,
     applyScreenShareSenderParams,
     asScreenShareCodec,
     buildScreenSharePublishOptions,
@@ -36,41 +43,86 @@ import {
     type SenderCreatedSource,
     type ScreenShareCodec,
 } from '../utils/screenShare';
-import { ShareSoftwareGuard, softwareShareNotice, type ShareSoftwareContext } from '../utils/shareSoftwareGuard';
+import { clampShareFps, maxShareFps, shareHasLowerLayer } from '../utils/screenShare';
+import {
+    EncoderOverloadWatch, suggestSetting, suggestionInputs, resolveOption, shortOption, sizeChange, overloadEventDetail, overloadNoteDetail, settingKey,
+    type OverloadVerdict,
+} from '../utils/shareEncoderOverload';
+import { KeepAliveGate, engageKeepAlive, supportsKeepAlive, keepAlivePlatformOk, keepAliveDisabled, type KeepAliveHandle } from '../utils/shareKeepAlive';
+import { starveNotice, fullscreenClassInFront } from '../utils/shareStarveNotice';
+import { secureLocalStore } from '../utils/secureLocalStore';
+import { GameStarveWatch, gameInFront, planStarveOffer, starveEventDetail, type StarveVerdict, type BoostState } from '../utils/shareGameStarve';
+import { getGamingVideoSnapshot, loadGamingVideoMode, setGamingVideoMode, gamingVideoRestartCopy } from '../utils/gamingVideoMode';
+import { canOffer as canOfferGamingBoost, answerOffer as answerGamingBoostOffer, readOfferState as readGamingBoostOffer, writeOfferState as writeGamingBoostOffer } from '../utils/gamingVideoOffer';
+import { ShareTxRing, TxRingGate, shareFpsDip } from '../utils/shareSecondRing';
+import { logShareTxRing } from '../utils/shareFreezeLog';
+import { ShareSoftwareGuard, softwareShareNotice, type ShareSoftwareContext, type EncoderSampleStats } from '../utils/shareSoftwareGuard';
 import { getScreenShareCodecPref, getAllowHevc, getShareLowLayerEnabled } from '../utils/streamDiagnosticsPrefs';
 import {
     startCamera, applyCameraTier, retuneCamera, republishCamera, watchHardwareCamera, chooseCameraCodec,
-    asCameraParticipant, asCameraTrack, recoverStalledCamera, type StartCameraOptions,
+    asCameraParticipant, asCameraTrack, recoverStalledCamera, handleCameraDrift, isCameraRepublishing, asCameraCodec, getCameraPublishState,
+    type StartCameraOptions, type CameraDriftGate,
 } from '../utils/cameraPublish';
+import { describeCameraPreviewError } from '../utils/cameraPreview';
 import { EncoderStallDetector, encoderStallSample, ENCODER_STALL_SAMPLE_MS } from '../utils/cameraEncoderStall';
 import { markPickerRequested, prefetchDesktopSources } from '../utils/desktopSourceCache';
 import { CameraLayeringPolicy, initialLayering, type CameraCodec } from '../utils/cameraQuality';
 import {
-    HEVC_ATTR, HevcPolicy, formatDecodeCaps, hevcCapableCount, roomHevcState, probeHevcDecode, probeHevcEncode,
+    HEVC_ATTR, HevcPolicy, formatDecodeCaps, hevcCapableCount, hevcSwitchReason, liveShareWantsHevc, remoteCapsAtTick, roomHevcState, shareWantsHevc, probeHevcDecode, probeHevcEncode,
     hasHevcFailed, markHevcFailed, hasHevcGpuLost, parseDecodeCaps, type HevcMode,
 } from '../utils/hevcNegotiation';
 import { swapShareCodec, type ShareParticipantLike } from '../utils/shareRepublish';
+import { shareAudioUnavailableReason, windowAudioUnresolvedNotice } from '../utils/sharePlatformSupport';
+import { shareAudioEventDetail, type ShareAudioInput } from '../utils/shareAudioEvent';
 import { installShareLowLayerControl, type ShareTrackLike } from '../utils/shareLowLayer';
 import { ShareBackgroundProbe, subscribeWindowBackground, isWindowBackground } from '../utils/shareBackgroundProbe';
 import { chooseQuickShareSource, pickGameWindow } from '../utils/quickShareTarget';
-import { mintCaptureGrant, grantTokenFor, type CaptureGrant, type PendingShare } from '../utils/captureGrant';
+import { mintCaptureGrant, continueCaptureGrant, grantTokenFor, type CaptureGrant, type PendingShare } from '../utils/captureGrant';
 import { createCropPipeline, supportsCropPipeline, type CropPipeline } from '../utils/shareCrop';
 import { startHdrSharePipeline, parseHdrProbe, fitOutputSize, type HdrSharePipeline } from '../utils/hdrSharePipeline';
-import { sliceRect, layoutChoices, aspectOf, type ShareLayout } from '../utils/shareLayout';
+import { startNativeSharePipeline, startFailureLatchesNative, type NativeSharePipeline } from '../utils/nativeSharePipeline';
+import { overlayFactsFromPortal } from '../utils/screenChoiceMemory';
+import { decideShareBackend } from '../utils/nativeShareSelect';
+import { mergeFpsCeiling, chromiumPathFpsCap, capFrameRate } from '../utils/linuxShareDefaults';
+import { nativeShareLikely } from '../utils/linuxShareCaps';
+import { getNativeShareEnabled, getNativeShareRestoreToken, setNativeShareRestoreToken, nativeRestoreTokenFor } from '../utils/nativeSharePrefs';
+import { e2eeWorkerOf } from '../utils/e2eeSenderCodec';
+import { setNativeShareLive } from '../utils/nativeShareLive';
+import { sliceRect, layoutChoices, aspectOf, isUltrawide, type ShareLayout } from '../utils/shareLayout';
 import { planEncode } from '../utils/shareEncoderLimits';
 import {
-    retuneLiveShare, applyLiveSelection, applyQualityAfterSwap, qualityEventDetails,
+    retuneLiveShare, applyLiveSelection, applyQualityAfterSwap, qualityEventDetails, resolutionChangeNeedsFresh, liveFrameUnchanged, sourceSwapNeedsFresh,
+    isAudioOnlyChange, audioPlusQualityNeedsFresh,
     type LiveShareApplier,
 } from '../utils/shareLiveRetune';
-import { ShareStatsSampler, ShareEncoderWatchdog, decideStallAction, stallToastCopy, type EncoderStall } from '../utils/shareHealth';
-import { fetchForegroundDiag, foregroundLogFields } from '../utils/foregroundInfo';
+import { portalRetuneTouchesCapture, type CaptureAsk } from '../utils/portalCapturePlan';
+import { cameraShareCapPlan, applyCameraShareCap } from '../utils/cameraShareCap';
+import { publishScreenShareSettled, settleCaptureSize, settleEventDetails, fmtSize, waitForFirstFrameSize, type SettledCapture } from '../utils/shareFirstFrame';
+import { shareRepublishSignal, announceShareSwap, type RepublishRun } from '../utils/shareRepublishSignal';
+import { probeShareSource } from '../utils/shareSourceProbe';
 import {
-    FullscreenHintGate, accountHintSeenStore, shareKindOf, FULLSCREEN_HINT_TITLE, FULLSCREEN_HINT_MESSAGE, FULLSCREEN_HINT_ACTION,
-} from '../utils/shareFullscreenHint';
+    captureViaPortal, captureHandshakeMs, shouldProbeNewSource, cancelStopsSwap, canReuseLiveCapture,
+    shouldAcquireBeforeTeardown, canReuseCropCapture, portalCaptureRequest, readCaptureCeiling, portalRestoreListed,
+    PORTAL_FIRST_FRAME_WAIT, portalChooserClosedError,
+} from '../utils/sharePlatformSupport';
+import { newPortalSourceId, isPortalSourceId } from '../utils/portalSource';
+import { useShareHoldIds } from '../hooks/useShareHold';
+import { sharePublications } from '../utils/shareHold';
+import {
+    ShareStatsSampler, ShareEncoderWatchdog, decideStallAction, stallToastCopy, type EncoderStall,
+    diagnoseNoFrames, decideCaptureStallAction, captureStallNotice, type NoFramesDiagnosis, type StatsLike as ShareStatsLike,
+} from '../utils/shareHealth';
+import { ShareCodecDriftWatch, CodecDriftWatch, codecDriftNotice, DRIFT_REPUBLISH_COOLDOWN_MS } from '../utils/shareCodecDrift';
+import { noteLinuxHwEncodeFailure } from '../utils/linuxHwEncode';
+import { fetchForegroundDiag, foregroundLogFields, type ForegroundDiag } from '../utils/foregroundInfo';
 import { logCallEvent } from '../utils/callEventLog';
 import { getCameraQualityTier, getCameraCodecPref, subscribeCameraQualityPrefs, useIncomingVideoMode } from '../utils/cameraQualityPrefs';
-import { chooseDecodedSet, DECODE_CAP } from '../utils/remoteVideoQuality';
-import { parseMainDiagnostics, parseCaptureTiming, setScreenShareSession, updateScreenShareSession } from '../utils/screenShareDiagnostics';
+import { chooseDecodedSet, decodeCapFor } from '../utils/remoteVideoQuality';
+import { parseMainDiagnostics, parseCaptureTiming, setScreenShareSession, updateScreenShareSession, getScreenShareSession, subscribeScreenShareSession } from '../utils/screenShareDiagnostics';
+import { resolveShareRef, claimShareOnce } from '../utils/shareRef';
+import { shouldAutoFocusWatchedShare } from '../utils/shareAutoFocus';
+import { CaptureBoundWatch, captureBoundNotice, shareKindOf } from '../utils/shareCaptureBound';
+import { capKbpsFromEncodings } from '../utils/shareNetStats';
 import { installShareStartBitrate, type StartBitrateParticipant } from '../utils/shareStartBitrate';
 import { ShareStartTracker, describeShareStartError, type ShareStartOutcome } from '../utils/screenShareStartState';
 
@@ -86,7 +138,9 @@ interface ScreenShareSendStats {
     qualityLimitationReason?: string;
     encoderImplementation?: string;
 }
-import { ScreenShare } from 'lucide-react';
+import { ShareNotice } from './ShareNotice';
+import { ShareOverloadOffer, type ShareOverloadOfferProps } from './call/ShareOverloadOffer';
+import { acquireCallOfferSlot, releaseCallOfferSlot, callOfferSlotHolder } from '../utils/performanceOffer';
 import axios from 'axios';
 import { apiUrl } from '../utils/apiPath';
 import { EncryptedAvatar } from './EncryptedAvatar';
@@ -97,6 +151,7 @@ import { AloneEcho } from './call/AloneEcho';
 import { ParticipantCard } from './call/ParticipantCard';
 import { ScreenShareGate } from './call/ScreenShareGate';
 import { withoutIdentity, focusAfterStopWatching, unsubscribeShareTracks } from '../utils/stopWatchingScreenshare';
+import { scheduleWatchPrune, pruneToActive, activeIdSet, WATCH_PRUNE_GRACE_MS } from '../utils/shareWatchPrune';
 import { AudioOnlyStrip } from './call/AudioOnlyStrip';
 import { ControlBar } from './call/ControlBar';
 import { FocusedStreamBanner } from './call/FocusedStreamBanner';
@@ -108,8 +163,12 @@ import { useLocalPublicationSid } from '../hooks/useLocalPublicationSid';
 import { Permissions } from '@cipherline/shared';
 import { annotationStore } from '../utils/annotationStore';
 import { useDesktopAnnotationOverlay } from '../hooks/useDesktopAnnotationOverlay';
-import { isDesktopOverlayCaptured, onDesktopOverlayCapturedChange } from '../utils/desktopAnnotationOverlay';
-import { capturedAttributePatch } from '../utils/annotationOverlayCapture';
+import { isDesktopOverlayCaptured, onDesktopOverlayCapturedChange, getOverlayStatus, onOverlayStatusChange, answerScreenChoice, forgetScreenAnswer } from '../utils/desktopAnnotationOverlay';
+import { capturedAttributePatch, overlayStateAttributePatch } from '../utils/annotationOverlayCapture';
+import { ScreenChoiceDialog } from './call/ScreenChoiceDialog';
+import { useSharerOverlayNote } from '../hooks/useSharerOverlayNote';
+import { useLinuxShareIntroTrigger } from '../utils/linuxShareIntro';
+import { useQueuedCallOfferSlot } from '../hooks/useCallNoticeLayer';
 import { parseParticipantMetadata, type ParticipantMeta } from '../utils/participantMetadata';
 import {
     writeWatchedShares,
@@ -141,13 +200,14 @@ import {
 } from '../utils/micDeviceSync';
 import { useNotificationPrefs } from '../contexts/NotificationContext';
 import { playSound } from '../utils/notificationSounds';
-import { useWindowFocus } from '../hooks/useWindowFocus';
+import { LocalScreenShareTile } from './call/LocalScreenShareTile';
 import { useToast } from '../contexts/ToastContext';
 import { reapplyOutputDevice, setOutputDeviceFallbackHandler } from '../utils/audioOutput';
 import type { DeviceHint } from '../utils/deviceResolve';
-import { SilenceWatchdog } from '../utils/audioSilenceWatchdog';
+import { SilenceWatchdog, type SilenceWatchdogState } from '../utils/audioSilenceWatchdog';
+import { readOutboundAudio, type WireReading } from '../utils/outboundAudioStats';
 import { reportBeta } from '../utils/betaDiagnostics/reporter';
-import { getCurrentPipelineDbfs } from '../utils/micLevelRegistry';
+import { takePipelinePeak } from '../utils/micLevelRegistry';
 import { flatRecordEqual } from '../utils/flatRecordEqual';
 import { ROSTER_ONLY } from '../utils/callRosterEvents';
 import { setCallParticipantSpeaking, clearCallSpeaking } from '../utils/callSpeakingStore';
@@ -253,11 +313,11 @@ const tileItemVariants = {
     initial: { opacity: 0 },
     animate: {
         opacity: 1,
-        transition: { duration: 0.2, ease: [0.22, 1, 0.36, 1] as const },
+        transition: { duration: 0.2, ease: CALL_EASE_ENTER },
     },
     exit: {
         opacity: 0,
-        transition: { duration: 0.14, ease: [0.4, 0, 1, 1] as const },
+        transition: { duration: 0.14, ease: CALL_EASE_EXIT },
     },
 };
 /**
@@ -276,8 +336,11 @@ const tileItemVariants = {
  * structure: the old exit moved the panel 178 px in one frame; this one eases
  * it over ~0.32 s (20 frames) with no step at the end.
  */
-const SIDEBAR_GLIDE_S = 0.32;
-const SIDEBAR_GLIDE_EASE = [0.4, 0, 0.2, 1] as const;
+const OVERLOAD_OFFER_SLOT = 'share-overload';
+/** The sharer's "drawings won't show on your screen" card (utils/sharerOverlayNotice.ts). */
+const SHARER_OVERLAY_SLOT = 'sharer-overlay-off';
+const SIDEBAR_GLIDE_S = CALL_GLIDE_S;
+const SIDEBAR_GLIDE_EASE = CALL_EASE_GLIDE;
 /**
  * `gapPx` is the flex `gap` of the column the tile sits in. The gap beside a
  * tile is not part of the tile, so collapsing only its height left that gap
@@ -320,33 +383,6 @@ const sidebarPillVariants = {
     exit:    { opacity: 0, transition: { duration: 0.16, ease: [0.4, 0, 1, 1] as const } },
 };
 
-// Self-view of your own screenshare — unlike everyone else's screenshare tile,
-// which other participants need decoded to actually watch, nothing in the call
-// depends on this one being rendered. It exists purely so you can confirm
-// what's going out. Swapping in a static placeholder while Cipherline isn't
-// the focused app unmounts the VideoTile underneath, which detaches the track
-// from its <video> element and stops the local decode/composite work — free
-// savings with no effect on what's actually being sent to the room.
-//
-// The desktop annotation overlay is NOT tied to this tile (it used to be).
-// This tile is unmounted whenever you focus your own share — the focused
-// stage draws a different tile — and whenever its portal target is gone, so
-// the overlay vanished exactly while the streamer was looking at the strokes.
-// It is held by SidebarConference for the whole share instead.
-const LocalScreenShareTile = (props: React.ComponentProps<typeof VideoTile>) => {
-    const appFocused = useWindowFocus();
-    if (!appFocused) {
-        return (
-            <div className="relative rounded-xl overflow-hidden bg-cl-abyss w-full shrink-0 min-h-[80px] aspect-video ring-inset ring-1 ring-white/5 flex items-center justify-center">
-                <span className="text-[11px] font-semibold text-cl-text/35 text-center px-4 leading-snug">
-                    Preview paused — Cipherline isn&apos;t focused
-                </span>
-            </div>
-        );
-    }
-    return <VideoTile {...props} />;
-};
-
 /** GPU vendors from main (for the NVIDIA rule in decideCameraCodec), time-boxed. */
 function cameraGpuVendors(): Promise<readonly { vendor: string }[] | null> {
     const ask = window.electronAPI?.getScreenShareDiagnostics?.('')
@@ -387,6 +423,22 @@ export const SidebarConference = ({
     const participants = useParticipants(ROSTER_ONLY);
     const { localParticipant } = useLocalParticipant();
     const room = useRoomContext();
+    // ── Join / leave animation lifecycle (components/call/presenceMotion) ───
+    // Fed the real roster after the fact; it never gates or delays call logic.
+    // Held per call session outside this component because this component
+    // remounts when its portal root moves — the tracker remembers who has
+    // already been animated in, so a remount / layout switch never replays a
+    // join. Your own tile gets the join animation when this view is the first
+    // thing you see of the call (not after the instant-join placeholder, which
+    // already showed you arriving).
+    const presenceTracker = callPresenceTracker(sessionId || room?.name || 'call', {
+        selfJoinIds: !instantEnter && localParticipant ? [localParticipant.identity] : [],
+    });
+    const presenceReducedMotion = usePrefersReducedMotion();
+    presenceTracker.setReducedMotion(presenceReducedMotion);
+    presenceTracker.observe(participants.map(p => p.identity), presenceNow());
+    // AnimatePresence `custom` for exiting tiles: was this an actual leave?
+    const presenceExit = React.useMemo(() => presenceExitContext(presenceTracker), [presenceTracker]);
     const callCtx = useCallContextSafe();
     // Setters only — see useCallTelemetrySettersSafe: subscribing to the
     // telemetry VALUE re-rendered this whole tree after each of its own pushes.
@@ -422,6 +474,7 @@ export const SidebarConference = ({
     const setHiddenVideoIdsCtx      = callCtx?.setHiddenVideoIds;
     const setHiddenScreenShareIdsCtx = callCtx?.setHiddenScreenShareIds;
     const setWatchedScreenShareIdsCtx = callCtx?.setWatchedScreenShareIds;
+    const setFocusedStreamCtx = callCtx?.setFocusedStream;
     const registerLocalToggles      = callCtx?.registerLocalToggles;
 
     // Push live stats into CallContext so HuddleButton (outside LiveKit tree) can read them.
@@ -695,26 +748,53 @@ export const SidebarConference = ({
     // The one failure mode LiveKit's own connection-state machinery
     // structurally can't see (see audioSilenceWatchdog.ts's header comment):
     // ICE/DTLS can be perfectly healthy while the actual capture/encode path
-    // is dead. Polls at ~1s — deliberately decoupled from voiceProcessor's
-    // own 20Hz level-poll timer (see micLevelRegistry.ts for why) and from
-    // LiveKit's own audioLevel updates, which is why this is a plain
-    // interval rather than an event subscription.
+    // is dead. Judged against the mic SENDER's own getStats() — bytes on the
+    // wire and the energy fed to the encoder — NOT against
+    // localParticipant.audioLevel, which is the SFU's thresholded speaker
+    // report and read 0 while a Mac user's sender was putting ~60 kbps of live
+    // audio on the wire (2026-11-02). Polled at ~1s, deliberately decoupled
+    // from voiceProcessor's own level-poll timer (see micLevelRegistry.ts).
     const silenceWatchdogRef = React.useRef(new SilenceWatchdog());
-    const [isPipelineSilent, setIsPipelineSilent] = React.useState(false);
+    const [silenceState, setSilenceState] = React.useState<SilenceWatchdogState>({ tripped: false, cause: null });
+    const isPipelineSilent = silenceState.tripped;
+    const silenceCause = silenceState.cause;
+    const isReconnectingRef = React.useRef(isReconnecting);
+    React.useEffect(() => { isReconnectingRef.current = isReconnecting; }, [isReconnecting]);
     React.useEffect(() => {
-        const interval = setInterval(() => {
-            const tripped = silenceWatchdogRef.current.update(
-                {
-                    pipelineDbfs: getCurrentPipelineDbfs(),
-                    outboundLevel: localParticipant?.audioLevel ?? 0,
-                    micEnabled: !!localParticipant?.isMicrophoneEnabled,
-                },
-                Date.now(),
-            );
-            setIsPipelineSilent(tripped);
-        }, 1000);
-        return () => clearInterval(interval);
-    }, [localParticipant]);
+        let busy = false;
+        let alive = true;
+        const tick = async () => {
+            if (busy) return;
+            busy = true;
+            try {
+                const micEnabled = !!localParticipant?.isMicrophoneEnabled;
+                let wire: WireReading | null = null;
+                if (micEnabled) {
+                    try {
+                        wire = readOutboundAudio(await localParticipant?.getTrackPublication(Track.Source.Microphone)?.track?.getRTCStatsReport());
+                    } catch { wire = null; /* closing / no sender yet: no verdict this tick */ }
+                }
+                if (!alive) return;
+                const now = Date.now();
+                const peak = takePipelinePeak(now);
+                const next = silenceWatchdogRef.current.update(
+                    {
+                        pipelineDbfs: peak.dbfs,
+                        pipelineAgeMs: peak.ageMs,
+                        micEnabled,
+                        transportUp: room?.state === ConnectionState.Connected && !isReconnectingRef.current,
+                        wire,
+                    },
+                    now,
+                );
+                setSilenceState(prev => (prev.tripped === next.tripped && prev.cause === next.cause ? prev : next));
+            } finally {
+                busy = false;
+            }
+        };
+        const interval = setInterval(() => { void tick(); }, 1000);
+        return () => { alive = false; clearInterval(interval); };
+    }, [localParticipant, room]);
 
     // Clear on unmount (call ended) — restores unread dot or clean icon, and
     // Keys on Home takes his headset's mic light / ring light / frame down.
@@ -777,7 +857,16 @@ export const SidebarConference = ({
     // shown to the user is never sent — only that it happened).
     React.useEffect(() => { if (micError) reportBeta('mic_failed', { stage: 'in_call' }); }, [micError]);
     React.useEffect(() => { if (cameraError) reportBeta('camera_failed', { stage: 'in_call' }); }, [cameraError]);
-    React.useEffect(() => { if (isPipelineSilent) reportBeta('call_one_way_audio', { direction: 'out' }); }, [isPipelineSilent]);
+    // The watchdog tripped: say which kind (enums and booleans only), and try
+    // the one self-repair that is safe and cheap — a processing AudioContext
+    // that is not running delivers nothing to the published track, so resume it.
+    React.useEffect(() => {
+        if (!isPipelineSilent) return;
+        const cause = silenceCause ?? 'no_rtp';
+        const rec = voiceProcessorManager.getCurrentProcessor()?.recoverContext() ?? { state: 'none', resumed: false };
+        reportBeta('call_one_way_audio', { direction: 'out', cause });
+        logCallEvent('audio_out_stall', { cause, ctx: rec.state, resumed: rec.resumed });
+    }, [isPipelineSilent, silenceCause]);
     /** The published-mic device follower (utils/micDeviceSync.ts). One per Room. */
     const micSyncRef = React.useRef<MicDeviceSync | null>(null);
 
@@ -849,8 +938,6 @@ export const SidebarConference = ({
     const echoCancellation = resolveEchoCancellation(voice?.settings.echoCancellation);
     const echoCancellationRef = React.useRef(echoCancellation);
     React.useEffect(() => { echoCancellationRef.current = echoCancellation; }, [echoCancellation]);
-    const toastRef = React.useRef(toast);
-    React.useEffect(() => { toastRef.current = toast; }, [toast]);
 
     React.useEffect(() => {
         if (!room) return;
@@ -870,12 +957,13 @@ export const SidebarConference = ({
                 // "your mic is dead / wrong" case the user has to act on.
                 setMicError(outcome.ok ? null : describeSwitchFailure(outcome));
             },
+            // No pop-up (owner, 2026-11-11: "this pop up should never appear"). A picked mic that is not
+            // plugged in is ordinary (a headset left at work, per-mic settings made on another mic), the
+            // call already moved to the system default and the mic works, so telling the user every join
+            // was pure noise. The console line stays for debugging; a mic that is genuinely dead still
+            // surfaces through onOutcome / onUnrecoverable below.
             onFellBackToDefault: () => {
-                toastRef.current.push({
-                    kind: 'info',
-                    title: 'Microphone disconnected',
-                    message: 'Your selected microphone is no longer available — using your system default.',
-                });
+                console.info('[Mic] the picked microphone is not connected - using the system default');
             },
             onRecovered: () => {
                 setMicError(null);
@@ -1227,7 +1315,14 @@ export const SidebarConference = ({
     // if they were NOT already muted — matching the self-deafen pattern above.
     const wasMutedBeforeServerMuteRef = React.useRef(false);
     const [localMutedParticipantIds, setLocalMutedParticipantIds] = React.useState<Set<string>>(new Set());
-    const isLocalDeafened = localDeafened || baseLocalDeafened || baseServerDeafened;
+    // SELF deafen only. A moderator's server deafen is deliberately NOT folded in:
+    // it must not switch the mic off (mute and deafen are independent), must not
+    // block push-to-talk, and must not silence screen-share audio - it only stops
+    // other participants' MICROPHONES being played (hooks/useParticipantAudio reads
+    // it from utils/localServerDeafen). `isDeafenedForUi` is the union, for the
+    // deafen icon and the tray.
+    const isLocalDeafened = localDeafened || baseLocalDeafened;
+    const isDeafenedForUi = isLocalDeafened || baseServerDeafened;
 
     // Publish MY mute / deafen (the user's own choice - not push-to-talk, not a
     // moderator's server-mute, not a missing SPEAK permission) so the next call
@@ -1240,17 +1335,24 @@ export const SidebarConference = ({
             selfDeafened: localDeafened || baseLocalDeafened,
             wasMutedBeforeDeafen: wasMutedBeforeDeafenRef.current,
             pushToTalk: !!voice?.settings.pushToTalk,
-            serverForcedMute: localServerMutedAudio || baseServerDeafened,
+            serverForcedMute: localServerMutedAudio,
             canSpeak,
         }));
-    }, [localParticipant, localIsMuted, localDeafened, baseLocalDeafened, voice?.settings.pushToTalk, localServerMutedAudio, baseServerDeafened, canSpeak]);
+    }, [localParticipant, localIsMuted, localDeafened, baseLocalDeafened, voice?.settings.pushToTalk, localServerMutedAudio, canSpeak]);
+
+    // Hand the server-deafen flag to the remote-audio chains (mic only; shares keep
+    // playing). The server wrote it onto our metadata - this holds no decision.
+    React.useEffect(() => {
+        setLocalServerDeafened(baseServerDeafened);
+    }, [baseServerDeafened]);
+    React.useEffect(() => () => setLocalServerDeafened(false), []);
 
     // Push combined tray state whenever any of the four dimensions change.
     // (Declared here, after isLocalDeafened, so the dep array doesn't hit a TDZ.)
     React.useEffect(() => {
         if (!room || !localIdentity) return;
-        window.electronAPI?.traySetCallSpeaking?.(true, localIsSpeaking, localIsMuted, isLocalDeafened);
-    }, [room, localIdentity, localIsSpeaking, localIsMuted, isLocalDeafened]);
+        window.electronAPI?.traySetCallSpeaking?.(true, localIsSpeaking, localIsMuted, isDeafenedForUi);
+    }, [room, localIdentity, localIsSpeaking, localIsMuted, isDeafenedForUi]);
 
     // Keys on Home mirrors your call (utils/keysBeats): three booleans, no
     // audio, no identities. Only the edges cost anything (setOwnCallMedia is a
@@ -1312,16 +1414,11 @@ export const SidebarConference = ({
             // call that simply never had a server-mute doesn't fire this at
             // all) and skip when this effect's own true→false transition
             // wasn't a real lift (covered by the same guard).
+            // No toast / notice: server mute and deafen changes are silent for the
+            // target and everyone else (the red badge on the row or tile is the signal).
             if (!wasMutedBeforeServerMuteRef.current && canPublishMicrophone(localParticipant)) {
                 localParticipant.setMicrophoneEnabled(true).catch(() => {});
             }
-            toast.push({
-                kind: 'info',
-                title: 'Server mute removed',
-                message: wasMutedBeforeServerMuteRef.current
-                    ? 'A moderator removed your server mute. You muted yourself, so your mic stays off until you unmute.'
-                    : 'A moderator removed your server mute.',
-            });
         }
         prevServerMutedAudioRef.current = localServerMutedAudio;
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1394,7 +1491,15 @@ export const SidebarConference = ({
     }, [sessionId, token, participants.length, metadataKey, memberAvatarMap]);
 
     const [subscribedScreenshares, setSubscribedScreenshares] = React.useState<Set<string>>(new Set());
+    // An ultra-wide share opens on the stage when watched (utils/shareAutoFocus.ts). The Watch click only
+    // notes it; the focus is applied below, in the SAME effect that mirrors the watch set into the context,
+    // so FocusedStreamBanner's "unwatched share" backstop sees the watch and the focus together.
+    const pendingAutoFocusRef = React.useRef<string | null>(null);
     const handleSubscribeScreenshare = (identity: string) => {
+        const dims = room?.remoteParticipants.get(identity)?.getTrackPublication(Track.Source.ScreenShare)?.dimensions;
+        if (shouldAutoFocusWatchedShare({ width: dims?.width, height: dims?.height, hasFocus: !!callCtx?.focusedStream })) {
+            pendingAutoFocusRef.current = identity;
+        }
         setSubscribedScreenshares(prev => new Set([...prev, identity]));
     };
 
@@ -1406,7 +1511,12 @@ export const SidebarConference = ({
     useScreenShareAudioSubscriptions(room, subscribedScreenshares);
     React.useEffect(() => {
         setWatchedScreenShareIdsCtx?.(subscribedScreenshares);
-    }, [setWatchedScreenShareIdsCtx, subscribedScreenshares]);
+        const pending = pendingAutoFocusRef.current;
+        if (pending && subscribedScreenshares.has(pending)) {
+            pendingAutoFocusRef.current = null;
+            setFocusedStreamCtx?.({ identity: pending, source: Track.Source.ScreenShare });
+        }
+    }, [setWatchedScreenShareIdsCtx, setFocusedStreamCtx, subscribedScreenshares]);
     // CallProvider outlives the call: never let the next call start with this
     // call's watch set (an identity watching here must not play there).
     React.useEffect(() => () => { setWatchedScreenShareIdsCtx?.(new Set()); }, [setWatchedScreenShareIdsCtx]);
@@ -1521,8 +1631,11 @@ export const SidebarConference = ({
         const pub = p.getTrackPublication(Track.Source.Camera);
         return pub?.isSubscribed && !pub.isMuted;
     });
+    // Someone mid-republish after an announcement is still sharing (utils/shareHold.ts):
+    // their tile stays, and the watch and hide state below is not put on a timer.
+    const heldShareIds = useShareHoldIds();
     const screenShareParticipants = remoteParticipants.filter(p =>
-        p.getTrackPublication(Track.Source.ScreenShare)
+        p.getTrackPublication(Track.Source.ScreenShare) || heldShareIds.has(p.identity)
     );
 
     const activeScreenShareIds = screenShareParticipants.map(sp => sp.identity).sort().join(',');
@@ -1532,24 +1645,18 @@ export const SidebarConference = ({
     // old publication is torn down and a new one is published within a few
     // hundred ms. Without this grace window, every watcher's subscription gets
     // immediately dropped, the "Click to Watch" gate reappears, and they have
-    // to click again — painful mid-call. 1500 ms covers the longest observed
-    // republish gap while still pruning fast enough for genuine stops.
-    React.useEffect(() => {
-        const activeSet = new Set(activeScreenShareIds ? activeScreenShareIds.split(',') : []);
-        // Anyone still in subscribedScreenshares but no longer actively sharing
-        // is a candidate for pruning. Delay the actual prune — if the pub
-        // reappears within the window, the auto-resubscribe effect below
-        // re-takes the subscription seamlessly.
-        const timer = setTimeout(() => {
-            setSubscribedScreenshares(prev => {
-                const next = new Set<string>();
-                prev.forEach(id => { if (activeSet.has(id)) next.add(id); });
-                if (next.size !== prev.size) return next;
-                return prev;
-            });
-        }, 1500);
-        return () => clearTimeout(timer);
-    }, [activeScreenShareIds]);
+    // to click again — painful mid-call. The grace (WATCH_PRUNE_GRACE_MS) must
+    // outlast the SLOWEST republish: 1500 ms covered a source swap, but a fresh
+    // republish (start-check fallback, drift recovery) re-acquires the capture
+    // and takes 2-4 s (report a346d7cf: "I had to click watch 2 times").
+    // Anyone still in subscribedScreenshares but no longer actively sharing is
+    // a candidate for pruning. Delay the actual prune — if the pub reappears
+    // within the window, the auto-resubscribe effect below re-takes the
+    // subscription seamlessly.
+    React.useEffect(
+        () => scheduleWatchPrune(activeScreenShareIds, setSubscribedScreenshares),
+        [activeScreenShareIds],
+    );
 
     // Auto-resubscribe effect: when a screenshare publication (re)appears for
     // someone we were already watching, transparently re-take the subscription
@@ -1563,14 +1670,18 @@ export const SidebarConference = ({
     React.useEffect(() => {
         screenShareParticipants.forEach(p => {
             if (!subscribedScreenshares.has(p.identity)) return;
-            const ssPub = p.getTrackPublication(Track.Source.ScreenShare) as RemoteTrackPublication | undefined;
-            (async () => {
-                try {
-                    if (ssPub && !ssPub.isSubscribed) await ssPub.setSubscribed(true);
-                } catch (e) {
-                    console.warn('[ScreenShare] auto-resubscribe failed', e);
-                }
-            })();
+            // Every share publication, not just getTrackPublication's: during a codec
+            // swap that is the old one, and the new one must already be coming in when
+            // the old one goes.
+            for (const ssPub of sharePublications(p as unknown as { trackPublications: Map<string, RemoteTrackPublication> })) {
+                (async () => {
+                    try {
+                        if (!ssPub.isSubscribed) await ssPub.setSubscribed(true);
+                    } catch (e) {
+                        console.warn('[ScreenShare] auto-resubscribe failed', e);
+                    }
+                })();
+            }
         });
     }, [activeScreenShareIds, subscribedScreenshares, screenShareParticipants]);
 
@@ -1581,26 +1692,24 @@ export const SidebarConference = ({
     // ends their share, the badge has nothing to refer to anymore — but the
     // Set entry would persist until the next time they share, at which point
     // the user would expect a fresh prompt and instead see a stale badge with
-    // no gate. Same 1500 ms grace as subscribedScreenshares so a quick
-    // adjust-source republish doesn't reset the user's hide preference.
+    // no gate. Same grace as subscribedScreenshares so a republish doesn't
+    // reset the user's hide preference.
+    //
+    // Your OWN share counts as active here: `activeScreenShareIds` is remote-only,
+    // so without this "Hide Screen Share" on your own preview would undo itself
+    // ten seconds later. Same flag, same grace: hiding survives your own republish
+    // and is forgotten once you really stop, so the next share shows its preview.
+    const ownActiveShareId = localScreenShare ? localParticipant?.identity : undefined;
     React.useEffect(() => {
-        const activeSet = new Set(activeScreenShareIds ? activeScreenShareIds.split(',') : []);
+        const activeSet = activeIdSet(activeScreenShareIds);
+        if (ownActiveShareId) activeSet.add(ownActiveShareId);
         const timer = setTimeout(() => {
-            setHiddenScreenShareIds(prev => {
-                const next = new Set<string>();
-                prev.forEach(id => { if (activeSet.has(id)) next.add(id); });
-                if (next.size !== prev.size) return next;
-                return prev;
-            });
-        }, 1500);
+            setHiddenScreenShareIds(prev => pruneToActive(prev, activeSet) as Set<string>);
+        }, WATCH_PRUNE_GRACE_MS);
         return () => clearTimeout(timer);
-    }, [activeScreenShareIds]);
+    }, [activeScreenShareIds, ownActiveShareId]);
 
     const [isScreenSharePickerOpen, setIsScreenSharePickerOpen] = React.useState(false);
-    // "Share the game window instead" (utils/shareFullscreenHint.ts): the picker
-    // opens on the Window tab with the game's window pre-selected. Cleared the
-    // moment the picker closes, so an ordinary open is never affected.
-    const [pickerPreset, setPickerPreset] = React.useState<{ exe: string } | null>(null);
     // Pending options during the getDisplayMedia handshake. This ref is cleared as
     // soon as Electron's setDisplayMediaRequestHandler resolves (see line ~620).
     const pendingScreenShareRef = React.useRef<PendingShare | null>(null);
@@ -1621,6 +1730,30 @@ export const SidebarConference = ({
     const mintShareGrant = async (o: ScreenShareOptions): Promise<void> => {
         shareGrantRef.current = await mintCaptureGrant(o.sourceId, o.audio);
     };
+    /**
+     * A restart on the capture that is ALREADY running (Wayland: the live capture is kept, so nothing
+     * resolves and no consent is renewed by a capture): the share's own consent is continued in main for
+     * this source only (capture-consent.continueLive) so the native audio start that follows is trusted,
+     * however long ago the share began. A source main does not see live gets nothing from it and falls
+     * back to an ordinary grant - which is what a new source is: a new consent.
+     */
+    const continueShareGrant = async (o: ScreenShareOptions): Promise<void> => {
+        shareGrantRef.current = (await continueCaptureGrant(o.sourceId, o.audio)) ?? (await mintCaptureGrant(o.sourceId, o.audio));
+    };
+    // Is the capture the desktop's portal (Linux Wayland)? Fixed for the life of the session; read synchronously by the
+    // retune, which must not touch a portal capture (sharePlatformSupport.retuneTouchesCapture).
+    const viaPortalRef = React.useRef(false);
+    // Does that portal re-open a source the share LISTED with no dialog (GNOME, measured)? Then a quality change re-opens
+    // the capture (the capture really changes); otherwise only a change that needs more than the capture was asked for does
+    // (utils/portalCapturePlan.ts). And what the live portal capture was last asked for, to tell the two apart.
+    const restoreListedRef = React.useRef(false);
+    const portalAskedRef = React.useRef<CaptureAsk | null>(null);
+    React.useEffect(() => {
+        let alive = true;
+        void captureViaPortal().then(v => { if (alive) viaPortalRef.current = v; });
+        void portalRestoreListed().then(v => { if (alive) restoreListedRef.current = v; });
+        return () => { alive = false; };
+    }, []);
     // Long-lived record of the currently-running share — set after a successful
     // publish, cleared when the share stops. Used by "Change Source" and "Adjust
     // Quality" so they can reference the active sourceId/quality even after the
@@ -1652,6 +1785,11 @@ export const SidebarConference = ({
     // capture's generated track, when the shared screen is in HDR mode. Same
     // lifecycle as the crop pipeline - stopped on every path that ends a share.
     const hdrPipelineRef = React.useRef<HdrSharePipeline | null>(null);
+    // Linux hardware screen share (utils/nativeSharePipeline.ts, on by default, used only when a GPU encoder works): the live native pipeline, if this share is one. It is
+    // ALSO held in hdrPipelineRef, because everything that already treats "our own generated track" specially (no Chromium-side retune,
+    // own size source, no capture reuse) applies to it unchanged. `nativeFailedRef` = fell back once this session: don't try again.
+    const nativePipeRef = React.useRef<NativeSharePipeline | null>(null);
+    const nativeFailedRef = React.useRef(false);
     const stopCropPipeline = () => {
         const pipe = cropPipelineRef.current;
         cropPipelineRef.current = null;
@@ -1661,6 +1799,8 @@ export const SidebarConference = ({
         const hdr = hdrPipelineRef.current;
         hdrPipelineRef.current = null;
         try { hdr?.stop(); } catch { /* already stopped */ }
+        nativePipeRef.current = null;
+        setNativeShareLive(null);
     };
 
     // Desktop annotation overlay (docs/video-annotation-design.md, Phase 5) —
@@ -1670,6 +1810,17 @@ export const SidebarConference = ({
     useDesktopAnnotationOverlay(
         localScreenShare ? localParticipant?.identity : null,
         localScreenShare ? currentShare?.sourceId : null,
+        // Wayland only: which monitor a portal share shows is not reported, so main matches the
+        // shared frame's size to the compositor's outputs (and refuses when it is ambiguous).
+        () => {
+            // A native (hardware) share publishes a stand-in track: the frame size is the helper's source size.
+            const nat = nativePipeRef.current;
+            if (nat) { const s = nat.captureSettings(); return s.width && s.height ? { width: Math.round(s.width), height: Math.round(s.height) } : null; }
+            const st = localParticipant?.getTrackPublication(Track.Source.ScreenShare)?.track?.mediaStreamTrack?.getSettings?.();
+            return st?.width && st?.height ? { width: Math.round(st.width), height: Math.round(st.height) } : null;
+        },
+        // Native share only: the portal's own statement of which monitor it streams, and whether it re-opened our grant silently.
+        () => overlayFactsFromPortal(nativePipeRef.current?.portalStream?.()),
     );
     // Linux: the overlay is captured into the share. Say so on our participant
     // so viewers draw only their own strokes over a video that already shows
@@ -1691,6 +1842,28 @@ export const SidebarConference = ({
         };
     }, [localParticipant]);
 
+    // "Which screen are you sharing?" (Wayland, identical monitors) and "your desktop cannot show
+    // drawings": the sharer answers the dialog; viewers get the state via a participant attribute.
+    const [overlayStatus, setOverlayStatus] = React.useState(getOverlayStatus);
+    React.useEffect(() => onOverlayStatusChange(setOverlayStatus), []);
+    React.useEffect(() => {
+        const lp = localParticipant;
+        if (!lp) return;
+        lp.setAttributes(overlayStateAttributePatch(overlayStatus.kind)).catch(() => { /* cosmetic */ });
+    }, [localParticipant, overlayStatus.kind]);
+    React.useEffect(() => {
+        const lp = localParticipant;
+        return () => { lp?.setAttributes(overlayStateAttributePatch('idle')).catch(() => {}); };
+    }, [localParticipant]);
+    // ...and the SHARER is told too, when their own desktop cannot show the drawings (X11 with
+    // no compositor: utils/sharerOverlayNotice.ts). Once per share, as a card in the call's
+    // notice slot - queued behind a card already there, never on top of it - and it asks nothing,
+    // so no sound. Annotation itself carries on: viewers still see every stroke.
+    const { note: sharerOverlayCard, dismiss: dismissSharerOverlayCard } = useSharerOverlayNote(!!localScreenShare);
+    const sharerOverlayCardUp = useQueuedCallOfferSlot(SHARER_OVERLAY_SLOT, sharerOverlayCard !== null);
+    // Linux: the one-time "screen sharing on Linux is new" card (utils/linuxShareIntro.ts), told which encoder engaged.
+    useLinuxShareIntroTrigger(!!localScreenShare, () => nativePipeRef.current?.encoder);
+
     // H.264 High for the screen share when that is this GPU's hardware H.264
     // (decideScreenShareCodec — the NVIDIA case). Set per publish; read by the
     // localSenderCreated hook below on the first publish AND on every
@@ -1699,9 +1872,23 @@ export const SidebarConference = ({
     // The H.264 High start watchdog republishes through this (a direct
     // self-call from inside handleScreenShareSelect makes the React compiler
     // treat the whole handler as render-reachable). Set in an effect below.
-    const republishShareRef = React.useRef<((o: ScreenShareOptions) => void) | null>(null);
+    // `fresh`: a NEW publication (new sender, codec decided again), never the
+    // in-place retune or the hot swap - those keep the live sender and so its
+    // codec, which is exactly what a codec or size fallback must replace.
+    const republishShareRef = React.useRef<((o: ScreenShareOptions, opts?: { fresh?: boolean }) => void) | null>(null);
+    // A clone of the live capture taken for a fresh republish through the Wayland portal, until
+    // LiveKit owns it (startScreenShareFrom): a start that throws must not leave the capture running.
+    const reuseCloneRef = React.useRef<MediaStreamTrack | null>(null);
     /** The current share's codec facts for the software-encoder guard. */
     const shareSoftwareCtxRef = React.useRef<{ sourceId: string; ctx: ShareSoftwareContext } | null>(null);
+    /** The live share's sender is sending another codec than it was published with (shareCodecDrift.ts). */
+    const shareDriftRef = React.useRef(false);
+    /** The last codec-drift republish, so a codec that drifts again is not retried in a loop. */
+    const driftRepublishRef = React.useRef<{ sourceId: string; at: number } | null>(null);
+    /** The source whose single-screen (cropped) share already fell back to the whole display after a capture stall. */
+    const captureStallWholeRef = React.useRef<string | null>(null);
+    /** Rate limit for camera codec-drift republishes (cameraPublish.handleCameraDrift). */
+    const cameraDriftGateRef = React.useRef<CameraDriftGate>({ at: null });
     React.useEffect(() => {
         if (!localParticipant) return;
         return installH264HighPreference(
@@ -1762,6 +1949,13 @@ export const SidebarConference = ({
     // codec is RECONCILED each tick (desired vs what is published), so a camera
     // that was off during a switch catches up when it comes back.
     const hevcModeRef = React.useRef<HevcMode>('base');
+    /**
+     * Should a SCREEN SHARE be H.265 right now (hevcNegotiation.shareWantsHevc)?
+     * Refreshed by the 1 s loop below. The camera waits 30 s of everyone
+     * qualifying (hevcModeRef); a share starting in that window begins on H.265
+     * instead of starting H.264 and being republished when the timer ends.
+     */
+    const hevcShareOkRef = React.useRef(false);
     /** The current share's base codec is hardware H.264 (gates the lighter copy). */
     const shareHwH264Ref = React.useRef(false);
     /** The current share's base codec is H.264 High (the transceiver preference must follow it). */
@@ -1774,6 +1968,7 @@ export const SidebarConference = ({
             pref: getCameraCodecPref(),
             probe: (w, h, fps) => probeHardwareEncoders(w, h, fps),
             gpus: cameraGpuVendors,
+            linux: window.electronAPI?.platform === 'linux',
         },
         setWantH264High: on => { wantCameraH264HighRef.current = on; },
         hevc: hevcModeRef.current === 'h265' && hevcEncodeRef.current && !hasHevcFailed() && !hasHevcGpuLost(),
@@ -1795,19 +1990,17 @@ export const SidebarConference = ({
         let layering: CameraLayeringPolicy | null = null;
         const hevc = new HevcPolicy('base');
         hevcModeRef.current = 'base';
+        hevcShareOkRef.current = false;
         const firstSeen = new Map<string, number>();
         let capsKey = '';
         let busy = false;
         const iv = setInterval(() => {
             if (busy) return;
             const now = performance.now();
-            const live = new Set<string>();
-            const remotes = [...room.remoteParticipants.values()].map(p => {
-                live.add(p.identity);
-                if (!firstSeen.has(p.identity)) firstSeen.set(p.identity, now);
-                return { attr: p.attributes?.[HEVC_ATTR], joinedMsAgo: now - (firstSeen.get(p.identity) ?? now) };
-            });
-            for (const id of [...firstSeen.keys()]) if (!live.has(id)) firstSeen.delete(id);
+            const remotes = remoteCapsAtTick(firstSeen, [...room.remoteParticipants.values()].map(p => ({
+                sessionKey: p.sid || p.identity,
+                attr: p.attributes?.[HEVC_ATTR],
+            })), now);
             const caps = hevcCapableCount(remotes);
             // What WE advertise (read back from our own attribute, so a
             // post-GPU-restart "no H.265" re-advertisement shows up too).
@@ -1824,9 +2017,13 @@ export const SidebarConference = ({
                 capsKey = key;
                 logCallEvent('h265_caps', { capable: caps.capable, total: caps.total, self_encode: hevcEncodeRef.current, self_decode: selfDecode, allowed, blocked });
             }
-            const hevcWant = hevc.observe(roomHevcState(remotes), allowed, now);
+            const roomState = roomHevcState(remotes);
+            const hevcWant = hevc.observe(roomState, allowed, now);
             if (hevcWant) { hevc.applied(hevcWant, now); hevcModeRef.current = hevcWant; }
             const wantHevc = hevcModeRef.current === 'h265';
+            // The share does not wait out the camera's 30 s hysteresis.
+            const wantShareHevc = shareWantsHevc(hevcModeRef.current, roomState, allowed);
+            hevcShareOkRef.current = wantShareHevc;
 
             const camPub = lp.getTrackPublication(Track.Source.Camera);
             const cam = asCameraTrack(camPub?.track as LocalVideoTrack | undefined);
@@ -1847,7 +2044,9 @@ export const SidebarConference = ({
             const sharePub = lp.getTrackPublication(Track.Source.ScreenShare);
             const share = currentShareRef.current;
             const shareCodec = (sharePub?.track as { codec?: string } | undefined)?.codec;
-            const shareFix = !!share && !!sharePub?.track && !!shareCodec && (shareCodec === 'h265') !== wantHevc;
+            // A join still being worked out, or an empty room, leaves a live share alone.
+            const liveShareHevc = liveShareWantsHevc(shareCodec === 'h265', roomState, allowed);
+            const shareFix = !!share && !!sharePub?.track && !!shareCodec && (shareCodec === 'h265') !== liveShareHevc;
             if (!layWant && !camCodecFix && !shareFix) return;
 
             busy = true;
@@ -1859,13 +2058,13 @@ export const SidebarConference = ({
                     if (camCodecFix) {
                         if (wantHevc) {
                             codec = 'h265';
-                            reason = 'everyone can decode H.265';
+                            reason = hevcSwitchReason(true, blocked, roomState);
                         } else {
                             const s = cam!.mediaStreamTrack.getSettings?.() ?? {};
                             const base = await chooseCameraCodec(cameraStartOptions().codec, s.width ?? 1280, s.height ?? 720);
                             wantCameraH264HighRef.current = base.codec === 'h264' && base.h264Profile === 'high';
                             codec = base.codec;
-                            reason = hasHevcGpuLost() ? 'graphics driver reset' : hasHevcFailed() ? 'H.265 failed' : 'someone cannot decode H.265';
+                            reason = hevcSwitchReason(false, blocked, roomState);
                         }
                     }
                     const ok = await republishCamera(asCameraParticipant(lp), {
@@ -1878,12 +2077,14 @@ export const SidebarConference = ({
                     }
                 }
                 if (shareFix && share) {
-                    const codec: ScreenShareCodec = wantHevc ? 'h265' : shareBaseCodecRef.current;
+                    const codec: ScreenShareCodec = liveShareHevc ? 'h265' : shareBaseCodecRef.current;
                     wantH264HighRef.current = codec === 'h264' && shareBaseHighRef.current;
                     await swapShareCodec(lp as unknown as ShareParticipantLike, codec, share, {
                         makeTrack: t => new LocalVideoTrack(t, undefined, true),
                         lowerLayer: getShareLowLayerEnabled() && (codec === 'h265' || (codec === 'h264' && shareHwH264Ref.current)),
-                        reason: wantHevc ? 'everyone can decode H.265' : (hasHevcGpuLost() ? 'graphics driver reset' : hasHevcFailed() ? 'H.265 failed' : 'someone cannot decode H.265'),
+                        ...(viaPortalRef.current ? { box: captureBoxFor(share.resolution, codec) } : {}),
+                        reason: hevcSwitchReason(liveShareHevc, blocked, roomState),
+                        announce: () => announceShareSwap(lp),
                     });
                 }
             })().catch(err => console.warn('[Call] republish failed:', err)).finally(() => { busy = false; });
@@ -1952,11 +2153,45 @@ export const SidebarConference = ({
         tone: 'info' | 'warn';
         text: string;
     } | null>(null);
+    // The encoder-overload suggestion, as an offer card (call/ShareOverloadOffer.tsx). Holds the
+    // call's offer slot while up, so it never stacks on the webcam or gaming offers.
+    const [overloadOffer, setOverloadOffer] = React.useState<ShareOverloadOfferProps | null>(null);
+    const closeOverloadOffer = React.useCallback(() => {
+        setOverloadOffer(null);
+        releaseCallOfferSlot(OVERLOAD_OFFER_SLOT);
+    }, []);
+    React.useEffect(() => () => releaseCallOfferSlot(OVERLOAD_OFFER_SLOT), []);
+    // Nothing to suggest about once the share has stopped.
+    const sharingForOffer = !!localParticipant?.isScreenShareEnabled;
+    React.useEffect(() => { if (!sharingForOffer) closeOverloadOffer(); }, [sharingForOffer, closeOverloadOffer]);
+    const screenShareNoticeRef = React.useRef(screenShareNotice);
+    React.useEffect(() => { screenShareNoticeRef.current = screenShareNotice; }, [screenShareNotice]);
     React.useEffect(() => {
         if (!screenShareNotice) return;
         const id = setTimeout(() => setScreenShareNotice(null), 6000);
         return () => clearTimeout(id);
     }, [screenShareNotice]);
+    // Per share: what the encoder-overload watch has already said and what the
+    // user dismissed (shareEncoderOverload.ts). Keyed by the shared source.
+    const overloadRef = React.useRef<{ sourceId: string; watch: EncoderOverloadWatch } | null>(null);
+    // Same, for a game in front starving the share (shareGameStarve.ts); shares the offer card and its slot.
+    const starveRef = React.useRef<{ sourceId: string; watch: GameStarveWatch } | null>(null);
+    // The share's keep-alive stage while one is on the sender (utils/shareKeepAlive.ts). Always put back
+    // (or released) before a retune, a swap, a republish or the share's end.
+    const keepAliveRef = React.useRef<{ handle: KeepAliveHandle; sid: string } | null>(null);
+    const keepAliveBusyRef = React.useRef(false);
+    const stopKeepAlive = React.useCallback(async (): Promise<void> => {
+        const cur = keepAliveRef.current;
+        if (!cur) return;
+        keepAliveRef.current = null;
+        const st = cur.handle.stats();
+        await cur.handle.stop().catch(() => { /* the share is gone */ });
+        logCallEvent('share_keepalive', { phase: 'stopped', real: st.real, repeats: st.repeated, errors: st.errors });
+    }, []);
+    const stopKeepAliveRef = React.useRef(stopKeepAlive);
+    stopKeepAliveRef.current = stopKeepAlive;
+    // The one-click answer to a suggestion goes through the same path as the quality chips.
+    const adjustScreenShareQualityRef = React.useRef<((r: ScreenShareOptions['resolution'], f: ScreenShareOptions['frameRate']) => Promise<void>) | null>(null);
 
     // Whether the native audio_capture.node addon (WASAPI on Windows,
     // ScreenCaptureKit on macOS 13+) is actually loaded and usable in the
@@ -1991,7 +2226,14 @@ export const SidebarConference = ({
     // on a subsequent share (e.g. swap-source within 3 s).
     const nativeChunkWatchdogRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
-    const stopNativeWindowAudio = React.useCallback(async () => {
+    // One row per step of the share's system audio (utils/shareAudioEvent.ts): fixed words and counts only.
+    const logShareAudio = React.useCallback((i: ShareAudioInput) => {
+        logCallEvent('share_audio', shareAudioEventDetail({ platform: window.electronAPI?.platform, ...i }));
+    }, []);
+
+    const stopNativeWindowAudio = React.useCallback(async (cause: string = 'restart') => {
+        // Only a capture that was actually running is worth a row.
+        if (nativeAudioCtxRef.current || nativeAudioPubRef.current) logShareAudio({ step: 'stopped', cause });
         // Cancel any pending "no chunks" watchdog from the previous capture session.
         if (nativeChunkWatchdogRef.current !== null) {
             clearTimeout(nativeChunkWatchdogRef.current);
@@ -2021,7 +2263,7 @@ export const SidebarConference = ({
             } catch (_) { /* best-effort; failure is non-fatal and intentionally ignored */ }
             nativeAudioPubRef.current = null;
         }
-    }, [localParticipant]);
+    }, [localParticipant, logShareAudio]);
 
     // When the OS ends the share externally (e.g. user hits "Stop" in the platform
     // overlay/notification instead of Cipherline's own controls), LiveKit flips
@@ -2049,7 +2291,7 @@ export const SidebarConference = ({
                 setCurrentShare(null);
             }
             if (nativeAudioPubRef.current || nativeAudioCtxRef.current) {
-                void stopNativeWindowAudio();
+                void stopNativeWindowAudio('share_end');
             }
             // A share that is being RESTARTED (change source / quality / layout,
             // an encoder-stall fallback) is briefly "not enabled" too, with its
@@ -2075,23 +2317,34 @@ export const SidebarConference = ({
     const startNativeWindowAudio = React.useCallback(async (
         mode: 'window' | 'screen',
         sourceId: string,
+        // Linux Wayland window share: the handle of the app whose audio the picker chose
+        // (electron/app-audio.ts). The portal gives the window no pid, so this - not a pid - names the audio.
+        appHandle?: string | null,
     ) => {
-        if (!window.electronAPI?.startWindowAudioCapture) {
+        const viaApp = mode === 'window' && !!appHandle && window.electronAPI?.platform === 'linux';
+        // The share_audio rows say "app" for it (fixed words and counts only - never the app's name).
+        const logMode: 'screen' | 'window' | 'app' = viaApp ? 'app' : mode;
+        if (!window.electronAPI?.startWindowAudioCapture || (viaApp && !window.electronAPI.startAppAudioCapture)) {
             console.warn('[NativeAudio] Electron API not available');
+            logShareAudio({ step: 'skipped', mode: logMode, why: 'no_api' });
             return;
         }
 
         // Defensive: tear down any in-flight capture from a previous share attempt
         // so we can't stack publications ("publishing a second track with the same source").
-        await stopNativeWindowAudio();
+        await stopNativeWindowAudio('start_again');
 
         // Resolve the PID and WASAPI mode based on share type.
         let targetPid: number | null = null;
         let wasapiMode: 'include' | 'exclude' = 'include';
 
-        if (mode === 'window') {
+        if (viaApp) {
+            // No pid to resolve: main turns the handle into the app, and keeps Cipherline's own audio out.
+            console.log('[NativeAudio] window mode — capturing one app\'s audio (Wayland portal window)');
+        } else if (mode === 'window') {
             if (!window.electronAPI?.getPidFromSourceId) {
                 console.warn('[NativeAudio] getPidFromSourceId unavailable');
+                logShareAudio({ step: 'skipped', mode: logMode, why: 'no_api' });
                 return;
             }
             // For window sources, walk up from the renderer to the app's root process
@@ -2101,9 +2354,10 @@ export const SidebarConference = ({
             if (!targetPid) {
                 console.warn('[NativeAudio] Could not resolve root PID for source', sourceId,
                     '— video share continues without audio.');
+                logShareAudio({ step: 'skipped', mode: logMode, why: window.electronAPI?.platform === 'linux' ? 'window_unsupported' : 'no_pid' });
                 setScreenShareNotice({
                     tone: 'warn',
-                    text: 'Could not identify the window\'s process for audio capture. Sharing without audio.',
+                    text: windowAudioUnresolvedNotice(window.electronAPI?.platform),
                 });
                 return;
             }
@@ -2111,6 +2365,7 @@ export const SidebarConference = ({
         } else {
             if (!window.electronAPI?.getOwnPid) {
                 console.warn('[NativeAudio] getOwnPid unavailable');
+                logShareAudio({ step: 'skipped', mode: logMode, why: 'no_api' });
                 return;
             }
             // For screen sources, exclude Cipherline's own process tree from
@@ -2119,7 +2374,7 @@ export const SidebarConference = ({
             wasapiMode = 'exclude';
             console.log('[NativeAudio] screen mode — Cipherline PID for EXCLUDE capture:', targetPid);
         }
-        const rootPid = targetPid;
+        const rootPid = targetPid ?? 0;   // 0 only for an app capture (viaApp), which never uses it
 
         // Create the AudioContext at 48 kHz to match the native capture format exactly.
         // This eliminates resampling (48000 -> hardware default) which was a source of
@@ -2182,6 +2437,7 @@ export const SidebarConference = ({
         // It's also stored in nativeChunkWatchdogRef so stopNativeWindowAudio can
         // cancel it if the user swaps source before the 3-second window elapses.
         let chunkCount = 0;
+        const startedAtMs = performance.now();
         let chunkWatchdog: ReturnType<typeof setTimeout> | null = null;
         nativeChunkWatchdogRef.current = null; // clear any stale ref from prior capture
         window.electronAPI!.onWindowAudioChunk((chunk) => {
@@ -2198,6 +2454,7 @@ export const SidebarConference = ({
             );
 
             if (chunkCount === 1) {
+                logShareAudio({ step: 'first_chunk', mode: logMode, ms: performance.now() - startedAtMs });
                 if (chunkWatchdog !== null) {
                     clearTimeout(chunkWatchdog);
                     chunkWatchdog = null;
@@ -2218,13 +2475,14 @@ export const SidebarConference = ({
         // silently carrying a permanently-silent ScreenShareAudio track.
         window.electronAPI?.onWindowAudioProcessExited?.(() => {
             console.warn('[NativeAudio] Capture target process exited — stopping native audio capture.');
+            logShareAudio({ step: 'exited', mode: logMode });
             setScreenShareNotice({
                 tone: 'warn',
                 text: mode === 'window'
                     ? 'The app you were sharing audio from has closed.'
                     : 'The process behind this audio capture has closed.',
             });
-            void stopNativeWindowAudio();
+            void stopNativeWindowAudio('exited');
         });
 
         // macOS (ScreenCaptureKit) reports start/stop failures asynchronously —
@@ -2233,6 +2491,7 @@ export const SidebarConference = ({
         // which already tears the video down, so it needs no message.
         window.electronAPI?.onWindowAudioFailed?.(({ reason }) => {
             console.warn('[NativeAudio] Native capture failed:', reason);
+            logShareAudio({ step: 'failed', mode: logMode, reason, ms: performance.now() - startedAtMs });
             if (reason !== 'stopped') {
                 setScreenShareNotice({
                     tone: 'warn',
@@ -2240,19 +2499,30 @@ export const SidebarConference = ({
                         ? 'Cipherline needs Screen Recording permission to share audio. Allow it in System Settings → Privacy & Security → Screen & System Audio Recording, then restart Cipherline. Sharing video without audio.'
                         : reason === 'no-target'
                             ? 'Could not find the shared app for audio capture. Sharing video without audio.'
-                            : 'Audio capture failed. Sharing video without audio.',
+                            // Linux (PipeWire): the daemon went away or refused the connection mid-share.
+                            : reason === 'unavailable' || reason === 'unsupported'
+                                ? 'Sharing audio needs PipeWire, and it stopped responding. Sharing video without audio.'
+                                : 'Audio capture failed. Sharing video without audio.',
                 });
             }
-            void stopNativeWindowAudio();
+            void stopNativeWindowAudio('failed');
         });
 
         // Hand off to the native addon. For window shares this is INCLUDE on the
         // app's root tree (captures that app only); for full-screen shares this is
         // EXCLUDE on Cipherline's own tree (captures everything else, no feedback).
-        console.log(`[NativeAudio] Calling startWindowAudioCapture: pid=${rootPid} mode=${wasapiMode}`);
-        const started = await window.electronAPI!.startWindowAudioCapture(rootPid, wasapiMode, grantTokenFor(shareGrantRef.current, sourceId));
+        // A Wayland portal window (viaApp) has no pid: main starts the picked APP's streams instead,
+        // from the handle it issued (never a pid or a name from here).
+        console.log(viaApp
+            ? '[NativeAudio] Calling startAppAudioCapture'
+            : `[NativeAudio] Calling startWindowAudioCapture: pid=${rootPid} mode=${wasapiMode}`);
+        logShareAudio({ step: 'starting', mode: logMode });
+        const started = viaApp
+            ? await window.electronAPI!.startAppAudioCapture!(appHandle!, grantTokenFor(shareGrantRef.current, sourceId))
+            : await window.electronAPI!.startWindowAudioCapture(rootPid, wasapiMode, grantTokenFor(shareGrantRef.current, sourceId));
         if (!started) {
             console.warn('[NativeAudio] startWindowAudioCapture returned false — native capture failed to init');
+            logShareAudio({ step: 'refused', mode: logMode, ms: performance.now() - startedAtMs });
             setScreenShareNotice({
                 tone: 'warn',
                 text: 'Audio capture could not be started. Sharing video without audio.',
@@ -2267,6 +2537,7 @@ export const SidebarConference = ({
         chunkWatchdog = setTimeout(() => {
             nativeChunkWatchdogRef.current = null;
             if (chunkCount === 0) {
+                logShareAudio({ step: 'no_chunks', mode: logMode, ms: performance.now() - startedAtMs });
                 console.warn('[NativeAudio] No chunks received in 3s after capture start.',
                     `pid=${rootPid} mode=${wasapiMode}`,
                     '— native capture is silent. Possible causes: target app has no audio,',
@@ -2275,7 +2546,9 @@ export const SidebarConference = ({
                     'or (macOS) ScreenCaptureKit has no audio-producing app in the filter.');
                 setScreenShareNotice({
                     tone: 'warn',
-                    text: mode === 'window'
+                    text: viaApp
+                        ? 'No audio detected from that app yet. It may not be playing anything right now; it is picked up as soon as it does.'
+                        : mode === 'window'
                         ? 'No audio detected from this window. The app may not be producing sound.'
                         : 'No system audio captured. Audio may be routed through a process Cipherline cannot intercept.',
                 });
@@ -2327,7 +2600,7 @@ export const SidebarConference = ({
         } catch (err) {
             console.error('[NativeAudio] Failed to publish native audio track:', err);
         }
-    }, [localParticipant, stopNativeWindowAudio]);
+    }, [localParticipant, stopNativeWindowAudio, logShareAudio]);
 
     // Electron IPC: fires when getDisplayMedia is intercepted by setDisplayMediaRequestHandler.
     React.useEffect(() => {
@@ -2335,7 +2608,12 @@ export const SidebarConference = ({
         const unsub = window.electronAPI.onShowScreensharePicker(() => {
             const pending = pendingScreenShareRef.current;
             if (pending) {
-                window.electronAPI!.resolveDesktopSource(pending.sourceId, pending.audio, pending.grantToken ?? undefined);
+                // What main decided, when it refused: the renderer only ever sees NotReadableError,
+                // whichever of them it was. A fixed word, never a source's id or name.
+                void window.electronAPI!.resolveDesktopSource(pending.sourceId, pending.audio, pending.grantToken ?? undefined)
+                    .then(outcome => {
+                        if (outcome && outcome !== 'ok') logCallEvent('share_start', { verdict: 'resolve_refused', why: outcome });
+                    }, () => { /* the capture's own error reports this */ });
                 pendingScreenShareRef.current = null;
             }
         });
@@ -2396,6 +2674,19 @@ export const SidebarConference = ({
     };
 
     const toggleHideScreenShare = async (id: string, hide: boolean) => {
+        // Your own share is a local preview and this flag is all there is to
+        // hiding it: nothing here may reach the watch set or the publication. The
+        // path below would put you in your own `watching_shares` (a viewer count
+        // of yourself) and treat your publication as a subscription. What goes to
+        // the room is not this client's preview, so hiding it changes nothing there.
+        if (id === localParticipant?.identity) {
+            setHiddenScreenShareIds(prev => {
+                const next = new Set(prev);
+                if (hide) next.add(id); else next.delete(id);
+                return next;
+            });
+            return;
+        }
         // Hiding = no longer watching: leave the viewer list and unsubscribe the
         // video + share audio (same path as the tile's red X). Idempotent when
         // this client was not subscribed (e.g. hiding the Watch prompt).
@@ -2442,16 +2733,15 @@ export const SidebarConference = ({
     const decodeFocusId = callCtx?.focusedStream?.source === Track.Source.Camera ? callCtx.focusedStream.identity : null;
     // Cheap (a few dozen ids at most) — computed per render, read only via .has().
     const budgetOrder = userVisibleRemoteCams.map(p => p.identity);
-    const budgetDecoded = incomingVideoMode === 'auto'
-        ? null
-        : chooseDecodedSet({ order: budgetOrder, focused: decodeFocusId, recentSpeakers: speakOrder, cap: DECODE_CAP });
+    // Every mode has a cap now: 'auto' a roomy one (AUTO_DECODE_CAP, only bites in a big call), the others DECODE_CAP.
+    const budgetDecoded = chooseDecodedSet({ order: budgetOrder, focused: decodeFocusId, recentSpeakers: speakOrder, cap: decodeCapFor(incomingVideoMode) });
     const budgetHiddenVideoIds = new Set(budgetDecoded ? budgetOrder.filter(id => !budgetDecoded.has(id)) : []);
     const visibleRemoteCamParticipants = userVisibleRemoteCams.filter(p => !budgetHiddenVideoIds.has(p.identity));
     const decodeCapHidden = budgetHiddenVideoIds.size;
     React.useEffect(() => { logCallEvent('incoming_mode', { mode: incomingVideoMode }); }, [incomingVideoMode]);
     React.useEffect(() => {
-        if (incomingVideoMode === 'auto') return;
-        logCallEvent('decode_cap', { cap: DECODE_CAP, decoded: userVisibleRemoteCams.length - decodeCapHidden, avatars: decodeCapHidden });
+        if (incomingVideoMode === 'auto' && decodeCapHidden === 0) return;
+        logCallEvent('decode_cap', { cap: decodeCapFor(incomingVideoMode), decoded: userVisibleRemoteCams.length - decodeCapHidden, avatars: decodeCapHidden });
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [incomingVideoMode, decodeCapHidden]);
 
@@ -2603,9 +2893,14 @@ export const SidebarConference = ({
 
     const visibleScreenShareParticipants = screenShareParticipants.filter(p => !hiddenScreenShareIds.has(p.identity));
 
+    // Your own preview, unless you hid it. Only what THIS client draws: `localScreenShare`
+    // stays the truth about whether you are sharing, and everything about the share
+    // itself keeps reading that.
+    const localShareTile = localScreenShare && !hiddenScreenShareIds.has(localScreenShare.identity) ? localScreenShare : null;
+
     const videoParticipantIds = new Set([
         ...(localCam ? [localParticipant!.identity] : []),
-        ...(localScreenShare ? [localParticipant!.identity] : []),
+        ...(localShareTile ? [localParticipant!.identity] : []),
         ...visibleRemoteCamParticipants.map(p => p.identity),
         ...visibleScreenShareParticipants.map(p => p.identity),
     ]);
@@ -2736,7 +3031,7 @@ export const SidebarConference = ({
 
     // Overflow detection (speaker promotion gate) — see the block near
     // videoBottomSentinelRef. Re-runs whenever the tile set changes.
-    const videoTileCount = (localCam ? 1 : 0) + (localScreenShare ? 1 : 0)
+    const videoTileCount = (localCam ? 1 : 0) + (localShareTile ? 1 : 0)
         + visibleRemoteCamParticipants.length + visibleScreenShareParticipants.length;
     React.useEffect(() => {
         const sentinel = videoBottomSentinelRef.current;
@@ -2869,8 +3164,8 @@ export const SidebarConference = ({
         if (!localParticipant) return;
         const willEnable = !localParticipant.isCameraEnabled;
         // P13: VIDEO gate — block enable when denied; allow disable.
-        if (willEnable && !canVideo) return;
-        if (willEnable) setIsCameraEnabling(true);
+        if (willEnable && !canVideo) { setCameraError("You don't have permission to use video here."); return; }
+        if (willEnable) { setIsCameraEnabling(true); setCameraError(null); }
         // Your OWN camera cue plays on the press, not when the camera has
         // finished opening (a first publish can take a second or more). Other
         // people still hear it from the Room events in CallPane's
@@ -2885,7 +3180,13 @@ export const SidebarConference = ({
                 ...cameraStartOptions(),
                 // 1:1 call → one layer (cameraQuality.CameraLayeringPolicy).
                 single: initialLayering(remoteParticipants.length) === 'single',
-            }).catch(err => console.warn('[Camera] enable failed:', err));
+            }).catch(err => {
+                // Another app holding the camera lands here. Say so: the button
+                // otherwise just goes back to off with nothing to explain why.
+                console.warn('[Camera] enable failed:', err);
+                setIsCameraEnabling(false);
+                setCameraError(describeCameraPreviewError(err));
+            });
         } else {
             localParticipant.setCameraEnabled(false).catch(() => {});
         }
@@ -2912,6 +3213,7 @@ export const SidebarConference = ({
         // button is disabled; this covers the keybind).
         if (shareStartRef.current?.starting) return;
         if (localParticipant.isScreenShareEnabled) {
+            shareRepublishSignal.cancel(localParticipant);
             stopNativeWindowAudio();
             localParticipant.setScreenShareEnabled(false);
             stopCropPipeline();
@@ -2934,6 +3236,9 @@ export const SidebarConference = ({
     // re-applied when the cropped size changes (a layout switch, a display
     // mode change) without the original start's locals.
     const shareParamsCtxRef = React.useRef<{ options: ScreenShareOptions; codec: ScreenShareCodec } | null>(null);
+    // The size handshake of a hot swap (shareFirstFrame.settleEventDetails),
+    // handed to the commit that logs the swap's share_clamp, then cleared.
+    const shareSettleExtraRef = React.useRef<Record<string, string | number | boolean> | null>(null);
 
     /**
      * The ONE way a new resolution / frame rate reaches a LIVE share
@@ -2944,11 +3249,63 @@ export const SidebarConference = ({
      * `commit` keeps the share's bookkeeping in step and logs share_codec +
      * share_clamp, exactly as a fresh publish does.
      */
+    // Is the live share encoded by a hardware encoder (H.265, or H.264 on a GPU
+    // that has it)? A hardware encoder is not re-opened at a new size in place:
+    // see resolutionChangeNeedsFresh (report 45a5e136, renderer crash).
+    const liveShareIsHardware = (): boolean => {
+        const track = localParticipant?.getTrackPublication(Track.Source.ScreenShare)?.track as
+            (LocalVideoTrack & { sender?: RTCRtpSender }) | undefined;
+        const codec = asScreenShareCodec(track?.codec) ?? shareParamsCtxRef.current?.codec;
+        return codec === 'h265' || (codec === 'h264' && shareHwH264Ref.current);
+    };
+
+    // Would the new resolution leave the encoder's frames the same size? (shareLiveRetune.liveFrameUnchanged:
+    // then a hardware encoder needs no fresh publish.) Off the portal and off the crop / HDR pipelines only.
+    const liveFrameUnchangedFor = (cur: ScreenShareOptions, next: ScreenShareOptions): boolean => {
+        if (viaPortalRef.current || cropPipelineRef.current || hdrPipelineRef.current) return false;
+        const track = localParticipant?.getTrackPublication(Track.Source.ScreenShare)?.track as
+            (LocalVideoTrack & { sender?: RTCRtpSender }) | undefined;
+        const codec = asScreenShareCodec(track?.codec) ?? shareParamsCtxRef.current?.codec;
+        if (!codec) return false;
+        try {
+            return liveFrameUnchanged(track?.mediaStreamTrack?.getSettings?.(), captureBoxFor(cur.resolution, codec), captureBoxFor(next.resolution, codec));
+        } catch { return false; }
+    };
+
     const liveShareApplier = (): LiveShareApplier => ({
         cropActive: () => !!cropPipelineRef.current || !!hdrPipelineRef.current,
+        hardwareEncoder: liveShareIsHardware,
+        frameUnchanged: liveFrameUnchangedFor,
         retune: async (resolution, frameRate) => {
+            // The capture's constraints are about to change: the sender must be back on the capture itself.
+            await stopKeepAliveRef.current();
             const track = localParticipant?.getTrackPublication(Track.Source.ScreenShare)?.track;
-            return retuneScreenShareInPlace(track, resolution, frameRate, { step: shareResStepRef.current });
+            // A 'source' retune is sized by what the share captures, but only a
+            // share that was ALREADY 'source' reports its native size; after a
+            // switch from a named preset the track still reads that preset's box.
+            const captured = currentShareRef.current?.resolution === 'source'
+                ? senderCaptureSize((track as { sender?: RTCRtpSender } | undefined)?.sender)
+                : undefined;
+            // Through the Wayland portal a changed constraint is a new portal session, and a re-open stalls the capture
+            // (utils/portalCapturePlan.ts): the capture is the source's size, so a new size and a lower rate are the
+            // sender's alone and only a higher rate than it was opened at re-opens it. The retune decides.
+            // The one portal change that still re-opens the capture is a HIGHER frame rate than it was opened at:
+            // say so while it happens, so the pause reads as "applying" and not as a frozen stream.
+            const applying = 'Applying the higher frame rate…';
+            try {
+                return await retuneScreenShareInPlace(track, resolution, frameRate, {
+                    step: shareResStepRef.current, captured, viaPortal: viaPortalRef.current,
+                    ...(viaPortalRef.current ? {
+                        restoreListed: restoreListedRef.current,
+                        asked: portalAskedRef.current,
+                        ceiling: await readCaptureCeiling(),
+                        onAsked: (a: CaptureAsk) => { portalAskedRef.current = a; },
+                        onReopen: () => setScreenShareNotice({ tone: 'info', text: applying }),
+                    } : {}),
+                });
+            } finally {
+                setScreenShareNotice(n => (n && n.text === applying ? null : n));
+            }
         },
         commit: (next, how) => {
             currentShareRef.current = next;
@@ -2970,9 +3327,14 @@ export const SidebarConference = ({
                     next,
                     how,
                     capture: track?.mediaStreamTrack?.getSettings?.(),
+                    // The portal's capture is not fitted to the chosen size: the sender scales it.
+                    ...(viaPortalRef.current && !cropPipelineRef.current && !hdrPipelineRef.current && codec
+                        ? { box: captureBoxFor(next.resolution, codec) } : {}),
                     step: shareResStepRef.current,
                     layout: cropPipelineRef.current ? 'slice' : 'whole',
+                    ...(shareSettleExtraRef.current ? { extra: shareSettleExtraRef.current } : {}),
                 });
+                shareSettleExtraRef.current = null;
                 logCallEvent('share_codec', ev.codec);
                 logCallEvent('share_clamp', ev.clamp);
             } catch { /* diagnostics must never break a retune */ }
@@ -3003,6 +3365,7 @@ export const SidebarConference = ({
             resolution: cur.resolution,
             frameRate:  cur.frameRate,
             audio:      !cur.audio,
+            appAudio:   cur.appAudio,
             layout:     cur.layout,
         });
     };
@@ -3059,6 +3422,7 @@ export const SidebarConference = ({
             resolution,
             frameRate,
             audio:      current.audio,
+            appAudio:   current.appAudio,
             layout:     current.layout,
         });
     };
@@ -3081,7 +3445,7 @@ export const SidebarConference = ({
         useNativeAudio: boolean,
         nativeMode: 'window' | 'screen',
         tStart: number,
-    ): Promise<boolean> => {
+    ): Promise<boolean | { cancelled: unknown }> => {
         if (!localParticipant) return false;
         const ssPub = localParticipant.getTrackPublication(Track.Source.ScreenShare);
         const lkTrack = ssPub?.track as (LocalVideoTrack & { sender?: RTCRtpSender }) | undefined;
@@ -3104,6 +3468,18 @@ export const SidebarConference = ({
         // the track or report failure — the fallback would tear down a working
         // share to rebuild the same thing.
         let swapped = false;
+        let settledSwap: SettledCapture | undefined;
+        // Through the Wayland portal this capture may be waiting on a person
+        // (sharePlatformSupport.ts): the handshake gets a person's time, and a
+        // closed dialog ends the change instead of falling through to a teardown.
+        const viaPortal = await captureViaPortal();
+        viaPortalRef.current = viaPortal;
+        const handshakeMs = captureHandshakeMs(viaPortal);
+        // Through the portal this capture is opened at the quality picked (sharePlatformSupport.portalCaptureRequest).
+        const portalCap = viaPortal
+            ? portalCaptureRequest(options, await readCaptureCeiling(), asScreenShareCodec(lkTrack.codec) ?? 'vp8') : null;
+        const capBox = portalCap ? portalCap.box : dims;
+        if (portalCap) portalAskedRef.current = { fps: portalCap.frameRate, width: capBox.width, height: capBox.height };
         try {
             // Drive Electron's setDisplayMediaRequestHandler exactly the way
             // LiveKit does internally: park the choice on the pending ref, then
@@ -3114,11 +3490,11 @@ export const SidebarConference = ({
             pendingScreenShareRef.current = pendingShare(options, false);
             mediaPromise = navigator.mediaDevices.getDisplayMedia({
                 video: {
-                    width:     { max: dims.width },
-                    height:    { max: dims.height },
+                    width:     { max: capBox.width },
+                    height:    { max: capBox.height },
                     // The paced capture rate (captureFrameRateFor), like a fresh
                     // publish and the in-place retune; the encoder stays at the target.
-                    frameRate: { max: captureFrameRateFor(options.frameRate) },
+                    frameRate: { max: portalCap ? portalCap.frameRate : captureFrameRateFor(options.frameRate) },
                 },
                 audio: false,
             });
@@ -3131,7 +3507,7 @@ export const SidebarConference = ({
                 // resolve leaves an unowned capture running, which keeps the
                 // OS "you are sharing" indicator lit with nothing behind it.
                 new Promise<never>((_, rej) =>
-                    setTimeout(() => rej(new Error('getDisplayMedia handshake timed out')), 10_000)),
+                    setTimeout(() => rej(new Error('getDisplayMedia handshake timed out')), handshakeMs)),
             ]);
             newMs = stream.getVideoTracks()[0];
             if (!newMs) throw new Error('getDisplayMedia returned no video track');
@@ -3139,6 +3515,17 @@ export const SidebarConference = ({
             // when it configures the encoder, so applying it later leaves the
             // opening seconds on the still-image profile.
             newMs.contentHint = 'motion';
+            // A fresh capture reports the constraint BOX as its size until its
+            // first frame arrives, and replaceTrack() recomputes the sender's
+            // encodings from whatever getSettings() says (LiveKit
+            // refreshSenderEncodings): wait for the real frame size and make the
+            // track say it for the swap (shareFirstFrame.ts). Bounded; a timeout
+            // changes nothing.
+            // (Through the portal the first frame is the user's answer to the desktop's chooser - see
+            // PORTAL_FIRST_FRAME_WAIT; none = the dialog was closed, and the running share stays as it is.)
+            settledSwap = await settleCaptureSize(newMs, capBox, portalCap ? PORTAL_FIRST_FRAME_WAIT : {});
+            if (portalCap && !settledSwap.first) throw portalChooserClosedError();
+            shareSettleExtraRef.current = settleEventDetails(settledSwap);
             const tAcquired = performance.now();
 
             // replaceTrack() awaits onSenderTrackSwapped() internally (verified
@@ -3168,6 +3555,7 @@ export const SidebarConference = ({
                 resolution: options.resolution,
                 frameRate:  options.frameRate,
                 audio:      options.audio,
+                appAudio:   options.appAudio,
                 layout:     options.layout,
             };
             const retuned = await applyQualityAfterSwap(liveShareApplier(), recorded);
@@ -3175,23 +3563,30 @@ export const SidebarConference = ({
                 try {
                     await applyScreenShareSenderParams(
                         lkTrack.sender, options.frameRate,
-                        computeSSBitrate(options.resolution, options.frameRate, asScreenShareCodec(lkTrack.codec)),
-                        { codec: asScreenShareCodec(lkTrack.codec), step: shareResStepRef.current },
+                        computeSSBitrate(options.resolution, options.frameRate, asScreenShareCodec(lkTrack.codec), senderCaptureSize(lkTrack.sender, settledSwap.first ?? undefined)),
+                        {
+                            codec: asScreenShareCodec(lkTrack.codec), step: shareResStepRef.current,
+                            ...(settledSwap.first ? { sourceSize: settledSwap.first } : {}),
+                            ...(viaPortal ? { box: dims } : {}),
+                        },
                     );
                 } catch (err) {
                     console.warn('[ScreenShare] hot-swap: setParameters override failed:', err);
                 }
             }
+            settledSwap.release();
 
             // Audio last — it is a separate publication, so it can catch up
             // without ever holding up the video swap. The old capture was bound
             // to the previous source's process, so it always has to be restarted.
-            await stopNativeWindowAudio();
+            await stopNativeWindowAudio('swap');
+            if (!useNativeAudio) logShareAudio({ step: 'skipped', mode: nativeMode, why: options.audio ? 'no_native' : 'off' });
             if (useNativeAudio) {
                 try {
-                    await startNativeWindowAudio(nativeMode, options.sourceId);
+                    await startNativeWindowAudio(nativeMode, options.sourceId, options.appAudio?.handle);
                 } catch (err) {
                     console.error('[ScreenShare] hot-swap: startNativeWindowAudio threw:', err);
+                    logShareAudio({ step: 'failed', reason: 'error' });
                     setScreenShareNotice({
                         tone: 'warn',
                         text: 'Screen share is active but audio capture failed. Video is still being shared.',
@@ -3223,17 +3618,28 @@ export const SidebarConference = ({
                 ?.then(s => s.getTracks().forEach(t => { try { t.stop(); } catch { /* gone */ } }))
                 .catch(() => { /* the request itself failed; nothing to release */ });
             pendingScreenShareRef.current = null;
+            // The user closed the desktop's chooser: that is the answer. Falling back
+            // would take the running share down and open the chooser again.
+            if (cancelStopsSwap(viaPortal, err)) return { cancelled: err };
             return false;
+        } finally {
+            settledSwap?.release();
+            shareSettleExtraRef.current = null;
         }
     };
 
     /** Options for applyScreenShareSenderParams: the fallback step, and - for a cropped share, whose generated track reports no size - the size and box to scale to. */
-    const shareSenderParamOpts = (codec: ScreenShareCodec, options: ScreenShareOptions) => {
+    const shareSenderParamOpts = (codec: ScreenShareCodec, options: ScreenShareOptions): {
+        codec: ScreenShareCodec; step: number; sourceSize?: { width: number; height: number }; box?: { width: number; height: number };
+    } => {
         const out = cropOutSizeRef.current;
         return {
             codec,
             step: shareResStepRef.current,
-            ...((cropPipelineRef.current || hdrPipelineRef.current) && out ? { sourceSize: out, box: captureBoxFor(options.resolution, codec) } : {}),
+            ...((cropPipelineRef.current || hdrPipelineRef.current) && out
+                ? { sourceSize: out, box: captureBoxFor(options.resolution, codec) }
+                // Through the portal a capture left as it was (a change that fits inside it) is scaled to the chosen size by the sender.
+                : viaPortalRef.current ? { box: captureBoxFor(options.resolution, codec) } : {}),
         };
     };
     const reapplyShareSenderParams = async () => {
@@ -3242,14 +3648,55 @@ export const SidebarConference = ({
         if (!ctx || !track?.sender) return;
         const codec = asScreenShareCodec(track.codec) ?? ctx.codec;
         try {
+            const paramOpts = shareSenderParamOpts(codec, ctx.options);
             await applyScreenShareSenderParams(
                 track.sender, ctx.options.frameRate,
-                computeSSBitrate(ctx.options.resolution, ctx.options.frameRate, codec),
-                shareSenderParamOpts(codec, ctx.options),
+                computeSSBitrate(ctx.options.resolution, ctx.options.frameRate, codec, senderCaptureSize(track.sender, paramOpts.sourceSize)),
+                paramOpts,
             );
         } catch (err) {
             console.warn('[ScreenShare] re-applying sender params failed:', err);
         }
+    };
+
+    /**
+     * "Were frames encoded?" said no: ask the sender whether the capture ever
+     * handed it a frame (shareHealth.diagnoseNoFrames). Never throws; an
+     * unreadable sender is 'unknown' (= the old behaviour: blame the encoder).
+     */
+    const diagnoseShareNoFrames = async (getStats: () => Promise<unknown>): Promise<NoFramesDiagnosis> => {
+        let report: ShareStatsLike | null = null;
+        try { report = (await getStats()) as ShareStatsLike; } catch { report = null; }
+        let crop: { framesIn: number; framesOut: number } | null = null;
+        try { crop = cropPipelineRef.current?.stats() ?? null; } catch { crop = null; }
+        return diagnoseNoFrames(report, crop);
+    };
+
+    /**
+     * The CAPTURE produced nothing (not the encoder): no codec or size change
+     * can help, so none is made and nothing is marked failed. A single screen
+     * of an ultra-wide display falls back once to the whole display (the path
+     * the owner's machine demonstrably shares with a game running); anything
+     * else stays published - capture may resume - and the user is told what
+     * usually blocks it.
+     */
+    const handleCaptureStall = (options: ScreenShareOptions, codec: ScreenShareCodec, d: NoFramesDiagnosis, check: string) => {
+        const cur = currentShareRef.current;
+        if (!cur || cur.sourceId !== options.sourceId) return; // the share changed meanwhile
+        const slice = cur.layout?.kind === 'slice' || !!cropPipelineRef.current;
+        const action = decideCaptureStallAction({ slice, triedWhole: captureStallWholeRef.current === cur.sourceId });
+        let crop: ReturnType<CropPipeline['diag']> | null = null;
+        try { crop = cropPipelineRef.current?.diag() ?? null; } catch { crop = null; }
+        logCallEvent('share_capture_stall', {
+            phase: 'start', check, codec, layout: slice ? 'slice' : 'whole',
+            src_frames: d.srcFrames ?? NaN, crop_in: d.cropIn ?? NaN, crop_out: d.cropOut ?? NaN,
+            mode: crop?.mode ?? '', why: crop?.fallback ?? '', wk_err: crop?.workerError ?? false,
+            action: action.kind,
+        });
+        setScreenShareNotice({ tone: 'warn', text: captureStallNotice(action) });
+        if (action.kind !== 'whole') return;
+        captureStallWholeRef.current = cur.sourceId;
+        republishShareRef.current?.({ ...cur, layout: undefined }, { fresh: true });
     };
 
     /** The encoder produced nothing: republish smaller (once per step), or say plainly that nothing is left to try. */
@@ -3258,6 +3705,8 @@ export const SidebarConference = ({
         if (!cur || cur.sourceId !== options.sourceId) return; // the share changed meanwhile
         const step = shareResStepRef.current;
         const action = decideStallAction(step);
+        // Linux VA-API: a hardware encoder that produced nothing counts toward the failure ledger (linuxHwEncode.ts).
+        void noteLinuxHwEncodeFailure('stall', { codec, encoder: info.encoder });
         logCallEvent('share_start_check', {
             codec, verdict: 'stalled', ms: info.waitedMs,
             res: info.width && info.height ? `${info.width}x${info.height}` : '',
@@ -3269,14 +3718,19 @@ export const SidebarConference = ({
         toast.push({ kind: copy.kind, message: copy.message, durationMs: 12_000 });
         if (action.kind !== 'resolution') return;
         shareResStepRef.current = action.step;
-        republishShareRef.current?.({ ...cur });
+        republishShareRef.current?.({ ...cur }, { fresh: true });
     };
     const armEncoderWatchdog = (options: ScreenShareOptions, codec: ScreenShareCodec, sender: RTCRtpSender) => {
         shareWatchdogRef.current?.dispose();
         const wd = new ShareEncoderWatchdog({
             getStats: () => sender.getStats(),
             onHealthy: () => logCallEvent('share_start_check', { codec, verdict: 'ok' }),
-            onStall: info => handleEncoderStall(options, codec, info),
+            onStall: info => {
+                void diagnoseShareNoFrames(() => sender.getStats()).then(d => {
+                    if (d.cause === 'capture') handleCaptureStall(options, codec, d, 'watchdog');
+                    else handleEncoderStall(options, codec, info);
+                });
+            },
         });
         shareWatchdogRef.current = wd;
         void wd.start();
@@ -3326,9 +3780,29 @@ export const SidebarConference = ({
         });
     };
 
-    const handleScreenShareSelect = async (options: ScreenShareOptions | null) => {
+    const handleScreenShareSelect = async (requested: ScreenShareOptions | null, startOpts?: { fresh?: boolean }) => {
+        // A brand-new share (nothing live, not an internal restart) starts with a clean "which screen?" answer; a restart of the live one keeps it.
+        if (!startOpts?.fresh && !currentShareRef.current) forgetScreenAnswer();
+        // Every start and restart comes through here: nothing asks a window for more than it can deliver.
+        // Linux on the Chromium path also stops at 60 (linuxShareDefaults.ts): the target is not set above what that capture delivers.
+        const chromiumFpsCap = requested ? chromiumPathFpsCap({ platform: window.electronAPI?.platform, nativeLikely: await nativeShareLikely() }) : null;
+        const options = requested && { ...requested, frameRate: capFrameRate(clampShareFps(requested.frameRate, requested.sourceId), chromiumFpsCap) };
+        // Linux shares audio only through the native PipeWire addon (shareAudioUnavailableReason):
+        // asking Chromium for loopback there either echoes the call back into the share or never
+        // answers at all. Without PipeWire, say so once, and share the video. The mount-time probe
+        // can read false transiently, so a "no" is asked again here before it is believed.
+        let linuxNativeAudio = nativeAudioSupported;
+        if (options?.audio && !linuxNativeAudio && window.electronAPI?.platform === 'linux' && window.electronAPI.isAudioCaptureSupported) {
+            try { linuxNativeAudio = await window.electronAPI.isAudioCaptureSupported(); } catch { linuxNativeAudio = false; }
+            if (linuxNativeAudio) setNativeAudioSupported(true);
+        }
+        const noAudioWhy = options?.audio ? shareAudioUnavailableReason(window.electronAPI?.platform, linuxNativeAudio) : null;
+        if (options && noAudioWhy) {
+            options.audio = false;
+            logShareAudio({ step: 'skipped', why: 'no_native' });
+            setScreenShareNotice({ tone: 'info', text: `${noAudioWhy} Sharing without audio.` });
+        }
         setIsScreenSharePickerOpen(false);
-        setPickerPreset(null);
         if (!options || !localParticipant) {
             window.electronAPI?.resolveDesktopSource(null);
             return;
@@ -3340,15 +3814,130 @@ export const SidebarConference = ({
             return;
         }
         let outcome: ShareStartOutcome = 'failed';
+        const republishRun: RepublishRun = { seq: null };
         try {
-            outcome = await startScreenShareFrom(options, () => tracker.settle(attempt, 'published', true));
+            outcome = await startScreenShareFrom(options, () => tracker.settle(attempt, 'published', true), startOpts, republishRun);
         } catch (err) {
             console.warn('[ScreenShare] start threw:', err);
         } finally {
             // No-op once published; otherwise releases the button. A failed
             // change-source can leave the previous share running.
+            const leftover = reuseCloneRef.current;
+            reuseCloneRef.current = null;
+            if (leftover) { try { leftover.stop(); } catch { /* already stopped */ } }
             tracker.settle(attempt, outcome, !!localParticipant.isScreenShareEnabled);
+            // Every way out of a republish takes the flag back. If nothing was
+            // published, this is what tells viewers to stop holding, at once.
+            shareRepublishSignal.end(localParticipant, republishRun.seq, outcome);
         }
+    };
+
+    /**
+     * Linux hardware screen share (utils/nativeSharePipeline.ts). Null = share the normal way, and that is the answer for EVERYTHING that
+     * is not a clean yes: switched off by the user (costs nothing, no IPC), not Linux/Wayland-portal, no helper, no usable GPU encoder, hardware too
+     * slow at this size, or anything failing while starting. It never throws and never leaves a half-started helper behind.
+     */
+    const tryStartNativeShare = async (
+        box: { width: number; height: number }, fps: number, bitrateBps: number, viaPortal: boolean, resolution: ScreenShareOptions['resolution'],
+        grantSourceId: string, internalRestart: boolean,
+    ): Promise<NativeSharePipeline | null> => {
+        const grantToken = grantTokenFor(shareGrantRef.current, grantSourceId);
+        const nativeGrant = grantToken ? { sourceId: grantSourceId, token: grantToken } : null;
+        const api = window.nativeShare;
+        if (!api || window.electronAPI?.platform !== 'linux' || nativeFailedRef.current || !viaPortal) return null;
+        const flagOn = getNativeShareEnabled() || api.envFlag === true;
+        if (!flagOn) return null;
+        const why = (reason: string, extra: Record<string, unknown> = {}) => logCallEvent('native_share_select', { path: 'chromium', reason, ...extra });
+        try {
+            if (!(await api.available()).helper) { why('no helper'); return null; }
+            const probe = await api.probe({ width: box.width, height: box.height, fps });
+            const decision = decideShareBackend({ flagOn, platform: 'linux', probe, wantFps: fps });
+            if (decision.path !== 'native' || !decision.backend) { why(decision.reason, { sustained: probe.sustainedFps ?? 0 }); return null; }
+            const worker = e2eeWorkerOf(room as unknown as Parameters<typeof e2eeWorkerOf>[0]) as unknown as Worker | null;
+            if (!worker) { why('no e2ee worker'); return null; }   // never publish native frames without the call's cryptor in front of them
+            const started = await startNativeSharePipeline({
+                api, worker,
+                params: {
+                    backend: decision.backend, maxWidth: box.width, maxHeight: box.height, fps: decision.fps ?? fps, bitrateBps,
+                    source: 'any',
+                    // Consent for the share's audio: main binds this grant to the native session it starts (no getDisplayMedia handshake spends it).
+                    grant: nativeGrant,
+                    // A NEW share (and a change of source) always shows the portal chooser: a remembered grant would silently pick the last
+                    // screen again (owner, 2026-11-11). The remembered grant is only for the app's own restart of the SAME live share.
+                    restoreToken: nativeRestoreTokenFor(internalRestart, getNativeShareRestoreToken()),
+                },
+                onRestoreToken: setNativeShareRestoreToken,
+                // The lighter copy, same rule as the Chromium share (the encoder here is always hardware): setting on and a size that gets one.
+                lowerLayer: getShareLowLayerEnabled() && shareHasLowerLayer(resolution, 'h264'),
+                intraRefresh: false,   // flip only after the tester bundle proves NVENC intra-refresh decodes (docs/plans/native-share-encoder.md)
+            });
+            if (!started.ok) {
+                nativeFailedRef.current = startFailureLatchesNative(started.reason);   // a closed / timed-out chooser is not a hardware problem: only real encoder/helper failures latch
+                logCallEvent('native_share_fallback', { reason: started.reason, detail: (started.detail ?? '').slice(0, 120), phase: 'start', latched: nativeFailedRef.current });
+                return null;
+            }
+            logCallEvent('native_share_select', {
+                path: 'native', backend: decision.backend, reason: decision.reason, fps: decision.fps ?? fps, sustained: probe.sustainedFps ?? 0,
+                gpu: (probe.nvencInfo ?? probe.vaapiInfo)?.gpu ?? '', driver: (probe.nvencInfo ?? probe.vaapiInfo)?.driver ?? '', api: probe.nvencInfo?.nvencApi ?? '',
+                w: started.pipeline.info.width, h: started.pipeline.info.height, src_w: started.pipeline.info.srcWidth, src_h: started.pipeline.info.srcHeight,
+            });
+            return started.pipeline;
+        } catch (err) {
+            nativeFailedRef.current = true;
+            logCallEvent('native_share_fallback', { reason: 'threw', detail: String((err as Error)?.message ?? err).slice(0, 120), phase: 'start' });
+            return null;
+        }
+    };
+
+    /**
+     * Publish a started native pipeline as the screen share (see tryStartNativeShare). The pipeline is held in hdrPipelineRef too, so every
+     * "own generated track" guard (no Chromium-side retune, own size source, no capture reuse) applies to it unchanged. Anything that ends
+     * the native capture after this point (helper crash, the compositor stopped the source, an encoder error, the injection watchdog) ends
+     * the share and restarts it the normal way: a share is never left frozen or dead. A failing publish does the same.
+     */
+    const publishNativeShare = async (
+        pipe: NativeSharePipeline, options: ScreenShareOptions,
+    ): Promise<{ srcSize: { width: number; height: number }; outSize: { width: number; height: number } }> => {
+        nativePipeRef.current = pipe;
+        setNativeShareLive(() => { const st = pipe.liveStats(); return { encoder: st.encoder, width: st.width, height: st.height, fps: st.fps, kbps: st.kbps, encMsP95: st.encMsP95 }; });
+        hdrPipelineRef.current = pipe;
+        pendingScreenShareRef.current = null; // no getDisplayMedia handshake follows
+        const srcSize = { width: pipe.info.srcWidth, height: pipe.info.srcHeight };
+        const outSize = { width: pipe.info.width, height: pipe.info.height };
+        cropSourceSizeRef.current = srcSize;
+        cropOutSizeRef.current = outSize;
+        setShareDisplayAspect(aspectOf(srcSize.width, srcSize.height));
+        logCallEvent('share_codec', {
+            codec: 'h264', profile: 'cb', hardware: true, reason: `native-${pipe.encoder}`, res: options.resolution, fps: options.frameRate,
+            lighter_copy: pipe.lowerLayer, backend: `native-${pipe.encoder}`, ceiling: 0,
+        });
+        pipe.onSourceEnded((reason) => {
+            console.info(`[ScreenShare] the native capture ended (${reason}) - restarting the share the normal way`);
+            logCallEvent('native_share_fallback', { reason: reason.slice(0, 80), phase: 'live' });
+            const ownEnd = /^(source_ended|stopped)/.test(reason);   // the source going away on its own is the user's stop (window closed), not a failure
+            nativeFailedRef.current = !ownEnd;
+            stopCropPipeline();
+            setScreenShareNotice({ tone: 'info', text: ownEnd ? 'The shared screen went away, so the share ended.' : 'Hardware screen share stopped, so Cipherline switched to the normal screen share.' });
+            void (async () => {
+                try { await localParticipant?.setScreenShareEnabled(false); } catch { /* already unpublished */ }
+                if (!ownEnd) { try { await handleScreenShareSelect(options, { fresh: true }); } catch { /* the user can start it again */ } }
+            })();
+        });
+        pipe.track.contentHint = 'motion';
+        try {
+            await localParticipant!.publishTrack(new LocalVideoTrack(pipe.track, undefined, true), { source: Track.Source.ScreenShare, ...pipe.publishOptions });
+            const pcOf = (room?.engine as unknown as { pcManager?: { publisher?: { pc?: RTCPeerConnection } } } | undefined)?.pcManager?.publisher?.pc ?? null;
+            await pipe.afterPublish(pcOf);
+        } catch (err) {
+            // The publish itself failed: stop the native capture, never try it again this session, and start the share the normal way
+            // as soon as this attempt has settled (the error below only ends THIS attempt).
+            nativeFailedRef.current = true;
+            logCallEvent('native_share_fallback', { reason: 'publish_failed', detail: String((err as Error)?.message ?? err).slice(0, 120), phase: 'publish' });
+            stopCropPipeline();
+            setTimeout(() => { void handleScreenShareSelect(options, { fresh: true }); }, 300);
+            throw err;
+        }
+        return { srcSize, outSize };
     };
 
     /** A capture or publish error → the share notice (or nothing, for a cancel). */
@@ -3416,10 +4005,11 @@ export const SidebarConference = ({
         return { pipe, spent: true };
     };
 
-    const reportShareStartError = (err: unknown): ShareStartOutcome => {
-        // A failed start must not leave a half-built crop pipeline holding the display capture.
-        stopCropPipeline();
-        const view = describeShareStartError(err, window.electronAPI?.platform);
+    const reportShareStartError = (err: unknown, opts: { stillSharing?: boolean } = {}): ShareStartOutcome => {
+        // A failed start must not leave a half-built crop pipeline holding the display
+        // capture. With a share still running, that pipeline is the share's own.
+        if (!opts.stillSharing) stopCropPipeline();
+        const view = describeShareStartError(err, window.electronAPI?.platform, opts);
         if (view.kind === 'cancelled') {
             console.info('[ScreenShare] start cancelled:', err);
             return 'cancelled';
@@ -3427,16 +4017,143 @@ export const SidebarConference = ({
         console.warn('[ScreenShare] start failed:', err);
         // The DOMException type only (e.g. NotAllowedError) — never the message.
         const errType = String((err as { name?: unknown } | null)?.name ?? 'unknown').slice(0, 40);
-        logCallEvent('share_start', { verdict: 'failed', why: errType });
+        logCallEvent('share_start', { verdict: 'failed', why: errType, kept: !!opts.stillSharing });
         setScreenShareNotice({ tone: 'warn', text: view.text });
         return 'failed';
+    };
+
+    /**
+     * Only the audio flag changed ("Disable audio" / "Enable audio" on a live
+     * share): switch the audio on its own and leave the video exactly as it is.
+     * Routed through the hot swap like a source change, this re-acquired the
+     * same screen and replaceTrack()ed it onto the running hardware encoder,
+     * which killed the renderer (shareLiveRetune.isAudioOnlyChange). The audio
+     * is a separate publication: the native WASAPI / ScreenCaptureKit capture
+     * this component owns, or the Chromium loopback track that came with the
+     * video (off = unpublish it; ON through loopback needs a new capture, so
+     * that one is left to the republish path). Returns false, having changed
+     * nothing it cannot repeat, when the caller should take the old route.
+     */
+    const applyAudioOnlyChange = async (
+        options: ScreenShareOptions, useNativeAudio: boolean, nativeMode: 'window' | 'screen',
+    ): Promise<boolean> => {
+        const cur = currentShareRef.current;
+        if (!localParticipant || !cur) return false;
+        try {
+            // Whose is the live audio publication? Decided BEFORE the native
+            // teardown below clears nativeAudioPubRef.
+            const livePub = localParticipant.getTrackPublication(Track.Source.ScreenShareAudio);
+            const loopbackTrack = livePub?.track && livePub.track !== nativeAudioPubRef.current?.track ? livePub.track : undefined;
+            await stopNativeWindowAudio('toggle');
+            if (!options.audio && loopbackTrack) await localParticipant.unpublishTrack(loopbackTrack, true);
+            if (options.audio && useNativeAudio) {
+                try {
+                    // The audio start presents a grant like every other capture
+                    // (electron/capture-consent.ts). This path does not go
+                    // through the republish that mints one, so the grant from
+                    // the share's start was already spent and main would have
+                    // asked the user in a native dialog on every "Enable audio".
+                    await mintShareGrant(options);
+                    await startNativeWindowAudio(nativeMode, options.sourceId, options.appAudio?.handle);
+                } catch (err) {
+                    console.error('[ScreenShare] audio toggle: startNativeWindowAudio threw:', err);
+                    logShareAudio({ step: 'failed', reason: 'error' });
+                    setScreenShareNotice({
+                        tone: 'warn',
+                        text: 'Screen share is active but audio capture failed. Video is still being shared.',
+                    });
+                }
+            }
+        } catch (err) {
+            console.warn('[ScreenShare] audio-only change failed, taking the republish route:', err);
+            return false;
+        }
+        const recorded: ScreenShareOptions = { ...cur, audio: options.audio, appAudio: options.appAudio };
+        currentShareRef.current = recorded;
+        setCurrentShare(recorded);
+        if (shareParamsCtxRef.current) shareParamsCtxRef.current = { ...shareParamsCtxRef.current, options: recorded };
+        console.info(`[ScreenShare] audio ${options.audio ? 'on' : 'off'} - video untouched`);
+        return true;
+    };
+
+    /**
+     * Through the Wayland portal: the capture of the source being CHANGED TO, asked for
+     * while the running share is still up (sharePlatformSupport.shouldAcquireBeforeTeardown).
+     * The chooser may sit open for a person's time; the share and its viewers are not
+     * touched while it does, a closed dialog or any other failure changes nothing, and the
+     * republish that follows publishes this track without a capture of its own. Same
+     * grant + pending-share handshake as every other capture. Never throws; whatever it
+     * yields is the caller's to stop (reuseCloneRef is how a failed start cleans up).
+     */
+    const acquireCaptureFirst = async (
+        options: ScreenShareOptions,
+    ): Promise<{ ok: true; track: MediaStreamTrack } | { ok: false; error: unknown }> => {
+        const wantsSlice = options.layout?.kind === 'slice' && supportsCropPipeline();
+        // The new share's capture, opened at the quality picked (portalCaptureRequest).
+        const cap = portalCaptureRequest(options, await readCaptureCeiling());
+        const fps = cap.frameRate;
+        let mediaPromise: Promise<MediaStream> | undefined;
+        try {
+            await mintShareGrant(options);
+            pendingScreenShareRef.current = pendingShare(options, false);
+            mediaPromise = navigator.mediaDevices.getDisplayMedia({
+                // One screen of an ultra-wide display needs the whole display's own pixels
+                // (publishCroppedShare); anything else is held to the share's maximum box, and the
+                // chosen size is the sender's scale (and what the codec can encode, its clamp).
+                video: wantsSlice
+                    ? { width: 16384, height: 8640, frameRate: fps }
+                    : { width: { max: cap.box.width }, height: { max: cap.box.height }, frameRate: { max: fps } },
+                audio: false,
+            });
+            const stream = await Promise.race([
+                mediaPromise,
+                new Promise<never>((_, rej) =>
+                    setTimeout(() => rej(new Error('getDisplayMedia handshake timed out')), captureHandshakeMs(true))),
+            ]);
+            const track = stream.getVideoTracks()[0];
+            if (!track) throw new Error('getDisplayMedia returned no video track');
+            track.contentHint = 'motion';
+            // The portal resolves before the desktop has been asked: the chooser opens when the first sink
+            // attaches, and its answer is the first frame. Wait for it HERE, with the running share and its
+            // viewers still undisturbed (the point of acquiring first); no frame ever = the dialog was closed.
+            const first = await waitForFirstFrameSize(track, PORTAL_FIRST_FRAME_WAIT);
+            if (!first.size) { try { track.stop(); } catch { /* gone */ } throw portalChooserClosedError(); }
+            portalAskedRef.current = { fps, width: cap.box.width, height: cap.box.height };
+            return { ok: true, track };
+        } catch (err) {
+            // Losing the race does not cancel the request: stop whatever it yields.
+            void mediaPromise
+                ?.then(st => st.getTracks().forEach(t => { try { t.stop(); } catch { /* gone */ } }))
+                .catch(() => { /* the request itself failed; nothing to release */ });
+            pendingScreenShareRef.current = null;
+            return { ok: false, error: err };
+        }
     };
 
     // The body of a share start. Calls onPublished the moment LiveKit has
     // published the video (that ends the button's loading state); returns the
     // outcome for the paths that never get there.
-    const startScreenShareFrom = async (options: ScreenShareOptions, onPublished: () => void): Promise<ShareStartOutcome> => {
+    const startScreenShareFrom = async (
+        options: ScreenShareOptions, onPublished: () => void, startOpts?: { fresh?: boolean }, republishRun?: RepublishRun,
+    ): Promise<ShareStartOutcome> => {
         if (!localParticipant) return 'cancelled';
+        // A fallback that must change the ENCODER (codec, size) asks for a
+        // fresh publication: the retune and the hot swap below both keep the
+        // live sender, and with it whatever encoder / codec it is stuck on.
+        // A resolution change on a live HARDWARE encoder is one too: the
+        // retune and the hot swap would re-open the encoder at the new size
+        // in place, which left a share on VP8 and, once, killed the renderer
+        // (report 45a5e136; shareLiveRetune.resolutionChangeNeedsFresh).
+        // A different SOURCE on a live hardware encoder is one as well: every
+        // hot swap there failed (report abb0f871 crashed the renderer 0.2 s
+        // after one, dd3e84e3 fell off H.265 4 s after one;
+        // shareLiveRetune.sourceSwapNeedsFresh).
+        const fresh = !!startOpts?.fresh
+            || (localParticipant.isScreenShareEnabled
+                && (resolutionChangeNeedsFresh(currentShareRef.current, options, liveShareIsHardware(),
+                    !!currentShareRef.current && liveFrameUnchangedFor(currentShareRef.current, options))
+                    || sourceSwapNeedsFresh(currentShareRef.current, options, liveShareIsHardware())
+                    || audioPlusQualityNeedsFresh(currentShareRef.current, options, liveShareIsHardware())));
         const tStart = performance.now();
         const since = (t: number) => (performance.now() - t).toFixed(0);
         // The encoder-stall fallback ladder is per SOURCE: a stall-triggered
@@ -3457,7 +4174,11 @@ export const SidebarConference = ({
         // know whether audio will be handled out-of-band (native) or has to come
         // from the same getDisplayMedia stream as the video (Chromium loopback).
         const isWindowSource = options.sourceId.startsWith('window:');
-        const nativeMode: 'window' | 'screen' = isWindowSource ? 'window' : 'screen';
+        // A Wayland portal share is a placeholder (utils/portalSource.ts): nobody knows whether a window or
+        // a screen was chosen. What its audio is comes from the picker: one app's (window mode with the
+        // app's handle), or everything except Cipherline (screen mode).
+        const portalAppAudio = isPortalSourceId(options.sourceId) && !!options.appAudio?.handle;
+        const nativeMode: 'window' | 'screen' = (isWindowSource || portalAppAudio) ? 'window' : 'screen';
         // Re-probe the native-audio capability inline rather than trusting the
         // mount-time state alone. The mount probe can resolve false transiently
         // if the IPC handler wasn't registered yet (e.g. main.ts hot-reload
@@ -3470,6 +4191,15 @@ export const SidebarConference = ({
         }
         const useNativeAudio = options.audio && nativeReady;
 
+        // ── Only the audio flag changed: the video is not touched ─────────────
+        // (applyAudioOnlyChange; turning audio ON through the Chromium loopback
+        // needs a new capture and takes the republish route below.)
+        if (!fresh && localParticipant.isScreenShareEnabled && isAudioOnlyChange(currentShareRef.current, options)
+            && (!options.audio || useNativeAudio)
+            && await applyAudioOnlyChange(options, useNativeAudio, nativeMode)) {
+            return 'published';
+        }
+
         // ── Same source, new quality: the Adjust-quality retune ───────────────
         // The picker opened mid-share can re-pick the SAME screen at another
         // resolution / frame rate. That is a quality change, not a source
@@ -3479,7 +4209,7 @@ export const SidebarConference = ({
         // A different source, a layout or audio change, or an unchanged
         // selection (a stall / codec republish passes the share's own options)
         // is not matched and takes the paths below.
-        if (await applyLiveSelection(liveShareApplier(), localParticipant.isScreenShareEnabled, currentShareRef.current, options)) {
+        if (!fresh && await applyLiveSelection(liveShareApplier(), localParticipant.isScreenShareEnabled, currentShareRef.current, options)) {
             return 'published';
         }
 
@@ -3516,13 +4246,21 @@ export const SidebarConference = ({
         const liveSsAudioPub = localParticipant.getTrackPublication(Track.Source.ScreenShareAudio);
         const hasLoopbackAudioPublished =
             !!liveSsAudioPub?.track && liveSsAudioPub.track !== nativeAudioPubRef.current?.track;
+        // Through the portal a hot swap is a NEW capture (the swap acquires one), i.e. the desktop's chooser:
+        // right for another source, never for the one that is already live (audio + quality in one pick) -
+        // that republishes on the capture it has (below).
+        const portalSameSource = (await captureViaPortal()) && localParticipant.isScreenShareEnabled
+            && currentShareRef.current?.sourceId === options.sourceId;
         if (
-            localParticipant.isScreenShareEnabled
+            !fresh
+            && localParticipant.isScreenShareEnabled
             && !(options.audio && !nativeReady)
             && !hasLoopbackAudioPublished
+            && !portalSameSource
         ) {
             const swapped = await tryHotSwapScreenShare(options, useNativeAudio, nativeMode, tStart);
-            if (swapped) return 'published';
+            if (swapped === true) return 'published';
+            if (swapped && typeof swapped === 'object') return reportShareStartError(swapped.cancelled, { stillSharing: true });
         }
 
         // If we're republishing an existing share (Change Source / Adjust
@@ -3534,14 +4272,52 @@ export const SidebarConference = ({
         // LiveKit does NOT echo a participant's own data packets back to
         // themselves, so a plain DataReceived listener would miss the sharer's
         // own marker. A window event mirrors the signal for the local page too.
-        const isAdjustment = localParticipant.isScreenShareEnabled;
+        let isAdjustment = localParticipant.isScreenShareEnabled;
+        // Switching to another source: make sure it opens while the running share is
+        // still up, since everything below takes that share down first.
+        // Not through the Wayland portal: there a probe is a second dialog for one change of
+        // source (sharePlatformSupport.shouldProbeNewSource).
+        if (isAdjustment && options.sourceId !== currentShareRef.current?.sourceId && shouldProbeNewSource(await captureViaPortal())) {
+            const probe = await probeShareSource(async () => {
+                await mintShareGrant(options);
+                pendingScreenShareRef.current = pendingShare(options, false);
+                return navigator.mediaDevices.getDisplayMedia({ video: { frameRate: { max: 5 } }, audio: false });
+            });
+            if (!probe.ok) {
+                pendingScreenShareRef.current = null;
+                return reportShareStartError(probe.error, { stillSharing: true });
+            }
+        }
+        // Through the Wayland portal a change of source asks the desktop for the NEW capture
+        // here, while the running share is still up and its viewers are undisturbed: the
+        // chooser is a person, and the viewers' hold (utils/shareHold.ts, 6 s) only has to
+        // cover the teardown and publish below. A closed dialog changes nothing.
+        let acquiredCapture: MediaStreamTrack | null = null;
+        if (shouldAcquireBeforeTeardown({
+            viaPortal: await captureViaPortal(), live: localParticipant.isScreenShareEnabled,
+            cur: currentShareRef.current, next: options,
+            nativeLive: !!nativePipeRef.current && !nativeFailedRef.current,
+        })) {
+            const got = await acquireCaptureFirst(options);
+            if (!got.ok) return reportShareStartError(got.error, { stillSharing: true });
+            acquiredCapture = got.track;
+            reuseCloneRef.current = acquiredCapture; // stopped by handleScreenShareSelect if nothing took it
+            // The share may have ended while the chooser was open: then this is a plain start.
+            isAdjustment = localParticipant.isScreenShareEnabled;
+        }
         if (isAdjustment) {
+            // Before anything is torn down: every viewer holds their place only on
+            // this flag (utils/shareHold.ts). Bounded, so it cannot stall the republish.
+            const announced = await shareRepublishSignal.begin(localParticipant);
+            if (republishRun) republishRun.seq = announced.seq;
             window.dispatchEvent(new CustomEvent('cipherline:ss-adjust', {
-                detail: { identity: localParticipant.identity },
+                detail: { identity: localParticipant.identity, hold: announced.acked },
             }));
             if (room) {
                 try {
-                    const payload = new TextEncoder().encode(JSON.stringify({ type: 'ss-adjust' }));
+                    const payload = new TextEncoder().encode(JSON.stringify(
+                        announced.acked ? { type: 'ss-adjust', hold: 1 } : { type: 'ss-adjust' },
+                    ));
                     await room.localParticipant.publishData(payload, { reliable: true, topic: 'ss-adjust' });
                 } catch (err) {
                     console.warn('[ScreenShare] failed to broadcast adjust marker', err);
@@ -3559,6 +4335,54 @@ export const SidebarConference = ({
         // calling setScreenShareEnabled(false) — otherwise the native teardown
         // races with LiveKit's unpublish and leaves the native addon in a bad
         // state that the next startNativeWindowAudio() can't recover from.
+        //
+        // Through the Wayland portal, a fresh publication of the SAME source keeps the
+        // capture that is already running (a clone survives the old track's stop): the
+        // restarts the app makes by itself (encoder stall, codec drift, a hardware
+        // encoder's resolution rule) must not open the desktop's chooser with nobody
+        // there to answer it, and a person answering is time the viewers' hold
+        // (utils/shareHold.ts, 6 s) does not have. See sharePlatformSupport.canReuseLiveCapture.
+        let reusedCapture: MediaStreamTrack | null = acquiredCapture;
+        let reusedHow: 'acquired_first' | 'live_clone' | 'crop_source' = 'acquired_first';
+        if (!reusedCapture && localParticipant.isScreenShareEnabled && (fresh || portalSameSource)) {
+            const viaPortalNow = await captureViaPortal();
+            const liveCapture = localParticipant.getTrackPublication(Track.Source.ScreenShare)?.track?.mediaStreamTrack;
+            if (liveCapture && canReuseLiveCapture({
+                // (portalSameSource: the hot swap above was skipped, so this IS a fresh publication)
+                viaPortal: viaPortalNow, fresh: true, live: true,
+                cur: currentShareRef.current, next: options,
+                trackLive: liveCapture.readyState === 'live',
+                ownPipeline: !!cropPipelineRef.current || !!hdrPipelineRef.current,
+            })) {
+                try { reusedCapture = liveCapture.clone(); } catch { reusedCapture = null; }
+                reusedHow = 'live_clone';
+            } else if (cropPipelineRef.current && canReuseCropCapture({
+                viaPortal: viaPortalNow, live: true, cur: currentShareRef.current, next: options,
+                cropPipeline: true, hdrPipeline: !!hdrPipelineRef.current,
+            })) {
+                // One screen of an ultra-wide display falling back to the whole display (a
+                // capture stall): the crop pipeline's capture IS the whole display. Kept only
+                // if a real frame comes out of a clone of it - a stall in the capture itself
+                // is the one thing a fresh capture is for, and a clone of a dead one is dead.
+                const candidate = cropPipelineRef.current.cloneSource();
+                if (candidate) {
+                    const frame = await waitForFirstFrameSize(candidate, { timeoutMs: 1_500 });
+                    if (frame.how === 'frame') {
+                        reusedCapture = candidate;
+                        reusedHow = 'crop_source';
+                    } else {
+                        try { candidate.stop(); } catch { /* gone */ }
+                        console.info(`[ScreenShare] the display capture is not delivering (${frame.how}) - capturing again for the whole display`);
+                    }
+                }
+            }
+            reuseCloneRef.current = reusedCapture; // stopped by handleScreenShareSelect if nothing took it
+            // A capture that is kept never reaches main's resolve step, which is what renews the
+            // consent the share's native audio rides on (capture-consent.ts). Continue it here, BEFORE
+            // the teardown below ends the live share main knows: the same live source only - a new
+            // source is a new capture and a new consent (continueShareGrant falls back to a plain grant).
+            if (reusedCapture) await continueShareGrant(options);
+        }
         if (localParticipant.isScreenShareEnabled) {
             const tTeardown = performance.now();
             await stopNativeWindowAudio();
@@ -3637,7 +4461,7 @@ export const SidebarConference = ({
         // H.265 when the room negotiation says everyone can decode it and this
         // machine HW-encodes it (hevcNegotiation.ts); otherwise the normal choice,
         // which the republish loop also falls back to mid-share.
-        const hevcShare = hevcModeRef.current === 'h265' && hevcEncodeRef.current && !hasHevcFailed() && !hasHevcGpuLost();
+        const hevcShare = hevcShareOkRef.current && hevcEncodeRef.current && !hasHevcFailed() && !hasHevcGpuLost();
         shareBaseCodecRef.current = decision.codec;
         shareBaseHighRef.current = decision.codec === 'h264' && decision.h264Profile === 'high';
         const codec: ScreenShareCodec = hevcShare ? 'h265' : decision.codec;
@@ -3664,11 +4488,24 @@ export const SidebarConference = ({
         // captureFrameRateFor); the encoder's maxFramerate stays at the target.
         // A capturer with a fixed ceiling (Linux Wayland/PipeWire: 60) is not
         // asked for more than it can deliver; `share_codec` records both.
-        const captureCeiling = mainDiag?.captureFpsCeiling ?? null;
-        const captureFps = captureFrameRateFor(options.frameRate, captureCeiling);
+        // Plus the Chromium path's own measured 60 when the native hardware path will not run (linuxShareDefaults.ts).
+        const captureCeiling = mergeFpsCeiling(
+            mainDiag?.captureFpsCeiling ?? null,
+            chromiumPathFpsCap({ platform: window.electronAPI?.platform, nativeLikely: await nativeShareLikely() }),
+        );
+        // Through the Wayland portal the capture is opened at the quality picked, not at the monitor's maximum
+        // (sharePlatformSupport.portalCaptureRequest). A later change re-opens it silently where the portal
+        // restores a listed source, and only when it needs more elsewhere (utils/portalCapturePlan.ts).
+        const viaPortalStart = await captureViaPortal();
+        viaPortalRef.current = viaPortalStart;
+        const portalCap = viaPortalStart ? portalCaptureRequest(options, captureCeiling, codec) : null;
+        const captureFps = portalCap ? portalCap.frameRate : captureFrameRateFor(options.frameRate, captureCeiling);
         // The capture box, held to what THIS codec can encode (the Surround
         // 7680x1440 black screen: shareEncoderLimits.ts).
         const box = captureBoxFor(options.resolution, codec);
+        // What the capture is asked for: the user's box (portal: the same, at the exact rate chosen).
+        const captureBox = portalCap ? portalCap.box : box;
+        if (portalCap) portalAskedRef.current = { fps: captureFps, width: captureBox.width, height: captureBox.height };
         // One screen of an ultra-wide display, cropped before the encoder
         // (utils/shareCrop.ts). Needs the WebCodecs breakout box; without it the
         // whole display is shared, scaled to fit.
@@ -3693,9 +4530,10 @@ export const SidebarConference = ({
             hw: hwEncoders,
             main: mainDiag,
         });
+        let mainRefinedByPortal = false;   // a native share's Hz came from the portal stream's own rectangle: a late answer must not overwrite it with a guess
         if (!mainDiag) {
             void mainDiagPromise.then(late => {
-                if (late) updateScreenShareSession(options.sourceId, { main: late });
+                if (late && !mainRefinedByPortal) updateScreenShareSession(options.sourceId, { main: late });
             });
         }
         const publishOptions = buildScreenSharePublishOptions(options.resolution, options.frameRate, codec, { lowerLayer });
@@ -3761,8 +4599,11 @@ export const SidebarConference = ({
         // Always tell Electron's displayMedia handler to use video-only when we're
         // handling audio natively, so we don't stack Electron's 'loopback' stream
         // on top of the native capture.
-        await mintShareGrant(options);
-        pendingScreenShareRef.current = pendingShare(options, useNativeAudio ? false : options.audio);
+        // (A re-used capture asks for nothing: no grant, no handshake with main.)
+        if (!reusedCapture) {
+            await mintShareGrant(options);
+            pendingScreenShareRef.current = pendingShare(options, useNativeAudio ? false : options.audio);
+        }
 
         // The share's ceiling, for its start bitrate (installShareStartBitrate
         // arms on the sender LiveKit creates inside this publish).
@@ -3771,6 +4612,12 @@ export const SidebarConference = ({
         // An HDR screen goes through our own tone-mapped capture (see
         // tryStartHdrShare); anything else - every SDR screen - costs one IPC.
         let hdrPipe: HdrSharePipeline | null = null;
+        // Linux hardware share: on unless switched off, used only when a GPU encoder works; any failure inside falls through to the normal path below.
+        let nativePipe: NativeSharePipeline | null = null;
+        if (!sliceLayout && !reusedCapture) {
+            nativePipe = await tryStartNativeShare(box, captureFps, Math.min(maxBitrate, 30_000_000), viaPortalStart, options.resolution, options.sourceId,
+                fresh === true && currentShareRef.current?.sourceId === options.sourceId);
+        }
         if (!sliceLayout && !isWindowSource) {
             const hdr = await tryStartHdrShare(options, box, captureFps);
             hdrPipe = hdr.pipe;
@@ -3787,9 +4634,19 @@ export const SidebarConference = ({
         // preference all apply to it exactly as to a captured one.
         let sliceStartSize: { width: number; height: number } | undefined;
         let sliceCapture: { width: number; height: number } | undefined;
-        const publishCroppedShare = async (layout: Extract<ShareLayout, { kind: 'slice' }>) => {
+        // The display capture for a cropped share: asked for here, or (capturedFirst) already
+        // in hand from acquireCaptureFirst, in which case there is no grant and no handshake.
+        const captureDisplayForCrop = async (capturedFirst?: MediaStreamTrack | null): Promise<MediaStreamTrack | undefined> => {
+            if (capturedFirst) {
+                // Only the rate is held to what this capturer can deliver.
+                // (Not through the portal: it was asked for its maximum already, and a changed constraint
+                // is a new portal session.)
+                if (!portalCap) try { await capturedFirst.applyConstraints({ frameRate: { max: captureFps } }); } catch { /* the capture's own rate stands */ }
+                return capturedFirst;
+            }
             await mintShareGrant(options);
             pendingScreenShareRef.current = pendingShare(options, false);
+            const handshakeMs = captureHandshakeMs(await captureViaPortal());
             const mediaPromise = navigator.mediaDevices.getDisplayMedia({
                 // Far above any display: the capturer never upscales, so this is
                 // "the display's own size" - the crop needs the real pixels.
@@ -3800,7 +4657,7 @@ export const SidebarConference = ({
             try {
                 stream = await Promise.race([
                     mediaPromise,
-                    new Promise<never>((_, rej) => setTimeout(() => rej(new Error('getDisplayMedia handshake timed out')), 10_000)),
+                    new Promise<never>((_, rej) => setTimeout(() => rej(new Error('getDisplayMedia handshake timed out')), handshakeMs)),
                 ]);
             } catch (err) {
                 // Losing the race does not cancel the request: stop whatever it yields.
@@ -3809,7 +4666,10 @@ export const SidebarConference = ({
                     .catch(() => { /* the request itself failed */ });
                 throw err;
             }
-            const capTrack = stream.getVideoTracks()[0];
+            return stream.getVideoTracks()[0];
+        };
+        const publishCroppedShare = async (layout: Extract<ShareLayout, { kind: 'slice' }>, capturedFirst?: MediaStreamTrack | null) => {
+            const capTrack = await captureDisplayForCrop(capturedFirst);
             if (!capTrack) throw new Error('getDisplayMedia returned no video track');
             capTrack.contentHint = 'motion';
             const capSettings = capTrack.getSettings();
@@ -3836,11 +4696,73 @@ export const SidebarConference = ({
             });
             const croppedTrack = new LocalVideoTrack(pipe.track, undefined, true);
             await localParticipant.publishTrack(croppedTrack, { source: Track.Source.ScreenShare, ...publishOptions });
+            if (reuseCloneRef.current === capTrack) reuseCloneRef.current = null; // the crop owns it now
+            // Where the crop runs and whether frames go through it (the
+            // worker reports every 5 s): the record that says, next time a
+            // single-screen share is black, whether the capture or the crop
+            // stage is the one that stopped (share_crop).
+            setTimeout(() => {
+                if (cropPipelineRef.current !== pipe) return;
+                try {
+                    const st = pipe.stats();
+                    const dg = pipe.diag();
+                    const s = cropSourceSizeRef.current;
+                    const o = cropOutSizeRef.current;
+                    logCallEvent('share_crop', {
+                        mode: dg.mode, why: dg.fallback ?? '', wk_err: dg.workerError ?? false,
+                        crop_in: st.framesIn, crop_out: st.framesOut, crop_err: st.errors,
+                        src: s ? `${s.width}x${s.height}` : '', res: o ? `${o.width}x${o.height}` : '',
+                    });
+                } catch { /* diagnostics only */ }
+            }, 6_000);
         };
         const tPublish = performance.now();
+        let settledStart: SettledCapture | null = null;
         try {
-          if (sliceLayout) {
-            await publishCroppedShare(sliceLayout);
+          if (nativePipe) {
+            // The display the person picked in the portal chooser is known now (its rectangle): read ITS refresh rate instead of the primary's.
+            const sharedRect = nativePipe.portalStream?.()?.rect ?? null;
+            if (sharedRect) {
+                mainRefinedByPortal = true;
+                try {
+                    const refined = parseMainDiagnostics(await Promise.race([
+                        window.electronAPI?.getScreenShareDiagnostics?.(options.sourceId, sharedRect) ?? Promise.resolve(null),
+                        new Promise<null>(res => setTimeout(() => res(null), 750)),
+                    ]));
+                    if (refined) updateScreenShareSession(options.sourceId, { main: refined });
+                } catch { /* keep what the first query said */ }
+            }
+            const ns = await publishNativeShare(nativePipe, options);
+            sliceCapture = ns.srcSize;
+            sliceStartSize = ns.outSize;
+          } else if (reusedCapture && !sliceLayout) {
+            // The live capture, kept (see where it was cloned): a fresh sender and encoder on the
+            // same frames. A failure here is a failed start like any other publish failure; the
+            // clone is stopped by handleScreenShareSelect's finally.
+            const clone = reusedCapture;
+            clone.contentHint = 'motion';
+            // Through the portal the kept capture is re-opened only where that is silent, or when the new quality needs
+            // more than it was asked for (portalCapturePlan): a changed constraint is a new portal session - a dialog
+            // in front of whoever is there on a desktop that does not restore (this is a restart the app makes by
+            // itself). The new size and rate are also the new sender's (shareSenderParamOpts, applyScreenShareSenderParams).
+            const cloneWant: CaptureAsk = { fps: captureFps, width: captureBox.width, height: captureBox.height };
+            if (!portalCap || portalRetuneTouchesCapture({ restoreListed: restoreListedRef.current, asked: portalAskedRef.current, want: cloneWant })) {
+                try {
+                    await clone.applyConstraints({
+                        width: { max: captureBox.width }, height: { max: captureBox.height }, frameRate: { max: captureFps },
+                    });
+                    if (portalCap) portalAskedRef.current = cloneWant;
+                } catch (err) { console.warn('[ScreenShare] re-sizing the kept capture failed, publishing it as it is:', err); }
+            }
+            const settled = await settleCaptureSize(clone, captureBox);
+            logCallEvent('share_clamp', { codec, phase: 'pre', reused: true, how: reusedHow, ...settleEventDetails(settled) });
+            try {
+                await localParticipant.publishTrack(new LocalVideoTrack(clone, undefined, true), { source: Track.Source.ScreenShare, ...publishOptions });
+            } finally { settled.release(); }
+            settledStart = settled;
+            reuseCloneRef.current = null; // LiveKit owns it now
+          } else if (sliceLayout) {
+            await publishCroppedShare(sliceLayout, reusedCapture); // (a capture asked for first is the crop's from here)
           } else if (hdrPipe) {
             const pipe = hdrPipe;
             hdrPipelineRef.current = pipe;
@@ -3859,10 +4781,10 @@ export const SidebarConference = ({
             pipe.track.contentHint = 'motion';
             await localParticipant.publishTrack(new LocalVideoTrack(pipe.track, undefined, true), { source: Track.Source.ScreenShare, ...publishOptions });
           } else {
-            await localParticipant.setScreenShareEnabled(true, {
+            settledStart = await publishScreenShareSettled(localParticipant, {
                 resolution: {
-                    width: box.width,
-                    height: box.height,
+                    width: captureBox.width,
+                    height: captureBox.height,
                     frameRate: captureFps,
                 },
                 // Share audio is NEVER voice-processed (owner rule): the
@@ -3892,6 +4814,23 @@ export const SidebarConference = ({
                 // machine, overridable, and visible (encoder + HW/SW) in the
                 // stream-stats overlay rather than assumed.
                 publishOptions,
+                // The capture's first real frame is waited for BEFORE anything
+                // is published: until then the track reports the constraint box
+                // (cap_res 3840x2160 on a 2560x1440 display) and livekit-client
+                // sizes the encodings from it (shareFirstFrame.ts). Logged here,
+                // before the publish, so a crash during it still leaves the
+                // numbers in the perf log's breadcrumbs.
+                {
+                    onSettled: st => {
+                        logCallEvent('share_clamp', { codec, phase: 'pre', ...settleEventDetails(st) });
+                        // Through the portal the first frame is the user's answer to the desktop's chooser (it
+                        // opens when the first sink attaches, not when getDisplayMedia resolves). None - the
+                        // dialog was closed, the track ended - is a cancelled start, not a share that is "not
+                        // capturing anything"; publishScreenShareSettled stops the tracks when this throws.
+                        if (portalCap && !st.first) throw portalChooserClosedError();
+                    },
+                    ...(portalCap ? { waitOptions: PORTAL_FIRST_FRAME_WAIT } : {}),
+                },
             );
           }
         } catch (err) {
@@ -3913,12 +4852,16 @@ export const SidebarConference = ({
             `[ScreenShare] started in ${ms(tStart, tPublished)}ms from selection ` +
             `(codec probe ${ms(tProbeStart, tProbed)}ms, acquire+publish ${ms(tPublish, tPublished)}ms)`
         );
+        // share_ref: a short digest of the track SID, so this report and a viewer's
+        // can be matched without naming anything (shareRef.ts). '' = unavailable.
+        const publishedRef = await resolveShareRef(localParticipant.getTrackPublication(Track.Source.ScreenShare)?.trackSid);
         logCallEvent('share_start', {
             verdict: 'published',
             ms: ms(tStart, tPublished),
             probe_ms: ms(tProbeStart, tProbed),
             publish_ms: ms(tPublish, tPublished),
             res: options.resolution,
+            share_ref: publishedRef ?? '',
         });
         updateScreenShareSession(options.sourceId, { startedAt: performance.now() });
 
@@ -3937,13 +4880,18 @@ export const SidebarConference = ({
                     if (result !== 'failed') return;
                     const cur = currentShareRef.current;
                     if (!cur || cur.sourceId !== options.sourceId) return;
+                    // Nothing ever reached the encoder: the capture, not H.265.
+                    const d = await diagnoseShareNoFrames(() => ssSender.getStats());
+                    if (d.cause === 'capture') { handleCaptureStall(options, codec, d, 'h265'); return; }
                     markHevcFailed();
                     logCallEvent('share_fallback', { from: 'h265', to: decision.codec, reason: 'no-frames' });
                     wantH264HighRef.current = shareBaseHighRef.current;
                     await swapShareCodec(localParticipant as unknown as ShareParticipantLike, decision.codec, cur, {
                         makeTrack: t => new LocalVideoTrack(t, undefined, true),
                         lowerLayer: getShareLowLayerEnabled() && shareHwH264Ref.current,
+                        ...(viaPortalRef.current ? { box: captureBoxFor(cur.resolution, decision.codec) } : {}),
                         reason: 'H.265 encoder produced no frames',
+                        announce: () => announceShareSwap(localParticipant),
                     });
                 });
             }
@@ -3952,20 +4900,26 @@ export const SidebarConference = ({
             const ssSender = (localParticipant.getTrackPublication(Track.Source.ScreenShare)?.track as
                 { sender?: RTCRtpSender } | undefined)?.sender;
             if (ssSender) {
-                void watchH264HighStart(() => ssSender.getStats()).then(result => {
+                void watchH264HighStart(() => ssSender.getStats()).then(async result => {
                     console.info(`[ScreenShare] H.264 High start check: ${result}`);
                     logCallEvent('share_start_check', { codec: 'h264', profile: 'high', verdict: result });
                     if (result !== 'failed') return;
-                    logCallEvent('share_fallback', { from: 'h264-high', to: 'restart', reason: 'no-frames' });
                     const cur = currentShareRef.current;
                     if (!cur || cur.sourceId !== options.sourceId) return; // share changed meanwhile
+                    // The owner's Surround share: no frame ever reached the
+                    // encoder, and blaming High cost every later share that
+                    // session its hardware encoder. The capture is the problem.
+                    const d = await diagnoseShareNoFrames(() => ssSender.getStats());
+                    if (d.cause === 'capture') { handleCaptureStall(options, codec, d, 'h264_high'); return; }
+                    logCallEvent('share_fallback', { from: 'h264-high', to: 'restart', reason: 'no-frames' });
                     markH264HighFailed();
                     console.warn('[ScreenShare] H.264 High hardware encoder produced no frames — republishing without it');
                     setScreenShareNotice({
                         tone: 'warn',
                         text: 'The GPU’s H.264 encoder did not start. Restarting the share with the software encoder.',
                     });
-                    republishShareRef.current?.({ ...cur });
+                    // Fresh: a hot swap would keep the High sender that did not start.
+                    republishShareRef.current?.({ ...cur }, { fresh: true });
                 });
             }
         }
@@ -3990,7 +4944,22 @@ export const SidebarConference = ({
             }
             const sender = (ssPub?.track as { sender?: RTCRtpSender } | undefined)?.sender;
             if (sender) {
-                await applyScreenShareSenderParams(sender, options.frameRate, maxBitrate, shareSenderParamOpts(codec, options));
+                // The first real frame's size, when it was seen: getSettings()
+                // may still be saying the box (a cropped / HDR share has its own size).
+                const realSize = !cropPipelineRef.current && !hdrPipelineRef.current ? settledStart?.first : null;
+                const paramOpts = {
+                    ...shareSenderParamOpts(codec, options),
+                    ...(realSize ? { sourceSize: realSize } : {}),
+                };
+                // The ceiling published above was sized before any frame existed;
+                // now the real size is known, a 'source' share is held to its own
+                // pixels' tier (computeSSBitrate) instead of the label's.
+                const sizedBitrate = computeSSBitrate(options.resolution, options.frameRate, codec, senderCaptureSize(sender, paramOpts.sourceSize));
+                if (sizedBitrate !== maxBitrate) {
+                    console.info(`[ScreenShare] 'source' sized by its captured pixels: maxBitrate ${Math.round(maxBitrate / 1e6)} -> ${Math.round(sizedBitrate / 1e5) / 10}Mbps`);
+                }
+                shareMaxBitrateRef.current = sizedBitrate;
+                await applyScreenShareSenderParams(sender, options.frameRate, sizedBitrate, paramOpts);
             } else {
                 console.warn('[ScreenShare] RTP sender not available — framerate override skipped');
             }
@@ -4004,14 +4973,20 @@ export const SidebarConference = ({
         try {
             const st = localParticipant.getTrackPublication(Track.Source.ScreenShare)?.track?.mediaStreamTrack?.getSettings();
             const capSize = sliceCapture ?? (st?.width && st?.height ? { width: st.width, height: st.height } : undefined);
-            const sent = sliceStartSize ?? capSize;
+            // What the encoder is really handed: the crop / HDR size, else the
+            // first real frame, else whatever the track reports now.
+            const sent = sliceStartSize ?? settledStart?.first ?? capSize;
             const plan = planEncode(codec, sent?.width, sent?.height, shareResStepRef.current);
             const capRes = capSize ? `${capSize.width}x${capSize.height}` : '';
             const outRes = plan.width ? `${plan.width}x${plan.height}` : '';
             const layoutKind = cropPipelineRef.current ? 'slice' : 'whole';
             logCallEvent('share_clamp', {
                 codec, cap_res: capRes, res: outRes, scale: plan.scale, layout: layoutKind,
-                step: shareResStepRef.current, over: plan.overLimit,
+                step: shareResStepRef.current, over: plan.overLimit, phase: 'post',
+                ...(settledStart ? {
+                    ask: fmtSize(settledStart.asked), first_frame: fmtSize(settledStart.first),
+                    settle: settledStart.how === 'frame' ? (settledStart.pinned ? 'pinned' : 'ok') : settledStart.how,
+                } : {}),
             });
             if (!cropPipelineRef.current && capSize) setShareDisplayAspect(aspectOf(capSize.width, capSize.height));
         } catch { /* diagnostics must never break publishing */ }
@@ -4074,9 +5049,10 @@ export const SidebarConference = ({
 
         if (useNativeAudio) {
             try {
-                await startNativeWindowAudio(nativeMode, options.sourceId);
+                await startNativeWindowAudio(nativeMode, options.sourceId, options.appAudio?.handle);
             } catch (err) {
                 console.error('[ScreenShare] startNativeWindowAudio threw unexpectedly:', err);
+                logShareAudio({ step: 'failed', reason: 'error' });
                 setScreenShareNotice({
                     tone: 'warn',
                     text: 'Screen share is active but audio capture failed. Video is still being shared.',
@@ -4091,6 +5067,7 @@ export const SidebarConference = ({
             resolution: options.resolution,
             frameRate:  options.frameRate,
             audio:      options.audio,
+            appAudio:   options.appAudio,
             layout:     sliceLayout ?? undefined,
         };
         currentShareRef.current = recorded;
@@ -4098,8 +5075,9 @@ export const SidebarConference = ({
         return 'published';
     };
     React.useEffect(() => {
-        republishShareRef.current = (o: ScreenShareOptions) => { void handleScreenShareSelect(o); };
+        republishShareRef.current = (o: ScreenShareOptions, opts?: { fresh?: boolean }) => { void handleScreenShareSelect(o, opts); };
     });
+    React.useEffect(() => { adjustScreenShareQualityRef.current = adjustScreenShareQuality; });
 
     const toggleDeafen = () => {
         if (!localParticipant) return;
@@ -4157,21 +5135,12 @@ export const SidebarConference = ({
     // on every one of those remounts was a second source of "no NS" windows on
     // top of the join-time one). This effect's only remaining job is to push
     // live settings changes into whatever processor already exists.
+    const liveProcessorKey = voice ? liveProcessorSettingsKey(voice.settings) : null;
     React.useEffect(() => {
         if (!voice) return;
         voiceProcessorManager.updateSettings(voice.settings);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- the individual settings fields are the dependency list (so only real changes push settings to the processor); voice itself is a new object every render
-    }, [
-        voice?.settings.noiseSuppression,
-        voice?.settings.volumeNormalization,
-        voice?.settings.voiceGate,
-        voice?.settings.voiceGateThreshold,
-        voice?.settings.micVolume,
-        voice?.settings.eqEnabled,
-        // Stringify the bands array so React detects element-level changes
-        // eslint-disable-next-line react-hooks/exhaustive-deps -- stringified so element-level changes in the EQ band array are detected by value
-        JSON.stringify(voice?.settings.eqBands),
-    ]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- liveProcessorKey (voiceChain.ts) is the exact set of settings the processor reads, so only real changes push; voice itself is a new object every render
+    }, [liveProcessorKey]);
 
     // Derive the mic track SID — still needed below by the mic-health watchdog
     // and RTP-priority-pin effects, which operate on the published track
@@ -4263,6 +5232,8 @@ export const SidebarConference = ({
     const ssTrackSid = useLocalPublicationSid(localParticipant, Track.Source.ScreenShare);
     React.useEffect(() => {
         if (!localParticipant || !ssTrackSid) return;
+        // A native (hardware) share's track is a stand-in the encoder never sees: its sender is tuned once, by the pipeline.
+        if (nativePipeRef.current) return;
         const share = currentShareRef.current;
         if (!share) return;
         const ssPub = localParticipant.getTrackPublication(Track.Source.ScreenShare);
@@ -4273,8 +5244,13 @@ export const SidebarConference = ({
         void applyScreenShareSenderParams(
             sender,
             share.frameRate,
-            computeSSBitrate(share.resolution, share.frameRate, asScreenShareCodec(ssPub?.track?.codec)),
-            { codec: asScreenShareCodec(ssPub?.track?.codec) },
+            computeSSBitrate(share.resolution, share.frameRate, asScreenShareCodec(ssPub?.track?.codec), senderCaptureSize(sender)),
+            {
+                codec: asScreenShareCodec(ssPub?.track?.codec),
+                // The portal's capture is the share's maximum, not the chosen size: the sender scales it.
+                ...(viaPortalRef.current && !cropPipelineRef.current && !hdrPipelineRef.current
+                    ? { box: captureBoxFor(share.resolution, asScreenShareCodec(ssPub?.track?.codec) ?? 'vp8') } : {}),
+            },
         ).catch(err => console.warn('[ScreenShare] re-applying sender params failed:', err));
     }, [localParticipant, ssTrackSid]);
 
@@ -4295,7 +5271,8 @@ export const SidebarConference = ({
         return () => { try { offA?.(); offB?.(); } catch { /* gone */ } };
     }, []);
     React.useEffect(() => {
-        if (!localParticipant || !ssTrackSid) return;
+        const nativePipe = nativePipeRef.current;
+        if (!localParticipant || !ssTrackSid || (nativePipe && !nativePipe.lowerLayer)) return;
         const track = localParticipant.getTrackPublication(Track.Source.ScreenShare)?.track as unknown as ShareTrackLike | undefined;
         const share = currentShareRef.current;
         if (!track || !share) return;
@@ -4305,39 +5282,13 @@ export const SidebarConference = ({
             gameRunning: () => gameRunningRef.current,
             targetFps: share.frameRate,
             onChange: (allow, reason) => logCallEvent('share_low_layer', { on: allow, reason, viewers: shareViewersRef.current }),
+            // Linux hardware share: same gate, the helper runs the copy (nativeSharePipeline.ts).
+            ...(nativePipe ? { native: {
+                facts: () => { const f = nativePipe.lowLayerFacts(); return { hardware: f.hardware, topShort: f.topShort, topEncodeMs: f.encodeMs, blocked: f.blocked }; },
+                setLow: (on: boolean) => nativePipe.setLowLayer(on),
+            } } : {}),
         });
     }, [localParticipant, ssTrackSid]);
-
-    // "For smooth game streaming, share the game window instead." One gate per
-    // share (reset when the share ends): the share_fps sampler below feeds it
-    // what has the screen, and it fires once when a fullscreen game covers the
-    // shared monitor. The button opens the picker on the Window tab with the
-    // game's window pre-selected; it never switches the share by itself.
-    const fullscreenHintGateRef = React.useRef<FullscreenHintGate | null>(null);
-    const fullscreenHintRef = React.useRef<(exe: string) => void>(() => {});
-    React.useEffect(() => {
-        fullscreenHintRef.current = (exe: string) => {
-            logCallEvent('share_hint', { result: 'shown' });
-            toast.push({
-                kind: 'info',
-                title: FULLSCREEN_HINT_TITLE,
-                message: FULLSCREEN_HINT_MESSAGE,
-                // Seen when the user tabs back out of the game, so it stays a while.
-                durationMs: 300_000,
-                action: {
-                    label: FULLSCREEN_HINT_ACTION,
-                    onClick: () => {
-                        logCallEvent('share_hint', { result: 'accepted' });
-                        setPickerPreset({ exe });
-                        openScreenSharePicker();
-                    },
-                },
-            });
-        };
-    });
-    React.useEffect(() => {
-        if (!currentShare) fullscreenHintGateRef.current = null;
-    }, [currentShare]);
 
     // What the share does when Cipherline goes to the background
     // (utils/shareBackgroundProbe.ts): capture and send rates before vs. after,
@@ -4394,6 +5345,109 @@ export const SidebarConference = ({
         return () => { off(); probe.dispose(); };
     }, [localParticipant, ssTrackSid, currentShare]);
 
+    // Codec drift (utils/shareCodecDrift.ts): the share's sender silently
+    // switched to another codec than the one it was PUBLISHED with - libwebrtc's
+    // encoder fallback when a hardware encoder fails to (re)open - and the SFU
+    // forwards nothing of it to anyone (report e951243d: H.265 published, VP8
+    // sent after a source swap; the owner, watching, got 0 kbps). Mark the
+    // published codec failed for the session and republish, once per source per
+    // cooldown, so the codec decision picks something that really encodes.
+    React.useEffect(() => {
+        if (!localParticipant || !ssTrackSid) return;
+        const share = currentShare;
+        const track = localParticipant.getTrackPublication(Track.Source.ScreenShare)?.track as
+            { sender?: RTCRtpSender; codec?: string } | undefined;
+        const sender = track?.sender;
+        const published = asScreenShareCodec(track?.codec) ?? shareParamsCtxRef.current?.codec;
+        if (!share || !sender || !published) return;
+        shareDriftRef.current = false;
+        const watch = new ShareCodecDriftWatch({
+            getStats: () => sender.getStats(),
+            published,
+            onDrift: d => {
+                const cur = currentShareRef.current;
+                if (!cur || cur.sourceId !== share.sourceId) return;
+                shareDriftRef.current = true;
+                const now = performance.now();
+                const last = driftRepublishRef.current;
+                const retry = !last || last.sourceId !== cur.sourceId || now - last.at >= DRIFT_REPUBLISH_COOLDOWN_MS;
+                const high = published === 'h264' && wantH264HighRef.current;
+                logCallEvent('share_codec_drift', {
+                    published, sent: d.sent, layers: d.layers, enc: d.encoder ?? '',
+                    profile: high ? 'high' : 'none', action: retry ? 'republish' : 'none',
+                });
+                // The encoder that failed is not chosen again this session.
+                if (published === 'h265') markHevcFailed();
+                else if (high) markH264HighFailed();
+                if (!retry) {
+                    setScreenShareNotice({ tone: 'warn', text: 'Your graphics card’s video encoder keeps failing, so viewers may not see your screen. Try a lower resolution or frame rate, or another codec in Settings → Advanced.' });
+                    return;
+                }
+                driftRepublishRef.current = { sourceId: cur.sourceId, at: now };
+                setScreenShareNotice({ tone: 'warn', text: codecDriftNotice(published) });
+                republishShareRef.current?.({ ...cur }, { fresh: true });
+            },
+        });
+        void watch.start();
+        return () => watch.dispose();
+    }, [localParticipant, ssTrackSid, currentShare]);
+
+    // Camera codec drift (utils/shareCodecDrift.ts, cameraPublish.handleCameraDrift):
+    // the same silent libwebrtc encoder fallback as the share's - a hardware
+    // H.264 / H.265 camera encoder that fails to (re)open makes the sender send
+    // VP8 while the SFU forwards only the published codec, so viewers get a
+    // blank tile. Mark the codec failed, republish the camera FRESH (a new
+    // sender), once per cooldown. Stands down while the camera is muted or a
+    // deliberate republish is in flight. Software (VP8) cameras are not watched.
+    const camTrackSid = useLocalPublicationSid(localParticipant, Track.Source.Camera);
+    React.useEffect(() => {
+        if (!localParticipant || !camTrackSid) return;
+        const lp = localParticipant;
+        const pub = lp.getTrackPublication(Track.Source.Camera);
+        const track = pub?.track as
+            { sender?: RTCRtpSender; publishOptions?: { videoCodec?: string }; isMuted?: boolean } | undefined;
+        const sender = track?.sender;
+        const published = asCameraCodec(track?.publishOptions?.videoCodec);
+        if (!pub || !track || !sender || published === 'vp8') return;
+        const watch = new CodecDriftWatch({
+            getStats: () => sender.getStats(),
+            published,
+            paused: () => !!pub.isMuted || !!track.isMuted || isCameraRepublishing(lp),
+            onDrift: d => {
+                void handleCameraDrift(
+                    asCameraParticipant(lp), asCameraTrack(track as unknown as LocalVideoTrack)!, d,
+                    cameraDriftGateRef.current, cameraStartOptions(), performance.now(),
+                    text => setScreenShareNotice({ tone: 'warn', text }),
+                ).catch(err => console.warn('[Camera] codec drift recovery failed:', err));
+            },
+        });
+        void watch.start();
+        return () => watch.dispose();
+    }, [localParticipant, camTrackSid, cameraStartOptions]);
+
+    // Software camera + software share on Linux: hold the camera's top layer to 720p30 while the share is live and
+    // put it back after (utils/cameraShareCap.ts). A sender parameter only; never for an explicit camera quality.
+    React.useEffect(() => {
+        if (!localParticipant) return;
+        const camSender = (localParticipant.getTrackPublication(Track.Source.Camera)?.track as { sender?: RTCRtpSender } | undefined)?.sender;
+        if (!camSender) return;
+        const camState = getCameraPublishState();
+        const plan = cameraShareCapPlan({
+            platform: window.electronAPI?.platform,
+            shareLive: !!ssTrackSid,
+            shareSoftware: !liveShareIsHardware(),
+            cameraLive: true,
+            cameraSoftware: camState ? camState.codec.hardware === false : null,
+            tier: getCameraQualityTier(),
+        });
+        let cancelled = false;
+        void applyCameraShareCap(camSender, plan).then(did => {
+            if (!cancelled && did !== 'none') logCallEvent('camera_share_cap', { to: did, height: plan?.maxHeight ?? 0, fps: plan?.maxFps ?? 0 });
+        }).catch(() => { /* the sender went away with the camera */ });
+        return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [localParticipant, ssTrackSid, camTrackSid]);
+
     // Frame-rate instrumentation (utils/shareHealth.ts): one `share_fps` call
     // event every ~10 s while sharing, and one 2 s after Cipherline gains or
     // loses focus - capture / source / encode / send rates, the encoder's limit
@@ -4402,36 +5456,243 @@ export const SidebarConference = ({
     // focused, at 90 requested): the next test says which limit it hits.
     React.useEffect(() => {
         if (!localParticipant || !ssTrackSid) return;
+        // Native (hardware) share: the sender carries a stand-in track, so its stats say nothing about the real encode. Report the helper's
+        // own numbers instead (encoder name, encoded fps, resolution), and skip the sender-stats watchers below.
+        const nat = nativePipeRef.current;
+        if (nat) {
+            const t = setInterval(() => {
+                const st = nat.liveStats();
+                logCallEvent('native_share_stats', { encoder: st.encoder, enc_fps: st.fps, eff_fps: st.effFps, w: st.width, h: st.height, kbps: st.kbps, dropped: st.dropped, enc_ms_p95: st.encMsP95 });
+            }, 10_000);
+            return () => clearInterval(t);
+        }
         const share = currentShare;
         const track = localParticipant.getTrackPublication(Track.Source.ScreenShare)?.track as
             { sender?: RTCRtpSender; mediaStreamTrack?: MediaStreamTrack } | undefined;
         const sender = track?.sender;
         if (!share || !sender) return;
         const num = (v: unknown): number => (typeof v === 'number' ? v : NaN);
-        // Never sit on a software encoder at a high frame rate silently
-        // (shareSoftwareGuard.ts — the owner's OpenH264 1080p60 share).
+        // A CB share that ran in software on a machine with a hardware High encoder is switched to it
+        // (shareSoftwareGuard.ts); it never changes the user's resolution or frame rate.
         const swCtx = shareSoftwareCtxRef.current;
-        const swGuard = swCtx && swCtx.sourceId === share.sourceId ? new ShareSoftwareGuard(swCtx.ctx) : null;
-        const onEncoderSample = (hw: boolean | null) => {
-            const act = swGuard?.observe(hw);
+        const swGuard = swCtx && swCtx.sourceId === share.sourceId
+            ? new ShareSoftwareGuard({ ...swCtx.ctx, targetFps: share.frameRate })
+            : null;
+        const captureBound = new CaptureBoundWatch();
+        // The encoder cannot keep up with this setting (shareEncoderOverload.ts):
+        // measured on the TOP layer, said once per setting, never acted on without a click.
+        if (!overloadRef.current || overloadRef.current.sourceId !== share.sourceId) {
+            overloadRef.current = { sourceId: share.sourceId, watch: new EncoderOverloadWatch() };
+        }
+        const overload = overloadRef.current.watch;
+        overload.restart(performance.now());
+        // A game in front starves the share (shareGameStarve.ts): the capture collapses, or the
+        // encoder drops frames the capture delivered, with libwebrtc saying nothing. Windows only
+        // in practice (it needs foregroundInfo); never acted on without a click.
+        if (!starveRef.current || starveRef.current.sourceId !== share.sourceId) {
+            starveRef.current = { sourceId: share.sourceId, watch: new GameStarveWatch() };
+        }
+        const starve = starveRef.current.watch;
+        starve.restart(performance.now());
+        let captureBoundSaid = false;
+        const keepAliveGate = new KeepAliveGate();
+        const onStarved = (v: StarveVerdict) => {
+            void (async () => {
+                try { await loadGamingVideoMode(); } catch { /* the setting is simply unknown */ }
+                const cur = currentShareRef.current;
+                if (!cur || cur.sourceId !== share.sourceId) return;
+                // The "While gaming" boost: only offered turned on if it is available, off, and the user has not said no to that offer.
+                const snap = getGamingVideoSnapshot();
+                const boost: BoostState = !snap.available ? 'na' : snap.enabled ? 'on'
+                    : canOfferGamingBoost({ state: readGamingBoostOffer(), now: Date.now(), modeOn: false, shownThisCall: false }) ? 'off' : 'na';
+                const pub = localParticipant.getTrackPublication(Track.Source.ScreenShare)?.track as
+                    { codec?: string; mediaStreamTrack?: MediaStreamTrack } | undefined;
+                const st = pub?.mediaStreamTrack?.getSettings?.();
+                const plan = planStarveOffer({
+                    verdict: v, boost,
+                    setting: { resolution: cur.resolution, frameRate: cur.frameRate },
+                    codec: asScreenShareCodec(pub?.codec) ?? shareParamsCtxRef.current?.codec ?? 'h264',
+                    source: cropOutSizeRef.current ?? (st?.width && st?.height ? { width: st.width, height: st.height } : null),
+                    maxFps: maxShareFps(cur.sourceId),
+                });
+                logCallEvent('share_game_starve', starveEventDetail(plan ? 'shown' : 'none', v, plan, boost));
+                if (!plan) return;
+                if (!acquireCallOfferSlot(OVERLOAD_OFFER_SLOT)) return; // `suppressed` should have held this back
+                const sug = plan.suggestion;
+                setOverloadOffer({
+                    title: plan.title, body: plan.body, acceptLabel: plan.acceptLabel, dismissLabel: plan.dismissLabel,
+                    sizeChange: plan.sizeChange,
+                    ...(plan.action === 'tip' ? {} : {
+                        onSwitch: () => {
+                            logCallEvent('share_game_starve', starveEventDetail('accepted', v, plan, boost));
+                            closeOverloadOffer();
+                            if (plan.action === 'lower' && sug) {
+                                void adjustScreenShareQualityRef.current?.(sug.resolution, sug.frameRate as ScreenShareOptions['frameRate']);
+                            } else if (plan.action === 'boost') {
+                                writeGamingBoostOffer(answerGamingBoostOffer(readGamingBoostOffer(), 'turn-on', Date.now()));
+                                void setGamingVideoMode(true)
+                                    .then(after => {
+                                        const restart = gamingVideoRestartCopy(true, after.restartPending);
+                                        if (restart) setScreenShareNotice({ tone: 'info', text: restart });
+                                    })
+                                    .catch(() => setScreenShareNotice({ tone: 'warn', text: 'Couldn’t turn that on. It is in Settings → Voice & Video.' }));
+                            }
+                        },
+                    }),
+                    onDismiss: () => {
+                        starve.dismiss(v.key);
+                        if (plan.action === 'boost') writeGamingBoostOffer(answerGamingBoostOffer(readGamingBoostOffer(), 'not-now', Date.now()));
+                        logCallEvent('share_game_starve', starveEventDetail('dismissed', v, plan, boost));
+                        closeOverloadOffer();
+                    },
+                });
+            })().catch(() => { /* the share ended mid-offer */ });
+        };
+        const onOverload = (v: OverloadVerdict) => {
+            const cur = currentShareRef.current;
+            if (!cur || cur.sourceId !== share.sourceId) return;
+            const pub = localParticipant.getTrackPublication(Track.Source.ScreenShare)?.track as
+                { codec?: string; mediaStreamTrack?: MediaStreamTrack } | undefined;
+            const codec = asScreenShareCodec(pub?.codec) ?? shareParamsCtxRef.current?.codec ?? 'h264';
+            const st = pub?.mediaStreamTrack?.getSettings?.();
+            const size = cropOutSizeRef.current ?? (st?.width && st?.height ? { width: st.width, height: st.height } : null);
+            const setting = { resolution: cur.resolution, frameRate: cur.frameRate };
+            const fit = suggestionInputs(v.evidence);
+            const sug = size ? suggestSetting({
+                current: setting, codec, source: size, maxFps: maxShareFps(cur.sourceId),
+                budgetTop: fit.budgetTop, srcFpsCap: fit.srcFpsCap,
+            }) : null;
+            logCallEvent('share_encoder_overload', overloadEventDetail(sug ? 'shown' : 'none', v.key, v.evidence, sug));
+            if (!sug || !size) return;
+            const curOpt = resolveOption(setting, codec, size, fit.srcFpsCap);
+            if (!acquireCallOfferSlot(OVERLOAD_OFFER_SLOT)) return; // `suppressed` below should have held this back
+            setOverloadOffer({
+                current: shortOption(curOpt),
+                suggested: shortOption(sug),
+                sizeChange: sizeChange(curOpt, sug),
+                onSwitch: () => {
+                    logCallEvent('share_encoder_overload', overloadEventDetail('accepted', v.key, v.evidence, sug));
+                    closeOverloadOffer();
+                    void adjustScreenShareQualityRef.current?.(sug.resolution, sug.frameRate as ScreenShareOptions['frameRate']);
+                },
+                onDismiss: () => {
+                    overload.dismiss(v.key);
+                    logCallEvent('share_encoder_overload', overloadEventDetail('dismissed', v.key, v.evidence, sug));
+                    closeOverloadOffer();
+                },
+            });
+        };
+        const onStatsForOverload = (stats: ShareStatsLike, at: number, fg?: ForegroundDiag | null) => {
+            const cur = currentShareRef.current;
+            if (!cur || cur.sourceId !== share.sourceId) return;
+            const setting = { resolution: cur.resolution, frameRate: cur.frameRate };
+            // A start, swap or republish in flight; a codec-drift republish pending.
+            const blocked = pendingScreenShareRef.current !== null || shareDriftRef.current;
+            // Another notice is up, or something else already spoke about this share's frame rate.
+            const suppressed = screenShareNoticeRef.current !== null || callOfferSlotHolder() !== null || !!swGuard?.hasActed || captureBoundSaid;
+            let focused = false;
+            try { focused = document.hasFocus(); } catch { /* unknown: treat as not focused */ }
+            // A game in front owns a collapsed capture (shareGameStarve); with nothing in front, a collapsed capture
+            // under a cpu-limited encoder is the whole machine out of CPU, which the overload card now speaks for.
+            const verdict = overload.observe(at, stats, { setting, targetFps: cur.frameRate, blocked, suppressed, gameInFront: gameInFront(fg ?? null, focused) });
+            // Why the watch stopped or could not judge (restart, blocked, layers, no_capture...): only changes, capped per share.
+            for (const note of overload.takeNotes()) {
+                logCallEvent('share_encoder_overload', overloadNoteDetail(note, settingKey(setting), cur.frameRate));
+            }
+            if (verdict) { onOverload(verdict); return; }
+            // The encoder-overload card owns every window it calls overload; this one is for what it cannot see.
+            const starved = starve.observe(at, stats, { setting, targetFps: cur.frameRate, fg: fg ?? null, focused, blocked, suppressed });
+            if (starved) onStarved(starved);
+            // The capturer has delivered (almost) nothing for a while: keep the stream alive for viewers, say so when a
+            // fullscreen-class program is the reason (a still screen is not an alarm). Every desktop OS, only on a plain
+            // display capture (the crop / HDR pipelines already own the track), never while a change is in flight.
+            if (keepAliveGate.observe(at, stats) && !blocked && !keepAliveRef.current && !keepAliveBusyRef.current
+                && keepAlivePlatformOk(window.electronAPI?.platform) && !cropPipelineRef.current && !hdrPipelineRef.current
+                && supportsKeepAlive() && !keepAliveDisabled(k => secureLocalStore.getItem(k))) {
+                keepAliveBusyRef.current = true;
+                const fgFull = fullscreenClassInFront(fg ?? null);
+                void (async () => {
+                    try {
+                        const pub = localParticipant.getTrackPublication(Track.Source.ScreenShare)?.track as Parameters<typeof engageKeepAlive>[0] | undefined;
+                        const handle = pub && currentShareRef.current?.sourceId === share.sourceId ? await engageKeepAlive(pub) : null;
+                        if (!handle) { logCallEvent('share_keepalive', { phase: 'failed', fg_full: fgFull }); return; }
+                        // The effect (or the share) may have ended while the swap was in flight.
+                        if (!alive || currentShareRef.current?.sourceId !== share.sourceId) { await handle.stop(); return; }
+                        keepAliveRef.current = { handle, sid: ssTrackSid };
+                        logCallEvent('share_keepalive', { phase: 'engaged', fg_full: fgFull });
+                        const text = starveNotice(fg ?? null, true);
+                        if (text && (!shareRef || claimShareOnce('capture_starved', shareRef))) setScreenShareNotice({ tone: 'warn', text });
+                    } catch { logCallEvent('share_keepalive', { phase: 'failed', fg_full: fgFull }); } finally { keepAliveBusyRef.current = false; }
+                })();
+            }
+        };
+        const onEncoderSample = (hw: boolean | null, stats?: EncoderSampleStats) => {
+            // A sender that silently switched codec is "software" for a reason
+            // the encoder switch cannot fix - the codec-drift watch republishes it.
+            if (shareDriftRef.current) return;
+            const act = swGuard?.observe(hw, stats);
             if (!act) return;
             const cur = currentShareRef.current;
             if (!cur || cur.sourceId !== share.sourceId) return;
+            // The only automatic action left is the CB -> High encoder switch: same resolution, same frame rate
+            // (shareSoftwareGuard.ts). A slow CPU encoder is the encoder-overload suggestion's to say, once, and
+            // changes nothing until the user clicks - the old software-encoder ladder (clamp to 30 fps, step the
+            // picture down) silently changed the user's choice and is gone for every platform.
             logCallEvent('share_fallback', {
                 from: `${swCtx!.ctx.codec}${swCtx!.ctx.profile ? `-${swCtx!.ctx.profile}` : ''}-software`,
-                to: act.kind === 'switch-high' ? 'h264-high' : `fps_${act.fps}`,
+                to: 'h264-high',
                 reason: 'software-encoder',
             });
             setScreenShareNotice({ tone: 'warn', text: softwareShareNotice(act) });
-            if (act.kind === 'switch-high') {
-                markH264CbSoftware();
-                republishShareRef.current?.({ ...cur });
-            } else {
-                republishShareRef.current?.({ ...cur, frameRate: act.fps as ScreenShareOptions['frameRate'] });
-            }
+            markH264CbSoftware();
+            // Fresh: a hot swap would keep the CB sender (same codec, same encoder).
+            republishShareRef.current?.({ ...cur }, { fresh: true });
         };
+        // share_ref + the sharer's display refresh rate (share_display). The ref
+        // resolves asynchronously (WebCrypto); the display facts come from the main
+        // process's share diagnostics, which can land after the publish - so both
+        // are retried until each is known, then logged once for this publication.
+        let shareRef: string | undefined;
+        let displayLogged = false;
+        let alive = true;
+        const logDisplay = () => {
+            if (displayLogged || !shareRef) return;
+            const sess = getScreenShareSession();
+            const main = sess && sess.sourceId === share.sourceId ? sess.main : null;
+            if (!main) return;
+            displayLogged = true;
+            // The effect re-runs for the same publication (a retune); log the display once per share.
+            if (!claimShareOnce('share_display', shareRef)) return;
+            logCallEvent('share_display', {
+                share_ref: shareRef, role: 'sharer',
+                hz: main.displayHz ?? NaN, hz_src: main.displayHzSource ?? 'unknown', share: main.sourceKind,
+            });
+        };
+        const offSession = subscribeScreenShareSession(logDisplay);
+        void resolveShareRef(ssTrackSid).then(r => { if (r && alive) { shareRef = r; logDisplay(); } });
+        // The last ~10 s of this share, a row per second; written out only around a dip (see report below).
+        const txRing = new ShareTxRing();
+        const txGate = new TxRingGate();
+        let txBusy = false;
+        const txTick = async () => {
+            if (txBusy || !alive) return;
+            txBusy = true;
+            try { txRing.observe(await sender.getStats(), performance.now()); } catch { /* the share ended mid-read */ } finally { txBusy = false; }
+        };
+        const txIv = setInterval(() => { void txTick(); }, 1000);
+        void txTick();
         const sampler = new ShareStatsSampler({
             getStats: () => sender.getStats(),
+            onStats: onStatsForOverload,
+            getShareRef: () => shareRef,
+            getCapKbps: () => { try { return capKbpsFromEncodings(sender.getParameters().encodings); } catch { return undefined; } },
+            // NaN / '' = not measured: the log drops them.
+            reportNet: d => {
+                logCallEvent('share_net', {
+                    share_ref: d.share_ref, kbps: d.kbps, cap_kbps: d.cap_kbps, avail_kbps: d.avail_kbps,
+                    rtt_ms: d.rtt_ms, loss_pct: d.loss_pct, enc_ms: d.enc_ms,
+                });
+            },
             getCaptureFps: () => {
                 try { return (cropPipelineRef.current?.captureSettings() ?? hdrPipelineRef.current?.captureSettings() ?? track?.mediaStreamTrack?.getSettings())?.frameRate; } catch { return undefined; }
             },
@@ -4439,16 +5700,6 @@ export const SidebarConference = ({
             visible: () => { try { return !document.hidden; } catch { return true; } },
             targetFps: share.frameRate,
             getForeground: () => fetchForegroundDiag(share.sourceId),
-            // Every sample (the first one too): is a fullscreen game covering the
-            // shared screen? Once per share, a toast offers the game's window.
-            onForeground: fg => {
-                const gate = (fullscreenHintGateRef.current ??= new FullscreenHintGate({
-                    onHint: exe => fullscreenHintRef.current(exe),
-                    // Once EVER per account, not once per share (secureLocalStore).
-                    seen: accountHintSeenStore,
-                }));
-                gate.observe(fg, shareKindOf(share.sourceId));
-            },
             report: (d, fg) => {
                 // NaN / '' = not measured: the log drops them. At most 11 keys
                 // (the log keeps one slot for `repeat`): the fg_* trio took the
@@ -4458,20 +5709,48 @@ export const SidebarConference = ({
                 const sent_fps = num(d.sent_fps);
                 const limit = typeof d.limit === 'string' ? d.limit : '';
                 const enc = typeof d.enc === 'string' ? d.enc : '';
-                const hw = typeof d.hw === 'boolean' ? d.hw : '';
+                // act = active layers: 0 is a dynacast pause (nobody watching), > 0 with enc_fps 0 is an encoder that stopped.
+                // It took the slot of `hw` (enc names the implementation; share_codec carries `hardware`).
+                const act = num(d.act);
                 const fgLog = foregroundLogFields(fg);
                 logCallEvent('share_fps', {
-                    src_fps, enc_fps, sent_fps, limit, enc, hw,
+                    src_fps, enc_fps, sent_fps, limit, enc, act,
                     target: share.frameRate, focus: d.focus === true,
                     fg_state: fgLog.fg_state, fg_exe: fgLog.fg_exe, fg_cover: fgLog.fg_cover,
                 });
-                onEncoderSample(typeof d.hw === 'boolean' ? d.hw : null);
+                // A dip under half the target: write the last ~10 s, a row per second (shareSecondRing.ts).
+                const dip = shareFpsDip({ target: share.frameRate, src: src_fps, enc: enc_fps, sent: sent_fps, act });
+                if (txGate.shouldLog(performance.now(), dip) && dip) {
+                    const summary = txRing.summary();
+                    if (summary) logShareTxRing({ shareRef, why: dip, target: share.frameRate, summary });
+                }
+                onEncoderSample(typeof d.hw === 'boolean' ? d.hw : null, { encFps: enc_fps, srcFps: src_fps, limit });
+                // The capture itself is the limit (a game's own 56 fps): say so,
+                // once per share (utils/shareCaptureBound.ts, reports 884b6045 / 438f97a1).
+                // An ultra-wide picture (Surround, 5.33:1) is capture-bound with no game in front too.
+                const trackSettings = sender.track?.getSettings?.();
+                const wide = isUltrawide(aspectOf(trackSettings?.width, trackSettings?.height));
+                const bound = captureBound.observe({
+                    targetFps: share.frameRate, srcFps: src_fps, encFps: enc_fps, limit,
+                    fgCover: fgLog.fg_cover, focused: d.focus === true, wide,
+                });
+                if (bound) captureBoundSaid = true;
+                if (bound && (!shareRef || claimShareOnce('capture_bound', shareRef))) {
+                    const cur = currentShareRef.current;
+                    if (cur && cur.sourceId === share.sourceId) {
+                        setScreenShareNotice({ tone: 'info', text: captureBoundNotice(bound.fps, share.frameRate, shareKindOf(share.sourceId), wide, window.electronAPI?.platform) });
+                    }
+                }
             },
         });
         sampler.start();
         const off = subscribeWindowBackground(() => sampler.noteFocusChange());
-        return () => { off(); sampler.dispose(); };
+        return () => { alive = false; clearInterval(txIv); offSession(); off(); sampler.dispose(); };
     }, [localParticipant, ssTrackSid, currentShare]);
+    // A suggestion made for a setting that has since changed (or a share that ended) is stale.
+    React.useEffect(() => () => { closeOverloadOffer(); }, [ssTrackSid, currentShare]);
+    // The keep-alive stage goes with the publication / setting it was engaged for (a republish, a swap, the share's end).
+    React.useEffect(() => () => { void stopKeepAliveRef.current(); }, [ssTrackSid, currentShare]);
 
     // Pin mic sender RTP priority HIGH — explicitly tells WebRTC's congestion
     // controller not to steal the mic's bitrate to feed screenshare video.
@@ -4672,6 +5951,7 @@ export const SidebarConference = ({
                 if (!localParticipant) return;
                 if (shareStartRef.current?.starting) return;
                 if (localParticipant.isScreenShareEnabled) {
+                    shareRepublishSignal.cancel(localParticipant);
                     stopNativeWindowAudio();
                     localParticipant.setScreenShareEnabled(false);
                     stopCropPipeline();
@@ -4681,6 +5961,15 @@ export const SidebarConference = ({
                 }
                 void (async () => {
                     const api = window.electronAPI;
+                    // Wayland (portal): there is nothing to look for - a window list is the desktop's own
+                    // dialog, and the capture after it would be a second one. The share starts and its capture
+                    // asks the desktop once (utils/portalSource.ts); a closed dialog is a cancelled start.
+                    if (await captureViaPortal()) {
+                        await handleScreenShareSelect({
+                            sourceId: newPortalSourceId(), resolution: '1080p', frameRate: 30, audio: true,
+                        });
+                        return;
+                    }
                     if (!api?.getDesktopSources) {
                         // No IPC available — fall back to the picker.
                         setIsScreenSharePickerOpen(true);
@@ -4800,7 +6089,7 @@ export const SidebarConference = ({
     // as ~33px of dead space above the panel's search bar. The camera strip now
     // mounts only when it has something to show, and the wrapper's padding eases
     // to 0 (rather than the wrapper unmounting) so the panel glides up.
-    const hasLocalShareTile = !!localScreenShare && !!localParticipant
+    const hasLocalShareTile = !!localShareTile && !!localParticipant
         && !isFocusedInSidebar(localParticipant.identity, Track.Source.ScreenShare);
     const hasRemoteShareTile = visibleScreenShareParticipants
         .some(p => !isFocusedInSidebar(p.identity, Track.Source.ScreenShare));
@@ -4850,6 +6139,12 @@ export const SidebarConference = ({
             animate={{ opacity: 1 }}
             transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
         >
+            <ScreenChoiceDialog
+                choice={overlayStatus.kind === 'choose' ? overlayStatus.choice : null}
+                preselectId={overlayStatus.kind === 'choose' ? overlayStatus.preselect ?? null : null}
+                onPick={answerScreenChoice}
+                onDecline={() => answerScreenChoice(null)}
+            />
             {/* Ping / packet-loss pill — server/voice-channel calls only.
                 Portals into `#call-stats-root` when a stream is focused so
                 it stays visible inside the focused banner. DM and group calls
@@ -4930,7 +6225,11 @@ export const SidebarConference = ({
                     className="mx-3 mb-1 flex items-center gap-2 px-3 py-2 bg-cl-deep border border-cl-flash/40 rounded-xl text-[11px] text-cl-muted"
                 >
                     <Mic className="w-3 h-3 text-cl-flash shrink-0" />
-                    <span className="text-cl-text">You appear to be talking, but nothing is being sent — try toggling your mic off and on.</span>
+                    <span className="text-cl-text">
+                        {silenceCause === 'no_rtp'
+                            ? "Your microphone isn't sending any audio — try toggling your mic off and on."
+                            : 'You appear to be talking, but nothing is being sent — try toggling your mic off and on.'}
+                    </span>
                 </motion.div>
             )}
 
@@ -4982,28 +6281,32 @@ export const SidebarConference = ({
                 </motion.div>
             )}
 
-            {/* Screenshare-audio notice (platform limits, capture failures). */}
+            {overloadOffer && <ShareOverloadOffer {...overloadOffer} />}
+            {sharerOverlayCard && sharerOverlayCardUp && (
+                <ShareOverloadOffer
+                    title={sharerOverlayCard.title}
+                    body={sharerOverlayCard.body}
+                    dismissLabel="Got it"
+                    icon={<PenOff size={17} />}
+                    cue={false}
+                    onDismiss={dismissSharerOverlayCard}
+                />
+            )}
+
+            {/* Screenshare notice (platform limits, capture failures, codec drift...):
+                the same note family as the picker's disclaimers (ShareNotice / ClNote). */}
             {screenShareNotice && (
                 <motion.div
                     variants={sidebarPillVariants}
                     initial="initial"
                     animate="animate"
-                    className="mx-3 mb-1 flex items-start gap-2 px-3 py-2 rounded-xl text-[11px] border"
-                    style={{
-                        background:  screenShareNotice.tone === 'warn' ? 'rgba(234,179,8,0.08)' : 'rgba(14,165,233,0.08)',
-                        borderColor: screenShareNotice.tone === 'warn' ? 'rgba(234,179,8,0.35)' : 'rgba(14,165,233,0.35)',
-                        color:       screenShareNotice.tone === 'warn' ? 'rgb(252,211,77)'      : 'rgb(125,211,252)',
-                    }}
+                    className="mx-3 mb-1"
                 >
-                    <ScreenShare className="w-3 h-3 shrink-0 mt-[1px]" />
-                    <span className="leading-snug">{screenShareNotice.text}</span>
-                    <ClButton
-                        icon
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => setScreenShareNotice(null)}
-                        className="ml-auto"
-                    >✕</ClButton>
+                    <ShareNotice tone={screenShareNotice.tone}
+                        onDismiss={() => setScreenShareNotice(null)}
+                    >
+                        {screenShareNotice.text}
+                    </ShareNotice>
                 </motion.div>
             )}
 
@@ -5051,11 +6354,11 @@ export const SidebarConference = ({
                     style={{ overflow: 'hidden' }}
                 >
                     <LayoutGroup id="portal-video-tiles">
-                    <AnimatePresence initial={true}>
+                    <AnimatePresence custom={presenceExit} initial={true}>
                     {/* Your own share — pinned first, same self-view treatment local
                         camera already gets. Confirms what's actually being sent, the
                         way every other call app shows your own share back to you. */}
-                    {localScreenShare && !isFocusedInSidebar(localParticipant!.identity, Track.Source.ScreenShare) && (
+                    {localShareTile && !isFocusedInSidebar(localParticipant!.identity, Track.Source.ScreenShare) && (
                         <motion.div key="local-screenshare" layout
                             variants={portalTileGlide} initial="initial" animate="animate" exit="exit"
                             transition={{ layout: { duration: SIDEBAR_GLIDE_S, ease: SIDEBAR_GLIDE_EASE } }}>
@@ -5080,8 +6383,8 @@ export const SidebarConference = ({
                     {visibleScreenShareParticipants.map(p => (
                         !isFocusedInSidebar(p.identity, Track.Source.ScreenShare) && (
                             subscribedScreenshares.has(p.identity) ? (
-                                <motion.div key={`ss-${p.identity}`} layout
-                                    variants={portalTileGlide} initial="initial" animate="animate" exit="exit"
+                                <PresenceMotion key={`ss-${p.identity}`} pid={p.identity} surface="share" tracker={presenceTracker} layout
+                                    variants={portalTileGlide}
                                     transition={{ layout: { duration: SIDEBAR_GLIDE_S, ease: SIDEBAR_GLIDE_EASE } }}>
                                     <VideoTile
                                         p={p}
@@ -5103,10 +6406,10 @@ export const SidebarConference = ({
                                         onServerMuteTrack={onServerMuteTrack}
                                         onStopWatching={() => handleStopWatchingScreenshare(p.identity)}
                                     />
-                                </motion.div>
+                                </PresenceMotion>
                             ) : (
-                                <motion.div key={`ssgate-${p.identity}`} layout
-                                    variants={portalTileGlide} initial="initial" animate="animate" exit="exit"
+                                <PresenceMotion key={`ssgate-${p.identity}`} pid={p.identity} surface="share" tracker={presenceTracker} layout
+                                    variants={portalTileGlide}
                                     transition={{ layout: { duration: SIDEBAR_GLIDE_S, ease: SIDEBAR_GLIDE_EASE } }}>
                                     <ScreenShareGate
                                         p={p}
@@ -5126,7 +6429,7 @@ export const SidebarConference = ({
                                         onSubscribed={handleSubscribeScreenshare}
                                         onHideScreenShare={() => toggleHideScreenShare(p.identity, true)}
                                     />
-                                </motion.div>
+                                </PresenceMotion>
                             )
                         )
                     ))}
@@ -5146,10 +6449,10 @@ export const SidebarConference = ({
                             className="flex flex-col gap-1.5"
                             transition={{ layout: { duration: SIDEBAR_GLIDE_S, ease: SIDEBAR_GLIDE_EASE } }}
                         >
-                            <AnimatePresence initial={false}>
+                            <AnimatePresence custom={presenceExit} initial={false}>
                             {localCam && !isFocusedInSidebar(localParticipant!.identity, Track.Source.Camera) && (
-                                <motion.div layout key="local-cam-portal" className="w-full"
-                                    variants={camStripTileGlide} initial="initial" animate="animate" exit="exit"
+                                <PresenceMotion layout key="local-cam-portal" pid={localParticipant!.identity} surface="cam" tracker={presenceTracker} className="w-full"
+                                    variants={camStripTileGlide}
                                     transition={{ layout: { duration: SIDEBAR_GLIDE_S, ease: SIDEBAR_GLIDE_EASE } }}>
                                     <VideoTile
                                         p={localParticipant!}
@@ -5167,12 +6470,12 @@ export const SidebarConference = ({
                                         canServerMute={canServerMute}
                                         onServerMuteTrack={onServerMuteTrack}
                                     />
-                                </motion.div>
+                                </PresenceMotion>
                             )}
                             {sortedVisibleRemoteCamParticipants.map((p) => (
                                 !isFocusedInSidebar(p.identity, Track.Source.Camera) && (
-                                    <motion.div key={`cam-${p.identity}`} layout className="w-full"
-                                        variants={camStripTileGlide} initial="initial" animate="animate" exit="exit"
+                                    <PresenceMotion key={`cam-${p.identity}`} pid={p.identity} surface="cam" tracker={presenceTracker} layout className="w-full"
+                                        variants={camStripTileGlide}
                                         transition={{ layout: { duration: SIDEBAR_GLIDE_S, ease: SIDEBAR_GLIDE_EASE } }}>
                                         <VideoTile
                                             p={p}
@@ -5193,7 +6496,7 @@ export const SidebarConference = ({
                                             canServerMute={canServerMute}
                                             onServerMuteTrack={onServerMuteTrack}
                                         />
-                                    </motion.div>
+                                    </PresenceMotion>
                                 )
                             ))}
                             </AnimatePresence>
@@ -5265,9 +6568,9 @@ export const SidebarConference = ({
                 <div ref={videoTilesRef} className="flex flex-col gap-3">
                 {!(noRinging && anyVideo) && (
                     <LayoutGroup id="inline-video-tiles">
-                    <AnimatePresence initial={true}>
+                    <AnimatePresence custom={presenceExit} initial={true}>
                     {/* Your own share — see the portal branch above for why. */}
-                    {localScreenShare && !isFocusedInSidebar(localParticipant!.identity, Track.Source.ScreenShare) && (
+                    {localShareTile && !isFocusedInSidebar(localParticipant!.identity, Track.Source.ScreenShare) && (
                         <motion.div key="local-screenshare" layout
                             variants={inlineTileGlide} initial="initial" animate="animate" exit="exit"
                             transition={{ layout: { duration: SIDEBAR_GLIDE_S, ease: SIDEBAR_GLIDE_EASE } }}>
@@ -5292,8 +6595,8 @@ export const SidebarConference = ({
                     {visibleScreenShareParticipants.map(p => (
                         !isFocusedInSidebar(p.identity, Track.Source.ScreenShare) && (
                             subscribedScreenshares.has(p.identity) ? (
-                                <motion.div key={`ss-${p.identity}`} layout
-                                    variants={inlineTileGlide} initial="initial" animate="animate" exit="exit"
+                                <PresenceMotion key={`ss-${p.identity}`} pid={p.identity} surface="share" tracker={presenceTracker} layout
+                                    variants={inlineTileGlide}
                                     transition={{ layout: { duration: SIDEBAR_GLIDE_S, ease: SIDEBAR_GLIDE_EASE } }}>
                                     <VideoTile
                                         p={p}
@@ -5315,10 +6618,10 @@ export const SidebarConference = ({
                                         onServerMuteTrack={onServerMuteTrack}
                                         onStopWatching={() => handleStopWatchingScreenshare(p.identity)}
                                     />
-                                </motion.div>
+                                </PresenceMotion>
                             ) : (
-                                <motion.div key={`ssgate-${p.identity}`} layout
-                                    variants={inlineTileGlide} initial="initial" animate="animate" exit="exit"
+                                <PresenceMotion key={`ssgate-${p.identity}`} pid={p.identity} surface="share" tracker={presenceTracker} layout
+                                    variants={inlineTileGlide}
                                     transition={{ layout: { duration: SIDEBAR_GLIDE_S, ease: SIDEBAR_GLIDE_EASE } }}>
                                     <ScreenShareGate
                                         p={p}
@@ -5338,15 +6641,15 @@ export const SidebarConference = ({
                                         onSubscribed={handleSubscribeScreenshare}
                                         onHideScreenShare={() => toggleHideScreenShare(p.identity, true)}
                                     />
-                                </motion.div>
+                                </PresenceMotion>
                             )
                         )
                     ))}
 
                     {/* Local camera — pinned above remotes, never promoted */}
                     {localCam && !isFocusedInSidebar(localParticipant!.identity, Track.Source.Camera) && (
-                        <motion.div key="local-cam" layout
-                            variants={inlineTileGlide} initial="initial" animate="animate" exit="exit"
+                        <PresenceMotion key="local-cam" pid={localParticipant!.identity} surface="cam" tracker={presenceTracker} layout
+                            variants={inlineTileGlide}
                             transition={{ layout: { duration: SIDEBAR_GLIDE_S, ease: SIDEBAR_GLIDE_EASE } }}>
                             <VideoTile
                                 p={localParticipant!}
@@ -5364,14 +6667,14 @@ export const SidebarConference = ({
                                 canServerMute={canServerMute}
                                 onServerMuteTrack={onServerMuteTrack}
                             />
-                        </motion.div>
+                        </PresenceMotion>
                     )}
 
                     {/* Remote cameras — sorted by active speaker when tiles overflow */}
                     {sortedVisibleRemoteCamParticipants.map((p) => (
                         !isFocusedInSidebar(p.identity, Track.Source.Camera) && (
-                            <motion.div key={`cam-${p.identity}`} layout
-                                variants={inlineTileGlide} initial="initial" animate="animate" exit="exit"
+                            <PresenceMotion key={`cam-${p.identity}`} pid={p.identity} surface="cam" tracker={presenceTracker} layout
+                                variants={inlineTileGlide}
                                 transition={{ layout: { duration: SIDEBAR_GLIDE_S, ease: SIDEBAR_GLIDE_EASE } }}>
                                 <VideoTile
                                     p={p}
@@ -5392,7 +6695,7 @@ export const SidebarConference = ({
                                     canServerMute={canServerMute}
                                     onServerMuteTrack={onServerMuteTrack}
                                 />
-                            </motion.div>
+                            </PresenceMotion>
                         )
                     ))}
                     </AnimatePresence>
@@ -5427,11 +6730,13 @@ export const SidebarConference = ({
                         /* Voice-channel / huddle mode: participant rows inside a MUI-style card */
                         <div className="rounded-b-xl overflow-hidden bg-white/[0.04] border-x border-b border-white/[0.07]">
                         <div ref={audioOnlyNormalRef} className="flex flex-col w-full">
-                            <AnimatePresence mode="popLayout" initial={true}>
+                            {/* Sync mode, not popLayout: an exiting row collapses IN the
+                                card (ROW_VARIANTS) instead of being popped out and clipped by
+                                the card's overflow while the card snaps shorter. */}
+                            <AnimatePresence initial={true} custom={presenceExit}>
                             {audioOnlyParticipants.map(p => (
-                                <motion.div key={p.identity} layout
-                                    variants={tileItemVariants} initial="initial" animate="animate" exit="exit" className="w-full"
-                                    transition={{ layout: { duration: 0.38, ease: [0.22, 1, 0.36, 1] } }}>
+                                <PresenceMotion key={p.identity} pid={p.identity} surface="audio" kind="row" tracker={presenceTracker} layout className="w-full"
+                                    transition={{ layout: { duration: 0.38, ease: CALL_EASE_ENTER } }}>
                                     <ParticipantCard
                                         p={p}
                                         localParticipant={localParticipant}
@@ -5454,7 +6759,7 @@ export const SidebarConference = ({
                                         onServerMuteTrack={onServerMuteTrack}
                                         showLocalPing
                                     />
-                                </motion.div>
+                                </PresenceMotion>
                             ))}
                             </AnimatePresence>
                         </div>
@@ -5464,11 +6769,11 @@ export const SidebarConference = ({
                         ref={audioOnlyNormalRef}
                         className="flex flex-row flex-wrap justify-center gap-4 pt-1 pb-1"
                     >
-                        <AnimatePresence mode="popLayout" initial={true}>
+                        <AnimatePresence mode="popLayout" initial={true} custom={presenceExit}>
                         {audioOnlyParticipants.map(p => (
-                            <motion.div key={p.identity} layout
-                                variants={tileItemVariants} initial="initial" animate="animate" exit="exit"
-                                transition={{ layout: { duration: 0.38, ease: [0.22, 1, 0.36, 1] } }}>
+                            <PresenceMotion key={p.identity} pid={p.identity} surface="audio" tracker={presenceTracker} layout
+                                variants={tileItemVariants}
+                                transition={{ layout: { duration: 0.38, ease: CALL_EASE_ENTER } }}>
                                 <ParticipantCard
                                     p={p}
                                     localParticipant={localParticipant}
@@ -5487,7 +6792,7 @@ export const SidebarConference = ({
                                     isGroup={isGroup}
                                     fallbackAvatars={fallbackAvatars}
                                 />
-                            </motion.div>
+                            </PresenceMotion>
                         ))}
                         </AnimatePresence>
                     </div>
@@ -5516,9 +6821,10 @@ export const SidebarConference = ({
                             transition={{ duration: 0.3, delay: 0.2, ease: [0.22, 1, 0.36, 1] }}
                         >
                         <div className="flex flex-col w-full">
-                            <AnimatePresence mode="popLayout" initial={false}>
+                            {/* Sync mode + ROW_VARIANTS — see the rows above. */}
+                            <AnimatePresence initial={false} custom={presenceExit}>
                             {audioOnlyParticipants.map(p => (
-                                <motion.div key={p.identity} variants={tileItemVariants} initial="initial" animate="animate" exit="exit" className="w-full">
+                                <PresenceMotion key={p.identity} pid={p.identity} surface="audio" kind="row" tracker={presenceTracker} className="w-full">
                                     <ParticipantCard
                                         p={p}
                                         localParticipant={localParticipant}
@@ -5541,7 +6847,7 @@ export const SidebarConference = ({
                                         onServerMuteTrack={onServerMuteTrack}
                                         showLocalPing
                                     />
-                                </motion.div>
+                                </PresenceMotion>
                             ))}
                             </AnimatePresence>
                         </div>
@@ -5549,9 +6855,14 @@ export const SidebarConference = ({
                     ) : (
                         /* ── DM / group call tile grid ───────────────────────── */
                         <div className="flex-1 flex flex-row flex-wrap justify-center items-center content-center gap-x-8 gap-y-6">
-                            <AnimatePresence mode="popLayout" initial={!instantEnter}>
+                            {/* `layout` on every tile: when someone joins, leaves, or the
+                                ringing tile hands over to the person who answered, the
+                                others FLIP to their new slots instead of jumping. */}
+                            <AnimatePresence mode="popLayout" initial={!instantEnter} custom={presenceExit}>
                             {audioOnlyParticipants.map(p => (
-                                <motion.div key={p.identity} variants={tileItemVariants} initial="initial" animate="animate" exit="exit">
+                                <PresenceMotion key={p.identity} pid={p.identity} surface="audio" tracker={presenceTracker} layout
+                                    variants={tileItemVariants}
+                                    transition={{ layout: { duration: CALL_GLIDE_S, ease: CALL_EASE_GLIDE } }}>
                                     <ParticipantCard
                                         p={p}
                                         localParticipant={localParticipant}
@@ -5573,11 +6884,13 @@ export const SidebarConference = ({
                                         canServerMute={canServerMute}
                                         onServerMuteTrack={onServerMuteTrack}
                                     />
-                                </motion.div>
+                                </PresenceMotion>
                             ))}
                             {isRinging && (
                                 <motion.div
                                     key="ringing-tile"
+                                    layout
+                                    transition={{ layout: { duration: CALL_GLIDE_S, ease: CALL_EASE_GLIDE } }}
                                     variants={tileItemVariants}
                                     initial="initial"
                                     animate="animate"
@@ -5662,7 +6975,7 @@ export const SidebarConference = ({
                         ) : null}
                         <ControlBar
                             localParticipant={localParticipant}
-                            isLocalDeafened={isLocalDeafened}
+                            isLocalDeafened={isDeafenedForUi}
                             onToggleMic={toggleMic}
                             onToggleDeafen={toggleDeafen}
                             onToggleCamera={toggleCamera}
@@ -5670,9 +6983,10 @@ export const SidebarConference = ({
                             onOpenScreenSharePicker={openScreenSharePicker}
                             onScreenShareIntent={warmScreenSharePicker}
                             onAdjustScreenShareQuality={adjustScreenShareQuality}
-                            onToggleScreenShareAudio={toggleScreenShareAudio}
+                            onToggleScreenShareAudio={shareAudioUnavailableReason(window.electronAPI?.platform, nativeAudioSupported) ? undefined : toggleScreenShareAudio}
                             currentShareResolution={currentShare?.resolution}
                             currentShareFrameRate={currentShare?.frameRate}
+                            currentShareSourceId={currentShare?.sourceId ?? null}
                             currentShareAudio={currentShare?.audio}
                             shareLayoutChoices={layoutChoices(shareDisplayAspect)}
                             currentShareLayout={currentShare?.layout}
@@ -5680,6 +6994,8 @@ export const SidebarConference = ({
                             screenShareStarting={shareStarting}
                             onLeave={handleUserLeave}
                             showFullscreenButton={anyVideo}
+                            localPreviewHidden={!!localScreenShare && !localShareTile}
+                            onToggleLocalPreview={localScreenShare ? () => { void toggleHideScreenShare(localScreenShare.identity, !!localShareTile); } : undefined}
                             canSpeak={canSpeak}
                             canVideo={canVideo}
                             canScreenShare={canScreenShare}
@@ -5696,11 +7012,7 @@ export const SidebarConference = ({
 
             {/* Screen share picker */}
             {isScreenSharePickerOpen && (
-                <ScreenSharePickerModal
-                    onSelect={handleScreenShareSelect}
-                    initialTab={pickerPreset ? 'window' : undefined}
-                    preselectExe={pickerPreset?.exe}
-                />
+                <ScreenSharePickerModal onSelect={(o) => { if (!o || o.sourceId !== currentShare?.sourceId) forgetScreenAnswer(); return handleScreenShareSelect(o); }} initialResolution={currentShare?.resolution} initialFrameRate={currentShare?.frameRate} initialAudio={currentShare?.audio === true} initialAppAudio={currentShare?.audio === true ? currentShare.appAudio ?? null : null} liveSourceId={currentShare && isPortalSourceId(currentShare.sourceId) ? currentShare.sourceId : null} />
             )}
 
             {/* Solo inactivity kick dialog — a LIVE countdown with a "Leave Now"

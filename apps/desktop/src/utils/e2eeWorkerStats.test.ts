@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
-import { dataPacketErrorFromMessage, attachDataPacketErrorLog, annexBStatsFromMessage } from './e2eeWorkerStats';
+import { dataPacketErrorFromMessage, attachDataPacketErrorLog, annexBStatsFromMessage, AudioLagFolder, AUDIO_LAG_FOLD_MS, AUDIO_LAG_NOTABLE_MS } from './e2eeWorkerStats';
 import { getCallEvents, clearCallEvents } from './callEventLog';
 
 describe('data-packet E2EE failures (annotations ride these)', () => {
@@ -44,5 +44,34 @@ describe('data-packet E2EE failures (annotations ride these)', () => {
         expect(ev).toHaveLength(1);
         expect(ev[0].detail).toEqual({ reason: 'invalid_key' });
         expect(JSON.stringify(ev)).not.toContain('alice');
+    });
+});
+
+describe('e2ee_audio_lag folding (2026-11-10: 41-51 jitter windows filled each report)', () => {
+    const win = (maxMs: number, extra: Partial<{ dropped: number; rebases: number }> = {}) => ({ dir: 'recv', frames: 500, dropped: 0, rebases: 0, maxMs, ...extra });
+
+    it('stays silent for a minute of ordinary jitter (120-350 ms, nothing dropped)', () => {
+        const f = new AudioLagFolder();
+        for (let i = 0; i < 6; i++) expect(f.add(win(150 + i * 30), i * 10_000)).toBeNull();
+        expect(f.add(win(200), AUDIO_LAG_FOLD_MS)).toBeNull();
+    });
+
+    it('reports a fold whose worst window reached the notable lag, with the windows counted', () => {
+        const f = new AudioLagFolder();
+        for (let i = 0; i < 5; i++) f.add(win(i === 2 ? AUDIO_LAG_NOTABLE_MS + 115 : 180), i * 10_000);
+        expect(f.add(win(190), AUDIO_LAG_FOLD_MS)).toEqual({ dir: 'recv', windows: 6, frames: 3000, dropped: 0, maxMs: 515, rebases: 0 });
+    });
+
+    it('reports a drop or a re-base at once, whatever the lag', () => {
+        const f = new AudioLagFolder();
+        expect(f.add(win(130, { dropped: 4 }), 1000)).toMatchObject({ dropped: 4, windows: 1 });
+        expect(f.add(win(130, { rebases: 1 }), 2000)).toMatchObject({ rebases: 1 });
+    });
+
+    it('folds the two directions separately', () => {
+        const f = new AudioLagFolder();
+        f.add({ ...win(500), dir: 'send' }, 0);
+        expect(f.add(win(150), 5000)).toBeNull();
+        expect(f.add({ ...win(150), dir: 'send' }, AUDIO_LAG_FOLD_MS)).toMatchObject({ dir: 'send', maxMs: 500, windows: 2 });
     });
 });

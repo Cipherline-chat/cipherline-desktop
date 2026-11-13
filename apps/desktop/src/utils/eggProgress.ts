@@ -81,7 +81,6 @@ export const EGG_IDS = [
     'echo-everyone',
     'self-ping',
     'wish',
-    'empty-party',
     'volume-ceiling',
     'friends-100',
     'servers-10',
@@ -92,8 +91,6 @@ export const EGG_IDS = [
     'double-general',
     'revolving-door',
     'first-ban',
-    'first-message',
-    'first-call',
     'first-server',
     'call-100',
     'pi-day',
@@ -102,6 +99,20 @@ export const EGG_IDS = [
 ] as const;
 
 export type EggId = (typeof EGG_IDS)[number];
+
+/**
+ * Eggs that were REMOVED from the product (2026-11-12) but may already be in
+ * stored `user_egg_progress.egg_ids` rows, and may still be sent by an older
+ * desktop build. They are not in `EGG_IDS`, so they are not stored, not
+ * counted toward a tier and not part of any "N of TOTAL"; a request carrying
+ * them is still accepted (unknown well-formed ids are dropped, never a 400).
+ * Never reuse these ids for a different egg.
+ *   first-message  (paper plane with a padlock, an account's first day)
+ *   first-call     (Keys with a tin-can phone, an account's first day)
+ *   empty-party    (Keys at a snack table, joining a voice channel alone)
+ */
+export const RETIRED_EGG_IDS: readonly string[] = ['first-message', 'first-call', 'empty-party'];
+
 
 export interface EggTier {
     /** 1..4 (0 = no badge yet). */
@@ -112,7 +123,7 @@ export interface EggTier {
 }
 
 /**
- * Sized for the original 37-egg registry (45 now; the thresholds stay put, see the API mirror for the reasoning): the top
+ * Sized for the original 37-egg registry (57 now; the thresholds stay put, see the API mirror for the reasoning): the top
  * tier is reachable without waiting on the calendar or a 100-friend list.
  */
 export const EGG_TIERS: readonly EggTier[] = [
@@ -420,3 +431,5 @@ export const unbindEggAccount = (): void => controller.unbind();
 export const flushEggSync = (): Promise<void> => controller.flush();
 /** The ids found on the bound account ([] when signed out). Read-only view. */
 export const eggsFound = (): string[] => controller.snapshot()?.found ?? [];
+/** How many of the found ids are CURRENT registry eggs (a retired id still in the stored set never counts). */
+export const eggsFoundCount = (): number => eggsFound().filter(id => REGISTRY.has(id)).length;

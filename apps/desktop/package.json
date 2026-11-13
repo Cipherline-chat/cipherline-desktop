@@ -1,7 +1,8 @@
 {
   "name": "desktop",
+  "desktopName": "cipherline.desktop",
   "private": true,
-  "version": "1.0.23",
+  "version": "0.1.0",
   "license": "Apache-2.0",
   "homepage": "https://cipherline.chat",
   "main": "dist-electron/entry.js",
@@ -14,8 +15,9 @@
     "dev:packaged": "npm run build && npx electron-builder --dir",
     "dev:vite": "vite --host --port 5174",
     "build": "vite build && tsc -p tsconfig.electron.json",
-    "rebuild-native": "npx --package=@electron/rebuild -- electron-rebuild -f -w audio_capture -v 43.7.9",
+    "rebuild-native": "npx --package=@electron/rebuild -- electron-rebuild -f -w audio_capture -v 43.8.7",
     "rebuild-native:mac": "bash scripts/rebuild-native-mac.sh",
+    "rebuild-native:linux-compat": "bash scripts/rebuild-native-linux-compat.sh",
     "package": "npm run rebuild-native && npm run build && npx electron-builder",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit -p tsconfig.app.json",
@@ -25,7 +27,7 @@
   "build": {
     "appId": "com.cipherline.desktop",
     "productName": "Cipherline",
-    "electronVersion": "43.7.9",
+    "electronVersion": "43.8.7",
     "directories": {
       "output": "release"
     },
@@ -33,10 +35,12 @@
       "dist/**/*",
       "dist-electron/**/*",
       "!dist-electron/test-*.js",
-      "build/Release/audio_capture.node"
+      "build/Release/audio_capture.node",
+      "build/Release/cl-wayland-overlay"
     ],
     "asarUnpack": [
-      "build/Release/audio_capture.node"
+      "build/Release/audio_capture.node",
+      "build/Release/cl-wayland-overlay"
     ],
     "extraResources": [
       {
@@ -98,7 +102,8 @@
       "extendInfo": {
         "NSMicrophoneUsageDescription": "Cipherline needs microphone access for voice and video calls.",
         "NSCameraUsageDescription": "Cipherline needs camera access for video calls.",
-        "NSAudioCaptureUsageDescription": "Cipherline needs system audio access to include sound when you share your screen."
+        "NSAudioCaptureUsageDescription": "Cipherline needs system audio access to include sound when you share your screen.",
+        "NSAppleEventsUsageDescription": "Cipherline reads the song playing in Spotify or Music for your “Listening to” status (Settings, Connections)."
       }
     },
     "linux": {
@@ -116,13 +121,28 @@
           ]
         }
       ],
+      "extraResources": [
+        {
+          "from": "build/Release/share-encoder-helper",
+          "to": "share-encoder-helper"
+        }
+      ],
+      "extraFiles": [
+        {
+          "from": "build-assets/linux/AppRun",
+          "to": "AppRun"
+        }
+      ],
       "category": "Network;Chat",
-      "icon": "build-assets/icon.png",
+      "icon": "build-assets/linux-icons",
       "maintainer": "Cipherline LLC <hello@cipherline.chat>",
       "vendor": "Cipherline LLC",
       "synopsis": "End-to-end encrypted messaging and calls",
       "description": "Cipherline is a private messenger for friends and communities: direct messages, group chats, servers, and voice and video calls, all end-to-end encrypted on your device.",
-      "executableName": "cipherline"
+      "executableName": "cipherline",
+      "executableArgs": [
+        "--enable-sandbox"
+      ]
     },
     "dmg": {
       "writeUpdateInfo": true
@@ -135,6 +155,9 @@
       }
     ],
     "npmRebuild": false,
+    "toolsets": {
+      "appimage": "1.0.2"
+    },
     "electronFuses": {
       "runAsNode": false,
       "enableCookieEncryption": true,
@@ -147,7 +170,10 @@
     },
     "deb": {
       "packageName": "cipherline",
-      "artifactName": "cipherline_${version}_${arch}.${ext}"
+      "artifactName": "cipherline_${version}_${arch}.${ext}",
+      "recommends": [
+        "nvidia-vaapi-driver"
+      ]
     }
   },
   "dependencies": {
@@ -199,7 +225,7 @@
     "autoprefixer": "^10.4.27",
     "concurrently": "^9.2.5",
     "cross-env": "^7.0.3",
-    "electron": "43.7.9",
+    "electron": "43.8.7",
     "electron-builder": "26.15.7",
     "eslint": "^9.39.1",
     "eslint-plugin-react-hooks": "^7.0.1",

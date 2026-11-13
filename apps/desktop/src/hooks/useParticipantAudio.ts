@@ -58,10 +58,17 @@ import { applyOutputDevice, unregisterOutputDeviceTarget, registerOutputAudioCon
 import { workletModuleUrl, forgetWorkletModuleUrl } from '../utils/workletModuleUrl';
 import { choosePlaybackPath, elementVolumeFor, webAudioExtraMs, type PlaybackInfo, type PlaybackPath } from '../utils/avSync';
 import { clampVolumePercent, clampPerUserVolume } from '../utils/volumeLimits';
-import { notePlaybackPath, noteWebAudioContext } from '../utils/avSyncMonitor';
-import { ReceiveLeveler, dbToLinear, stepBoostLatch } from '../audio/receiveLeveler.js';
+import { useLocalServerDeafened, shouldSilenceMicAudio, shouldSilenceShareAudio } from '../utils/localServerDeafen';
+import { notePlaybackPath, noteWebAudioContext, slotFor } from '../utils/avSyncMonitor';
+import { logCallEvent } from '../utils/callEventLog';
 import {
-    LEVELER_POLL_MS, boostNeedsWebAudio, isIncomingLevelerEnabled, pickRtpLevel, subscribeIncomingLeveler,
+    RX_LEVEL_LOG_MS, RX_LEVEL_MIN_NEW_SPEECH_SEC, RX_LEVEL_DIAG_REPEAT_MS,
+    newRxPollTally, tallyRxPoll, rxNoSpeechReason, rxPollFields,
+    type RxPollTally, type RxNoSpeechReason,
+} from '../utils/rxLevelLog';
+import { ReceiveLeveler, dbToLinear, stepBoostLatch, type ReceiveLevelerSnapshot } from '../audio/receiveLeveler.js';
+import {
+    LEVELER_POLL_MS, boostNeedsWebAudio, isIncomingLevelerEnabled, subscribeIncomingLeveler,
 } from '../utils/incomingLeveler';
 
 // ── Shared AudioContext ─────────────────────────────────────────────────────
@@ -207,17 +214,30 @@ function subscribeMasterSlider(cb: () => void): () => void {
 // ceiling so a loud moment can't clip/distort at the OS mixer, without
 // audibly squashing normal conversation (threshold is well above typical
 // speech levels — it only engages on genuine peaks).
+//
+// The compressor node adds its own automatic make-up gain, and it depends on the
+// threshold. At the old -6 dBFS it was +3.4 dB (measured in Chromium), so anyone
+// played through Web Audio came out 3.4 dB louder than anyone on the <audio>
+// element path in the same call, and jumped when their path changed. Now it sits
+// above normal speech peaks and a trim cancels its make-up, so this stage is
+// unity below the threshold and both paths are equally loud: -17.6 dBFS speech
+// stays where it is, and a 0 dBFS input comes out about -2.5 dBFS peak.
+export const MASTER_LIMITER_THRESHOLD_DB = -3;
+export const MASTER_LIMITER_MAKEUP_DB = 1.7;
 let masterLimiter: DynamicsCompressorNode | null = null;
 
 function getMasterLimiter(ctx: AudioContext): DynamicsCompressorNode {
     if (!masterLimiter) {
         masterLimiter = ctx.createDynamicsCompressor();
-        masterLimiter.threshold.value = -6;   // dBFS — only catches genuine peaks
+        masterLimiter.threshold.value = MASTER_LIMITER_THRESHOLD_DB;
         masterLimiter.knee.value = 0;         // hard knee — a limiter, not a leveller
         masterLimiter.ratio.value = 20;       // effectively brick-wall above threshold
         masterLimiter.attack.value = 0.001;   // 1ms — fast enough to catch transients
         masterLimiter.release.value = 0.1;    // 100ms — recovers quickly between peaks
-        masterLimiter.connect(ctx.destination);
+        const makeupTrim = ctx.createGain();
+        makeupTrim.gain.value = Math.pow(10, -MASTER_LIMITER_MAKEUP_DB / 20);
+        masterLimiter.connect(makeupTrim);
+        makeupTrim.connect(ctx.destination);
     }
     return masterLimiter;
 }
@@ -364,6 +384,21 @@ function notifyLevelBoost(): void {
 
 let levelerTimer: ReturnType<typeof setInterval> | null = null;
 
+/** A 30 s window that heard no speech still says WHY (see rxLevelLog.ts): no source / stale / quiet. */
+function logRxNoSpeech(chain: MicChain, identity: string, now: number): void {
+    if (now - chain.rxLoggedAtMs < RX_LEVEL_LOG_MS) return;
+    if (chain.leveler.activeSec - chain.rxLoggedActiveSec >= RX_LEVEL_MIN_NEW_SPEECH_SEC) return; // the speech path logs it
+    chain.rxLoggedAtMs = now;
+    const reason = rxNoSpeechReason(chain.rxTally);
+    const fields = rxPollFields(chain.rxTally);
+    chain.rxTally = newRxPollTally();
+    if (!reason || chain.pub.isMuted) return;
+    if (reason === chain.rxDiagReason && now - chain.rxDiagAtMs < RX_LEVEL_DIAG_REPEAT_MS) return;
+    chain.rxDiagReason = reason;
+    chain.rxDiagAtMs = now;
+    logCallEvent('rx_level', { slot: slotFor(identity), reason, ...fields });
+}
+
 function pollLevelers(): void {
     const now = performance.now();
     const masterLinear = masterSliderToGain(getMasterSlider());
@@ -372,9 +407,29 @@ function pollLevelers(): void {
         if (!receiver || typeof receiver.getSynchronizationSources !== 'function') return;
         const dt = chain.levelPollAtMs > 0 ? Math.min(0.5, (now - chain.levelPollAtMs) / 1000) : LEVELER_POLL_MS / 1000;
         chain.levelPollAtMs = now;
-        const level = pickRtpLevel(receiver.getSynchronizationSources(), now);
-        if (level === undefined) return; // no fresh reading = a pause: gain holds
+        const level = tallyRxPoll(chain.rxTally, receiver.getSynchronizationSources(), now);
+        if (level === undefined) { logRxNoSpeech(chain, identity, now); return; } // no fresh reading = a pause: gain holds
         const gainDb = chain.leveler.pushLinear(level, dt);
+        // Diagnostics: what this talker sends us, what the leveler did to it, and what that
+        // adds up to (before the listener's own sliders). Per call-local placeholder, levels only.
+        if (now - chain.rxLoggedAtMs >= RX_LEVEL_LOG_MS
+            && chain.leveler.activeSec - chain.rxLoggedActiveSec >= RX_LEVEL_MIN_NEW_SPEECH_SEC) {
+            chain.rxLoggedAtMs = now;
+            chain.rxLoggedActiveSec = chain.leveler.activeSec;
+            const wire = chain.leveler.levelDb;
+            if (Number.isFinite(wire)) {
+                logCallEvent('rx_level', {
+                    slot: slotFor(identity),
+                    wire_db: Math.round(wire * 10) / 10,
+                    rx_gain_db: Math.round(gainDb * 10) / 10,
+                    heard_db: Math.round((wire + gainDb) * 10) / 10,
+                    ...rxPollFields(chain.rxTally),
+                });
+            }
+            chain.rxTally = newRxPollTally();
+        } else {
+            logRxNoSpeech(chain, identity, now);
+        }
         const linear = dbToLinear(gainDb);
         if (Math.abs(gainDb - chain.levelGainDb) >= 0.05) {
             chain.levelGainDb = gainDb;
@@ -410,22 +465,33 @@ function syncLevelerTimer(): void {
     }
 }
 
-function resetLeveler(chain: MicChain): void {
+/** Forget the talker. `applied` = the leveler is on, so the chain starts at the
+ *  leveler's conservative join gain; off = plain unity, nothing applied. */
+function resetLeveler(chain: MicChain, applied: boolean): void {
     chain.leveler.reset();
-    chain.levelGainDb = 0;
-    chain.levelLoggedDb = 0;
-    chain.levelGain = 1;
+    chain.levelGainDb = applied ? chain.leveler.gainDb : 0;
+    chain.levelLoggedDb = chain.levelGainDb;
+    chain.levelGain = applied ? dbToLinear(chain.leveler.gainDb) : 1;
     chain.boostAccumSec = 0;
     chain.levelPollAtMs = 0;
 }
 
+// A talker whose chain is rebuilt mid-call (tile layout change, fullscreen
+// toggle, a brief refCount 0) used to restart the leveler from zero and ramp
+// all over again - "they come in loud and are slowly turned down", every time
+// the layout changed. The state of a released chain is remembered for a while
+// so the rebuilt one resumes exactly where it was. Session memory only (never
+// persisted): it holds a gain, not an identity record that outlives the call.
+const LEVELER_MEMORY_MS = 10 * 60 * 1000;
+const levelerMemory = new Map<string, { snap: ReceiveLevelerSnapshot; at: number }>();
+
 // The setting flipped: off = every talker back to unity (and off the boost
 // path), on = start measuring from scratch.
 subscribeIncomingLeveler(() => {
-    if (!isIncomingLevelerEnabled()) {
-        micChains.forEach(c => { resetLeveler(c); applyChainVolume(c); });
-        if (levelBoostLatched.size) { levelBoostLatched.clear(); notifyLevelBoost(); }
-    }
+    const on = isIncomingLevelerEnabled();
+    levelerMemory.clear();
+    micChains.forEach(c => { resetLeveler(c, on); applyChainVolume(c); });
+    if (!on && levelBoostLatched.size) { levelBoostLatched.clear(); notifyLevelBoost(); }
     syncLevelerTimer();
 });
 
@@ -485,6 +551,13 @@ interface MicChain extends PlaybackChainBase {
     levelLoggedDb: number;
     boostAccumSec: number;
     levelPollAtMs: number;
+    /** rx_level diagnostics: when it was last logged, and the leveler's speech seconds then. */
+    rxLoggedAtMs: number;
+    rxLoggedActiveSec: number;
+    /** What the last window's polls got (rxLevelLog.ts), and the last no-speech reason logged. */
+    rxTally: RxPollTally;
+    rxDiagReason: RxNoSpeechReason | null;
+    rxDiagAtMs: number;
 }
 const micChains = new Map<string, MicChain>();
 // Per-identity in-flight build/rebuild promises. Without this, two concurrent
@@ -703,18 +776,28 @@ async function acquireMicChain(p: RemoteParticipant, nsEnabled: boolean): Promis
                 return existing;
             }
             const internals = await buildMicInternals(ctx, pub, track, nsEnabled, p.identity, path);
+            const leveler = new ReceiveLeveler();
+            const remembered = levelerMemory.get(p.identity);
+            levelerMemory.delete(p.identity);
+            if (remembered && Date.now() - remembered.at < LEVELER_MEMORY_MS) leveler.restore(remembered.snap);
+            const levelOn = isIncomingLevelerEnabled();
             const newChain: MicChain = {
                 refCount: 0,
                 track,
                 nsEnabled,
                 pub,
                 perUserGain: sliderToGain(readPersistedPerUserVolume(p.identity, 'mic')),
-                levelGain: 1,
-                leveler: new ReceiveLeveler(),
-                levelGainDb: 0,
-                levelLoggedDb: 0,
+                levelGain: levelOn ? dbToLinear(leveler.gainDb) : 1,
+                leveler,
+                levelGainDb: levelOn ? leveler.gainDb : 0,
+                levelLoggedDb: levelOn ? leveler.gainDb : 0,
                 boostAccumSec: 0,
                 levelPollAtMs: 0,
+                rxLoggedAtMs: performance.now(),
+                rxLoggedActiveSec: 0,
+                rxTally: newRxPollTally(),
+                rxDiagReason: null,
+                rxDiagAtMs: 0,
                 silenced: false,
                 ...internals,
             };
@@ -746,6 +829,7 @@ function releaseMicChain(identity: string): void {
     if (!chain) return;
     chain.refCount--;
     if (chain.refCount <= 0) {
+        if (isIncomingLevelerEnabled()) levelerMemory.set(identity, { snap: chain.leveler.snapshot(), at: Date.now() });
         teardownMicInternals(chain);
         micChains.delete(identity);
         levelBoostLatched.delete(identity);
@@ -881,9 +965,14 @@ export function useParticipantAudio(
     const volumeRef = useRef(volume);
     const isLocalMutedRef = useRef(isLocalMuted);
     const isLocalDeafenedRef = useRef(isLocalDeafened);
+    // A moderator's server deafen silences other people's MICROPHONES only (the
+    // share-audio chain below never reads it): it is not part of `isLocalDeafened`.
+    const serverDeafened = useLocalServerDeafened();
+    const serverDeafenedRef = useRef(serverDeafened);
     volumeRef.current = volume;
     isLocalMutedRef.current = isLocalMuted;
     isLocalDeafenedRef.current = isLocalDeafened;
+    serverDeafenedRef.current = serverDeafened;
 
     // ── Mic chain ref-counted acquire ───────────────────────────────────────
     // acquireMicChain is async (it awaits the worklet-module registration to
@@ -913,7 +1002,11 @@ export function useParticipantAudio(
             // via the always-current refs above.
             if (chain) {
                 chain.perUserGain = sliderToGain(volumeRef.current);
-                chain.silenced = isLocalMutedRef.current || isLocalDeafenedRef.current;
+                chain.silenced = shouldSilenceMicAudio({
+                    isLocalMuted: isLocalMutedRef.current,
+                    isLocalDeafened: isLocalDeafenedRef.current,
+                    serverDeafened: serverDeafenedRef.current,
+                });
                 applyChainVolume(chain);
             }
         }).catch(err => {
@@ -938,9 +1031,9 @@ export function useParticipantAudio(
         const chain = micChains.get(p.identity);
         if (!chain) return;
         chain.perUserGain = sliderToGain(volume);
-        chain.silenced = isLocalMuted || isLocalDeafened;
+        chain.silenced = shouldSilenceMicAudio({ isLocalMuted, isLocalDeafened, serverDeafened });
         applyChainVolume(chain);
-    }, [isLocal, p.identity, volume, isLocalMuted, isLocalDeafened, micTrack, nsEnabled, micPath]);
+    }, [isLocal, p.identity, volume, isLocalMuted, isLocalDeafened, serverDeafened, micTrack, nsEnabled, micPath]);
 
     // ── Screenshare-audio chain ref-counted acquire ─────────────────────────
     useEffect(() => {
@@ -959,7 +1052,9 @@ export function useParticipantAudio(
         const chain = ssAudioChains.get(p.identity);
         if (!chain) return;
         chain.perUserGain = sliderToGain(screenShareVolume ?? 1);
-        chain.silenced = !!(isLocalDeafened || isScreenShareMuted);
+        // Self-deafen / muting this share only. NOT the moderator's server deafen:
+        // a server-deafened member keeps hearing screen shares (and seeing video).
+        chain.silenced = shouldSilenceShareAudio({ isLocalDeafened, isScreenShareMuted: !!isScreenShareMuted });
         applyChainVolume(chain);
     }, [isLocal, isScreenShare, p.identity, screenShareVolume, isLocalDeafened, isScreenShareMuted, ssAudioTrack, ssPath]);
 }

@@ -1,5 +1,6 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
+    getStill,
     ANIMATED_MAX_BYTES, animatedPickError, bytesAreAnimated, isAnimatedCandidateMime, isAnimatedFile, pickDisplayUrl,
 } from './animatedImage';
 
@@ -52,12 +53,31 @@ describe('pickDisplayUrl: card animates, lists show the first frame', () => {
         expect(pickDisplayUrl(URL_, 'image/gif', false, STILL)).toBe(STILL);
         expect(pickDisplayUrl(URL_, 'image/gif', true, STILL)).toBe(URL_);
     });
-    it('static images are untouched either way', () => {
+    it('images that are positively still are untouched either way', () => {
         expect(pickDisplayUrl(URL_, 'image/jpeg', false, null)).toBe(URL_);
-        expect(pickDisplayUrl(URL_, null, false, null)).toBe(URL_);
+        expect(pickDisplayUrl(URL_, 'image/png', false, null)).toBe(URL_);
     });
-    it('no URL, no output; before the still is ready the full URL stands in', () => {
+    it('an UNKNOWN type is never waved through as static: it is held on its first frame', () => {
+        expect(pickDisplayUrl(URL_, null, false, STILL)).toBe(STILL);
+        expect(pickDisplayUrl(URL_, '', false, STILL)).toBe(STILL);
+        expect(pickDisplayUrl(URL_, 'application/octet-stream', false, STILL)).toBe(STILL);
+        expect(pickDisplayUrl(URL_, null, true, STILL)).toBe(URL_);
+    });
+    it('no URL, no output; until the still exists the animated URL is NEVER the stand-in', () => {
         expect(pickDisplayUrl(null, 'image/gif', false, null)).toBeNull();
-        expect(pickDisplayUrl(URL_, 'image/gif', false, null)).toBe(URL_);
+        expect(pickDisplayUrl(URL_, 'image/gif', false, null)).toBeNull();
+        expect(pickDisplayUrl(URL_, null, false, null)).toBeNull();
+    });
+});
+
+describe('a first frame is only ever fetched from somewhere an <img> may load', () => {
+    it('refuses an arbitrary address without fetching it', async () => {
+        const fetchSpy = vi.fn();
+        vi.stubGlobal('fetch', fetchSpy);
+        try {
+            await expect(getStill('https://attacker.example/x.gif')).resolves.toBeNull();
+            await expect(getStill('http://169.254.169.254/latest/meta-data/')).resolves.toBeNull();
+            expect(fetchSpy).not.toHaveBeenCalled();
+        } finally { vi.unstubAllGlobals(); }
     });
 });

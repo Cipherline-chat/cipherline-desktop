@@ -1,7 +1,7 @@
-import React from 'react';
-import { MicOff, Monitor, Eye, EyeOff, Users, AudioLines, VideoOff, MonitorOff, HeadphoneOff, Check, PencilOff, PenLine, Flag, PhoneOff, X, Music } from 'lucide-react';
+import React, { useState } from 'react';
+import { MicOff, Monitor, Eye, EyeOff, Users, AudioLines, VideoOff, MonitorOff, HeadphoneOff, Check, PencilOff, PenLine, Flag, PhoneOff, X, Music, Maximize, Minimize } from 'lucide-react';
 import { ResetSlider } from '../ResetSlider';
-import { MAX_PER_USER_VOLUME, DEFAULT_PER_USER_VOLUME } from '../../utils/volumeLimits';
+import { MAX_PER_USER_VOLUME, DEFAULT_PER_USER_VOLUME, formatPerUserVolume } from '../../utils/volumeLimits';
 import { VolumeCeilingWatch } from '../moments/VolumeCeilingWatch';
 import { useOpenProfile } from '../../contexts/ProfileOpenContext';
 import { useCallServerCtx } from '../../contexts/CallServerCtx';
@@ -105,6 +105,12 @@ export interface PopoverMenuProps {
      * component, same as ContextMenu/SubMenu, so the layer is unconditional).
      */
     onClose?: () => void;
+    /**
+     * Fullscreen's "this one video fills the whole screen". Only FullscreenOverlay
+     * passes these, so the row exists nowhere else.
+     */
+    isFilled?: boolean;
+    onToggleFill?: () => void;
 }
 
 /** Plain action row — matches ContextMenu.tsx's MenuRow markup exactly
@@ -121,6 +127,15 @@ const ActionRow: React.FC<{
         <span className="ci" aria-hidden="true">{icon}</span>
         <span className="clabel">{label}</span>
     </button>
+);
+
+/** The fullscreen fill row, the same on someone else's tile and your own. */
+const FillRow: React.FC<{ isFilled?: boolean; onToggle: () => void }> = ({ isFilled, onToggle }) => (
+    <ActionRow
+        icon={isFilled ? <Minimize size={15} /> : <Maximize size={15} />}
+        label={isFilled ? 'Exit Fill Screen' : 'Fill Entire Screen'}
+        onClick={onToggle}
+    />
 );
 
 /** Checkbox row — the menuitemcheckbox pattern from ContextMenu.tsx's
@@ -168,6 +183,33 @@ const DisconnectRow: React.FC<{
     );
 };
 
+/**
+ * One per-participant volume row: label, live percent readout, slider. The
+ * stored value is a linear multiplier (0..2, 1 = 100%), but ClSlider's bubble
+ * rounds to an integer by default, so on this scale it always read 0/1/2 and
+ * looked frozen at "1". The readout is also kept in LOCAL state: the slider
+ * paints straight onto the DOM during a drag and the menu's `value` prop is a
+ * snapshot that need not re-render, so a prop-derived label never moved.
+ */
+export const PerUserVolumeSlider = ({ label, value, onChange }: { label: string; value: number; onChange: (v: number) => void }) => {
+    const [live, setLive] = useState(value);
+    // Follow the prop when the parent hands in a new one (adjust-state-on-prop-change, no effect).
+    const [seen, setSeen] = useState(value);
+    if (seen !== value) { setSeen(value); setLive(value); }
+    const handle = (v: number) => { setLive(v); onChange(v); };
+    return (
+        <>
+            <div className="flex justify-between items-center text-[10px]">
+                <span className="text-cl-faint">{label}</span>
+                <span className="text-cl-lume font-semibold">{formatPerUserVolume(live)}</span>
+            </div>
+            <VolumeCeilingWatch>
+                <ResetSlider min={0} max={MAX_PER_USER_VOLUME} step={0.05} value={value} resetValue={DEFAULT_PER_USER_VOLUME} onChangeValue={handle} formatLabel={formatPerUserVolume} />
+            </VolumeCeilingWatch>
+        </>
+    );
+};
+
 export const PopoverMenu = ({
     displayName, volume, screenShareVolume,
     isLocalMuted, isScreenShare, hasVideo, isVideoHidden, hasScreenShare, isScreenShareHidden,
@@ -180,6 +222,7 @@ export const PopoverMenu = ({
     serverMutedAudio = false, serverMutedVideo = false, serverMutedScreenShare = false, serverDeafened = false,
     onServerMuteAudio, onServerMuteVideo, onServerMuteScreenShare, onServerDeafen,
     onClose,
+    isFilled, onToggleFill,
 }: PopoverMenuProps) => {
     useEscape(() => onClose?.(), !!onClose);
     const openProfile = useOpenProfile();
@@ -225,29 +268,19 @@ export const PopoverMenu = ({
                     perceptual gain curve in useParticipantAudio.ts converts slider
                     value → linear gain via x^1.5, so 200% lands at ≈+9 dB. */}
                 <div className="flex flex-col gap-1 px-[11px] mb-2.5">
-                    <div className="flex justify-between items-center text-[10px]">
-                        <span className="text-cl-faint">Volume</span>
-                        <span className="text-cl-lume font-semibold">{Math.round(volume * 100)}%</span>
-                    </div>
-                    <VolumeCeilingWatch>
-                        <ResetSlider min={0} max={MAX_PER_USER_VOLUME} step={0.05} value={volume} resetValue={DEFAULT_PER_USER_VOLUME} onChangeValue={onVolumeChange} />
-                    </VolumeCeilingWatch>
+                    <PerUserVolumeSlider label="Volume" value={volume} onChange={onVolumeChange} />
                 </div>
 
                 {/* Screenshare audio volume — same 200% ceiling. */}
                 {isScreenShare && onScreenShareVolumeChange && (
                     <div className="flex flex-col gap-1 px-[11px] mb-2.5 pt-2 border-t border-white/5">
-                        <div className="flex justify-between items-center text-[10px]">
-                            <span className="text-cl-faint">Screen Audio</span>
-                            <span className="text-cl-lume font-semibold">{Math.round((screenShareVolume ?? 1) * 100)}%</span>
-                        </div>
-                        <VolumeCeilingWatch>
-                            <ResetSlider min={0} max={MAX_PER_USER_VOLUME} step={0.05} value={screenShareVolume ?? DEFAULT_PER_USER_VOLUME} resetValue={DEFAULT_PER_USER_VOLUME} onChangeValue={onScreenShareVolumeChange} />
-                        </VolumeCeilingWatch>
+                        <PerUserVolumeSlider label="Screen Audio" value={screenShareVolume ?? DEFAULT_PER_USER_VOLUME} onChange={onScreenShareVolumeChange} />
                     </div>
                 )}
 
                 <div className="ctxm-sep" />
+
+                {onToggleFill && <FillRow isFilled={isFilled} onToggle={onToggleFill} />}
 
                 <CheckRow icon={<MicOff size={15} />} label="Mute" checked={isLocalMuted} onChange={onMuteChange} />
 
@@ -398,6 +431,58 @@ export const PopoverMenu = ({
                             }}
                         />
                     </>
+                )}
+            </div>
+        </div>
+    );
+};
+
+/**
+ * The same menu on YOUR OWN stream or card, where almost nothing in PopoverMenu
+ * means anything: there is no volume to set on yourself, no one to report, no
+ * grant to hand out. A separate shell rather than a flag threading through that
+ * component, whose rows all assume a remote participant (see `canReport` above).
+ *
+ * Everything here is local to this client. "Hide" takes your preview off your own
+ * screen and nothing else: the share keeps going out exactly as it was.
+ */
+export const SelfStreamMenu = ({ displayName, streamRes, ownShare, onHideOwnShareChange, isFilled, onToggleFill, popoverRef, style, onClose }: {
+    displayName: string;
+    streamRes?: string;
+    /** What the share row should offer, or null for no row. */
+    ownShare: 'hide' | 'show' | null;
+    onHideOwnShareChange?: (hide: boolean) => void;
+    isFilled?: boolean;
+    onToggleFill?: () => void;
+    popoverRef: React.Ref<HTMLDivElement>;
+    style: React.CSSProperties;
+    onClose: () => void;
+}) => {
+    useEscape(onClose);
+    return (
+        <div className="cl-kit">
+            <div
+                ref={popoverRef}
+                role="menu"
+                aria-orientation="vertical"
+                className="ctxm"
+                style={{ ...style, position: 'fixed', width: 200, maxWidth: '90vw', zIndex: 9999 }}
+                onContextMenu={e => e.preventDefault()}
+            >
+                <div className="ctxm-title" aria-hidden="true">{displayName}</div>
+                {streamRes && (
+                    <div className="flex items-center justify-between px-[11px] py-1 mb-1 text-[10px]">
+                        <span className="text-cl-faint">Resolution</span>
+                        <span className="ctxm-acc">{streamRes}</span>
+                    </div>
+                )}
+                {onToggleFill && <FillRow isFilled={isFilled} onToggle={() => { onToggleFill(); onClose(); }} />}
+                {ownShare && onHideOwnShareChange && (
+                    <ActionRow
+                        icon={ownShare === 'hide' ? <EyeOff size={15} /> : <Monitor size={15} />}
+                        label={ownShare === 'hide' ? 'Hide Screen Share' : 'Show Screen Share'}
+                        onClick={() => { onHideOwnShareChange(ownShare === 'hide'); onClose(); }}
+                    />
                 )}
             </div>
         </div>

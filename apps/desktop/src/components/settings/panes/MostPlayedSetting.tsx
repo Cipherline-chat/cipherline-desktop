@@ -5,7 +5,7 @@ import { SettingsDisclosure } from '../SettingsDisclosure';
 import { getTracker, subscribeBind } from '../../../utils/achievements/tracker';
 
 /**
- * Settings → Personalize → "Show my most played games to friends".
+ * Settings → Activity & Style → Activity → "Show my most played games to friends".
  *
  * OFF by default. The setting is account-wide (it rides the encrypted
  * achievements snapshot to your other devices; the latest change wins, and a
@@ -37,7 +37,7 @@ export const MostPlayedSetting: React.FC = () => {
 
     return (
         <SettingsDisclosure
-            id="personalize.activity" variant="card" title="Activity"
+            id="personalize.activity" variant="card" title="Most played"
             summary={on ? 'Most played shown to friends' : 'Most played is private'}
             labels={['Most played this week', 'Show my most played games to friends']}
         >

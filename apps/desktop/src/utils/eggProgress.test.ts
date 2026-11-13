@@ -3,7 +3,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-    EGG_FOUND_EVENT, EGG_ID_RE, EGG_IDS, EGG_TIER_COLORS, EGG_TIER_EVENT, EGG_TIERS, MAX_EGG_IDS,
+    EGG_FOUND_EVENT, EGG_ID_RE, RETIRED_EGG_IDS, EGG_IDS, EGG_TIER_COLORS, EGG_TIER_EVENT, EGG_TIERS, MAX_EGG_IDS,
     SYNC_DEBOUNCE_MS, SYNC_RETRY_MS, BOOT_SYNC_DELAY_MS,
     costumeEggFor, createEggProgress, creditLedgerFinds, eggProgressKey, eggTierByNumber, eggTierFor,
     legacyEggsFoundKey, parseEggTierIcon, parseLegacyFound, parseProgress,
@@ -88,6 +88,14 @@ describe('server mirror (apps/api/src/profile-eggs/egg-registry.ts)', () => {
         const block = /export const EGG_IDS = \[([\s\S]*?)\] as const;/.exec(src)![1];
         const ids = [...block.matchAll(/'([a-z0-9-]+)'/g)].map(m => m[1]);
         expect(ids).toEqual([...EGG_IDS]);
+    });
+
+    it2('retires the same ids, and none of them is a live egg', () => {
+        const src = readFileSync(api, 'utf8');
+        const block = /export const RETIRED_EGG_IDS[^=]*= \[([\s\S]*?)\];/.exec(src)![1];
+        expect([...block.matchAll(/'([a-z0-9-]+)'/g)].map(m => m[1])).toEqual([...RETIRED_EGG_IDS]);
+        for (const id of RETIRED_EGG_IDS) expect(EGG_IDS as readonly string[]).not.toContain(id);
+        expect(EGG_IDS.length).toBe(57);
     });
 
     it2('has the same tier thresholds and names', () => {

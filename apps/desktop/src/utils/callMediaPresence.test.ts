@@ -11,6 +11,8 @@ import {
     huddleCallMediaKey,
     resolveParticipantAudio,
     resolveParticipantMedia,
+    resolveServerModeration,
+    onServerModerationPresenceChange,
     setCallMedia,
     subscribeCallMedia,
     summarizeCallMedia,
@@ -221,5 +223,96 @@ describe('resolveParticipantAudio — in-call and out-of-call agree on one rule'
     it('not in the call: server presence, live state ignored', () => {
         expect(resolveParticipantAudio(false, { isMuted: false }, { deafened: false }, presence)).toEqual({ muted: true, deafened: true });
         expect(resolveParticipantAudio(false, { isMuted: true }, { deafened: true }, OFF)).toEqual({ muted: false, deafened: false });
+    });
+});
+
+describe('callMediaPresence — server mute / server deafen (moderator state, server-written)', () => {
+    it('a call:media_state event with server_muted / server_deafened is stored, independently of the self flags', () => {
+        applyCallMediaEvent({ channel_id: 'h', call_id: CALL, user_id: A, camera: false, screen_share: false, muted: false, deafened: false, server_muted: true });
+        expect(getCallMedia(CALL, A)).toEqual(st({ server_muted: true }));
+        applyCallMediaEvent({ channel_id: 'h', call_id: CALL, user_id: A, camera: false, screen_share: false, muted: true, deafened: false, server_deafened: true });
+        // The event replaces the whole state: server_muted was not repeated, so it is gone.
+        expect(getCallMedia(CALL, A)).toEqual(st({ muted: true, server_deafened: true }));
+    });
+
+    it('a moderator-only participant (nothing else on) is kept - it is a real badge', () => {
+        setCallMedia(CALL, A, { server_deafened: true });
+        expect(getCallMedia(CALL, A).server_deafened).toBe(true);
+    });
+
+    it('removal arrives as an event WITHOUT the flags and clears the badge (absent reads as false)', () => {
+        setCallMedia(CALL, A, { server_muted: true, server_deafened: true });
+        applyCallMediaEvent({ channel_id: 'h', call_id: CALL, user_id: A, camera: false, screen_share: false, muted: false, deafened: false });
+        expect(getCallMedia(CALL, A)).toEqual(OFF);
+    });
+
+    it('a participant leaving / re-joining starts clean; the server re-announces the badge right after the join', () => {
+        setCallMedia(CALL, A, { server_muted: true });
+        clearCallMediaUser(CALL, A);
+        expect(getCallMedia(CALL, A)).toEqual(OFF);
+        applyCallMediaEvent({ channel_id: 'h', call_id: CALL, user_id: A, camera: false, screen_share: false, muted: false, deafened: false, server_muted: true });
+        expect(getCallMedia(CALL, A).server_muted).toBe(true);
+    });
+
+    it('seeds carry the badge (immediately on reconnect / boot), and a re-seed without it removes it', () => {
+        applyCallMediaSeed(new Map([[CALL, { [A]: { ...OFF, server_muted: true }, [B]: { ...OFF, server_deafened: true } }]]));
+        expect(getCallMedia(CALL, A).server_muted).toBe(true);
+        expect(getCallMedia(CALL, B).server_deafened).toBe(true);
+        applyCallMediaSeed(new Map([[CALL, { [B]: { ...OFF, server_deafened: true } }]]));
+        expect(getCallMedia(CALL, A)).toEqual(OFF);
+    });
+
+    it('non-boolean server flags on the wire are not coerced to true; an older server (no fields) means "not moderated"', () => {
+        applyCallMediaEvent({ channel_id: 'h', call_id: CALL, user_id: A, camera: false, screen_share: false, muted: false, deafened: false, server_muted: 'yes', server_deafened: 1 });
+        expect(getCallMedia(CALL, A)).toEqual(OFF);
+        applyCallMediaEvent({ channel_id: 'h', call_id: CALL, user_id: B, camera: true, screen_share: false });
+        expect(getCallMedia(CALL, B)).toEqual(st({ camera: true }));
+    });
+
+    it('a change of ONLY the moderator flags notifies the call\'s subscribers; an identical one does not', () => {
+        const l = vi.fn();
+        const off = subscribeCallMedia(CALL, l);
+        setCallMedia(CALL, A, { server_muted: true });
+        expect(l).toHaveBeenCalledTimes(1);
+        setCallMedia(CALL, A, { server_muted: true });
+        expect(l).toHaveBeenCalledTimes(1);
+        off();
+    });
+
+    it('onServerModerationPresenceChange fires when the moderator flags change (event or seed), not for camera / self-mute toggles', () => {
+        const l = vi.fn();
+        const off = onServerModerationPresenceChange(l);
+        setCallMedia(CALL, A, { camera: true });
+        setCallMedia(CALL, A, { camera: true, muted: true });
+        expect(l).not.toHaveBeenCalled();
+        setCallMedia(CALL, A, { camera: true, muted: true, server_muted: true });
+        expect(l).toHaveBeenCalledTimes(1);
+        applyCallMediaSeed(new Map([[CALL, {}]])); // the seed removes the badge
+        expect(l).toHaveBeenCalledTimes(2);
+        off();
+        setCallMedia(CALL, B, { server_deafened: true });
+        expect(l).toHaveBeenCalledTimes(2); // unsubscribed
+    });
+
+    it('summarizeCallMedia (Home deck) still lists only camera and screen share', () => {
+        setCallMedia(CALL, A, { server_muted: true, server_deafened: true });
+        expect(summarizeCallMedia(CALL, [A])).toEqual({ camera: [], screen_share: [] });
+    });
+});
+
+describe('resolveServerModeration — in-call (LiveKit metadata) and out-of-call (server presence) agree', () => {
+    const presence = st({ server_muted: true, server_deafened: true });
+    it('in the call: the metadata the server wrote wins, presence is ignored', () => {
+        expect(resolveServerModeration(true, { serverMutedAudio: false, serverDeafened: false }, presence)).toEqual({ serverMuted: false, serverDeafened: false });
+        expect(resolveServerModeration(true, { serverMutedAudio: true, serverDeafened: false }, OFF)).toEqual({ serverMuted: true, serverDeafened: false });
+        expect(resolveServerModeration(true, undefined, presence)).toEqual({ serverMuted: false, serverDeafened: false });
+    });
+    it('not in the call: the server\'s presence overlay, live metadata ignored', () => {
+        expect(resolveServerModeration(false, { serverMutedAudio: false }, presence)).toEqual({ serverMuted: true, serverDeafened: true });
+        expect(resolveServerModeration(false, { serverMutedAudio: true, serverDeafened: true }, OFF)).toEqual({ serverMuted: false, serverDeafened: false });
+    });
+    it('mute and deafen are independent', () => {
+        expect(resolveServerModeration(false, undefined, st({ server_deafened: true }))).toEqual({ serverMuted: false, serverDeafened: true });
+        expect(resolveServerModeration(false, undefined, st({ server_muted: true }))).toEqual({ serverMuted: true, serverDeafened: false });
     });
 });

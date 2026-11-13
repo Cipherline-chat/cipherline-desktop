@@ -21,7 +21,12 @@ export const BREADCRUMB_KINDS: ReadonlySet<string> = new Set([
     'call_join', 'call_leave',
     'share_picker', 'share_codec', 'share_hdr', 'share_start', 'share_start_check', 'share_fallback',
     'share_low_layer', 'share_fps', 'share_clamp', 'h265_switch',
-    'camera_codec', 'camera_start_check',
+    'share_codec_drift', 'share_capture_stall', 'share_crop',
+    // Share rates at both ends (shareNetStats.ts / shareRxStats.ts): numbers, a
+    // refresh rate and a decoder name only. share_rx_snap / share_tx_snap are
+    // report-time only and never reach the call log, so they are not here.
+    'share_net', 'share_display', 'share_rx_fps', 'share_rx_start',
+    'camera_codec', 'camera_start_check', 'camera_codec_drift',
     'ns_load_fallback', 'audio_render', 'e2ee_audio_lag', 'av_sync_applied',
     'gpu_process_restarted', 'video_recovery', 'mic_device_switch',
 ]);

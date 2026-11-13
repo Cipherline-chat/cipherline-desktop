@@ -30,6 +30,7 @@ import type { FriendRequestResult, OnboardingDeps, OnboardingUser } from '../typ
  *   &sent=x     pretend a friend request was already sent to tag `x` (the ending's toast)
  *   &referral=pending  (invite) my referral link never loads: the skeleton + disabled Copy link
  *   &official=1 pretend "also join the official server" was switched on
+ *   &dots=2d    skip WebGL: the Canvas 2D fallback of the dot field (&dots=still = its still-frame last resort)
  *
  * Simulate "a friend signed up with your link" from devtools / Playwright:
  *   window.dispatchEvent(new CustomEvent('ob-harness:friend', { detail: { username: 'kit', discriminator: 5512 } }))
@@ -136,6 +137,7 @@ export const OnboardingHarness: React.FC = () => {
             initialStep={step}
             onDone={() => { log('onDone'); setDone(true); }}
             forceReducedMotion={q.get('rm') === '1'}
+            forceCanvasDots={q.get('dots') === '2d' ? '2d' : q.get('dots') === 'still' ? 'still' : false}
             persist={false}
             initialFlow={{
                 ...(q.get('sent') ? { friendRequestSentTo: q.get('sent') } : {}),

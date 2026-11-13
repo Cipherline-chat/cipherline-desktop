@@ -182,3 +182,18 @@ describe('eggBadgeCount', () => {
         expect(eggBadgeCount({ badge_id: 'founder', count: 9 })).toBeUndefined();
     });
 });
+
+
+describe('Founder badge (early-adopter wire id; never a number)', () => {
+    it("the server's icon and colour for it are in the client allowlists, so even an old client draws it properly", () => {
+        // apps/api profile-badges.service.ts: icon 'rocket', colour 'purple'.
+        expect(resolveProfileBadgeIcon('rocket')).not.toBe(DEFAULT_PROFILE_BADGE_ICON);
+        expect(resolveProfileBadgeColor('purple')).toBe(PROFILE_BADGE_COLOR_TOKENS.purple);
+    });
+
+    it('NEGATIVE: the client has no founder-number reader at all', async () => {
+        const mod = await import('./profileBadges');
+        expect('earlyAdopterNumber' in mod).toBe(false);
+        expect('sanitizeFounderNumber' in mod).toBe(false);
+    });
+});

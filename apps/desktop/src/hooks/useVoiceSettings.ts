@@ -4,6 +4,7 @@ import { voiceChainNeedsProcessor } from '../utils/voiceChain';
 import { MAX_VOLUME_PERCENT } from '../utils/volumeLimits';
 import { deviceHintOf } from '../utils/deviceResolve';
 import { DEFAULT_ECHO_CANCELLATION, resolveEchoCancellation } from '../utils/audioInput';
+import { migrateVoiceDefaults } from '../utils/voiceDefaultsMigration';
 import { onOutputDeviceChange, refreshOutputDevices } from '../utils/audioOutput';
 import { setIncomingLevelerEnabled } from '../utils/incomingLeveler';
 import { isNoiseSuppressionMode, type NoiseSuppressionMode } from '../utils/nsLatency';
@@ -18,7 +19,8 @@ export interface VoiceSettings {
      *  whistling / whispering, ~2.7 ms). See utils/nsLatency.ts. */
     noiseSuppressionMode: NoiseSuppressionMode;
     // Chromium's acoustic echo cancellation on the mic capture (audioInput.ts
-    // micCaptureConstraints). Default ON; applied live mid-call.
+    // micCaptureConstraints). Default OFF for new installs (DEFAULT_ECHO_CANCELLATION);
+    // a saved choice is honoured as-is. Applied live mid-call.
     echoCancellation: boolean;
     volumeNormalization: boolean;
     // "Normalize voice volume" (Settings -> Voice & Video -> Output): a gentle
@@ -26,7 +28,10 @@ export interface VoiceSettings {
     // auto gain control. Default ON; applied live. See utils/incomingLeveler.ts.
     normalizeIncomingVolume: boolean;
     voiceGate: boolean;
-    voiceGateThreshold: number; // dBFS, range -60 to -20
+    voiceGateThreshold: number; // dBFS, range -60 to -20 — the MANUAL threshold, used only when voiceGateAuto is false
+    /** Gate "Automatic" (default ON): the gate follows the measured noise floor + 7 dB and
+     *  voiceGateThreshold is ignored (but kept, for when the user switches Automatic off). */
+    voiceGateAuto: boolean;
     pushToTalk: boolean;
     pushToTalkKey: string | null;
     micDeviceId: string;
@@ -70,12 +75,16 @@ const STORAGE_KEY = VOICE_SETTINGS_STORAGE_KEY;
 
 export const DEFAULT_VOICE_SETTINGS: VoiceSettings = {
     noiseSuppression: true,
-    noiseSuppressionMode: 'strong',
+    // Light (Speex, ~2.7 ms) for NEW installs / devices: near-zero latency and it keeps
+    // whistling / whispering. Existing users are untouched: loadVoiceSettings() keeps
+    // whatever they saved, and a blob from before the mode existed loads as Strong.
+    noiseSuppressionMode: 'light',
     echoCancellation: DEFAULT_ECHO_CANCELLATION,
     volumeNormalization: true,
     normalizeIncomingVolume: true,
     voiceGate: true,
     voiceGateThreshold: -45,
+    voiceGateAuto: true,
     pushToTalk: false,
     pushToTalkKey: null,
     micDeviceId: '',
@@ -102,17 +111,25 @@ function resyncOutputDevices(): void {
 // ── Hook ──────────────────────────────────────────────────────────────────────
 
 export function loadVoiceSettings(): VoiceSettings {
+    migrateVoiceDefaults();
     try {
         const raw = secureLocalStore.getItem(STORAGE_KEY);
         if (!raw) return { ...DEFAULT_VOICE_SETTINGS };
-        const merged = { ...DEFAULT_VOICE_SETTINGS, ...JSON.parse(raw) };
+        const saved = JSON.parse(raw);
+        const merged = { ...DEFAULT_VOICE_SETTINGS, ...saved };
         // Saved before this setting existed → default (ON); a non-boolean → default.
         merged.echoCancellation = resolveEchoCancellation(merged.echoCancellation);
         if (typeof merged.micVolume === 'number') merged.micVolume = Math.min(merged.micVolume, MIC_VOLUME_MAX);
         // Output used to go to 300%; an existing user above the ceiling comes down to it.
         if (typeof merged.speakerVolume === 'number') merged.speakerVolume = Math.min(merged.speakerVolume, SPEAKER_VOLUME_MAX);
-        // Saved before the mode existed (or hand-edited) -> the engine everyone had until now.
-        if (!isNoiseSuppressionMode(merged.noiseSuppressionMode)) merged.noiseSuppressionMode = 'strong';
+        // A saved blob with no valid mode (written before the mode existed, or hand-edited)
+        // -> Strong, the engine every existing user has been on. NOT the new-install default
+        // (Light): that only applies when nothing was ever saved, so no one's audio flips.
+        if (!isNoiseSuppressionMode(saved?.noiseSuppressionMode)) merged.noiseSuppressionMode = 'strong';
+        // One-time migration by absence: a blob saved before the flag existed has no voiceGateAuto, so it
+        // takes the default (ON) for everyone, and the saved voiceGateThreshold stays as the manual value
+        // for when Automatic is switched off (not read as a deliberate choice — it may be an old default).
+        if (typeof saved?.voiceGateAuto !== 'boolean') merged.voiceGateAuto = true;
         for (const k of RETIRED_VOICE_SETTING_KEYS) delete (merged as Record<string, unknown>)[k];
         return merged;
     } catch {
@@ -162,6 +179,7 @@ export function useVoiceSettings(userId?: string | null) {
     const setVolumeNormalization = useCallback((v: boolean) => update({ volumeNormalization: v }), [update]);
     const setNormalizeIncomingVolume = useCallback((v: boolean) => update({ normalizeIncomingVolume: v }), [update]);
     const setVoiceGate           = useCallback((v: boolean) => update({ voiceGate: v }), [update]);
+    const setVoiceGateAuto       = useCallback((v: boolean) => update({ voiceGateAuto: v }), [update]);
     const setVoiceGateThreshold  = useCallback((v: number) => update({ voiceGateThreshold: Math.max(-60, Math.min(-20, v)) }), [update]);
     const setPushToTalk          = useCallback((v: boolean) => update({ pushToTalk: v }), [update]);
     const setPushToTalkKey       = useCallback((v: string | null) => update({ pushToTalkKey: v }), [update]);
@@ -261,6 +279,7 @@ export function useVoiceSettings(userId?: string | null) {
         setVolumeNormalization,
         setNormalizeIncomingVolume,
         setVoiceGate,
+        setVoiceGateAuto,
         setVoiceGateThreshold,
         setPushToTalk,
         setPushToTalkKey,
@@ -285,7 +304,7 @@ export function useVoiceSettings(userId?: string | null) {
         setEchoCancellation,
         setVolumeNormalization,
         setNormalizeIncomingVolume,
-        setVoiceGate, setVoiceGateThreshold,
+        setVoiceGate, setVoiceGateAuto, setVoiceGateThreshold,
         setPushToTalk, setPushToTalkKey,
         setMicDeviceId, setSpeakerDeviceId, setCameraDeviceId,
         setMicVolume, setSpeakerVolume,

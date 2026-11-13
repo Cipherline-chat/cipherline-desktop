@@ -72,22 +72,22 @@ export function logoToScreen(ax: number, ay: number, u: number, v: number): [num
  * each pixel of his sprite, which point of him is there. Returned
  * COLUMN-MAJOR, ready for uniformMatrix3fv(…, false, H).
  */
-export function tiltHomography(ax: number, ay: number): Float32Array {
-    const R = rotation(ax, ay);
-    // forward: [s·w, w] = F · [u, v, 1], F = [[E·R00, E·R01, 0], [E·R10, E·R11, 0], [R20, R21, E]]
+export function tiltHomography(ax: number, ay: number, out: Float32Array = new Float32Array(9)): Float32Array {
+    // `out`: the worker computes this every frame into one array it keeps. Plain
+    // locals, so nothing is allocated (rotation() and the array destructuring this
+    // used to do cost ~1 KB of garbage a frame).
+    const cx = Math.cos(ax), sx = Math.sin(ax), cy = Math.cos(ay), sy = Math.sin(ay);
+    // forward: [s·w, w] = F · [u, v, 1], F = [[E·R00, E·R01, 0], [E·R10, E·R11, 0], [R20, R21, E]],
+    // with R as in rotation(): R00 = cy, R01 = sy·sx, R10 = 0, R11 = cx, R20 = -sy, R21 = cy·sx
     const E = EYE;
-    const f = [E * R[0], E * R[1], 0, E * R[3], E * R[4], 0, R[6], R[7], E];
-    const [a, b, c, d, e, g, h, i, j] = f;
+    const a = E * cy, b = E * (sy * sx), c = 0, d = 0, e = E * cx, g = 0, h = -sy, i = cy * sx, j = E;
     const A = e * j - g * i, B = -(d * j - g * h), C = d * i - e * h;
     const det = a * A + b * B + c * C;
-    // inverse = adjugate / det, row-major
-    const inv = [
-        A / det, -(b * j - c * i) / det, (b * g - c * e) / det,
-        B / det, (a * j - c * h) / det, -(a * g - c * d) / det,
-        C / det, -(a * i - b * h) / det, (a * e - b * d) / det,
-    ];
-    // column-major for GL
-    return new Float32Array([inv[0], inv[3], inv[6], inv[1], inv[4], inv[7], inv[2], inv[5], inv[8]]);
+    // the inverse (adjugate / det), column-major for GL
+    out[0] = A / det; out[1] = B / det; out[2] = C / det;
+    out[3] = -(b * j - c * i) / det; out[4] = (a * j - c * h) / det; out[5] = -(a * i - b * h) / det;
+    out[6] = (b * g - c * e) / det; out[7] = -(a * g - c * d) / det; out[8] = (a * e - b * d) / det;
+    return out;
 }
 
 /** Apply a column-major homography from tiltHomography() to a sprite offset, as the shader does. */
@@ -103,6 +103,11 @@ export function applyHomography(H: Float32Array, sx: number, sy: number): [numbe
  * window centre, y UP (as the worker gets them); on = the pointer is in the
  * window. Facing it: the side toward the pointer turns away from you.
  */
-export function tiltToward(px: number, py: number, on: number): { ax: number; ay: number } {
-    return { ax: -py * on * TILT.x, ay: -px * on * TILT.y };
+export function tiltToward(
+    px: number, py: number, on: number,
+    out: { ax: number; ay: number } = { ax: 0, ay: 0 },
+): { ax: number; ay: number } {
+    out.ax = -py * on * TILT.x;
+    out.ay = -px * on * TILT.y;
+    return out;
 }

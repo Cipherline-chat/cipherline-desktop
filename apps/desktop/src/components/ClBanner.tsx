@@ -143,18 +143,41 @@ export const ClBannerStack: React.FC<ClBannerStackProps> = ({ children, max = MA
     );
 };
 
-/** A fixed, centred layer for banners that must show above whatever pane is open (renderer hang, device reset). */
+/**
+ * A fixed layer for banners that must show above whatever pane is open (renderer
+ * hang, device reset). It takes the edges of the app's main column, so it lines up
+ * with the panes under it; where there is no main column (the login screen) it stays
+ * centred.
+ */
 export const ClBannerOverlay: React.FC<{ children: React.ReactNode; testId?: string; live?: 'polite' | 'assertive'; className?: string }> =
-    ({ children, testId, live, className }) => (
-        <div
-            className={['cl-banner-overlay', className ?? ''].filter(Boolean).join(' ')}
-            data-testid={testId}
-            role={live === 'assertive' ? 'alert' : live === 'polite' ? 'status' : undefined}
-            aria-live={live}
-        >
-            {children}
-        </div>
-    );
+    ({ children, testId, live, className }) => {
+        const [bounds, setBounds] = useState<{ left: number; width: number } | null>(null);
+        useLayoutEffect(() => {
+            const column = document.querySelector<HTMLElement>('[data-banner-column]');
+            if (!column) return;
+            const measure = () => {
+                const r = column.getBoundingClientRect();
+                setBounds(r.width > 0 ? { left: r.left, width: r.width } : null);
+            };
+            measure();
+            const observer = new ResizeObserver(measure);
+            observer.observe(column);
+            window.addEventListener('resize', measure);
+            return () => { observer.disconnect(); window.removeEventListener('resize', measure); };
+        }, []);
+        return (
+            <div
+                className={['cl-banner-overlay', className ?? ''].filter(Boolean).join(' ')}
+                data-testid={testId}
+                data-aligned={bounds ? '' : undefined}
+                style={bounds ? { '--cl-banner-left': `${bounds.left}px`, '--cl-banner-width': `${bounds.width}px` } as React.CSSProperties : undefined}
+                role={live === 'assertive' ? 'alert' : live === 'polite' ? 'status' : undefined}
+                aria-live={live}
+            >
+                {children}
+            </div>
+        );
+    };
 
 // ── Pieces ─────────────────────────────────────────────────────────────────
 

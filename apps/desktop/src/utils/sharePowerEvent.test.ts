@@ -31,7 +31,6 @@ describe('share_power in the call event log', () => {
 
     it('is a published kind, and the event is valid and keeps every field', () => {
         expect(CALL_EVENT_KINDS as readonly string[]).toContain('share_power');
-        expect(CALL_EVENT_KINDS as readonly string[]).toContain('share_hint');
         log(parseSharePowerReport(GOOD)!);
         const [ev] = getCallEvents();
         expect(ev.kind).toBe('share_power');

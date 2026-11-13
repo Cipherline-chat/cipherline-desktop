@@ -1,7 +1,7 @@
 import * as crypto from 'crypto';
 import { getChannelKey, getLatestEpoch } from './channel-keys';
 import { secureStore } from './storage';
-import { classifyChannelNonce, recordChannelNonce, flushChannelReplayLedger } from './channel-replay';
+import { classifyChannelNonce, recordChannelNonce, flushChannelReplayLedger, ciphertextDigest } from './channel-replay';
 import { SpkCandidateOrder } from './spk-candidates';
 
 // H4: in-memory replay cache — ephemeral keys are unique per message; a
@@ -958,6 +958,27 @@ function _decryptV3(
 
 export const CHANNEL_BINDING_VERSION = 2;
 
+/**
+ * Cutoff for UNBOUND (legacy v1) channel messages, as ms since epoch, or null
+ * for "accept unbound messages of any age" (the current behaviour).
+ *
+ * Unbound rows are the ones a malicious server can still re-label to a
+ * never-seen sender device (see G4 above). Once every client in the field
+ * writes a binding, set this to a date: an unbound row whose server
+ * created_at is at or after it is refused with [E2EE:CHANNEL_UNBOUND] and
+ * dropped like any other serve rejection. Older unbound rows (history, saved
+ * and pinned messages) keep decrypting. A server can backdate a forged row
+ * past the cutoff, but it then lands in old history rather than the live
+ * conversation, which is the point of the cutoff.
+ *
+ * DISABLED until mobile ships the binding: desktop has written it since
+ * 1.0.17, but mobile `main` (the build testers run) still sends unbound
+ * messages, so any active date would silently hide every mobile user's channel
+ * messages from desktop users. Port mobile's `int/shellA` channel-binding
+ * commit to mobile main, ship it, then set a date a few weeks out.
+ */
+export const UNBOUND_CHANNEL_CUTOFF_MS: number | null = null;
+
 /** Max length of a sender-supplied client_msg_id reused as the bound `m`. */
 const MAX_BOUND_MSG_ID_LEN = 128;
 
@@ -1069,6 +1090,10 @@ export function decryptChannelMessage(params: {
     message_id?: string | null;
     sender_user_id?: string | null;
     sender_device_id?: string | null;
+    /** The server row's created_at (ISO). Only consulted for unbound rows when the cutoff is active. */
+    created_at?: string | null;
+    /** Test seam: overrides UNBOUND_CHANNEL_CUTOFF_MS. Never forwarded from IPC. */
+    unbound_cutoff_ms?: number | null;
 }): string {
     const { channel_id, epoch, nonce_b64, ciphertext_b64, signature_b64, sender_identity_pub_b64 } = params;
 
@@ -1102,10 +1127,12 @@ export function decryptChannelMessage(params: {
 
     let resultJson = plaintext;
     let parsed: unknown;
+    let bound = false;
     try { parsed = JSON.parse(plaintext); } catch { parsed = undefined; }
     if (isPlainObject(parsed) && '_cb' in parsed) {
         const cb = parsed._cb;
         if (isPlainObject(cb) && cb.v === CHANNEL_BINDING_VERSION && cb.n === nonceCanon) {
+            bound = true;
             // A genuine v2 binding written by the encrypting engine. Enforce it.
             const fail = (what: string) => {
                 throw new Error(`[E2EE:CHANNEL_BINDING] ${what} mismatch (arrived channel=${channel_id} epoch=${epoch})`);
@@ -1124,14 +1151,26 @@ export function decryptChannelMessage(params: {
         resultJson = JSON.stringify(rest);
     }
 
+    if (!bound) {
+        const cutoff = params.unbound_cutoff_ms !== undefined ? params.unbound_cutoff_ms : UNBOUND_CHANNEL_CUTOFF_MS;
+        if (cutoff !== null) {
+            const createdMs = typeof params.created_at === 'string' ? Date.parse(params.created_at) : NaN;
+            // No usable timestamp counts as "new": it cannot be shown in the past.
+            if (!Number.isFinite(createdMs) || createdMs >= cutoff) {
+                throw new Error(`[E2EE:CHANNEL_UNBOUND] unbound (legacy) channel message after the cutoff (channel=${channel_id})`);
+            }
+        }
+    }
+
     // Replay ledger — version-independent, so legacy rows are covered too.
     // Recorded only after every other check has passed (see RC-9 above for why
     // a failed message must never be admitted into a replay set).
     if (nonEmptyString(params.message_id)) {
-        if (classifyChannelNonce(channel_id, nonceCanon, params.message_id) === 'replay') {
+        const ctDigest = ciphertextDigest(ciphertextBuf);
+        if (classifyChannelNonce(channel_id, nonceCanon, params.message_id, ctDigest) === 'replay') {
             throw new Error(`[E2EE:CHANNEL_REPLAY] ciphertext already accepted under another message id (channel=${channel_id})`);
         }
-        recordChannelNonce(channel_id, nonceCanon, params.message_id);
+        recordChannelNonce(channel_id, nonceCanon, params.message_id, ctDigest);
     }
 
     return resultJson;

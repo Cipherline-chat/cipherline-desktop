@@ -36,9 +36,9 @@ describe('one applier for every live-share quality change', () => {
 
     it('the hot swap applies the chosen quality with the same retune, at the paced capture rate, and records the share before the audio tail', () => {
         const swap = body('const tryHotSwapScreenShare = async', 'const reapplyShareSenderParams');
-        expect(swap).toContain('frameRate: { max: captureFrameRateFor(options.frameRate) },');
+        expect(swap).toContain('frameRate: { max: portalCap ? portalCap.frameRate : captureFrameRateFor(options.frameRate) },');
         expect(swap).toContain('await applyQualityAfterSwap(liveShareApplier(), recorded)');
-        expect(swap.indexOf('applyQualityAfterSwap(')).toBeLessThan(swap.indexOf('await stopNativeWindowAudio();'));
+        expect(swap.indexOf('applyQualityAfterSwap(')).toBeLessThan(swap.indexOf("await stopNativeWindowAudio('swap');"));
         // The old direct sender-param call survives only as the fallback when the retune is refused.
         expect(swap).toMatch(/if \(!retuned\) \{\s*try \{\s*await applyScreenShareSenderParams\(/);
         // ...and the swap no longer records the share itself after the audio restart.
@@ -47,7 +47,9 @@ describe('one applier for every live-share quality change', () => {
 
     it('the applier retunes the live track, then commits: current share, sender-param context, session, share_codec + share_clamp', () => {
         const ap = body('const liveShareApplier = (): LiveShareApplier => ({', 'const openScreenSharePicker');
-        expect(ap).toContain('retuneScreenShareInPlace(track, resolution, frameRate, { step: shareResStepRef.current })');
+        // (through the Wayland portal the retune is told what the capture was asked for and whether the portal restores a listed
+        //  source, and portalCapturePlan decides inside whether the capture is re-opened or the retune is the sender's alone)
+        expect(ap).toMatch(/retuneScreenShareInPlace\(track, resolution, frameRate, \{\s*step: shareResStepRef\.current, captured, viaPortal: viaPortalRef\.current,\s*\.\.\.\(viaPortalRef\.current \? \{[^}]*restoreListed: restoreListedRef\.current,[\s\S]*?asked: portalAskedRef\.current,[\s\S]*?\} : \{\}\),\s*\}\);/);
         expect(ap).toContain('currentShareRef.current = next;');
         expect(ap).toContain('setCurrentShare(next);');
         expect(ap).toContain('updateScreenShareSession(next.sourceId, { requestedFps: next.frameRate, resolution: next.resolution });');
@@ -58,8 +60,12 @@ describe('one applier for every live-share quality change', () => {
     });
 
     it('republishes that must stay republishes are not intercepted: they pass the share\'s own options (no quality difference)', () => {
-        // The stall / codec-swap / H.264-High fallbacks all republish { ...cur }.
-        expect(SC.match(/republishShareRef\.current\?\.\(\{ \.\.\.cur(rent)? \}\)/g)?.length).toBeGreaterThanOrEqual(2);
+        // The stall / codec-swap / H.264-High fallbacks all republish { ...cur } -
+        // and say `fresh`, so neither the retune nor the hot swap (both keep the
+        // live sender, i.e. the failing encoder) can intercept them (2026-10-25).
+        expect(SC.match(/republishShareRef\.current\?\.\(\{ \.\.\.cur(rent)? \}, \{ fresh: true \}\)/g)?.length).toBeGreaterThanOrEqual(2);
+        expect(SC.match(/republishShareRef\.current\?\.\(\{ \.\.\.cur(rent)? \}\)/g)).toBeNull();
+        expect(SC).toContain('if (!fresh && await applyLiveSelection(');
         // ...and the matcher requires a quality difference, so an identical selection is 'other'.
         const util = fs.readFileSync(path.resolve(__dirname, '../utils/shareLiveRetune.ts'), 'utf8');
         expect(util).toContain('sameLiveCapture(cur, next) && qualityDiffers(cur, next) ? \'retune\' : \'other\'');

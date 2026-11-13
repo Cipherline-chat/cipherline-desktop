@@ -5,10 +5,12 @@ import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import { API_BASE } from '../constants';
 import secureLocalStore from '../utils/secureLocalStore';
-import { EGG_FOUND_EVENT, eggsFound } from '../utils/eggProgress';
+import { EGG_FOUND_EVENT, eggsFoundCount } from '../utils/eggProgress';
 import { resolveProfileBadgeColor } from '../utils/profileBadges';
-import { achievementById, ACHIEVEMENT_IDS } from '../utils/achievements/catalog';
+import { achievementById, ACHIEVEMENT_IDS, type AchievementDef } from '../utils/achievements/catalog';
+import { unlockToastText, unlockToastDelayMs, BOOT_TOAST_GATHER_MS } from '../utils/achievements/format';
 import { bindTracker, createTracker, type AchievementsTracker } from '../utils/achievements/tracker';
+import { hasCustomProfile } from '../utils/achievements/state';
 import { sameTop, type PlayedGame } from '../utils/achievements/mostPlayed';
 import { useAchievementsSync } from '../hooks/useAchievementsSync';
 import { pushUnlockedIds } from '../services/achievementsSyncEnv';
@@ -19,7 +21,7 @@ const TICK_MS = 30_000;
 const MOST_PLAYED_PUBLISH_MS = 10 * 60_000;
 const COUNTER_SYNC_MS = 30 * 60_000;
 const TIER_COLOR = { bronze: 'orange', silver: 'cyan', gold: 'gold' } as const;
-
+const TIER_RANK = { bronze: 0, silver: 1, gold: 2 } as const;
 /**
  * The signed-in app's side of Achievements and Most played this week, mounted
  * once next to EggProgressHost. It renders nothing; it:
@@ -32,7 +34,9 @@ const TIER_COLOR = { bronze: 'orange', silver: 'cyan', gold: 'gold' } as const;
  *   4. if the user opted in, publishes the rolling-week top 3 games to
  *      `PUT /v1/most-played/me` (and `DELETE`s every row on opt-out);
  *   5. shows the unlock toast (the stock toast stack, which honours
- *      prefers-reduced-motion; the icon never animates).
+ *      prefers-reduced-motion; the icon never animates). Unlocks that land
+ *      within UNLOCK_TOAST_GATHER_MS share one toast, and everything
+ *      unlocked during the first BOOT_TOAST_GATHER_MS after launch shares a single one.
  *
  * Achievements are client-attested and gate NOTHING.
  */
@@ -45,7 +49,11 @@ export const AchievementsHost: React.FC = () => {
     const tokenRef = useRef(token);
     const pushRef = useRef(push);
     const createdRef = useRef<string | null>(null);
-    useEffect(() => { tokenRef.current = token; pushRef.current = push; createdRef.current = user?.created_at ?? null; });
+    const profileCustomRef = useRef(false);
+    const profileCustom = hasCustomProfile(user);
+    useEffect(() => {
+        tokenRef.current = token; pushRef.current = push; createdRef.current = user?.created_at ?? null; profileCustomRef.current = profileCustom;
+    });
 
     const sync = useAchievementsSync({ userId, deviceId, token, tracker });
     const markDirtyRef = useRef(sync.markDirty);
@@ -65,11 +73,12 @@ export const AchievementsHost: React.FC = () => {
                 saveWeekly: raw => secureLocalStore.setItem(weeklyGamesKey(userId), raw),
                 deviceId,
                 now: () => Date.now(),
-                eggCount: () => eggsFound().length,
+                eggCount: () => eggsFoundCount(),
                 accountCreatedMs: () => {
                     const ms = createdRef.current ? Date.parse(createdRef.current) : NaN;
                     return Number.isFinite(ms) ? ms : null;
                 },
+                profileCustom: () => profileCustomRef.current,
             });
             bindTracker(t);
             t.reevaluate();
@@ -93,7 +102,7 @@ export const AchievementsHost: React.FC = () => {
             tracker.flush();
         };
     }, [tracker]);
-    useEffect(() => { tracker?.reevaluate(); }, [tracker, user?.created_at]);
+    useEffect(() => { tracker?.reevaluate(); }, [tracker, user?.created_at, profileCustom]);
 
     // Unlocks: toast, event, server push, sync.
     const acked = useRef<Set<string>>(new Set());
@@ -105,8 +114,11 @@ export const AchievementsHost: React.FC = () => {
             if (!t) return;
             const ids = tracker.unlockedIds().filter(id => ACHIEVEMENT_IDS.includes(id));
             if (ids.length === 0 || ids.every(id => acked.current.has(id))) return;
-            if (await pushUnlockedIds(t, ids)) {
-                for (const id of ids) acked.current.add(id);
+            const stored = await pushUnlockedIds(t, ids);
+            if (stored) {
+                // Ack only what the server now holds (an older API may have taken a subset).
+                const held = new Set(stored.map(u => u.id));
+                for (const id of ids) if (held.has(id)) acked.current.add(id);
                 invalidateAchievements(userId);
             } else {
                 // Retry later (focus / next unlock / next boot); nothing is lost.
@@ -118,15 +130,22 @@ export const AchievementsHost: React.FC = () => {
             if (pushTimer.current) clearTimeout(pushTimer.current);
             pushTimer.current = setTimeout(() => { void pushIds(); }, ms);
         };
-        const off = tracker.onUnlock(({ id }) => {
-            const def = achievementById(id);
-            if (!def) return;
-            const c = resolveProfileBadgeColor(TIER_COLOR[def.tier]);
-            window.dispatchEvent(new CustomEvent(ACHIEVEMENT_UNLOCK_EVENT, { detail: { id } }));
+        // Gather unlocks that land together into one toast (the best tier's colour).
+        const bootEnd = Date.now() + BOOT_TOAST_GATHER_MS;
+        let gathered: AchievementDef[] = [];
+        let gatherTimer: ReturnType<typeof setTimeout> | null = null;
+        const showToast = () => {
+            gatherTimer = null;
+            const defs = gathered;
+            gathered = [];
+            const text = unlockToastText(defs);
+            if (!text) return;
+            const best = defs.reduce((a, b) => (TIER_RANK[b.tier] > TIER_RANK[a.tier] ? b : a));
+            const c = resolveProfileBadgeColor(TIER_COLOR[best.tier]);
             pushRef.current({
                 kind: 'success',
-                title: `Achievement unlocked: ${def.name}`,
-                message: def.description,
+                title: text.title,
+                message: text.message,
                 durationMs: 8000,
                 icon: (
                     <span className={`inline-flex items-center justify-center rounded-full border w-7 h-7 ${c.bg} ${c.border} ${c.text}`} data-testid="achievement-toast-icon">
@@ -134,11 +153,22 @@ export const AchievementsHost: React.FC = () => {
                     </span>
                 ),
             });
+        };
+        const off = tracker.onUnlock(({ id }) => {
+            const def = achievementById(id);
+            if (!def) return;
+            window.dispatchEvent(new CustomEvent(ACHIEVEMENT_UNLOCK_EVENT, { detail: { id } }));
+            gathered.push(def);
+            if (gatherTimer === null) gatherTimer = setTimeout(showToast, unlockToastDelayMs(Date.now(), bootEnd));
             schedule(3_000);
             markDirtyRef.current();
         });
         schedule(10_000); // boot: reconcile anything unlocked on another device or while offline
-        return () => { off(); if (pushTimer.current) clearTimeout(pushTimer.current); };
+        return () => {
+            off();
+            if (pushTimer.current) clearTimeout(pushTimer.current);
+            if (gatherTimer !== null) { clearTimeout(gatherTimer); showToast(); }
+        };
     }, [tracker, userId]);
 
     // Counter progress follows the account between devices at most every 30 min.

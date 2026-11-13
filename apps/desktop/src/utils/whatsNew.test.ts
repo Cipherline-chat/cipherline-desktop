@@ -47,6 +47,18 @@ describe('decideWhatsNew', () => {
     it('a downgrade shows nothing', () => {
         expect(decideWhatsNew('1.0.23', '1.0.30', d)).toEqual({ action: 'record' });
     });
+    it('the launch renumbering (1.x -> 0.1+) counts as an update and shows the 0.1.0 notes', () => {
+        const dd = data('0.1.0');
+        const r = decideWhatsNew('0.1.0', '1.0.24', dd);
+        expect(r.action).toBe('show');
+        expect(r.action === 'show' && r.notes.version).toBe('0.1.0');
+        expect(decideWhatsNew('0.1.0', '1.0.24-staging.226', dd).action).toBe('show');
+        // …but only that crossing: an ordinary 0.x downgrade, or 1.x into the renumbered 0.0.x, still shows nothing
+        expect(decideWhatsNew('0.1.0', '0.1.1', dd)).toEqual({ action: 'record' });
+        expect(decideWhatsNew('0.0.23', '1.0.24', data('0.0.23'))).toEqual({ action: 'record' });
+        // and a version with no notes still records silently
+        expect(decideWhatsNew('0.1.1-staging.227', '1.0.24-staging.226', dd)).toEqual({ action: 'record' });
+    });
     it('skipping versions shows the notes for the version you landed on', () => {
         const r = decideWhatsNew('1.0.23', '1.0.19', d);
         expect(r.action).toBe('show');

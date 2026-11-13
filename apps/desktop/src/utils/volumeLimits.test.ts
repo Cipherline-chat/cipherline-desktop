@@ -76,7 +76,9 @@ describe('no control or gain path still allows more than 200%', () => {
 
     it('per-participant mic and screen-share sliders stop at 2 (200%)', () => {
         const menu = src('components', 'call', 'PopoverMenu.tsx');
-        expect(menu.match(/max=\{MAX_PER_USER_VOLUME\}/g)).toHaveLength(2);
+        // One shared row component (PerUserVolumeSlider) renders both, so the ceiling is spelled once.
+        expect(menu.match(/max=\{MAX_PER_USER_VOLUME\}/g)).toHaveLength(1);
+        expect(menu.match(/<PerUserVolumeSlider /g)).toHaveLength(2);
         expect(menu).not.toMatch(/max=\{4\}/);
     });
 

@@ -208,6 +208,13 @@ export class CallSummaryAccumulator {
 
 /** An unmuted, subscribed remote mic whose packet count has not moved for this long = we are not hearing them. */
 export const INBOUND_STALL_MS = 15_000;
+/**
+ * Readings further apart than this are not continuous observation: the poll
+ * runs every 5 s, so a bigger gap is a suspended machine or a frozen
+ * renderer, and the wall-clock time that passed in it is not evidence that
+ * packets stopped (they could not be counted). Everything restarts.
+ */
+export const INBOUND_MAX_POLL_GAP_MS = 12_000;
 
 export interface InboundAudioReading {
     /** The track OBJECT — a map key only, never read or stored beyond this call. */
@@ -215,36 +222,60 @@ export interface InboundAudioReading {
     /** Publisher says the mic is on (LiveKit's publication mute state). */
     unmuted: boolean;
     packetsReceived: number;
+    /** The SFU's own speaker report for this peer (RemoteParticipant.isSpeaking). */
+    sfuSpeaking?: boolean;
+    /** Packets received on this peer's OTHER subscribed tracks, summed; undefined when it has none. */
+    otherPackets?: number;
 }
+
+/** What the stall looked like, as booleans only. */
+export interface InboundStall {
+    /** The SFU reported this peer speaking at some point in the stalled stretch: their uplink was fine, OUR leg is the dead one. false is ambiguous (they may simply have been quiet). */
+    sfuHears: boolean;
+    /** Some other media from the same peer kept arriving: our connection was alive and only the mic stream stopped. */
+    otherFlowing: boolean;
+}
+
+interface Watch { packets: number; since: number; other: number | undefined; otherMoved: boolean; sfuHeard: boolean }
 
 /**
  * "We can't hear them": an unmuted remote microphone, subscribed, whose
  * inbound packet count stays flat for INBOUND_STALL_MS. An unmuted mic keeps
- * sending (comfort-noise / DTX packets at least) even when its owner is
- * silent, so a flat count is a dead inbound path — not a quiet person. The
- * outbound half ("they can't hear us") is SidebarConference's existing
- * SilenceWatchdog (utils/audioSilenceWatchdog.ts).
+ * sending packets even when its owner is silent (the idle floor in real
+ * reports is a steady 13 kbps — Opus DTX is not suppressing them), so a flat
+ * count is a dead inbound path — not a quiet person. Counted at the RTP
+ * level, BEFORE the E2EE frame cryptor: a key mismatch (frames dropped after
+ * packetsReceived) can never trip it, and neither can an autoplay or sink
+ * failure — those are separate faults this does not see.
  *
- * Fires at most once per call (returns true on that update only).
+ * Fires at most once per call (returns the stall on that update only). The
+ * outbound half ("they can't hear us") is SidebarConference's SilenceWatchdog
+ * (utils/audioSilenceWatchdog.ts).
  */
 export class InboundAudioStallDetector {
-    private state = new WeakMap<object, { packets: number; since: number }>();
+    private state = new WeakMap<object, Watch>();
     private fired = false;
+    private lastAt: number | null = null;
 
-    update(readings: readonly InboundAudioReading[], now: number): boolean {
-        if (this.fired) return false;
+    update(readings: readonly InboundAudioReading[], now: number): InboundStall | null {
+        if (this.fired) return null;
+        if (this.lastAt !== null && now - this.lastAt > INBOUND_MAX_POLL_GAP_MS) this.state = new WeakMap();
+        this.lastAt = now;
         for (const r of readings) {
             const prev = this.state.get(r.ref);
             if (!r.unmuted) { this.state.delete(r.ref); continue; }
             if (!prev || r.packetsReceived !== prev.packets) {
-                this.state.set(r.ref, { packets: r.packetsReceived, since: now });
+                this.state.set(r.ref, { packets: r.packetsReceived, since: now, other: r.otherPackets, otherMoved: false, sfuHeard: !!r.sfuSpeaking });
                 continue;
             }
+            if (r.otherPackets !== undefined && prev.other !== undefined && r.otherPackets !== prev.other) prev.otherMoved = true;
+            prev.other = r.otherPackets;
+            if (r.sfuSpeaking) prev.sfuHeard = true;
             if (now - prev.since >= INBOUND_STALL_MS) {
                 this.fired = true;
-                return true;
+                return { sfuHears: prev.sfuHeard, otherFlowing: prev.otherMoved };
             }
         }
-        return false;
+        return null;
     }
 }

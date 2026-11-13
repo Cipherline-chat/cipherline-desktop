@@ -67,6 +67,7 @@ describe('privacy: the egg machinery is local-only', () => {
         'utils/easterEggs.ts', 'hooks/useEasterEggs.ts', 'utils/eggPools.ts', 'utils/aloneEcho.ts', 'utils/versionTaps.ts',
         'utils/statusFlap.ts', 'utils/groupOfTwo.ts', 'utils/settingsSearchNote.ts', 'utils/eggProgress.ts',
         'components/call/AloneEcho.tsx', 'components/EggLayer.tsx', 'components/KeysParty.tsx',
+        'components/EggScrim.tsx', 'hooks/useEggSkip.ts', 'components/FirstFriendCelebration.tsx',
         'components/mascot/KeysCostume.tsx', 'components/settings/VersionTapEgg.tsx', 'components/GroupOfTwoDialog.tsx',
         // Keys mirroring you on Home (2026-10-20)
         'utils/keysMirror.ts', 'utils/keysGestures.ts', 'utils/keysBeats.ts',
@@ -155,8 +156,14 @@ describe('Keys on Home: what reaches him is kinds and flags, never content', () 
         expect(fields.length).toBeGreaterThan(10);
         for (const [name, type] of fields) {
             if (name === 'status') { expect(type).toBe('MirrorStatus'); continue; }
+            // his own wardrobe pick (utils/keysWardrobe.ts): a closed set of
+            // literals chosen on this device, never anything of yours
+            if (name === 'hat') { expect(type).toBe('Hat | null'); continue; }
             expect(['boolean', 'number'], name).toContain(type);
         }
+        const wardrobe = read('utils/keysWardrobe.ts');
+        expect(wardrobe).toMatch(/export const HATS = \[[^\]]*\] as const;/);
+        expect(wardrobe).toMatch(/export type Hat = \(typeof HATS\)\[number\];/);
     });
 });
 
@@ -166,7 +173,6 @@ describe('full-screen moments (utils/moments.ts, components/moments/)', () => {
         'components/moments/views/index.ts', 'components/moments/views/SelfFriendMoment.tsx',
         'components/moments/views/SelfPingMoment.tsx',
         'components/moments/views/WishMoment.tsx',
-        'components/moments/views/EmptyPartyMoment.tsx',
         'components/moments/views/VolumeCeilingMoment.tsx',
         'components/moments/VolumeCeilingWatch.tsx', 'hooks/useCountMilestone.ts', 'components/moments/MomentClock.tsx',
         'components/moments/views/SchoolMoment.tsx',
@@ -181,8 +187,6 @@ describe('full-screen moments (utils/moments.ts, components/moments/)', () => {
         'components/moments/views/NoteToSelfMoment.tsx', 'components/moments/views/EchoEveryoneMoment.tsx',
         'utils/milestones.ts',
         'components/moments/MilestoneWatch.tsx',
-        'components/moments/views/FirstMessageMoment.tsx',
-        'components/moments/views/FirstCallMoment.tsx',
         'components/moments/views/FirstServerMoment.tsx',
         'components/moments/views/Call100Moment.tsx',
         'components/moments/views/PiDayMoment.tsx',
@@ -261,11 +265,11 @@ describe('full-screen moments (utils/moments.ts, components/moments/)', () => {
         expect(src).toMatch(/const dmMentionMo = mentionMoment\(mentions, \{ me: user\?\.user_id, othersInServer: null \}\);\s*if \(dmMentionMo\) requestMoment\(dmMentionMo\);/);
     });
 
-    it('voice join: the clock and the roster presence, only after the join succeeded', () => {
+    it('voice join: the clock only, after the join succeeded', () => {
         const dash = read('components/Dashboard.tsx');
         const join = dash.slice(dash.indexOf('const handleJoinVoiceChannel = useCallback'), dash.indexOf('const handleJoinVoiceChannel = useCallback') + 6000);
         const set = join.indexOf('setActiveCall({');
-        const mo = join.indexOf('const joinMo = voiceJoinMoment(new Date(), peekRoster(channel.server_id)?.members ?? null, userId);');
+        const mo = join.indexOf('const joinMo = voiceJoinMoment(new Date());');
         expect(set).toBeGreaterThan(-1);
         expect(mo).toBeGreaterThan(set);
         expect(join).toMatch(/if \(joinMo\) requestMoment\(joinMo\);/);
@@ -274,7 +278,10 @@ describe('full-screen moments (utils/moments.ts, components/moments/)', () => {
     it('volume ceiling: every 200% slider is wrapped, and the cl/ slider itself is untouched', () => {
         expect(read('components/VoiceVideoSettings.tsx')).toMatch(/<VolumeCeilingWatch>\s*<ClSlider/);
         expect(read('components/call/ControlBar.tsx')).toMatch(/<VolumeCeilingWatch>\s*<ClSlider min=\{0\} max=\{max\}/);
-        expect(read('components/call/PopoverMenu.tsx').match(/<VolumeCeilingWatch>\s*<ResetSlider min=\{0\} max=\{MAX_PER_USER_VOLUME\}/g)?.length).toBe(2);
+        // Both menu sliders (Volume, Screen Audio) render through the one shared PerUserVolumeSlider.
+        const popover = read('components/call/PopoverMenu.tsx');
+        expect(popover.match(/<VolumeCeilingWatch>\s*<ResetSlider min=\{0\} max=\{MAX_PER_USER_VOLUME\}/g)?.length).toBe(1);
+        expect(popover.match(/<PerUserVolumeSlider /g)?.length).toBe(2);
         expect(read('components/ClSlider.tsx')).not.toMatch(/moment/i);
     });
 
@@ -313,20 +320,11 @@ describe('full-screen moments (utils/moments.ts, components/moments/)', () => {
         expect(post).toBeGreaterThan(-1);
         expect(mo).toBeGreaterThan(post);
     });
-    it('first message: asked for only AFTER the server accepted a text send, in both delivery lanes, and given nothing but account age + "is it your own notes"', () => {
-        const src = read('components/ChatPane.tsx');
-        const calls = [...src.matchAll(/markDelivered\(clientMsgId\);\s*noteMessageDelivered\(user\?\.created_at, isSelfChat\);/g)];
-        expect(calls).toHaveLength(2);
-        // each sits after the POST that carried it, inside `post:`, never in the optimistic part
-        for (const m of calls) {
-            const before = src.slice(Math.max(0, m.index! - 2500), m.index);
-            expect(before).toMatch(/await trackActivity\('send:post'/);
-        }
-        const mil = strip('utils/milestones.ts');
-        const fn = mil.slice(mil.indexOf('export function noteMessageDelivered'), mil.indexOf('export function noteServerCreated'));
-        expect(fn).toMatch(/messageDeliveredMoment\(createdIso, eggsFound\(\), isSelfChat\)/);
+    it('the retired first-message moment has no trigger left in ChatPane or milestones', () => {
+        expect(read('components/ChatPane.tsx')).not.toMatch(/noteMessageDelivered/);
+        expect(strip('utils/milestones.ts')).not.toMatch(/messageDelivered|first-message|first-call/);
     });
-    it('first call + the 100th: CallPane announces the media room CONNECTED (once per call, no detail); the watch counts it', () => {
+    it('the 100th call: CallPane announces the media room CONNECTED (once per call, no detail); the watch counts it', () => {
         const pane = read('components/CallPane.tsx');
         expect(pane.match(/announceCallConnected\(\)/g)).toHaveLength(1);
         const at = pane.indexOf('announceCallConnected()');
@@ -337,8 +335,7 @@ describe('full-screen moments (utils/moments.ts, components/moments/)', () => {
         expect(app).toMatch(/\{isAuthenticated && <MilestoneWatch \/>\}/);
         const watch = strip('components/moments/MilestoneWatch.tsx');
         expect(watch).toMatch(/const uid = user\?\.user_id \?\? null;/);
-        expect(watch).toMatch(/const created = user\?\.created_at \?\? null;/);
-        expect(watch.match(/user\?\.\w+/g)!.sort()).toEqual(['user?.created_at', 'user?.user_id']);
+        expect(watch.match(/user\?\.\w+/g)!.sort()).toEqual(['user?.user_id']);
     });
     it('the call counter is one integer per account, in the encrypted store, and the backup carries it', () => {
         const mil = strip('utils/milestones.ts');

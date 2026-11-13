@@ -333,6 +333,69 @@ describe('real livekit-client E2EE worker round trip (sender → WebRTC H.26x fr
     });
 });
 
+/**
+ * Linux hardware encode (Chromium's VaapiVideoEncodeAccelerator, on by default since 2026-11-04):
+ * the bitstream shapes it writes, through the REAL livekit-client E2EE worker.
+ *
+ * MEASURED (harness/linux-share-matrix/e2e, Arch container, Intel UHD 630 via iHD, Electron 43.8.1, a real
+ * LiveKit v1.9.12 SFU, call E2EE on, publisher and viewer in one Electron on a sway session): for a 1080p30 H.264
+ * Constrained Baseline share on VaapiVideoEncodeAccelerator (powerEfficientEncoder true, simulcast = two VA-API
+ * encoder sessions) the app's E2EE worker reported e2ee_annexb frames=233 rewritten=0 short_sc=0 (335 / 0 / 0 in an
+ * earlier 1080p60 run; H.264 High 245 / 0 / 0): the encoder writes 4-byte start codes only, so the canonicalizer is
+ * a pass-through for it. The viewer decoded 40 of 40 seconds at 30 fps with 0 decryption errors (VP8 41 of 41 at 29
+ * fps, High 39 of 41 at 19 fps); a viewer with another key decoded 0 of 41 seconds (23 decryption errors); the
+ * software OpenH264 control (CIPHERLINE_LINUX_HW_ENCODE=0) decoded 40 of 40.
+ *
+ * These tests pin that shape (IDR = SPS + PPS + IDR slice, deltas = one slice, optional SEI / multiple slices)
+ * and, defensively, the one variant another VA-API driver could still write (packed SPS/PPS from Chromium with
+ * 4-byte codes, slice data straight from the driver's coded buffer with 3-byte codes).
+ */
+describe('Linux VA-API (VaapiVideoEncodeAccelerator) H.264 / VP8 shapes', () => {
+    const idr = (sc: (nal: number) => Uint8Array, withSei = false) =>
+        annexB([h264(0x67, 14, 21), h264(0x68, 4, 22), ...(withSei ? [h264(0x06, 20, 23)] : []), h264(0x65, 600, 24)], (i) => sc(i));
+    const delta = (sc: (nal: number) => Uint8Array, slices = 1) =>
+        annexB(Array.from({ length: slices }, (_, k) => h264(0x41, 280, 30 + k)), (i) => sc(i));
+    const types: ('key' | 'delta')[] = ['key', 'delta', 'delta', 'delta'];
+
+    it('the measured shape (all 4-byte start codes) is already canonical: the hook leaves every frame alone, byte for byte', () => {
+        for (const f of [idr(() => SC4), idr(() => SC4, true), delta(() => SC4), delta(() => SC4, 3)]) {
+            const frame: EncodedFrameLike = { data: f.slice().buffer, type: 'delta', getMetadata: () => ({ payloadType: 103 }) };
+            expect(classifyAnnexB(f, findNaluIndices(f))).toBe('canonical');
+            expect(canonicalizeFrame(frame)).toBe('canonical');
+            expect(new Uint8Array(frame.data)).toEqual(f);
+        }
+    });
+
+    it('round-trips through the real worker with and without the hook (4-byte shape, SEI, multi-slice) and the body is encrypted', async () => {
+        const gop = [idr(() => SC4, true), delta(() => SC4), delta(() => SC4, 3), delta(() => SC4)];
+        for (const fix of [false, true]) {
+            const r = await roundTrip(gop, types, 'h264', fix);
+            expect(r.delivered).toEqual([true, true, true, true]);
+            expect(r.bodyInTheClear).toBe(false);
+            expect(r.receiverErrors).toBe(0);
+        }
+    });
+
+    it('defensive: Chromium-packed SPS/PPS (4-byte) + driver slice data with 3-byte codes - broken WITHOUT the hook, intact WITH it', async () => {
+        const gop = [idr((nal) => (nal < 2 ? SC4 : SC3)), delta(() => SC3), delta(() => SC3, 2), delta(() => SC3)];
+        const without = await roundTrip(gop, types, 'h264', false);
+        expect(without.delivered.filter(Boolean).length).toBeLessThan(4);
+        const withHook = await roundTrip(gop, types, 'h264', true);
+        expect(withHook.delivered).toEqual([true, true, true, true]);
+        expect(withHook.receiverErrors).toBe(0);
+    });
+
+    it('VP8 from the hardware encoder is not an Annex-B frame: the hook never touches it, even when its bytes contain 00 00 01', () => {
+        // RFC 6386 key-frame tag (3 bytes) + start code 9d 01 2a + 14-bit dimensions + payload that happens to contain 00 00 01.
+        const vp8Key = u8(0x50, 0x42, 0x00, 0x9d, 0x01, 0x2a, 0x80, 0x07, 0x38, 0x04, 0x00, 0x00, 0x01, 0x7f, 0x00, 0x00, 0x00, 0x01, 0x22);
+        const map = new Map<number, string>([[96, 'vp8']]);
+        const frame: EncodedFrameLike = { data: vp8Key.slice().buffer, type: 'key', getMetadata: () => ({ payloadType: 96 }) };
+        expect(isH26xFrame(frame, map, 'vp8')).toBe(false);
+        expect(isH26xFrame(frame, new Map(), 'vp8')).toBe(false);
+        expect(new Uint8Array(frame.data)).toEqual(vp8Key);
+    });
+});
+
 describe('wiring', () => {
     const here = dirname(fileURLToPath(import.meta.url));
     it('the call\'s E2EE worker is LiveKit\'s worker with the canonicalizer installed after it', () => {

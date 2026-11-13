@@ -1,4 +1,5 @@
 import type { EmojiMartData, Emoji } from '@emoji-mart/data';
+import { toShortcode, toShortcodeQuery } from '../utils/emojiNames';
 
 /**
  * The `:query` autocomplete's emoji search, with the emoji dataset loaded on
@@ -64,6 +65,10 @@ export interface EmojiSuggestion {
     custom?: { attachmentId: string; keyB64: string; nonceB64: string };
     /** Present (true) for one of the user's own "My Emojis"; `id` is its `p_...` id. */
     personal?: boolean;
+    /** The `:shortcode:` this row is typed as - underscores, never spaces
+     *  (`red_heart`, not "Red Heart"). Native rows only; custom rows' `name`
+     *  already is one. */
+    shortcode?: string;
 }
 
 // emoji-mart's own `SearchIndex.search()` is async (always returns a Promise,
@@ -77,16 +82,29 @@ export function searchEmoji(query: string, limit = 8): EmojiSuggestion[] {
         return [];
     }
     try {
+        // A name is typed with underscores (`red_heart`) but emoji-mart spells
+        // it "Red Heart": compare in shortcode form, and keep the raw query too
+        // so ids such as `-1` / `+1` still match as written.
         const q = query.toLowerCase();
+        const qn = toShortcodeQuery(query);
         const scored: { emoji: Emoji; score: number }[] = [];
         for (const emoji of Object.values(emojiData.emojis)) {
+            // Standard emojis only. This is the same object emoji-mart's `init`
+            // mutates: opening the picker registers My Emojis and the server's
+            // emojis as `custom` entries in `data.emojis` (skins carry `src`,
+            // no `native`). Those are offered by searchEmojiWithCustom with
+            // their real image and hint; picked up here they became a second,
+            // blank, unlabelled row for the same name.
+            if (!emoji.skins?.[0]?.native) continue;
             const id = emoji.id.toLowerCase();
+            const idn = toShortcode(id);
+            const nameSc = toShortcode(emoji.name);
             let score = -1;
-            if (id === q) score = 0;
-            else if (id.startsWith(q)) score = 1;
-            else if (id.includes(q)) score = 2;
+            if (id === q || idn === qn || nameSc === qn) score = 0;
+            else if (id.startsWith(q) || idn.startsWith(qn)) score = 1;
+            else if (id.includes(q) || idn.includes(qn)) score = 2;
             else if (emoji.keywords?.some(k => k.toLowerCase().startsWith(q))) score = 3;
-            else if (emoji.name.toLowerCase().includes(q)) score = 4;
+            else if (nameSc.includes(qn) || emoji.name.toLowerCase().includes(q)) score = 4;
             if (score >= 0) scored.push({ emoji, score });
         }
         scored.sort((a, b) => a.score - b.score || a.emoji.id.localeCompare(b.emoji.id));
@@ -94,6 +112,7 @@ export function searchEmoji(query: string, limit = 8): EmojiSuggestion[] {
             id: emoji.id,
             native: emoji.skins[0].native,
             name: emoji.name,
+            shortcode: toShortcode(emoji.name),
         }));
     } catch {
         return [];

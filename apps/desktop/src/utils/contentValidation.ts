@@ -225,7 +225,9 @@ export const ACCEPTED_CONTENT_TYPES: readonly string[] = Object.freeze(Object.ke
 
 /**
  * Why decrypted content cannot be shown, or `null` when it can. A non-null
- * answer means: store a "couldn't be shown" placeholder in its place.
+ * answer means: store a "couldn't be shown" placeholder in its place — or,
+ * for a control message (edit, delete, reaction, pin, …), drop it, since it
+ * never had a row to stand in for (utils/unshowableContent.ts decides which).
  *
  * Applied where decrypted content enters this client: the DM pull loop and
  * the live and history channel decode paths (components/Dashboard.tsx). An
@@ -291,7 +293,8 @@ export function storedContentProblem(content: unknown): string | null {
  *     'member_event', built from the server's own row or event, never from
  *     ciphertext, stored with sender_user_id null and sender_device_id '');
  *   - the group "X added Y" line built from the server's `group:*` event
- *     (no `kind`, stored with sender_user_id '__system__').
+ *     (no `kind`, stored with sender_user_id '__system__');
+ *   - the legacy server member line ({@link isLegacyMemberLineRow}).
  *
  * `contentProblem` refuses `system` from another client. A forged row stored
  * by a build from before that check carries the real sender's id, which none
@@ -306,9 +309,58 @@ export function storedSystemRowProblem(row: Record<string, unknown>): string | n
             ? null : 'member_event row with a message sender';
     }
     if (c.kind === undefined || c.kind === null) {
+        if (isLegacyMemberLineRow(row)) return null;
         return row.sender_user_id === '__system__' ? null : 'system text row with a message sender';
     }
     return 'unknown system row kind';
+}
+
+/** Longest legacy member line kept ("<username> was banned by <username>."). */
+const LEGACY_MEMBER_LINE_MAX = 512;
+
+/** The id + sender signature of a row this client wrote itself as a legacy
+ *  member line: never produced for a received row (see below). */
+function hasLegacyMemberLineSignature(row: Record<string, unknown>): boolean {
+    return typeof row.id === 'string' && row.id.startsWith('sys_')
+        && row.sender_user_id === ''
+        && (row.sender_device_id === '' || row.sender_device_id === undefined);
+}
+
+/**
+ * Is `row` the "X joined the server." line desktop ≤ 1.0.21 wrote into the
+ * CHANNEL cache itself (Dashboard's old `channelSystemEvent` effect, from
+ * 2026-05-10 until 88d11af5 replaced it with persisted `member_event` rows)?
+ *
+ *     { id: 'sys_<ms>_<rand>', content: { type: 'system', text },
+ *       sender_user_id: '', sender_device_id: '' }
+ *
+ * 1.0.23's forged-row check did not know this shape, so every such line in
+ * every channel became "A message couldn't be shown" (owner report,
+ * 2026-10-26). It is unforgeable by another client for the same reason the
+ * group line is: `sender_user_id === ''` is never produced for a received row —
+ * a DM stores the sealed sender id or null, a channel row the server's
+ * non-empty user id — and that holds for every build back to v1.0.1.
+ */
+export function isLegacyMemberLineRow(row: Record<string, unknown>): boolean {
+    if (!hasLegacyMemberLineSignature(row)) return false;
+    const c = row.content;
+    if (!isRecord(c) || c.type !== 'system') return false;
+    if (c.kind !== undefined && c.kind !== null) return false;
+    return typeof c.text === 'string' && c.text.length <= LEGACY_MEMBER_LINE_MAX;
+}
+
+/**
+ * A legacy member line that a 1.0.23 load had ALREADY replaced with the
+ * stand-in (the replacement is written back on the next persist, so the text
+ * is gone). Same unforgeable signature as {@link isLegacyMemberLineRow} with
+ * the stand-in as content: removed on load. A real lost message never matches —
+ * a DM stand-in carries sender_user_id null, a channel one the sender's id.
+ */
+function isConvertedLegacyMemberLine(row: Record<string, unknown>): boolean {
+    if (!hasLegacyMemberLineSignature(row)) return false;
+    const c = row.content;
+    return isRecord(c) && c.type === 'system' && c.kind === UNDECRYPTABLE_KIND
+        && isRecord(c.data) && c.data.reason === 'malformed';
 }
 
 /** The stand-in content for a row that cannot be shown (renders as "A message couldn't be shown"). */
@@ -318,7 +370,8 @@ export function unshowablePlaceholderContent(): { type: 'system'; kind: typeof U
 
 /**
  * Loaded history with every row a renderer would throw on replaced by a
- * "couldn't be shown" row (same id, time and sender), and non-object rows
+ * "couldn't be shown" row (same id, time and sender), and non-object rows —
+ * and legacy member lines an earlier 1.0.23 load had already replaced —
  * dropped. A thread with nothing to fix keeps its array identity, and so does
  * the map, so the store does not rewrite clean threads.
  */
@@ -332,6 +385,7 @@ export function sanitizeStoredThreads<M extends Record<string, unknown[]>>(map: 
             const row = thread[i];
             let replacement: unknown = row;
             if (!isRecord(row)) replacement = undefined;
+            else if (isConvertedLegacyMemberLine(row)) replacement = undefined;
             else if (storedContentProblem(row.content) !== null || storedSystemRowProblem(row) !== null) {
                 replacement = { ...row, content: unshowablePlaceholderContent() };
             } else if (isRecord(row.reactions) && Object.keys(row.reactions).some(isReservedObjectKey)) {

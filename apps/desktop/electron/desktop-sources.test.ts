@@ -137,4 +137,26 @@ describe('createDesktopSourcesBroker', () => {
         await tick();
         expect(f.calls[0].req.thumbnailSize).toEqual({ width: 0, height: 359 });
     });
+
+    it('abandons a getSources that never settles, so the queue behind it moves on', async () => {
+        const f = controllable();
+        const b = createDesktopSourcesBroker({ getSources: f.getSources, timeoutMs: 40 });
+        const stuck = b.request({ types: ['screen'], thumbnailSize: { width: 0, height: 0 } });
+        const next = b.request({ types: ['window'], thumbnailSize: { width: 0, height: 0 } });
+        await expect(stuck).rejects.toThrow(/timed out/);
+        await tick();
+        expect(f.calls).toHaveLength(2); // the second call started although the first never settled
+        f.calls[1].resolve(['w']);
+        await expect(next).resolves.toEqual(['w']);
+        expect(b.pending()).toBe(0);
+    });
+
+    it('without a timeout a stuck call blocks the chain (control for the test above)', async () => {
+        const f = controllable();
+        const b = createDesktopSourcesBroker({ getSources: f.getSources });
+        void b.request({ types: ['screen'], thumbnailSize: { width: 0, height: 0 } });
+        void b.request({ types: ['window'], thumbnailSize: { width: 0, height: 0 } });
+        await new Promise(r => setTimeout(r, 80));
+        expect(f.calls).toHaveLength(1);
+    });
 });

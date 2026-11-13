@@ -5,7 +5,7 @@ import { API_BASE } from '../constants';
 import { apiUrl } from '../utils/apiPath';
 import { encryptAndAddress } from '../utils/encryptAndAddress';
 import { generateCallKey } from '../utils/crypto';
-import { CALL_KEY_ROTATION_MS, type CallKeyDecision, type CallKeyStore } from '../utils/callKeyStore';
+import { CALL_KEY_ROTATION_MS, nextRotationEpoch, type CallKeyDecision, type CallKeyStore } from '../utils/callKeyStore';
 import {
     CALL_KEY_DECRYPT_REQUEST_MIN_GAP_MS,
     CALL_KEY_ID_MINT,
@@ -92,6 +92,8 @@ export interface KeyRequestInput {
 const MINT_RECHECK_MS = 10_000;
 const ROTATION_TICK_MS = 5_000;
 const ROTATION_RETRY_BACKOFF_MS = 30_000;
+/** After a rotation the store refused (or at the epoch ceiling): wait a full rotation interval, not a tick. */
+const ROTATION_STALL_BACKOFF_MS = CALL_KEY_ROTATION_MS;
 
 const newId = () => (typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : `ck-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 
@@ -277,9 +279,15 @@ export function useCallKeySharing(args: CallKeySharingArgs) {
                 connectedUserIds: participantIdsRef.current,
             });
             if (!isRotationDue({ selfUserId: auth.userId, choice, rotatesAtMs: held.rotatesAtMs, nowMs: Date.now() })) return;
+            // At the epoch ceiling there is no successor to write: stop (a peer
+            // can no longer park us here, but never loop on an impossible rotation).
+            const nextEpoch = nextRotationEpoch(held.epoch);
+            if (nextEpoch === null) {
+                rotateBackoffUntilRef.current = Date.now() + ROTATION_STALL_BACKOFF_MS;
+                return;
+            }
             rotatingRef.current = true;
             try {
-                const nextEpoch = held.epoch + 1;
                 const newKey = await generateCallKey();
                 // Someone else rotated while the key was being made: stand down.
                 if (store.accepted(convId, callId)?.epoch !== held.epoch) return;
@@ -292,7 +300,12 @@ export function useCallKeySharing(args: CallKeySharingArgs) {
                     key_id: `rotate-${nextEpoch}`,
                     rotates_at: new Date(Date.now() + CALL_KEY_ROTATION_MS).toISOString(),
                 });
-                latest.current.recordGeneratedKey(convId, callId, newKey, nextEpoch);
+                // A refusal here (not an exception) used to leave no back-off, so
+                // the same futile rotation repeated every tick.
+                if (latest.current.recordGeneratedKey(convId, callId, newKey, nextEpoch) !== 'stored') {
+                    rotateBackoffUntilRef.current = Date.now() + ROTATION_STALL_BACKOFF_MS;
+                    console.warn('[CallKeyShare] rotated key was not recorded locally; backing off');
+                }
             } catch {
                 rotateBackoffUntilRef.current = Date.now() + ROTATION_RETRY_BACKOFF_MS;
                 console.warn('[CallKeyShare] key rotation failed; will retry');

@@ -43,6 +43,22 @@ describe('effectiveTier — Auto reaches 1440p only on a hardware encoder', () =
     });
 });
 
+describe('decideCameraCodec on Linux — Auto keeps the camera on VP8 (a VA-API camera froze, 2026-11-04)', () => {
+    const HW = { h264: true, h264High: true, vp8: false };
+    it('Auto on Linux is VP8 even where the hardware probe says H.264 is available', () => {
+        const d = decideCameraCodec('auto', HW, [{ vendor: 'Intel' }], { linux: true });
+        expect(d.codec).toBe('vp8');
+        expect(d.hardware).toBeFalsy();
+        expect(d.reason).toMatch(/Linux/);
+    });
+    it('negative controls: the same probe off Linux is hardware H.264, and an explicit H.264 choice on Linux is honoured', () => {
+        expect(decideCameraCodec('auto', HW, [{ vendor: 'Intel' }], { linux: false }).codec).toBe('h264');
+        expect(decideCameraCodec('auto', HW, [{ vendor: 'Intel' }]).codec).toBe('h264');
+        expect(decideCameraCodec('h264', HW, [{ vendor: 'Intel' }], { linux: true }).codec).toBe('h264');
+        expect(decideCameraCodec('vp8', HW, [{ vendor: 'Intel' }], { linux: true }).codec).toBe('vp8');
+    });
+});
+
 describe('nextStepDown — prefer a crisp 30 at a lower resolution over a slideshow', () => {
     it('keeps any mode at ≥ 24 fps', () => {
         expect(nextStepDown({ width: 2560, height: 1440, frameRate: 30 })).toBeNull();

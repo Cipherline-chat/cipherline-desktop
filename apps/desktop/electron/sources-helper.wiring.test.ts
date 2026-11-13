@@ -52,7 +52,8 @@ describe('main.ts never lists sources in-process when DXGI is on', () => {
         expect(c).toContain("forceHelper: !IS_PACKAGED && process.env.CIPHERLINE_SOURCES_HELPER === '1'");
     });
     it('the share is granted with id + name only', () => {
-        expect(c).toContain('cb({ video: { id: match.id, name: match.name }, audio: audioMode });');
+        // (a portal placeholder is answered with portalCaptureVideo, or with the id it listed (portal-pick.ts): the same two fields, id + name, nothing else)
+        expect(c).toContain('cb({ video: portalVideo ?? (portalPlaceholder ? portalCaptureVideo(++portalCaptureSeq) : { id: match.id, name: match.name }), audio: audioMode });');
     });
     it('the launch log says where the picker runs', () => {
         expect(c).toContain('picker=${PICKER_ENUMERATION}');

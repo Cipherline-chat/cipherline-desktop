@@ -7,7 +7,8 @@
  * app. No phase on Windows or macOS has a "go to your browser" action — a
  * failure offers Retry, which main turns into a fresh in-app download. The one
  * browser action, `open-download`, belongs to `manual`, which main only ever
- * produces on Linux (an AppImage that cannot replace itself).
+ * produces on Linux (an AppImage that cannot replace itself, or a .deb whose
+ * `pkexec dpkg -i` install keeps failing — then the link is the .deb).
  */
 
 export type UpdateTileAction = 'install' | 'retry' | 'open-download' | null;
@@ -38,6 +39,18 @@ const FAILED_LABEL: Record<'download' | 'verify' | 'install', string> = {
     install: "Update couldn't be installed — click to try again",
 };
 
+const CANCELLED_LABEL = 'Update not installed — the password prompt was cancelled. Click to try again';
+
+/** What the Linux download link says. A .deb is named as one, and says WHY it is offered. */
+export function manualLabel(state: Extract<UpdateStateShape, { phase: 'manual' }>): string {
+    if (state.pkg === 'deb') {
+        return state.cause === 'install'
+            ? `Couldn't install the update automatically — click to download v${state.version} (.deb) and install it yourself`
+            : `Update couldn't download in the app — click to download v${state.version} (.deb)`;
+    }
+    return `Update available — click to download v${state.version}`;
+}
+
 export function describeUpdateTile(state: UpdateStateShape, now: number): UpdateTileDescriptor {
     switch (state.phase) {
         case 'idle':
@@ -59,11 +72,13 @@ export function describeUpdateTile(state: UpdateStateShape, now: number): Update
             };
         }
         case 'failed':
+            // A .deb install whose password prompt the user dismissed: a choice, not a fault.
+            if (state.cause === 'cancelled') return { visible: true, action: 'retry', label: CANCELLED_LABEL, tone: 'warn', percent: null };
             return { visible: true, action: 'retry', label: FAILED_LABEL[state.stage] ?? FAILED_LABEL.download, tone: 'error', percent: null };
         case 'ready':
             return { visible: true, action: 'install', label: 'Update ready — click to restart and install', tone: 'ready', percent: null };
         case 'manual':
-            return { visible: true, action: 'open-download', label: `Update available — click to download v${state.version}`, tone: 'external', percent: null };
+            return { visible: true, action: 'open-download', label: manualLabel(state), tone: 'external', percent: null };
         default:
             // An unknown phase from a newer main process: show nothing rather than guess.
             return { visible: false, action: null, label: '', tone: 'busy', percent: null };

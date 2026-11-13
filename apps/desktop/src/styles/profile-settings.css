@@ -287,6 +287,10 @@ button.ps-chip:disabled { opacity: .45; cursor: not-allowed; }
 .ps-steam-txt span { font-size: 12px; line-height: 1.4; color: var(--cl-muted, #A7B3D4); }
 .ps-steam-txt .ps-steam-ok { display: inline-flex; align-items: center; gap: 4px; color: var(--cl-lume, #25E0C8); font-weight: 700; }
 .ps-steam-actions { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; }
+.ps-steam--row { padding: 8px 10px; border-radius: 12px; gap: 10px; }
+.ps-steam--row .ps-steam-av { width: 30px; height: 30px; border-radius: 8px; }
+.ps-steam--row .ps-steam-txt { gap: 1px; }
+.ps-steam--row .ps-steam-err { flex-basis: 100%; }
 .ps-steam-q { font-size: 12.5px; font-weight: 700; color: var(--cl-text, #F4F7FF); }
 
 @media (prefers-reduced-motion: reduce) {

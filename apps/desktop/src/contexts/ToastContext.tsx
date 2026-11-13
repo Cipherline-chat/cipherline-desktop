@@ -1,6 +1,7 @@
-import React, { createContext, useCallback, useContext, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { AlertCircle, AlertTriangle, CheckCircle, Info, X } from 'lucide-react';
 import { ClButton } from '../components/cl';
+import { TOAST_RESUME_MIN_MS, onToastHold, toastsHeld } from '../utils/toastHold';
 
 export type ToastKind = 'error' | 'warning' | 'info' | 'success';
 
@@ -23,6 +24,9 @@ interface Toast extends Required<Pick<ToastInput, 'message'>> {
     action?: ToastInput['action'];
     icon?: React.ReactNode;
 }
+
+/** One toast's auto-dismiss countdown (pausable: utils/toastHold.ts). */
+interface ToastTimer { left: number; startedAt: number; handle: number | null }
 
 interface ToastContextValue {
     push: (t: ToastInput) => void;
@@ -50,7 +54,12 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const [toasts, setToasts] = useState<Toast[]>([]);
     const [closing, setClosing] = useState<Set<string>>(new Set());
 
+    const timers = useRef(new Map<string, ToastTimer>());
+
     const dismiss = useCallback((id: string) => {
+        const t = timers.current.get(id);
+        if (t?.handle != null) window.clearTimeout(t.handle);
+        timers.current.delete(id);
         setClosing(prev => {
             if (prev.has(id)) return prev;
             const next = new Set(prev);
@@ -63,6 +72,11 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             setClosing(prev => { const next = new Set(prev); next.delete(id); return next; });
         }, 180);
     }, []);
+
+    const startTimer = useCallback((id: string, t: ToastTimer) => {
+        t.startedAt = Date.now();
+        t.handle = window.setTimeout(() => { t.handle = null; dismiss(id); }, Math.max(0, t.left));
+    }, [dismiss]);
 
     const push = useCallback((input: ToastInput) => {
         const id = (typeof crypto !== 'undefined' && 'randomUUID' in crypto)
@@ -79,16 +93,40 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         };
         setToasts(prev => [...prev, toast]);
         const dur = input.durationMs ?? 4500;
-        if (dur > 0) window.setTimeout(() => dismiss(id), dur);
-    }, [dismiss]);
+        if (dur > 0) {
+            const t: ToastTimer = { left: dur, startedAt: 0, handle: null };
+            timers.current.set(id, t);
+            if (!toastsHeld()) startTimer(id, t);
+        }
+    }, [startTimer]);
+
+    // A full-screen layer over the stack (utils/toastHold.ts) pauses every
+    // countdown; on release each toast gets at least TOAST_RESUME_MIN_MS back.
+    useEffect(() => onToastHold((held) => {
+        for (const [id, t] of timers.current) {
+            if (held) {
+                if (t.handle !== null) {
+                    window.clearTimeout(t.handle);
+                    t.handle = null;
+                    t.left -= Date.now() - t.startedAt;
+                }
+            } else if (t.handle === null) {
+                t.left = Math.max(t.left, TOAST_RESUME_MIN_MS);
+                startTimer(id, t);
+            }
+        }
+    }), [startTimer]);
 
     return (
         <ToastContext.Provider value={{ push, dismiss }}>
             {children}
-            {/* Stack — fixed to the bottom-right, above every modal z-index.
+            {/* Stack — fixed to the bottom-right, above every modal z-index AND the
+                full-screen moments (z 50000, styles/moments.css), so an unlock or badge toast
+                that lands during a dimming moment stays readable; still below the system
+                surfaces (screen-share picker 99999, update prompt, lock).
                 Individual toasts own their pointer events so nothing steals clicks
                 from the rest of the UI. */}
-            <div className="fixed bottom-4 right-4 z-[10000] flex flex-col gap-2 pointer-events-none max-w-sm">
+            <div className="fixed bottom-4 right-4 z-[60000] flex flex-col gap-2 pointer-events-none max-w-sm">
                 {toasts.map(t => {
                     const style = KIND_STYLES[t.kind];
                     const isClosing = closing.has(t.id);

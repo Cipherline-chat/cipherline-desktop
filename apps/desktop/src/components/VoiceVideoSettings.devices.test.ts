@@ -41,7 +41,8 @@ describe('VoiceVideoSettings — the gate meter is the gate', () => {
     it("the threshold slider shows the gate's own detector level and state, not the end-of-chain level", () => {
         expect(src).toMatch(/level=\{gateLevel\.db\}/);
         expect(src).toMatch(/open=\{gateLevel\.open\}/);
-        expect(src).toMatch(/onGateLevel: \(db, open\) => setGateLevel\(\{ db, open \}\)/);
+        // The gate also reports its live auto threshold (thr) for the Automatic marker (voice-gate-auto-toggle).
+        expect(src).toMatch(/onGateLevel: \(db, open, thr\) => setGateLevel\(\{ db, open, thr \}\)/);
         expect(src).toMatch(/\{ gateMeterMs: GATE_METER_REPORT_MS \}/);
     });
 });
@@ -66,5 +67,24 @@ describe('VoiceVideoSettings — the camera preview follows the picked camera', 
         const call = readFileSync(join(here, 'CallPane.tsx'), 'utf8');
         expect(call).toMatch(/useState\(\(\) => voice\?\.settings\.cameraDeviceId \|\| undefined\)/);
         expect(call).toMatch(/videoCaptureDefaults: \{[^}]*deviceId: initialCameraDeviceId,/s);
+    });
+});
+
+describe('VoiceVideoSettings — voice gate: automatic, with a Manual button that drops the slider down (owner, 2026-11-11)', () => {
+    const dir = dirname(fileURLToPath(import.meta.url));
+    const vv = readFileSync(join(dir, 'VoiceVideoSettings.tsx'), 'utf8');
+    const list = readFileSync(join(dir, 'settings', 'AudioDeviceList.tsx'), 'utf8');
+    it('no separate Automatic toggle row any more', () => {
+        expect(vv).not.toMatch(/label="Automatic"/);
+        expect(list).not.toMatch(/label="Automatic"/);
+    });
+    it('the gate row carries a Manual chip that flips voiceGateAuto', () => {
+        expect(vv).toMatch(/active=\{!settings\.voiceGateAuto\}\s*onClick=\{\(\) => voice\.setVoiceGateAuto\(!settings\.voiceGateAuto\)\}[\s\S]{0,200}>\s*Manual\s*<\/ClButton>/);
+        expect(list).toMatch(/onClick=\{\(\) => set\(\{ voiceGateAuto: !s\.voiceGateAuto \}\)\}[\s\S]{0,200}>\s*Manual\s*<\/ClButton>/);
+    });
+    it('the draggable slider exists only in the drop-down, only when Manual', () => {
+        expect(vv).toMatch(/\{!settings\.voiceGateAuto && \(\s*<div className="vv-gate-drop"[\s\S]{0,80}<GateSlider\s+show="track"/);
+        expect(vv).toMatch(/<GateSlider\s+show="readout"/);
+        expect(list).toMatch(/\{!s\.voiceGateAuto && \(\s*<div className="vv-gate-drop">\s*<ClSlider/);
     });
 });

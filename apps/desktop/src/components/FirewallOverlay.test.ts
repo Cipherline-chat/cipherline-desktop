@@ -23,6 +23,7 @@ import { applyMotionState } from '../utils/idleMotion';
 import { firewallBestKey, readFirewallBest, writeFirewallBest } from '../utils/firewallBest';
 import { classifyKvKey } from '../services/backupRegistry';
 import type { FromWorker, ToWorker } from '../workers/loadingScreenProtocol';
+import { __resetFlappyBest, bindFlappyAccount, flappySyncKey, type FlappyApi, type SubmitResult } from '../utils/flappyBest';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -292,5 +293,203 @@ describe('FirewallOverlay: best score per account', () => {
 
     it('its key is classified in the backup registry (excluded)', () => {
         expect(classifyKvKey(firewallBestKey(UID), UID)).toBe('exclude');
+    });
+});
+
+describe('FirewallOverlay: the best is never lost, and a new one is celebrated', () => {
+    const syncOf = () => JSON.parse(store.get(flappySyncKey(UID)) ?? 'null');
+    afterEach(() => { __resetFlappyBest(); });
+
+    it('a point counts at once: leaving a run mid-flight (no crash message) keeps the score', () => {
+        open();
+        const w = last();
+        w.emit({ type: 'game', mode: 'playing', score: 7, best: 7, runMs: 21_000 });
+        close(); // Esc / close button mid-run
+        expect(store.get(firewallBestKey(UID))).toBe('7');
+        expect(syncOf().pending).toEqual({ score: 7, runMs: 21_000 }); // queued for the leaderboard too
+    });
+
+    it('closing sends the queued best to the server now rather than at the next debounce', async () => {
+        const submit = vi.fn(async (): Promise<SubmitResult> => ({ kind: 'ok', best_score: 7 }));
+        bindFlappyAccount(UID, { submit, me: async () => null, board: async () => null, setOptIn: async () => null } as unknown as FlappyApi);
+        open();
+        last().emit({ type: 'game', mode: 'playing', score: 7, best: 7, runMs: 21_000 });
+        close();
+        await Promise.resolve();
+        expect(submit).toHaveBeenCalledWith(7, 21_000);
+    });
+
+    it('the run length from the worker travels with the score', () => {
+        open();
+        last().emit({ type: 'game', mode: 'over', score: 12, best: 12, runMs: 41_250 });
+        expect(syncOf().pending).toEqual({ score: 12, runMs: 41_250 });
+    });
+
+    it('the HUD numbers follow every point, a restart and the card', () => {
+        open();
+        const w = last();
+        w.emit({ type: 'ok' });
+        const now = () => host.querySelector('.fw-score-now')?.textContent;
+        const best = () => host.querySelector('.fw-score-best')?.textContent;
+        w.emit({ type: 'game', mode: 'playing', score: 0, best: 0 });
+        expect(now()).toBe('0');
+        expect(best()).toBeUndefined(); // no best yet: no span
+        w.emit({ type: 'game', mode: 'playing', score: 1, best: 1 });
+        expect(now()).toBe('1');
+        expect(best()).toBe('Best 1'); // the first best has to mount its span, and shows it at once
+        const span = host.querySelector('.fw-score-now');
+        w.emit({ type: 'game', mode: 'playing', score: 2, best: 2 });
+        w.emit({ type: 'game', mode: 'playing', score: 3, best: 3 });
+        expect(now()).toBe('3');
+        expect(best()).toBe('Best 3');
+        expect(host.querySelector('.fw-score-now')).toBe(span); // the same node, written in place
+        w.emit({ type: 'game', mode: 'over', score: 3, best: 3 });
+        expect(now()).toBe('3');
+        expect(host.querySelector('.fw-over-title')?.textContent).toMatch(/Score 3.*Best 3/); // the card saw the mid-run points
+        w.emit({ type: 'game', mode: 'playing', score: 0, best: 3 });
+        expect(now()).toBe('0'); // a new run starts from nothing
+        expect(best()).toBe('Best 3');
+        w.emit({ type: 'game', mode: 'over', score: 0, best: 3 });
+        expect(host.querySelector('.fw-over-title')?.textContent).toMatch(/Score 0.*Best 3/);
+        w.emit({ type: 'game', mode: 'idle', score: 0, best: 3 });
+        expect(host.querySelector('.fw-score-now')).toBeNull(); // left the game
+        w.emit({ type: 'game', mode: 'playing', score: 0, best: 3 });
+        expect(now()).toBe('0'); // the span comes back holding the current number
+    });
+
+    it('beating your best shows "New best!" on the score card (and a chip during the run)', () => {
+        store.set(firewallBestKey(UID), '5');
+        open();
+        const w = last();
+        w.emit({ type: 'ok' });
+        w.emit({ type: 'game', mode: 'playing', score: 0, best: 5 });
+        w.emit({ type: 'game', mode: 'playing', score: 6, best: 6 });
+        expect(host.querySelector('[data-testid="fw-new-best-chip"]')).not.toBeNull();
+        w.emit({ type: 'game', mode: 'over', score: 6, best: 6 });
+        expect(host.querySelector('[data-testid="fw-new-best"]')?.textContent).toContain('New best!');
+        expect(host.querySelector('.fw-over-title')?.textContent).toMatch(/Score 6.*Best 6/);
+    });
+
+    it('a good run that does not beat your best is not a new best', () => {
+        store.set(firewallBestKey(UID), '20');
+        open();
+        const w = last();
+        w.emit({ type: 'ok' });
+        w.emit({ type: 'game', mode: 'playing', score: 0, best: 20 });
+        w.emit({ type: 'game', mode: 'playing', score: 9, best: 20 });
+        expect(host.querySelector('[data-testid="fw-new-best-chip"]')).toBeNull();
+        w.emit({ type: 'game', mode: 'over', score: 9, best: 20 });
+        expect(host.querySelector('[data-testid="fw-new-best"]')).toBeNull();
+    });
+
+    it('the first ever run (best 0) celebrates on the card, but does not flash the in-run chip', () => {
+        open();
+        const w = last();
+        w.emit({ type: 'ok' });
+        w.emit({ type: 'game', mode: 'playing', score: 0, best: 0 });
+        w.emit({ type: 'game', mode: 'playing', score: 3, best: 3 });
+        expect(host.querySelector('[data-testid="fw-new-best-chip"]')).toBeNull();
+        w.emit({ type: 'game', mode: 'over', score: 3, best: 3 });
+        expect(host.querySelector('[data-testid="fw-new-best"]')).not.toBeNull();
+    });
+
+    it('the next run starts clean: the celebration goes away and the bar to beat is the new best', () => {
+        open();
+        const w = last();
+        w.emit({ type: 'ok' });
+        w.emit({ type: 'game', mode: 'playing', score: 0, best: 0 });
+        w.emit({ type: 'game', mode: 'over', score: 5, best: 5 });
+        expect(host.querySelector('[data-testid="fw-new-best"]')).not.toBeNull();
+        w.emit({ type: 'game', mode: 'playing', score: 0, best: 5 });
+        w.emit({ type: 'game', mode: 'over', score: 4, best: 5 });
+        expect(host.querySelector('[data-testid="fw-new-best"]')).toBeNull();
+    });
+});
+
+describe('FirewallOverlay: the leaderboard panel', () => {
+    afterEach(() => { __resetFlappyBest(); });
+    const boardApi = () => ({
+        submit: vi.fn(), me: vi.fn(async () => null), setOptIn: vi.fn(async (on: boolean) => on),
+        board: vi.fn(async () => ({ scope: 'friends', entries: [], me: { best_score: 0, global_opt_in: false, rank: null } })),
+    }) as unknown as FlappyApi;
+    const trophy = () => host.querySelector('[data-testid="fw-trophy"]') as HTMLButtonElement;
+
+    it('the trophy opens it, and again closes it; it is a named button that reports its state', () => {
+        bindFlappyAccount(UID, boardApi());
+        open();
+        expect(trophy().getAttribute('aria-label')).toBe('Leaderboard');
+        expect(trophy().getAttribute('aria-expanded')).toBe('false');
+        expect(host.querySelector('[data-testid="fw-leaderboard"]')).toBeNull();
+        act(() => { trophy().click(); });
+        expect(trophy().getAttribute('aria-expanded')).toBe('true');
+        expect(host.querySelector('[data-testid="fw-leaderboard"]')).not.toBeNull();
+        act(() => { trophy().click(); });
+        expect(host.querySelector('[data-testid="fw-leaderboard"]')).toBeNull();
+    });
+
+    it('the game pauses behind it and resumes after', () => {
+        bindFlappyAccount(UID, boardApi());
+        open();
+        const w = last();
+        w.emit({ type: 'ok' });
+        act(() => { trophy().click(); });
+        expect(w.types()).toContain('pause');
+        act(() => { trophy().click(); });
+        expect(w.types().slice(-1)[0]).toBe('resume');
+    });
+
+    it('Space inside the panel belongs to the panel (never starts or flaps the game)', () => {
+        bindFlappyAccount(UID, boardApi());
+        open();
+        const w = last();
+        w.emit({ type: 'ok' });
+        act(() => { trophy().click(); });
+        const sw = host.querySelector('[role="switch"]') as HTMLElement;
+        const ev = key('keydown', ' ', sw);
+        expect(ev.defaultPrevented).toBe(false);
+        expect(w.types()).not.toContain('act');
+        // outside the panel Space still swims
+        key('keydown', ' ');
+        expect(w.types()).toContain('act');
+    });
+
+    it('Esc closes the panel first, then the game', () => {
+        bindFlappyAccount(UID, boardApi());
+        const onClose = open();
+        act(() => { trophy().click(); });
+        key('keydown', 'Escape');
+        expect(host.querySelector('[data-testid="fw-leaderboard"]')).toBeNull();
+        expect(onClose).not.toHaveBeenCalled();
+        key('keydown', 'Escape');
+        expect(onClose).toHaveBeenCalledTimes(1);
+    });
+
+    it('closing it puts focus back on the trophy', () => {
+        bindFlappyAccount(UID, boardApi());
+        open();
+        act(() => { trophy().click(); });
+        key('keydown', 'Escape');
+        expect(document.activeElement).toBe(trophy());
+    });
+
+    it('the score card offers it too', () => {
+        bindFlappyAccount(UID, boardApi());
+        open();
+        const w = last();
+        w.emit({ type: 'ok' });
+        w.emit({ type: 'game', mode: 'over', score: 2, best: 2 });
+        const btn = Array.from(host.querySelectorAll('.fw-over .fw-btn')).find(b => /leaderboard/i.test(b.textContent ?? '')) as HTMLButtonElement;
+        expect(btn).toBeTruthy();
+        act(() => { btn.click(); });
+        expect(host.querySelector('[data-testid="fw-leaderboard"]')).not.toBeNull();
+    });
+
+    it('a best that arrives from the server (another device) lifts the HUD best', async () => {
+        const api = { ...boardApi(), me: vi.fn(async () => ({ best_score: 48, global_opt_in: false, rank: null })) } as unknown as FlappyApi;
+        open();
+        bindFlappyAccount(UID, api); // sign-in reconcile
+        await act(async () => { for (let i = 0; i < 6; i++) await Promise.resolve(); });
+        expect(host.querySelector('.fw-score-best')?.textContent).toBe('Best 48');
+        expect(store.get(firewallBestKey(UID))).toBe('48');
     });
 });

@@ -14,6 +14,21 @@ import {
 import { __resetLoadingWorkerHost, __setLoadingWorkerFactory, type WorkerLike } from './loadingWorkerHost';
 import type { FromWorker, ToWorker } from '../workers/loadingScreenProtocol';
 
+// An in-memory encrypted store (the real one throws before hydrate()): the best score is read and
+// written through it by utils/loadingGameBest.ts and utils/flappyBest.ts.
+const kv = vi.hoisted(() => new Map<string, string>());
+vi.mock('../utils/secureLocalStore', () => {
+    const api = {
+        getItem: (k: string) => kv.get(k) ?? null,
+        setItem: (k: string, v: string) => { kv.set(k, v); },
+        removeItem: (k: string) => { kv.delete(k); },
+        isAccountReady: () => true,
+        whenAccountReady: () => Promise.resolve(),
+    };
+    return { default: api, secureLocalStore: api };
+});
+const secureLocalStore = { getItem: (k: string) => kv.get(k) ?? null, setItem: (k: string, v: string) => { kv.set(k, v); }, removeItem: (k: string) => { kv.delete(k); } };
+
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 /**
@@ -95,6 +110,7 @@ function startPlaying(onSurfaced = vi.fn()) {
 }
 
 beforeEach(() => {
+    kv.clear();
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'performance'] });
     __resetLoadingSession();
     __resetLoadingWorkerHost();
@@ -587,6 +603,52 @@ describe('the game', () => {
         render({ onSurfaced: vi.fn() });
         const init = lastWorker().sent[0];
         expect(init.type === 'init' && init.best).toBe(12);
+    });
+});
+
+describe('the best is the ACCOUNT\'s best, shared with the Home game and the leaderboard', () => {
+    const UID = 'acct-lb-1';
+    const KEY = `cipherline_firewall_best_${UID}`;
+    afterEach(() => {
+        secureLocalStore.removeItem('cipherline_user_id');
+        secureLocalStore.removeItem(KEY);
+        secureLocalStore.removeItem(`cipherline_flappy_sync_${UID}`);
+    });
+
+    it('a best set on another screen (the Home game) is what the worker is told', () => {
+        secureLocalStore.setItem('cipherline_user_id', UID);
+        secureLocalStore.setItem(KEY, '33');
+        enableWorkers();
+        render({ onSurfaced: vi.fn() });
+        const init = lastWorker().sent[0];
+        expect(init.type === 'init' && init.best).toBe(33);
+    });
+
+    it('a run here counts for the account: every point is recorded with its run length, mid-run too', async () => {
+        secureLocalStore.setItem('cipherline_user_id', UID);
+        const { w } = startPlaying();
+        await act(async () => { w.emit({ type: 'game', mode: 'playing', score: 41, best: 41, runMs: 150_000 }); await Promise.resolve(); await Promise.resolve(); });
+        expect(secureLocalStore.getItem(KEY)).toBe('41');
+        const q = JSON.parse(secureLocalStore.getItem(`cipherline_flappy_sync_${UID}`) ?? 'null');
+        expect(q.pending).toEqual({ score: 41, runMs: 150_000 });
+    });
+
+    it('signed out (the first loading screen of a cold start): nothing is written for an account', async () => {
+        const { w } = startPlaying();
+        await act(async () => { w.emit({ type: 'game', mode: 'playing', score: 5, best: 5, runMs: 9_000 }); await Promise.resolve(); });
+        expect(secureLocalStore.getItem(KEY)).toBeNull();
+    });
+
+    it('beating the best shows "New best!" on the score card; a lesser run does not', () => {
+        const { w } = startPlaying();
+        const base = Math.max(0, Number(host.querySelector('.lo-score-best')?.textContent?.replace(/\D/g, '')) || 0);
+        const hi = base + 50;
+        w.emit({ type: 'game', mode: 'playing', score: 0, best: base });
+        w.emit({ type: 'game', mode: 'over', score: hi, best: hi });
+        expect(host.querySelector('[data-testid="lo-new-best"]')?.textContent).toBe('New best!');
+        w.emit({ type: 'game', mode: 'playing', score: 0, best: hi });
+        w.emit({ type: 'game', mode: 'over', score: 3, best: hi });
+        expect(host.querySelector('[data-testid="lo-new-best"]')).toBeNull();
     });
 });
 

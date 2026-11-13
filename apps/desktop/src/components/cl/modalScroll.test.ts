@@ -27,13 +27,13 @@ const read = (...p: string[]) => readFileSync(join(here, ...p), 'utf8');
 /** Modals that opt into the cap, and why they need it. Heights are the measured
  *  worst case at 1280x720 (headless Chrome, real components):
  *    SafetyVerificationModal  750px @ 3 devices, 1008px @ 5   (unbounded list)
- *    ServerInviteModal        739px with link settings expanded
+ *    (ServerInviteModal was 739px with link settings expanded; it moved to the dlg-card
+ *     frame, whose own max-height + scrolling body covers it, see serverDialogs.wiring.test.ts)
  *    HistoryRequestModal      877px — the tallest in the app
  *    HistorySyncBanner        774px @ 10 devices               (unbounded list)
  *  The budget is 672px: a 720px viewport minus the cap's 48px gutter. */
 const OPTED_IN: [name: string, path: string[]][] = [
     ['SafetyVerificationModal', ['..', 'SafetyVerificationModal.tsx']],
-    ['ServerInviteModal', ['..', 'server', 'ServerInviteModal.tsx']],
     ['HistoryRequestModal', ['..', 'HistoryRequestModal.tsx']],
     ['HistorySyncBanner', ['..', 'HistorySyncBanner.tsx']],
 ];

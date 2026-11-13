@@ -89,7 +89,59 @@ export function parseSystemInfoReply(v: unknown, appVersion: string, buildCommit
         hardware_acceleration: s.hardware_acceleration !== false,
         uptime_s: Math.max(0, Math.round(num(s.uptime_s))),
     };
+    const ls = isObj(s.linux_session) ? s.linux_session : null;
+    if (ls) {
+        const pick = <T extends string>(v: unknown, allowed: readonly T[], dflt: T): T => (allowed as readonly unknown[]).includes(v) ? v as T : dflt;
+        const desktop = typeof ls.desktop === 'string' ? ls.desktop.replace(/[^A-Za-z:]/g, '').slice(0, 40) : '';
+        out.system.linux_session = {
+            session_type: pick(ls.session_type, ['wayland', 'x11', 'tty', 'unknown'] as const, 'unknown'),
+            desktop,
+            ozone: pick(ls.ozone, ['wayland', 'x11', 'default'] as const, 'default'),
+            capture_path: pick(ls.capture_path, ['portal', 'x11'] as const, 'x11'),
+            restore_mode: pick(ls.restore_mode, ['listed', 'single', 'n/a'] as const, 'n/a'),
+        };
+    }
+    const gs = isObj(s.global_shortcuts) ? parseGlobalShortcuts(s.global_shortcuts) : null;
+    if (gs) out.system.global_shortcuts = gs;
     return out;
+}
+
+const ID_RE = /^[a-z0-9-]{1,40}$/;
+const idList = (v: unknown): string[] | undefined =>
+    Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string' && ID_RE.test(x)).slice(0, 24) : undefined;
+
+/** Fixed vocabularies and key combos only: an id that is not shaped like one of ours is dropped, not copied. */
+function parseGlobalShortcuts(g: Record<string, unknown>): NonNullable<SystemInfo['global_shortcuts']> | null {
+    if (g.mode !== 'native' && g.mode !== 'portal' && g.mode !== 'unavailable') return null;
+    const out: NonNullable<SystemInfo['global_shortcuts']> = {
+        mode: g.mode,
+        reason: typeof g.reason === 'string' && /^[a-z0-9-]{0,40}$/.test(g.reason) ? g.reason : '',
+        desktop: typeof g.desktop === 'string' ? g.desktop.replace(/[^A-Za-z:]/g, '').slice(0, 40) : '',
+        actions: [],
+    };
+    if (typeof g.app_id === 'string' && /^[A-Za-z0-9._-]{1,80}$/.test(g.app_id)) out.app_id = g.app_id;
+    const bound = idList(g.bound); if (bound) out.bound = bound;
+    const notBound = idList(g.not_bound); if (notBound) out.not_bound = notBound;
+    for (const a of (Array.isArray(g.actions) ? g.actions : []).slice(0, 24)) {
+        if (!isObj(a) || typeof a.action !== 'string' || !ID_RE.test(a.action)) continue;
+        const accelerator = typeof a.accelerator === 'string' && /^[\x21-\x7e]{1,48}$/.test(a.accelerator) ? a.accelerator : '';
+        const state = a.state === 'registered' || a.state === 'failed' || a.state === 'unbound' ? a.state : 'failed';
+        out.actions.push({ action: a.action, accelerator, state });
+    }
+    return out;
+}
+
+/**
+ * Adds the global actions that have no key at all, which main cannot know (it is only handed what is
+ * bound). Keeps "no key assigned" distinguishable from "assigned, but the desktop did not register it".
+ */
+export function addUnboundShortcuts(system: SystemInfo, unbound: readonly string[]): SystemInfo {
+    const gs = system.global_shortcuts;
+    if (!gs) return system;
+    const have = new Set(gs.actions.map(a => a.action));
+    const extra = unbound.filter(a => ID_RE.test(a) && !have.has(a)).slice(0, 24)
+        .map(action => ({ action, accelerator: '', state: 'unbound' as const }));
+    return extra.length ? { ...system, global_shortcuts: { ...gs, actions: [...gs.actions, ...extra].slice(0, 32) } } : system;
 }
 
 export type CrashHandled = 'recovered' | 'restart_prompted' | 'not_in_call';

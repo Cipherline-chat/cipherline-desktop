@@ -70,7 +70,7 @@ export const SHARE_LOW_HEAVY_SHORT_SIDE = 1440;
 
 /**
  * Heavy = a full layer big enough that a viewer on an ordinary connection can
- * fall behind it (1080p60 H.265 is ~10 Mbps, 1440p90 ~22 Mbps). For those the
+ * fall behind it (1080p60 H.265 is ~6.4 Mbps, 1440p90 ~14 Mbps since 2026-10-31). For those the
  * copy is the congestion fallback for EVERY viewer, so it runs from the first
  * one: LiveKit's SFU can only move a subscriber whose downlink cannot carry the
  * full layer to a lower layer that exists, and with one layer it has nothing
@@ -224,6 +224,16 @@ export interface ShareLowControlDeps {
     /** Called whenever the decision or its reason changes (call event log). */
     onChange?: (allow: boolean, reason: string) => void;
     intervalMs?: number;
+    /**
+     * The Linux hardware share (nativeSharePipeline.ts) publishes the SAME 2-layer simulcast, but its sender stats describe a tiny dummy
+     * track, not the picture: `facts` supplies what they cannot say (the helper's encoder is hardware, the real picture's short side, its
+     * real encode time, and `blocked` once the helper could not run the copy), and `setLow` starts/stops the helper's second encoder session
+     * so the copy costs the sharer nothing while the gate holds it off. Every rule, threshold and back-off is this file's, unchanged.
+     */
+    native?: {
+        facts(): { hardware: boolean; topShort?: number; topEncodeMs?: number; blocked?: string | null };
+        setLow(on: boolean): void;
+    };
 }
 
 /**
@@ -255,17 +265,25 @@ export function installShareLowLayerControl(track: ShareTrackLike, deps: ShareLo
             const topEncodeMs = dFrames > 0 && r.topEncodeS !== undefined && prev.encodeS !== undefined
                 ? ((r.topEncodeS - prev.encodeS) / dFrames) * 1000 : undefined;
             prev = { frames: r.topFrames, encodeS: r.topEncodeS };
-            const d = gate.observe({
-                settingOn: deps.settingOn(), hardware: r.hardware, viewers: deps.viewers(), cpuLimited: r.cpuLimited,
-                topFps: r.topFps, topEncodeMs, targetFps: deps.targetFps, topShort: r.topShort, gameRunning: deps.gameRunning(), lowActive: r.lowActive,
+            const nf = deps.native?.facts();
+            let d = gate.observe({
+                settingOn: deps.settingOn(), hardware: nf ? nf.hardware : r.hardware, viewers: deps.viewers(), cpuLimited: r.cpuLimited,
+                topFps: r.topFps, topEncodeMs: nf ? (nf.topEncodeMs && nf.topEncodeMs > 0 ? nf.topEncodeMs : undefined) : topEncodeMs, targetFps: deps.targetFps,
+                topShort: nf ? nf.topShort : r.topShort, gameRunning: deps.gameRunning(), lowActive: r.lowActive,
                 topLimit: r.topLimit,
             });
+            if (nf?.blocked) d = { allow: false, reason: nf.blocked, latched: true };
             if (d.reason !== lastReason) {
                 log(`[ScreenShare] lighter copy for viewers: ${d.allow ? 'on' : `off (${d.reason})`}`);
                 lastReason = d.reason;
                 deps.onChange?.(d.allow, d.reason);
             }
-            if (d.allow !== allowLow) { allowLow = d.allow; await reapply(); }
+            if (d.allow !== allowLow) {
+                allowLow = d.allow;
+                if (d.allow) deps.native?.setLow(true);          // the helper's session first: the layer's frames then find AUs waiting
+                await reapply();
+                if (!d.allow) deps.native?.setLow(false);        // the layer off first, then the session: nothing is left encoding for nobody
+            }
         } catch { /* share ended between ticks */ }
     }, deps.intervalMs ?? 1000);
     return () => {

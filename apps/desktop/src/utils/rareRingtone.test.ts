@@ -94,20 +94,19 @@ describe('playLoopingSound with the rare alternate', () => {
         expect(recordEggFound).not.toHaveBeenCalled();
     });
 
-    it('respects the call category being off or at zero volume', () => {
-        const off = prefs();
-        off.sounds.call = { ...off.sounds.call, enabled: false };
-        sounds.playLoopingSound('call', off, { alternate: always() });
+    it('respects the ring volume at zero and sounds switched off', () => {
+        sounds.playLoopingSound('call', prefs({ sounds_enabled: false }), { alternate: always() });
         sounds.playLoopingSound('call', prefs({}, undefined, 0), { alternate: always() });
         expect(built).toHaveLength(0);
         expect(recordEggFound).not.toHaveBeenCalled();
     });
 
-    it('never replaces a ringtone the user chose themselves', () => {
-        const roll = vi.fn(() => true);
+    it('a custom ringtone saved under the old settings is ignored: the stock ring (and its rare alternate) plays', () => {
+        // Custom sounds were removed from Settings on 2026-11-08.
+        const roll = vi.fn(() => false);
         sounds.playLoopingSound('call', prefs({}, '/home/me/my-ring.wav'), { alternate: { file: rare.RARE_RINGTONE_FILE, roll } });
-        expect(built[0].src).toBe('/home/me/my-ring.wav');
-        expect(roll).not.toHaveBeenCalled();
+        expect(built[0].src).toBe(sounds.DEFAULT_SOUNDS.call);
+        expect(roll).toHaveBeenCalledTimes(1);
     });
 
     it('does not count the egg when the audio element cannot be built', () => {

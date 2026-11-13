@@ -13,6 +13,7 @@ import {
 import { recordEggFound } from '../../utils/eggProgress';
 import { MOMENT_VIEWS, CEREMONY_VIEWS } from './views';
 import { MomentStill } from './MomentStill';
+import { EggScrim } from '../EggScrim';
 import '../../styles/moments.css';
 
 /**
@@ -22,7 +23,11 @@ import '../../styles/moments.css';
  *
  * The contract every moment gets for free from here:
  *   - portal to <body>, above every app layer (z 50000) but below the system
- *     surfaces (screen-share picker, update prompt, screen lock, client block);
+ *     surfaces (screen-share picker, update prompt, screen lock, client block)
+ *     and the toast stack (z 60000);
+ *   - the shared egg scrim (EggScrim) under every moment, stage or passive,
+ *     animated or still: it dims the app in the notice beat and fades out with
+ *     the scene, so no view draws its own backdrop;
  *   - skip: Escape (through the shared escape stack, so it never ALSO closes
  *     the dialog underneath), any other key, or a click. A skip keystroke is
  *     never swallowed — typed text still lands where it was going;
@@ -288,6 +293,7 @@ const MomentStage: React.FC<{ id: StageId; reduced: boolean; serverId: string | 
                 ? { role: 'dialog', 'aria-modal': false, 'aria-label': ceremony ? 'Press any key to skip.' : 'Easter egg. Press any key to skip.', tabIndex: -1, onClick: onDone }
                 : { 'aria-hidden': true })}
         >
+            <EggScrim />
             {reduced
                 ? <MomentStill headline={text.headline} line={text.line} />
                 : isCeremonyId(id) ? React.createElement(CEREMONY_VIEWS[id], { headline: text.headline, line: text.line, peer }) : React.createElement(MOMENT_VIEWS[id])}

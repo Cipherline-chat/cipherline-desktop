@@ -9,6 +9,7 @@ import {
 } from '../../utils/onboardingProgress';
 import { INITIAL_FLOW_STATE, type OnboardingDeps, type OnboardingFlowState, type StepProps } from './types';
 import { useDotField } from './dots';
+import { clearDotsRepairs, guardDotsVisible, rememberedDotsFallback, reportDotsRender } from './dots/renderReport';
 import { StorageStep } from './steps/StorageStep';
 import { PrivacyStep } from './steps/PrivacyStep';
 import { ProfileStep } from './steps/ProfileStep';
@@ -25,7 +26,7 @@ import './onboarding.css';
  * utils/onboardingProgress.ts for why it runs after sign-in, and how it
  * resumes). This shell owns: the deep-field backdrop, the lockup + step dots,
  * step navigation (Back on steps 2–4, enter/exit motion), the resume marker,
- * the one shared WebGL dot canvas, and the hand-off to the ending.
+ * the one shared dot canvas (WebGL, or its 2D fallback), and the hand-off to the ending.
  */
 
 const STEP_COMPONENTS: Record<Exclude<OnboardingStepId, 'ending'>, React.FC<StepProps>> = {
@@ -49,6 +50,8 @@ export interface OnboardingFlowProps {
     persist?: boolean;
     /** Dev harness only: pretend earlier steps already set these (e.g. to play the ending with a sent friend request). */
     initialFlow?: Partial<OnboardingFlowState>;
+    /** Dev harness only: skip WebGL and draw the dots with the Canvas 2D fallback ('still' = its last-resort still frame). */
+    forceCanvasDots?: false | '2d' | 'still';
 }
 
 /** Back + primary action row (`.acts`), shared by every step. */
@@ -100,7 +103,7 @@ const DeepField: React.FC = () => {
     );
 };
 
-export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ deps, initialStep, onDone, forceReducedMotion, persist = true, initialFlow }) => {
+export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ deps, initialStep, onDone, forceReducedMotion, persist = true, initialFlow, forceCanvasDots }) => {
     const osReduced = !!useReducedMotion();
     const reducedMotion = osReduced || !!forceReducedMotion;
     const { userId } = deps;
@@ -115,22 +118,42 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ deps, initialSte
     // ── the shared dot field ────────────────────────────────────────────────
     // One full-window field for the whole setup (privacy, invite, the ending):
     // 7000 points, transparent over the deep field, stops 2.6 s after the
-    // last change. Null when WebGL is unavailable — every step must cope.
+    // last change. WebGL when it works; without it (a VM with no 3D
+    // acceleration, Remote Desktop's basic render driver) or after a lost
+    // context, the Canvas 2D fallback draws the same scenes (dots/
+    // canvasEngine.ts, lighter and self-throttling). Null only before mount
+    // and when not even a 2D canvas works — every step must still cope.
     const canvasRef = useRef<HTMLCanvasElement>(null);
-    const dots = useDotField(canvasRef, { count: 7000, transparent: true, settle: 2600, reducedMotion });
+    const dots = useDotField(canvasRef, {
+        count: 7000, transparent: true, settle: 2600, reducedMotion,
+        remembered: rememberedDotsFallback(), onRender: reportDotsRender,
+        ...(forceCanvasDots ? { forceCanvas: true, canvas: forceCanvasDots === 'still' ? { startLevel: 'still' as const } : undefined } : {}),
+    });
+    useEffect(() => {
+        if (!import.meta.env.DEV) return;
+        (window as unknown as Record<string, unknown>).__obDots = dots;
+    }, [dots]);
     const [dotsOn, setDotsOn] = useState(false);
     const dotsOnRef = useRef(false);
     const pauseTimer = useRef<number | null>(null);
+    const guardCancel = useRef<(() => void) | null>(null);
     const showDots = useCallback((on: boolean) => {
         if (dotsOnRef.current === on) return;
         dotsOnRef.current = on;
         setDotsOn(on);
         if (pauseTimer.current) { window.clearTimeout(pauseTimer.current); pauseTimer.current = null; }
         // Fade first, then stop drawing entirely (the .6 s opacity transition).
-        if (on) dots?.pause(false);
-        else pauseTimer.current = window.setTimeout(() => { if (!dotsOnRef.current) dots?.pause(true); }, 650);
+        if (on) {
+            dots?.pause(false);
+            // Never leave the field invisible because of a stuck opacity transition.
+            if (canvasRef.current) guardCancel.current = guardDotsVisible(canvasRef.current, () => dotsOnRef.current);
+        } else {
+            guardCancel.current?.();
+            if (canvasRef.current) clearDotsRepairs(canvasRef.current);
+            pauseTimer.current = window.setTimeout(() => { if (!dotsOnRef.current) dots?.pause(true); }, 650);
+        }
     }, [dots]);
-    useEffect(() => () => { if (pauseTimer.current) window.clearTimeout(pauseTimer.current); }, []);
+    useEffect(() => () => { guardCancel.current?.(); if (pauseTimer.current) window.clearTimeout(pauseTimer.current); }, []);
     // Nothing draws until a step asks for the dots.
     useEffect(() => { if (dots && !dotsOnRef.current) dots.pause(true); }, [dots]);
 

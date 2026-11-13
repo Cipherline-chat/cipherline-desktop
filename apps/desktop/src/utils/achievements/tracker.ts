@@ -37,6 +37,8 @@ export interface TrackerEnv {
     eggCount(): number;
     /** Account creation, epoch ms, or null if unknown. */
     accountCreatedMs(): number | null;
+    /** The profile is customized (banner / theme / decoration / effect; all public on the profile). Absent = false. */
+    profileCustom?(): boolean;
     setTimer?(fn: () => void, ms: number): unknown;
     clearTimer?(h: unknown): void;
 }
@@ -70,8 +72,13 @@ export function createTracker(env: TrackerEnv) {
     let weeklyDirty = false;
     const changeListeners = new Set<() => void>();
     const unlockListeners = new Set<(e: UnlockEvent) => void>();
+    /** Unlocked (and persisted) while nobody listened yet, e.g. at launch before the host attaches its toast: delivered to the first listener. */
+    let pendingUnlocks: string[] = [];
 
     const emitChange = () => { for (const l of changeListeners) l(); };
+    const ctxAt = (now: number) => ({
+        eggCount: env.eggCount(), accountCreatedMs: env.accountCreatedMs(), profileCustom: env.profileCustom?.() === true, now,
+    });
 
     function persistSoon() {
         if (persistTimer !== null) return;
@@ -89,11 +96,12 @@ export function createTracker(env: TrackerEnv) {
     /** Re-check every rule; record and announce what is newly satisfied. Never removes. */
     function evaluate(): string[] {
         const now = env.now();
-        const sat = satisfied(computeTotals(state, { eggCount: env.eggCount(), accountCreatedMs: env.accountCreatedMs(), now }));
+        const sat = satisfied(computeTotals(state, ctxAt(now)));
         const fresh = sat.filter(id => !state.unlocked[id]);
         if (fresh.length === 0) return [];
         state = unlockIds(state, fresh, monthKey(new Date(now)));
-        for (const id of fresh) for (const l of unlockListeners) l({ id });
+        if (unlockListeners.size === 0) pendingUnlocks.push(...fresh);
+        else for (const id of fresh) for (const l of unlockListeners) l({ id });
         return fresh;
     }
 
@@ -128,7 +136,7 @@ export function createTracker(env: TrackerEnv) {
     return {
         /** The current state (treat as immutable). */
         getState: (): AchievementsState => state,
-        totals: (): Totals => computeTotals(state, { eggCount: env.eggCount(), accountCreatedMs: env.accountCreatedMs(), now: env.now() }),
+        totals: (): Totals => computeTotals(state, ctxAt(env.now())),
         unlockedIds: (): string[] => Object.keys(state.unlocked).filter(id => ACHIEVEMENT_IDS.includes(id)),
         top: (): PlayedGame[] => topGames(weekly, dayKey(new Date(env.now()))),
 
@@ -155,7 +163,7 @@ export function createTracker(env: TrackerEnv) {
         },
         tick,
 
-        /** An eggs / account-age change can satisfy a rule without any tracker event. */
+        /** An eggs / account-age / profile change can satisfy a rule without any tracker event. */
         reevaluate() {
             if (evaluate().length > 0) { persistSoon(); emitChange(); }
         },
@@ -172,7 +180,16 @@ export function createTracker(env: TrackerEnv) {
         },
 
         subscribe(fn: () => void) { changeListeners.add(fn); return () => { changeListeners.delete(fn); }; },
-        onUnlock(fn: (e: UnlockEvent) => void) { unlockListeners.add(fn); return () => { unlockListeners.delete(fn); }; },
+        /** Announces new unlocks. Anything unlocked before the first listener attached is delivered to it right away, so a launch-time unlock is never silent. */
+        onUnlock(fn: (e: UnlockEvent) => void) {
+            unlockListeners.add(fn);
+            if (pendingUnlocks.length > 0) {
+                const backlog = pendingUnlocks;
+                pendingUnlocks = [];
+                for (const id of backlog) fn({ id });
+            }
+            return () => { unlockListeners.delete(fn); };
+        },
         /** Write now (sign-out, quit). */
         flush,
     };

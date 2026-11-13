@@ -1,8 +1,8 @@
 /**
- * milestones — the "firsts" and the 100th call, wired to the moments.
+ * milestones — the first server and the 100th call, wired to the moments.
  *
- * The DECISIONS are pure and live in utils/moments.ts (messageDeliveredMoment,
- * callConnectedMoment, serverCreatedMoment); this file is the thin I/O around
+ * The DECISIONS are pure and live in utils/moments.ts (callConnectedMoment,
+ * serverCreatedMoment); this file is the thin I/O around
  * them: the one persisted fact (a per-account COUNT of calls that connected),
  * the account's own set of found eggs (so a second machine never replays a
  * once-ever moment), and the window event that carries "a call connected" from
@@ -20,7 +20,6 @@ import { secureLocalStore } from './secureLocalStore';
 import { eggsFound } from './eggProgress';
 import { requestMoment } from './moments';
 import { parseCallCount, callConnectedMoment } from './moments';
-import { messageDeliveredMoment } from './moments';
 import { serverCreatedMoment } from './moments';
 
 /** Fired on window when a call's media room connects (once per call). Carries no detail. */
@@ -40,20 +39,14 @@ export function announceCallConnected(): void {
  * the account-bound store to be ready (a record read cold right after sign-in
  * would restart the count at 0).
  */
-export function noteCallConnected(userId: string | null | undefined, createdIso: string | null | undefined): void {
+export function noteCallConnected(userId: string | null | undefined): void {
     if (!userId) return;
     void secureLocalStore.whenAccountReady().then(() => {
         const before = parseCallCount(secureLocalStore.getItem(callCountKey(userId)));
         try { secureLocalStore.setItem(`cipherline_calls_connected_${userId}`, String(before + 1)); } catch { /* the count is cosmetic */ }
-        const id = callConnectedMoment(before, createdIso, eggsFound());
+        const id = callConnectedMoment(before, eggsFound());
         if (id) requestMoment(id);
     }).catch(() => { /* cosmetic */ });
-}
-
-/** ChatPane: the server accepted a message of yours (not an edit, not your own notes). */
-export function noteMessageDelivered(createdIso: string | null | undefined, isSelfChat: boolean): void {
-    const id = messageDeliveredMoment(createdIso, eggsFound(), isSelfChat);
-    if (id) requestMoment(id);
 }
 
 /**

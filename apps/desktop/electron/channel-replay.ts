@@ -63,6 +63,19 @@ function ledgerKey(channelId: string, nonceB64: string): string {
 
 /** 96-bit tag of the server message id — enough to tell two ids apart, and it
  *  keeps the persisted ledger compact (it is re-serialised on every write). */
+/** Ledger key that also commits to the ciphertext (see classifyChannelNonce). */
+function ledgerKeyCt(channelId: string, nonceB64: string, ctDigestB64: string): string {
+    return b64(crypto.createHash('sha256')
+        .update(`cl-chan-replay-v2\0${channelId}\0${nonceB64}\0${ctDigestB64}`, 'utf8')
+        .digest()
+        .subarray(0, 16));
+}
+
+/** Digest of the ciphertext row (body || GCM tag) a nonce was used with. */
+export function ciphertextDigest(ciphertext: Buffer): string {
+    return crypto.createHash('sha256').update(ciphertext).digest('base64');
+}
+
 function idTag(messageId: string): string {
     return b64(crypto.createHash('sha256').update(`cl-chan-msgid-v1\0${messageId}`, 'utf8').digest().subarray(0, 12));
 }
@@ -146,18 +159,31 @@ export type ChannelReplayVerdict = 'new' | 'same' | 'replay';
  * 'same' = this exact server row was accepted before; 'replay' = this
  * ciphertext was already accepted under a DIFFERENT server id.
  */
-export function classifyChannelNonce(channelId: string, nonceB64: string, messageId: string): ChannelReplayVerdict {
+export function classifyChannelNonce(channelId: string, nonceB64: string, messageId: string, ctDigestB64?: string): ChannelReplayVerdict {
     ensureLoaded();
+    const tag = idTag(messageId);
+    if (ctDigestB64 !== undefined) {
+        // v2: the key commits to the ciphertext, so a member who re-posts DIFFERENT
+        // content under a copied nonce (nonce squatting) can no longer make the
+        // genuine row read as a replay on a device that decrypts his row first.
+        // A replay is the SAME ciphertext under a different server id.
+        const seenCt = ledger.get(ledgerKeyCt(channelId, nonceB64, ctDigestB64));
+        if (seenCt !== undefined) return seenCt === tag ? 'same' : 'replay';
+    }
+    // Legacy entries (recorded before v2, keyed by nonce alone) keep their old
+    // meaning. When the caller supplies a digest and the legacy entry belongs to
+    // another id we cannot tell squat from replay, so it stays a replay (fails
+    // toward the pre-existing protection).
     const seen = ledger.get(ledgerKey(channelId, nonceB64));
     if (seen === undefined) return 'new';
-    return seen === idTag(messageId) ? 'same' : 'replay';
+    return seen === tag ? 'same' : 'replay';
 }
 
 /** Record an accepted message. Call ONLY after every check has passed, so a
  *  row that failed for another reason is never misfiled as the original. */
-export function recordChannelNonce(channelId: string, nonceB64: string, messageId: string): void {
+export function recordChannelNonce(channelId: string, nonceB64: string, messageId: string, ctDigestB64?: string): void {
     ensureLoaded();
-    const k = ledgerKey(channelId, nonceB64);
+    const k = ctDigestB64 !== undefined ? ledgerKeyCt(channelId, nonceB64, ctDigestB64) : ledgerKey(channelId, nonceB64);
     if (ledger.has(k)) return;
     ledger.set(k, idTag(messageId));
     trim();

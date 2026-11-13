@@ -32,12 +32,20 @@ const REDUCED = typeof window !== 'undefined' && window.matchMedia
  * for the life of the component and reads its target from a ref, so a new
  * target is just a new aim — velocity and shape carry straight through, which
  * is the whole reason the membrane is a spring and not a transition.
+ *
+ * COMING BACK FROM HIDDEN IS NOT A TRAVEL. The track holds its last slot while
+ * nothing is active, so without `visible` the indicator would fly from there
+ * to the new tile while also fading in from scale(0.6). From a far slot that
+ * measured 208px tall and 27px wide on a two-slot move: long, skinny, and worse
+ * the more servers there are. It appears on the new tile instead.
  */
 export function useRailMembrane(
     node: React.RefObject<HTMLElement | null>,
     target: number,
     rest: RestBox | null,
+    visible = true,
 ) {
+    const shown = useRef(visible);
     const targetRef = useRef(target);
     const restRef = useRef(rest);
     const st = useRef<MembraneState>(initialMembrane(target));
@@ -58,10 +66,20 @@ export function useRailMembrane(
     // Kept in refs so a re-render never restarts the loop; a changed target is
     // picked up on the very next frame instead.
     useEffect(() => {
+        // No rest: the track has not measured the active tile yet (it does so in a
+        // layout effect, so the answer arrives before the next paint). Wait for it.
+        if (!rest) return;
         targetRef.current = target;
         restRef.current = rest;
-        if (!rest) return;
+        const appearing = visible && !shown.current;
+        shown.current = visible;
 
+        if (appearing) {
+            // A loop still in flight just reads this next frame, settles and stops.
+            st.current = initialMembrane(target);
+            paint(st.current);
+            return;
+        }
         if (REDUCED) {
             st.current = initialMembrane(target);
             paint(st.current);
@@ -95,7 +113,7 @@ export function useRailMembrane(
         };
         raf.current = requestAnimationFrame(step);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- paint is a per-render closure; target/rest/node already cover what it reads, and including it would restart the animation every render
-    }, [target, rest, node]);
+    }, [target, rest, node, visible]);
 
     useEffect(() => () => {
         cancelAnimationFrame(raf.current);

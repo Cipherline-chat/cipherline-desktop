@@ -53,7 +53,7 @@ export type AudioDeviceKind = 'input' | 'output';
 
 /** The fields remembered per microphone. */
 export const INPUT_PROFILE_FIELDS = [
-    'micVolume', 'noiseSuppression', 'noiseSuppressionMode', 'voiceGate', 'voiceGateThreshold',
+    'micVolume', 'noiseSuppression', 'noiseSuppressionMode', 'voiceGate', 'voiceGateAuto', 'voiceGateThreshold',
     'echoCancellation', 'volumeNormalization', 'eqEnabled', 'eqBands',
 ] as const satisfies readonly (keyof VoiceSettings)[];
 
@@ -151,6 +151,7 @@ function cleanInput(raw: unknown, fallback: InputProfileSettings): InputProfileS
         noiseSuppression: bool(r.noiseSuppression, fallback.noiseSuppression),
         noiseSuppressionMode: isNoiseSuppressionMode(r.noiseSuppressionMode) ? r.noiseSuppressionMode : fallback.noiseSuppressionMode,
         voiceGate: bool(r.voiceGate, fallback.voiceGate),
+        voiceGateAuto: bool(r.voiceGateAuto, true), // a profile saved before the flag existed -> Automatic
         voiceGateThreshold: num(r.voiceGateThreshold, -60, -20, fallback.voiceGateThreshold),
         echoCancellation: bool(r.echoCancellation, fallback.echoCancellation),
         volumeNormalization: bool(r.volumeNormalization, fallback.volumeNormalization),
@@ -175,7 +176,7 @@ export function pickProfileSettings(kind: AudioDeviceKind, s: VoiceSettings): In
     if (kind === 'input') {
         return {
             micVolume: s.micVolume, noiseSuppression: s.noiseSuppression, noiseSuppressionMode: s.noiseSuppressionMode,
-            voiceGate: s.voiceGate, voiceGateThreshold: s.voiceGateThreshold, echoCancellation: s.echoCancellation,
+            voiceGate: s.voiceGate, voiceGateAuto: s.voiceGateAuto, voiceGateThreshold: s.voiceGateThreshold, echoCancellation: s.echoCancellation,
             volumeNormalization: s.volumeNormalization, eqEnabled: s.eqEnabled, eqBands: [...s.eqBands],
         };
     }

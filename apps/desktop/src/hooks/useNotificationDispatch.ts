@@ -23,7 +23,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNotificationPrefs } from '../contexts/NotificationContext';
 import { computeDnd } from './useDndState';
 import { playSound } from '../utils/notificationSounds';
-import { resolveNotification, type NotifDecision } from '../utils/notificationDecision';
+import { resolveNotification, gateOnOtherDeviceAttention, type NotifDecision } from '../utils/notificationDecision';
+import { isMobileAttentive } from '../utils/remoteAttention';
 import { mentionsToDisplayText } from '../utils/mentionTokens';
 import { clipForPreview } from '../utils/messagePreviewText';
 import {
@@ -129,7 +130,7 @@ export function useNotificationDispatch(options?: NotificationDispatchOptions) {
         //    (and counted its badges from the same object), or we resolve an
         //    equivalent one here. Same function either way — that identity is
         //    the fix, not an optimisation.
-        const decision = payload.decision ?? resolveNotification({
+        const resolved = payload.decision ?? resolveNotification({
             text,
             // A call is always mention-level: it must pierce muted conversations
             // and DND the same way an @ping does.
@@ -143,6 +144,16 @@ export function useNotificationDispatch(options?: NotificationDispatchOptions) {
                 userStatus: 'online', activeCall: false, screensharing: false, gameActive: false,
             }).active,
             dndLetMentionsThrough: p.dnd_let_mentions_through,
+        });
+
+        // 2b. The user is on their PHONE with the app open: stay silent here
+        //     (no sound, no toast, no taskbar flash). Applied to a COPY, so the
+        //     caller's badge counters, which share `payload.decision`, are not
+        //     affected: the message still counts and shows, it just does not
+        //     interrupt. Unknown reads as "not attentive": notify as before.
+        const decision = gateOnOtherDeviceAttention(resolved, {
+            category: payload.category,
+            mobileAttentive: isMobileAttentive(),
         });
 
         // 3. Sound — plays even when the window is focused, as long as it isn't

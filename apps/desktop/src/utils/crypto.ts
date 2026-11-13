@@ -1,7 +1,13 @@
 import { encryptBlobOffThread, decryptBlobOffThread } from './attachmentCryptoWorker';
 import secureLocalStore from './secureLocalStore';
 import * as messageStore from './messageStore';
-import { collectIncludedKv, applyIncludedKv, dropShadowingRailLayout, repairSoundPaths, APP_PREF_KEYS, BACKUP_RESTORED_EVENT } from '../services/backupRegistry';
+import {
+    collectIncludedKv, applyIncludedKv, dropShadowingRailLayout, repairSoundPaths, APP_PREF_KEYS, BACKUP_RESTORED_EVENT,
+    ownedCustomSounds, isCustomSoundName, CUSTOM_SOUND_MAX_BYTES, CUSTOM_SOUND_TRANSFER_MAX,
+} from '../services/backupRegistry';
+import { kvMergerFor } from '../services/backupKvMerge';
+import { VOICE_DEFAULTS_MIGRATION_KEY } from './voiceDefaultsMigration';
+import { KEYBINDS_MIGRATION_KEY } from '../hooks/useKeybinds';
 import { extractPortableSaves, portableSavesFromVault, applyRestoredSaves, type PortableRetentionSaves } from './retentionPortability';
 import { snapshotWarnings, mergeWarnings } from './senderWarningStore';
 import { classifyHistoryPayload } from './historyPayloadFormat';
@@ -209,6 +215,24 @@ export interface BackupVault {
      *  `meta` record of the record-based backup; an older build ignores it.
      *  See utils/customEntranceSound/transfer.ts. */
     entranceSound?: EntranceSoundTransfer;
+    /** Custom NOTIFICATION sounds (Settings -> Notifications -> Custom sounds),
+     *  file name -> base64 bytes, INLINE. Only on the all-in-one vault a
+     *  device-to-device history transfer sends; the record-based backup streams
+     *  them as `sound:<name>` records instead and leaves this out. Only the
+     *  files this account's notification prefs reference, each <= 1 MB, at most
+     *  CUSTOM_SOUND_TRANSFER_MAX. An older build ignores the field (the sounds
+     *  just don't arrive, exactly as before). */
+    customSounds?: Record<string, string>;
+    /** Whether `voiceSettings` (and the audio-device profiles in `kv`) were
+     *  written AFTER this device ran the one-time voice-defaults migration
+     *  (utils/voiceDefaultsMigration.ts). The migration marker describes the
+     *  blob, so it travels with it: true -> the restoring device must not
+     *  migrate the restored settings again (that would undo a deliberate
+     *  Strong / echo-on choice); false -> they predate it and are migrated on
+     *  next load. Absent (older build) -> the local marker is left alone. */
+    voiceDefaultsMigrated?: boolean;
+    /** Same for `keybinds` and the one-time keybind migration (useKeybinds.ts). */
+    keybindsMigrated?: boolean;
     // Attachment keys (v2).
     avatarKeys?: Record<string, { keyB64: string; nonceB64: string }>;
     // Channel messages (v3) — Record<channelId, Message[]>. Subject to the
@@ -340,6 +364,67 @@ async function collectGifFiles(ownedIds?: Set<string>): Promise<Record<string, s
         }
         return out;
     } catch { return {}; }
+}
+
+/** This account's custom notification sounds, inline, for a device-to-device
+ *  transfer. Bounded: only files the account's prefs reference, each within the
+ *  upload cap, at most CUSTOM_SOUND_TRANSFER_MAX. Safe no-op without the bridge. */
+async function collectCustomSoundsInline(userId: string): Promise<Record<string, string> | undefined> {
+    const api = window.electronAPI;
+    if (!api?.listCustomSounds || !api?.readCustomSound) return undefined;
+    try {
+        const prefsRaw = secureLocalStore.getItem(`cipherline_notif_global_prefs_${userId}`);
+        const owned = ownedCustomSounds(await api.listCustomSounds(), prefsRaw)
+            .filter(s => isCustomSoundName(s.name))
+            .sort((a, b) => a.name.localeCompare(b.name))
+            .slice(0, CUSTOM_SOUND_TRANSFER_MAX);
+        const out: Record<string, string> = {};
+        for (const s of owned) {
+            try {
+                const raw = await api.readCustomSound(s.file);
+                const u8 = raw instanceof Uint8Array ? raw : new Uint8Array(raw);
+                if (u8.length === 0 || u8.length > CUSTOM_SOUND_MAX_BYTES) continue;
+                out[s.name] = u8ToBase64(u8);
+            } catch (e) {
+                console.warn('[backup] failed to read custom sound', s.name, e);
+            }
+        }
+        return Object.keys(out).length ? out : undefined;
+    } catch { return undefined; }
+}
+
+/** Write a transfer's inline custom notification sounds into this machine's
+ *  custom-sounds directory (name and size re-checked here; the main process
+ *  sanitises the name again). Runs BEFORE repairCustomSoundPaths so the
+ *  restored prefs point at these copies instead of falling back to defaults. */
+async function restoreCustomSoundsInline(raw: unknown): Promise<void> {
+    const api = window.electronAPI;
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw) || !api?.uploadCustomSound) return;
+    let n = 0;
+    for (const [name, b64] of Object.entries(raw as Record<string, unknown>)) {
+        if (n >= CUSTOM_SOUND_TRANSFER_MAX) break;
+        if (typeof b64 !== 'string' || !isCustomSoundName(name)) continue;
+        // base64 length bound before decoding anything large.
+        if (b64.length > Math.ceil(CUSTOM_SOUND_MAX_BYTES / 3) * 4 + 4) continue;
+        try {
+            const bin = atob(b64);
+            if (bin.length === 0 || bin.length > CUSTOM_SOUND_MAX_BYTES) continue;
+            const bytes = new Uint8Array(bin.length);
+            for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+            await api.uploadCustomSound(name, bytes);
+            n++;
+        } catch (e) {
+            console.warn('[importLocalHistory] failed to write custom sound', name, e);
+        }
+    }
+}
+
+/** Carry a one-time migration marker with the blob it describes (see
+ *  BackupVault.voiceDefaultsMigrated). Only acts on explicit information. */
+function applyMigrationMarker(key: string, blobRestored: boolean, migrated: unknown): void {
+    if (!blobRestored || typeof migrated !== 'boolean') return;
+    if (migrated) secureLocalStore.setItem(key, '1');
+    else secureLocalStore.removeItem(key);
 }
 
 /** Pull every avatar_key:* entry from the Electron secure store via IPC. */
@@ -556,6 +641,11 @@ export async function buildLocalVault(
 
         ...(await buildEmojiVaultPart(userId, realBackupIO(), { inlineFiles: opts.includeGifFiles !== false })),
         entranceSound: await exportEntranceSound(ownEntranceSound()).catch(() => undefined),
+        // Inline only for the all-in-one vault (history transfer, legacy
+        // export); the record-based backup streams them as `sound:` records.
+        customSounds: opts.includeGifFiles === false ? undefined : await collectCustomSoundsInline(userId),
+        voiceDefaultsMigrated: secureLocalStore.getItem(VOICE_DEFAULTS_MIGRATION_KEY) === '1',
+        keybindsMigrated: secureLocalStore.getItem(KEYBINDS_MIGRATION_KEY) === '1',
 
         avatarKeys: await collectAvatarKeys(),
 
@@ -634,6 +724,9 @@ export async function importLocalHistory(userId: string, blob: Blob): Promise<vo
     // vaults restore cleanly without these fields.
     if (vault.voiceSettings)   secureLocalStore.setItem('cipherline_voice_settings',                JSON.stringify(vault.voiceSettings));
     if (vault.keybinds)        secureLocalStore.setItem('cipherline_keybinds',                     JSON.stringify(vault.keybinds));
+    // The one-time migration markers follow the blobs they describe.
+    applyMigrationMarker(VOICE_DEFAULTS_MIGRATION_KEY, !!vault.voiceSettings, vault.voiceDefaultsMigrated);
+    applyMigrationMarker(KEYBINDS_MIGRATION_KEY, !!vault.keybinds, vault.keybindsMigrated);
     if (vault.gameSettings)    secureLocalStore.setItem(`cipherline_game_settings_${userId}`,      JSON.stringify(vault.gameSettings));
     // Retention is per-device: a vault's retention windows (legacy
     // `retentionPolicy`) are NEVER applied — this device keeps whatever it
@@ -705,7 +798,7 @@ export async function importLocalHistory(userId: string, blob: Blob): Promise<vo
         // BEFORE the apply: a legacy-order-only backup must remove the local v2
         // rail layout that would otherwise shadow the order it restores.
         dropShadowingRailLayout(secureLocalStore, vault.kv as Record<string, string>, userId);
-        applyIncludedKv(secureLocalStore, vault.kv as Record<string, string>, userId);
+        applyIncludedKv(secureLocalStore, vault.kv as Record<string, string>, userId, kvMergerFor);
     }
     mergeWarnings(userId, localWarnings);
     if (vault.appPrefs && typeof vault.appPrefs === 'object' && window.electronAPI?.secureReplaceMany) {
@@ -719,6 +812,9 @@ export async function importLocalHistory(userId: string, blob: Blob): Promise<vo
             catch (e) { console.warn('[importLocalHistory] failed to apply app prefs', e); }
         }
     }
+    // A device-to-device transfer carries the custom sound files inline (the
+    // record-based backup has already written them as `sound:` records).
+    await restoreCustomSoundsInline((vault as { customSounds?: unknown }).customSounds);
     // Notification prefs reference custom sound files by absolute path on
     // the machine that exported them. Re-point them at this machine's copies
     // (restored just before this by the container reader) or fall back to

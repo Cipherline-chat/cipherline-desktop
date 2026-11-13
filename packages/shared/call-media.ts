@@ -9,11 +9,19 @@
  * exactly the same VIEW_CHANNEL audience as voice presence itself.
  *
  * `muted` / `deafened` are the participant's SELF state (their own mic toggle
- * and deafen toggle), reported by their own client. Server-moderation
- * mute/deafen (an admin muting someone) lives only in LiveKit participant
- * metadata and is NOT carried here. Push-to-talk: a client in PTT mode
- * reports `muted: false` — the mic closing between key presses is not a mute,
- * and reporting it would flap the icon on every key press.
+ * and deafen toggle), reported by their own client. Push-to-talk: a client in
+ * PTT mode reports `muted: false` — the mic closing between key presses is not
+ * a mute, and reporting it would flap the icon on every key press.
+ *
+ * `server_muted` / `server_deafened` are the MODERATOR state (a member with
+ * MODERATE_CALL_MEDIA muted or deafened someone for up to 24 h). They are
+ * never client-reported: the server overlays them from its own per-(server,
+ * user) record onto every event and seed, so an out-of-call viewer sees the
+ * red badge the moment the person (re)joins. Both are OPTIONAL and sparse - a
+ * server that predates them never sends them, and a reader must treat an
+ * absent value as false. They are independent of each other and of the self
+ * flags: a server-deafened member can still talk, a server-muted member can
+ * still hear.
  *
  * What this is NOT: content, keys, or anything about who watches whom. It is
  * four bits per participant, the same thing every participant in the call can
@@ -38,6 +46,13 @@ export interface CallMediaState {
     muted: boolean;
     /** Self deafen. */
     deafened: boolean;
+    /** A moderator server-muted this member (their mic is not allowed to
+     *  publish). Server-written only; absent reads as false. */
+    server_muted?: boolean;
+    /** A moderator server-deafened this member (their client does not play
+     *  other participants' microphones). Server-written only; absent reads as
+     *  false. */
+    server_deafened?: boolean;
 }
 
 /** user_id → media state. Only participants with at least one flag set
@@ -73,17 +88,23 @@ export interface CallMediaStateEvent {
      *  — readers go through {@link readCallMediaState}, which reads absent as false. */
     muted: boolean;
     deafened: boolean;
+    /** Moderator state, see {@link CallMediaState}. Sent only when true by the
+     *  server's overlay on a join / change; a `false` after a removal is sent
+     *  explicitly so a client clears it. Absent from an older server. */
+    server_muted?: boolean;
+    server_deafened?: boolean;
 }
 
 export const NO_CALL_MEDIA: Readonly<CallMediaState> = Object.freeze({
     camera: false, screen_share: false, muted: false, deafened: false,
 });
 
-/** True when ANY of the four flags is set — a muted-only participant still
- *  belongs in a seed's `media` map. (Callers that mean "has video" must read
- *  `camera` / `screen_share` directly, not this.) */
+/** True when ANY flag is set (self or moderator) — a muted-only participant
+ *  still belongs in a seed's `media` map. (Callers that mean "has video" must
+ *  read `camera` / `screen_share` directly, not this.) */
 export function hasAnyCallMedia(s: CallMediaState | null | undefined): boolean {
-    return !!s && (s.camera || s.screen_share || s.muted || s.deafened);
+    return !!s && (s.camera || s.screen_share || s.muted || s.deafened
+        || s.server_muted === true || s.server_deafened === true);
 }
 
 /** Tolerant reader for one wire value: anything that is not an object with
@@ -97,6 +118,10 @@ export function readCallMediaState(raw: unknown): CallMediaState {
         screen_share: r.screen_share === true,
         muted: r.muted === true,
         deafened: r.deafened === true,
+        // Sparse: only present when true, so a state with no moderation is
+        // exactly the four-flag shape it always was.
+        ...(r.server_muted === true ? { server_muted: true } : {}),
+        ...(r.server_deafened === true ? { server_deafened: true } : {}),
     };
 }
 
@@ -111,4 +136,21 @@ export function readCallMediaByUser(raw: unknown): CallMediaByUser {
         if (hasAnyCallMedia(s)) out[uid] = s;
     }
     return out;
+}
+
+/** How long a moderator's server mute / server deafen lasts unless a
+ *  moderator removes it first. Re-applying restarts the clock. */
+export const VOICE_MODERATION_TTL_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * One active server mute / deafen, as `GET /v1/servers/:sid/voice-moderation`
+ * returns it (moderators only - MODERATE_CALL_MEDIA). The two `*_until` fields
+ * are ISO timestamps, `null` when that restriction is not active. Only members
+ * with at least one active restriction are listed. The person need not be in a
+ * call: the restriction follows them (server-side) until it expires.
+ */
+export interface VoiceModerationEntry {
+    user_id: string;
+    muted_until: string | null;
+    deafened_until: string | null;
 }

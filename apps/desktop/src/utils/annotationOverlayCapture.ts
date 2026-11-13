@@ -80,3 +80,43 @@ export function useOverlayCaptured(p: AttributeSource | null | undefined, enable
     const read = () => !!(enabled && p && isOverlayCaptured(p.attributes));
     return useSyncExternalStore(subscribe, read, read);
 }
+
+
+// ── "The sharer's desktop cannot show your drawing" ──────────────────────────
+// Without this a viewer draws on a tile, the strokes look fine to them, and the sharer sees
+// nothing at all: silence. When the sharer's desktop overlay is not up (it is waiting for them to
+// say which monitor they share, or they declined, or their desktop cannot host one) they say so
+// on their participant, and a viewer who is allowed to draw is told on the tile.
+
+/** LiveKit participant attribute: '' = fine / unknown, 'choose' = waiting for the sharer, 'off' = will not show. */
+export const ANNOT_OVERLAY_STATE_ATTR = 'cl.annot_ovl';
+export type OverlayDesktopState = 'choose' | 'off';
+
+export function overlayDesktopState(attributes: Readonly<Record<string, string>> | undefined | null): OverlayDesktopState | null {
+    const v = attributes?.[ANNOT_OVERLAY_STATE_ATTR];
+    return v === 'choose' || v === 'off' ? v : null;
+}
+
+/** The attribute patch the sharer publishes ('' deletes it in LiveKit). */
+export function overlayStateAttributePatch(kind: 'idle' | 'choose' | 'off'): Record<string, string> {
+    return { [ANNOT_OVERLAY_STATE_ATTR]: kind === 'idle' ? '' : kind };
+}
+
+/** What a viewer who may draw is told. */
+export function overlayStateNote(state: OverlayDesktopState, sharerName: string): { short: string; long: string } {
+    const who = sharerName.trim() || 'The sharer';
+    return state === 'choose'
+        ? { short: 'Waiting for them to pick a screen', long: `${who} has not said which screen they are sharing yet, so your drawing is not on their desktop. They have been asked.` }
+        : { short: 'Not shown on their desktop', long: `${who}'s desktop cannot show your drawing. People in the call still see it here.` };
+}
+
+/** Live `overlayDesktopState(p.attributes)`, re-rendering on attribute changes. */
+export function useOverlayDesktopState(p: AttributeSource | null | undefined, enabled: boolean): OverlayDesktopState | null {
+    const subscribe = useCallback((onChange: () => void) => {
+        if (!enabled || !p) return () => {};
+        p.on('attributesChanged', onChange);
+        return () => { p.off('attributesChanged', onChange); };
+    }, [p, enabled]);
+    const read = () => (enabled && p ? overlayDesktopState(p.attributes) : null);
+    return useSyncExternalStore(subscribe, read, read);
+}

@@ -80,7 +80,12 @@ export type SoundCategory =
     // A moderator (MANAGE_CALL_MEMBERS) moved YOU into another call. Plays once, as
     // you arrive, and never for a move you made yourself. 'app' group, so it
     // gets its own on/off toggle under "Choose individual sounds".
-    | 'call_moved';
+    | 'call_moved'
+    // An in-call card is asking you to decide something (lower the camera, lower
+    // the share, turn on gaming mode). You are often in another window when it
+    // appears, so this is what tells you to come back and look. See
+    // hooks/useCallPromptCue.ts.
+    | 'call_prompt';
 
 export interface SoundCategoryPrefs {
     enabled: boolean;
@@ -216,6 +221,10 @@ export const DEFAULT_SOUNDS: Record<SoundCategory, string> = {
     // "carried across" and cannot be mistaken for the join glorp or the leave
     // ebb. If it is ever retuned, keep it distinct from join/leave.
     call_moved:          './sounds/reconnected.wav',
+    // Made for this: two soft rising notes (D5 to A5), 0.62 s, in the same
+    // synthesized family. Not notification.wav, which means a message arrived,
+    // and not subtle.wav, which means someone is waiting to draw on your share.
+    call_prompt:         './sounds/call_prompt.wav',
 };
 
 // ── Default per-category enable/volume ──────────────────────────────────────
@@ -297,6 +306,7 @@ export const DEFAULT_SOUND_PREFS: Record<SoundCategory, { enabled: boolean; volu
     // Something happened TO you rather than something you did, and it changes
     // which room you are in — peer-action tier (0.7), like join/leave.
     call_moved:          { enabled: true, volume: 0.7 },
+    call_prompt:         { enabled: true, volume: 0.8 },
 };
 
 /**
@@ -336,38 +346,42 @@ function getOrCreate(category: SoundCategory): HTMLAudioElement {
  * that's the whole point of the module, and three call sites had grown their
  * own `new Audio()` around it.
  *
- * Three gates, all AND-ed: the master `sounds_enabled`, the group's enable
- * (grouped categories only), and the category's own enable. The group is a
- * gate on top of the category rather than a replacement for it, which is what
- * makes the migration lossless — a user who had muted `join` individually
- * before the group row existed stays muted rather than being un-muted by a
- * group that defaults to on.
- *
- * Volume works the same way: the group volume is a SCALAR over the category's
- * own volume, not a substitute for it. That keeps the deliberate loudness
- * ladder (mascot 0.35 < mute 0.55 < join 0.7) intact under one slider, and it
- * makes the group's 1.0 default byte-for-byte identical to the pre-group
- * behaviour, so nobody's cues change volume on upgrade.
+ * One gate (the master `sounds_enabled`) and two volumes (the cue's stock
+ * level on the loudness ladder, or the ring slider for incoming calls, times
+ * the master volume). Per-event overrides are deliberately ignored; see the
+ * note inside.
  */
 function resolve(category: SoundCategory, prefs?: SoundsPrefs | null): { file: string; vol: number } | null {
     if (prefs && !prefs.sounds_enabled) return null;
 
-    const group = soundGroupOf(category);
-    // 'primary' has no collapsed prefs — indexing with it would be undefined
-    // anyway, but the guard keeps the intent readable.
-    const grp = group === 'primary' ? undefined : prefs?.sound_groups?.[group];
-    if (grp && !grp.enabled) return null;
-
-    const cat = prefs?.sounds[category];
-    if (cat && !cat.enabled) return null;
-
-    const file  = cat?.file  ?? DEFAULT_SOUNDS[category];
-    const catVol = cat?.volume ?? 1.0;
-    const groupVol = grp?.volume ?? 1.0;
+    // Owner, 2026-11-08: the per-event sound settings (pick a file, mute or
+    // balance each cue, upload your own) were removed from Settings. Their
+    // saved values (`sounds[cat]`, `sound_groups`, `custom_sounds`) are still
+    // in old prefs blobs, but with no control left to change them they must
+    // not decide anything, or a cue someone muted years ago would stay silent
+    // with no way to bring it back. Every cue plays its stock file at its
+    // stock volume, under the master switch and master volume. The one
+    // exception is the incoming-call ring, whose loudness is the "Incoming
+    // calls" slider (0 = silent).
+    const file = DEFAULT_SOUNDS[category];
+    const catVol = category === RING_VOLUME_CATEGORY
+        ? ringVolumeOf(prefs)
+        : DEFAULT_SOUND_PREFS[category].volume;
     const masterVol = prefs?.master_volume ?? 0.8;
-    const vol = Math.min(1, Math.max(0, catVol * groupVol * masterVol));
+    const vol = Math.min(1, Math.max(0, catVol * masterVol));
 
     return vol === 0 ? null : { file, vol };
+}
+
+/** The one cue whose loudness is still user-set (Settings > Notifications > Incoming calls). */
+export const RING_VOLUME_CATEGORY: SoundCategory = 'call';
+
+/** The saved incoming-call ring volume, 0..1, or the default for a missing or malformed value. */
+export function ringVolumeOf(prefs?: SoundsPrefs | null): number {
+    const v = prefs?.sounds?.[RING_VOLUME_CATEGORY]?.volume;
+    return typeof v === 'number' && Number.isFinite(v)
+        ? Math.min(1, Math.max(0, v))
+        : DEFAULT_SOUND_PREFS[RING_VOLUME_CATEGORY].volume;
 }
 
 /**
@@ -428,21 +442,53 @@ export function previewSound(file: string, volume: number): void {
  * second cue replaces a running one). `baseVolume` is the cue's own level on
  * the loudness ladder.
  */
-export function playGeneratedSound(src: string, baseVolume: number, prefs?: SoundsPrefs | null): void {
-    if (!src) return;
-    if (prefs && !prefs.sounds_enabled) return;
+export async function playGeneratedSound(src: string, baseVolume: number, prefs?: SoundsPrefs | null): Promise<boolean> {
+    // Deliberate silence (empty src, sounds off, zero volume) is not a failure: nothing to retry.
+    if (!src) return true;
+    if (prefs && !prefs.sounds_enabled) return true;
     const vol = Math.min(1, Math.max(0, baseVolume * (prefs?.master_volume ?? 0.8)));
-    if (vol === 0) return;
+    if (vol === 0) return true;
     if (!generatedEl) {
         generatedEl = new Audio();
         applyOutputDevice(generatedEl);
     }
+    const el = generatedEl;
+    const mine = ++generatedSeq;
+    // One element is reused, so a newer cue interrupts an older one; the older
+    // play() then rejects with AbortError. That is a replacement, not a failure.
+    const start = async (): Promise<void> => {
+        el.src = src;
+        el.volume = vol;
+        el.currentTime = 0;
+        await el.play();
+    };
     try {
-        generatedEl.src = src;
-        generatedEl.volume = vol;
-        generatedEl.currentTime = 0;
-        generatedEl.play().catch(() => { /* autoplay gate or no device */ });
-    } catch { /* ignore */ }
+        await start();
+        return true;
+    } catch (err) {
+        if (mine !== generatedSeq) return true;
+        warnPlayRejected(err, 1);
+    }
+    // One retry: an interrupted load or a sink that was not ready a moment ago.
+    await new Promise<void>(r => setTimeout(r, GENERATED_RETRY_MS));
+    if (mine !== generatedSeq) return true;
+    try {
+        await start();
+        return true;
+    } catch (err) {
+        if (mine !== generatedSeq) return true;
+        warnPlayRejected(err, 2);
+        return false;
+    }
+}
+
+const GENERATED_RETRY_MS = 150;
+let generatedSeq = 0;
+
+/** Error NAME only (a closed set of DOMException names): no src, no message, nothing identifying. */
+function warnPlayRejected(err: unknown, attempt: number): void {
+    const name = err && typeof (err as { name?: unknown }).name === 'string' ? (err as { name: string }).name : 'unknown';
+    console.warn(`[sound] generated cue play() rejected (attempt ${attempt}): ${name}`);
 }
 
 let generatedEl: HTMLAudioElement | undefined;

@@ -5,8 +5,8 @@
    the two blocks below meeting at x 0, the line under those. */
 .mo-sv { --sv-lume: var(--cl-lume, #25E0C8); --sv-glow: var(--cl-glow, #FFC94D); }
 
-/* Notice (0–0.3): the dim is quicker than a moment's, and the orbs come up with it. */
-.mo-sv .mo-dim { animation-duration: .3s; }
+/* Notice (0–0.3): the dim (the host's egg scrim, timed off --mo-main) is quicker than a
+   moment's, and the orbs come up with it. */
 .mo-sv-orb {
   position: absolute; top: -132px; width: 72px; height: 72px; border-radius: 50%;
   box-sizing: border-box;
@@ -87,4 +87,6 @@
    moments.css's blanket "no animation" rule has to be beaten on purpose (!important, and more
    specific): a fade is what keeps the card gentle rather than abrupt, and it does not travel. */
 .mo-ceremony.mo-reduced .mo-still { opacity: 0; animation: mo-sv-still var(--mo-still, 6s) linear both !important; }
+/* …and its backdrop (the host's egg scrim) fades with it, on the same curve. */
+.mo-ceremony.mo-reduced > .egg-scrim { opacity: 0; animation: mo-sv-still var(--mo-still, 6s) linear both !important; }
 @keyframes mo-sv-still { 0% { opacity: 0; } 5% { opacity: 1; } 92% { opacity: 1; } 100% { opacity: 0; } }

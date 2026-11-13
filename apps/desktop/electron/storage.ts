@@ -5,6 +5,10 @@ import * as path from 'path';
 import { Worker } from 'worker_threads';
 import { app, safeStorage, dialog } from 'electron';
 import { classifyKeyProtection, type KeyProtection } from './key-protection';
+import {
+    buildKeyringStatus, classifyKeyringOutcome, decideKeyInit, decideKeyPersist, isKeyringBackend,
+    type KeyFileState, type KeyringState, type KeyringStatus,
+} from './keyring-prompt';
 import { freezeMonitor } from './freeze-monitor';
 import { decideSmokeTestMode } from './smoke-mode';
 import { deriveRecoveryApprovalKeypair, type RecoveryApprovalKeypair } from './device-approval-keys';
@@ -183,6 +187,11 @@ async function parseEnvelope(raw: Buffer, stats: { offThread: boolean }): Promis
     return parseEnvelopeOnThisThread(raw);
 }
 
+/** What the Linux keyring hook may hand back (see keyring-preflight.ts): a disposer, or a disposer plus "the wallet was refused". */
+export type KeyringProbeHook = (backend: string) =>
+    Promise<(() => void) | { dispose?: () => void; refused?: boolean } | void>
+    | (() => void) | { dispose?: () => void; refused?: boolean } | void;
+
 export type SecureStoreStatus = 'uninitialized' | 'ok' | 'locked';
 
 /** Linux only; null elsewhere or when the API is missing / throws. */
@@ -217,8 +226,49 @@ export class SecureStore {
     // per init; 'unknown' until then (and for the whole smoke-test run).
     private _keyProtection: KeyProtection = { level: 'unknown', reason: null, backend: null, platform: process.platform };
 
-    // Constructor does nothing heavy — safe to call at module load time
-    constructor() {}
+    // Linux keyring prompt (keyring-prompt.ts): what the system wallet did when
+    // the first safeStorage call asked it to open. 'not-applicable' until init
+    // has run, and for the whole life of a Windows / macOS / smoke-test process.
+    private _keyring: KeyringState = 'not-applicable';
+    private _keyringBackend: string | null = null;
+    // The wallet was refused and no key file existed: nothing has been stored
+    // or lost yet, and (deliberately) nothing was generated either.
+    private _firstRunDenied = false;
+    private probeHook: KeyringProbeHook | null = null;
+    private readonly now: () => number;
+
+    // Constructor does nothing heavy — safe to call at module load time.
+    // `now` is a test seam for the keyring-prompt timing.
+    constructor(opts: { now?: () => number } = {}) {
+        this.now = opts.now ?? Date.now;
+    }
+
+    /**
+     * Linux only. Registered by main.ts BEFORE initialize(): called right before
+     * the first, possibly blocking, safeStorage call, and only when Chromium has
+     * selected a real keyring (KWallet / GNOME Keyring). It returns a disposer,
+     * called the moment that call returns. main.ts uses it to put up the
+     * "your system is asking for your wallet password" window (see
+     * keyring-notice.ts), which has to exist BEFORE the main thread blocks.
+     * Never called on Windows / macOS, under the smoke test, or for basic_text.
+     * A hook that throws is ignored: a notice must never stop the store opening.
+     */
+    setKeyringProbeHook(hook: KeyringProbeHook | null): void {
+        this.probeHook = hook;
+    }
+
+    /** What the system wallet did (see keyring-prompt.ts). Enums and flags only. */
+    /** The Chromium secret-store backend the first safeStorage call used (Linux), for the wallet watcher. */
+    keyringBackend(): string | null { return this._keyringBackend; }
+
+    keyringStatus(): KeyringStatus {
+        return buildKeyringStatus({
+            state: this._keyring,
+            backend: this._keyringBackend,
+            firstRun: this._firstRunDenied,
+            storeOk: this._status === 'ok',
+        });
+    }
 
     initialize(): Promise<void> {
         if (!this._initPromise) this._initPromise = this._doInitialize();
@@ -335,7 +385,49 @@ export class SecureStore {
         // "copy the file" attack yields opaque bytes instead of our AES key.
         // Older builds wrote it as plaintext hex; we migrate those forward on
         // first launch without wiping identity.
-        const canWrap = safeStorage.isEncryptionAvailable();
+        //
+        // On Linux this FIRST call is where the OS may ask the user to unlock or
+        // create their wallet. It blocks the main thread until the user answers
+        // (KWallet gives up after 25 s; GNOME never does), so the explanation
+        // window has to be put up before it (probeHook), and how long it took
+        // tells "the user said no" from "there is no wallet service at all".
+        const linuxBackend = selectedLinuxBackend();
+        let endProbe: (() => void) | void = undefined;
+        let refused = false;
+        if (process.platform === 'linux' && isKeyringBackend(linuxBackend)) {
+            // Awaited: the notice window must have PAINTED before the thread
+            // blocks, or it never gets its first frame (measured: an unpainted
+            // white rectangle on top of the wallet dialog).
+            try {
+                const h = await this.probeHook?.(linuxBackend as string);
+                if (typeof h === 'function') endProbe = h;
+                else if (h) { endProbe = h.dispose; refused = h.refused === true; }
+            } catch { /* a notice must never stop the store opening */ }
+        }
+        const probeStartedAt = this.now();
+        let canWrap: boolean;
+        if (refused) {
+            // The person cancelled the wallet-creation wizard the hook opened.
+            // That IS the wallet's answer: do not call safeStorage (it would
+            // only ask again, or fall back to "no keychain"), take the notice
+            // down, and fall into the denied branches below: first run = locked
+            // with nothing written, an existing key = left untouched.
+            canWrap = false;
+            try { endProbe?.(); } catch { /* same */ }
+        } else {
+            try {
+                canWrap = safeStorage.isEncryptionAvailable();
+            } finally {
+                try { endProbe?.(); } catch { /* same */ }
+            }
+        }
+        this._keyringBackend = linuxBackend;
+        this._keyring = refused ? 'denied' : classifyKeyringOutcome({
+            platform: process.platform,
+            backend: linuxBackend,
+            encryptionAvailable: canWrap,
+            firstCallMs: this.now() - probeStartedAt,
+        });
         let keyHex: string | null = null;
 
         // ENOENT (and ONLY ENOENT) means "no key file yet". See
@@ -361,6 +453,31 @@ export class SecureStore {
             );
         }
 
+        // The decision is keyring-prompt.ts's: a wallet the user refused
+        // (`denied`) NEVER reaches a branch that generates a key or writes one
+        // to disk. First run -> locked with nothing written; a wrapped key ->
+        // locked with the file left byte-for-byte as it was; a plaintext key
+        // from an earlier no-wallet run -> used as it is (never rewritten).
+        const keyFileState: KeyFileState = raw === null
+            ? 'absent'
+            : PLAINTEXT_HEX.test(raw.toString('utf8').trim()) ? 'plaintext' : 'wrapped';
+        const initAction = decideKeyInit({ keyFile: keyFileState, canWrap, keyring: this._keyring });
+        if (initAction === 'refuse-first-run') {
+            console.error('[SecureStore] the system wallet was not opened and this device has no master key yet — not generating one; locked until the wallet is unlocked');
+            this.masterKey = null;
+            this._firstRunDenied = true;
+            this._status = 'locked';
+            return;
+        }
+        if (initAction === 'locked') {
+            console.error(this._keyring === 'denied'
+                ? '[SecureStore] the system wallet was not opened — master key left untouched, locked until the wallet is unlocked'
+                : '[SecureStore] stored key is wrapped but safeStorage is unavailable — locked');
+            this.masterKey = null;
+            this._status = 'locked';
+            return;
+        }
+
         if (raw !== null) {
             const asText = raw.toString('utf8').trim();
 
@@ -378,6 +495,11 @@ export class SecureStore {
                     } catch (err) {
                         console.error('[SecureStore] safeStorage wrap failed during migration; leaving plaintext in place', err);
                     }
+                } else if (this._keyring === 'denied') {
+                    // The wallet was refused: that dialog says "no keychain is
+                    // running", which is wrong here. The renderer shows the
+                    // "Unlock wallet" banner instead (keyringStatus().degraded).
+                    console.warn('[SecureStore] system wallet not opened — plaintext master key from an earlier run stays as it is');
                 } else {
                     console.warn('[SecureStore] safeStorage unavailable — master key stays in plaintext on disk');
                     // M7: warn the user visibly — same dialog as the first-launch plaintext path.
@@ -542,23 +664,36 @@ export class SecureStore {
             }
         }
 
-        // Re-wrap with this device's keystore (atomic).
-        try {
-            const keyHex = key.toString('hex');
-            const tmp = this.keyPath + '.tmp';
-            if (safeStorage.isEncryptionAvailable()) {
-                fs.writeFileSync(tmp, safeStorage.encryptString(keyHex), { mode: 0o600 });
-            } else {
-                fs.writeFileSync(tmp, keyHex, { mode: 0o600 });
+        // Re-wrap with this device's keystore (atomic) — unless the system wallet
+        // was refused this launch. Then the key file is not touched (a wrapped
+        // file must stay readable by the wallet later) and nothing is written in
+        // plaintext: the recovered key lives in memory for this session, and the
+        // "Unlock wallet" banner stays up (keyringStatus().degraded). That needs
+        // a validated key (a non-empty vault): with nothing to check it against,
+        // a key held only in memory would encrypt a vault the next launch could
+        // not open.
+        const persist = decideKeyPersist({ canWrap: safeStorage.isEncryptionAvailable(), keyring: this._keyring });
+        if (persist === 'memory-only') {
+            if (names.length === 0) return false;
+        } else {
+            try {
+                const keyHex = key.toString('hex');
+                const tmp = this.keyPath + '.tmp';
+                if (persist === 'wrap') {
+                    fs.writeFileSync(tmp, safeStorage.encryptString(keyHex), { mode: 0o600 });
+                } else {
+                    fs.writeFileSync(tmp, keyHex, { mode: 0o600 });
+                }
+                fs.renameSync(tmp, this.keyPath);
+            } catch (e) {
+                console.error('[SecureStore] failed to persist recovered key', e);
+                return false;
             }
-            fs.renameSync(tmp, this.keyPath);
-        } catch (e) {
-            console.error('[SecureStore] failed to persist recovered key', e);
-            return false;
         }
 
         this.masterKey = key;
         this._status = 'ok';
+        this._firstRunDenied = false;
         // Same reload-survival reasoning as factoryReset() — a successful
         // recovery resolves the corrupt-envelope state too (the store was
         // empty either way, so there's nothing left to be "still corrupt").
@@ -577,6 +712,9 @@ export class SecureStore {
      * wipes its encrypted IndexedDB store.
      */
     factoryReset(): void {
+        // With the wallet refused this launch the new key could only be written
+        // in plaintext (or lost at quit). Refuse: unlock the wallet first.
+        if (this._keyring === 'denied') throw new Error('factoryReset refused: the system wallet was not opened');
         // A written-behind snapshot of the OLD vault must never land after the
         // wipe: drop the scheduled write and invalidate any write in flight.
         this.clearWriteTimer();

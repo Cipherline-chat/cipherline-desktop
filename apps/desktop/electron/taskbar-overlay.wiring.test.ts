@@ -53,7 +53,7 @@ describe('mention flag: renderer -> main', () => {
 
 describe('call state: renderer -> main', () => {
     it('SidebarConference pushes in-call / speaking / muted / deafened, and clears on unmount', () => {
-        expect(CONFERENCE).toMatch(/traySetCallSpeaking\?\.\(true, localIsSpeaking, localIsMuted, isLocalDeafened\)/);
+        expect(CONFERENCE).toMatch(/traySetCallSpeaking\?\.\(true, localIsSpeaking, localIsMuted, isDeafenedForUi\)/);
         expect(CONFERENCE).toMatch(/traySetCallSpeaking\?\.\(false, false, false, false\)/);
     });
 

@@ -209,7 +209,7 @@ export const ScreenShareGate = ({
                             makes the Watch button worth pressing. Hidden at
                             zero (see ViewerCountBadge) so an unwatched share
                             isn't advertised as one. */}
-                        <ViewerCountBadge publisher={p.identity} size={11} />
+                        <ViewerCountBadge publisher={p.identity} size={11} token={token} />
                     </p>
                 </div>
                 <div className="flex items-center justify-center gap-1 pointer-events-auto">
@@ -295,7 +295,18 @@ export const ScreenShareGate = ({
                     <span className="text-white text-[11px] font-semibold truncate min-w-0">{displayName}</span>
                     <AnnotationGrantBadge identity={p.identity} size={10} />
                     <Monitor className="w-3 h-3 text-cl-lume shrink-0" />
-                    <ViewerCountBadge publisher={p.identity} size={10} />
+                    {/* The pill is pointer-events-none, so a click on the card
+                        used to fall through to the Watch surface underneath.
+                        The eye is hit-testable now (it has to be, to be
+                        hovered), so it hands the click and the right-click
+                        to the same two handlers that surface uses. */}
+                    <ViewerCountBadge
+                        publisher={p.identity}
+                        size={10}
+                        token={token}
+                        onActivate={() => { if (!subscribing) void handleWatch(); }}
+                        onContextMenu={handleContextMenu}
+                    />
                 </TileNamePill>
             )}
 

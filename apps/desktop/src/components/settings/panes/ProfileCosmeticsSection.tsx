@@ -97,7 +97,8 @@ const OwnFace: React.FC<{ base: ProfileCosmeticsSectionProps['base'] }> = ({ bas
 );
 
 const DecoThumb: React.FC<{ decoration: string | null; tint: string | null; base: ProfileCosmeticsSectionProps['base']; size?: number; options?: ItemOptions | null }> = ({ decoration, tint, base, size = 36, options }) => (
-    <AvatarDecoration decoration={decoration} tint={tint} options={options} className="shrink-0">
+    // Every DecoThumb is thumbnail-sized (26-44px): fine-detailed items draw their bolder compact version.
+    <AvatarDecoration decoration={decoration} tint={tint} options={options} className="shrink-0" compact>
         <span className="su-avatar-face" style={{ width: size, height: size }}><OwnFace base={base} /></span>
     </AvatarDecoration>
 );
@@ -444,19 +445,20 @@ export const ProfileCosmeticsSection: React.FC<ProfileCosmeticsSectionProps> = (
 
     // ── decoration / effect ──
     const pickDecoration = (id: string | null) => {
+        // What is on your card stays yours, even if its unlock rule got stricter since: re-picking it is a no-op, not a try-on.
+        if (id === decoration) { setTryDeco(null); return; }
         const it = id ? findDecoration(id) : null;
         if (it && !unlocked(it)) { setTryDeco(id); return; } // preview only
         setTryDeco(null);
-        if (id === decoration) return;
         const before = decoration; setDecoration(id);
         setDecoOpts(readItemOptions(saved.cosmetic_options?.d, 'decoration', id));
         void save({ avatar_decoration: id }, () => setDecoration(before));
     };
     const pickEffect = (id: string | null) => {
+        if (id === effect) { setTryFx(null); return; }
         const it = id ? findEffect(id) : null;
         if (it && !unlocked(it)) { setTryFx(id); return; }
         setTryFx(null);
-        if (id === effect) return;
         const before = effect; setEffect(id);
         setFxOpts(readItemOptions(saved.cosmetic_options?.e, 'effect', id));
         void save({ profile_effect: id }, () => setEffect(before));
@@ -483,7 +485,12 @@ export const ProfileCosmeticsSection: React.FC<ProfileCosmeticsSectionProps> = (
     const decoSplit = splitDecorationId(decoration);
     const decoItem = findDecoration(decoration);
     const decoBase = decoSplit.base ? findDecoration(decoSplit.base) : null;
-    const decoName = !decoration ? 'None' : decoColourName(decoBase?.label ?? decoItem?.label ?? 'Custom', decoSplit.colour);
+    // A retired id (no longer in the catalog) shows as nothing to every viewer, so it reads "None" here too.
+    const decoName = !decoration || !(decoBase ?? decoItem) ? 'None' : decoColourName(decoBase?.label ?? decoItem?.label ?? 'Custom', decoSplit.colour);
+    // Equipped before its rule got stricter: still yours while it stays on (the server only checks a change).
+    const keptNote = (it: CosmeticItem | null) => (it && !unlocked(it)
+        ? `${it.blurb ?? ''} Yours while it stays on. Switch to something else and it locks again: ${unlockHint(it.rule, found, level).replace(/^./, (c) => c.toLowerCase())}.`.trim()
+        : it?.blurb);
     const effectName = findEffect(effect)?.label ?? 'None';
     const styleSummary = [themeName !== 'Default' && `${themeName} theme`, decoration && decoName, effect && effectName]
         .filter(Boolean).join(', ') || 'Default look';
@@ -627,7 +634,7 @@ export const ProfileCosmeticsSection: React.FC<ProfileCosmeticsSectionProps> = (
                         <Inspector
                             thumb={<DecoThumb decoration={tryDeco ?? decoration} tint={decoSplit.colour === 'match' ? tint : null} base={base} size={44} options={tryDeco ? null : decoOpts} />}
                             title={decoInsp ? (tryDeco ? decoInsp.label : decoName) : 'No decoration'}
-                            blurb={decoInsp?.blurb ?? (decoInsp ? undefined : 'Pick one below. Pointing at one tries it on in the preview.')}
+                            blurb={(tryDeco ? decoInsp?.blurb : keptNote(decoInsp)) ?? (decoInsp ? undefined : 'Pick one below. Pointing at one tries it on in the preview.')}
                             state={tryDeco && decoInsp ? 'locked' : decoration ? 'on' : 'none'}
                             lockHint={tryDeco && decoInsp ? unlockHint(decoInsp.rule, found, level) : undefined}
                             onLeaveTryOn={() => setTryDeco(null)} leaveLabel={`Back to ${decoName}`}
@@ -667,7 +674,7 @@ export const ProfileCosmeticsSection: React.FC<ProfileCosmeticsSectionProps> = (
                             {baseDecorations.map((it) => {
                                 const open = unlocked(it);
                                 return (
-                                    <Tile key={it.id} name={it.label} on={tryDeco ? tryDeco === it.id : decoSplit.base === it.id} locked={!open} disabled={busy}
+                                    <Tile key={it.id} name={it.label} on={tryDeco ? tryDeco === it.id : decoSplit.base === it.id} locked={!open && decoSplit.base !== it.id} disabled={busy}
                                         short={shortUnlockHint(it.rule, found, level)} full={unlockHint(it.rule, found, level)}
                                         onPoint={(p) => setPointDeco(p ? it.id : undefined)}
                                         onPick={() => pickDecoration(open ? joinDecorationId(it.id, supportsColour(it.id) && isColourUnlocked(decoSplit.colour, level) ? decoSplit.colour : 'match') : it.id)}>
@@ -684,7 +691,7 @@ export const ProfileCosmeticsSection: React.FC<ProfileCosmeticsSectionProps> = (
                         <Inspector
                             thumb={<EffectThumb effect={tryFx ?? effect} tint={tint} base={base} options={tryFx ? null : fxOpts} play />}
                             title={fxInsp ? fxInsp.label : 'No effect'}
-                            blurb={fxInsp?.blurb ?? (fxInsp ? undefined : 'Pick one below. Pointing at one tries it on in the preview.')}
+                            blurb={(tryFx ? fxInsp?.blurb : keptNote(fxInsp)) ?? (fxInsp ? undefined : 'Pick one below. Pointing at one tries it on in the preview.')}
                             state={tryFx && fxInsp ? 'locked' : effect ? 'on' : 'none'}
                             lockHint={tryFx && fxInsp ? unlockHint(fxInsp.rule, found, level) : undefined}
                             onLeaveTryOn={() => setTryFx(null)} leaveLabel={`Back to ${effectName}`}
@@ -700,7 +707,7 @@ export const ProfileCosmeticsSection: React.FC<ProfileCosmeticsSectionProps> = (
                                 {() => <EffectThumb effect={null} tint={null} base={base} />}
                             </Tile>
                             {PROFILE_EFFECTS.map((it) => (
-                                <Tile key={it.id} name={it.label} on={tryFx ? tryFx === it.id : effect === it.id} locked={!unlocked(it)} disabled={busy}
+                                <Tile key={it.id} name={it.label} on={tryFx ? tryFx === it.id : effect === it.id} locked={!unlocked(it) && effect !== it.id} disabled={busy}
                                     short={shortUnlockHint(it.rule, found, level)} full={unlockHint(it.rule, found, level)}
                                     onPoint={(p) => setPointFx(p ? it.id : undefined)} onPick={() => pickEffect(it.id)}>
                                     {(hot) => <EffectThumb effect={it.id} tint={tint} base={base} options={effect === it.id ? fxOpts : null} play={hot} />}

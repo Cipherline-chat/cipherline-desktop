@@ -42,6 +42,18 @@ describe('page-zoom lock wiring', () => {
         expect(bodyOf(OVERLAY, /function createOverlay\(/)).toContain('lockPageZoom(win.webContents)');
     });
 
+    it('the Linux wallet notice is locked in showKeyringNotice', () => {
+        const NOTICE = fs.readFileSync(path.join(__dirname, 'keyring-notice.ts'), 'utf8');
+        expect(NOTICE).toMatch(/import \{ lockPageZoom \} from '\.\/page-zoom-lock';/);
+        expect(NOTICE).toContain('lockPageZoom(win.webContents)');
+    });
+
+    it('the "Applying update" popup is locked in openApplyingUpdateWindow', () => {
+        const POPUP = fs.readFileSync(path.join(__dirname, 'applying-update-window.ts'), 'utf8');
+        expect(POPUP).toMatch(/import \{ lockPageZoom \} from '\.\/page-zoom-lock';/);
+        expect(bodyOf(POPUP, /function openApplyingUpdateWindow\(/)).toContain('lockPageZoom(win.webContents)');
+    });
+
     it('every `new BrowserWindow(` in electron/ is accounted for (a new window must be locked or listed here)', () => {
         const hits: string[] = [];
         for (const f of fs.readdirSync(__dirname)) {
@@ -49,7 +61,7 @@ describe('page-zoom lock wiring', () => {
             const n = (fs.readFileSync(path.join(__dirname, f), 'utf8').match(/new BrowserWindow\(/g) ?? []).length;
             if (n) hits.push(`${f}:${n}`);
         }
-        expect(hits.sort()).toEqual(['annotation-overlay.ts:1', 'main.ts:2']);
+        expect(hits.sort()).toEqual(['annotation-overlay.ts:1', 'applying-update-window.ts:1', 'keyring-notice.ts:1', 'main.ts:2']);
     });
 
     it('nothing else sets the zoom (no in-app scale exists; if one is added it must feed page-zoom-lock)', () => {

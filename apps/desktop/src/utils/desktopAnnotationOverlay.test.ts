@@ -234,6 +234,24 @@ describe('desktop overlay window lifecycle (lazy)', () => {
         release();
     });
 
+    it('passes the shared frame size to main when the caller can say it (Wayland matches the monitor by it)', async () => {
+        const t = await setup();
+        const release = t.mod.attachDesktopAnnotationOverlay('me', 'screen:0:0', () => ({ width: 2560, height: 1440 }));
+        t.annotationStore.beginStroke(t.key, 'peer', { x: 0.1, y: 0.1 });
+        await t.settle();
+        expect(t.api.annotationOverlayShow).toHaveBeenCalledWith('screen:0:0', { width: 2560, height: 1440 });
+        release();
+    });
+
+    it('a frame getter that throws or answers nothing never blocks the overlay', async () => {
+        const t = await setup();
+        const release = t.mod.attachDesktopAnnotationOverlay('me', 'screen:0:0', () => { throw new Error('no track yet'); });
+        t.annotationStore.beginStroke(t.key, 'peer', { x: 0.1, y: 0.1 });
+        await t.settle();
+        expect(t.api.annotationOverlayShow).toHaveBeenCalledWith('screen:0:0');
+        release();
+    });
+
     it('a refusal is logged once with its reason, and main is NOT re-asked on every store change', async () => {
         const t = await setup();
         const { getCallEvents, clearCallEvents } = await import('./callEventLog');
@@ -279,6 +297,122 @@ describe('desktop overlay window lifecycle (lazy)', () => {
         off();
     });
 
+    describe('Wayland "Which screen are you sharing?"', () => {
+        const CHOICE = {
+            displays: [
+                { id: 1, x: 0, y: 0, width: 3440, height: 1440, primary: true },
+                { id: 2, x: 3440, y: 0, width: 3440, height: 1440, primary: false },
+                { id: 3, x: 6880, y: 0, width: 1080, height: 1920, primary: false },
+            ],
+            candidates: [1, 2],
+        };
+        const ask = { ok: false, reason: 'needs_choice', displays: 3, choice: CHOICE };
+        const resolve = (t: { show: (b: boolean) => void }, r: unknown) => (t.show as unknown as (r: unknown) => void)(r);
+
+        it('asks ONCE, does not re-ask main while waiting, and remembers the answer for the share', async () => {
+            const t = await setup();
+            const seen: string[] = [];
+            const off = t.mod.onOverlayStatusChange(s => seen.push(s.kind));
+            const release = t.mod.attachDesktopAnnotationOverlay('me', 'screen:0:0', () => ({ width: 3440, height: 1440 }));
+            const id = t.annotationStore.beginStroke(t.key, 'peer', { x: 0.1, y: 0.1 })!;
+            await t.settle();
+            resolve(t, ask);
+            await t.settle();
+            expect(t.mod.getOverlayStatus()).toEqual({ kind: 'choose', choice: CHOICE });
+            // 50 packets and well past the back-off: still the one ask.
+            for (let i = 0; i < 50; i++) { t.annotationStore.appendPoints(t.key, id, [{ x: 0.2 + i / 1000, y: 0.2 }]); await vi.advanceTimersByTimeAsync(16); }
+            await vi.advanceTimersByTimeAsync(t.mod.REFUSED_RETRY_MS * 3);
+            expect(t.api.annotationOverlayShow).toHaveBeenCalledTimes(1);
+            // The sharer picks screen 2: main is asked again, WITH that id.
+            t.mod.answerScreenChoice(2);
+            await t.settle();
+            expect(t.api.annotationOverlayShow).toHaveBeenCalledTimes(2);
+            expect(t.api.annotationOverlayShow).toHaveBeenLastCalledWith('screen:0:0', { width: 3440, height: 1440 }, 2);
+            resolve(t, { ok: true, how: 'wl-layer-chosen', captured: true });
+            await t.settle();
+            expect(t.mod.getOverlayStatus()).toEqual({ kind: 'idle' });
+            expect(seen).toEqual(['choose', 'idle']);
+            // Idle-hide then a new stroke re-shows with the SAME answer, no new question.
+            t.annotationStore.clearTrack(t.key);
+            await vi.advanceTimersByTimeAsync(t.mod.HIDE_AFTER_IDLE_MS + 200);
+            t.annotationStore.beginStroke(t.key, 'peer', { x: 0.5, y: 0.5 });
+            await t.settle();
+            expect(t.api.annotationOverlayShow).toHaveBeenLastCalledWith('screen:0:0', { width: 3440, height: 1440 }, 2);
+            off();
+            release();
+        });
+
+        it('declining keeps the in-app preview, records why, and never asks again this share', async () => {
+            const t = await setup();
+            const release = t.mod.attachDesktopAnnotationOverlay('me', 'screen:0:0', () => ({ width: 3440, height: 1440 }));
+            t.annotationStore.beginStroke(t.key, 'peer', { x: 0.1, y: 0.1 });
+            await t.settle();
+            resolve(t, ask);
+            await t.settle();
+            t.mod.answerScreenChoice(null);
+            expect(t.mod.getOverlayStatus()).toEqual({ kind: 'off', reason: 'declined' });
+            t.annotationStore.beginStroke(t.key, 'peer', { x: 0.3, y: 0.3 });
+            await vi.advanceTimersByTimeAsync(t.mod.REFUSED_RETRY_MS * 3);
+            expect(t.api.annotationOverlayShow).toHaveBeenCalledTimes(1);
+            release();
+            expect(t.mod.getOverlayStatus()).toEqual({ kind: 'idle' });   // a NEW share is asked afresh
+        });
+
+        it('negative controls: an answer that is not a candidate, or with no question open, does nothing', async () => {
+            const t = await setup();
+            t.mod.answerScreenChoice(2);                                    // no question open
+            expect(t.mod.getOverlayStatus()).toEqual({ kind: 'idle' });
+            const release = t.mod.attachDesktopAnnotationOverlay('me', 'screen:0:0', () => ({ width: 3440, height: 1440 }));
+            t.annotationStore.beginStroke(t.key, 'peer', { x: 0.1, y: 0.1 });
+            await t.settle();
+            resolve(t, ask);
+            await t.settle();
+            t.mod.answerScreenChoice(3);                                    // the portrait screen: not a candidate
+            t.mod.answerScreenChoice(99);
+            expect(t.mod.getOverlayStatus().kind).toBe('choose');
+            expect(t.api.annotationOverlayShow).toHaveBeenCalledTimes(1);
+            release();
+        });
+
+        it('a stale answer (that display went away) is dropped and the sharer is asked again', async () => {
+            const t = await setup();
+            const release = t.mod.attachDesktopAnnotationOverlay('me', 'screen:0:0', () => ({ width: 3440, height: 1440 }));
+            t.annotationStore.beginStroke(t.key, 'peer', { x: 0.1, y: 0.1 });
+            await t.settle();
+            resolve(t, ask); await t.settle();
+            t.mod.answerScreenChoice(2); await t.settle();
+            resolve(t, ask); await t.settle();                              // main: "2 is not a candidate any more"
+            expect(t.mod.getOverlayStatus().kind).toBe('choose');
+            release();
+        });
+
+        it('a stable refusal (no layer-shell, helper failed...) becomes the "off" state viewers are told about', async () => {
+            const t = await setup();
+            const release = t.mod.attachDesktopAnnotationOverlay('me', 'screen:0:0');
+            t.annotationStore.beginStroke(t.key, 'peer', { x: 0.1, y: 0.1 });
+            await t.settle();
+            resolve(t, { ok: false, reason: 'no_layer_shell' });
+            await t.settle();
+            expect(t.mod.getOverlayStatus()).toEqual({ kind: 'off', reason: 'no_layer_shell' });
+            await vi.advanceTimersByTimeAsync(t.mod.REFUSED_RETRY_MS + 100);
+            resolve(t, { ok: true, how: 'wl-layer-only-display', captured: true });
+            await t.settle();
+            expect(t.mod.getOverlayStatus()).toEqual({ kind: 'idle' });     // it recovered: the notice goes away
+            release();
+        });
+
+        it('cleanScreenChoice: only a well-formed question of two or more real answers survives', async () => {
+            const { cleanScreenChoice } = await import('./desktopAnnotationOverlay');
+            expect(cleanScreenChoice(CHOICE)).toEqual(CHOICE);
+            expect(cleanScreenChoice({ ...CHOICE, candidates: [1] })).toBeNull();           // one answer is not a question
+            expect(cleanScreenChoice({ ...CHOICE, candidates: [1, 77] })).toBeNull();       // 77 is not a display we know
+            expect(cleanScreenChoice({ displays: [{ id: 1, x: 0, y: 0, width: 0, height: 5, primary: true }, CHOICE.displays[1]], candidates: [1, 2] })).toBeNull();
+            expect(cleanScreenChoice({ displays: 'x', candidates: [] })).toBeNull();
+            expect(cleanScreenChoice(null)).toBeNull();
+            expect(cleanScreenChoice({ displays: Array.from({ length: 40 }, (_, i) => ({ id: i, x: i, y: 0, width: 10, height: 10 })), candidates: [0, 1] })?.displays).toHaveLength(16);
+        });
+    });
+
     it('normalizeShowResult: legacy booleans and junk', async () => {
         const t = await setup();
         expect(t.mod.normalizeShowResult(true)).toEqual({ ok: true, how: 'unknown', captured: false });
@@ -298,13 +432,15 @@ describe('desktop overlay window lifecycle (lazy)', () => {
  */
 describe('who holds the desktop overlay (SidebarConference source guard)', () => {
     const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'components', 'SidebarConference.tsx'), 'utf8');
+    const tileSrc = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'components', 'call', 'LocalScreenShareTile.tsx'), 'utf8');
     const tileBody = (s: string) => {
         const start = s.indexOf('const LocalScreenShareTile');
+        expect(start).toBeGreaterThan(-1);
         const end = s.indexOf('\n};', start);
         return s.slice(start, end);
     };
     it('the self-view tile does not attach it', () => {
-        expect(tileBody(src)).not.toMatch(/useDesktopAnnotationOverlay|attachDesktopAnnotationOverlay/);
+        expect(tileBody(tileSrc)).not.toMatch(/useDesktopAnnotationOverlay|attachDesktopAnnotationOverlay/);
     });
     it('the conference body attaches it for the local share, keyed on the share — never on focus', () => {
         const calls = [...src.matchAll(/useDesktopAnnotationOverlay\(([\s\S]*?)\);/g)].map(m => m[1]);

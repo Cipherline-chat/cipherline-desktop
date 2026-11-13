@@ -36,6 +36,7 @@
  */
 import { MAX_RESOLUTION_STEP } from './shareEncoderLimits';
 import type { ForegroundDiag } from './foregroundInfo';
+import { readShareNetSnapshot, buildShareNetDetail, layerSetOf, type ShareNetSnapshot } from './shareNetStats';
 
 export const SHARE_FPS_INTERVAL_MS = 10_000;
 /** An extra sample this long after a focus change, so before/after is visible without waiting. */
@@ -54,6 +55,8 @@ export interface ShareEncoderSnapshot {
     at: number;
     /** Number of active video layers (outbound-rtp with active !== false). */
     activeLayers: number;
+    /** Which layers `framesEncoded` sums over (shareNetStats.layerSetOf); rates are only valid between equal sets. */
+    layerSet?: string;
     /** Sum of framesEncoded over ACTIVE layers. */
     framesEncoded: number;
     /** Largest active layer. */
@@ -85,6 +88,7 @@ export function readShareEncoderSnapshot(report: StatsLike | null | undefined, a
     const snap: ShareEncoderSnapshot = {
         at,
         activeLayers: active.length,
+        layerSet: layerSetOf(active),
         framesEncoded: active.reduce((n, s) => n + (fin(s.framesEncoded) ? s.framesEncoded : 0), 0),
     };
     if (fin(top.framesPerSecond)) snap.sentFps = top.framesPerSecond;
@@ -116,6 +120,9 @@ const r1 = (n: number) => Math.round(n * 10) / 10;
  *   limit    qualityLimitationReason                   enc      encoderImplementation
  *   hw       powerEfficientEncoder                     res      encoded frame size
  *   target   the fps the user asked for                focus / vis  window state
+ *   act      ACTIVE layers (outbound-rtp active): 0 = dynacast paused every layer
+ *            (nobody watching - enc_fps 0 is then expected), > 0 with enc_fps 0 =
+ *            an encoder that is not producing
  * Absent values are omitted (the log drops non-finite numbers and empty strings).
  */
 export function buildShareFpsDetail(
@@ -123,12 +130,13 @@ export function buildShareFpsDetail(
     cur: ShareEncoderSnapshot,
     ctx: ShareSampleContext,
 ): ShareFpsDetail {
-    const d: ShareFpsDetail = { target: ctx.targetFps, focus: ctx.focused, vis: ctx.visible ? 'visible' : 'hidden' };
+    const d: ShareFpsDetail = { target: ctx.targetFps, focus: ctx.focused, vis: ctx.visible ? 'visible' : 'hidden', act: cur.activeLayers };
     if (fin(ctx.captureFps)) d.cap_fps = r1(ctx.captureFps);
     if (fin(cur.sourceFps)) d.src_fps = r1(cur.sourceFps);
     if (prev) {
         const dt = (cur.at - prev.at) / 1000;
-        if (dt >= 0.5 && cur.framesEncoded >= prev.framesEncoded) d.enc_fps = r1((cur.framesEncoded - prev.framesEncoded) / dt);
+        // Not across a change of the active layers: a resumed layer brings its whole history (enc_fps=766 on a 90 fps share).
+        if (dt >= 0.5 && prev.layerSet === cur.layerSet && cur.framesEncoded >= prev.framesEncoded) d.enc_fps = r1((cur.framesEncoded - prev.framesEncoded) / dt);
     }
     if (fin(cur.sentFps)) d.sent_fps = r1(cur.sentFps);
     if (cur.limitation) d.limit = cur.limitation;
@@ -147,10 +155,24 @@ export interface ShareStatsSamplerDeps {
     targetFps: number;
     /** What has the screen right now (foregroundInfo.ts); null/absent = unknown. Asked before every sample. */
     getForeground?(): Promise<ForegroundDiag | null>;
-    /** Every sample's foreground answer, the baseline included - the fullscreen hint watches this. */
-    onForeground?(fg: ForegroundDiag | null): void;
     /** `fg` is what was in front when this sample was taken (null = unknown). */
     report(detail: ShareFpsDetail, fg: ForegroundDiag | null): void;
+    /**
+     * The same report, read for the share's NETWORK side (`share_net`, shareNetStats.ts):
+     * called after `report`, from the same getStats() result - no second stats call.
+     */
+    reportNet?(detail: ShareFpsDetail): void;
+    /**
+     * The raw sender report of every non-baseline sample, for readers that need
+     * the TOP layer on its own (shareEncoderOverload.ts) - the same getStats()
+     * result, no second call. `fg` is what was in front when that sample was
+     * taken (null = unknown), for readers that must tell a game from a still screen.
+     */
+    onStats?(stats: StatsLike, at: number, fg?: ForegroundDiag | null): void;
+    /** Configured send ceiling, kbit/s (sum of the active encodings' maxBitrate). */
+    getCapKbps?(): number | undefined;
+    /** share_ref once resolved (shareRef.ts); absent until then. */
+    getShareRef?(): string | undefined;
     now?(): number;
     intervalMs?: number;
     focusDelayMs?: number;
@@ -159,6 +181,7 @@ export interface ShareStatsSamplerDeps {
 /** Emits `share_fps` on an interval and shortly after a focus change. One per share. */
 export class ShareStatsSampler {
     private prev: ShareEncoderSnapshot | null = null;
+    private prevNet: ShareNetSnapshot | null = null;
     private timer: ReturnType<typeof setInterval> | null = null;
     private focusTimer: ReturnType<typeof setTimeout> | null = null;
     private disposed = false;
@@ -201,11 +224,15 @@ export class ShareStatsSampler {
             let fg: ForegroundDiag | null = null;
             try { fg = (await this.deps.getForeground?.()) ?? null; } catch { fg = null; }
             if (this.disposed) return;
-            try { this.deps.onForeground?.(fg); } catch { /* a watcher must not break the sampler */ }
-            const cur = readShareEncoderSnapshot(await this.deps.getStats(), this.now());
+            const stats = await this.deps.getStats();
+            const at = this.now();
+            const cur = readShareEncoderSnapshot(stats, at);
             if (this.disposed || !cur) return;
             const prev = this.prev;
             this.prev = cur;
+            const net = readShareNetSnapshot(stats, at);
+            const prevNet = this.prevNet;
+            if (net) this.prevNet = net;
             if (baselineOnly) return;
             this.deps.report(buildShareFpsDetail(prev, cur, {
                 captureFps: this.deps.getCaptureFps(),
@@ -213,6 +240,11 @@ export class ShareStatsSampler {
                 focused: this.deps.focused(),
                 visible: this.deps.visible(),
             }), fg);
+            if (stats) { try { this.deps.onStats?.(stats, at, fg); } catch { /* a reader must not break the sampler */ } }
+            if (net && this.deps.reportNet) {
+                const nd = buildShareNetDetail(prevNet, net, { shareRef: this.deps.getShareRef?.(), capKbps: this.deps.getCapKbps?.(), topLayer: true });
+                if (nd) this.deps.reportNet(nd);
+            }
         } catch {
             /* the share ended mid-sample - diagnostics only */
         } finally {
@@ -326,4 +358,77 @@ export function stallToastCopy(action: StallAction): { kind: 'warning' | 'error'
             ? 'Your screen is too large for the video encoder, so the share was restarted at a lower resolution.'
             : 'The video encoder still couldn’t start, so the share was restarted at an even lower resolution.',
     };
+}
+
+// ── "No frames": the capture, or the encoder? ──────────────────────────────
+//
+// Both start checks (watchH264HighStart for H.264 High / H.265, and the
+// ShareEncoderWatchdog for the rest) only see "framesEncoded is still 0" and
+// used to blame the ENCODER for it: mark H.264 High failed for the whole app
+// session, or step the resolution down. The owner's 1.0.23 Surround share
+// (report 83da3af8) was the counter-example: the crop pipeline delivered no
+// frames at all (utils/shareCrop.ts header), the High check said `failed`,
+// every later share that session was software VP8 ("H.264 High HW encoder
+// failed -> VP8"), then the resolution ladder stepped down twice and gave up -
+// on an encoder that had never been handed a frame.
+//
+// The sender's own media-source stats say how many frames the capture handed
+// it (`frames`, cumulative). Zero = nothing reached the encoder: a capture /
+// pipeline problem, and no codec or size change can fix it.
+
+/** media-source `frames` summed over the sender's video sources; undefined when not reported. */
+export function readSourceFrames(report: StatsLike | null | undefined): number | undefined {
+    let total: number | undefined;
+    report?.forEach(s => {
+        if (!s || typeof s !== 'object') return;
+        if (s.type === 'media-source' && s.kind === 'video' && fin(s.frames)) total = (total ?? 0) + s.frames;
+    });
+    return total;
+}
+
+export interface NoFramesDiagnosis {
+    /** 'capture': nothing reached the encoder; 'encoder': frames arrived and none came out; 'unknown': no evidence either way. */
+    cause: 'capture' | 'encoder' | 'unknown';
+    /** media-source frames, if reported. */
+    srcFrames?: number;
+    /** The crop pipeline's counters, for a single-screen share. */
+    cropIn?: number;
+    cropOut?: number;
+}
+
+/**
+ * Why did a share encode nothing? media-source first (it is what the SENDER
+ * received, whatever produced it); for a cropped share whose media-source is
+ * not reported, the crop pipeline's own output count. Worker crop counters
+ * lag up to 5 s, so they only ever decide when media-source is missing.
+ */
+export function diagnoseNoFrames(
+    report: StatsLike | null | undefined,
+    crop?: { framesIn: number; framesOut: number } | null,
+): NoFramesDiagnosis {
+    const src = readSourceFrames(report);
+    const d: NoFramesDiagnosis = { cause: 'unknown' };
+    if (src !== undefined) d.srcFrames = src;
+    if (crop) { d.cropIn = crop.framesIn; d.cropOut = crop.framesOut; }
+    if (src !== undefined) d.cause = src > 0 ? 'encoder' : 'capture';
+    else if (crop) d.cause = crop.framesOut > 0 ? 'encoder' : 'capture';
+    return d;
+}
+
+export type CaptureStallAction =
+    /** A single screen of an ultra-wide display produced nothing: share the whole display (scaled) instead. */
+    | { kind: 'whole' }
+    /** Nothing else to switch to: keep the share up (capture may resume) and tell the user what blocks it. */
+    | { kind: 'notify' };
+
+/** What to do when the CAPTURE (not the encoder) produced nothing. */
+export function decideCaptureStallAction(opts: { slice: boolean; triedWhole: boolean }): CaptureStallAction {
+    return opts.slice && !opts.triedWhole ? { kind: 'whole' } : { kind: 'notify' };
+}
+
+/** User-facing copy for a capture stall. */
+export function captureStallNotice(action: CaptureStallAction): string {
+    return action.kind === 'whole'
+        ? 'Couldn’t capture a single screen of your ultra-wide display, so the whole display is being shared (scaled to fit) instead.'
+        : 'Nothing is being captured from that screen. A game in exclusive fullscreen can block screen capture - switch it to borderless or windowed, or share the game’s window instead.';
 }

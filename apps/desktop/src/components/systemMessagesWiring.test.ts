@@ -37,9 +37,12 @@ describe('the single-slot ephemeral injection stays gone; the legacy event is a 
         expect(dashboard).toContain('dropShadowedEphemeralRows(unTombstoned)');
     });
 
-    it('ChatPane offers no react / delete on a line that has no server row', () => {
-        expect(chatPane).toContain('isEphemeralMemberEventId(msg.id)');
-        expect(chatPane).toMatch(/canManageMessages && !isEphemeral/);
+    it('ChatPane: a line with no server row gets only a LOCAL hide, never a server delete', () => {
+        // Right-click only (owner, 2026-11-08): no hover trash button; the menu
+        // labels follow the delete mode.
+        expect(chatPane).toContain('label: systemRowDeleteLabel(mode)');
+        // The delete path routes a line without a server row to the local hide (utils/systemRowDelete.ts).
+        expect(chatPane).toMatch(/systemRowDeleteMode\(target, \{ canManageMessages, isServerChannel \}\) === 'local'/);
     });
 });
 
@@ -69,16 +72,28 @@ describe('the persisted path is wired', () => {
         expect(decryptAt - at).toBeLessThan(1500);
     });
 
-    it('ChatPane renders member-event rows, allows reactions + moderator delete, offers no reply/edit there', () => {
+    it('ChatPane renders member-event rows, offers NO reactions, moderator delete (right-click), no reply/edit there', () => {
         const start = chatPane.indexOf('if (isMemberEventContent(msg.content)) {');
         expect(start).toBeGreaterThan(-1);
         const end = chatPane.indexOf('// DM placeholder (Message integrity', start);
         const block = chatPane.slice(start, end);
         expect(block).toContain('memberEventText(ev, id => userIdToUsername[id])');
-        expect(block).toContain('canReactServer');
-        expect(block).toContain('reactionChips()');
-        expect(block).toContain('canManageMessages');
+        // Owner 2026-11-11: no reaction affordance of any kind on these lines.
+        expect(block).not.toMatch(/canReact|reactionChips|SmilePlus|EmojiPickerPopover|setShowEmojiPicker|aria-label="React"/);
+        expect(block).toContain('onContextMenu={(e) => openMemberEventMenu(e, msg)}');
+        // The hover trash button is gone: delete lives only in the right-click menu.
+        expect(block).not.toContain('<Trash2');
         expect(block).not.toMatch(/setReplyingId|startEdit|Reply/);
+        // The menu offers delete only by the shared rule (server delete needs MANAGE_MESSAGES).
+        const menu = chatPane.slice(chatPane.indexOf('const openMemberEventMenu = '), chatPane.indexOf('const openUndeliveredMenu = '));
+        expect(menu).not.toMatch(/Add Reaction|SmilePlus|setShowEmojiPicker/);
+        expect(menu).toContain('systemRowDeleteMode(msg, { canManageMessages, isServerChannel })');
+        expect(menu).toContain("requestDelete(msg, { entryPoint: 'contextmenu', shiftKey: false }, false)");
+    });
+
+    it('the shared reaction funnel refuses a system row', () => {
+        const fn = chatPane.slice(chatPane.indexOf('const handleAddReaction = '));
+        expect(fn.slice(0, 600)).toContain("if (msg?.content?.type === 'system') return;");
     });
 
     it('ChatPane resolves names for member-event rows through the same lazy lookup as senders', () => {

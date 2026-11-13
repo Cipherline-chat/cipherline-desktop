@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { safeImageSrc, safeBlobUrl } from './safeMediaUrl';
+import { safeImageSrc, safeBlobUrl, cipherlineMediaUrl } from './safeMediaUrl';
 
 const ALLOWED: string[] = [
   'blob:http://127.0.0.1:41233/5b0c8c3e-7c7a-4b0a-9a35-0f2f8f3d2b11',
@@ -93,3 +93,30 @@ describe('safeImageSrc blocked matrix', () => {
 // 'port' and 'data html' rows are exactly the inputs a plain prefix / substring check
 // accepts (e.g. a check that only looks at how the string begins), and every one of
 // them must come back undefined here.
+
+describe('cipherlineMediaUrl (zero-click values from other users, e.g. a legacy https avatar_url)', () => {
+  it('allows only the Cipherline media host', () => {
+    expect(cipherlineMediaUrl('https://media.cipherline.chat/a/b.png')).toBe('https://media.cipherline.chat/a/b.png');
+  });
+
+  it.each([
+    ['an attacker host (IP beacon)', 'https://attacker.example/p.png?u=1'],
+    ['a KLIPY host (opt-in only, a peer must not opt the viewer in)', 'https://static.klipy.com/x.gif'],
+    ['a lookalike suffix', 'https://media.cipherline.chat.evil.example/x.png'],
+    ['a subdomain of the media host', 'https://x.media.cipherline.chat/x.png'],
+    ['userinfo', 'https://user@media.cipherline.chat/x.png'],
+    ['an explicit port', 'https://media.cipherline.chat:8443/x.png'],
+    ['plain http', 'http://media.cipherline.chat/x.png'],
+    ['whitespace', 'https://media.cipherline.chat/a b.png'],
+    ['a control character', 'https://media.cipherline.chat/a\u0007.png'],
+    ['an attachment id', '3f2b8c1e-9d4a-4e7b-8a21-5c6d7e8f9a0b'],
+    ['empty', ''],
+  ])('refuses %s', (_name, raw) => {
+    expect(cipherlineMediaUrl(raw)).toBeUndefined();
+  });
+
+  it('refuses non-strings', () => {
+    expect(cipherlineMediaUrl(null)).toBeUndefined();
+    expect(cipherlineMediaUrl(undefined)).toBeUndefined();
+  });
+});

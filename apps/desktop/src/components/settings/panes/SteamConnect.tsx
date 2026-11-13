@@ -1,14 +1,11 @@
-import React, { useEffect, useRef, useState } from 'react';
-import axios from 'axios';
+import React, { useState } from 'react';
 import { BadgeCheck, ExternalLink, Loader2 } from 'lucide-react';
 import { ClButton } from '../../cl';
-import { API_BASE } from '../../../constants';
-import { useToast } from '../../../contexts/ToastContext';
 import { ProfileLinkIcon } from '../../ProfileLinkIcon';
 import { openExternalLink } from '../../../utils/openExternalLink';
 import { steamProfileUrl } from '../../../utils/profileLinks';
-import { patchErrorMessage } from '../../../utils/patchErrorMessage';
-import { forgetSteamCard, type SteamCard } from '../../../hooks/useProfileRelations';
+import type { SteamCard } from '../../../hooks/useProfileRelations';
+import { useSteamConnect } from '../../../hooks/useSteamConnect';
 
 /**
  * Settings > Profile > Showcase > Steam: connect a VERIFIED Steam account.
@@ -19,10 +16,8 @@ import { forgetSteamCard, type SteamCard } from '../../../hooks/useProfileRelati
  * checks Steam's answer with Steam and only then records your SteamID - this
  * client never sends one. While that happens this section waits, re-reading
  * your profile every few seconds and whenever the window regains focus.
+ * The flow itself is `useSteamConnect`, shared with the Links editor's Steam row.
  */
-
-const POLL_MS = 3000;
-const WAIT_MAX_MS = 10 * 60 * 1000;
 
 export const SteamConnect: React.FC<{
     token: string | null;
@@ -32,63 +27,9 @@ export const SteamConnect: React.FC<{
     /** Re-read /auth/me (the caller's refreshProfile). */
     onChanged: () => void | Promise<void>;
 }> = ({ token, userId, linked, card, onChanged }) => {
-    const toast = useToast();
-    const [waitingSince, setWaitingSince] = useState<number | null>(null);
-    const [busy, setBusy] = useState(false);
+    const { waiting, busy, connect, cancel, unlink: doUnlink } = useSteamConnect({ token, userId, linked, onChanged });
     const [confirmUnlink, setConfirmUnlink] = useState(false);
-    const waiting = waitingSince !== null && !linked;
-
-    // Linked while we waited: say so once (a side effect, so it runs after render).
-    const waitedRef = useRef(false);
-    useEffect(() => { waitedRef.current = waitingSince !== null; }, [waitingSince]);
-    useEffect(() => {
-        if (!linked || !waitedRef.current) return;
-        waitedRef.current = false;
-        setWaitingSince(null); // the wait ends when the server says linked
-        toast.push({ kind: 'success', title: 'Steam linked', message: 'Your Steam account now shows as verified.' });
-    }, [linked, toast]);
-
-    useEffect(() => {
-        if (!waiting || waitingSince === null) return;
-        const poll = () => {
-            if (Date.now() - waitingSince > WAIT_MAX_MS) { setWaitingSince(null); return; }
-            void onChanged();
-        };
-        const t = window.setInterval(poll, POLL_MS);
-        window.addEventListener('focus', poll);
-        return () => { window.clearInterval(t); window.removeEventListener('focus', poll); };
-    }, [waiting, waitingSince, onChanged]);
-
-    const connect = async () => {
-        if (!token || busy) return;
-        setBusy(true);
-        try {
-            const res = await axios.post(`${API_BASE}/steam/link`, {}, { headers: { Authorization: `Bearer ${token}` } });
-            const url = typeof res.data?.url === 'string' ? res.data.url : '';
-            if (!openExternalLink(url).ok) throw new Error('bad url');
-            forgetSteamCard(userId);
-            setWaitingSince(Date.now());
-        } catch (err) {
-            toast.push({ kind: 'error', title: 'Could not start', message: patchErrorMessage(err, 'Steam linking is unavailable right now. Try again in a minute.') });
-        } finally {
-            setBusy(false);
-        }
-    };
-
-    const unlink = async () => {
-        if (!token || busy) return;
-        setBusy(true);
-        try {
-            await axios.delete(`${API_BASE}/steam/link`, { headers: { Authorization: `Bearer ${token}` } });
-            forgetSteamCard(userId);
-            setConfirmUnlink(false);
-            await onChanged();
-        } catch (err) {
-            toast.push({ kind: 'error', title: 'Not unlinked', message: patchErrorMessage(err, 'Could not unlink Steam. Try again.') });
-        } finally {
-            setBusy(false);
-        }
-    };
+    const unlink = async () => { if (await doUnlink()) setConfirmUnlink(false); };
 
     if (linked) {
         return (
@@ -141,7 +82,7 @@ export const SteamConnect: React.FC<{
                 {waiting ? (
                     <>
                         <Loader2 size={16} className="ps-spin" aria-label="Waiting for Steam" />
-                        <ClButton size="sm" variant="ghost" onClick={() => setWaitingSince(null)}>Cancel</ClButton>
+                        <ClButton size="sm" variant="ghost" onClick={cancel}>Cancel</ClButton>
                     </>
                 ) : (
                     <ClButton size="sm" onClick={() => void connect()} loading={busy}>Connect Steam</ClButton>

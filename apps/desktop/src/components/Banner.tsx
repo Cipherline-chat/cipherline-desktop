@@ -57,6 +57,8 @@ export const DefaultBanner: React.FC = () => (
 );
 
 const BANNER_KIND = { kind: 'banner' } as const;
+/** Type to report for a local `src` preview: not gated (the type is unknown there, which would read as "maybe animated"). */
+const LOCAL_PREVIEW_MIME = 'image/jpeg';
 
 /**
  * Shared profile-banner component. All sizing is enforced via CSS rules in
@@ -89,7 +91,9 @@ export const Banner: React.FC<BannerProps> = ({
     const resolvedUrl = useEncryptedAvatar(allowImage && !src ? attachmentId : null, token, null, BANNER_KIND);
     // Only a validated image URL (blob:, data:image/*, trusted https) ever reaches <img src>.
     const fullUrl = safeImageSrc(src || resolvedUrl) ?? null;
-    const bannerUrl = useStillGate(fullUrl, src ? null : avatarUrlMime(fullUrl), animate);
+    // Always-on animation holds only while Cipherline is the window in front.
+    // A local preview (`src`) is the owner's own just-cropped pick, shown as-is.
+    const bannerUrl = useStillGate(fullUrl, src ? LOCAL_PREVIEW_MIME : avatarUrlMime(fullUrl), animate);
 
     // ── No blank flash, no pop ───────────────────────────────────────────────
     // The default banner is ALWAYS underneath, so there is never an empty box.

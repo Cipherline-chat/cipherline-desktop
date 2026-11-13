@@ -155,5 +155,6 @@ describe('probeApiReachable', () => {
         expect(cfg.validateStatus(503)).toBe(true);
         expect(cfg.timeout).toBeLessThanOrEqual(5000);
         expect(String(get.mock.calls[0][0])).toMatch(/\/health\/live$/);
+        expect(String(get.mock.calls[0][0])).not.toMatch(/\/v1\/health/);
     });
 });

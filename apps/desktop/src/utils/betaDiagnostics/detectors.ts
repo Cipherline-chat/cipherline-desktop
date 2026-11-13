@@ -4,8 +4,10 @@
  * bridges.ts). Each detector here is pure or takes its clock/timers
  * injected, and does NO work while beta diagnostics is off.
  *
- *   KeyWaitTracker      key_request_unanswered — a channel-key request this
- *                       device filed has had no key installed for 2 minutes.
+ *   KeyWaitTracker      key_request_unanswered — a channel-key request the API
+ *                       filed for this device has had no key envelope for 2
+ *                       minutes (30 for a history-only ask, which blocks nothing).
+ *                       `shape` says what was asked (keyless/newer/history/all).
  *   watchPendingSend    msg_pending_stuck — a message still "sending" 30 s
  *                       after it was handed to the delivery queue.
  *   WsChurnCounter      ws_churn — 5+ WebSocket drops inside 10 minutes.
@@ -25,17 +27,65 @@ export function reportStaleEpochRefused(err: unknown, action: string): void {
 
 // ── key requests ───────────────────────────────────────────────────────────
 
+/** A key request that BLOCKS this device (no key at all, or the newest epoch
+ *  missing) is reported after this long without a key. */
 export const KEY_UNANSWERED_MS = 2 * 60_000;
+/** A HISTORY-ONLY ask (the device holds the newest epoch; it is missing older
+ *  ones) blocks nothing: sending and the live feed work, and the one who holds
+ *  the old epoch may simply be offline. Two minutes measures nothing for it, so
+ *  it is reported only after this long. */
+export const KEY_HISTORY_UNANSWERED_MS = 30 * 60_000;
 const KEY_TICK_MS = 15_000;
 
+/**
+ * What the ask was for - the one thing the first version of this report left
+ * out, so every shape read the same (2026-11-04: 150 events, 148 of them from
+ * devices that already held a key).
+ *   keyless  holds no key for the channel
+ *   newer    holds some, but not the newest epoch (sending is stale)
+ *   history  holds the newest; asked for older epochs only
+ *   all      asked for "every epoch" while already holding a key
+ */
+export type KeyAskShape = 'keyless' | 'newer' | 'history' | 'all';
+const SHAPE_RANK: Record<KeyAskShape, number> = { history: 0, all: 1, newer: 2, keyless: 3 };
+
+/**
+ * The shape of an ask, from what the device asked for and what it holds.
+ * `askEpochs` undefined = an "every epoch" ask; `heldEpochs` = the epochs held
+ * when it was filed (unknown = undefined).
+ */
+export function keyAskShape(o: { keyless: boolean; askEpochs?: readonly number[]; heldEpochs?: readonly number[] }): KeyAskShape {
+    if (o.keyless) return 'keyless';
+    if (!o.askEpochs || !o.askEpochs.length) return 'all';
+    if (!o.heldEpochs) return 'newer'; // unknown holdings: assume the blocking case rather than hide it
+    const newestHeld = o.heldEpochs.length ? Math.max(...o.heldEpochs) : 0;
+    return o.askEpochs.some(e => e > newestHeld) ? 'newer' : 'history';
+}
+
+/**
+ * Did the API actually FILE the ask? Its answer carries `epochs`: [] (and a
+ * null request_id) when it dropped everything the ask named - an epoch above
+ * the newest registered one, or history the caller may not read - and "file
+ * nothing, wake nobody". No holder was ever asked, so no holder can answer; that
+ * is not an unanswered request. An older API that does not send `epochs` at all
+ * is taken as filed.
+ */
+export function keyAskWasFiled(answer: { request_id?: unknown; epochs?: unknown } | null | undefined): boolean {
+    if (!answer) return true;
+    if (Array.isArray(answer.epochs) && answer.epochs.length === 0) return false;
+    if (answer.request_id === null) return false;
+    return true;
+}
+
 /** heldEpoch: a number = the epoch held; null = no key at all; undefined = not known. */
-interface KeyWait { askedAt: number; targetEpoch: number | null; heldEpoch: number | null | undefined; reported: boolean }
+interface KeyWait { askedAt: number; targetEpoch: number | null; heldEpoch: number | null | undefined; shape: KeyAskShape | undefined; epochsAsked: number; reported: boolean }
+type KeyWaitReport = { waited_s: number; epoch_gap?: number; keyless?: boolean; shape?: KeyAskShape; epochs_n?: number };
 
 export class KeyWaitTracker {
     private waits = new Map<string, KeyWait>();
     private timer: ReturnType<typeof setInterval> | null = null;
     private readonly clock: () => number;
-    private readonly emit: (detail: { waited_s: number; epoch_gap?: number; keyless?: boolean }) => void;
+    private readonly emit: (detail: KeyWaitReport) => void;
     private readonly autoTimer: boolean;
 
     constructor(o: { clock?: () => number; emit?: KeyWaitTracker['emit']; autoTimer?: boolean } = {}) {
@@ -44,22 +94,26 @@ export class KeyWaitTracker {
         this.autoTimer = o.autoTimer ?? true;
     }
 
-    /** A key request for this channel was accepted by the API. The FIRST ask of a wait starts its clock. */
-    noteAsked(channelId: string, o: { targetEpoch?: number | null; heldEpoch?: number | null } = {}): void {
+    /** A key request for this channel was FILED by the API. The first ask of a wait starts its clock. */
+    noteAsked(channelId: string, o: { targetEpoch?: number | null; heldEpoch?: number | null; shape?: KeyAskShape; epochsAsked?: number } = {}): void {
         if (!channelId) return;
         const cur = this.waits.get(channelId);
         const targetEpoch = typeof o.targetEpoch === 'number' ? o.targetEpoch : null;
         const heldEpoch = typeof o.heldEpoch === 'number' || o.heldEpoch === null ? o.heldEpoch : undefined;
+        const epochsAsked = typeof o.epochsAsked === 'number' && o.epochsAsked > 0 ? Math.floor(o.epochsAsked) : 0;
         if (cur) {
             if (targetEpoch !== null) cur.targetEpoch = Math.max(cur.targetEpoch ?? 0, targetEpoch);
+            // A later ask that blocks more than the first one makes the wait that kind.
+            if (o.shape && (!cur.shape || SHAPE_RANK[o.shape] > SHAPE_RANK[cur.shape])) cur.shape = o.shape;
+            cur.epochsAsked = Math.max(cur.epochsAsked, epochsAsked);
             return;
         }
         if (this.waits.size >= 500) return; // leak guard
-        this.waits.set(channelId, { askedAt: this.clock(), targetEpoch, heldEpoch, reported: false });
+        this.waits.set(channelId, { askedAt: this.clock(), targetEpoch, heldEpoch, shape: o.shape, epochsAsked, reported: false });
         this.ensureTimer();
     }
 
-    /** A key envelope for this channel was installed: the wait is over. */
+    /** A key envelope for this channel arrived (installed, or a copy of one already held): the wait is over. */
     noteReceived(channelId: string): void {
         this.waits.delete(channelId);
         if (!this.waits.size) this.stopTimer();
@@ -68,13 +122,17 @@ export class KeyWaitTracker {
     tick(): void {
         const now = this.clock();
         for (const w of this.waits.values()) {
-            if (w.reported || now - w.askedAt < KEY_UNANSWERED_MS) continue;
+            if (w.reported) continue;
+            const limit = w.shape === 'history' ? KEY_HISTORY_UNANSWERED_MS : KEY_UNANSWERED_MS;
+            if (now - w.askedAt < limit) continue;
             w.reported = true;
             const gap = w.targetEpoch !== null && w.heldEpoch !== undefined ? w.targetEpoch - (w.heldEpoch ?? 0) : undefined;
             this.emit({
                 waited_s: Math.round((now - w.askedAt) / 1000),
                 ...(gap !== undefined && gap >= 0 ? { epoch_gap: gap } : {}),
                 ...(w.heldEpoch !== undefined ? { keyless: w.heldEpoch === null } : {}),
+                ...(w.shape ? { shape: w.shape } : {}),
+                ...(w.epochsAsked > 0 ? { epochs_n: w.epochsAsked } : {}),
             });
         }
     }
@@ -97,11 +155,12 @@ export class KeyWaitTracker {
 export const keyWaitTracker = new KeyWaitTracker();
 
 /** Dashboard's key-request path: a request was accepted. No-op while beta diagnostics is off. */
-export function noteBetaKeyAsked(channelId: string, o: { targetEpoch?: number | null; heldEpoch?: number | null } = {}): void {
+export function noteBetaKeyAsked(channelId: string, o: { targetEpoch?: number | null; heldEpoch?: number | null; shape?: KeyAskShape; epochsAsked?: number } = {}): void {
     try { if (isBetaActive()) keyWaitTracker.noteAsked(channelId, o); } catch { /* diagnostics only */ }
 }
 
-/** channelKeyWait.noteChannelKeyReceived: a key arrived. */
+/** A key arrived (channelKeyWait.noteChannelKeyReceived), a copy of one already held arrived (a holder DID answer),
+ *  or this device minted the channel's key itself: the wait is over. */
 export function noteBetaKeyReceived(channelId: string): void {
     try { keyWaitTracker.noteReceived(channelId); } catch { /* diagnostics only */ }
 }

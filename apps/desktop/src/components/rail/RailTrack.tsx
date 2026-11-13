@@ -48,7 +48,7 @@ export const RailTrack: React.FC<{
     // further down the rail it went, which is exactly what was reported.
     // Reading the real child box is immune to that and to any future layout
     // change. Child 0 is the indicator itself, so slot N is child N + 1.
-    const [rest, setRest] = React.useState<RestBox | null>(null);
+    const [rest, setRest] = React.useState<(RestBox & { slot: number }) | null>(null);
     // PERF (freeze fix): this effect used to depend on `children`, which is a
     // fresh element array on EVERY Dashboard render — so every render, for any
     // reason (a message arriving, a presence tick, a fetch landing), re-ran it:
@@ -72,10 +72,10 @@ export const RailTrack: React.FC<{
             const tile = el?.children[slot + 1] as HTMLElement | undefined;
             if (!tile) return;
             const next = {
-                top: tile.offsetTop, left: tile.offsetLeft,
+                slot, top: tile.offsetTop, left: tile.offsetLeft,
                 width: tile.offsetWidth, height: tile.offsetHeight,
             };
-            setRest(prev => (prev && prev.top === next.top && prev.left === next.left
+            setRest(prev => (prev && prev.slot === next.slot && prev.top === next.top && prev.left === next.left
                 && prev.width === next.width && prev.height === next.height) ? prev : next);
         };
         measure();
@@ -110,9 +110,12 @@ export const RailTrack: React.FC<{
     // Geometry is written straight to the node every frame — see
     // useRailMembrane for why this bypasses React state, and railMembrane.ts
     // for why the integrator is analytic.
-    useRailMembrane(indicator, rest ? rest.top : 0, rest);
-
     const hidden = activeIndex < 0 || !rest;
+    // Only the box of the slot we are on counts: on the commit that changes slot,
+    // `rest` is still the old tile's, and aiming at it would undo coming back in place.
+    const measured = rest?.slot === slot ? rest : null;
+    useRailMembrane(indicator, measured ? measured.top : 0, measured, !hidden);
+
     const trackEl = (
         <div
             className={scroll ? 'cl-rail-track cl-rail-track--scroll' : 'cl-rail-track'}

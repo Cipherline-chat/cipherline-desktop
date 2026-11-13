@@ -1,6 +1,6 @@
 /**
  * "What has the screen right now?" - the main-process half of the screen-share
- * frame-rate diagnostics and the "share the game window instead" hint.
+ * frame-rate diagnostics.
  *
  * ── Why ────────────────────────────────────────────────────────────────────
  * Owner report 2026-10-14 (Windows 11, 2560x1440 @ 200 Hz, sharing the whole
@@ -12,10 +12,11 @@
  *   (B) the game's fullscreen / independent-flip presentation, which bypasses
  *       DWM composition while the game is in front, so a whole-SCREEN capture
  *       only receives occasional frames.
- * (B) cannot be fixed from our side for a screen capture, only detected, and
- * a WINDOW capture of the game is not affected by it. So every `share_fps` /
- * `share_background` event now says what was in front (fg_state / fg_exe /
- * fg_cover), and the renderer offers to share the game's window instead.
+ * (B) cannot be fixed from our side for a screen capture, only detected. So
+ * every `share_fps` / `share_background` event says what was in front
+ * (fg_state / fg_exe / fg_cover). (A "share the game window instead" hint was
+ * built on this and removed 2026-10-31: a window share is capped at 60 fps,
+ * the whole screen reaches 90, so the advice was not true.)
  *
  * ── Privacy ────────────────────────────────────────────────────────────────
  * The addon (share_power.cc getForegroundInfo) reports the Windows
@@ -164,50 +165,4 @@ export function describeForeground(opts: {
         fgIsCipherline: native.fgIsCipherline,
         onSharedScreen,
     };
-}
-
-// ── Picking the game's window in the picker ────────────────────────────────
-
-export const MAX_WINDOW_SOURCE_IDS = 256;
-
-/** The renderer's `share:find-window-source` request, validated. */
-export function validateFindWindowRequest(exe: unknown, ids: unknown): { exe: string; ids: string[] } {
-    const name = cleanExeName(exe);
-    if (!name) throw new Error('share:find-window-source: expected a program name');
-    if (!Array.isArray(ids) || ids.length > MAX_WINDOW_SOURCE_IDS) throw new Error('share:find-window-source: expected a list of window source ids');
-    const clean: string[] = [];
-    for (const id of ids) {
-        if (typeof id !== 'string' || id.length > 64 || parseWindowSourceHandle(id) === null) {
-            throw new Error('share:find-window-source: not a window source id');
-        }
-        clean.push(id);
-    }
-    return { exe: name, ids: clean };
-}
-
-export interface WindowCandidate {
-    id: string;
-    /** The window's process basename, '' when unreadable. */
-    exe: string;
-    /** The window's visible area in px (0 = unknown). */
-    area: number;
-    /** Visible and not minimised. */
-    usable: boolean;
-}
-
-/**
- * The window source to pre-select for a game: the usable window(s) of that
- * program (case-insensitive), the largest one winning. Several windows of one
- * program are normal (a launcher, a splash); the game itself is the big one.
- * null = no match - the picker then just opens on the Window tab.
- */
-export function pickWindowByExe(candidates: readonly WindowCandidate[], exe: string): string | null {
-    const want = exe.toLowerCase();
-    if (!want) return null;
-    let best: WindowCandidate | null = null;
-    for (const c of candidates) {
-        if (!c.usable || c.exe.toLowerCase() !== want) continue;
-        if (!best || c.area > best.area) best = c;
-    }
-    return best ? best.id : null;
 }

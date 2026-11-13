@@ -3,7 +3,7 @@ import ReactDOM from 'react-dom';
 import { Track, Participant } from 'livekit-client';
 import { MicOff, Headphones, HeadphoneOff, Video, VideoOff, Monitor, MonitorOff } from 'lucide-react';
 import { EncryptedAvatar } from '../EncryptedAvatar';
-import { PopoverMenu, calcPopoverPos } from './PopoverMenu';
+import { PopoverMenu, SelfStreamMenu, calcPopoverPos } from './PopoverMenu';
 import { AnnotationGrantBadge } from './AnnotationGrantBadge';
 import { SignalBars, signalQuality } from './CallStatsPill';
 import { pingColor } from '../../hooks/useCallStats';
@@ -15,6 +15,7 @@ import { useParticipantAudio } from '../../hooks/useParticipantAudio';
 import { useDismissOnOutsideClick } from '../../hooks/useDismissOnOutsideClick';
 import { useOpenProfile } from '../../contexts/ProfileOpenContext';
 import { useCallServerCtx } from '../../contexts/CallServerCtx';
+import { useVoiceModerationTitles } from '../../utils/serverVoiceModeration';
 import { TileNamePill } from './TileCornerChrome';
 import { tileCornerInsets, tileChromeSlots } from './videoRectChrome';
 import { tileMetrics } from './participantTileMetrics';
@@ -128,7 +129,9 @@ export const ParticipantCard = ({
         serverMutedScreenShare: meta?.server_muted_screenshare === true,
         serverDeafened:         meta?.server_deafened === true,
     };
-    const isDeafened = meta?.deafened === true || modMeta.serverDeafened;
+    // SELF deafen only. A moderator's server deafen is a separate red badge and does
+    // not silence or dim this person: they can still talk (mute is what stops that).
+    const isDeafened = meta?.deafened === true;
     // useIsMicMuted subscribes to TrackMuted / TrackUnmuted events on p so the
     // icon updates immediately on mute toggle without waiting for a parent
     // re-render from useParticipants(). Reading p.isMicrophoneEnabled inline
@@ -138,6 +141,7 @@ export const ParticipantCard = ({
 
     const openProfile = useOpenProfile();
     const callServerCtx = useCallServerCtx();
+    const modTitles = useVoiceModerationTitles(callServerCtx?.serverId, p.identity);
 
     const handleToggle = (e?: React.MouseEvent) => {
         // Clicking your own tile opens your profile (consistent with every
@@ -159,10 +163,23 @@ export const ParticipantCard = ({
         setShowPopover(v => !v);
     };
 
+    // You hid your own screen share, so it has no tile left to right-click: this
+    // card is where the way back lives. Only then; otherwise a right-click on your
+    // own card opens your profile, as it always has.
+    const canRestoreOwnShare = isLocal && !!isHiddenScreenShare && hasActiveScreenShare && !!onHideScreenShareChange;
+
     const handleContextMenu = (e: React.MouseEvent) => {
         e.preventDefault();
         e.stopPropagation();
         window.dispatchEvent(new Event('close-all-popovers'));
+        if (canRestoreOwnShare) {
+            setPopoverPos({
+                left: Math.max(16, Math.min(e.clientX, window.innerWidth - 216)),
+                top: Math.max(16, Math.min(e.clientY, window.innerHeight - 96)),
+            });
+            setShowPopover(true);
+            return;
+        }
         handleToggle(e);
     };
 
@@ -176,6 +193,18 @@ export const ParticipantCard = ({
         window.addEventListener('close-all-popovers', closePopover);
         return () => window.removeEventListener('close-all-popovers', closePopover);
     }, [showPopover]);
+
+    const ownShareMenu = showPopover && canRestoreOwnShare && ReactDOM.createPortal(
+        <SelfStreamMenu
+            displayName={displayName}
+            ownShare="show"
+            onHideOwnShareChange={onHideScreenShareChange}
+            popoverRef={popoverRef}
+            style={popoverPos}
+            onClose={() => setShowPopover(false)}
+        />,
+        document.body,
+    );
 
     // ── Row mode (voice-channel list) ────────────────────────────────────────
     if (sizeMode === 'row') {
@@ -201,10 +230,10 @@ export const ParticipantCard = ({
                         (white/grey) and local-deafen (also red but for the local
                         user only). Each badge has a title for hover-explain. */}
                     {modMeta.serverMutedAudio && (
-                        <MicOff className="w-3.5 h-3.5 text-red-500" />
+                        <span title={modTitles.muted} className="inline-flex"><MicOff className="w-3.5 h-3.5 text-red-500" /></span>
                     )}
                     {modMeta.serverDeafened && (
-                        <HeadphoneOff className="w-3.5 h-3.5 text-red-500" />
+                        <span title={modTitles.deafened} className="inline-flex"><HeadphoneOff className="w-3.5 h-3.5 text-red-500" /></span>
                     )}
                     {modMeta.serverMutedVideo && (
                         <VideoOff className="w-3.5 h-3.5 text-red-500" />
@@ -226,10 +255,10 @@ export const ParticipantCard = ({
                     )}
                     {/* Skip the regular deafen/mute icons when server-muted —
                         the red server badge above already conveys the muted state. */}
-                    {isDeafened && !modMeta.serverDeafened && (
+                    {isDeafened && (
                         <Headphones className="w-3.5 h-3.5 text-red-400" />
                     )}
-                    {isMuted && !modMeta.serverMutedAudio && !modMeta.serverDeafened && (
+                    {isMuted && !modMeta.serverMutedAudio && (
                         <MicOff className="w-3.5 h-3.5 text-red-400" />
                     )}
                     {!isMuted && !isDeafened && isLocalMuted && (
@@ -240,6 +269,7 @@ export const ParticipantCard = ({
                     )}
                 </>}
             >
+                {ownShareMenu}
                 {showPopover && !isLocal && ReactDOM.createPortal(
                     <PopoverMenu
                         displayName={displayName}
@@ -322,6 +352,7 @@ export const ParticipantCard = ({
                     ) : null}
             </>}
         >
+            {ownShareMenu}
             {showPopover && !isLocal && ReactDOM.createPortal(
                 <PopoverMenu
                     displayName={displayName}
@@ -422,6 +453,7 @@ export const ParticipantRowShell = ({ userId, displayName, avatarId, token, spea
                 fallbackSize={13}
                 disableClickProfile
                 bypassFriendGate
+                speaking={speaking}
             />
         </div>
 
@@ -535,6 +567,7 @@ export const ParticipantTileShell = ({ userId, displayName, avatarId, token, siz
                         fallbackSize={effectiveCompact ? 14 : effectiveLarge ? 28 : 32}
                         disableClickProfile
                         bypassFriendGate
+                        speaking={speaking}
                     />
                 </button>
 

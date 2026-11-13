@@ -7,11 +7,14 @@ import { BookmarkPlus, Check } from 'lucide-react';
 import type { ToastInput } from '../contexts/ToastContext';
 import { personalEmojis } from '../utils/personalEmoji/service';
 import { isPersonalEmojiName, PERSONAL_EMOJI_LIBRARY_MAX } from '../utils/personalEmoji/token';
+import { repairEmojiName } from '../utils/emojiNames';
 import type { ContextMenuItem } from './primitives/ContextMenu';
 
 /** A name the library will accept: `name`, or `name_2`, `name_3`... if taken. */
 export function uniqueEmojiName(taken: ReadonlySet<string>, name: string): string {
-    const base = isPersonalEmojiName(name) ? name : 'emoji';
+    // A server emoji named before the underscore rule (`party-parrot`) saves as
+    // `party_parrot`, not a generic "emoji".
+    const base = isPersonalEmojiName(name) ? name : repairEmojiName(name);
     if (!taken.has(base)) return base;
     for (let n = 2; n < 1000; n++) {
         const suffix = `_${n}`;
@@ -37,7 +40,7 @@ export async function saveBytesToMyEmojis(bytes: Uint8Array, name: string, push:
     push({
         kind: 'error',
         title: "Couldn't save emoji",
-        message: res.error === 'full' ? `My Emojis is full (${PERSONAL_EMOJI_LIBRARY_MAX} max). Remove one in Settings > Personalize first.`
+        message: res.error === 'full' ? `My Emojis is full (${PERSONAL_EMOJI_LIBRARY_MAX} max). Remove one in Settings > Activity & Style first.`
             : res.error === 'too_large' ? 'That emoji is too large to save.'
             : res.error === 'signed_out' ? 'Sign in to save emojis.'
             : 'That emoji could not be saved.',

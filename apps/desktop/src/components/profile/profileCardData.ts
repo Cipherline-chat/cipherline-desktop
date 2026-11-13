@@ -24,6 +24,8 @@ export interface ProfileCardData {
     proSince?: string | null;
     badges?: readonly ProfileBadge[] | null;
     level?: number;
+    /** The points behind `level` (server `level_points`); null/absent = unknown (older server). */
+    levelPoints?: number | null;
     bio?: string | null;
     bioFriendsOnly?: boolean;
     timeZone?: string | null;

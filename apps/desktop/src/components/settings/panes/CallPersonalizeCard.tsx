@@ -20,7 +20,7 @@ import { CustomEntranceEditor, CustomEntranceStatus } from './CustomEntranceSoun
 import { useOwnEntranceSound } from '../../../utils/customEntranceSound/ui';
 
 /**
- * Settings > Personalize > Calls. Three things, all free, all public cosmetics:
+ * Settings > Activity & Style > Style > Calls. Three things, all free, all public cosmetics:
  *   - the color of your speaking ring (everyone in a call sees it), shown on
  *     your own avatar; a custom one comes from Cipherline's color picker,
  *   - the sound that plays for others when you join: a built-in one, or your

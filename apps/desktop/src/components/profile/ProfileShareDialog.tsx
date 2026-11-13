@@ -6,6 +6,7 @@ import { API_BASE } from '../../constants';
 import { useEncryptedAvatar } from '../../hooks/useEncryptedAvatar';
 import { useEscape } from '../../hooks/useEscape';
 import { writeToClipboard } from '../../utils/clipboard';
+import { copyImageBlob } from '../../utils/copyImage';
 import { drawShareCard, shareLinkFor, SHARE_CARD_H, SHARE_CARD_W } from '../../utils/shareCard';
 import type { ProfileCardData } from './profileCardData';
 import '../../styles/profile-v3.css';
@@ -100,8 +101,10 @@ export const ProfileShareDialog: React.FC<{
         setErr(null);
         try {
             const blob = await pngBlob();
-            if (!blob || typeof ClipboardItem === 'undefined' || !navigator.clipboard?.write) throw new Error('unsupported');
-            await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+            if (!blob) throw new Error('not ready');
+            // The shared helper: web Clipboard API first, then the preload bridge. Electron's permission
+            // handler refuses the web API in the app, so the bridge is what actually copies there.
+            await copyImageBlob(blob);
             setDone('image');
         } catch { setErr('Could not copy the image. Try Save image instead.'); }
     };

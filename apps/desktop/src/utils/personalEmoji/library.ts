@@ -24,6 +24,7 @@ import {
     PERSONAL_EMOJI_LIBRARY_MAX, PERSONAL_EMOJI_MAX_BYTES, PERSONAL_EMOJI_MIMES,
     isPersonalEmojiId, isPersonalEmojiName,
 } from './token';
+import { repairEmojiName } from '../emojiNames';
 
 export interface EmojiEntry {
     /** `p_` + content hash: also the key of the stored bytes. */
@@ -64,6 +65,13 @@ export function isValidEntry(e: unknown): e is EmojiEntry {
         && typeof c.addedAt === 'number' && Number.isFinite(c.addedAt);
 }
 
+function repairLegacyName(e: unknown): unknown {
+    if (!e || typeof e !== 'object') return e;
+    const c = e as { name?: unknown };
+    if (typeof c.name !== 'string' || isPersonalEmojiName(c.name)) return e;
+    return { ...(e as object), name: repairEmojiName(c.name) };
+}
+
 /** Coerce an untrusted state (a snapshot from the other device, or the
  *  persisted blob) to one the merge can trust. Invalid entries are dropped. */
 export function sanitizeLibrary(raw: unknown): EmojiLibState {
@@ -72,7 +80,13 @@ export function sanitizeLibrary(raw: unknown): EmojiLibState {
     const r = raw as { entries?: unknown; tombstones?: unknown };
     if (Array.isArray(r.entries)) {
         const seen = new Set<string>();
-        for (const e of r.entries) {
+        for (const raw of r.entries) {
+            // A name from before the letters/numbers/underscores rule (spaces,
+            // dashes...) is REPAIRED, not dropped: the emoji is the person's,
+            // only its label changes (red-heart -> red_heart). `normalise`
+            // below makes any collision unique (_2, _3). Deterministic, so two
+            // devices repair to the same name and still converge.
+            const e = repairLegacyName(raw);
             if (isValidEntry(e) && !seen.has(e.id)) {
                 seen.add(e.id);
                 out.entries.push({ id: e.id, name: e.name, mime: e.mime, animated: e.animated, size: e.size, order: e.order, at: e.at, addedAt: e.addedAt });

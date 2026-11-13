@@ -47,8 +47,9 @@ import {
     verifyHistoryRequestAdvertisement, HISTORY_REFUSED_LEGACY_REQUESTER,
 } from '../utils/historyRequestProof';
 import { shouldShowQrAuthorisedLine } from '../utils/recentTransfers';
-import { Monitor, Smartphone, X, Loader2, AlertTriangle, MessageSquare, Image as ImageIcon, Users, QrCode } from 'lucide-react';
+import { Monitor, Smartphone, X, Loader2, AlertTriangle, MessageSquare, Image as ImageIcon, Users, QrCode, Check, CheckCircle2 } from 'lucide-react';
 import { ClButton, ClCheckbox, ClModal } from './cl';
+import '../styles/history-request.css';
 
 interface HistoryRequest {
     device_id: string;
@@ -128,6 +129,14 @@ export const HistoryRequestModal: React.FC<Props> = ({ request, onClose }) => {
     const [error, setError] = useState<string | null>(null);
     const [progress, setProgress] = useState<{ done: number; total: number; bytes: number } | null>(null);
     const [working, setWorking] = useState(false);
+    // The transfer finished. The send button turns into a green "Sent" (which
+    // closes the dialog) for the moment before auto-close, instead of sitting
+    // on the loading dots under a "Done" line that still had a spinner.
+    const [sent, setSent] = useState(false);
+    // Synchronous re-entry guard. `working` (and the disabled button it drives)
+    // only lands on the next render, so two clicks in the same frame would
+    // otherwise both start an export + upload.
+    const sendingRef = useRef(false);
 
     // C-2b gate. `bundle` is the requester's key bundle fetched ONCE: the same
     // entry is used to verify the advertisement and, later, to wrap the
@@ -235,6 +244,8 @@ export const HistoryRequestModal: React.FC<Props> = ({ request, onClose }) => {
             setError('This device could not be verified. Refusing to send history.');
             return;
         }
+        if (sendingRef.current) return;
+        sendingRef.current = true;
         setWorking(true); setError(null);
 
         try {
@@ -328,11 +339,13 @@ export const HistoryRequestModal: React.FC<Props> = ({ request, onClose }) => {
             );
 
             setStatus('Done — history sent.');
+            setSent(true);
             setTimeout(handleClose, 1200);
         // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (err: any) {
             console.error('[HistoryRequestModal] send failed', err);
             setError(err?.response?.data?.message || err?.message || 'Transfer failed.');
+            sendingRef.current = false;
             setWorking(false);
             setStatus(null);
         }
@@ -447,11 +460,16 @@ export const HistoryRequestModal: React.FC<Props> = ({ request, onClose }) => {
                         </p>
                     )}
                 </div>
-                {!working && (
-                    <ClButton icon variant="ghost" onClick={handleClose} aria-label="Close" className="shrink-0">
-                        <X size={18} />
-                    </ClButton>
-                )}
+                {/* Hidden, not unmounted, while sending: removing it widened
+                    the text column and re-wrapped the subtitle mid-send.
+                    `visibility:hidden` also takes it out of the tab order and
+                    the accessibility tree. */}
+                <ClButton
+                    icon variant="ghost" onClick={handleClose} aria-label="Close" className="shrink-0"
+                    style={working ? { visibility: 'hidden' } : undefined}
+                >
+                    <X size={18} />
+                </ClButton>
             </div>
 
             {/* Range chips */}
@@ -525,8 +543,13 @@ export const HistoryRequestModal: React.FC<Props> = ({ request, onClose }) => {
             </p>
 
             {status && (
-                <div className="text-cl-lume bg-cl-lume/[0.08] border border-cl-lume/25 rounded-xl px-3 py-2 mb-3 text-[13px] flex items-center gap-2">
-                    <Loader2 size={14} className="animate-spin shrink-0" />
+                <div
+                    role="status"
+                    className="text-cl-lume bg-cl-lume/[0.08] border border-cl-lume/25 rounded-xl px-3 py-2 mb-3 text-[13px] flex items-center gap-2"
+                >
+                    {sent
+                        ? <CheckCircle2 size={14} className="shrink-0" />
+                        : <Loader2 size={14} className="animate-spin shrink-0" />}
                     <span className="flex-1">{status}</span>
                     {progress && progress.total > 0 && (
                         <span className="text-[11px] text-cl-lume/70 tabular-nums">
@@ -547,9 +570,21 @@ export const HistoryRequestModal: React.FC<Props> = ({ request, onClose }) => {
                 <ClButton fullWidth variant="ghost" style={{ flex: 1 }} disabled={working} onClick={handleDecline}>
                     Decline
                 </ClButton>
-                <ClButton fullWidth style={{ flex: 1 }} loading={working} disabled={noneSelected} onClick={handleSend} pressAnim="send">
-                    Send history
-                </ClButton>
+                {/* `hr-send` (styles/history-request.css) keeps the loading
+                    dots at the label's line height, so the cap no longer drops
+                    8px and bares the teal depth sheets mid-send. */}
+                {sent ? (
+                    <ClButton fullWidth variant="ok" className="hr-send" style={{ flex: 1 }} onClick={handleClose}>
+                        <Check size={15} strokeWidth={3} /> Sent
+                    </ClButton>
+                ) : (
+                    <ClButton
+                        fullWidth className="hr-send" style={{ flex: 1 }}
+                        loading={working} disabled={noneSelected} onClick={handleSend}
+                    >
+                        Send history
+                    </ClButton>
+                )}
             </div>
         </ClModal>
     );

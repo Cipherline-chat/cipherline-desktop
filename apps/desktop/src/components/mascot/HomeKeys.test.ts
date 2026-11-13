@@ -25,6 +25,8 @@ import { SHOWS, PERSONALITIES, type Personality } from '../../utils/keysSpam';
 import { spamBagKey, __resetSpamBagMemory } from '../../utils/keysSpamStore';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+/** The wardrobe's dice: a bare head unless a case asks for a hat (utils/keysWardrobe.ts). */
+const BARE = () => 0;
 
 /**
  * HomeKeys wired end to end in the DOM: real clicks on the rig, the spam
@@ -46,7 +48,7 @@ function mount(verdict: PlayVerdict = 'ok', userId = UID) {
     const onPoke = vi.fn();
     const canPlay = vi.fn(() => verdict);
     act(() => {
-        root!.render(React.createElement(HomeKeys, { userId, signal: 'idle', speech: null, lively: true, onPoke, canPlay, onPlay }));
+        root!.render(React.createElement(HomeKeys, { random: BARE, userId, signal: 'idle', speech: null, lively: true, onPoke, canPlay, onPlay }));
     });
     return { onPlay, onPoke, canPlay };
 }
@@ -342,7 +344,7 @@ describe('HomeKeys: reduced motion (Windows "Animation effects" off) still opens
             lineUp('dodge');
             const onPlay = vi.fn();
             act(() => {
-                root!.render(React.createElement(HomeKeys, {
+                root!.render(React.createElement(HomeKeys, { random: BARE,
                     userId: UID, signal: 'idle', speech: null, lively: true, onPoke: vi.fn(),
                     canPlay: () => homeGameVerdict(false, () => true), onPlay,
                 }));
@@ -449,7 +451,7 @@ describe('HomeKeys: the idle-CPU contract', () => {
 
     it('no swim at all when ambience is off', () => {
         act(() => {
-            root!.render(React.createElement(HomeKeys, { userId: UID, signal: 'idle', speech: null, lively: false, onPoke: () => {}, canPlay: (): PlayVerdict => 'ok', onPlay: () => {} }));
+            root!.render(React.createElement(HomeKeys, { random: BARE, userId: UID, signal: 'idle', speech: null, lively: false, onPoke: () => {}, canPlay: (): PlayVerdict => 'ok', onPlay: () => {} }));
         });
         expect(host.querySelector('.hk')?.getAttribute('data-swim')).toBe('off');
     });

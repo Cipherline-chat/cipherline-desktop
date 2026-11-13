@@ -116,6 +116,11 @@ export interface E2EEKeyHolder {
 /** What `installE2EEKey` needs: `ExternalE2EEKeyProvider` satisfies it structurally. */
 export interface E2EEKeyInstaller extends E2EEKeyHolder {
     setKey(key: ArrayBuffer): Promise<void>;
+    /**
+     * Present on `RotatingKeyProvider` (utils/e2eeKeyRing.ts): install the key
+     * of a known epoch at its own ring slot instead of overwriting index 0.
+     */
+    installKeyAtEpoch?(key: ArrayBuffer, epoch: number): Promise<void>;
 }
 
 export interface E2EEActivationHandlers {
@@ -148,12 +153,20 @@ export const DEFAULT_ACK_TIMEOUT_MS = 10_000;
  * This is the ONLY place a room key should enter the provider: it returns
  * the promise `activateRoomE2EE` needs as `keyReady`. Rotations go through
  * it too; only the first call's promise gates activation.
+ *
+ * `epoch` (DM/group calls: the call-key store's epoch for THIS key; absent
+ * for Calls channels and epoch-less adoptions) selects the key-ring path,
+ * see utils/e2eeKeyRing.ts.
  */
-export async function installE2EEKey(keyProvider: E2EEKeyInstaller, keyB64: string): Promise<void> {
+export async function installE2EEKey(keyProvider: E2EEKeyInstaller, keyB64: string, epoch?: number): Promise<void> {
     const binaryString = atob(keyB64); // throws on malformed input → rejection → no_key
     const bytes = new Uint8Array(binaryString.length);
     for (let i = 0; i < binaryString.length; i++) bytes[i] = binaryString.charCodeAt(i);
-    await keyProvider.setKey(bytes.buffer as ArrayBuffer);
+    // With a known epoch and a ring-capable provider the key goes to its own
+    // slot (frames sealed under the previous epoch keep decrypting during the
+    // grace); otherwise exactly the legacy index-0 overwrite.
+    if (epoch !== undefined && keyProvider.installKeyAtEpoch) await keyProvider.installKeyAtEpoch(bytes.buffer as ArrayBuffer, epoch);
+    else await keyProvider.setKey(bytes.buffer as ArrayBuffer);
     if (keyProvider.getKeys().length === 0) {
         throw new Error('E2EE key provider holds no key after setKey() resolved');
     }

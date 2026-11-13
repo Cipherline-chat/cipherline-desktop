@@ -186,10 +186,12 @@ let slotHolder: string | null = null;
  *  The class carries only what is common to every placement; the offsets come
  *  from `callOfferPosition()` (measured at runtime by hooks/useCallOfferAnchor)
  *  or, when the pane cannot be found, from CALL_OFFER_FALLBACK_CLASS.
- *  pointer-events-none: only the card itself takes clicks. z-[9500]: above the
- *  docked call UI, below modals. */
+ *  pointer-events-none: only the card itself takes clicks. The stacking order
+ *  (CALL_NOTICE_Z: above the docked call UI, BELOW every actionable call prompt)
+ *  is not in this class: it comes from utils/callNoticeLayer.ts, which owns the
+ *  whole sharer-side order — see callOfferWrapper(). */
 export const CALL_OFFER_WRAPPER_CLASS =
-    'fixed z-[9500] w-[340px] max-w-[calc(100vw-2rem)] pointer-events-none';
+    'fixed w-[340px] max-w-[calc(100vw-2rem)] pointer-events-none';
 
 /** Used when the main pane is not in the DOM (or not measured yet): 56px down,
  *  clear of the 34px titlebar, and 88px in = the 72px rail + a 16px inset. */
@@ -227,18 +229,56 @@ export function callOfferPosition(
  *  (`.fade-slide-left-enter` in index.css; off under prefers-reduced-motion). */
 export const CALL_OFFER_ENTER_CLASS = 'fade-slide-left-enter';
 
+const slotListeners = new Set<() => void>();
+function slotChanged(): void {
+    for (const l of [...slotListeners]) { try { l(); } catch { /* listener's problem */ } }
+}
+
 /** Take the single in-call offer surface. False if another offer holds it. */
 export function acquireCallOfferSlot(id: string): boolean {
     if (slotHolder !== null && slotHolder !== id) return false;
+    if (slotHolder === id) return true;
     slotHolder = id;
+    slotChanged();
     return true;
 }
 
 export function releaseCallOfferSlot(id: string): void {
-    if (slotHolder === id) slotHolder = null;
+    if (slotHolder !== id) return;
+    slotHolder = null;
+    slotChanged();
 }
 
 export function callOfferSlotHolder(): string | null { return slotHolder; }
 
+/**
+ * Queue for the slot instead of giving up. The offers above are DETECTIONS: one
+ * that finds the slot taken simply stays eligible and fires again later. A
+ * one-shot notice (the sharer's "drawings won't show on your screen") has no
+ * later: it must wait its turn, or it is lost. `onGranted` runs once, as soon as
+ * the slot is ours — at once if it is free. The returned function cancels the
+ * wait, or, once granted, gives the slot back.
+ */
+export function waitForCallOfferSlot(id: string, onGranted: () => void): () => void {
+    let granted = false;
+    let done = false;
+    const tryTake = () => {
+        if (done || granted || (slotHolder !== null && slotHolder !== id)) return;
+        // Marked BEFORE acquiring: the acquire notifies every listener, this one included.
+        granted = true;
+        slotListeners.delete(tryTake);
+        acquireCallOfferSlot(id);
+        onGranted();
+    };
+    slotListeners.add(tryTake);
+    tryTake();
+    return () => {
+        if (done) return;
+        done = true;
+        slotListeners.delete(tryTake);
+        if (granted) releaseCallOfferSlot(id);
+    };
+}
+
 /** Test-only. */
-export function __resetCallOfferSlotForTests(): void { slotHolder = null; }
+export function __resetCallOfferSlotForTests(): void { slotHolder = null; slotListeners.clear(); }

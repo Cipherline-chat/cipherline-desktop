@@ -1,6 +1,17 @@
 import React from 'react';
 import { Participant } from 'livekit-client';
+import { AnimatePresence } from 'framer-motion';
 import { ParticipantCard } from './ParticipantCard';
+import { PresenceMotion } from './presenceMotion';
+import { presenceExitContext, CALL_EASE_ENTER, CALL_EASE_EXIT, CALL_EASE_GLIDE, CALL_GLIDE_S } from './presenceVariants';
+import { currentCallPresenceTracker } from '../../utils/callPresenceLifecycle';
+
+/** Same fade as SidebarConference's tileItemVariants; joins / leaves add the presence pop. */
+const stripItemVariants = {
+    initial: { opacity: 0 },
+    animate: { opacity: 1, transition: { duration: 0.2, ease: CALL_EASE_ENTER } },
+    exit: { opacity: 0, transition: { duration: 0.14, ease: CALL_EASE_EXIT } },
+};
 
 interface AudioOnlyStripProps {
     participants: Participant[];
@@ -43,14 +54,29 @@ export const AudioOnlyStrip = ({
     canServerMute,
     onServerMuteTrack,
 }: AudioOnlyStripProps) => {
+    // The call's lifecycle tracker (SidebarConference feeds it the roster
+    // before this renders) — same surface key ('audio') as the rows / grid this
+    // strip replaces when video takes the space, so switching to the strip
+    // never replays a join.
+    const tracker = currentCallPresenceTracker();
+    const exitCtx = React.useMemo(() => presenceExitContext(tracker), [tracker]);
     if (participants.length === 0 && !ringingElement) return null;
 
     return (
         <div className="shrink-0 border-t border-white/5 px-3 py-2 max-h-[120px] overflow-y-auto custom-scrollbar">
             <div className="flex flex-row flex-wrap gap-2 justify-center items-start">
+                <AnimatePresence mode="popLayout" initial={false} custom={exitCtx}>
                 {participants.map(p => (
-                    <ParticipantCard
+                    <PresenceMotion
                         key={p.identity}
+                        pid={p.identity}
+                        surface="audio"
+                        tracker={tracker}
+                        layout
+                        variants={stripItemVariants}
+                        transition={{ layout: { duration: CALL_GLIDE_S, ease: CALL_EASE_GLIDE } }}
+                    >
+                    <ParticipantCard
                         p={p}
                         localParticipant={localParticipant}
                         token={token}
@@ -70,7 +96,9 @@ export const AudioOnlyStrip = ({
                         canServerMute={canServerMute}
                         onServerMuteTrack={onServerMuteTrack}
                     />
+                    </PresenceMotion>
                 ))}
+                </AnimatePresence>
                 {ringingElement}
             </div>
         </div>

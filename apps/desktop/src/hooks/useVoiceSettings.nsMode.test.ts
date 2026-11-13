@@ -1,7 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
 
 vi.mock('../utils/secureLocalStore', () => {
-    const mem = new Map<string, string>();
+    // Already past the one-time voice-defaults migration: these cover the loader itself.
+    const mem = new Map<string, string>([['cipherline_voice_defaults_migrated_v1', '1']]);
     return {
         default: {
             getItem: (k: string) => mem.get(k) ?? null,
@@ -17,11 +18,18 @@ import { DEFAULT_VOICE_SETTINGS, VOICE_SETTINGS_STORAGE_KEY, loadVoiceSettings }
 const save = (v: unknown) => secureLocalStore.setItem(VOICE_SETTINGS_STORAGE_KEY, JSON.stringify(v));
 
 describe('noiseSuppressionMode (Strong = RNNoise, Light = Speex)', () => {
-    it('defaults to Strong - the engine every existing user has been on', () => {
-        expect(DEFAULT_VOICE_SETTINGS.noiseSuppressionMode).toBe('strong');
+    it('defaults to Light for a new install (nothing saved)', () => {
+        expect(DEFAULT_VOICE_SETTINGS.noiseSuppressionMode).toBe('light');
+        secureLocalStore.removeItem(VOICE_SETTINGS_STORAGE_KEY);
+        expect(loadVoiceSettings().noiseSuppressionMode).toBe('light');
     });
 
-    it('settings saved before the mode existed load as Strong, everything else kept', () => {
+    it('an existing user who saved Strong (the old default) stays on Strong', () => {
+        save({ ...DEFAULT_VOICE_SETTINGS, noiseSuppressionMode: 'strong' });
+        expect(loadVoiceSettings().noiseSuppressionMode).toBe('strong');
+    });
+
+    it('settings saved before the mode existed load as Strong (what they were on), everything else kept', () => {
         save({ noiseSuppression: true, micVolume: 120 });
         const s = loadVoiceSettings();
         expect(s.noiseSuppressionMode).toBe('strong');

@@ -1,0 +1,101 @@
+/* ============================================================================
+   First friend, ever — components/FirstFriendCelebration.tsx (timeline there).
+   Transform + opacity ONLY (doctrine rule 11 for anything this big): no
+   filter, no animated box-shadow, no will-change. The layer lives ~3.8 s and
+   is unmounted afterwards. It sits on the shared egg scrim at the moments'
+   layer: above every app layer and modal, below the toast stack (60000).
+   ============================================================================ */
+.ff-root {
+  position: fixed; inset: 0; z-index: 50000;
+  pointer-events: none; overflow: hidden; contain: strict;
+}
+/* Everything but the scrim fades and drifts down a touch on the way out. */
+.ff-scene {
+  position: absolute; inset: 0;
+  animation: ff-out var(--ff-exit, .6s) cubic-bezier(.45, 0, .55, 1) var(--ff-exit-at, 3.2s) forwards;
+}
+@keyframes ff-out { from { opacity: 1; transform: none; } to { opacity: 0; transform: translateY(10px); } }
+
+/* The point the burst comes out of: a little above the middle, so the words fit under Keys. */
+.ff-anchor { position: absolute; left: 50%; top: 44%; width: 0; height: 0; }
+
+/* A soft Lume bloom behind Keys (the "glow in the deep" itself). */
+.ff-glow {
+  position: absolute; left: -170px; top: -170px; width: 340px; height: 340px; border-radius: 50%;
+  background: radial-gradient(circle, rgba(37, 224, 200, .26) 0%, rgba(37, 224, 200, .08) 42%, rgba(37, 224, 200, 0) 68%);
+  opacity: 0;
+  animation: ff-glow .9s cubic-bezier(.2, .8, .3, 1) .1s both;
+}
+@keyframes ff-glow { from { transform: scale(.4); opacity: 0; } to { transform: none; opacity: 1; } }
+
+/* The pulse that sets it off: two Lume rings, one after the other. */
+.ff-ring {
+  position: absolute; left: -60px; top: -60px; width: 120px; height: 120px; border-radius: 50%;
+  border: 2px solid var(--cl-lume, #25E0C8); opacity: 0;
+  animation: ff-ring .9s cubic-bezier(.2, .8, .3, 1) .1s both;
+}
+.ff-ring-2 { animation-delay: .32s; border-color: var(--cl-lume-hi, #3BEAD6); }
+@keyframes ff-ring {
+  0% { transform: scale(.3); opacity: 0; } 20% { opacity: .9; } 100% { transform: scale(3.2); opacity: 0; }
+}
+
+/* The burst: plankton dots, bubbles and a few chips fly out fast, then sink slowly and fade. */
+.ff-p {
+  position: absolute; left: 0; top: 0;
+  width: var(--s, 6px); height: var(--s, 6px);
+  margin: calc(var(--s, 6px) / -2) 0 0 calc(var(--s, 6px) / -2);
+  border-radius: 50%; background: currentColor; opacity: 0;
+  animation: ff-burst var(--t, 2.6s) linear var(--d, .15s) both;
+}
+.ff-p--ring { background: none; border: 1.5px solid currentColor; }
+.ff-p--chip { border-radius: 2px; height: calc(var(--s, 6px) * .6); }
+@keyframes ff-burst {
+  0%   { transform: translate(0, 0) scale(.3) rotate(0deg); opacity: 0; animation-timing-function: cubic-bezier(.12, .8, .3, 1); }
+  5%   { opacity: 1; }
+  34%  { transform: translate(var(--dx), var(--dy)) scale(1) rotate(calc(var(--rot) * .5)); opacity: 1; animation-timing-function: cubic-bezier(.4, 0, .7, 1); }
+  72%  { opacity: .85; }
+  100% { transform: translate(var(--dx), calc(var(--dy) + var(--sink, 60px))) scale(.75) rotate(var(--rot)); opacity: 0; }
+}
+
+/* Slow bubbles rising from the bottom edge. */
+.ff-bubble {
+  position: absolute; bottom: -24px; border-radius: 50%;
+  border: 1.5px solid rgba(37, 224, 200, .5); opacity: 0;
+  animation: ff-rise var(--t, 3s) ease-in var(--d, 0s) both;
+}
+@keyframes ff-rise {
+  0% { transform: translateY(0); opacity: 0; } 15% { opacity: .8; }
+  100% { transform: translate(var(--drift, 0px), -70vh); opacity: 0; }
+}
+
+/* Keys pops up in the middle of the burst (soft overshoot), then waves. */
+.ff-keys { position: absolute; left: -64px; top: -78px; width: 128px; }
+.ff-keys-pop { animation: ff-pop .55s cubic-bezier(.3, 1.4, .4, 1) .12s both; transform-origin: 50% 80%; }
+@keyframes ff-pop { from { transform: translateY(18px) scale(.4); opacity: 0; } to { transform: none; opacity: 1; } }
+
+/* The words, under Keys. */
+.ff-text {
+  position: absolute; left: 0; top: 64px; transform: translateX(-50%);
+  text-align: center; white-space: nowrap;
+}
+.ff-headline {
+  font-family: var(--cl-font-display, 'Fredoka', sans-serif); font-weight: 600;
+  font-size: 32px; line-height: 1.15; color: var(--cl-text, #F4F7FF);
+  animation: ff-rise-in .45s cubic-bezier(.2, .8, .3, 1) .45s both;
+}
+.ff-line {
+  margin-top: 6px;
+  font-family: var(--cl-font-body, 'Nunito', sans-serif); font-weight: 700;
+  font-size: 16px; color: var(--cl-lume, #25E0C8);
+  animation: ff-rise-in .45s cubic-bezier(.2, .8, .3, 1) .65s both;
+}
+@keyframes ff-rise-in { from { transform: translateY(10px); opacity: 0; } to { transform: none; opacity: 1; } }
+
+@media (max-width: 640px) {
+  .ff-headline { font-size: 26px; }
+}
+/* Dashboard never mounts it under reduced motion; if the setting flips mid-play, nothing travels. */
+@media (prefers-reduced-motion: reduce) {
+  .ff-root * { animation: none !important; }
+  .ff-p, .ff-ring, .ff-bubble, .ff-glow { display: none; }
+}

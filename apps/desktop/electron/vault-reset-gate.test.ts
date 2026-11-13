@@ -107,6 +107,35 @@ describe('vault-reset-gate — legitimate recovery flows still work', () => {
     });
 });
 
+describe('refused system wallet (Linux): reset is refused, recovery is not', () => {
+    it('factory reset is refused BEFORE asking, and never performed, while the wallet is refused', async () => {
+        const h = harness({ state: 'locked', walletDenied: () => true });
+        expect(await h.gate.factoryReset()).toEqual({ ok: false, reason: 'wallet' });
+        expect(h.calls.reset).toBe(0);
+        expect(h.calls.confirms).toEqual([]);
+    });
+
+    it('also refused if the wallet is refused only after the dialog was answered (re-check)', async () => {
+        let denied = false;
+        const h = harness({ state: 'locked', confirm: async () => { denied = true; return true; }, walletDenied: () => denied });
+        expect(await h.gate.factoryReset()).toEqual({ ok: false, reason: 'wallet' });
+        expect(h.calls.reset).toBe(0);
+    });
+
+    it('NEGATIVE CONTROL: with the wallet fine (or on another platform) a locked store can still be reset', async () => {
+        const h = harness({ state: 'locked', walletDenied: () => false });
+        expect(await h.gate.factoryReset()).toEqual({ ok: true });
+        expect(h.calls.reset).toBe(1);
+        const none = harness({ state: 'locked' }); // dep absent: Windows / macOS
+        expect(await none.gate.factoryReset()).toEqual({ ok: true });
+    });
+
+    it('recovery with the user’s own key is still allowed while the wallet is refused', async () => {
+        const h = harness({ state: 'locked', empty: false, walletDenied: () => true });
+        expect(await h.gate.recoverWithKey('GOOD')).toEqual({ ok: true });
+    });
+});
+
 describe('wiring', () => {
     it('main.ts routes both channels through the gate; the screens stop when main refuses', () => {
         const main = fs.readFileSync(path.join(__dirname, 'main.ts'), 'utf8');

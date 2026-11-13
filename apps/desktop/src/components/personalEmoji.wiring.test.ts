@@ -51,17 +51,18 @@ describe('My Emojis wiring', () => {
         const picker = read('EmojiPicker.tsx');
         expect(read('emojiPickerTabs.ts')).toContain("categoryId: 'my_emojis'");
         expect(picker).toContain('buildEmojiTabCategories(');
-        expect(chat).toContain('searchEmojiWithCustom(query, serverEmojis, myEmojiEntries)');
+        expect(chat).toContain('searchEmojiWithCustom(query, serverEmojis, myEmojiEntries');
     });
 
-    it('Settings has a Personalize pane in the left nav, rendered, with search entries', () => {
+    it('Settings has My Emojis under Activity & Style (the old Personalize pane) in the left nav, rendered, with search entries', () => {
         // DepthGauge pulls in the whole settings UI, so read the nav as text:
-        // 'personalize' must sit inside the first (Surface) zone, before Twilight.
+        // 'activityStyle' must sit inside the first (Surface) zone, before Twilight.
         const nav = read('settings/DepthGauge.tsx');
         const surface = nav.slice(nav.indexOf("name: 'Surface'"), nav.indexOf("name: 'Twilight'"));
-        expect(surface).toContain("{ id: 'personalize', label: 'Personalize'");
-        expect(read('settings/SettingsScreen.tsx')).toContain("pane === 'personalize' && <PersonalizePane />");
-        expect(SETTINGS_INDEX.personalize.some(e => e.label === 'My Emojis')).toBe(true);
+        expect(surface).toContain("{ id: 'activityStyle', label: 'Activity & Style'");
+        expect(read('settings/SettingsScreen.tsx')).toContain("pane === 'activityStyle' && <ActivityStylePane />");
+        expect(read('settings/panes/ActivityStylePane.tsx')).toContain('<MyEmojisCard />');
+        expect(SETTINGS_INDEX.activityStyle.some(e => e.label === 'My Emojis')).toBe(true);
     });
 
     it('the content boundary does not reject the new optional field on text, edit or reaction', () => {

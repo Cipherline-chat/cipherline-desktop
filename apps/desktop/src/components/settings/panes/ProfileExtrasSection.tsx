@@ -12,7 +12,7 @@ import { patchErrorMessage } from '../../../utils/patchErrorMessage';
 import { SettingsDisclosure } from '../SettingsDisclosure';
 import { ProfileLinksEditor } from './ProfileLinksEditor';
 import { ProfileGamesEditor } from './ProfileGamesEditor';
-import { SteamConnect } from './SteamConnect';
+import { revealSetting } from '../revealSetting';
 import { useSteamCard } from '../../../hooks/useProfileRelations';
 import {
     BLOCK_LABELS, INTERESTS, INTERESTS_MAX, MAX_LEVEL, SHOWCASE_BLOCKS, SLOT_LEVELS,
@@ -29,8 +29,9 @@ import '../../../styles/profile-settings.css';
  *
  *  - Your level (a ring) and what the next level adds.
  *  - The card's sections in order. Each row says what is in it; open it to
- *    edit that content right there (Steam, games, links, interests, featured
- *    achievements). Rows stay open until you close them (several at once).
+ *    edit that content right there (games, links, interests, featured
+ *    achievements). Steam's row points at the Steam card below
+ *    (ProfileSteamSection), the one place Steam is connected and managed. Rows stay open until you close them (several at once).
  *    Reorder with the arrows, remove with the cross, add from the list of
  *    unused ones while you have a free slot.
  *
@@ -189,16 +190,23 @@ export const ProfileExtrasSection: React.FC<{
     const editor = (b: ShowcaseBlock): React.ReactNode => {
         switch (b) {
             case 'games': return <ProfileGamesEditor games={games} disabled={busy} onChange={saveGames} />;
+            // Connecting, unlinking and the stats switch live in ONE place, the Steam
+            // card under this one (ProfileSteamSection) - no second Connect button here.
             case 'steam': return (
-                <SteamConnect
-                    token={token} userId={userId} linked={!!saved.steam} card={steamCard}
-                    onChanged={() => onSaved({})}
-                />
+                <p className="ps-note" style={{ marginTop: 0 }} data-testid="showcase-steam-pointer">
+                    {saved.steam ? 'Shows your verified Steam account.' : 'Shows your Steam account once you connect it.'}{' '}
+                    <button
+                        type="button" className="pcd-link-btn"
+                        onClick={(e) => { const root = e.currentTarget.closest<HTMLElement>('.pp-main') ?? document.body; revealSetting(root, 'Steam account'); }}
+                    >
+                        {saved.steam ? 'Manage Steam' : 'Connect Steam'}
+                    </button>
+                </p>
             );
             case 'links': return (
                 <ProfileLinksEditor
                     links={links} disabled={busy} onChange={saveLinks}
-                    verifiedSteam={saved.steam ? { label: steamCard?.persona_name ?? 'Steam account' } : null}
+                    steam={{ token, userId, linked: !!saved.steam, card: steamCard, onChanged: () => onSaved({}) }}
                 />
             );
             case 'interests': return (
@@ -241,7 +249,7 @@ export const ProfileExtrasSection: React.FC<{
             );
             case 'most_played': return (
                 <p className="ps-note" style={{ marginTop: 0 }}>
-                    Your top three games this week. Only friends see it, and only while sharing is on in Personalize, under Activity.
+                    Your top three games this week. Only friends see it, and only while sharing is on in Activity &amp; Style.
                 </p>
             );
             default: return null;
@@ -255,7 +263,7 @@ export const ProfileExtrasSection: React.FC<{
             <SettingsDisclosure
                 id="profile.showcase" variant="card" title="Showcase"
                 summary={`Level ${level}${level >= MAX_LEVEL ? ' (max)' : ''}, ${blocks.length} of ${slots} sections`}
-                labels={['Showcase', 'Level', 'Steam', 'Connect Steam', 'Top achievements', 'Games & links', 'Favorite games', 'Links', 'Interests']}
+                labels={['Showcase', 'Level', 'Top achievements', 'Games & links', 'Favorite games', 'Links', 'Interests']}
             >
                 <div data-testid="extras-section" aria-busy={busy}>
                     <div className="ps-level" data-testid="level-card">

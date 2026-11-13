@@ -49,7 +49,7 @@ const maxed: ProfileCardData = {
     ...bare, name: 'Dawson', isPro: true, proSince: '2025-02', level: 9,
     badges: [{ badge_id: 'b1', icon: 'star', color: 'gold', label: 'Founder', sort_order: 0 }],
     bio: 'Building the quiet internet.', bioFriendsOnly: true, timeZone: 'America/Toronto', localTimeFriendsOnly: true, friendsSince: '2024-10',
-    theme: { primary: '#ffc94d', accent: '#ff6b5e' }, decoration: 'keys-crown', effect: 'plankton',
+    theme: { primary: '#ffc94d', accent: '#ff6b5e' }, decoration: 'circlet', effect: 'plankton',
     blocks: ['achievements', 'links', 'games', 'interests', 'steam', 'most_played'], topAchievements: ['voice-500h', 'streak-100', 'eggs-30'],
     steam: { steamId: '76561197960287930', personaName: 'gaben', avatar: null }, games: ['Hollow Knight', 'Celeste'], gamesFriendsOnly: true,
     links: [{ platform: 'github', handle: 'dawson' }], linksFriendsOnly: true, interests: ['chess', 'coffee'], myInterests: ['chess'],
@@ -207,9 +207,9 @@ describe('the full profile', () => {
 
     it('the verified Steam block opens Steam through the link opener', () => {
         const open = vi.fn();
-        full(maxed, { onOpenLink: open });
+        full(maxed, { onOpenSteam: open });
         act(() => (q('.pcd-steam') as HTMLButtonElement).click());
-        expect(open).toHaveBeenLastCalledWith({ platform: 'steam', handle: '76561197960287930' });
+        expect(open).toHaveBeenLastCalledWith('76561197960287930');
     });
 
     it('shared interests are highlighted for someone else', () => {

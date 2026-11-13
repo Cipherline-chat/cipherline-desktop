@@ -12,7 +12,12 @@
  * utils/profileExtras.ts): never a badge, limit, permission or entitlement.
  * Do not change that without moving the checks server-side.
  *
- * Rules are deliberately long-term. `progress` is the only place a rule lives:
+ * Rules are mostly long-term. The four STARTERS at the top are the exception:
+ * a new account earns them in its first day or two, so the list is not all
+ * locked on day one. They read only signals the device already has (its own
+ * message / call counters, the verified set) or that are already
+ * public (whether your profile has a banner, theme colours, decoration or effect), so they add no metadata.
+ * `progress` is the only place a rule lives:
  * unlocked <=> current >= target, and the same numbers drive the progress bar
  * (self only, never sent anywhere).
  */
@@ -21,7 +26,7 @@ import type { Totals } from './state';
 export type AchievementTier = 'bronze' | 'silver' | 'gold';
 
 /** How a progress number is shown. */
-export type ProgressUnit = 'hours' | 'count' | 'days' | 'people';
+export type ProgressUnit = 'hours' | 'minutes' | 'count' | 'days' | 'people';
 
 export interface Progress {
     current: number;
@@ -34,6 +39,8 @@ export interface AchievementDef {
     description: string;
     tier: AchievementTier;
     secret: boolean;
+    /** A first-day achievement: the locked list puts these first (they are the next step). */
+    starter?: true;
     /** Key into the icon map in AchievementsPanel (kept out of here so this stays node-testable). */
     icon: string;
     unit: ProgressUnit;
@@ -43,6 +50,15 @@ export interface AchievementDef {
 const at = (current: number, target: number): Progress => ({ current, target });
 
 export const ACHIEVEMENTS: readonly AchievementDef[] = [
+    // Starters: a new account's first day or two. All bronze.
+    { id: 'msgs-10', starter: true, name: 'Message in a Bottle', tier: 'bronze', secret: false, icon: 'message', unit: 'count',
+      description: 'Send 10 messages.', progress: t => at(t.messages, 10) },
+    { id: 'voice-10m', starter: true, name: 'Testing the Waters', tier: 'bronze', secret: false, icon: 'mic', unit: 'minutes',
+      description: 'Spend 10 minutes in a call or voice channel.', progress: t => at(t.voiceMinutes, 10) },
+    { id: 'profile-custom', starter: true, name: 'New Face', tier: 'bronze', secret: false, icon: 'portrait', unit: 'count',
+      description: 'Customize your profile.', progress: t => at(t.profileCustom, 1) },
+    { id: 'verify-1', starter: true, name: 'Handshake', tier: 'bronze', secret: false, icon: 'shield', unit: 'count',
+      description: 'Verify a safety number with a friend.', progress: t => at(t.verified, 1) },
     { id: 'voice-100h', name: 'Deep Listener', tier: 'bronze', secret: false, icon: 'mic', unit: 'hours',
       description: 'Spend 100 hours in calls and voice channels.', progress: t => at(t.voiceHours, 100) },
     { id: 'voice-500h', name: 'Abyssal Voice', tier: 'silver', secret: false, icon: 'mic', unit: 'hours',

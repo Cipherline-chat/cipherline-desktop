@@ -112,7 +112,9 @@ describe('every decode path checks the content before storing or rendering it', 
     it('the DM pull loop stores a placeholder for malformed content', () => {
         const loop = dash.slice(dash.indexOf('const pullMessagesOnce = React.useCallback'), dash.indexOf('const pullMessages = React.useCallback'));
         expect(loop).toContain('contentProblem(content)');
-        expect(loop).toContain("keepPlaceholder(env, 'malformed')");
+        // A malformed safety_number is a message, so settleUnshowable keeps its
+        // placeholder (only control messages are dropped — unshowableRows.test.ts).
+        expect(loop).toContain("settleUnshowable(env, 'malformed', content, problem)");
     });
 
     it('both channel decode paths (live and history) check it too', () => {

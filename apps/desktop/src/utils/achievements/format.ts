@@ -14,3 +14,18 @@ export function formatPlayTime(minutes: number): string {
     const h = minutes / 60;
     return `${h < 10 ? h.toFixed(1).replace(/\.0$/, '') : Math.round(h)} h`;
 }
+
+/** What the unlock toast says. Several unlocks that land together share ONE toast. */
+export function unlockToastText(defs: ReadonlyArray<{ name: string; description: string }>): { title: string; message: string } | null {
+    if (defs.length === 0) return null;
+    if (defs.length === 1) return { title: `Achievement unlocked: ${defs[0].name}`, message: defs[0].description };
+    return { title: `${defs.length} achievements unlocked`, message: defs.map(d => d.name).join(' · ') };
+}
+
+/** Unlocks this close together share one toast. */
+export const UNLOCK_TOAST_GATHER_MS = 1500;
+/** Right after launch the window is longer, so everything the tracker settles at boot shares ONE toast. */
+export const BOOT_TOAST_GATHER_MS = 6000;
+
+/** How long to wait before showing the toast for an unlock that starts a gather now (`bootEnd` = launch + BOOT_TOAST_GATHER_MS). */
+export const unlockToastDelayMs = (now: number, bootEnd: number): number => Math.max(UNLOCK_TOAST_GATHER_MS, bootEnd - now);

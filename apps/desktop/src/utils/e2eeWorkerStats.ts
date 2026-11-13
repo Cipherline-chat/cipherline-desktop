@@ -78,15 +78,47 @@ export function decryptErrorReason(err: unknown): 'invalid_key' | 'missing_key' 
 }
 
 /**
- * The E2EE worker's audio-lag windows (utils/e2eeAudioLag.ts) → `e2ee_audio_lag`
- * call events: direction, frames, frames dropped to stay inside the cap, the
- * worst lag seen (ms) and re-bases. Counts only.
+ * The E2EE worker's audio-lag windows (utils/e2eeAudioLag.ts) -> `e2ee_audio_lag`
+ * call events: direction, windows folded, frames, frames dropped to stay inside the cap,
+ * the worst lag seen (ms) and re-bases. Counts only.
+ *
+ * The worker reports every 10 s that came within AUDIO_LAG_REPORT_MS (120 ms) of the cap, and
+ * on the receive side that is ordinary network jitter (the lag includes arrival jitter; NetEq
+ * absorbs it, and nothing is dropped below the 1 s cap): both 2026-11-10 loudness reports had
+ * 41 and 51 of these (median ~205 ms, max ~515 ms, 0 dropped), half of each report, saying
+ * nothing. So windows are folded per direction over AUDIO_LAG_FOLD_MS and an event is logged
+ * only when the fold is worth reading: a frame was dropped, the clock was re-based, or the
+ * worst lag reached AUDIO_LAG_NOTABLE_MS. Anything dropped is also still console.warn'd at once.
  */
+export const AUDIO_LAG_FOLD_MS = 60_000;
+export const AUDIO_LAG_NOTABLE_MS = 400;
+
+export interface AudioLagFold { dir: string; windows: number; frames: number; dropped: number; maxMs: number; rebases: number }
+
+export class AudioLagFolder {
+    private acc = new Map<string, AudioLagFold & { since: number }>();
+    /** Fold one worker window in; returns the event detail when a fold closes and is notable. */
+    add(s: { dir: string; frames: number; dropped: number; maxMs: number; rebases: number }, now: number): AudioLagFold | null {
+        let a = this.acc.get(s.dir);
+        if (!a) { a = { dir: s.dir, windows: 0, frames: 0, dropped: 0, maxMs: 0, rebases: 0, since: now }; this.acc.set(s.dir, a); }
+        a.windows++; a.frames += s.frames; a.dropped += s.dropped; a.rebases += s.rebases;
+        if (s.maxMs > a.maxMs) a.maxMs = s.maxMs;
+        // Anything that dropped or re-based is reported at once; a quiet fold waits for its minute.
+        const urgent = s.dropped > 0 || s.rebases > 0;
+        if (!urgent && now - a.since < AUDIO_LAG_FOLD_MS) return null;
+        this.acc.delete(s.dir);
+        const notable = a.dropped > 0 || a.rebases > 0 || a.maxMs >= AUDIO_LAG_NOTABLE_MS;
+        return notable ? { dir: a.dir, windows: a.windows, frames: a.frames, dropped: a.dropped, maxMs: a.maxMs, rebases: a.rebases } : null;
+    }
+}
+
 export function attachAudioLagLog(worker: Pick<Worker, 'addEventListener'>): void {
+    const folder = new AudioLagFolder();
     worker.addEventListener('message', (ev: MessageEvent) => {
         const s = audioLagStatsFromMessage(ev.data);
         if (!s) return;
-        logCallEvent('e2ee_audio_lag', { dir: s.dir, frames: s.frames, dropped: s.dropped, max_ms: s.maxMs, rebases: s.rebases });
+        const f = folder.add(s, Date.now());
+        if (f) logCallEvent('e2ee_audio_lag', { dir: f.dir, windows: f.windows, frames: f.frames, dropped: f.dropped, max_ms: f.maxMs, rebases: f.rebases });
         if (s.dropped > 0) console.warn(`[E2EE] ${s.dir} audio fell ${s.maxMs} ms behind in the E2EE worker; dropped ${s.dropped} late frame(s) to catch up`);
     });
 }

@@ -12,7 +12,7 @@ const readServerEnabled = () => betaReporter.getState().serverEnabled;
  *
  * Rendered ONLY while the server has beta diagnostics switched on (GET
  * /v1/client-status `beta_diagnostics`) — outside the beta there is nothing to
- * share and no toggle to show. Default ON; per account on this device; never
+ * share and no toggle to show. Opt-in (default OFF); per account on this device; never
  * restored from a backup (backupRegistry.ts).
  */
 export const BetaDiagnosticsSetting: React.FC<{ userId: string | null; serverEnabled?: boolean }> = ({ userId, serverEnabled }) => {

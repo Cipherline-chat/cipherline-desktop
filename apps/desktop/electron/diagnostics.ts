@@ -36,6 +36,7 @@
  * re-validates everything it receives over IPC.
  */
 import { createScrubber, type Scrubber } from './diagnostics-scrub';
+import type { linuxSessionInfo } from './capture-flags';
 
 // ── Types (structural copy of the renderer's CrashInfo / SystemInfo) ─────────
 
@@ -556,6 +557,10 @@ export interface SystemInfoLike {
     displays: Array<{ width: number; height: number; scale_factor: number; refresh_hz: number; primary: boolean }>;
     hardware_acceleration: boolean;
     uptime_s: number;
+    /** Linux only (capture-flags.ts linuxSessionInfo). */
+    linux_session?: NonNullable<ReturnType<typeof linuxSessionInfo>>;
+    /** Linux only: the hardware video DECODE launch decision (linux-video-decode.ts). */
+    linux_hw_decode?: { active: boolean; reason: string; nvidia: string; gpus: string; libva_driver: string | null; hint: string | null; failure_this_launch: boolean };
 }
 
 const hex = (n: unknown): string => (typeof n === 'number' && Number.isFinite(n) && n >= 0 ? `0x${Math.trunc(n).toString(16)}` : '0x0');

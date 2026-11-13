@@ -82,6 +82,12 @@
 .hkg-headset, .hkg-phones { --hkg-off: translateY(-16%) scale(1.06); }
 .hkg-mask     { --hkg-off: translateY(-12%) scaleY(.5); }
 .hkg-crown    { --hkg-off: translate(-6%, -22%) rotate(-25deg); transform-origin: 40% 15%; }
+/* the rest of the wardrobe (utils/keysWardrobe.ts): each goes on its own way */
+.hkg-beanie   { --hkg-off: translateY(-30%) scale(.92, .8); transform-origin: 50% 25%; }   /* pulled down over his dome */
+.hkg-captain  { --hkg-off: translate(10%, -30%) rotate(28deg); transform-origin: 53% 15%; }  /* tossed on, spinning in */
+.hkg-snorkel  { --hkg-off: translateY(-22%) scaleY(.6); transform-origin: 50% 40%; }        /* slid down over his eyes */
+.hkg-shades   { --hkg-off: translateY(16%) scale(.94); transform-origin: 50% 25%; }         /* pushed up off his eyes */
+.hkg-flower   { --hkg-off: scale(0) rotate(-120deg); transform-origin: 26.4% 22.8%; }        /* blooms where it sits */
 .hkg-lantern  { --hkg-off: translateY(-10%) scale(.8); transform-origin: 60% 30%; }
 .hkg-camoeyes { --hkg-off: none; }
 .hkg-pad, .hkg-frame, .hkg-box, .hkg-papers, .hkg-mug { --hkg-off: translateY(16%) scale(.7); transform-origin: 50% 80%; }

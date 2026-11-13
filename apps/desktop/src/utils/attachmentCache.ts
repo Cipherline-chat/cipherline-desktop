@@ -28,6 +28,7 @@
  */
 
 import { wrapBlob, unwrapBlob, getBlobCacheKey } from './blobCacheKey';
+import { withSniffedImageType } from './imageSniff';
 
 const DB_NAME = 'cipherline';
 const STORE = 'attachments_enc';
@@ -222,7 +223,10 @@ export async function getAvatarBlob(attachmentId: string): Promise<Blob | null> 
             if (kind) entry.kind = kind;
             run<IDBValidKey>(AVATAR_STORE, 'readwrite', store => store.put(entry, attachmentId)).catch(() => {});
         }
-        return await unwrapBlob(rawBlob);
+        // The wrap does not carry the type, so unwrap yields `type: ''`. Restore it
+        // from the bytes: the still gate (utils/animatedImage) reads it to decide
+        // whether an avatar can animate, and an untyped GIF used to play natively.
+        return await withSniffedImageType(await unwrapBlob(rawBlob));
     } catch (e) {
         console.warn('[attachmentCache] avatar read/unwrap failed', e);
         return null;

@@ -16,10 +16,12 @@ describe('profile customisation wiring', () => {
         expect(read('./ProfileCardParts.tsx')).toContain('<AvatarDecoration');
         expect(read('./profile/ProfilePopoutCard.tsx')).toContain('<AvatarDecoration decoration={data?.decoration}');
         expect(read('./profile/ProfileFullView.tsx')).toContain('<AvatarDecoration decoration={data?.decoration}');
-        expect(read('./ProfileModal.tsx')).toContain('decoration: profile.avatar_decoration');
-        expect(read('./FriendsPane.tsx')).toContain('decoration={f.avatar_decoration}');
+        expect(read('./profile/buildProfileCardData.ts')).toContain('decoration: profile.avatar_decoration ?? null');
+        expect(read('./ProfileModal.tsx')).toContain('buildProfileCardData(profile');
+        expect(read('./profile/DmProfileCard.tsx')).toContain('buildProfileCardData(profile');
+        expect(read('./FriendsPane.tsx')).toContain('<AvatarDecoration {...decorationLook(f, peekProfile(f.user_id))}');
         expect(read('./StatusPicker.tsx')).toContain('<AvatarDecoration');
-        expect(read('./Dashboard.tsx')).toContain('avatarDecoration={user?.avatar_decoration ?? null}');
+        expect(read('./Dashboard.tsx')).toContain('decorationLook={myDecorationLook}');
     });
     it('the effect and the theme belong to the card only', () => {
         // Both profile surfaces loop the effect (it keeps playing while the window is in front).
@@ -29,7 +31,7 @@ describe('profile customisation wiring', () => {
         const fullView = read('./profile/ProfileFullView.tsx');
         expect(fullView).toContain('<ProfileEffect effect={data?.effect} tint={tint} options={data?.effectOptions} loop />');
         expect(fullView).toContain('themeCardStyle(theme)');
-        const modal = read('./ProfileModal.tsx');
+        const modal = read('./profile/buildProfileCardData.ts');
         expect(modal).toContain('effect: profile.profile_effect');
         expect(modal).toContain('theme: readTheme(profile.profile_theme)');
         // The Settings preview is the same card component (the preview popover), not a copy of it.

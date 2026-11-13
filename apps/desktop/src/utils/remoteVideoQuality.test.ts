@@ -4,7 +4,7 @@ import {
     displayedPixels, pickTileLayer, capForCount, normaliseLayers,
     claimRemoteQuality, prewarmRemoteQuality, appliedQuality, msSinceUpgrade, setQualityCeiling, claimedQuality,
     DOWNGRADE_DELAY_MS, PREWARM_HOLD_MS, type LayerDims, type TileRole,
-    chooseDecodedSet, parseIncomingVideoMode, DECODE_CAP, pickShareLayer,
+    chooseDecodedSet, parseIncomingVideoMode, DECODE_CAP, pickShareLayer, AUTO_DECODE_CAP, decodeCapFor,
 } from './remoteVideoQuality';
 import { cameraLadder } from './cameraQuality';
 
@@ -456,5 +456,31 @@ describe('arbiter ceiling — the screen-share loss fallback (shareLossFallback.
         expect(p.calls).toEqual([]);
         claimRemoteQuality(p).set(MEDIUM);
         expect(p.calls).toEqual([LOW]);
+    });
+});
+
+describe('decodeCapFor / AUTO_DECODE_CAP — a 50-camera call in Automatic mode', () => {
+    const roster = Array.from({ length: 50 }, (_, i) => `p${String(i).padStart(2, '0')}`);
+    it("'auto' has a roomy cap, the reduced modes keep DECODE_CAP", () => {
+        expect(decodeCapFor('auto')).toBe(AUTO_DECODE_CAP);
+        expect(decodeCapFor('reduced')).toBe(DECODE_CAP);
+        expect(decodeCapFor('datasaver')).toBe(DECODE_CAP);
+        expect(AUTO_DECODE_CAP).toBeGreaterThan(DECODE_CAP);
+    });
+    it('an ordinary call (up to the cap) is untouched', () => {
+        expect(chooseDecodedSet({ order: roster.slice(0, AUTO_DECODE_CAP), cap: decodeCapFor('auto') })).toBeNull();
+    });
+    it('50 cameras: exactly the cap is decoded; the focused camera and the latest speakers always are', () => {
+        const s = chooseDecodedSet({ order: roster, focused: 'p49', recentSpeakers: ['p48', 'p47'], cap: decodeCapFor('auto') })!;
+        expect(s.size).toBe(AUTO_DECODE_CAP);
+        expect(s.has('p49') && s.has('p48') && s.has('p47')).toBe(true);
+        // Everyone else is on avatars (their tiles unmount, remoteVideoDemand pauses them at the SFU).
+        expect(roster.filter(id => !s.has(id))).toHaveLength(50 - AUTO_DECODE_CAP);
+    });
+    it('a tile in a 50-camera grid asks for the lowest layer whatever the cell size', () => {
+        const layers = CAM720;
+        const cellNeed = displayedPixels(400, 225, 1, 16 / 9);
+        // The count handed to pickTileLayer is the DECODED count (<= the cap, so 10+ tiers: 270 px).
+        expect(pickTileLayer({ need: cellNeed, layers, role: 'grid', count: AUTO_DECODE_CAP })).toBe(LOW);
     });
 });

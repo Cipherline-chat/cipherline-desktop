@@ -17,6 +17,7 @@
  */
 
 import { findMentionTokens, parseMentionToken } from '../mentionTokens';
+import { EMOJI_NAME_RE, isEmojiName } from '../emojiNames';
 
 export interface PersonalEmojiWire {
     id: string;
@@ -36,7 +37,9 @@ export const PERSONAL_EMOJI_PX = 128;
 export const PERSONAL_EMOJI_STATIC_TARGET_BYTES = 16 * 1024;
 
 export const PERSONAL_EMOJI_ID_RE = /^p_[0-9a-f]{32}$/;
-export const PERSONAL_EMOJI_NAME_RE = /^[a-z0-9_]{2,32}$/;
+/** Letters, numbers and underscores, 2-32, lowercase. The one rule lives in
+ *  ../emojiNames (shared with server emojis and the composer). */
+export const PERSONAL_EMOJI_NAME_RE = EMOJI_NAME_RE;
 export const PERSONAL_EMOJI_MIMES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'] as const;
 export type PersonalEmojiMime = (typeof PERSONAL_EMOJI_MIMES)[number];
 
@@ -45,7 +48,7 @@ export function isPersonalEmojiId(id: unknown): id is string {
 }
 
 export function isPersonalEmojiName(name: unknown): name is string {
-    return typeof name === 'string' && PERSONAL_EMOJI_NAME_RE.test(name);
+    return isEmojiName(name);
 }
 
 export function personalEmojiToken(name: string, id: string): string {

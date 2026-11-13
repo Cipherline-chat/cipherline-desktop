@@ -23,8 +23,12 @@
  *
  *   body pose  no connection > in a call > gaming > DND > away (asleep) > awake
  *   head       call headset > DND headphones;  DND eye mask only when nothing
- *              he is doing needs his eyes (pose 'focus');  the crown (Pro) only
- *              on a bare head with no calendar hat;  the night lantern always
+ *              he is doing needs his eyes (pose 'focus');  the night lantern
+ *              always;  the wardrobe's hat (utils/keysWardrobe.ts: a beanie, a
+ *              captain's cap, a snorkel mask, shades, a flower, the crown for
+ *              Pro, or nothing) only on a head nothing else claims: no
+ *              calendar hat, headset, headphones, eye mask or lantern, and not
+ *              while camouflaged
  *   hands      screen-share frame (not gaming) > game controller > transfer box
  *              > backup papers > morning coffee;  empty while asleep/offline
  *   left       the TV (gaming), with a LIVE light when you share it in a call
@@ -38,10 +42,11 @@
  * planted beside him, no eye mask (he needs to see the screen). Away + in a
  * call = in the call (activity outranks idleness). Lost connection hides what
  * the server can no longer vouch for (call, game, status) but keeps what is
- * local and still true (the pile, the lantern, the crown).
+ * local and still true (the pile, the lantern, the hat).
  */
 
 import type { KeysFace } from './keysBrain';
+import type { Hat } from './keysWardrobe';
 
 export type MirrorStatus = 'online' | 'away' | 'dnd' | 'offline';
 
@@ -64,7 +69,9 @@ export interface MirrorInputs {
     backup: boolean;
     /** Night dive (00:00–04:59, `<html data-depth="night">`). */
     night: boolean;
-    pro: boolean;
+    /** The wardrobe's pick (utils/keysWardrobe.ts; null = bare). Shown only
+     *  when nothing else claims his head. */
+    hat: Hat | null;
     /** He is wearing a calendar hat today (Halloween, New Year, birthday). */
     costume: boolean;
     /** The morning-coffee beat is on (HomeKeys decides when, once a day). */
@@ -74,7 +81,7 @@ export interface MirrorInputs {
 export const NEUTRAL_INPUTS: MirrorInputs = {
     status: 'online', connected: true, gaming: false, inCall: false, speaking: false,
     sharing: false, video: false, unread: 0, transfer: false, backup: false,
-    night: false, pro: false, costume: false, coffee: false,
+    night: false, hat: null, costume: false, coffee: false,
 };
 
 export type Pose = 'awake' | 'asleep' | 'focus' | 'gaming' | 'call' | 'offline';
@@ -84,7 +91,9 @@ export const GEAR = [
     // left / right of him, and the floor
     'tv', 'live', 'ringlight', 'safe', 'sign',
     // on him
-    'tvglow', 'headset', 'headphones', 'mask', 'crown', 'lantern', 'camoEyes',
+    'tvglow', 'headset', 'headphones', 'mask',
+    'crown', 'beanie', 'captain', 'snorkel', 'shades', 'flower', // the wardrobe (keysWardrobe HATS)
+    'lantern', 'camoEyes',
     'controller', 'frame', 'box', 'papers', 'mug',
     // above him
     'noSignal', 'callBubble', 'zzz',
@@ -117,11 +126,18 @@ export interface Scene {
     camo: boolean;
     /** The lantern burns low while he sleeps. */
     lanternDim: boolean;
+    /** Nothing claims his head: the wardrobe's hat (if any) is showing. */
+    headFree: boolean;
     /** The face the scene holds (the host can still override briefly). */
     face: KeysFace | null;
     /** For his accessible name: what he is doing, in a few words ('' = nothing). */
     doing: string;
 }
+
+/** Gear that claims his head ahead of the wardrobe. */
+const CLAIMS_HEAD: readonly Gear[] = ['headset', 'headphones', 'mask', 'lantern'];
+/** The wardrobe's pieces (keysWardrobe HATS), as gear. */
+export const HAT_GEAR: readonly Gear[] = ['crown', 'beanie', 'captain', 'snorkel', 'shades', 'flower'];
 
 export function poseFor(i: MirrorInputs): Pose {
     if (!i.connected) return 'offline';
@@ -171,9 +187,11 @@ export function sceneFor(i: MirrorInputs, prevPile: PileTier = 0): Scene {
         // invisible
         if (i.status === 'offline') on.add('camoEyes');
     }
-    if (i.pro && !i.costume && !on.has('headset') && !on.has('headphones')) on.add('crown');
-
     const camo = !offline && i.status === 'offline';
+    // The wardrobe gets his head only when nothing else has claimed it.
+    const headFree = !i.costume && !camo && !CLAIMS_HEAD.some(g => on.has(g));
+    if (i.hat && headFree) on.add(i.hat);
+
     // His face: no signal worries him; napping and DND close his eyes; a game
     // (even one you're streaming in a call) gets the determined slants; and
     // a heap of unread mail worries him too.
@@ -201,13 +219,14 @@ export function sceneFor(i: MirrorInputs, prevPile: PileTier = 0): Scene {
         pile,
         camo,
         lanternDim: pose === 'asleep' && on.has('lantern'),
+        headFree,
         face,
         doing,
     };
 }
 
 export function sameScene(a: Scene, b: Scene): boolean {
-    return a.pose === b.pose && a.pile === b.pile && a.camo === b.camo && a.lanternDim === b.lanternDim
+    return a.pose === b.pose && a.pile === b.pile && a.camo === b.camo && a.lanternDim === b.lanternDim && a.headFree === b.headFree
         && a.face === b.face && a.doing === b.doing
         && a.gear.length === b.gear.length && a.gear.every((g, k) => g === b.gear[k]);
 }
@@ -238,7 +257,8 @@ export type Gesture =
     | 'shimmer'   // camouflage on / off
     | 'yawn'      // the lantern came on (night dive): a sleepy yawn as he reaches up
     | 'pickup'    // something new in his hands
-    | 'proud';    // the crown arrived
+    | 'proud'     // the crown arrived
+    | 'dress';    // another hat went on, or his hat came off (the wardrobe)
 
 const NEED_EYES_OPEN: readonly Pose[] = ['awake', 'gaming', 'call'];
 const HANDS: readonly Gear[] = ['controller', 'frame', 'box', 'papers', 'mug'];
@@ -266,6 +286,9 @@ export function gestureFor(prev: Scene | null, next: Scene): Gesture | null {
     if (prev.gear.includes('lantern') && !next.gear.includes('lantern')) return 'stretch';
     if (added.some(g => HANDS.includes(g))) return 'pickup';
     if (added.includes('crown')) return 'proud';
+    // The wardrobe changed (a new hat, or bare): a little bob as it lands.
+    const hatOf = (s: Scene) => s.gear.find(g => HAT_GEAR.includes(g)) ?? null;
+    if (hatOf(prev) !== hatOf(next)) return 'dress';
     return null;
 }
 

@@ -327,9 +327,13 @@ describe('sound groups', () => {
         expect(split).toEqual(all);
     });
 
-    it('the group enable silences its members', () => {
+    // Owner, 2026-11-08: per-event sound settings were removed from Settings,
+    // so saved group / per-cue values must no longer decide anything (nobody
+    // could change them back). Stock file, stock volume, master switch and
+    // master volume; the one exception is the incoming-call ring volume.
+    it('a saved App-sounds group switch no longer silences its members', () => {
         sounds.playSound('join', grouped({ sound_groups: { app: { enabled: false, volume: 1 } } }));
-        expect(built).toHaveLength(0);
+        expect(built).toHaveLength(1);
     });
 
     it('the group enable does NOT silence primary categories', () => {
@@ -337,22 +341,54 @@ describe('sound groups', () => {
         expect(built).toHaveLength(1);
     });
 
-    it('the group volume scales a member rather than replacing its volume', () => {
-        // The per-category ladder (mascot quieter than join) has to survive one
-        // shared slider, so the group multiplies instead of overriding.
+    it('saved per-cue and group volumes are ignored: the stock ladder level plays', () => {
         const p = grouped({ sound_groups: { app: { enabled: true, volume: 0.5 } } });
-        p.sounds.join.volume = 0.7;
+        p.sounds.join.volume = 0.1;
         p.master_volume = 1;
 
         sounds.playSound('join', p);
 
-        expect(built[0].volume).toBeCloseTo(0.7 * 0.5, 10);
+        expect(built[0].volume).toBeCloseTo(sounds.DEFAULT_SOUND_PREFS.join.volume, 10);
     });
 
-    it('a member muted individually stays muted even with the group on', () => {
+    it('a cue muted individually under the old settings plays again (no control left to unmute it)', () => {
         const p = grouped();
         p.sounds.join.enabled = false;
         sounds.playSound('join', p);
+        expect(built).toHaveLength(1);
+    });
+
+    it('a saved custom file is ignored: the stock file plays', () => {
+        const p = grouped();
+        p.sounds.join.file = 'file:///home/me/custom.wav';
+        sounds.playSound('join', p);
+        expect(built[0].src).toBe(sounds.DEFAULT_SOUNDS.join);
+    });
+
+    it('the incoming-call ring follows its own slider, on top of the master volume', () => {
+        const p = grouped();
+        p.master_volume = 0.5;
+        p.sounds.call.volume = 0.4;
+        const stop = sounds.playLoopingSound('call', p);
+        expect(built[0].volume).toBeCloseTo(0.4 * 0.5, 10);
+        stop();
+    });
+
+    it('the ring slider at 0 rings silently; a malformed saved value falls back to the default', () => {
+        const zero = grouped();
+        zero.sounds.call.volume = 0;
+        sounds.playLoopingSound('call', zero);
+        expect(built).toHaveLength(0);
+
+        const bad = grouped();
+        (bad.sounds.call as { volume: unknown }).volume = 'loud';
+        expect(sounds.ringVolumeOf(bad)).toBe(sounds.DEFAULT_SOUND_PREFS.call.volume);
+        expect(sounds.ringVolumeOf(null)).toBe(sounds.DEFAULT_SOUND_PREFS.call.volume);
+    });
+
+    it('the master switch still silences everything, the ring included', () => {
+        sounds.playSound('join', grouped({ sounds_enabled: false }));
+        sounds.playLoopingSound('call', grouped({ sounds_enabled: false }));
         expect(built).toHaveLength(0);
     });
 
@@ -447,9 +483,9 @@ describe('call_moved cue ("Moved to another call")', () => {
         expect(sounds.DEFAULT_SOUNDS.call_moved).not.toBe(sounds.DEFAULT_SOUNDS.leave);
     });
 
-    it('is silent when its own toggle is off', () => {
+    it('a saved per-cue off no longer silences it (that setting was removed)', () => {
         sounds.playSound('call_moved', withMoved({ enabled: false }));
-        expect(built.every(b => b.play.mock.calls.length === 0)).toBe(true);
+        expect(built[0].play).toHaveBeenCalledTimes(1);
     });
 
     it('is silent when sounds are globally muted', () => {
@@ -457,10 +493,10 @@ describe('call_moved cue ("Moved to another call")', () => {
         expect(built.every(b => b.play.mock.calls.length === 0)).toBe(true);
     });
 
-    it('is silent when the App-sounds group is switched off', () => {
+    it('a saved App-sounds group off no longer silences it (that setting was removed)', () => {
         const p = prefs({ sound_groups: { app: { enabled: false, volume: 1 } } });
         sounds.playSound('call_moved', p);
-        expect(built.every(b => b.play.mock.calls.length === 0)).toBe(true);
+        expect(built[0].play).toHaveBeenCalledTimes(1);
     });
 
     it('has a settings default of enabled and lives in the App-sounds group', () => {
@@ -472,6 +508,37 @@ describe('call_moved cue ("Moved to another call")', () => {
     it('positive control: the same prefs with the toggle on DO play', () => {
         sounds.playSound('call_moved', withMoved({ enabled: true }));
         expect(built[0].play).toHaveBeenCalledTimes(1);
+    });
+});
+
+describe('call_prompt cue (an in-call card wants a decision)', () => {
+    const withCue = (over: Partial<SoundsPrefs['sounds']['call_prompt']> = {}) => {
+        const p = prefs();
+        p.sounds.call_prompt = { ...p.sounds.call_prompt, ...over };
+        return p;
+    };
+
+    it('plays its own file, not one that already means something else', () => {
+        sounds.playSound('call_prompt', withCue());
+        expect(built[0].play).toHaveBeenCalledTimes(1);
+        expect(built[0].src).toContain('call_prompt.wav');
+        for (const other of ['message', 'mention', 'annotation_request', 'call_moved'] as const) {
+            expect(sounds.DEFAULT_SOUNDS.call_prompt).not.toBe(sounds.DEFAULT_SOUNDS[other]);
+        }
+    });
+
+    it('a saved per-cue off no longer silences it; the master switch still does', () => {
+        sounds.playSound('call_prompt', withCue({ enabled: false }));
+        expect(built[0].play).toHaveBeenCalledTimes(1);
+        const muted = withCue();
+        muted.sounds_enabled = false;
+        sounds.playSound('call_prompt', muted);
+        expect(built[0].play).toHaveBeenCalledTimes(1);
+    });
+
+    it('is on by default and lives in the App-sounds group', () => {
+        expect(sounds.DEFAULT_SOUND_PREFS.call_prompt.enabled).toBe(true);
+        expect(sounds.soundGroupOf('call_prompt')).toBe('app');
     });
 });
 

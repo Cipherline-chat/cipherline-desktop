@@ -41,7 +41,7 @@ beforeAll(() => {
 
 const {
     ContainerWriter, openContainer, MemoryContainer, memorySource, teeSink,
-    isContainerFile, HEADER_LEN, sha256Hex, IMMUTABLE_HASH, CONTAINER_VERSION, BackupWrongPasswordError,
+    isContainerFile, HEADER_LEN, sha256Hex, IMMUTABLE_HASH, CONTAINER_VERSION, BackupWrongPasswordError, BackupRecordIntegrityError,
 } = await import('./backupContainer');
 
 // The v3 writer exactly as shipped — see the fixture's header for why a
@@ -506,6 +506,53 @@ describe('C3 — splicing one record back to an older generation', () => {
         const { g1, g2 } = await v4TwoGenerations();
         expect(g2.index.records.find(r => r.id === 'meta')!.gen).toBe(1);
         expect(g2.index.records.find(r => r.id === 'meta')).toEqual(g1.index.records.find(r => r.id === 'meta'));
+    });
+});
+
+describe('21/H-7 — Drive revisions: fresh files under one key cannot be spliced', () => {
+    // The Drive path: every upload is a FRESH file at generation 1 that
+    // re-uses the local file's key material, so record AADs are identical
+    // across revisions. Anyone with Drive's revision history can paste an
+    // older revision's frame into the current one.
+    async function twoDriveRevisions() {
+        const local = new MemoryContainer();
+        const lw = await ContainerWriter.create('pw', local);
+        await lw.addJson('meta', { userId: 'u1' });
+        await lw.finish({ userId: 'u1', fingerprint: 'fp-local' });
+        const { keyMaterial } = await openContainer(local, 'pw');
+        const rev = async (t: string) => {
+            const mem = new MemoryContainer();
+            const w = await ContainerWriter.create('pw', mem, { keyMaterial });
+            await w.addJson('meta', { userId: 'u1' });
+            await w.addJson('dm:c', { t });
+            await w.addBytes('att:1', new Uint8Array([9, 9, 9]), IMMUTABLE_HASH);
+            const fin = await w.finish({ userId: 'u1', fingerprint: 'fp-' + t });
+            return { mem, fin };
+        };
+        return { r1: await rev('ACCOUNT-11111'), r2: await rev('ACCOUNT-77777') };
+    }
+
+    it('precondition: both revisions really are generation 1 with same-length frames at the same offset', async () => {
+        const { r1, r2 } = await twoDriveRevisions();
+        const a = r1.fin.index.records.find(r => r.id === 'dm:c')!;
+        const b = r2.fin.index.records.find(r => r.id === 'dm:c')!;
+        expect([a.gen, b.gen]).toEqual([1, 1]);
+        expect(a.len).toBe(b.len);
+        expect(a.offset).toBe(b.offset);
+    });
+
+    it('an older revision\'s record spliced into the current file is refused, not served', async () => {
+        const { r1, r2 } = await twoDriveRevisions();
+        const ref = r2.fin.index.records.find(r => r.id === 'dm:c')!;
+        const all = r2.mem.bytes();
+        all.set(r1.mem.bytes().slice(ref.offset, ref.offset + ref.len), ref.offset);
+        const c = await openContainer(memorySource(all), 'pw');
+        await expect(c.readJson('dm:c')).rejects.toBeInstanceOf(BackupRecordIntegrityError);
+        // Untouched records still read; the honest file reads in full.
+        expect(await c.readJson('meta')).toEqual({ userId: 'u1' });
+        const honest = await openContainer(memorySource(r2.mem.bytes()), 'pw');
+        expect(await honest.readJson('dm:c')).toEqual({ t: 'ACCOUNT-77777' });
+        expect(Array.from(await honest.readBytes('att:1'))).toEqual([9, 9, 9]);
     });
 });
 

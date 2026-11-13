@@ -2,6 +2,7 @@ import secureLocalStore from '../utils/secureLocalStore';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { deriveBackupKey } from '../utils/crypto';
 import { primeScreenLockEngaged, setScreenLockEngaged } from '../utils/screenLockEngaged';
+import { isWatchingVideo } from '../utils/videoOnScreen';
 
 /**
  * Screen Lock — a local, PIN-gated UI overlay ("walked away from your desk")
@@ -49,7 +50,8 @@ interface ScreenLockSettings {
     enabled: boolean;
     /** Minutes without any mouse/keyboard activity IN Cipherline before
      *  auto-locking — not the system-wide idle time, so it still locks even
-     *  while you're busy in another app. 0 = only manual/keybind/OS-lock. */
+     *  while you're busy in another app. Watching a video counts as activity
+     *  (utils/videoOnScreen.ts). 0 = only manual/keybind/OS-lock. */
     timeoutMinutes: number;
     /** Lock immediately when the OS reports its own screen lock/sleep (Windows + macOS). */
     lockOnOsLock: boolean;
@@ -158,7 +160,9 @@ export function useScreenLock() {
     // been untouched, so Cipherline would never lock while you're working in
     // another app). Purely renderer-side: DOM activity listeners update
     // lastActiveAt, gated on document.hasFocus() so a stray mousemove over an
-    // unfocused-but-visible window doesn't reset the clock.
+    // unfocused-but-visible window doesn't reset the clock. Watching a video
+    // holds the clock too, so the full timeout starts when it ends; the OS-lock
+    // path below and the manual lock are not affected.
     useEffect(() => {
         if (!settings.enabled || settings.timeoutMinutes <= 0 || isLocked) return;
 
@@ -169,6 +173,7 @@ export function useScreenLock() {
         for (const evt of ACTIVITY_EVENTS) window.addEventListener(evt, markActive, { passive: true });
 
         const id = window.setInterval(() => {
+            if (isWatchingVideo(document)) lastActiveAt = Date.now();
             if (Date.now() - lastActiveAt >= thresholdMs) lockNow();
         }, ACTIVITY_POLL_MS);
 

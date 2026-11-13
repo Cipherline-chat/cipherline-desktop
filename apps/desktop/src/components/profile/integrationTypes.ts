@@ -23,12 +23,28 @@ export interface ProfileActivity {
      * dropped and the source icon is drawn instead.
      */
     art?: string | null;
+    /** 'icon' = an app/executable icon (drawn contained, with padding); 'cover' (default) fills the box. */
+    artShape?: 'icon' | 'cover' | null;
+    /** A plain original drawing for when there is no picture ('block' = a cube, for Minecraft). */
+    glyph?: 'block' | null;
     /** Where it comes from: picks the icon and the label. 'game' = a detected local process. */
     source: string;
     /** A live position (listening): epoch ms the item started + its length. Drawn as a thin bar. */
     progress?: { startedAt: number; durationMs: number } | null;
     /** Opened through the validated external-link path when the row is pressed. */
     url?: string | null;
+    /**
+     * What pressing it does, as the row's accessible name and tooltip
+     * ("Open Midnight City on Spotify", "Search YouTube for ..."). Defaults to
+     * the activity text + "Opens in your browser".
+     */
+    linkLabel?: string | null;
+    /**
+     * Report the picture this row shows - offered only for a friend's
+     * end-to-end encrypted Spotify cover (the server cannot see it, so the
+     * reporter's device attaches it: utils/integrations/coverReport.ts).
+     */
+    report?: (() => void) | null;
 }
 
 /** A connected account, drawn as a card on the Integrations tab. */

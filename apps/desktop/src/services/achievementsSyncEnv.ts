@@ -8,6 +8,7 @@ import { API_BASE } from '../constants';
 import secureLocalStore from '../utils/secureLocalStore';
 import type { SlotView } from '../utils/ownSlotSync';
 import type { AchievementsState } from '../utils/achievements/state';
+import { achievementById } from '../utils/achievements/catalog';
 import { createOwnSlotEnv, type OwnSlotAuth } from './ownSlotEnv';
 import type { AchievementsSyncEnv } from './achievementsSyncService';
 
@@ -37,12 +38,27 @@ export function createAchievementsSyncEnv(
     return { ...createOwnSlotEnv(auth, ACHIEVEMENTS_SLOT), loadLocalState: local.load, mergeRemote: local.merge };
 }
 
-/** `PUT /v1/achievements/me` — the unlocked ids only (add-only; the server stamps the month). */
+/**
+ * `PUT /v1/achievements/me` — the unlocked ids only (add-only; the server stamps the month).
+ * The server rejects the WHOLE set (400) on an id it does not know. A client that is newer
+ * than the API it talks to (a desktop build out before the API's main push) would then sync
+ * nothing at all, so on a 400 it retries once without the starter ids, the newest entries.
+ * Returns what the server holds (the caller acks only those), or null.
+ */
 export async function pushUnlockedIds(token: string, ids: readonly string[]): Promise<{ id: string; month: string }[] | null> {
-    try {
-        const res = await axios.put(`${API_BASE}/achievements/me`, { ids }, {
+    const put = async (set: readonly string[]) => {
+        const res = await axios.put(`${API_BASE}/achievements/me`, { ids: set }, {
             headers: { Authorization: `Bearer ${token}` }, timeout: 15000,
         });
-        return Array.isArray(res.data?.unlocked) ? res.data.unlocked : null;
-    } catch { return null; }
+        return Array.isArray(res.data?.unlocked) ? res.data.unlocked as { id: string; month: string }[] : null;
+    };
+    try {
+        return await put(ids);
+    } catch (e) {
+        const older = ids.filter(id => !achievementById(id)?.starter);
+        if (axios.isAxiosError(e) && e.response?.status === 400 && older.length > 0 && older.length < ids.length) {
+            try { return await put(older); } catch { return null; }
+        }
+        return null;
+    }
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { retainRemoteVideo, noteRemoteVideoSubscribed, PAUSE_AFTER_MS } from './remoteVideoDemand';
+import { retainRemoteVideo, noteRemoteVideoSubscribed, pauseRemoteVideoBriefly, PAUSE_AFTER_MS } from './remoteVideoDemand';
 
 /**
  * A remote video is paused at the SFU only after nothing has shown it on
@@ -75,5 +75,66 @@ describe('remoteVideoDemand', () => {
         p.isSubscribed = false;
         vi.advanceTimersByTime(PAUSE_AFTER_MS);
         expect(p.calls).toEqual([]);
+    });
+
+    describe('pauseRemoteVideoBriefly', () => {
+        it('pauses a shown video and resumes it', () => {
+            const p = pub();
+            retainRemoteVideo(p);
+            const resume = pauseRemoteVideoBriefly(p);
+            expect(p.isEnabled).toBe(false);
+            resume();
+            expect(p.calls).toEqual([false, true]);
+        });
+
+        it('does not touch a video that is not flowing, and its resume does not start it', () => {
+            const p = pub();
+            p.isEnabled = false;
+            pauseRemoteVideoBriefly(p)();
+            expect(p.calls).toEqual([]);
+            const q = pub();
+            q.isSubscribed = false;
+            pauseRemoteVideoBriefly(q)();
+            expect(q.calls).toEqual([]);
+        });
+
+        it('every tile let go during the pause: stays paused, nobody is showing it', () => {
+            const p = pub();
+            const release = retainRemoteVideo(p);
+            const resume = pauseRemoteVideoBriefly(p);
+            release();
+            vi.advanceTimersByTime(PAUSE_AFTER_MS); // the timer finds it already paused and does nothing
+            resume();
+            expect(p.calls).toEqual([false]);
+            expect(p.isEnabled).toBe(false);
+        });
+
+        it('a tile let go but its grace is still running: resumes, and the grace then pauses it as usual', () => {
+            const p = pub();
+            const release = retainRemoteVideo(p);
+            const resume = pauseRemoteVideoBriefly(p);
+            release();
+            resume();
+            expect(p.isEnabled).toBe(true);
+            vi.advanceTimersByTime(PAUSE_AFTER_MS);
+            expect(p.calls).toEqual([false, true, false]);
+        });
+
+        it('a tile mounting mid-pause resumes it at once, and the resume is then a no-op', () => {
+            const p = pub();
+            const resume = pauseRemoteVideoBriefly(p);
+            retainRemoteVideo(p);
+            resume();
+            expect(p.calls).toEqual([false, true]);
+        });
+
+        it('unsubscribed during the pause: left alone', () => {
+            const p = pub();
+            retainRemoteVideo(p);
+            const resume = pauseRemoteVideoBriefly(p);
+            p.isSubscribed = false;
+            resume();
+            expect(p.calls).toEqual([false]);
+        });
     });
 });

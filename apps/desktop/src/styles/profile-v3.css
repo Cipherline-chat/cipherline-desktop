@@ -44,6 +44,8 @@
 .ppo-avatar .pcd-dot { right: 1px; bottom: 1px; width: 18px; height: 18px; }
 
 .ppo-body { position: relative; z-index: 2; display: flex; flex-direction: column; gap: 10px; padding: 10px var(--ppo-pad) 0; }
+/* A card with no action row (the small DM-panel card) still needs its bottom padding. */
+.ppo-body:last-child { padding-bottom: var(--ppo-pad); }
 .ppo-id { display: flex; flex-direction: column; min-width: 0; }
 .ppo-name { margin: 0; display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; min-width: 0;
   font: 600 21px/1.15 var(--cl-font-display, 'Fredoka', sans-serif); color: var(--cl-text, #F4F7FF); overflow-wrap: anywhere; }
@@ -145,13 +147,43 @@ button.ppo-hl:focus-visible { outline: 2px solid var(--cl-lume, #25E0C8); outlin
 button.pfa-row { cursor: pointer; transition: background-color 140ms ease; }
 button.pfa-row:hover { background: rgba(255, 255, 255, .08); }
 button.pfa-row:focus-visible { outline: 2px solid var(--cl-lume, #25E0C8); outline-offset: 2px; }
+/* A link: the title underlines on hover / focus and a small "opens outside" mark sits at the end. */
+button.pfa-row:hover .pfa-title, button.pfa-row:focus-visible .pfa-title,
+button.pfa-row:hover .pfa-line b, button.pfa-row:focus-visible .pfa-line b { text-decoration: underline; text-underline-offset: 2px; }
+.pfa-ext { flex: none; color: var(--cl-muted, #A7B3D4); opacity: .55; transition: opacity 140ms ease; }
+button.pfa-row:hover .pfa-ext, button.pfa-row:focus-visible .pfa-ext { opacity: 1; color: var(--cl-text, #F4F7FF); }
+/* The preview card's row: opens the full profile, with only the title a link (ProfileActivityRow's OpenableRow). */
+.pfa-row[data-opens-profile] { position: relative; cursor: pointer; transition: background-color 140ms ease; }
+.pfa-row[data-opens-profile]:hover { background: rgba(255, 255, 255, .08); }
+.pfa-open { position: absolute; inset: 0; z-index: 0; border: 0; padding: 0; background: none; border-radius: inherit; cursor: pointer; }
+.pfa-open:focus-visible { outline: 2px solid var(--cl-lume, #25E0C8); outline-offset: 2px; }
+.pfa-row[data-opens-profile] > .pfa-art, .pfa-row[data-opens-profile] > .pfa-line { position: relative; z-index: 1; pointer-events: none; }
+.pfa-link { pointer-events: auto; cursor: pointer; }
+.pfa-link:hover b, .pfa-link:focus-visible b { text-decoration: underline; text-underline-offset: 2px; }
+.pfa-link:focus-visible { outline: 2px solid var(--cl-lume, #25E0C8); outline-offset: 1px; border-radius: 3px; }
+/* The icon sits over the line's end and the text fades under it: nothing moves, so a pointer on a long title cannot lose the hover. */
+.pfa-row[data-opens-profile] > .pfa-ext {
+  position: absolute; z-index: 1; right: 10px; top: 50%; translate: 0 -50%; opacity: 0; color: var(--cl-text, #F4F7FF);
+  pointer-events: none;
+}
+.pfa-row[data-opens-profile]:has(.pfa-link:hover) > .pfa-ext,
+.pfa-row[data-opens-profile]:has(.pfa-link:focus-visible) > .pfa-ext { opacity: 1; }
+.pfa-row[data-opens-profile]:has(.pfa-link:hover) > .pfa-line,
+.pfa-row[data-opens-profile]:has(.pfa-link:focus-visible) > .pfa-line {
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 26px), transparent calc(100% - 12px));
+  mask-image: linear-gradient(to right, #000 calc(100% - 26px), transparent calc(100% - 12px));
+}
 .pfa-art {
   flex: none; width: 36px; height: 36px; border-radius: 9px; overflow: hidden;
   display: flex; align-items: center; justify-content: center; background: rgba(10, 17, 32, .55); color: var(--cl-ok, #4ADE80);
 }
 .pfa-art[data-kind="listening"] { color: #1ED760; }
 .pfa-art[data-kind="streaming"], .pfa-art[data-source="twitch"] { color: #B9A3FF; }
-.pfa-art img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.pfa-art img { width: 100%; height: 100%; object-fit: cover; display: block; animation: pfa-art-in 180ms ease-out both; }
+/* An executable icon is a transparent square, not a poster: contain it, with air around it. */
+.pfa-art[data-shape="icon"] img { object-fit: contain; padding: 12%; box-sizing: border-box; }
+@keyframes pfa-art-in { from { opacity: 0; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .pfa-art img { animation: none; } }
 .pfa-row[data-variant="full"] .pfa-art { width: 52px; height: 52px; border-radius: 12px; }
 .pfa-txt { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
 .pfa-kind { font-size: 11.5px; font-weight: 700; color: var(--cl-muted, #A7B3D4); }
@@ -162,11 +194,13 @@ button.pfa-row:focus-visible { outline: 2px solid var(--cl-lume, #25E0C8); outli
 .pfa-line { flex: 1; min-width: 0; font-size: 12.5px; color: var(--cl-muted, #A7B3D4); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pfa-line b { font-weight: 800; color: var(--cl-text, #F4F7FF); }
 .pfa-line .pfa-detail { display: inline; font-size: inherit; }
-.pfa-more { font-size: 11.5px; font-weight: 700; color: var(--cl-muted, #A7B3D4); padding-left: 2px; }
 .pfa-prog { display: flex; flex-direction: column; gap: 3px; margin-top: 6px; }
 .pfa-bar { height: 4px; border-radius: 999px; overflow: hidden; background: rgba(255, 255, 255, .1); }
 .pfa-bar > i { display: block; height: 100%; background: var(--cl-text, #F4F7FF); transform-origin: left center; transition: transform 1s linear; }
 .pfa-time { display: flex; justify-content: space-between; font: 600 11px/1 var(--cl-font-mono, monospace); color: var(--cl-muted, #A7B3D4); font-variant-numeric: tabular-nums; }
+/* A reportable row (a friend's end-to-end encrypted cover): reported from its right-click menu. */
+.pfa-item { display: flex; align-items: center; min-width: 0; }
+.pfa-item > .pfa-row { flex: 1; min-width: 0; }
 
 /* ── the full profile ──────────────────────────────────────────────────────── */
 /* The layer starts under the titlebar strip so the window controls stay usable. */
@@ -289,6 +323,7 @@ button.pfa-row:focus-visible { outline: 2px solid var(--cl-lume, #25E0C8); outli
 .pfp .pcd-rows { max-height: none; display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 6px; }
 .pfp .pcd-row { background: rgba(255, 255, 255, .04); padding: 10px 12px; }
 .pfp .pcd-row:hover:not(:disabled) { background: rgba(255, 255, 255, .08); }
+.pfp-ach { display: flex; flex-direction: column; gap: 18px; }
 .pfp .pcd-sheet--embedded { padding: 0; animation: none; gap: 14px; }
 .pfp .pcd-sheet--embedded .pcd-sheet-head { display: none; }
 .pfp .pcd-sheet--embedded .pcd-seg { max-width: 320px; }

@@ -13,7 +13,7 @@
  * are placeholders (`self-camera`, `remote-video-1`). None of that is trusted
  * here: the builder drops anything that does not conform.
  */
-import { getCallEvents } from '../callEventLog';
+import { getCallEvents, getPinnedCallEvents } from '../callEventLog';
 
 export interface CallEventInput {
     /** ms since epoch. */
@@ -37,6 +37,20 @@ export function setCallEventsSource(fn: CallEventsGetter | null): void {
 export function readCallEvents(): CallEventInput[] {
     try {
         const out = source();
+        return Array.isArray(out) ? [...out] : [];
+    } catch {
+        return [];
+    }
+}
+
+/**
+ * The pinned share-context events (start / codec / clamp / crop / display /
+ * decoder of the current share), which outlive the ring. Same contract as
+ * readCallEvents; the builder merges them in, deduplicated.
+ */
+export function readPinnedCallEvents(): CallEventInput[] {
+    try {
+        const out = getPinnedCallEvents();
         return Array.isArray(out) ? [...out] : [];
     } catch {
         return [];

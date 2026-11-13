@@ -32,9 +32,9 @@ import {
 } from 'livekit-client';
 import { annotationStore, trackKey } from '../utils/annotationStore';
 import { encode, decode, chunkSnapshot, ANNOT_TOPIC, type AnnotMsg } from '../utils/annotationCodec';
-import { PerSenderRateLimiter } from '../utils/annotationRate';
+import { PerSenderRateLimiter, LeadingTrailingGate, OUTBOUND_MIN_INTERVAL_MS } from '../utils/annotationRate';
 import {
-    diffLocalForWire, applyRemote, applySnapshot, SnapshotAssembler, snapshotOf, grantsOf, ownerOf,
+    diffLocalForWire, applyRemote, applySnapshot, SnapshotAssembler, snapshotOf, grantsOf, ownerOf, coalesceAppends,
     type SentState, type ApplyResult,
 } from '../utils/annotationTransport';
 import { useNotificationPrefsSafe, DEFAULT_PREFS } from '../contexts/NotificationContext';
@@ -128,12 +128,32 @@ export function useAnnotationTransport(room: Room | null | undefined): void {
         };
 
         // -- outbound ---------------------------------------------------------
+        // Stroke points are coalesced to ~30 packets/s: one packet per pointermove (144-240 per second
+        // on a fast display) tripped every receiver's rate limit. ONLY pure `stroke.append` batches are
+        // held (and merged per stroke); anything else (begin, end, grants, requests...) goes out at once,
+        // behind whatever appends are already waiting, so nothing is ever reordered or delayed.
+        let pendingAppends: AnnotMsg[] = [];
+        const flushAppends = () => {
+            const out = coalesceAppends(pendingAppends);
+            pendingAppends = [];
+            if (out.length) void publish(out);
+        };
+        const gate = new LeadingTrailingGate(OUTBOUND_MIN_INTERVAL_MS, flushAppends);
         const unsubscribe = annotationStore.subscribe(() => {
             const next = annotationStore.getState();
             if (suppressDiff) { prev = next; return; }
             const msgs = diffLocalForWire(prev, next, me(), roomId(), sent);
             prev = next;
-            if (msgs.length) void publish(msgs);
+            if (!msgs.length) return;
+            if (msgs.every(m => m.t === 'stroke.append')) {
+                pendingAppends.push(...msgs);
+                gate.request();
+                return;
+            }
+            const out = coalesceAppends([...pendingAppends, ...msgs]);
+            pendingAppends = [];
+            gate.cancel();
+            void publish(out);
         });
 
         /** Mutate the store without narrating it to the room - used when a
@@ -425,6 +445,7 @@ export function useAnnotationTransport(room: Room | null | undefined): void {
         }
 
         return () => {
+            gate.flush();
             disposed = true;
             unsubscribe();
             clearInterval(expiryTick);

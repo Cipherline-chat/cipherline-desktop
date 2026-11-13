@@ -1,0 +1,13 @@
+/* ── HistoryRequestModal "Send history" button (components/HistoryRequestModal.tsx) ──
+   The kit's loading content is three 7px `.ldots` with no line box of their
+   own, while the idle label is a 15px (font-size x line-height:1) span. So a
+   loading cap was 33px tall where the idle one is 41px. In this dialog the
+   action row is a flex row whose default `align-items:stretch` holds the
+   `.clb` wrapper at Decline's 41px, so the shrunken cap sat at the top of a
+   41px wrapper and the depth sheets (inset:0, translated +2/+4px) showed as a
+   thick teal slab under it: the button looked collapsed the moment it was
+   pressed. Giving the dots the label's line box (1em at the cap's font size)
+   keeps the cap the same height loading or not, with the dots centred.
+   Scoped to this button on purpose: the kit primitives (shared with the
+   website) are not touched. */
+.cl-kit.clb.hr-send .ldots{height:1em;align-items:center}

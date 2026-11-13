@@ -97,6 +97,40 @@ describe('publishPublicAvatar: exactly what leaves the device', () => {
     });
 });
 
+describe('publishPublicAvatar: animated / oversized avatars (the referral page used the initial)', () => {
+    const GIF = new Uint8Array([0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0]);
+    const bigGif = () => new Blob([GIF, new Uint8Array(6 * 1024 * 1024)], { type: 'image/gif' });
+
+    it('uploads a downscaled first-frame still instead of skipping a 6 MB GIF', async () => {
+        const raster = vi.fn(async (_b: Blob, max: number) => (max === 512 ? jpegBlob() : null));
+        await publishPublicAvatar(bigGif(), AV1, 'tok', raster);
+        expect(raster).toHaveBeenCalledTimes(1);
+        expect(put).toHaveBeenCalledTimes(1);
+        expect(cfgOf(0).headers['Content-Type']).toBe('image/jpeg');
+        expect((put.mock.calls[0][1] as Blob).size).toBe(JPEG.length);
+    });
+
+    it('a small GIF is also sent as a still (the public copy is a still anyway)', async () => {
+        const raster = vi.fn(async () => jpegBlob());
+        await publishPublicAvatar(new Blob([GIF], { type: 'image/gif' }), AV1, 'tok', raster);
+        expect(raster).toHaveBeenCalledTimes(1);
+        expect(cfgOf(0).headers['Content-Type']).toBe('image/jpeg');
+    });
+
+    it('a static JPEG under the cap goes byte for byte, no rasterizing', async () => {
+        const raster = vi.fn(async () => null);
+        await publishPublicAvatar(jpegBlob(), AV1, 'tok', raster);
+        expect(raster).not.toHaveBeenCalled();
+        expect(put).toHaveBeenCalledTimes(1);
+    });
+
+    it('sends nothing when the still cannot be made or is still too big', async () => {
+        await expect(publishPublicAvatar(bigGif(), AV1, 'tok', async () => null)).resolves.toBeNull();
+        await expect(publishPublicAvatar(bigGif(), AV1, 'tok', async () => new Blob([JPEG, new Uint8Array(PUBLIC_AVATAR_MAX_BYTES)]))).resolves.toBeNull();
+        expect(put).not.toHaveBeenCalled();
+    });
+});
+
 describe('publishPublicAvatarInBackground', () => {
     it('uses the session token from the encrypted store and never throws', async () => {
         put.mockRejectedValueOnce(Object.assign(new Error('503'), { response: { status: 503 } }));

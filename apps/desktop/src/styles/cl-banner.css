@@ -11,7 +11,8 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 8px 12px 4px;
+  /* No side padding: the banners line up with the panes below them. The main row's own padding (layout-drift.css) sets both edges. */
+  padding: 0 0 8px;
   flex-shrink: 0;
   min-width: 0;
 }
@@ -204,4 +205,6 @@
   gap: 8px;
   pointer-events: none;
 }
+/* The same edges as the panes when the app's main column is on screen (ClBannerOverlay measures it). */
+.cl-banner-overlay[data-aligned] { left: var(--cl-banner-left); width: var(--cl-banner-width); transform: none; }
 .cl-banner-overlay > * { pointer-events: auto; }

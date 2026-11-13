@@ -59,7 +59,8 @@ describe('every place the Pro badge renders goes through ProPill', () => {
     });
 
     it('ProfileModal feeds the API field to the card, whose Pro medallion carries the same "member since" tip', () => {
-        expect(read('./ProfileModal.tsx')).toMatch(/proSince: profile\.pro_since/);
+        expect(read('./profile/buildProfileCardData.ts')).toMatch(/proSince: profile\.pro_since/);
+        expect(read('./ProfileModal.tsx')).toContain('buildProfileCardData(profile');
         expect(read('./profile/ProfilePopoutCard.tsx')).toMatch(/proSince=\{data\.proSince\}/);
         expect(read('./profile/ProfileFullView.tsx')).toMatch(/proSince=\{data\.proSince\}/);
         const badges = read('./ProfileBadgeRow.tsx');

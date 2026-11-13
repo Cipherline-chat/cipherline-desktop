@@ -30,6 +30,14 @@ export type ToWorker =
          * the PIN card however the worker is driven.
          */
         mode?: SceneMode;
+        /** Dev and staging builds only: report late frames and pillar entries (components/firewallHitchProbe.ts). */
+        probe?: boolean;
+        /**
+         * WebGL powerPreference. Omitted = 'low-power' (the loading screen and lock backdrop idle
+         * at 30 fps; a laptop should not wake its big GPU for them). The Firewall game asks for
+         * 'high-performance': on a PC with two GPUs, 'low-power' puts the game on the weaker one.
+         */
+        power?: 'low-power' | 'high-performance' | 'default';
     }
     | { type: 'resize'; w: number; h: number; dpr: number }
     /** The pointer, -1..1 from the centre (y up), at most once a frame. `on` = inside the window. */
@@ -65,5 +73,23 @@ export type ToWorker =
 export type FromWorker =
     | { type: 'ok' }
     | { type: 'nogl' }
-    | { type: 'game'; mode: GameMode; score: number; best: number }
-    | { type: 'stats'; frames: number; busyMs: number; wallMs: number };
+    /**
+     * `best` is live (it rises with every point, not only at the crash). `runMs`
+     * is the game-clock length of the current / just-ended run, which the
+     * leaderboard's plausibility check is told (utils/flappyRules.ts).
+     */
+    | { type: 'game'; mode: GameMode; score: number; best: number; runMs?: number }
+    | { type: 'stats'; frames: number; busyMs: number; wallMs: number }
+    | ProbeMsg;
+
+/**
+ * Only when init asked for `probe` (dev and staging builds). `at` is epoch ms (timeOrigin +
+ * the frame's timestamp), so the main thread can line it up with its own
+ * performance entries. `gap`: the late frame's interval; `js`: the previous
+ * frame's own work; `k`: pillars that have entered the screen this run.
+ */
+export type ProbeMsg =
+    | { type: 'probe'; kind: 'gap'; at: number; gap: number; js: number; score: number; k: number }
+    | { type: 'probe'; kind: 'pillar'; at: number; k: number; slot: number; score: number }
+    /** End of a run: how fast the worker really drew it, and which GL renderer / power preference it got. */
+    | { type: 'probe'; kind: 'rate'; frames: number; ms: number; fps: number; busyAvgMs: number; maxGapMs: number; gl: string };

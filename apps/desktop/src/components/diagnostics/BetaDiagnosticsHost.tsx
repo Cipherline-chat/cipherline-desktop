@@ -8,7 +8,7 @@ import { betaReporter, classifyBetaSend, reportBeta, type BetaRoute } from '../.
 import { installBetaBridges } from '../../utils/betaDiagnostics/bridges';
 import { setBetaCallUser } from '../../utils/betaDiagnostics/callSession';
 import {
-    getBetaDiagEnabled, getBetaNoticeSeen, markBetaNoticeSeen, setBetaDiagEnabled, subscribeBetaDiagSetting,
+    getBetaDiagEnabled, subscribeBetaDiagSetting,
 } from '../../utils/betaDiagnostics/settings';
 import {
     WsChurnCounter, jsHeapUsedBytes, keyWaitTracker, memoryHighCheck, STARTUP_SLOW_MS,
@@ -19,12 +19,11 @@ import { wasAuthScreenShown } from '../../utils/betaDiagnostics/startup';
 import { parseSystemInfoReply } from '../../utils/diagnostics/ipc';
 import { createScrubber } from '../../utils/diagnostics/scrub';
 import { collectSensitiveTerms } from '../../utils/diagnostics/sensitiveTerms';
-import { BetaDiagnosticsNotice } from './BetaDiagnosticsNotice';
 import { CallRatingCard } from './CallRatingCard';
 
 /**
  * The closed-beta diagnostics host. Mounted once for the signed-in app
- * (App.tsx). Renders the one-time notice and the call rating card; otherwise
+ * (App.tsx). Renders the call rating card; otherwise
  * it only wires things up:
  *
  *   - the reporter's transport (axios → POST /v1/diagnostics/beta/<route>,
@@ -48,15 +47,12 @@ const PROFILE_DEVICE_DEBOUNCE_MS = 5_000;
 
 const subscribeState = (cb: () => void) => betaReporter.subscribe(cb);
 const readActive = () => betaReporter.getState().active;
-const readServer = () => betaReporter.getState().serverEnabled;
 
 export const BetaDiagnosticsHost: React.FC = () => {
     const { token, userId, deviceId } = useAuth();
     const { ready: hydrated, settled } = useHydration();
     const active = useSyncExternalStore(subscribeState, readActive, () => false);
-    const serverEnabled = useSyncExternalStore(subscribeState, readServer, () => false);
     const localEnabled = useSyncExternalStore(subscribeBetaDiagSetting, () => getBetaDiagEnabled(userId), () => false);
-    const noticeSeen = useSyncExternalStore(subscribeBetaDiagSetting, () => getBetaNoticeSeen(userId), () => true);
     const auth = useRef({ token, deviceId });
     useEffect(() => { auth.current = { token, deviceId }; }, [token, deviceId]);
 
@@ -211,18 +207,10 @@ export const BetaDiagnosticsHost: React.FC = () => {
         if (startupMs.current >= STARTUP_SLOW_MS) reportBeta('startup_slow', { ms: startupMs.current, gate_timeout: gateTimedOut.current });
     }, [active, hydrated]);
 
-    const showNotice = serverEnabled && localEnabled && !!userId && !noticeSeen;
-    return (
-        <>
-            {showNotice && (
-                <BetaDiagnosticsNotice
-                    onAcknowledge={() => markBetaNoticeSeen(userId)}
-                    onTurnOff={() => { setBetaDiagEnabled(userId, false); markBetaNoticeSeen(userId); }}
-                />
-            )}
-            <CallRatingCard />
-        </>
-    );
+    // No consent pop-up (owner, 2026-11-08): sharing is a toggle in
+    // Settings > Advanced > Help & feedback ("Share beta diagnostics"), off by
+    // default, and nothing is sent until it is switched on there.
+    return <CallRatingCard />;
 };
 
 export default BetaDiagnosticsHost;

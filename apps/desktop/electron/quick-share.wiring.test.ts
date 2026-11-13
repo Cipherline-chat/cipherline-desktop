@@ -119,7 +119,7 @@ describe('the quick path stays dialog-free (capture-consent treats the shortcut 
         if (!m.ok) return;
         const v = await c.authorizeVideo(WIN, m.token, WINDOW, true);
         expect(v).toMatchObject({ allowed: true, via: 'grant' });
-        const a = await c.authorizeAudio(WIN, m.token, sid => sid === WINDOW.id, { kind: 'audio-app', name: WINDOW.name });
+        const a = c.authorizeAudio(WIN, m.token, sid => sid === WINDOW.id);
         expect(a).toMatchObject({ allowed: true, via: 'grant' });
         expect(prompts).toHaveLength(0);
     });

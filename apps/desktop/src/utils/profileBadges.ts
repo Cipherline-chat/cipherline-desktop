@@ -68,6 +68,15 @@ export function eggBadgeCount(badge: Pick<ProfileBadge, 'badge_id' | 'count'>): 
     return badge.badge_id === EGG_HUNTER_BADGE_ID ? sanitizeBadgeCount(badge.count) : undefined;
 }
 
+// ── Founder ───────────────────────────────────────────────────────────────
+
+/** `badge_id` of the API-synthesized, permanent Founder badge
+ *  (`EARLY_ADOPTER_BADGE_ID` in apps/api/src/profile-badges/profile-badges.service.ts):
+ *  worn by every account that holds a founder number, whether or not its
+ *  founding price lock is still in force. */
+export const EARLY_ADOPTER_BADGE_ID = 'early-adopter';
+
+
 // ── Icon mapping ──────────────────────────────────────────────────────────
 
 /**
@@ -219,3 +228,6 @@ export function sortProfileBadges(badges: readonly ProfileBadge[]): ProfileBadge
         return a.badge_id < b.badge_id ? -1 : a.badge_id > b.badge_id ? 1 : 0;
     });
 }
+
+// The Founder badge never carries a number, for anyone (owner decision 2026-11-12): the wire
+// `founder_number` field no longer exists and the client ignores it if an old server sends it.

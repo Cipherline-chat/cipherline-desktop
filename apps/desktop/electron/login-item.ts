@@ -25,6 +25,9 @@
  *  "start minimized" — a user opening the app themselves always sees it. */
 export const AUTOSTART_ARG = '--autostart';
 
+/** Desktop-entry key that marks a file as written by this app. */
+export const MANAGED_KEY = 'X-Cipherline-Managed';
+
 /** File name of the XDG autostart entry (Linux). */
 export const XDG_AUTOSTART_FILENAME = 'cipherline.desktop';
 
@@ -235,12 +238,15 @@ export function buildXdgDesktopEntry(exec: string[]): string {
         'Icon=cipherline',
         'Terminal=false',
         'X-GNOME-Autostart-enabled=true',
+        // Marks the file as ours so a later run (any packaging) can recognise it
+        // under a different filename and never touches anyone else's entry.
+        `${MANAGED_KEY}=true`,
         '',
     ].join('\n');
 }
 
 /** Value of `key` in the [Desktop Entry] group, or undefined. */
-function desktopEntryValue(content: string, key: string): string | undefined {
+export function desktopEntryValue(content: string, key: string): string | undefined {
     let inGroup = false;
     for (const raw of content.split(/\r?\n/)) {
         const line = raw.trim();
@@ -302,6 +308,25 @@ export function shouldApplyLoginDefault(opts: {
 export function wasLaunchedAtLogin(argv: readonly string[], platform: string, macWasOpenedAtLogin: boolean): boolean {
     if (argv.includes(AUTOSTART_ARG)) return true;
     return platform === 'darwin' && macWasOpenedAtLogin === true;
+}
+
+/**
+ * Linux login launch with "start minimized": do not map a window at all.
+ *
+ * GNOME (Mutter) posts `"Cipherline" is ready` for any window that is mapped without being given
+ * focus - an autostart has no click behind it, so focus-stealing prevention refuses it, and the
+ * shell turns that refusal into a notification on every login (Ubuntu 24.04 / GNOME, 2026-11-04).
+ * Both earlier attempts still mapped a window: show-then-minimize asked for focus and was refused;
+ * `showInactive()` (be9d4854) maps without asking, which is exactly the case Mutter reports (VM
+ * log-in test, 2026-11-06: the banner on every login, with either). "Minimized" has no meaning on a
+ * desktop without a tray anyway, so the honest implementation is the window staying unmapped:
+ * nothing to report, and launching Cipherline again from the launcher (second-instance) or the tray
+ * raises it, exactly as for a window hidden to the tray. The decision to be minimized is
+ * `shouldStartMinimized` (login launch + preference); every other launch (a click, the installer's
+ * Run, "start minimized" off) maps the window normally.
+ */
+export function keepLoginWindowUnmapped(platform: string, startMinimizedAtLogin: boolean): boolean {
+    return platform === 'linux' && startMinimizedAtLogin;
 }
 
 /**

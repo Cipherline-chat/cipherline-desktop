@@ -266,24 +266,24 @@ describe('migrated prefs still play grouped cues audibly', () => {
         expect(built[0].src).toBe('./sounds/join_call_sound.wav');
     });
 
-    it('the group enable gates every member', async () => {
+    it('a migrated App-sounds group switch no longer gates its members (setting removed 2026-11-08)', async () => {
         const prefs = await loadFromBlob(PREFS_BLOB_V1_0_12);
         const { playSound } = await import('./notificationSounds');
 
         playSound('join', { ...prefs, sound_groups: { app: { enabled: false, volume: 1 } } });
 
-        expect(built).toHaveLength(0);
+        expect(built).toHaveLength(1);
     });
 
-    it('the group volume scales members without touching the primary cues', async () => {
+    it('a migrated group volume no longer scales members; only the master volume applies', async () => {
         const prefs = await loadFromBlob(PREFS_BLOB_V1_0_12);
         const { playSound } = await import('./notificationSounds');
         const halved = { ...prefs, sound_groups: { app: { enabled: true, volume: 0.5 } } };
 
-        playSound('join', halved);      // grouped
-        playSound('message', halved);   // primary — must be unaffected
+        playSound('join', halved);
+        playSound('message', halved);
 
-        expect(built[0].volume).toBeCloseTo(0.7 * 0.5 * 0.65, 10);
+        expect(built[0].volume).toBeCloseTo(0.7 * 0.65, 10);
         expect(built[1].volume).toBeCloseTo(1.0 * 0.65, 10);
     });
 });

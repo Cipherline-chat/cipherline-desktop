@@ -15,7 +15,6 @@ import '../../../styles/moment-note-to-self.css';
  */
 export const NoteToSelfMoment: React.FC = () => (
     <div className="mo-nts mo-view" aria-hidden="true">
-        <div className="mo-dim" />
         <div className="mo-anchor">
             <div className="mo-nts-swell">
                 <svg viewBox="0 0 600 60" width="600" height="60">

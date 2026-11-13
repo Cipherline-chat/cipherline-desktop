@@ -39,6 +39,7 @@ import {
 import { API_BASE } from '../../constants';
 import { apiUrl } from '../../utils/apiPath';
 import { EncryptedAvatar } from '../EncryptedAvatar';
+import { HoverPlayRow } from './HoverPlayRow';
 import { StatusIcon } from '../StatusPicker';
 import { GameControllerIcon } from '../GameControllerIcon';
 import { StatusLine } from '../StatusLine';
@@ -53,6 +54,8 @@ import { ChannelMessageSearch, type SearchableMessage } from './ChannelMessageSe
 import { CategoryFormDialog } from './CategoryFormDialog';
 import { ChannelSettingsDialog } from './ChannelSettingsDialog';
 import { ConfirmDialog, type ConfirmOptions } from '../primitives/ConfirmDialog';
+import { RenameCallDialog, NicknameDialog } from './ServerTextPromptDialogs';
+import { cleanCallName } from '../../utils/callName';
 import { MemberActionDialog, type MemberActionKind } from './MemberActionDialog';
 import {
     canOfferDisconnect, disconnectConfirmCopy, disconnectErrorToast, hasManageCallMembers, hasModerateCallMedia,
@@ -66,12 +69,17 @@ import { getEntrancePrefs, setEntranceMuted } from '../../utils/entrancePrefs';
 import { PopoverMenu, calcPopoverPos } from '../call/PopoverMenu';
 import { usePersistentVolume, usePersistentNsEnabled } from '../call/VideoTile';
 import { ParticipantStatusIcons } from './ParticipantStatusIcons';
-import { huddleCallMediaKey, voiceChannelMediaKey } from '../../utils/callMediaPresence';
+import { getCallMedia, huddleCallMediaKey, voiceChannelMediaKey } from '../../utils/callMediaPresence';
+import {
+    fetchServerVoiceModeration, formatTimeLeft, getServerVoiceModeration, removeServerVoiceModeration,
+    removeVoiceModerationLabel, useServerVoiceModerationFeed, useServerVoiceModerationVersion,
+    type VoiceModerationBit,
+} from '../../utils/serverVoiceModeration';
 import { useDismissOnOutsideClick } from '../../hooks/useDismissOnOutsideClick';
 import ReactDOM from 'react-dom';
 import { SignalBars, signalQuality } from '../call/CallStatsPill';
 import { pingColor } from '../../hooks/useCallStats';
-import { ClButton, ClInput, ClModal, ClSearch } from '../cl';
+import { ClButton, ClSearch } from '../cl';
 import { FlatIconBtn } from '../primitives/HoverActions';
 import { writeToClipboard } from '../../utils/clipboard';
 import { useToast } from '../../contexts/ToastContext';
@@ -90,6 +98,8 @@ import { endsWhenNotice } from '../../utils/endCallOnLeave';
 import { requestMoment } from '../../utils/moments';
 import { listMoveDestinations } from '../../utils/callMoveDestinations';
 import { noteGuestMove } from '../../utils/guestCallKey';
+import { PresenceRoster } from '../call/presenceMotion';
+import { CALL_CARD_ENTER, CALL_CARD_EXIT } from '../call/presenceVariants';
 
 // ── Sortable wrappers for Huddle DnD ────────────────────────────────────────
 
@@ -521,7 +531,7 @@ export const ServerContextPanel: React.FC<Props> = ({
     const [renameDraft, setRenameDraft] = useState('');
     const commitRenameCall = () => {
         if (!renameCall) return;
-        const next = renameDraft.replace(/[^a-zA-Z0-9 '\-_.]/g, '').trim();
+        const next = cleanCallName(renameDraft);
         if (next && next !== renameCall.name) onRenameHuddleCall?.(renameCall.callId, next);
         setRenameCall(null);
     };
@@ -651,11 +661,81 @@ export const ServerContextPanel: React.FC<Props> = ({
                 apiUrl`/servers/${server.server_id}/members/${targetUserId}/call-mute`,
                 { track_type: trackType, muted, room_name: roomName },
                 { headers: { Authorization: `Bearer ${token}` } },
-            ).catch(err => {
+            ).then(() => {
+                // Mute / deafen persist for 24 h: pick up the new expiry for the tooltip.
+                if (trackType === 'audio' || trackType === 'deafen') {
+                    fetchServerVoiceModeration(axios, API_BASE, token, server.server_id).catch(() => { /* tooltip only */ });
+                }
+            }).catch(err => {
                 console.error('[ServerContextPanel] server-mute failed:', err?.response?.data ?? err.message);
             });
         },
         [token, server.server_id],
+    );
+
+    // Moderators keep the server's active mutes / deafens (with expiry) loaded:
+    // powers the "Server muted · 23 h left" tooltips and removing one from a
+    // member who is not in voice. Everyone else gets the badges from presence.
+    useServerVoiceModerationVersion(canServerMute ? server.server_id : null);
+    useServerVoiceModerationFeed({
+        serverId: server.server_id,
+        enabled: canServerMute && !!token,
+        load: () => fetchServerVoiceModeration(axios, API_BASE, token!, server.server_id),
+    });
+
+    /** Remove a server mute / deafen WITHOUT naming a call - works while the
+     *  member is not in voice at all. Silent on success (no notices); the
+     *  badge and the list just update. */
+    const removeVoiceModeration = React.useCallback((targetUserId: string, bit: VoiceModerationBit) => {
+        if (!token) return;
+        removeServerVoiceModeration(axios, API_BASE, token, server.server_id, targetUserId, bit).catch(err => {
+            console.error('[ServerContextPanel] remove server mute/deafen failed:', err?.response?.data ?? err.message);
+        });
+    }, [token, server.server_id]);
+
+    /** Member-menu items for server mute / deafen. In a Calls-channel call: the
+     *  two toggles (checked while active, "· 23 h left" when the expiry is
+     *  known). Not in a call: only the REMOVE entries, and only while a
+     *  restriction is active - it follows the member until it lapses or a
+     *  moderator lifts it, in voice or not. */
+    const buildVoiceModerationItems = React.useCallback(
+        (uid: string): import('../primitives/ContextMenu').ContextMenuItem[] => {
+            if (!canServerMute || uid === userId) return [];
+            const t = getServerVoiceModeration(server.server_id, uid);
+            const call = Object.values(huddleCalls).flat().find(c => c.participants.includes(uid));
+            const pres = call ? getCallMedia(huddleCallMediaKey(call.call_id), uid) : null;
+            const muted = t.mutedUntil > 0 || pres?.server_muted === true;
+            const deafened = t.deafenedUntil > 0 || pres?.server_deafened === true;
+            const left = (until: number) => { const s = formatTimeLeft(until); return s ? ` · ${s}` : ''; };
+            if (call) {
+                return [
+                    { divider: true },
+                    {
+                        icon: <MicOff />, label: `Server Mute${muted ? left(t.mutedUntil) : ''}`, checked: muted,
+                        onSelect: () => serverMuteCallParticipant(call.call_id, uid, 'audio', !muted),
+                    },
+                    {
+                        icon: <HeadphoneOff />, label: `Server Deafen${deafened ? left(t.deafenedUntil) : ''}`, checked: deafened,
+                        onSelect: () => serverMuteCallParticipant(call.call_id, uid, 'deafen', !deafened),
+                    },
+                ];
+            }
+            const items: import('../primitives/ContextMenu').ContextMenuItem[] = [];
+            if (muted) {
+                items.push({
+                    icon: <MicOff />, label: removeVoiceModerationLabel('muted', t.mutedUntil),
+                    onSelect: () => removeVoiceModeration(uid, 'muted'),
+                });
+            }
+            if (deafened) {
+                items.push({
+                    icon: <HeadphoneOff />, label: removeVoiceModerationLabel('deafened', t.deafenedUntil),
+                    onSelect: () => removeVoiceModeration(uid, 'deafened'),
+                });
+            }
+            return items.length ? [{ divider: true }, ...items] : [];
+        },
+        [canServerMute, userId, server.server_id, huddleCalls, serverMuteCallParticipant, removeVoiceModeration],
     );
 
     // Track states published by SidebarConference into shared CallContext.
@@ -854,18 +934,23 @@ export const ServerContextPanel: React.FC<Props> = ({
             // and is not acting on themselves, and we have a room to target.
             if (canServerMute && uid !== userId && roomName) {
                 const meta = participantMetadata[uid];
-                const mutedAudio  = !!meta?.serverMutedAudio;
-                const deafened    = !!meta?.serverDeafened;
+                // Live LiveKit state when we are in their call; otherwise the server's
+                // presence overlay / the moderator list (mute + deafen persist).
+                const t = getServerVoiceModeration(server.server_id, uid);
+                const pres = getCallMedia(huddleCallMediaKey(roomName), uid);
+                const mutedAudio  = !!meta?.serverMutedAudio || t.mutedUntil > 0 || pres.server_muted === true;
+                const deafened    = !!meta?.serverDeafened || t.deafenedUntil > 0 || pres.server_deafened === true;
                 const mutedVideo  = !!meta?.serverMutedVideo;
                 const mutedScreen = !!meta?.serverMutedScreenShare;
+                const leftSuffix = (until: number) => { const s = formatTimeLeft(until); return s ? ` · ${s}` : ''; };
                 items.push({ divider: true });
                 items.push({
-                    icon: <MicOff />, label: 'Server Mute',
+                    icon: <MicOff />, label: `Server Mute${mutedAudio ? leftSuffix(t.mutedUntil) : ''}`,
                     checked: mutedAudio,
                     onSelect: () => serverMuteCallParticipant(roomName, uid, 'audio', !mutedAudio),
                 });
                 items.push({
-                    icon: <HeadphoneOff />, label: 'Server Deafen',
+                    icon: <HeadphoneOff />, label: `Server Deafen${deafened ? leftSuffix(t.deafenedUntil) : ''}`,
                     checked: deafened,
                     onSelect: () => serverMuteCallParticipant(roomName, uid, 'deafen', !deafened),
                 });
@@ -1531,6 +1616,7 @@ export const ServerContextPanel: React.FC<Props> = ({
         // list where it would mean nothing.
         items.push(...buildMoveToSubmenu(m.user_id));
         items.push(...buildDisconnectItems(m.user_id, displayName));
+        items.push(...buildVoiceModerationItems(m.user_id));
         return items;
     };
     // Keep the ref always pointing at the latest closure so onSelect can
@@ -1573,7 +1659,7 @@ export const ServerContextPanel: React.FC<Props> = ({
             : 'rounded-lg';
 
         return (
-            <div
+            <HoverPlayRow
                 key={m.user_id}
                 className={`flex items-center gap-2.5 px-2 py-1.5 hover:bg-white/[0.04] transition-colors relative group cursor-pointer ${groupClasses}`}
                 onClick={(e) => {
@@ -1592,6 +1678,7 @@ export const ServerContextPanel: React.FC<Props> = ({
                     memberMenu.open(e, buildMemberMenu(m, displayName), displayName);
                 }}
             >
+                {(playing) => (<>
                 {/* Avatar + status dot — dim entire block when offline */}
                 <div className={`relative w-8 h-8 shrink-0 transition-opacity ${status === 'offline' ? 'opacity-35' : ''}`}>
                     <div className="w-full h-full rounded-full overflow-hidden">
@@ -1602,6 +1689,7 @@ export const ServerContextPanel: React.FC<Props> = ({
                             className="w-full h-full"
                             fallbackSize={14}
                             bypassFriendGate
+                            playing={playing}
                         />
                     </div>
                     {showController ? (
@@ -1662,7 +1750,8 @@ export const ServerContextPanel: React.FC<Props> = ({
                         <MoreVertical />
                     </FlatIconBtn>
                 )}
-            </div>
+                </>)}
+            </HoverPlayRow>
         );
     };
 
@@ -1862,8 +1951,8 @@ export const ServerContextPanel: React.FC<Props> = ({
                             key={c.render_key ?? c.call_id}
                             className={landedCallId === c.call_id ? 'cl-move-landed rounded-xl' : undefined}
                             initial={{ opacity: 0, y: -6 }}
-                            animate={{ opacity: 1, y: 0, transition: { duration: 0.18, ease: [0.22, 1, 0.36, 1] } }}
-                            exit={{ opacity: 0, y: -6, transition: { duration: 0.22, ease: [0.4, 0, 1, 1] } }}
+                            animate={{ opacity: 1, y: 0, transition: CALL_CARD_ENTER }}
+                            exit={{ opacity: 0, y: -6, transition: CALL_CARD_EXIT }}
                         >
                         <MoveDropZone
                             id={`${CALL_DROP_PREFIX}${c.call_id}`}
@@ -1905,7 +1994,14 @@ export const ServerContextPanel: React.FC<Props> = ({
                                         ], c.name)}
                                     />
                                     <div className="flex flex-col w-full">
-                                        {c.participants.map(uid => {
+                                        {/* Join / leave animate per person (components/call/presenceMotion):
+                                            a mid-call join grows in like the card did on the first join,
+                                            a leave collapses out as a short ghost. The card itself still
+                                            owns first-join / last-leave (AnimatePresence above). */}
+                                        <PresenceRoster
+                                            ids={c.participants}
+                                            rowClassName="w-full"
+                                            renderRow={(uid) => {
                                             const m = memberMap.get(uid);
                                             const displayName = m?.nickname || m?.username || 'Unknown User';
                                             const isMe = uid === userId;
@@ -1920,7 +2016,7 @@ export const ServerContextPanel: React.FC<Props> = ({
                                                     // MANAGE_CALL_MEMBERS.
                                                     disabled={!canMoveMembers && !isMe}
                                                 >
-                                                <div
+                                                <HoverPlayRow
                                                     className="flex items-center gap-2.5 px-2 py-1.5 hover:bg-white/[0.04] transition-colors w-full cursor-pointer relative isolate"
                                                     onClick={(e) => onOpenProfile(uid, { x: e.clientX, y: e.clientY }, { roleIds: [], roles: [], serverId: server.server_id })}
                                                     onContextMenu={(e) => {
@@ -1963,7 +2059,7 @@ export const ServerContextPanel: React.FC<Props> = ({
                                                         }
                                                     }}
                                                 >
-                                                    
+                                                    {(playing) => (<>
                                                     {/* Speaking ring subscribes per identity (SpeakingRing) so a
                                                         speaking flip doesn't re-render this whole panel. */}
                                                     <SpeakingRing
@@ -1973,14 +2069,18 @@ export const ServerContextPanel: React.FC<Props> = ({
                                                         glowAlpha={0.5}
                                                         idleClassName="ring-1 ring-white/10"
                                                     >
-                                                        <EncryptedAvatar
-                                                            attachmentId={m?.avatar_url ?? null}
-                                                            userId={uid}
-                                                            token={token}
-                                                            fallbackSize={13}
-                                                            bypassFriendGate
-                                                            className="w-full h-full object-cover"
-                                                        />
+                                                        {(speaking) => (
+                                                            <EncryptedAvatar
+                                                                attachmentId={m?.avatar_url ?? null}
+                                                                userId={uid}
+                                                                token={token}
+                                                                fallbackSize={13}
+                                                                bypassFriendGate
+                                                                playing={playing}
+                                                                speaking={speaking}
+                                                                className="w-full h-full object-cover"
+                                                            />
+                                                        )}
                                                     </SpeakingRing>
                                                     <span
                                                         className="flex-1 text-[13px] truncate"
@@ -2016,11 +2116,14 @@ export const ServerContextPanel: React.FC<Props> = ({
                                                         videoHidden={callCtx?.hiddenVideoIds.has(uid) ?? false}
                                                         screenHidden={callCtx?.hiddenScreenShareIds.has(uid) ?? false}
                                                         iconClass="w-3.5 h-3.5"
+                                                        serverId={server.server_id}
                                                     />
-                                                </div>
+                                                    </>)}
+                                                </HoverPlayRow>
                                                 </DraggableParticipant>
                                             );
-                                        })}
+                                            }}
+                                        />
                                     </div>
                                 </div>
                             ) : (
@@ -2463,15 +2566,22 @@ export const ServerContextPanel: React.FC<Props> = ({
                                             SidebarConference participant rows are portaled
                                             into the persistent #call-sidebar-root in
                                             Dashboard's aside, not here. */}
-                                        {!isMine && participants.length > 0 && (
+                                        {/* Always mounted while not in this channel (not only when
+                                            someone is in it), so the FIRST person joining animates in
+                                            the same way a mid-call join does, and the last one leaving
+                                            collapses out as a ghost instead of vanishing. */}
+                                        {!isMine && (
                                             <div>
-                                                {participants.map(uid => {
+                                                <PresenceRoster
+                                                    ids={participants}
+                                                    rowClassName="w-full"
+                                                    renderRow={(uid) => {
                                                         const pm = memberMap.get(uid);
                                                         const pName = pm?.nickname ?? pm?.username ?? 'Unknown User';
                                                         const pStatus = liveStatus(pm ?? { user_id: uid } as ServerMember);
                                                         const pOnMobile = liveOnMobile(pm ?? { user_id: uid } as ServerMember);
                                                         return (
-                                                            <div
+                                                            <HoverPlayRow
                                                                 key={uid}
                                                                 className="flex items-center gap-2 px-2 py-1.5 hover:bg-white/[0.03] transition-colors cursor-pointer group relative isolate"
                                                                 onClick={(e) => onOpenProfile(uid, { x: e.clientX, y: e.clientY })}
@@ -2481,7 +2591,7 @@ export const ServerContextPanel: React.FC<Props> = ({
                                                                     pName,
                                                                 )}
                                                             >
-                                                                
+                                                                {(playing) => (<>
                                                                 <div className="relative w-8 h-8 shrink-0">
                                                                     <SpeakingRing
                                                                         uid={uid}
@@ -2489,14 +2599,18 @@ export const ServerContextPanel: React.FC<Props> = ({
                                                                         glow={6}
                                                         glowAlpha={0.5}
                                                                     >
-                                                                        <EncryptedAvatar
-                                                                            attachmentId={pm?.avatar_url ?? null}
-                                                                            userId={uid}
-                                                                            token={token}
-                                                                            className="w-full h-full"
-                                                                            fallbackSize={13}
-                                                                            bypassFriendGate
-                                                                        />
+                                                                        {(speaking) => (
+                                                                            <EncryptedAvatar
+                                                                                attachmentId={pm?.avatar_url ?? null}
+                                                                                userId={uid}
+                                                                                token={token}
+                                                                                className="w-full h-full"
+                                                                                fallbackSize={13}
+                                                                                bypassFriendGate
+                                                                                playing={playing}
+                                                                                speaking={speaking}
+                                                                            />
+                                                                        )}
                                                                     </SpeakingRing>
                                                                     <span className="absolute bottom-[-1px] right-[-2px] border border-cl-abyss rounded-full">
                                                                         <StatusIcon status={pStatus} currentGame={null} onMobile={pOnMobile} size={7} />
@@ -2518,10 +2632,13 @@ export const ServerContextPanel: React.FC<Props> = ({
                                                                     videoHidden={callCtx?.hiddenVideoIds.has(uid) ?? false}
                                                                     screenHidden={callCtx?.hiddenScreenShareIds.has(uid) ?? false}
                                                                     iconClass="w-3 h-3"
+                                                                    serverId={server.server_id}
                                                                 />
-                                                            </div>
+                                                                </>)}
+                                                            </HoverPlayRow>
                                                         );
-                                                })}
+                                                    }}
+                                                />
                                             </div>
                                         )}
                                     </div>
@@ -2602,22 +2719,13 @@ export const ServerContextPanel: React.FC<Props> = ({
             </div>
 
             {/* Rename-call dialog — kit modal, not the old native window.prompt. */}
-            <ClModal open={!!renameCall} onClose={() => setRenameCall(null)} width={380} label="Rename call">
-                <h3 className="text-[17px]" style={{ fontFamily: 'var(--cl-font-display)', fontWeight: 600, color: 'var(--cl-text)', margin: 0 }}>Rename call</h3>
-                <p className="text-[12.5px] mb-4 mt-1" style={{ color: 'var(--cl-muted)' }}>Everyone in the call sees the new name.</p>
-                <ClInput
-                    value={renameDraft}
-                    onChange={e => setRenameDraft(e.target.value)}
-                    maxLength={60}
-                    placeholder="Call name"
-                    autoFocus
-                    onKeyDown={(e: React.KeyboardEvent) => { if (e.key === 'Enter') commitRenameCall(); }}
-                />
-                <div className="flex justify-end gap-2 mt-5">
-                    <ClButton variant="ghost" size="sm" onClick={() => setRenameCall(null)}>Cancel</ClButton>
-                    <ClButton size="sm" onClick={commitRenameCall} disabled={!renameDraft.replace(/[^a-zA-Z0-9 '\-_.]/g, '').trim()}>Rename</ClButton>
-                </div>
-            </ClModal>
+            <RenameCallDialog
+                open={!!renameCall}
+                draft={renameDraft}
+                onDraftChange={setRenameDraft}
+                onSubmit={commitRenameCall}
+                onClose={() => setRenameCall(null)}
+            />
 
             {/* Huddle create dialog — right-click blank space / category + button. */}
             {createHuddleSettings && (
@@ -2681,45 +2789,18 @@ export const ServerContextPanel: React.FC<Props> = ({
             )}
 
             {/* Nickname change dialog — kit modal; raised above the profile modal it opens from. */}
-            <ClModal
+            <NicknameDialog
                 open={!!nicknameDialog}
+                isSelf={nicknameDialog?.userId === userId}
+                displayName={nicknameDialog?.displayName ?? ''}
+                value={nicknameInput}
+                onChange={setNicknameInput}
+                error={nicknameError}
+                saving={nicknameSaving}
+                onSubmit={() => { if (nicknameDialog) void saveNickname(nicknameDialog.userId, nicknameInput); }}
                 onClose={() => setNicknameDialog(null)}
-                width={320}
                 overlayStyle={{ zIndex: 10020 }}
-                label="Change Nickname"
-                cardStyle={{ padding: 20 }}
-                cardClassName="flex flex-col gap-4"
-            >
-                {nicknameDialog && (
-                    <>
-                        <div>
-                            <h3 className="text-[15px] font-bold text-cl-text m-0">Change Nickname</h3>
-                            <p className="text-[12px] text-cl-faint mt-0.5">
-                                {nicknameDialog.userId === userId ? 'Your nickname in this server' : `Nickname for ${nicknameDialog.displayName}`}
-                            </p>
-                        </div>
-                        <div className="flex flex-col gap-1.5">
-                            <label className="text-[11px] font-semibold text-cl-faint uppercase tracking-widest">Nickname</label>
-                            <ClInput
-                                autoFocus
-                                value={nicknameInput}
-                                onChange={e => setNicknameInput(e.target.value)}
-                                onKeyDown={e => {
-                                    if (e.key === 'Enter') { e.preventDefault(); saveNickname(nicknameDialog.userId, nicknameInput); }
-                                }}
-                                maxLength={32}
-                                placeholder="Leave blank to reset to username"
-                            />
-                            {nicknameError && <p className="text-[11px] text-red-400">{nicknameError}</p>}
-                            <p className="text-[11px] text-cl-faint">Leave blank to reset to account username</p>
-                        </div>
-                        <div className="flex gap-2 justify-end">
-                            <ClButton size="sm" variant="ghost" onClick={() => setNicknameDialog(null)}>Cancel</ClButton>
-                            <ClButton size="sm" disabled={nicknameSaving} loading={nicknameSaving} onClick={() => saveNickname(nicknameDialog.userId, nicknameInput)}>Save</ClButton>
-                        </div>
-                    </>
-                )}
-            </ClModal>
+            />
 
             {memberAction && (
                 <MemberActionDialog

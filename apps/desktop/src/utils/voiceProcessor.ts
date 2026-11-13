@@ -20,25 +20,26 @@
  *         RNNoise's output when NS is on (see voiceChain.ts for the bug that
  *         tied them together)
  *     → EQ[80Hz, 250Hz, 1kHz, 4kHz, 12kHz] (5× BiquadFilterNode; gains zeroed when disabled)
- *     → AgcWorkletNode (the whole levelling stage: slow speech-gated gain toward
- *         a target active-speech level, a fast burst guard, a make-up-free peak
- *         compressor and a look-ahead limiter; pass-through at unity gain when
- *         the "Auto gain control" setting is off — see agcKernel.js)
+ *     → MicVolumeGain (0–200% user boost, in FRONT of the AGC since 2026-11-11 so the
+ *         AGC's limiter ceiling stays at -1 dBFS; see where it is connected)
+ *     → AgcWorkletNode (the whole levelling stage: a gain that adapts ONLY while
+ *         voiced speech is heard (pitch detector, so breaths/clicks/noise never
+ *         raise it) toward a target active-speech level, an instant loud-onset
+ *         guard, a make-up-free peak compressor and a look-ahead limiter; the
+ *         same law for Light and Strong; pass-through at unity gain when the
+ *         "Auto gain control" setting is off — see agcKernel.js)
  *     → DynamicsCompressorNode (kept in the graph but ALWAYS transparent:
  *         ratio 1. A Web Audio compressor carries a hidden automatic make-up
  *         gain that lifted everything below its threshold, noise included —
  *         the compression now lives in agcKernel.js without one)
- *     → MicVolumeGain (0–200% user boost, after the AGC on purpose: it is a
- *         deliberate "I want to be louder" control)
  *     → AnalyserNode (feeds input level meter so meter reflects final gain)
  *     → MediaStreamAudioDestinationNode
  *     → processedTrack
  *
  * "Auto gain control" is a genuine AGC (the libwebrtc AGC2 pattern), not a
  * compressor with a fixed threshold: a slow stage steers the talker's average
- * active-speech level to a fixed target (about -20 dBFS on the wire, the level
- * libwebrtc-based apps such as Discord land at — see agcKernel.js for the
- * sources) so two speakers with very different hardware levels arrive at the
+ * active-speech level to a fixed target (about -17.6 dBFS on the wire, raised
+ * 3 dB on 2026-11-08 — see agcKernel.js) so two speakers with very different hardware levels arrive at the
  * same loudness. A fixed-threshold compressor alone could not: a quiet mic
  * never crossed the threshold, so a 30 dB hardware gap came out ~20 dB apart
  * regardless of the setting on either end. Chromium's own AGC stays off
@@ -248,6 +249,29 @@ class GateWorklet extends AudioWorkletProcessor {
         // Default: disabled (pass-through)
         this.enabled   = false;
         this.threshold = Math.pow(10, -45 / 20); // linear, -45 dBFS default
+        // Auto mode (the user's "Automatic" voice-gate toggle, on by default): the effective threshold sits
+        // AUTO_SPEECH_RATIO (60%) of the way (in dB) from the measured noise floor up to the measured speech level,
+        // but at least AUTO_MARGIN_DB and at most AUTO_MAX_MARGIN_DB above the floor, clamped to
+        // [AUTO_MIN_DB, AUTO_MAX_DB]. Owner 2026-11-12: on a very low-noise mic "floor + 7 dB" sat around -60 and
+        // let breathing and movement through. Since 2026-11-13 it is also never more than AUTO_HEADROOM_DB (8) under the
+        // speech level, whichever of the two rules is higher wins. Examples: -30 speech over a -70 floor -> ~-38 (was -46; breathing at -50 is
+        // gated); -25 over -52 -> ~-36; a quiet talker, -45 over -52 -> the 7 dB minimum, -45 (still opens). Floor tracker: the AGC's pattern (falls fast to the quietest blocks, creeps up slowly).
+        // Speech tracker: rises fast toward loud blocks (well above the floor), decays slowly.
+        // Both start where the default threshold would be, so nothing moves until it has heard a pause.
+        this.auto      = false;
+        this.floorDb   = -52;
+        this.effDb     = -45; // the auto threshold in force (dBFS), reported to the Settings row
+        this.speechDb  = -45; // placeholder until speech is heard (was -38; with the headroom rule below that would chop a -55 talker for a minute)
+        this.AUTO_MARGIN_DB = 7;
+        this.AUTO_MAX_MARGIN_DB = 30;
+        this.AUTO_SPEECH_RATIO = 0.6;
+        this.AUTO_MIN_DB = -60;
+        this.AUTO_MAX_DB = -30;
+        // Second rule (owner 2026-11-13: "still too low all the time"): the threshold also never sits more than
+        // AUTO_HEADROOM_DB below the measured speech level. The floor-based rule above reads the floor AFTER noise
+        // suppression, where it is often -75..-90, so a real talker (raw speech around -45..-40 dBFS, not the
+        // -30..-20 the first tuning assumed) got a gate 15-20 dB under their voice, low enough for breathing.
+        this.AUTO_HEADROOM_DB = 8;
         // Hold: how many samples to stay open after level drops below threshold.
         // 150 ms × 48000 = 7200 samples.
         this.holdTotal  = Math.round(0.150 * sampleRate);
@@ -264,6 +288,15 @@ class GateWorklet extends AudioWorkletProcessor {
         this.reportEvery = 0;
         this.reportLeft  = 0;
         this.reportPeak  = 0;
+        // Once a second, always: how many quanta the gate was open. Diagnostic
+        // reports show it next to the speech level (a gate set above a quiet
+        // mic's speech chops the voice; that looks exactly like "too quiet").
+        this.tallyEvery  = Math.max(1, Math.round(sampleRate / 128));
+        this.tallyLeft   = this.tallyEvery;
+        this.tallyOpen   = 0;
+        // Quietest block of the current second, for the "high background noise" prompt: speech cannot lift
+        // a minimum, so it reads the room even while someone talks. Reported with each gateStats.
+        this.tallyMin    = Infinity;
 
         this.port.onmessage = ({ data }) => {
             if (data.type === 'gate') {
@@ -272,6 +305,8 @@ class GateWorklet extends AudioWorkletProcessor {
                     this.gain    = 1; // immediately pass-through when gate is off
                     this.holdLeft = 0;
                 }
+            } else if (data.type === 'auto') {
+                this.auto = !!data.value; // false = the user's own threshold, never moved
             } else if (data.type === 'threshold') {
                 // Receive threshold in dBFS, store as linear amplitude
                 this.threshold = Math.pow(10, data.value / 20);
@@ -285,6 +320,18 @@ class GateWorklet extends AudioWorkletProcessor {
         };
     }
 
+    tally(open) {
+        if (open) this.tallyOpen++;
+        if (--this.tallyLeft > 0) return;
+        this.port.postMessage({
+            type: 'gateStats', open: this.tallyOpen, total: this.tallyEvery,
+            minDb: this.tallyMin < Infinity ? 20 * Math.log10(Math.max(this.tallyMin, 1e-12)) : null,
+        });
+        this.tallyLeft = this.tallyEvery;
+        this.tallyOpen = 0;
+        this.tallyMin = Infinity;
+    }
+
     meter(rms) {
         if (!this.reportEvery) return;
         if (rms > this.reportPeak) this.reportPeak = rms;
@@ -293,6 +340,7 @@ class GateWorklet extends AudioWorkletProcessor {
             type: 'level',
             rms: this.reportPeak,
             open: !this.enabled || this.holdLeft > 0 || this.gain > 0.5,
+            thr: this.enabled && this.auto ? Math.round(this.effDb) : null,
         });
         this.reportLeft = this.reportEvery;
         this.reportPeak = 0;
@@ -303,20 +351,41 @@ class GateWorklet extends AudioWorkletProcessor {
         const out = outputs[0]?.[0];
         if (!out) return true;
 
-        if (!inp) { out.fill(0); this.meter(0); return true; }
+        if (!inp) { out.fill(0); this.tally(false); this.meter(0); return true; }
 
         // RMS for this 128-sample quantum
         let sum = 0;
         for (let i = 0; i < inp.length; i++) sum += inp[i] * inp[i];
         const rms = Math.sqrt(sum / inp.length);
+        if (rms < this.tallyMin) this.tallyMin = rms;
 
         if (!this.enabled) {
             out.set(inp);
+            this.tally(true);
             this.meter(rms);
             return true;
         }
 
-        if (rms >= this.threshold) {
+        let threshold = this.threshold;
+        if (this.auto) {
+            const rdb = 20 * Math.log10(Math.max(rms, 1e-12));
+            if (rdb < this.floorDb) this.floorDb += (rdb - this.floorDb) * 0.25;
+            else this.floorDb += 2 * (inp.length / sampleRate);
+            this.floorDb = Math.min(-35, Math.max(-90, this.floorDb));
+            // Speech level: only blocks clearly above the floor count as speech.
+            const dt = inp.length / sampleRate;
+            // Rises quickly toward louder speech; otherwise only drifts down slowly (0.3 dB/s), so breathing or
+            // movement just above the floor can never drag the speech estimate (and with it the gate) down.
+            if (rdb > this.floorDb + 10 && rdb > this.speechDb) this.speechDb += (rdb - this.speechDb) * 0.05;
+            else this.speechDb -= 0.3 * dt;
+            this.speechDb = Math.max(this.floorDb, Math.min(0, this.speechDb));
+            const margin = Math.min(this.AUTO_MAX_MARGIN_DB, Math.max(this.AUTO_MARGIN_DB, (this.speechDb - this.floorDb) * this.AUTO_SPEECH_RATIO));
+            const byFloor = this.floorDb + margin;
+            const bySpeech = this.speechDb - this.AUTO_HEADROOM_DB;
+            this.effDb = Math.min(this.AUTO_MAX_DB, Math.max(this.AUTO_MIN_DB, Math.max(byFloor, bySpeech)));
+            threshold = Math.pow(10, this.effDb / 20);
+        }
+        if (rms >= threshold) {
             this.holdLeft = this.holdTotal; // voice detected — reset hold timer
         } else if (this.holdLeft > 0) {
             this.holdLeft -= inp.length;    // still in hold period
@@ -334,6 +403,7 @@ class GateWorklet extends AudioWorkletProcessor {
             }
             out[i] = inp[i] * this.gain;
         }
+        this.tally(gateOpen);
         this.meter(rms);
         return true;
     }
@@ -344,6 +414,26 @@ registerProcessor('gate-worklet', GateWorklet);
 // RNNOISE_WORKLET_SOURCE lives in rnnoiseWorkletSource.ts (loaded via rnnoiseSources.ts)
 
 // ── Processor ─────────────────────────────────────────────────────────────────
+
+/** One second of the outgoing mic's levels, for diagnostic reports (micLevelLog.ts). */
+export interface MicLevelSecond {
+    /** AGC: gain applied now (dB), whether it hears voiced speech, its input speech level (dBFS). */
+    gainDb: number;
+    voiceActive: boolean;
+    speechDb: number | null;
+    /** AGC worklet window since its last report: quanta, voiced quanta, summed input / output
+     *  mean-squares over the voiced ones, peak |output|, voiced quanta held down >= 1 dB by the
+     *  compressor or limiter, output samples the mic-volume stage drives to full scale. */
+    blocks: number; voiced: number; inMs: number; outMs: number; peak: number; held: number; clip: number;
+    /** The mic-volume stage, dB (it follows the AGC). */
+    micGainDb: number;
+    /** Share of the second the voice gate was open (0..1); null before its first report. */
+    gateOpenFrac: number | null;
+    /** Mean-square of the raw capture / the noise suppressor's output over the polls that
+     *  landed while voice was heard; null when none did. */
+    rawMs: number | null;
+    nsMs: number | null;
+}
 
 export interface VoiceProcessorCallbacks {
     onVadProbability?: (prob: number) => void;
@@ -356,20 +446,26 @@ export interface VoiceProcessorCallbacks {
     /** Throttled (~1/s) health stats forwarded from the RNNoise worklet. */
     onNsStats?: (stats: { underruns: number; state: string; bufferedSamples: number }) => void;
     /** Throttled (~1/s) health stats forwarded from the AGC worklet — the
-     *  currently-applied gain in dB and whether it currently considers the
-     *  input to be speech (see agcKernel.js's floor-based voice detection). */
-    onAgcStats?: (stats: { gainDb: number; voiceActive: boolean }) => void;
+     *  currently-applied gain in dB and whether it currently hears voiced
+     *  speech (see agcKernel.js's VoiceDetector). */
+    onAgcStats?: (stats: { gainDb: number; voiceActive: boolean; speechDb?: number | null }) => void;
+    /** Once a second: the mic's levels through every stage (see micLevelLog.ts). Numbers only. */
+    onMicLevelStats?: (stats: MicLevelSecond) => void;
     /** Fires once if RNNoise failed to come up at all — a CSP block, a
      *  torn-down context, or WASM failing to load — and the chain runs without
      *  noise suppression. The gate, EQ, AGC and mic volume are separate stages
      *  and keep working. Distinct from onNsAutoBypass, which is a temporary
      *  load-driven pause that recovers on its own. */
     onNsUnavailable?: () => void;
+    /** Once a second: the quietest moment of the signal at the gate (dBFS; after noise
+     *  suppression when it is on), or null when there was no input. Local only; feeds the
+     *  "lots of background noise" prompt (noiseFloorPrompt.ts). */
+    onNoiseFloor?: (minDb: number | null) => void;
     /** The gate's own detector, for a meter (only when constructed with
      *  `gateMeterMs`): the loudest 128-sample block RMS of each interval in
      *  dBFS — the exact quantity compared against the threshold — and whether
      *  the gate is open. See GATE_METER_REPORT_MS in voiceChain.ts. */
-    onGateLevel?: (dbfs: number, open: boolean) => void;
+    onGateLevel?: (dbfs: number, open: boolean, autoThresholdDb: number | null) => void;
     /** Once per call: the audio render thread kept missing its deadlines with
      *  Strong (RNNoise) running, so Light (Speex) took over — nsLoadGuard.ts. */
     onNsLoadFallback?: (info: { underrunMs: number; underrunEvents: number }) => void;
@@ -418,6 +514,16 @@ export class CipherlineVoiceProcessor {
     private micVolumeGain?: GainNode;
     private analyser?: AnalyserNode;
     private gateWorkletNode?: AudioWorkletNode; // gate runs in audio thread — no JS timer jitter
+    /** Fraction of the last second the gate was open (gate worklet 'gateStats'); null before the first report. */
+    private gateOpenFrac: number | null = null;
+    /** Level taps for diagnostics only: the raw capture and the noise suppressor's output. */
+    private rawTap?: AnalyserNode;
+    private nsTap?: AnalyserNode;
+    /** Mean-square sums of those taps over the polls that landed while the AGC heard voice. */
+    private tapRawMs = 0;
+    private tapNsMs = 0;
+    private tapN = 0;
+    private lastVoiceActive = false;
     private eqFilters: BiquadFilterNode[] = [];
     private compressor?: DynamicsCompressorNode;
     private destination?: MediaStreamAudioDestinationNode;
@@ -662,17 +768,22 @@ export class CipherlineVoiceProcessor {
             });
             gate.port.postMessage({ type: 'gate',      enabled: this._settings.voiceGate });
             gate.port.postMessage({ type: 'threshold', value: this._settings.voiceGateThreshold });
+            gate.port.postMessage({ type: 'auto', value: this._settings.voiceGateAuto !== false });
             gate.port.postMessage({ type: 'hold',      ms: 150 });
             if (this.gateMeterMs > 0) {
                 // The Settings meter under the threshold slider reads the gate's
                 // OWN detector — see GATE_METER_REPORT_MS in voiceChain.ts.
                 gate.port.postMessage({ type: 'report', ms: this.gateMeterMs });
-                gate.port.onmessage = ({ data }: MessageEvent) => {
-                    if (data?.type !== 'level') return;
-                    const dbfs = data.rms > 0 ? 20 * Math.log10(data.rms) : -Infinity;
-                    this._callbacks.onGateLevel?.(dbfs, !!data.open);
-                };
             }
+            gate.port.onmessage = ({ data }: MessageEvent) => {
+                if (data?.type === 'gateStats') {
+                    this.gateOpenFrac = data.total > 0 ? data.open / data.total : null;
+                    this._callbacks.onNoiseFloor?.(typeof data.minDb === 'number' ? data.minDb : null);
+                } else if (data?.type === 'level' && this.gateMeterMs > 0) {
+                    const dbfs = data.rms > 0 ? 20 * Math.log10(data.rms) : -Infinity;
+                    this._callbacks.onGateLevel?.(dbfs, !!data.open, typeof data.thr === 'number' ? data.thr : null);
+                }
+            };
             this.gateWorkletNode = gate;
         } catch (err) {
             console.error('[VoiceProcessor] Voice gate unavailable — continuing without it:', err);
@@ -867,9 +978,24 @@ export class CipherlineVoiceProcessor {
                 outputChannelCount: [1],
             });
             this.agcWorkletNode.port.postMessage({ type: 'enabled', value: this._settings.volumeNormalization });
+            this.agcWorkletNode.port.postMessage({ type: 'micGainDb', value: this.micGainDb() });
             this.agcWorkletNode.port.onmessage = ({ data }: MessageEvent) => {
                 if (data.type === 'agcStats') {
                     this._callbacks.onAgcStats?.(data);
+                    this.lastVoiceActive = !!data.voiceActive;
+                    if (this._callbacks.onMicLevelStats) {
+                        const n = this.tapN;
+                        this._callbacks.onMicLevelStats({
+                            gainDb: data.gainDb, voiceActive: !!data.voiceActive, speechDb: data.speechDb ?? null,
+                            blocks: data.blocks ?? 0, voiced: data.voiced ?? 0, inMs: data.inMs ?? 0, outMs: data.outMs ?? 0,
+                            peak: data.peak ?? 0, held: data.held ?? 0, clip: data.clip ?? 0,
+                            micGainDb: this.micGainDb(),
+                            gateOpenFrac: this.gateOpenFrac,
+                            rawMs: n > 0 ? this.tapRawMs / n : null,
+                            nsMs: n > 0 ? this.tapNsMs / n : null,
+                        });
+                        this.tapRawMs = 0; this.tapNsMs = 0; this.tapN = 0;
+                    }
                 }
             };
         } catch (err) {
@@ -919,7 +1045,8 @@ export class CipherlineVoiceProcessor {
 
         // ── Connect the full chain ──
         // Source → RNNoiseWorklet → GateWorklet → EQ[0..4] → AgcWorklet
-        //        → Compressor → CompressorMakeupGain → MicVolumeGain → Analyser → Dest
+        //        → Compressor → CompressorMakeupGain → Analyser → Dest
+        //        (MicVolumeGain sits between EQ and AgcWorklet, see below)
         //
         // The RNNoise compensation gain (+3.5 dB when a sample was actually
         // processed, unity when it's raw passthrough) is applied INSIDE the
@@ -932,8 +1059,7 @@ export class CipherlineVoiceProcessor {
         // normalization setting — see that constant's comment for why the
         // makeup gain was removed entirely rather than merely reduced again.
         //
-        // MicVolumeGain sits AFTER the makeup gain as the user-controlled
-        // boost (0–200%). Analyser follows so the level meter reflects
+        // MicVolumeGain (user boost 0–200%) is IN FRONT of the AGC. Analyser follows so the level meter reflects
         // the final gain the user has dialed in.
         //
         // A worklet stage that failed to come up (see above) is simply absent:
@@ -947,6 +1073,13 @@ export class CipherlineVoiceProcessor {
             current.connect(this.speexWorkletNode);
             current = this.speexWorkletNode;
         }
+        // Diagnostic taps (no output, nothing downstream): the raw capture and what the
+        // noise suppressor hands on, so a report can say how much level it removed.
+        this.rawTap = ctx.createAnalyser();
+        this.nsTap = ctx.createAnalyser();
+        this.rawTap.fftSize = 256;
+        this.nsTap.fftSize = 256;
+        const nsOut = current; // connected to the taps AFTER the real chain, so the chain's first fan-out stays the audio path
         if (this.gateWorkletNode) {
             current.connect(this.gateWorkletNode);
             current = this.gateWorkletNode;
@@ -955,15 +1088,24 @@ export class CipherlineVoiceProcessor {
             current.connect(filter);
             current = filter;
         }
+        // Mic volume (0-200 %) goes in FRONT of the AGC (2026-11-11): behind it the AGC's limiter
+        // ceiling had to be lowered by the boost, so at 200 % (+7.5 dB) every speech peak hit a
+        // -8.5 dBFS ceiling (lim_pct ~90-100 %, 1.5-7 dB of speech squashed). Here the AGC levels
+        // what the user asked for and the ceiling stays at -1 dBFS. It is after the gate, EQ and
+        // the noise suppressors (so their thresholds and the Speex over-range limiter see the raw
+        // level, unchanged); anything the boost pushes past full scale is caught by the AGC's limiter.
+        current.connect(this.micVolumeGain!);
+        current = this.micVolumeGain!;
         if (this.agcWorkletNode) {
             current.connect(this.agcWorkletNode);
             current = this.agcWorkletNode;
         }
         current.connect(this.compressor);
         this.compressor.connect(this.compressorMakeupGain!);
-        this.compressorMakeupGain!.connect(this.micVolumeGain!);
-        this.micVolumeGain.connect(this.analyser);
+        this.compressorMakeupGain!.connect(this.analyser);
         this.analyser.connect(this.destination);
+        this.source.connect(this.rawTap);
+        nsOut.connect(this.nsTap);
 
         this.processedTrack = this.destination.stream.getAudioTracks()[0];
         this.startLevelPolling();
@@ -986,6 +1128,26 @@ export class CipherlineVoiceProcessor {
      * context's MediaStreamDestination emits silence — which `replaceTrack`
      * then hands to the SFU as the user's microphone.
      */
+    /**
+     * The processing graph's AudioContext state ('none' before init / after
+     * destroy), and — when it is not running — a resume() attempt. A context
+     * that is not running delivers nothing to its MediaStreamDestination, and
+     * a sender fed by it sends no RTP at all (measured; see
+     * outboundAudioStats.ts), so the silence watchdog calls this when it trips.
+     * resume() is a no-op on a running context and only resolves after a user
+     * gesture on a cold one, so it is fire-and-forget; the audioUnlock registry
+     * keeps retrying on gestures.
+     */
+    recoverContext(): { state: string; resumed: boolean } {
+        const ctx = this.ctx;
+        if (!ctx) return { state: 'none', resumed: false };
+        const state = String(ctx.state);
+        if (state === 'running' || state === 'closed') return { state, resumed: false };
+        ctx.resume().catch(() => { /* retried by the gesture-unlock registry */ });
+        registerCtxForUnlock(ctx);
+        return { state, resumed: true };
+    }
+
     async restart(opts: { track: MediaStreamTrack; audioContext?: AudioContext; kind?: string }) {
         await this.destroy();
         await this.init(opts);
@@ -1023,6 +1185,13 @@ export class CipherlineVoiceProcessor {
         this.compressorMakeupGain = undefined;
         try { this.micVolumeGain?.disconnect(); } catch { /* teardown is best-effort; the node/handle may already be closed */ }
         try { this.analyser?.disconnect(); } catch { /* teardown is best-effort; the node/handle may already be closed */ }
+        try { this.rawTap?.disconnect(); } catch { /* teardown is best-effort; the node/handle may already be closed */ }
+        try { this.nsTap?.disconnect(); } catch { /* teardown is best-effort; the node/handle may already be closed */ }
+        this.rawTap = undefined;
+        this.nsTap = undefined;
+        this.lastVoiceActive = false;
+        this.gateOpenFrac = null;
+        this.tapRawMs = 0; this.tapNsMs = 0; this.tapN = 0;
         if (this.gateWorkletNode) {
             this.gateWorkletNode.port.onmessage = null;
             try { this.gateWorkletNode.disconnect(); } catch { /* teardown is best-effort; the node/handle may already be closed */ }
@@ -1086,6 +1255,7 @@ export class CipherlineVoiceProcessor {
             p.cancelScheduledValues(t);
             p.setValueAtTime(cv, t);
             p.setTargetAtTime(micSliderToGain(settings.micVolume), t, 0.01);
+            this.agcWorkletNode?.port.postMessage({ type: 'micGainDb', value: this.micGainDb(settings.micVolume) });
         }
 
         // ── EQ bands ──
@@ -1124,14 +1294,25 @@ export class CipherlineVoiceProcessor {
             if (prev.voiceGateThreshold !== settings.voiceGateThreshold) {
                 this.gateWorkletNode.port.postMessage({ type: 'threshold', value: settings.voiceGateThreshold });
             }
+            if (prev.voiceGateThreshold !== settings.voiceGateThreshold || prev.voiceGateAuto !== settings.voiceGateAuto) {
+                this.gateWorkletNode.port.postMessage({ type: 'auto', value: settings.voiceGateAuto !== false });
+            }
         }
     }
 
     // ── Level metering (UI only — gate logic lives in GateWorklet) ───────
 
+    /** The mic-volume stage in dB (it sits after the AGC and is not limited by it). */
+    private micGainDb(slider: number = this._settings.micVolume): number {
+        const g = micSliderToGain(slider);
+        return g > 0 ? 20 * Math.log10(g) : -120;
+    }
+
     private startLevelPolling() {
         this.stopLevelPolling();
         const analyserData = new Float32Array(this.analyser?.fftSize ?? 256);
+        const tapRaw = new Float32Array(this.rawTap?.fftSize ?? 256);
+        const tapNs = new Float32Array(this.nsTap?.fftSize ?? 256);
 
         // 20ms poll is fine for the UI meter — the gate itself reacts every 128
         // samples (~2.67ms) inside the audio thread, so there's no coupling here.
@@ -1145,7 +1326,20 @@ export class CipherlineVoiceProcessor {
             const rms = Math.sqrt(sum / analyserData.length);
             const dbfs = rms > 0 ? 20 * Math.log10(rms) : -Infinity;
             this._callbacks.onInputLevel?.(dbfs);
+            this.sampleTaps(tapRaw, tapNs);
         }, this.levelPollMs);
+    }
+
+    /** Diagnostics: accumulate the raw and noise-suppressed levels, only while voice is heard. */
+    private sampleTaps(rawBuf: Float32Array<ArrayBuffer>, nsBuf: Float32Array<ArrayBuffer>): void {
+        if (!this.lastVoiceActive || !this.rawTap || !this.nsTap) return;
+        this.rawTap.getFloatTimeDomainData(rawBuf);
+        this.nsTap.getFloatTimeDomainData(nsBuf);
+        let a = 0, b = 0;
+        for (let i = 0; i < rawBuf.length; i++) { a += rawBuf[i] * rawBuf[i]; b += nsBuf[i] * nsBuf[i]; }
+        this.tapRawMs += a / rawBuf.length;
+        this.tapNsMs += b / nsBuf.length;
+        this.tapN++;
     }
 
     private stopLevelPolling() {

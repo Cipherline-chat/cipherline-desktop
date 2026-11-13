@@ -7,6 +7,7 @@ import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ProfileCardLinks } from './ProfileCardParts';
+import { buildProfileCardData } from './profile/buildProfileCardData';
 import { ProfileLinksEditor } from './settings/panes/ProfileLinksEditor';
 import { LINK_PLATFORMS, PROFILE_LINKS_MAX, type ProfileLink } from '../utils/profileLinks';
 
@@ -25,7 +26,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const read = (rel: string) => readFileSync(join(here, rel), 'utf8');
 
 const LINKS: ProfileLink[] = [
-    { platform: 'steam', handle: 'gaben' },
+    { platform: 'github', handle: 'gaben' },
     { platform: 'x', handle: 'jack' },
     { platform: 'discord', handle: 'some.one' },
 ];
@@ -38,11 +39,11 @@ describe('ProfileCardLinks (card rendering)', () => {
         expect(out.indexOf('gaben')).toBeLessThan(out.indexOf('@jack'));
         expect(out.indexOf('@jack')).toBeLessThan(out.indexOf('some.one'));
         expect((out.match(/<svg/g) ?? []).length).toBeGreaterThanOrEqual(3);
-        for (const p of ['steam', 'x', 'discord']) expect(out).toContain(`data-platform="${p}"`);
+        for (const p of ['github', 'x', 'discord']) expect(out).toContain(`data-platform="${p}"`);
     });
     it('every platform has a glyph', () => {
         for (const p of LINK_PLATFORMS) {
-            const handle = { steam: 'gaben', x: 'jack', instagram: 'abc', tiktok: 'abc', youtube: 'abc', twitch: 'abcd', github: 'abc', reddit: 'abc', spotify: 'abc', discord: 'abc', bluesky: 'a.bsky.social', medal: 'abc' }[p];
+            const handle = { x: 'jack', instagram: 'abc', tiktok: 'abc', youtube: 'abc', twitch: 'abcd', github: 'abc', reddit: 'abc', spotify: 'abc', discord: 'abc', bluesky: 'a.bsky.social', medal: 'abc' }[p];
             expect(html(h(ProfileCardLinks, { links: [{ platform: p, handle }] }))).toContain('<svg');
         }
     });
@@ -89,8 +90,8 @@ describe('ProfileCardLinks click -> safe open path', () => {
         window.electronAPI = { ...(window.electronAPI ?? {}), openExternal } as typeof window.electronAPI;
         try {
             act(() => root.render(h(ProfileCardLinks, { links: LINKS })));
-            act(() => { host.querySelector<HTMLButtonElement>('[data-platform="steam"]')!.click(); });
-            expect(openExternal).toHaveBeenCalledWith('https://steamcommunity.com/id/gaben');
+            act(() => { host.querySelector<HTMLButtonElement>('[data-platform="github"]')!.click(); });
+            expect(openExternal).toHaveBeenCalledWith('https://github.com/gaben');
             act(() => { host.querySelector<HTMLElement>('[data-platform="discord"]')!.click(); });
             expect(openExternal).toHaveBeenCalledTimes(1);
         } finally { window.electronAPI = original; }
@@ -132,20 +133,18 @@ describe('ProfileLinksEditor (one combined control)', () => {
         const onChange = vi.fn();
         act(() => root.render(h(ProfileLinksEditor, { links: [], onChange })));
         type(input(), 'https://evil.example/id/gaben');
-        expect(msg()).toMatch(/Only steamcommunity.com links/);
+        expect(msg()).toMatch(/Only x.com links/);
         enter();
         type(input(), 'a b c');
-        expect(msg()).toMatch(/Not a Steam handle/);
+        expect(msg()).toMatch(/Not a X handle/);
         enter();
         expect(onChange).not.toHaveBeenCalled();
         expect(host.querySelector('.ps-combo-preview')).toBeNull();
     });
     it('rejects a duplicate and stops at 6', () => {
         const onChange = vi.fn();
-        act(() => root.render(h(ProfileLinksEditor, { links: [{ platform: 'steam', handle: 'gaben' }], onChange })));
-        act(() => pick().click());
-        act(() => [...host.querySelectorAll<HTMLButtonElement>('.ps-plat')].find((b) => b.textContent === 'Steam')!.click());
-        type(input(), 'gaben');
+        act(() => root.render(h(ProfileLinksEditor, { links: [{ platform: 'x', handle: 'jack' }], onChange })));
+        type(input(), '@jack');
         expect(msg()).toMatch(/Already on your profile/);
         enter();
         expect(onChange).not.toHaveBeenCalled();
@@ -156,7 +155,7 @@ describe('ProfileLinksEditor (one combined control)', () => {
     });
     it('remove (x / Delete) and reorder (Alt + arrows) call onChange with the new order', () => {
         const onChange = vi.fn();
-        const links: ProfileLink[] = [{ platform: 'steam', handle: 'gaben' }, { platform: 'x', handle: 'jack' }];
+        const links: ProfileLink[] = [{ platform: 'github', handle: 'gaben' }, { platform: 'x', handle: 'jack' }];
         act(() => root.render(h(ProfileLinksEditor, { links, onChange })));
         const chips = () => [...host.querySelectorAll<HTMLElement>('[data-chip]')];
         act(() => { chips()[0].dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', altKey: true, bubbles: true })); });
@@ -166,12 +165,49 @@ describe('ProfileLinksEditor (one combined control)', () => {
         act(() => { chips()[0].dispatchEvent(new KeyboardEvent('keydown', { key: 'Delete', bubbles: true })); });
         expect(onChange).toHaveBeenLastCalledWith([links[1]]);
     });
-    it('a verified Steam account leads with a tick and cannot be removed here', () => {
-        act(() => root.render(h(ProfileLinksEditor, { links: [{ platform: 'x', handle: 'jack' }], onChange: vi.fn(), verifiedSteam: { label: 'gabe' } })));
-        const first = host.querySelector('[data-chip]')!;
-        expect(first.textContent).toContain('gabe');
-        expect(first.querySelector('[aria-label="Verified"]')).not.toBeNull();
-        expect(first.querySelector('.ps-rchip-x')).toBeNull();
+    it('the platform picker has no Steam option and defaults to another platform', () => {
+        act(() => root.render(h(ProfileLinksEditor, { links: [], onChange: vi.fn() })));
+        expect(pick().getAttribute('aria-label')).not.toMatch(/Steam/);
+        act(() => pick().click());
+        const names = [...host.querySelectorAll('.ps-plat')].map((b) => b.textContent);
+        expect(names).toHaveLength(LINK_PLATFORMS.length);
+        expect(names).not.toContain('Steam');
+        expect(names).toContain('X');
+    });
+    it('a pasted Steam profile link is refused with no Steam preview and nothing added', () => {
+        const onChange = vi.fn();
+        act(() => root.render(h(ProfileLinksEditor, { links: [], onChange })));
+        type(input(), 'https://steamcommunity.com/id/gaben');
+        expect(host.querySelector('.ps-combo-preview')).toBeNull();
+        expect(pick().getAttribute('aria-label')).not.toMatch(/Steam/);
+        enter();
+        expect(onChange).not.toHaveBeenCalled();
+    });
+    it('a stored steam entry from before never shows as a chip (callers sanitize; the card drops it too)', () => {
+        const out = html(h(ProfileCardLinks, { links: [{ platform: 'steam', handle: 'gaben' }, { platform: 'x', handle: 'jack' }] }));
+        expect(out).not.toContain('data-platform="steam"');
+        expect(out).not.toContain('gaben');
+        expect(out).toContain('@jack');
+        expect(html(h(ProfileCardLinks, { links: [{ platform: 'steam', handle: 'gaben' }] }))).toBe('');
+    });
+    it('every card (popout, full profile, DM card) is built through buildProfileCardData, which drops stored steam links', () => {
+        const profile = {
+            username: 'u', discriminator: 1, links: [{ platform: 'steam', handle: 'gaben' }, { platform: 'github', handle: 'octocat' }],
+            steam: { steam_id: '76561197960287930' },
+        } as unknown as Parameters<typeof buildProfileCardData>[0];
+        const data = buildProfileCardData(profile, { isOwn: false, anniversary: 0, myInterests: [], mostPlayed: [], verified: false });
+        expect(data.links).toEqual([{ platform: 'github', handle: 'octocat' }]);
+        expect(data.steam).toMatchObject({ steamId: '76561197960287930' });
+    });
+    it('the verified Steam chip still renders from `steam`, never from the links list', () => {
+        const out = html(h(ProfileCardLinks, {
+            links: [{ platform: 'steam', handle: 'gaben' }, { platform: 'x', handle: 'jack' }],
+            steam: { steamId: '76561197960287930', personaName: 'gabe', avatar: null },
+        }));
+        expect(out.match(/data-platform="steam"/g)).toHaveLength(1);
+        expect(out).toContain('data-verified="true"');
+        expect(out).toContain('gabe');
+        expect(out).not.toContain('gaben');
     });
     it('offers only the closed platform list (no website option)', () => {
         const src = read('./settings/panes/ProfileLinksEditor.tsx');

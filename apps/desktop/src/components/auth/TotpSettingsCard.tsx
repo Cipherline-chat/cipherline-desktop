@@ -14,6 +14,8 @@ import { useAuth } from '../../contexts/AuthContext';
 import { TotpSetupModal } from './TotpSetupModal';
 import { ClButton, ClModal, ClCheckbox } from '../cl';
 import SlottedCodeInput from '../SlottedCodeInput';
+import { DialogHeader, DialogBody, DialogFooter, DialogError } from '../dialog/DialogFrame';
+import { DialogStack, DialogLinkButton } from '../dialog/DialogExtras';
 import { writeToClipboard } from '../../utils/clipboard';
 
 interface Status {
@@ -230,20 +232,6 @@ export const TotpSettingsCard: React.FC<TotpSettingsCardProps> = ({ bare = false
         }
     };
 
-    // ── Shared error banners ──────────────────────────────────────────────────
-
-    const DisableErrorBanner = error ? (
-        <div style={{ marginBottom: 12, padding: '10px 14px', background: 'rgba(239,68,68,.1)', border: '1px solid rgba(239,68,68,.25)', borderRadius: 12, color: 'var(--cl-flash)', fontSize: 13, textAlign: 'center' }}>
-            {error}
-        </div>
-    ) : null;
-
-    const RegenErrorBanner = regenError ? (
-        <div style={{ marginBottom: 12, padding: '10px 14px', background: 'rgba(239,68,68,.1)', border: '1px solid rgba(239,68,68,.25)', borderRadius: 12, color: 'var(--cl-flash)', fontSize: 13, textAlign: 'center' }}>
-            {regenError}
-        </div>
-    ) : null;
-
     // ─────────────────────────────────────────────────────────────────────────
 
     return (
@@ -296,144 +284,131 @@ export const TotpSettingsCard: React.FC<TotpSettingsCardProps> = ({ bare = false
             )}
 
             {/* ── Disable modal ──────────────────────────────────────────── */}
-            <ClModal open={showDisable} onClose={closeDisable} width={420}>
-                <div style={{ textAlign: 'center', marginBottom: 20 }}>
-                    <div style={{ width: 56, height: 56, borderRadius: 16, background: 'rgba(239,68,68,.1)', border: '1px solid rgba(239,68,68,.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 16px' }}>
-                        <ShieldOff size={28} className="text-red-400" />
-                    </div>
-                    <h4>Disable authenticator</h4>
-                    <p>After disabling, sign-in codes will be sent to your email instead.</p>
-                </div>
-
-                {DisableErrorBanner}
-
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-                    <p style={{ fontSize: 13, color: 'var(--cl-muted)', textAlign: 'center', margin: 0 }}>
-                        {codeSent
-                            ? <>A 6-digit code was sent to <strong style={{ color: 'var(--cl-text)' }}>{user?.email ?? 'your email'}</strong>. Enter it to disable.</>
-                            : 'Sending a verification code to your email…'}
-                    </p>
-                    <SlottedCodeInput
-                        value={emailCode}
-                        onChange={setEmailCode}
-                        onAutoSubmit={handleDisable}
-                        disabled={loading || sendingCode || !codeSent}
-                        error={emailCodeError}
-                    />
+            <ClModal open={showDisable} onClose={closeDisable} width={420} label="Disable authenticator" cardClassName="dlg-card dlg-tone-danger">
+                <DialogHeader
+                    icon={<ShieldOff size={19} strokeWidth={2.2} />}
+                    title="Disable authenticator"
+                    subtitle="After disabling, sign-in codes will be sent to your email instead."
+                />
+                <DialogBody>
+                    <DialogStack center>
+                        <div className="dlg-copy">
+                            {codeSent
+                                ? <>A 6-digit code was sent to <strong>{user?.email ?? 'your email'}</strong>. Enter it to disable.</>
+                                : 'Sending a verification code to your email…'}
+                        </div>
+                        <SlottedCodeInput
+                            value={emailCode}
+                            onChange={setEmailCode}
+                            onAutoSubmit={handleDisable}
+                            disabled={loading || sendingCode || !codeSent}
+                            error={emailCodeError}
+                        />
+                        <DialogLinkButton disabled={sendingCode || resendCooldown > 0} onClick={sendDisableCode}>
+                            <RefreshCw size={13} />
+                            {resendCooldown > 0 ? `Resend in ${resendCooldown}s` : sendingCode ? 'Sending…' : 'Resend code'}
+                        </DialogLinkButton>
+                    </DialogStack>
+                </DialogBody>
+                {error && <DialogError>{error}</DialogError>}
+                <DialogFooter hint="Needs a code from your email">
+                    <ClButton variant="ghost" size="sm" onClick={closeDisable}>Cancel</ClButton>
                     <ClButton
                         variant="danger"
-                        fullWidth
+                        size="sm"
                         disabled={emailCode.length < 6 || loading || sendingCode}
                         loading={loading}
                         onClick={() => handleDisable(emailCode)}
                     >
                         Disable authenticator
                     </ClButton>
-                    <button
-                        type="button"
-                        disabled={sendingCode || resendCooldown > 0}
-                        onClick={sendDisableCode}
-                        style={{
-                            background: 'none', border: 'none', cursor: sendingCode || resendCooldown > 0 ? 'default' : 'pointer',
-                            color: sendingCode || resendCooldown > 0 ? 'var(--cl-faint)' : 'var(--cl-lume)',
-                            fontSize: 13, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '4px 0',
-                        }}
-                    >
-                        <RefreshCw size={13} />
-                        {resendCooldown > 0 ? `Resend in ${resendCooldown}s` : sendingCode ? 'Sending…' : 'Resend code'}
-                    </button>
-                    <ClButton variant="ghost" fullWidth onClick={closeDisable}>Cancel</ClButton>
-                </div>
+                </DialogFooter>
             </ClModal>
 
             {/* ── Regenerate backup codes modal ──────────────────────────── */}
-            <ClModal open={showRegen} onClose={closeRegen} width={440}>
-
+            <ClModal
+                open={showRegen}
+                onClose={closeRegen}
+                width={440}
+                label={regenStep === 'codes' ? 'New backup codes' : 'Regenerate backup codes'}
+                cardClassName={`dlg-card${regenStep === 'codes' ? ' dlg-tone-ok' : ' dlg-tone-warn'}`}
+            >
                 {regenStep === 'auth' && (
                     <>
-                        <div style={{ textAlign: 'center', marginBottom: 20 }}>
-                            <div style={{ width: 56, height: 56, borderRadius: 16, background: 'rgba(37,224,200,.1)', border: '1px solid rgba(37,224,200,.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 16px' }}>
-                                <RefreshCw size={28} style={{ color: 'var(--cl-lume)' }} />
-                            </div>
-                            <h4>Regenerate backup codes</h4>
-                            <p>Your existing backup codes will be permanently revoked and replaced with 10 new ones.</p>
-                        </div>
-
-                        {RegenErrorBanner}
-
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-                            <p style={{ fontSize: 13, color: 'var(--cl-muted)', textAlign: 'center', margin: 0 }}>
-                                {regenCodeSent
-                                    ? <>A 6-digit code was sent to <strong style={{ color: 'var(--cl-text)' }}>{user?.email ?? 'your email'}</strong>. Enter it to continue.</>
-                                    : 'Sending a verification code to your email…'}
-                            </p>
-                            <SlottedCodeInput
-                                value={regenEmailCode}
-                                onChange={setRegenEmailCode}
-                                onAutoSubmit={handleRegen}
-                                disabled={regenLoading || regenSendingCode || !regenCodeSent}
-                                error={regenEmailCodeError}
-                            />
+                        <DialogHeader
+                            icon={<RefreshCw size={19} strokeWidth={2.2} />}
+                            title="Regenerate backup codes"
+                            subtitle="Your existing backup codes will be permanently revoked and replaced with 10 new ones."
+                        />
+                        <DialogBody>
+                            <DialogStack center>
+                                <div className="dlg-copy">
+                                    {regenCodeSent
+                                        ? <>A 6-digit code was sent to <strong>{user?.email ?? 'your email'}</strong>. Enter it to continue.</>
+                                        : 'Sending a verification code to your email…'}
+                                </div>
+                                <SlottedCodeInput
+                                    value={regenEmailCode}
+                                    onChange={setRegenEmailCode}
+                                    onAutoSubmit={handleRegen}
+                                    disabled={regenLoading || regenSendingCode || !regenCodeSent}
+                                    error={regenEmailCodeError}
+                                />
+                                <DialogLinkButton disabled={regenSendingCode || regenResendCooldown > 0} onClick={sendRegenCode}>
+                                    <RefreshCw size={13} />
+                                    {regenResendCooldown > 0 ? `Resend in ${regenResendCooldown}s` : regenSendingCode ? 'Sending…' : 'Resend code'}
+                                </DialogLinkButton>
+                            </DialogStack>
+                        </DialogBody>
+                        {regenError && <DialogError>{regenError}</DialogError>}
+                        <DialogFooter hint="Needs a code from your email">
+                            <ClButton variant="ghost" size="sm" onClick={closeRegen}>Cancel</ClButton>
                             <ClButton
-                                fullWidth
+                                size="sm"
                                 disabled={regenEmailCode.length < 6 || regenLoading || regenSendingCode}
                                 loading={regenLoading}
                                 onClick={() => handleRegen(regenEmailCode)}
                             >
                                 Regenerate backup codes
                             </ClButton>
-                            <button
-                                type="button"
-                                disabled={regenSendingCode || regenResendCooldown > 0}
-                                onClick={sendRegenCode}
-                                style={{
-                                    background: 'none', border: 'none', cursor: regenSendingCode || regenResendCooldown > 0 ? 'default' : 'pointer',
-                                    color: regenSendingCode || regenResendCooldown > 0 ? 'var(--cl-faint)' : 'var(--cl-lume)',
-                                    fontSize: 13, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '4px 0',
-                                }}
-                            >
-                                <RefreshCw size={13} />
-                                {regenResendCooldown > 0 ? `Resend in ${regenResendCooldown}s` : regenSendingCode ? 'Sending…' : 'Resend code'}
-                            </button>
-                            <ClButton variant="ghost" fullWidth onClick={closeRegen}>Cancel</ClButton>
-                        </div>
+                        </DialogFooter>
                     </>
                 )}
 
                 {regenStep === 'codes' && (
                     <>
-                        <div style={{ textAlign: 'center', marginBottom: 20 }}>
-                            <div style={{ width: 56, height: 56, borderRadius: 16, background: 'rgba(34,197,94,.1)', border: '1px solid rgba(34,197,94,.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 16px' }}>
-                                <CheckCheck size={28} className="text-emerald-400" />
-                            </div>
-                            <h4>New backup codes</h4>
-                            <p>Your old codes are now invalid. Save these somewhere safe — we won't show them again.</p>
-                        </div>
-                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 16 }}>
-                            {regenCodes.map((c, i) => (
-                                <code key={i} style={{ padding: '8px 12px', background: 'rgba(0,0,0,.3)', borderRadius: 8, fontSize: 12, color: 'var(--cl-muted)', fontFamily: 'var(--cl-font-mono)', textAlign: 'center', letterSpacing: '0.1em' }}>
-                                    {c}
-                                </code>
-                            ))}
-                        </div>
-                        <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
-                            <ClButton variant="ghost" size="sm" fullWidth onClick={copyRegenCodes}>
-                                <Copy size={13} /> {regenCopied ? 'Copied' : 'Copy all'}
+                        <DialogHeader
+                            icon={<CheckCheck size={19} strokeWidth={2.2} />}
+                            title="New backup codes"
+                            subtitle="Your old codes are now invalid. Save these somewhere safe."
+                        />
+                        <DialogBody className="dlg-body--scroll">
+                            <DialogStack>
+                                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                                    {regenCodes.map((c, i) => (
+                                        <code key={i} className="dlg-code" style={{ padding: '8px 10px', letterSpacing: '0.1em' }}>{c}</code>
+                                    ))}
+                                </div>
+                                <div style={{ display: 'flex', gap: 8 }}>
+                                    <ClButton variant="ghost" size="sm" fullWidth onClick={copyRegenCodes}>
+                                        <Copy size={13} /> {regenCopied ? 'Copied' : 'Copy all'}
+                                    </ClButton>
+                                    <ClButton variant="ghost" size="sm" fullWidth onClick={downloadRegenCodes}>
+                                        <Download size={13} /> Download
+                                    </ClButton>
+                                </div>
+                                <ClCheckbox
+                                    checked={regenAcknowledged}
+                                    onChange={setRegenAcknowledged}
+                                    label="I've saved my new backup codes somewhere safe."
+                                />
+                            </DialogStack>
+                        </DialogBody>
+                        <DialogFooter hint="We won't show these again">
+                            <ClButton size="sm" disabled={!regenAcknowledged} onClick={() => { refresh(); closeRegen(); }}>
+                                Done
                             </ClButton>
-                            <ClButton variant="ghost" size="sm" fullWidth onClick={downloadRegenCodes}>
-                                <Download size={13} /> Download
-                            </ClButton>
-                        </div>
-                        <div style={{ marginBottom: 16 }}>
-                            <ClCheckbox
-                                checked={regenAcknowledged}
-                                onChange={setRegenAcknowledged}
-                                label="I've saved my new backup codes somewhere safe."
-                            />
-                        </div>
-                        <ClButton fullWidth disabled={!regenAcknowledged} onClick={() => { refresh(); closeRegen(); }}>
-                            Done
-                        </ClButton>
+                        </DialogFooter>
                     </>
                 )}
             </ClModal>

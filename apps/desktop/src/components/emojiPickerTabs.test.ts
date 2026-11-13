@@ -83,7 +83,7 @@ describe('buildEmojiTabCategories', () => {
 
     it('tab copy matches the spec', () => {
         expect(SERVER_EMOJI_TAB.emptyTitle).toBe('No server emojis here yet');
-        expect(MY_EMOJI_TAB.emptyBody).toBe('Save emojis with right-click or add your own in Settings → Personalize.');
+        expect(MY_EMOJI_TAB.emptyBody).toBe('Save emojis with right-click or add your own in Settings → Activity & Style.');
     });
 });
 
@@ -182,10 +182,10 @@ describe('empty tab panels', () => {
         expect(panel()).toBeNull();
     });
 
-    it('My Emojis empty state explains saving, and its button opens Settings -> Personalize and closes the picker', () => {
+    it('My Emojis empty state explains saving, and its button opens Settings -> Activity & Style (via the personalize alias) and closes the picker', () => {
         mount(['mine']);
         tab('My Emojis');
-        expect(panel()!.textContent).toContain('Save emojis with right-click or add your own in Settings → Personalize.');
+        expect(panel()!.textContent).toContain('Save emojis with right-click or add your own in Settings → Activity & Style.');
         const seen: string[] = [];
         const on = (e: Event) => seen.push((e as CustomEvent<{ pane: string }>).detail.pane);
         window.addEventListener(OPEN_SETTINGS_EVENT, on);
@@ -207,10 +207,10 @@ describe('the one picker component uses all of it', () => {
         expect(src).toMatch(/isEmptyPlaceholderId\(e\.id\)\) return/);
         expect(src).toContain('${PLACEHOLDER_HIDE_CSS}');
     });
-    it('only the three ChatPane pickers pass serverContext (derived from the open server); the status editor never does', () => {
+    it('only the two ChatPane pickers (composer + message reactions; join/kick lines take no reactions since 2026-11-11) pass serverContext (derived from the open server); the status editor never does', () => {
         const chat = readFileSync(resolve(__dirname, './ChatPane.tsx'), 'utf8');
         const status = readFileSync(resolve(__dirname, './CustomStatusInline.tsx'), 'utf8');
-        expect(chat.match(/serverContext=\{!!emojiServerId\}/g)!.length).toBe(3);
+        expect(chat.match(/serverContext=\{!!emojiServerId\}/g)!.length).toBe(2);
         expect(status).not.toContain('serverContext');
         expect(src).toMatch(/serverContext = false/);
     });
@@ -222,7 +222,7 @@ describe('the one picker component uses all of it', () => {
     it('composer, reactions and the status editor all go through that same component', () => {
         const chat = readFileSync(resolve(__dirname, './ChatPane.tsx'), 'utf8');
         const status = readFileSync(resolve(__dirname, './CustomStatusInline.tsx'), 'utf8');
-        expect(chat.match(/<EmojiPickerPopover/g)!.length).toBe(3);
+        expect(chat.match(/<EmojiPickerPopover/g)!.length).toBe(2);
         expect(status).toContain("from './emojiPickerLazy'");
     });
 });

@@ -23,6 +23,7 @@ const SERVE_REJECTION_TAGS = [
     '[E2EE:CHANNEL_REPLAY]',
     '[E2EE:CHANNEL_BINDING]',
     '[E2EE:CHANNEL_MALFORMED]',
+    '[E2EE:CHANNEL_UNBOUND]',
 ] as const;
 
 /** True when a decrypt error means "drop this row", not "we lack the key".

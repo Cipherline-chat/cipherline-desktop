@@ -230,6 +230,8 @@ export const isEmptyState = (s: AchievementsState): boolean =>
 
 export interface Totals {
     voiceHours: number;
+    /** voiceHours in minutes (the starter `voice-10m` rule reads this). */
+    voiceMinutes: number;
     aloneHours: number;
     lateNightHours: number;
     longestCallHours: number;
@@ -246,6 +248,8 @@ export interface Totals {
     gamesPlayed: number;
     /** Devices that have recorded any activity. */
     activeDevices: number;
+    /** 1 when the account's profile is customized (banner / theme / decoration / effect; all public on the profile), else 0. */
+    profileCustom: number;
 }
 
 export interface TotalsContext {
@@ -253,10 +257,23 @@ export interface TotalsContext {
     eggCount: number;
     /** Account creation, epoch ms; null when unknown. */
     accountCreatedMs: number | null;
+    /** The account's profile is customized. Absent = no. */
+    profileCustom?: boolean;
     now: number;
 }
 
 const H = 3_600_000;
+
+/**
+ * Has CUSTOMIZED the profile: a banner, theme colours, an avatar decoration or a
+ * profile effect is set. All four are already public on the profile (and default
+ * to unset), so the starter `profile-custom` reads nothing new. A plain avatar or
+ * About me does not count.
+ */
+export const hasCustomProfile = (u: {
+    banner_url?: string | null; profile_theme?: unknown; avatar_decoration?: string | null; profile_effect?: string | null;
+} | null | undefined): boolean =>
+    !!u && (!!u.banner_url || !!u.profile_theme || !!u.avatar_decoration || !!u.profile_effect);
 
 export function computeTotals(s: AchievementsState, ctx: TotalsContext): Totals {
     let voice = 0, alone = 0, late = 0, msgs = 0, longest = 0, peak = 0, hosted = 0, active = 0;
@@ -271,7 +288,7 @@ export function computeTotals(s: AchievementsState, ctx: TotalsContext): Totals 
     }
     const gm = Object.values(games);
     return {
-        voiceHours: voice / H, aloneHours: alone / H, lateNightHours: late / H, longestCallHours: longest / H,
+        voiceHours: voice / H, voiceMinutes: voice / 60_000, aloneHours: alone / H, lateNightHours: late / H, longestCallHours: longest / H,
         peakCallPeople: peak, hostedPeak: hosted, messages: msgs,
         bestStreak: Math.max(s.bestStreak, longestStreak(s.days)),
         verified: s.verified.length, servers: s.servers.length, eggs: ctx.eggCount,
@@ -279,6 +296,7 @@ export function computeTotals(s: AchievementsState, ctx: TotalsContext): Totals 
         bestGameHours: gm.length ? Math.max(...gm) / H : 0,
         gamesPlayed: gm.filter(ms => ms >= H).length,
         activeDevices: active,
+        profileCustom: ctx.profileCustom ? 1 : 0,
     };
 }
 

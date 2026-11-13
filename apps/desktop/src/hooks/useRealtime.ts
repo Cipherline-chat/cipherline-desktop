@@ -18,7 +18,12 @@ import {
     toTypingUsersView,
     type TypingTimestamps,
 } from '../utils/typingStore';
-import { computeIsAttentive, heartbeatPayload, isWindowAttendable, IDLE_THRESHOLD_SECONDS, IDLE_POLL_INTERVAL_MS } from '../utils/attentionState';
+import {
+    computeIsAttentive, heartbeatPayload, isSessionInUse, reduceSessionPowerState, nextIdlePollDelayMs,
+    SESSION_AVAILABLE, type SessionPowerState,
+} from '../utils/attentionState';
+import { getIdleThresholdSeconds } from '../utils/idleThreshold';
+import { applyRemoteAttention, resetRemoteAttention } from '../utils/remoteAttention';
 import { parseChannelReadEvent, type ChannelReadEvent } from '../utils/channelReadSync';
 import { parseSelfReadEvent, type SelfReadEvent } from '../utils/conversationReadSync';
 import { recipientBundles } from '../utils/recipientBundles';
@@ -29,8 +34,11 @@ import {
 import type { CallMediaReport, ChannelSystemMessageEvent } from '@cipherline/shared';
 import { APP_RESUMED_EVENT, WS_CLOSE_APP_SUSPENDED, dispatchSuspended, toNotice } from '../utils/clientControl';
 import { parseEpochAtSignal } from '../utils/channelKeyDistribution';
-import { applyListeningEvent } from '../utils/integrations/listening';
+import { applyListeningEvent, applyWatchingEvent } from '../utils/integrations/listening';
 import { parseGuestKeyEvent, parseGuestKeyRequestEvent, type GuestKeyEvent, type GuestKeyRequestEvent } from '../utils/guestCallKey';
+import { readTheme } from '../utils/profileTheme';
+import type { CosmeticOptions } from '../utils/profileCosmetics';
+import { netTiming } from '../utils/netTiming';
 
 /** Matches the application-defined close code in the gateway. */
 const WS_CLOSE_UPGRADE_REQUIRED = 4426;
@@ -70,6 +78,8 @@ export interface ChannelMessageEvent {
     reply_to_id: string | null;
     mentions_everyone: boolean;
     created_at: string;
+    /** Message franking: the relay's {c, t, kid, ts} for this row (additive; see utils/franking.ts). */
+    franking?: { c: string; t: string; kid: string; ts: number };
 }
 
 /**
@@ -253,8 +263,9 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
     // refs (not state — nothing here should ever trigger a re-render; they
     // exist purely to be read at the moment a heartbeat is about to be sent)
     // track the inputs; the decision itself is `currentAttention()`, computed
-    // at send time from them AND the live window (document focus, visibility):
-    //   focusedRef      — the focus/blur/minimise/hide/lock event stream's view.
+    // at send time from them:
+    //   powerStateRef   — whether the OS session is locked / suspended, from
+    //                     main's powerMonitor pushes (onOsPowerSignal).
     //   idleSecondsRef  — last polled electronAPI.getSystemIdleTime() reading.
     //                     Starts at +Infinity (unknown) so the FIRST heartbeat
     //                     this session sends — before any poll has completed —
@@ -262,24 +273,20 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
     //                     the module doc: the conservative direction is safe,
     //                     the permissive direction silences a phone that
     //                     shouldn't be silenced.
-    const focusedRef = useRef<boolean>(typeof document !== 'undefined' ? document.hasFocus() : true);
+    // Window focus is deliberately NOT an input: a PC being used in another
+    // app is in use (the OS shows its own notification), so the phone stays
+    // quiet. The threshold is the user's own "Idle timeout" setting.
+    const powerStateRef = useRef<SessionPowerState>(SESSION_AVAILABLE);
     const idleSecondsRef = useRef<number>(Number.POSITIVE_INFINITY);
-    /** The attention verdict from the LIVE window, recomputed at send time —
-     *  see isWindowAttendable: a missed focus/blur event must never leave a
-     *  hidden, minimised or unfocused window reporting `active: true`. */
-    const currentAttention = (): boolean => {
-        const attendable = typeof document !== 'undefined' && isWindowAttendable({
-            focusedByEvent: focusedRef.current,
-            documentHasFocus: document.hasFocus(),
-            visibilityState: document.visibilityState,
-        });
-        return computeIsAttentive(attendable, idleSecondsRef.current, IDLE_THRESHOLD_SECONDS);
-    };
+    /** The attention verdict, recomputed at send time from the live inputs. */
+    const currentAttention = (): boolean =>
+        computeIsAttentive(isSessionInUse(powerStateRef.current), idleSecondsRef.current, getIdleThresholdSeconds());
     /** Send a presence:heartbeat carrying an explicit `active` value RIGHT
-     *  NOW, outside the normal 15s cadence — the off-cycle half of the spec
-     *  ("send active:false immediately... on blur, minimise, screen lock or
-     *  app quit"). A no-op when there's no open socket (nothing to lie to —
-     *  the server already treats a dead/absent connection as not attentive). */
+     *  NOW, outside the normal 15s cadence — the off-cycle half of the spec:
+     *  `active:false` at once on screen lock, suspend or app quit, and on the
+     *  idle timeout being reached; `active:true` the moment input returns.
+     *  A no-op when there's no open socket (nothing to lie to — the server
+     *  already treats a dead/absent connection as not attentive). */
     const sendAttentionNow = useCallback((active: boolean) => {
         const ws = wsRef.current;
         if (ws && ws.readyState === WebSocket.OPEN) {
@@ -409,6 +416,14 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
      *  stayed stale on DM rows, chat headers and member lists until something
      *  unrelated refetched them. Payload carries the new handle directly —
      *  usernames aren't encrypted and the audience can already read them. */
+    // A person (friend, group co-member or yourself on another device) changed how their avatar decoration
+    // looks: the decoration, its colour/knobs, or the theme that "Match theme" follows. Public values, sent in full.
+    const [cosmeticsUpdatedEvent, setCosmeticsUpdatedEvent] = useState<{
+        user_id: string;
+        avatar_decoration: string | null;
+        profile_theme: { primary: string; accent: string } | null;
+        cosmetic_options: CosmeticOptions | null;
+    } | null>(null);
     const [usernameUpdatedEvent, setUsernameUpdatedEvent] = useState<{ user_id: string; username: string; discriminator: number | null } | null>(null);
     /** `display_name` is optional: the API and the desktop app roll separately,
      *  so an older API sends none and the consumer must degrade to the seeded
@@ -645,6 +660,7 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
                 try { stale.close(); } catch { /* already dead — fine */ }
                 wsRef.current = null;
             }
+            resetRemoteAttention();
             connect();
         };
         forceReconnectRef.current = forceReconnect;
@@ -726,6 +742,7 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
                 // SPECIFIC device that's connected, not just "some device of
                 // this user is online" (which JWT alone can't distinguish).
                 const deviceIdParam = deviceId ? `&device_id=${encodeURIComponent(deviceId)}` : '';
+                const wsOpenStartedAt = performance.now();   // connect-time stopwatch (utils/netTiming.ts)
                 const ws = new WebSocket(`${WS_BASE}?token=${token}&version=${encodeURIComponent(APP_VERSION)}${attestParam}${deviceIdParam}`);
                 wsRef.current = ws;
 
@@ -735,6 +752,7 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
             let confirmedConnected = false;
 
             ws.onopen = () => {
+                netTiming().wsOpened(performance.now() - wsOpenStartedAt);
                 retryDelay = 1000;
                 lastInboundAt = Date.now();
                 console.log('[WS] Connected ✓');
@@ -765,10 +783,10 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
                         return;
                     }
                     // Continuity: the same verdict the off-cycle sends use —
-                    // one state machine, recomputed from the live window at
-                    // send time (a hidden window whose timers still run, or
-                    // run late, reports false), never a second timer or a
-                    // second heartbeat.
+                    // one state machine, recomputed from the live idle/lock
+                    // inputs at send time (a locked or suspended session
+                    // reports false even if a timer runs late), never a
+                    // second timer or a second heartbeat.
                     ws.send(heartbeatPayload(currentAttention()));
                 }, HEARTBEAT_INTERVAL_MS);
             };
@@ -805,6 +823,16 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
                     if (msg.event === 'error' && msg.data?.code === 'subscription_required') {
                         window.dispatchEvent(new CustomEvent('cipherline:subscription-required'));
                         return;
+                    }
+
+                    // Continuity (R6): the server's answer to "is one of my
+                    // phones attentive" — on every heartbeat ack, and pushed at
+                    // once when a phone flips foreground/background. The
+                    // notification pipeline reads it (utils/remoteAttention.ts);
+                    // a missing field (older server, Redis hiccup) reads as
+                    // unknown, which means "notify as before".
+                    if (msg.event === 'presence:ack' || msg.event === 'presence:attention') {
+                        applyRemoteAttention(msg.data);
                     }
 
                     if (msg.event === 'typing:start' || msg.event === 'typing:stop') {
@@ -1074,6 +1102,10 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
                         // server side; validated and expired by the store (utils/integrations/listening.ts).
                         applyListeningEvent(msg.data, myUserIdRef.current ?? null);
                     }
+                    if (msg.event === 'friend:watching') {
+                        // "Watching ..." - the same store, its own event (older clients never see it).
+                        applyWatchingEvent(msg.data, myUserIdRef.current ?? null);
+                    }
                     if (msg.event === 'user:high_five' && typeof msg.data?.from_user_id === 'string') {
                         // Delivered, never stored. useProfileMoments decides whether to celebrate (never under DND).
                         window.dispatchEvent(new CustomEvent(HIGH_FIVE_EVENT, {
@@ -1083,6 +1115,15 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
                                 count: typeof msg.data.count === 'number' ? msg.data.count : 0,
                             },
                         }));
+                    }
+                    if (msg.event === 'user:cosmetics_updated' && typeof msg.data?.user_id === 'string') {
+                        const d = msg.data;
+                        setCosmeticsUpdatedEvent({
+                            user_id: d.user_id,
+                            avatar_decoration: typeof d.avatar_decoration === 'string' ? d.avatar_decoration : null,
+                            profile_theme: readTheme(d.profile_theme),
+                            cosmetic_options: d.cosmetic_options && typeof d.cosmetic_options === 'object' ? d.cosmetic_options : null,
+                        });
                     }
                     if (msg.event === 'user:username_updated') {
                         setUsernameUpdatedEvent({
@@ -1333,6 +1374,8 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
             ws.onclose = (ev) => {
                 if (heartbeatInterval.current) clearInterval(heartbeatInterval.current);
                 if (wsRef.current === ws) wsRef.current = null;
+                // No socket, so no answer about the phone: unknown, not "quiet".
+                resetRemoteAttention();
 
                 // Server rejected us as too old — stop reconnecting and let the
                 // global upgrade overlay take over the UI. Reconnecting would
@@ -1408,6 +1451,7 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
             if (heartbeatInterval.current) clearInterval(heartbeatInterval.current);
             wsRef.current?.close();
             wsRef.current = null;
+            resetRemoteAttention();
         };
     // deviceId is in the deps: a late-arriving deviceId (assigned shortly
     // after boot, once device registration completes) previously never
@@ -1457,92 +1501,80 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
 
     // ── Continuity — attention wiring ────────────────────────────────────────
     // Mount-once (no [token] dep), same pattern as the OS-resume effect above:
-    // this tracks focus/idle regardless of connection state (sendAttentionNow
-    // itself no-ops without an open socket, so there's nothing unsafe about
-    // running it before login), and re-subscribing on every token change would
-    // just mean redundant listener churn on every reconnect for no benefit.
+    // this tracks idle/lock state regardless of connection state
+    // (sendAttentionNow itself no-ops without an open socket, so there's
+    // nothing unsafe about running it before login), and re-subscribing on
+    // every token change would just mean redundant listener churn on every
+    // reconnect for no benefit.
+    //
+    // Focus / blur / minimise / hide are NOT wired here any more. They used to
+    // clear attention at once, which made the phone buzz whenever the user
+    // switched to another app on the same PC — the opposite of what attention
+    // is for (see attentionState.ts). The two things that DO end attention
+    // immediately, whatever the idle clock says, are the OS session going away
+    // (lock / suspend, below) and the app quitting.
     useEffect(() => {
         const electronAPI = (typeof window !== 'undefined' ? window.electronAPI : undefined);
 
-        // Focus lost → not attentive, reported OFF-CYCLE (immediately, not
-        // waiting for the next 15s heartbeat) per the spec: "without it the
-        // user waits their full idle threshold plus 90s [server escalation]".
-        const onFocusLost = () => {
-            focusedRef.current = false;
-            sendAttentionNow(false);
-        };
-        const onFocusGained = () => {
-            focusedRef.current = true;
-            // No off-cycle send on REGAINING focus — the spec only calls out
-            // immediate sends for the four loss triggers. The next scheduled
-            // heartbeat (≤15s) or idle poll (≤30s) picks up `true` once idle
-            // time actually confirms recent input; reporting attentive here
-            // before that would be the permissive direction the module doc
-            // warns against (window merely regained focus proves nothing
-            // about whether a human is actually at the keyboard yet).
+        // Idle-time polling — reuses the SAME threshold useUserStatus uses for
+        // auto-away (utils/idleThreshold.ts: the user's Idle timeout), never a
+        // second idle notion. A poll that CHANGES the verdict reports it off
+        // the 15 s cadence: attention ending the moment the idle timeout is
+        // reached (R2) and returning the moment the user touches the PC again
+        // (R1) is the whole point, so neither waits for the next heartbeat.
+        // The cadence itself (nextIdlePollDelayMs) sleeps until just after the
+        // threshold would be crossed while attentive and polls quickly once
+        // idle, so both edges are precise to a second or two. A failed read is
+        // "unknown", which is not-attentive (fail conservative).
+        let disposed = false;
+        let pollGen = 0;
+        let pollTimer: ReturnType<typeof setTimeout> | null = null;
+        const pollNow = () => {
+            if (disposed || !electronAPI?.getSystemIdleTime) return;
+            if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+            const gen = ++pollGen;
+            const before = currentAttention();
+            electronAPI.getSystemIdleTime()
+                .then((secs: number) => { idleSecondsRef.current = secs; })
+                .catch(() => { idleSecondsRef.current = Number.POSITIVE_INFINITY; })
+                .then(() => {
+                    if (disposed || gen !== pollGen) return;
+                    const after = currentAttention();
+                    if (after !== before) sendAttentionNow(after);
+                    pollTimer = setTimeout(pollNow, nextIdlePollDelayMs(idleSecondsRef.current, getIdleThresholdSeconds()));
+                });
         };
 
-        // DOM-level baseline — works outside Electron too (web/dev), and is
-        // the ONLY signal for 'focus'/'blur' in that context.
-        window.addEventListener('blur', onFocusLost);
-        window.addEventListener('focus', onFocusGained);
-        // Hidden (tray, minimise — Chromium reports both as `hidden`): report
-        // at once. A window hidden while it was already unfocused fires no
-        // blur, so without this the next report waited for the 15 s timer.
-        // Becoming visible again reports nothing early, same as regaining
-        // focus; the next heartbeat carries the live verdict.
-        const onVisibility = () => {
-            if (document.visibilityState === 'hidden') onFocusLost();
+        // Lock / suspend: report not-attentive AT ONCE. The idle clock cannot
+        // do this job (it would have to run out first, and a locked session
+        // keeps counting while the user types a password). Unlock / resume:
+        // the idle reading from before the sleep or lock is meaningless, so
+        // drop it and re-read immediately; the poll reports the new verdict.
+        const onPowerSignal = (signal: string) => {
+            powerStateRef.current = reduceSessionPowerState(powerStateRef.current, signal);
+            if (!isSessionInUse(powerStateRef.current)) {
+                sendAttentionNow(false);
+            } else {
+                idleSecondsRef.current = Number.POSITIVE_INFINITY;
+                pollNow();
+            }
         };
-        document.addEventListener('visibilitychange', onVisibility);
-
-        // Electron main-process pushes — see preload.ts/main.ts. More
-        // reliable than the renderer DOM events alone (same reasoning as the
-        // existing onWindowFocus comment), and 'minimize'/lock are cases the
-        // DOM 'blur' event may not reliably cover on every platform.
-        const unsubBlur = electronAPI?.onWindowBlur?.(onFocusLost);
-        const unsubMinimize = electronAPI?.onWindowMinimize?.(onFocusLost);
-        // Tray hide (close-to-tray, `mainWindow.hide()`): not a blur on every
-        // platform, and not a minimise at all.
-        const unsubHide = electronAPI?.onWindowHide?.(onFocusLost);
-        const unsubFocus = electronAPI?.onWindowFocus?.(onFocusGained);
-        const unsubLock = electronAPI?.onOsLockScreen?.(onFocusLost);
+        const unsubPower = electronAPI?.onOsPowerSignal?.(onPowerSignal);
         // Best-effort last heartbeat before the process dies — see main.ts's
         // 'before-quit' handler for why this can lose the race on a forced
         // quit (harmless: falls back to the pre-existing TTL-expiry behavior).
         const unsubQuit = electronAPI?.onBeforeQuit?.(() => sendAttentionNow(false));
 
-        // Idle-time polling — reuses the SAME threshold/cadence useUserStatus
-        // uses for auto-away (utils/idleThreshold.ts), never a second idle
-        // notion. Runs an immediate check on mount (unlike useUserStatus,
-        // which only checks on its interval) so a freshly-opened, focused,
+        // First read on mount (not after one interval) so a freshly-opened,
         // actively-used app doesn't sit at the conservative "unknown" default
-        // for up to IDLE_POLL_INTERVAL_MS before its first heartbeat can ever
-        // report true.
-        let idlePoll: ReturnType<typeof setInterval> | null = null;
-        if (electronAPI?.getSystemIdleTime) {
-            const pollOnce = () => {
-                electronAPI.getSystemIdleTime!()
-                    .then((secs: number) => {
-                        idleSecondsRef.current = secs;
-                    })
-                    .catch(() => { /* leave idleSecondsRef at its last known value */ });
-            };
-            pollOnce();
-            idlePoll = setInterval(pollOnce, IDLE_POLL_INTERVAL_MS);
-        }
+        // before its first heartbeat can ever report true.
+        pollNow();
 
         return () => {
-            window.removeEventListener('blur', onFocusLost);
-            window.removeEventListener('focus', onFocusGained);
-            document.removeEventListener('visibilitychange', onVisibility);
-            unsubBlur?.();
-            unsubMinimize?.();
-            unsubHide?.();
-            unsubFocus?.();
-            unsubLock?.();
+            disposed = true;
+            if (pollTimer) clearTimeout(pollTimer);
+            unsubPower?.();
             unsubQuit?.();
-            if (idlePoll) clearInterval(idlePoll);
         };
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
@@ -1653,6 +1685,7 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
         groupMemberAddedEvent,
         groupUpdatedEvent,
         avatarUpdatedEvent,
+        cosmeticsUpdatedEvent,
         usernameUpdatedEvent,
         voiceStateEvent,
         huddleSpawnEvent,

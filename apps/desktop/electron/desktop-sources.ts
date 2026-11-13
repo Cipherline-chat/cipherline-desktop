@@ -83,9 +83,29 @@ export function desktopSourcesKey(req: DesktopSourcesRequest): string {
     return `${types} thumbs=${w}x${h}`;
 }
 
+export const DESKTOP_SOURCES_TIMEOUT_MS = 120_000;
+
+function withDeadline<T>(p: Promise<T>, ms: number | undefined): Promise<T> {
+    if (!ms || !(ms > 0)) return p;
+    return new Promise<T>((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error('desktop sources timed out')), ms);
+        (t as { unref?: () => void }).unref?.();
+        p.then(v => { clearTimeout(t); resolve(v); }, e => { clearTimeout(t); reject(e); });
+    });
+}
+
 export function createDesktopSourcesBroker<S>(opts: {
     getSources: (req: { types: DesktopSourceType[]; thumbnailSize: { width: number; height: number } }) => Promise<S[]>;
     now?: () => number;
+    /**
+     * A getSources() that has not settled by then is abandoned: its caller gets a
+     * rejection and the NEXT queued call starts. Without it one call that never
+     * settles (a portal that never answers, a PipeWire capturer stuck in enumeration)
+     * wedges the serial chain, and every later share / picker / overlay request
+     * queues behind it forever. Generous: on Wayland a listing can be the desktop's
+     * own chooser, which a person is answering.
+     */
+    timeoutMs?: number;
     onTiming?: (t: DesktopSourcesTiming) => void;
 }): DesktopSourcesBroker<S> {
     const now = opts.now ?? (() => Date.now());
@@ -115,7 +135,7 @@ export function createDesktopSourcesBroker<S>(opts: {
             let ok = false;
             let count = 0;
             try {
-                const out = await opts.getSources({ types, thumbnailSize });
+                const out = await withDeadline(opts.getSources({ types, thumbnailSize }), opts.timeoutMs);
                 ok = true;
                 count = out.length;
                 return out;

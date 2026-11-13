@@ -1,5 +1,10 @@
 /**
- * Profile links (Steam + socials) - client side.
+ * Profile links (socials) - client side.
+ *
+ * Steam is NOT a link platform: it is shown only when VERIFIED (Steam OpenID,
+ * SteamConnect). `LinkPlatform` is the pasteable/storable set and has no
+ * `steam`; a stored `steam` entry (an old pasted link) fails `isLinkPlatform`,
+ * so `sanitizeLinks` drops it everywhere a list is rendered.
  *
  * The SERVER enforces every rule (apps/api/src/auth/profile-links.ts) and
  * stores HANDLES only. This module mirrors the handle patterns and pasted-URL
@@ -20,11 +25,14 @@ export const PROFILE_LINKS_MAX = 6;
 export const LINK_INPUT_MAX_LEN = 200;
 
 export const LINK_PLATFORMS = [
-    'steam', 'x', 'instagram', 'tiktok', 'youtube', 'twitch', 'github', 'reddit', 'spotify', 'discord', 'bluesky', 'medal',
+    'x', 'instagram', 'tiktok', 'youtube', 'twitch', 'github', 'reddit', 'spotify', 'discord', 'bluesky', 'medal',
 ] as const;
 export type LinkPlatform = (typeof LINK_PLATFORMS)[number];
 
 export interface ProfileLink { platform: LinkPlatform; handle: string }
+
+/** Anything that has a glyph: the link platforms plus the verified-only Steam mark. */
+export type IconPlatform = LinkPlatform | 'steam';
 
 interface PlatformRule {
     label: string;
@@ -38,11 +46,6 @@ interface PlatformRule {
 }
 
 export const PLATFORM_RULES: Readonly<Record<LinkPlatform, PlatformRule>> = {
-    steam: {
-        label: 'Steam', handle: /^(?:\d{17}|(?=.*\D)[A-Za-z0-9_-]{2,32})$/,
-        hosts: ['steamcommunity.com'], path: /^\/(?:id|profiles)\/([^/]+)\/?$/,
-        placeholder: 'Custom id, SteamID64 or profile link', hint: 'a custom id (2-32 letters, digits, - or _), a 17-digit SteamID64, or your steamcommunity.com profile link',
-    },
     x: {
         label: 'X', handle: /^[A-Za-z0-9_]{1,15}$/,
         hosts: ['x.com', 'twitter.com', 'mobile.twitter.com'], path: /^\/([^/]+)\/?$/, atPrefix: true,
@@ -99,7 +102,10 @@ export const PLATFORM_RULES: Readonly<Record<LinkPlatform, PlatformRule>> = {
     },
 };
 
-export const platformLabel = (p: LinkPlatform): string => PLATFORM_RULES[p].label;
+export const platformLabel = (p: IconPlatform): string => (p === 'steam' ? 'Steam' : PLATFORM_RULES[p].label);
+
+/** A platform with a glyph/label: a link platform or the verified-only Steam. */
+export const isIconPlatform = (p: unknown): p is IconPlatform => p === 'steam' || isLinkPlatform(p);
 
 export const isLinkPlatform = (p: unknown): p is LinkPlatform =>
     typeof p === 'string' && (LINK_PLATFORMS as readonly string[]).includes(p);
@@ -198,7 +204,6 @@ export function profileLinkUrl(link: ProfileLink): string | null {
     if (!isLinkPlatform(link.platform) || !isValidHandle(link.platform, link.handle)) return null;
     const h = encodeURIComponent(link.handle);
     switch (link.platform) {
-        case 'steam': return /^\d{17}$/.test(link.handle) ? `https://steamcommunity.com/profiles/${h}` : `https://steamcommunity.com/id/${h}`;
         case 'x': return `https://x.com/${h}`;
         case 'instagram': return `https://www.instagram.com/${h}/`;
         case 'tiktok': return `https://www.tiktok.com/@${h}`;

@@ -28,8 +28,9 @@
  *   and keeping it up still builds a show into the game. The garnish adds its
  *   own beat on top of that first click (prop-level), and its finale lands
  *   on the burst's sixth click as a prop-level flourish while the show goes
- *   on underneath. (Pro users wear the crown all day, and the unread pile is
- *   common: neither may cost anyone the Firewall egg.)
+ *   on underneath. (Any Pro Home visit may draw the crown (utils/keysWardrobe.ts),
+ *   and the unread pile is common: neither may cost anyone the Firewall egg.
+ *   The wardrobe's other hats are no state of their own: neutral.)
  *
  * Everything here is data: keyframes for named html targets (HomeKeys
  * resolves the names: gear pieces already on screen, or the small fx

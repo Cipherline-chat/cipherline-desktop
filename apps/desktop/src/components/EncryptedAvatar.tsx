@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { User, Users } from 'lucide-react';
 import { useEncryptedAvatar, evictAvatar, avatarUrlMime } from '../hooks/useEncryptedAvatar';
-import { isAnimatedCandidateMime, useStillGate } from '../utils/animatedImage';
+import { mayBeAnimated, SPEAKING_PLAY_LINGER_MS, useHeldOn, useStillGate } from '../utils/animatedImage';
 import { safeImageSrc } from '../utils/safeMediaUrl';
 import { userColor } from '../utils/avatarColor';
 import { useOpenProfile } from '../contexts/ProfileOpenContext';
@@ -33,6 +33,15 @@ interface EncryptedAvatarProps {
      *  show the first frame and play on hover. The profile card and the
      *  settings preview pass true. Static images ignore it. */
     animate?: boolean;
+    /** A PARENT says "play now" (e.g. the pointer is over the member row or the
+     *  author's name next to this avatar). Unlike `animate` it is transient:
+     *  it is OR'd into the still-gate alongside the avatar's own hover, so the
+     *  first frame returns as soon as the parent lets go. Static images ignore it. */
+    playing?: boolean;
+    /** This user is talking in a call (voice rows, call tiles): plays like
+     *  `playing`, but held through the pauses between words so the animation
+     *  does not restart on every burst of speech. Static images ignore it. */
+    speaking?: boolean;
 }
 
 export const EncryptedAvatar: React.FC<EncryptedAvatarProps> = ({
@@ -46,6 +55,8 @@ export const EncryptedAvatar: React.FC<EncryptedAvatarProps> = ({
     disableClickProfile = false,
     bypassFriendGate = false,
     animate = false,
+    playing = false,
+    speaking = false,
 }) => {
     const isFriendOrSelf = useIsFriendOrSelf();
     // Privacy gate: don't fetch / display a user's profile picture to strangers
@@ -60,9 +71,12 @@ export const EncryptedAvatar: React.FC<EncryptedAvatarProps> = ({
     const fullUrl = safeImageSrc(useEncryptedAvatar(allowImage ? attachmentId : null, token)) ?? null;
     // Animated images: first frame unless `animate` or hovered (free for all).
     const fullMime = avatarUrlMime(fullUrl);
-    const canMove = isAnimatedCandidateMime(fullMime);
+    const canMove = mayBeAnimated(fullMime);
     const [hovered, setHovered] = useState(false);
-    const avatarUrl = useStillGate(fullUrl, fullMime, animate || hovered);
+    // `animate` is always-on: ONLY the opened profile and the settings preview. None of
+    // these play while Cipherline is not the focused window (the gate's rule).
+    const talking = useHeldOn(speaking, SPEAKING_PLAY_LINGER_MS);
+    const avatarUrl = useStillGate(fullUrl, fullMime, animate || hovered || playing || talking);
     const openProfile = useOpenProfile();
 
     // Fade the image in ONLY when it resolved asynchronously (download+decrypt).
@@ -139,7 +153,8 @@ export const EncryptedAvatar: React.FC<EncryptedAvatarProps> = ({
           }
         : undefined;
 
-    const hoverHandlers = canMove && !animate
+    // Kept on while `animate` is true, or a leave that happens after it turns on is missed.
+    const hoverHandlers = canMove
         ? { onMouseEnter: () => setHovered(true), onMouseLeave: () => setHovered(false) }
         : undefined;
     const merged = hoverHandlers

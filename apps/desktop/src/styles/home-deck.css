@@ -436,6 +436,36 @@
 .hd-card:hover .hd-unpin, .hd-unpin:focus-visible { opacity: 1; }
 .hd-unpin:hover { color: var(--cl-flash); background: var(--cl-flash-tint); }
 
+/* ── Pin reorder (components/HomePinsGrid.tsx) ────────────────────────────────
+   Same language as the server rail drag: the dragged pin's own slot is the
+   gap where it will land — a lume dashed outline (the rail's gap line is lume:
+   lume = you / selection) that slides with the live preview — and a lifted
+   ghost follows the pointer. */
+.hd-cards[data-settled] > * { animation: none; }
+.hd-card[data-pin-key] { touch-action: manipulation; }
+.hd-cards[data-sorting] { cursor: grabbing; }
+.hd-cards[data-sorting] .hd-card { cursor: grabbing; }
+.hd-cards[data-sorting] .hd-card::after { opacity: 0; }
+.hd-cards[data-sorting] .hd-unpin { opacity: 0; pointer-events: none; }
+.hd-card[data-dnd="source"] {
+  background: rgba(37, 224, 200, .05);
+  border: 1px dashed rgba(37, 224, 200, .55);
+}
+/* visibility, not opacity: the unread pill's pop animation fills opacity and
+   would win over a plain declaration. */
+.hd-card[data-dnd="source"] > * { visibility: hidden; }
+.hd-pinlift { height: 100%; cursor: grabbing; }
+.hd-pinlift > .hd-card {
+  height: 100%; box-sizing: border-box; cursor: grabbing;
+  border-color: hsl(var(--hd-hue, 172) 65% 55% / .65);
+  box-shadow: 0 16px 34px -12px rgba(0, 0, 0, .7), 0 4px 10px -4px rgba(0, 0, 0, .5);
+  transform: scale(1.04);
+  transition: none;
+}
+.hd-pinlift > .hd-card::after { opacity: 1; }
+.hd-pinlift .hd-unpin { display: none; }
+.hd-pinlift[data-reduced-motion] > .hd-card { transform: none; }
+
 .hd-addcard {
   display: flex; align-items: center; justify-content: center; gap: 7px;
   padding: 9px 10px; border-radius: 11px;
@@ -501,24 +531,56 @@
 .hd-wave i:nth-child(3) { height: 7px;  animation-delay: .26s; }
 @keyframes hd-bounce { 0%, 100% { transform: scaleY(.5); } 50% { transform: scaleY(1); } }
 
-/* ── Caught-up state ──────────────────────────────────────────────────────── */
+/* ── Empty states (HomePanel's HomeEmpty) ─────────────────────────────────
+   A tile with nothing to list still owns its space: the empty block fills the
+   tile (which becomes a column for it) and sits centred in it, so a 2x2 tile
+   reads as calm rather than as a header with a stray line under it. The art
+   is a lit porthole on still water in the tile's own accent; the copy is one
+   display-weight line and one readable sentence. */
+.hd-tile:has(> .hd-clear) { display: flex; flex-direction: column; }
 .hd-clear {
-  position: relative;
+  flex: 1 1 auto; min-height: 176px;
   display: flex; flex-direction: column; align-items: center; justify-content: center;
-  text-align: center; padding: 26px 10px 22px; gap: 3px;
+  text-align: center; padding: 12px 16px 20px;
 }
-/* Becalmed water: a still horizon line with a soft mote of light resting on
-   it. Pure CSS, static — empty is a state of calm, not an absence of design. */
-.hd-clear::before {
-  content: ''; width: 76px; height: 22px; margin-bottom: 10px;
-  background:
-    radial-gradient(9px 9px at 50% 6px, rgba(37, 224, 200, .55), rgba(37, 224, 200, .12) 60%, transparent 75%),
-    linear-gradient(90deg, transparent, rgba(37, 224, 200, .35) 30%, rgba(37, 224, 200, .35) 70%, transparent) 50% calc(100% - 6px) / 100% 1.5px no-repeat;
+.hd-clear-art { display: block; width: 88px; height: 73px; margin-bottom: 14px; overflow: visible; }
+@container (max-width: 559px) { .hd-clear-art { width: 72px; height: 60px; } .hd-clear { min-height: 0; padding: 20px 16px 22px; } }
+.hd-clear-port {
+  fill: color-mix(in srgb, var(--hd-accent) 9%, transparent);
+  stroke: color-mix(in srgb, var(--hd-accent) 55%, transparent); stroke-width: 1.5;
 }
+.hd-clear-ring { stroke: color-mix(in srgb, var(--hd-accent) 20%, transparent); stroke-width: 1; }
+.hd-clear-check, .hd-clear-line {
+  stroke: var(--hd-accent); stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round;
+}
+.hd-clear-line { stroke-width: 1.8; }
+.hd-clear-fill { fill: var(--hd-accent); }
+.hd-clear-water {
+  stroke: color-mix(in srgb, var(--hd-accent) 38%, transparent);
+  stroke-width: 1.4; stroke-linecap: round;
+}
+.hd-clear-water--far { stroke: color-mix(in srgb, var(--hd-accent) 18%, transparent); }
 .hd-clear strong {
-  font-family: var(--cl-font-display); font-weight: 600; font-size: 15px; color: var(--cl-text);
+  font-family: var(--cl-font-display); font-weight: 600; font-size: 16px; line-height: 1.25;
+  color: var(--cl-text);
 }
-.hd-clear span { font-size: 12.5px; color: var(--cl-faint); font-family: var(--cl-font-body); }
+.hd-clear span {
+  margin-top: 5px; max-width: 34ch;
+  font-family: var(--cl-font-body); font-size: 13px; line-height: 1.45; color: var(--cl-muted);
+}
+/* The check strokes in once, after its tile has landed (same --hd-d clock as
+   the rows). One-shot with `both` fill: its resting frame IS the drawn check,
+   so it stays out of the idle gate below (see that block's note). */
+.hd-clear-check {
+  stroke-dasharray: 22; stroke-dashoffset: 0;
+  animation: hd-check-draw .5s cubic-bezier(.22, 1, .36, 1) both;
+  animation-delay: calc(var(--hd-d, 0s) + .32s);
+}
+@keyframes hd-check-draw { from { stroke-dashoffset: 22; } to { stroke-dashoffset: 0; } }
+/* The porthole rides a slow 2px swell — decoration, so behind the ambience switch. */
+.hd-clear-buoy { transform-box: fill-box; transform-origin: center; }
+.hd-host[data-ambient="on"] .hd-clear-buoy { animation: hd-buoy 6s ease-in-out infinite; }
+@keyframes hd-buoy { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-2px); } }
 
 /* ── Buttons ──────────────────────────────────────────────────────────────── */
 .hd-btn {
@@ -609,6 +671,9 @@
   .hd-wave i { animation: none; }
   .hd-card:hover { transform: none; }
   .hd-btn:active { transform: none; }
+  .hd-pinlift > .hd-card { transform: none; }
+  .hd-clear-check { animation: none; }
+  .hd-host[data-ambient="on"] .hd-clear-buoy { animation: none; }
 }
 
 /* ── Idle-motion gate (utils/idleMotion.ts) ───────────────────────────────────
@@ -632,7 +697,8 @@
 :root[data-cl-motion="idle"] .hd-host[data-ambient="on"] .hd-floor-dot,
 :root[data-cl-motion="idle"] .hd-host[data-ambient="on"] .hd-dot,
 :root[data-cl-motion="idle"] .hd-host[data-ambient="on"] .hd-live,
-:root[data-cl-motion="idle"] .hd-host[data-ambient="on"] .hd-mascotbtn::before { animation: none; }
+:root[data-cl-motion="idle"] .hd-host[data-ambient="on"] .hd-mascotbtn::before,
+:root[data-cl-motion="idle"] .hd-host[data-ambient="on"] .hd-clear-buoy { animation: none; }
 
 /* Occlusion gate (utils/idleMotion.ts, setOccluded) — the home deck is never
    rendered inside the Descent, but the `:not(.sd-root *)` guard is kept
@@ -641,4 +707,5 @@
 :root[data-cl-occluded="on"] .hd-host[data-ambient="on"] .hd-floor-dot:not(.sd-root *),
 :root[data-cl-occluded="on"] .hd-host[data-ambient="on"] .hd-dot:not(.sd-root *),
 :root[data-cl-occluded="on"] .hd-host[data-ambient="on"] .hd-live:not(.sd-root *),
-:root[data-cl-occluded="on"] .hd-host[data-ambient="on"] .hd-mascotbtn:not(.sd-root *)::before { animation: none; }
+:root[data-cl-occluded="on"] .hd-host[data-ambient="on"] .hd-mascotbtn:not(.sd-root *)::before,
+:root[data-cl-occluded="on"] .hd-host[data-ambient="on"] .hd-clear-buoy:not(.sd-root *) { animation: none; }

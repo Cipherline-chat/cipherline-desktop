@@ -14,6 +14,7 @@ import { parseParticipantMetadata } from '../../utils/participantMetadata';
 import {
     applyCallMediaEvent, clearCallMediaUser, describeCallMedia, huddleCallMediaKey, setCallMedia, __resetCallMediaPresence,
 } from '../../utils/callMediaPresence';
+import { setServerVoiceModeration, __resetServerVoiceModeration } from '../../utils/serverVoiceModeration';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 const h = React.createElement;
@@ -34,7 +35,7 @@ const svgClasses = (host: HTMLElement) =>
     [...host.querySelectorAll('svg')].map(s => s.getAttribute('class') ?? '');
 const has = (host: HTMLElement, lucide: string) => svgClasses(host).some(c => c.includes(`lucide-${lucide}`));
 
-beforeEach(() => __resetCallMediaPresence());
+beforeEach(() => { __resetCallMediaPresence(); __resetServerVoiceModeration(); });
 
 describe('ParticipantStatusIcons — NOT in the call (server presence)', () => {
     it('shows the screen-share and camera icons from presence', () => {
@@ -117,7 +118,7 @@ describe('ParticipantStatusIcons — NOT in the call: self mute / deafen from pr
         m.unmount();
     });
 
-    it('never draws server-moderation badges out of a call (presence does not carry them)', () => {
+    it('never draws LiveKit-metadata moderation badges out of a call (stale in-call state for a call I am not in)', () => {
         setCallMedia(KEY, A, { muted: true });
         const m = mount(h(ParticipantStatusIcons, {
             ...props, meta: parseParticipantMetadata(JSON.stringify({ server_muted_audio: true, server_deafened: true })),
@@ -224,5 +225,84 @@ describe('CallMediaSummary (Home "Happening now")', () => {
 
     it('describeCallMedia pluralises', () => {
         expect(describeCallMedia(['a', 'b'], [], { a: 'A', b: 'B' })).toBe('A, B are sharing a screen');
+    });
+});
+
+describe('ParticipantStatusIcons - server mute / server deafen badges (persist across leave / rejoin)', () => {
+    const titles = (host: HTMLElement) => [...host.querySelectorAll('span[title]')].map(e => e.getAttribute('title'));
+
+    it('NOT in the call: the red badges come from the server\'s presence overlay, so they are on the roster the moment the person (re)joins', () => {
+        applyCallMediaEvent({ channel_id: 'h', call_id: CALL, user_id: A, camera: false, screen_share: false, muted: false, deafened: false, server_muted: true });
+        const m = mount(h(ParticipantStatusIcons, { userId: A, inThisCall: false, mediaKey: KEY, iconClass: 'w-3 h-3' }));
+        expect(svgClasses(m.host).some(c => c.includes('lucide-mic-off') && c.includes('text-red-500'))).toBe(true);
+        expect(has(m.host, 'headphone-off')).toBe(false);
+        m.unmount();
+    });
+
+    it('server deafen alone shows only the deafen badge - it does not imply a mute', () => {
+        setCallMedia(KEY, A, { server_deafened: true });
+        const m = mount(h(ParticipantStatusIcons, { userId: A, inThisCall: false, mediaKey: KEY, iconClass: 'w-3 h-3' }));
+        expect(svgClasses(m.host).some(c => c.includes('lucide-headphone-off') && c.includes('text-red-500'))).toBe(true);
+        expect(has(m.host, 'mic-off')).toBe(false);
+        m.unmount();
+    });
+
+    it('both at once draw both, and a self-muted person who is server-DEAFENED still shows their own mute (independent)', () => {
+        setCallMedia(KEY, A, { muted: true, server_deafened: true });
+        const m = mount(h(ParticipantStatusIcons, { userId: A, inThisCall: false, mediaKey: KEY, iconClass: 'w-3 h-3' }));
+        const cls = svgClasses(m.host);
+        expect(cls.some(c => c.includes('lucide-headphone-off') && c.includes('text-red-500'))).toBe(true);
+        expect(cls.some(c => c.includes('lucide-mic-off') && c.includes('text-red-400'))).toBe(true);
+        m.unmount();
+    });
+
+    it('a server MUTE replaces the self-mute icon (one red mic, not two)', () => {
+        setCallMedia(KEY, A, { muted: true, server_muted: true });
+        const m = mount(h(ParticipantStatusIcons, { userId: A, inThisCall: false, mediaKey: KEY, iconClass: 'w-3 h-3' }));
+        const mics = svgClasses(m.host).filter(c => c.includes('lucide-mic-off'));
+        expect(mics).toHaveLength(1);
+        expect(mics[0]).toContain('text-red-500');
+        m.unmount();
+    });
+
+    it('updates live: a removal event clears the badge; leaving clears it too', () => {
+        setCallMedia(KEY, A, { server_muted: true, server_deafened: true });
+        const m = mount(h(ParticipantStatusIcons, { userId: A, inThisCall: false, mediaKey: KEY, iconClass: 'w-3 h-3' }));
+        expect(svgClasses(m.host).filter(c => c.includes('text-red-500'))).toHaveLength(2);
+        act(() => applyCallMediaEvent({ channel_id: 'h', call_id: CALL, user_id: A, camera: false, screen_share: false, muted: false, deafened: false, server_deafened: true }));
+        expect(svgClasses(m.host).filter(c => c.includes('text-red-500'))).toHaveLength(1);
+        act(() => clearCallMediaUser(KEY, A));
+        expect(m.host.querySelector('[data-testid="participant-status-icons"]')).toBeNull();
+        m.unmount();
+    });
+
+    it('IN the call: the metadata the server wrote wins over presence; deafen + self-mute both show', () => {
+        setCallMedia(KEY, A, { server_muted: true }); // stale presence must be ignored in-call
+        const m = mount(h(ParticipantStatusIcons, {
+            userId: A, inThisCall: true, mediaKey: KEY, iconClass: 'w-3.5 h-3.5',
+            track: { hasCamera: false, hasScreenShare: false, isMuted: true },
+            meta: parseParticipantMetadata(JSON.stringify({ server_deafened: true })),
+        }));
+        const cls = svgClasses(m.host);
+        expect(cls.some(c => c.includes('lucide-headphone-off') && c.includes('text-red-500'))).toBe(true);
+        expect(cls.some(c => c.includes('lucide-mic-off') && c.includes('text-red-400'))).toBe(true);
+        expect(cls.filter(c => c.includes('lucide-mic-off') && c.includes('text-red-500'))).toHaveLength(0);
+        m.unmount();
+    });
+
+    it('tooltip: "Server muted · 23 h left" for a moderator (who has the expiry list), plain for everyone else', () => {
+        setCallMedia(KEY, A, { server_muted: true, server_deafened: true });
+        const plain = mount(h(ParticipantStatusIcons, { userId: A, inThisCall: false, mediaKey: KEY, iconClass: 'w-3 h-3', serverId: 'srv' }));
+        expect(titles(plain.host)).toEqual(['Server muted', 'Server deafened']);
+        plain.unmount();
+
+        setServerVoiceModeration('srv', [{
+            user_id: A,
+            muted_until: new Date(Date.now() + 23 * 3_600_000 - 1000).toISOString(),
+            deafened_until: new Date(Date.now() + 5 * 3_600_000).toISOString(),
+        }]);
+        const mod = mount(h(ParticipantStatusIcons, { userId: A, inThisCall: false, mediaKey: KEY, iconClass: 'w-3 h-3', serverId: 'srv' }));
+        expect(titles(mod.host)).toEqual(['Server muted · 23 h left', 'Server deafened · 5 h left']);
+        mod.unmount();
     });
 });

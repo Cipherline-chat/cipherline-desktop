@@ -1,6 +1,6 @@
 import { personalEmojis } from './service';
 import { takePersonalEmojis } from './wire';
-import { takeStatusEmoji, type TakeStatusEmojiCtx } from './statusEmoji';
+import { releaseParkedStatusEmoji, takeStatusEmoji, type TakeStatusEmojiCtx } from './statusEmoji';
 
 /**
  * Called on every decrypted message body (DM pull, live channel message,
@@ -21,4 +21,9 @@ export function ingestInboundContent<T>(content: T): T {
  */
 export function ingestInboundStatusEmoji<T>(content: T, ctx: Omit<TakeStatusEmojiCtx, 'store'>): T {
     return takeStatusEmoji(content, { ...ctx, store: personalEmojis().store }).content;
+}
+
+/** After the friends list (re)loads: file the status emoji that arrived before it was known. */
+export function releaseInboundStatusEmoji(myUserId: string, isFriend: (id: string) => boolean): Promise<string[]> {
+    return releaseParkedStatusEmoji(myUserId, isFriend, personalEmojis().store);
 }

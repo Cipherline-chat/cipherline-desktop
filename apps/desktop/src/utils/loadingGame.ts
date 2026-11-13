@@ -5,9 +5,9 @@
  * owns the clock and the drawing; this file is what the tests can pin down.
  *
  * THE GAME — "Firewall". Keys is a jellyfish, so he swims the way one does:
- * every Space is one stroke upward, and between strokes he sinks. Pillars of
- * fine dots — the background field, packed tight — scroll in from the right,
- * building themselves out of the field as they come, each with one gap; swim
+ * every Space is one stroke upward, and between strokes he sinks. Solid pillars
+ * scroll in from the right, condensing out of the background's dots as they
+ * come, each with one gap; swim
  * through the gap, score a point. Touch a wall or the sea floor and he
  * scatters into dots. The gaps stay the same size for the whole run; only the
  * speed climbs, a little with every point, with no ceiling.
@@ -54,6 +54,13 @@ export interface Game {
     walls: Wall[];
     /** Seconds since the run started / since the crash. */
     t: number;
+    /**
+     * Game-clock seconds the CURRENT (or just-ended) run has lasted: the sum of the
+     * steps it was simulated for, so a paused window or a clamped frame does not
+     * count. Kept after the crash (t resets); this is what the leaderboard's
+     * plausibility check is told (utils/flappyRules.ts).
+     */
+    runT: number;
     seed: number;
 }
 
@@ -67,7 +74,7 @@ function rand(g: Game): number {
 
 export function newGame(best = 0, seed = 1): Game {
     return {
-        mode: 'idle', y: 0, vy: 0, thrust: 0, score: 0, best, speed: RULES.speed0, t: 0, seed,
+        mode: 'idle', y: 0, vy: 0, thrust: 0, score: 0, best, speed: RULES.speed0, t: 0, runT: 0, seed,
         walls: Array.from({ length: RULES.slots }, () => ({ x: 0, gap: 0, gapH: RULES.gap0, passed: false, live: false })),
     };
 }
@@ -101,6 +108,7 @@ export function startRun(g: Game, halfW: number, y0: number): number[] {
     g.thrust = RULES.thrust;
     g.score = 0;
     g.t = 0;
+    g.runT = 0;
     g.speed = speedFor(0);
     const needed = Math.min(RULES.slots, Math.ceil((2 * halfW + RULES.wallW) / RULES.spacing) + 1);
     let prev = 0;
@@ -144,11 +152,18 @@ function hitsWall(y: number, kx: number, w: Wall): boolean {
 
 export interface StepResult { scored: boolean; died: boolean; respawned: number[] }
 
-/** Advance the run by dt seconds. */
-export function step(g: Game, dt: number, halfW: number): StepResult {
-    const res: StepResult = { scored: false, died: false, respawned: [] };
+/**
+ * Advance the run by dt seconds. The worker calls this two or three times a frame,
+ * so it passes one `res` it keeps and nothing here allocates: no closures, no
+ * iterators, no result object. See "THE FRAME LOOP ALLOCATES NOTHING" in the worker.
+ */
+export function step(g: Game, dt: number, halfW: number, res: StepResult = { scored: false, died: false, respawned: [] }): StepResult {
+    res.scored = false;
+    res.died = false;
+    res.respawned.length = 0;
     g.t += dt;
     if (g.mode !== 'playing') return res;
+    g.runT += dt;
     if (g.thrust > 0) {
         // The stroke: momentum carries over and eases into the new rise.
         g.vy += (RULES.flap - g.vy) * (1 - Math.exp(-Math.min(dt, g.thrust) / 0.03));
@@ -160,15 +175,23 @@ export function step(g: Game, dt: number, halfW: number): StepResult {
     if (g.y + RULES.radius > RULES.top) { g.y = RULES.top - RULES.radius; g.vy = Math.min(0, g.vy); }
 
     const kx = keysX(halfW);
+    const walls = g.walls;
     let maxX = -Infinity;
     let lastGap = 0;
-    for (const w of g.walls) if (w.live && w.x > maxX) { maxX = w.x; lastGap = w.gap; }
-    g.walls.forEach((w, i) => {
-        if (!w.live) return;
+    for (let i = 0; i < walls.length; i++) {
+        const w = walls[i];
+        if (w.live && w.x > maxX) { maxX = w.x; lastGap = w.gap; }
+    }
+    let hit = false;
+    for (let i = 0; i < walls.length; i++) {
+        const w = walls[i];
+        if (!w.live) continue;
         w.x -= g.speed * dt;
         if (!w.passed && w.x + RULES.wallW / 2 < kx - RULES.radius) {
             w.passed = true;
             g.score++;
+            // The best is live: a run you leave mid-flight (Esc, close, quit) still counts.
+            g.best = Math.max(g.best, g.score);
             res.scored = true;
             g.speed = speedFor(g.score);
         }
@@ -178,10 +201,10 @@ export function step(g: Game, dt: number, halfW: number): StepResult {
             lastGap = w.gap;
             res.respawned.push(i);
         }
-    });
+    }
+    for (let i = 0; i < walls.length && !hit; i++) hit = walls[i].live && hitsWall(g.y, kx, walls[i]);
 
-    const dead = g.y - RULES.radius < -1 || g.walls.some(w => w.live && hitsWall(g.y, kx, w));
-    if (dead) {
+    if (g.y - RULES.radius < -1 || hit) {
         g.mode = 'over';
         g.t = 0;
         g.best = Math.max(g.best, g.score);

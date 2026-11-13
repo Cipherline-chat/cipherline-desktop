@@ -75,3 +75,56 @@ describe('BetaCallMonitor — time to first audio', () => {
         expect(reportBeta).toHaveBeenCalledWith('call_first_audio_slow', { ms: FIRST_AUDIO_SLOW_MS + 1000 });
     });
 });
+
+describe('BetaCallMonitor: one-way audio, inbound', () => {
+    const report = (stats: Array<Record<string, unknown>>) => ({ forEach: (cb: (s: Record<string, unknown>) => void) => stats.forEach(cb) });
+    /** A remote peer with a mic whose RTP counter `packets()` reads, optionally a camera whose counter is `cam()`. */
+    function addPeer(opts: { packets: () => number; muted?: () => boolean; speaking?: () => boolean; cam?: () => number }) {
+        const micTrack = { getRTCStatsReport: async () => report([{ type: 'inbound-rtp', kind: 'audio', packetsReceived: opts.packets() }]) };
+        const micPublication = { isSubscribed: true, get isMuted() { return opts.muted?.() ?? false; }, track: micTrack };
+        const pubs = new Map<string, unknown>();
+        if (opts.cam) pubs.set('cam', { isSubscribed: true, track: { getRTCStatsReport: async () => report([{ type: 'inbound-rtp', kind: 'video', packetsReceived: opts.cam!() }]) } });
+        const p = {
+            get isSpeaking() { return opts.speaking?.() ?? false; },
+            getTrackPublication: () => micPublication,
+            trackPublications: pubs,
+        };
+        room.remoteParticipants.set('peer', p);
+        return p;
+    }
+    const tick = (ms: number) => act(async () => { await vi.advanceTimersByTimeAsync(ms); });
+
+    it('an unmuted mic whose packets stop for 15 s reports once, with the leg booleans', async () => {
+        let packets = 100;
+        let cam = 5000;
+        addPeer({ packets: () => packets, cam: () => cam });
+        for (let i = 0; i < 4; i++) { packets += 250; cam += 40; await tick(5000); } // healthy for 20 s
+        expect(reportBeta).not.toHaveBeenCalledWith('call_one_way_audio', expect.anything());
+        for (let i = 0; i < 4; i++) { cam += 40; await tick(5000); } // mic stops, the camera keeps arriving
+        const calls = reportBeta.mock.calls.filter(c => c[0] === 'call_one_way_audio');
+        expect(calls).toHaveLength(1);
+        expect(calls[0][1]).toEqual({ direction: 'in', cause: 'rtp_flat', sfu_hears: false, other_flowing: true });
+        await tick(60_000);
+        expect(reportBeta.mock.calls.filter(c => c[0] === 'call_one_way_audio')).toHaveLength(1);
+    });
+
+    it('a muted publisher is never a stall', async () => {
+        addPeer({ packets: () => 7, muted: () => true });
+        await tick(120_000);
+        expect(reportBeta).not.toHaveBeenCalledWith('call_one_way_audio', expect.anything());
+    });
+
+    it('a machine that slept (timers frozen for an hour) does not report a stall on wake', async () => {
+        let packets = 500;
+        addPeer({ packets: () => packets });
+        packets += 100; await tick(5000);
+        packets += 100; await tick(5000);
+        // Lid closed: no timer fires, no packets are counted; the clock jumps an hour.
+        vi.setSystemTime(Date.now() + 3_600_000);
+        await tick(5000); // first poll after wake sees the same counter
+        expect(reportBeta).not.toHaveBeenCalledWith('call_one_way_audio', expect.anything());
+        // Packets resume (the SFU is still sending): still nothing.
+        packets += 100; await tick(5000);
+        expect(reportBeta).not.toHaveBeenCalledWith('call_one_way_audio', expect.anything());
+    });
+});

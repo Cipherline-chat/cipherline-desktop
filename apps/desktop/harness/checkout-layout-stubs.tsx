@@ -13,7 +13,8 @@ export const loadStripe = async () => fakeStripe;
 /* ── @stripe/react-stripe-js ── */
 export const Elements = ({ children, options }: any) => { (window as any).__elementsOptions = options; return <>{children}</>; };
 export const useStripe = () => fakeStripe;
-export const useElements = () => ({ submit: async () => ({}) });
+const elementsFake = { submit: async () => ({}), update: (o: any) => { (window as any).__elementsUpdate = o; } };
+export const useElements = () => elementsFake;
 
 const input = (label: string, value: string): React.ReactNode => (
     <div style={{ flex: 1, minWidth: 0 }}>
@@ -62,10 +63,20 @@ export const PaymentElement = ({ onReady, onChange, onFocus, onBlur, onEscape }:
 
 /* ── axios ── */
 const taxed = q.get('tax') !== '0';
-const route = async (url: string) => {
-    if (url.endsWith('/billing/checkout-config')) return { data: { publishable_key: 'pk_test_harness', amount: 250, currency: 'usd', automatic_tax: true, payment_method_types: ['card', 'link'] } };
-    if (url.endsWith('/billing/subscribe')) return { data: { client_secret: 'pi_h', subscription_id: 'sub_h', amount_subtotal: 250, amount_tax: taxed ? 18 : 0, amount_total: taxed ? 268 : 250, currency: 'usd' } };
+// ?plans=founder|regular offers yearly (founding $2.50/$30.00, regular $4.99/$49.99); absent = monthly only.
+const plans = q.get('plans');
+const PRICES: any = plans === 'regular'
+    ? { month: { amount: 499, currency: 'usd' }, year: { amount: 4999, currency: 'usd' } }
+    : { month: { amount: 250, currency: 'usd' }, year: { amount: 3000, currency: 'usd' } };
+const route = async (url: string, body?: any) => {
+    const yearly = body?.interval === 'year';
+    const base = yearly ? PRICES.year.amount : PRICES.month.amount;
+    const tax = taxed ? Math.round(base * 0.072) : 0;
+    if (url.endsWith('/billing/checkout-config')) return { data: { publishable_key: 'pk_test_harness', amount: PRICES.month.amount, currency: 'usd', automatic_tax: true, payment_method_types: ['card', 'link'], ...(plans ? { interval: 'month', intervals_available: ['month', 'year'], prices: PRICES } : {}) } };
+    if (url.endsWith('/billing/status')) return { data: { subscription_status: 'trial', renewal_consent: { required: true, version: 'ar-2026-11-10', text_hash: null } } };
+    if (url.endsWith('/billing/checkout-preview')) return { data: { available: true, amount_subtotal: base, amount_tax: tax, amount_total: base + tax, currency: 'usd' } };
+    if (url.endsWith('/billing/subscribe')) return { data: { client_secret: 'pi_h', subscription_id: 'sub_h', amount_subtotal: base, amount_tax: tax, amount_total: base + tax, currency: 'usd' } };
     return { data: { subscription_status: 'active' } };
 };
-const axios = { get: (url: string) => route(url), post: (url: string) => route(url), isAxiosError: () => false };
+const axios = { get: (url: string) => route(url), post: (url: string, body?: any) => route(url, body), isAxiosError: () => false };
 export default axios;

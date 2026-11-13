@@ -109,7 +109,6 @@ describe('rarity: once in a while, not every time (owner, 2026-10-20)', () => {
             'echo-everyone':  { cooldownMs: 30 * DAY },
             'self-ping':      { chance: 1 / 3, cooldownMs: 7 * DAY },
             'wish':           { cooldownMs: 7 * DAY },
-            'empty-party':    { cooldownMs: 14 * DAY },
             'volume-ceiling': { cooldownMs: 30 * DAY },
             'friends-100':    { maxTimes: 1 },
             'servers-10':     { maxTimes: 1 },
@@ -120,8 +119,6 @@ describe('rarity: once in a while, not every time (owner, 2026-10-20)', () => {
             'double-general': { cooldownMs: 30 * DAY },
             'revolving-door': { cooldownMs: 30 * DAY },
             'first-ban':      { maxTimes: 1 },
-            'first-message':  { maxTimes: 1 },
-            'first-call':     { maxTimes: 1 },
             'first-server':   { maxTimes: 1 },
             'call-100':       { maxTimes: 1 },
             'pi-day':         { oncePerDay: true },
@@ -302,10 +299,8 @@ describe('mentionMoment (structural mention facts, on send)', () => {
     });
 });
 
-describe('voiceJoinMoment (clock + roster presence)', () => {
+describe('voiceJoinMoment (the clock only)', () => {
     const at = (hm: string) => new Date(`2026-10-20T${hm}:30`);
-    const me = 'u-me';
-    const roster = (others: string[]) => [{ user_id: me, status: 'online' }, ...others.map((st, i) => ({ user_id: `u${i}`, status: st }))];
     it('isWishTime: 11:11 and 23:11 only', () => {
         expect(isWishTime(at('11:11'))).toBe(true);
         expect(isWishTime(at('23:11'))).toBe(true);
@@ -314,20 +309,10 @@ describe('voiceJoinMoment (clock + roster presence)', () => {
         expect(isWishTime(at('01:11'))).toBe(false);
         expect(isWishTime(at('12:11'))).toBe(false);
     });
-    it('11:11 → the wish (it outranks an empty server)', () => {
-        expect(voiceJoinMoment(at('11:11'), roster(['offline']), me)).toBe('wish');
-    });
-    it('nobody else online → the empty party (offline / invisible both count as away)', () => {
-        expect(voiceJoinMoment(at('15:00'), roster(['offline', 'invisible']), me)).toBe('empty-party');
-        expect(voiceJoinMoment(at('15:00'), roster([]), me)).toBe('empty-party');
-    });
-    it('anyone else online, idle or busy → nothing', () => {
-        for (const st of ['online', 'idle', 'dnd']) expect(voiceJoinMoment(at('15:00'), roster(['offline', st]), me)).toBeNull();
-    });
-    it('roster not loaded / unknown user → nothing', () => {
-        expect(voiceJoinMoment(at('15:00'), null, me)).toBeNull();
-        expect(voiceJoinMoment(at('15:00'), [], me)).toBeNull();
-        expect(voiceJoinMoment(at('15:00'), roster(['offline']), null)).toBeNull();
+    it('11:11 → the wish; any other time → nothing (the retired empty-party moment never returns)', () => {
+        expect(voiceJoinMoment(at('11:11'))).toBe('wish');
+        expect(voiceJoinMoment(at('15:00'))).toBeNull();
+        expect('empty-party' in MOMENTS).toBe(false);
     });
 });
 

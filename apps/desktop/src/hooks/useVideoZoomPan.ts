@@ -85,6 +85,8 @@ export interface UseVideoZoomPanOptions {
      */
     onViewChange?: (rect: Rect | null) => void;
     videoRef: React.RefObject<HTMLVideoElement | null>;
+    /** When set, the picture's size instead of the <video>'s: a held frame (utils/shareHold.ts). */
+    intrinsicOverrideRef?: React.RefObject<{ width: number; height: number } | null>;
     /** Must mirror the object-fit the <video> actually has. */
     fit: FitMode;
     /** Zoom is focused-view only. */
@@ -132,7 +134,7 @@ export interface UseVideoZoomPanOptions {
 }
 
 export function useVideoZoomPan({
-    rootRef, layerRef, clipRef, clipRadiusPx = 0, onViewChange, videoRef, fit, enabled, allowLeftDrag, resetKey,
+    rootRef, layerRef, clipRef, clipRadiusPx = 0, onViewChange, videoRef, intrinsicOverrideRef, fit, enabled, allowLeftDrag, resetKey,
     requireModifierForWheelZoom = false,
 }: UseVideoZoomPanOptions): void {
     const stateRef = useRef<ZoomState>(IDENTITY);
@@ -156,10 +158,12 @@ export function useVideoZoomPan({
     // so updating them after commit is equivalent here.
     const allowLeftRef = useRef(allowLeftDrag);
     const fitRef = useRef(fit);
+    const clipRadiusRef = useRef(clipRadiusPx);
     const onViewChangeRef = useRef(onViewChange);
     useEffect(() => {
         allowLeftRef.current = allowLeftDrag;
         fitRef.current = fit;
+        clipRadiusRef.current = clipRadiusPx;
         onViewChangeRef.current = onViewChange;
     });
 
@@ -187,7 +191,7 @@ export function useVideoZoomPan({
             const video = videoRef.current;
             const box = { width: v.width, height: v.height };
             if (!video) return fullRect(box);
-            return contentRect(box, { width: video.videoWidth, height: video.videoHeight }, fitRef.current)
+            return contentRect(box, intrinsicOverrideRef?.current ?? { width: video.videoWidth, height: video.videoHeight }, fitRef.current)
                 ?? fullRect(box);
         };
 
@@ -195,7 +199,7 @@ export function useVideoZoomPan({
         const contentOrNull = (v: { width: number; height: number }): Rect | null => {
             const video = videoRef.current;
             if (!video) return null;
-            return contentRect({ width: v.width, height: v.height }, { width: video.videoWidth, height: video.videoHeight }, fitRef.current);
+            return contentRect({ width: v.width, height: v.height }, intrinsicOverrideRef?.current ?? { width: video.videoWidth, height: video.videoHeight }, fitRef.current);
         };
 
         // ── painting ────────────────────────────────────────────────────
@@ -222,7 +226,7 @@ export function useVideoZoomPan({
                     const r = visibleRect(s, v, c);
                     const right = Math.max(0, v.width - r.x - r.width);
                     const bottom = Math.max(0, v.height - r.y - r.height);
-                    clip.style.clipPath = `inset(${r.y}px ${right}px ${bottom}px ${r.x}px round ${clipRadiusPx}px)`;
+                    clip.style.clipPath = `inset(${r.y}px ${right}px ${bottom}px ${r.x}px round ${clipRadiusRef.current}px)`;
                 } else {
                     clip.style.clipPath = '';
                 }

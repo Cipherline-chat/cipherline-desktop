@@ -112,6 +112,12 @@ export class FreezeMonitor {
     onClockJump: ((ms: number) => void) | null = null;
     /** Called after a main stall is recorded (main.ts snapshots metrics). */
     onStall: ((ms: number) => void) | null = null;
+    /**
+     * Mirrors open activities into shared memory (freeze-evidence.ts's
+     * InflightBoard) so a watchdog thread can name what main was inside while
+     * main itself is blocked. enter() returns a slot or -1.
+     */
+    inflightHook: { enter(label: string): number; leave(slot: number): void } | null = null;
 
     private readonly now: () => number;
 
@@ -131,6 +137,8 @@ export class FreezeMonitor {
         const span: ActivitySpan = { label, start: this.now(), end: null };
         this.spans.push(span);
         this.pruneSpans();
+        let slot = -1;
+        try { slot = this.inflightHook?.enter(label) ?? -1; } catch { /* diagnostics only */ }
         let done = false;
         return {
             span,
@@ -138,6 +146,7 @@ export class FreezeMonitor {
                 if (done) return;
                 done = true;
                 span.end = this.now();
+                if (slot >= 0) { try { this.inflightHook?.leave(slot); } catch { /* diagnostics only */ } }
             },
         };
     }
@@ -169,6 +178,22 @@ export class FreezeMonitor {
 
     private noteSync(span: ActivitySpan, ms: number): void {
         if (Number.isFinite(ms) && ms >= SLOW_SYNC_MS) span.syncMs = Math.round(ms);
+    }
+
+    /**
+     * Static labels for the freeze record: the names of the activities still
+     * open, then of those that ended within `windowMs`, newest first. Labels
+     * only (LABEL_RE-validated at open): no detail text, ids or paths.
+     */
+    recentActivityLabels(windowMs = 30_000, max = 12): string[] {
+        const t = this.now();
+        const out: string[] = [];
+        for (let i = this.spans.length - 1; i >= 0 && out.length < max; i--) {
+            const s = this.spans[i];
+            if (s.end !== null && t - s.end > windowMs) continue;
+            if (!out.includes(s.label)) out.push(s.label);
+        }
+        return out;
     }
 
     /**

@@ -99,7 +99,7 @@ export function recordNsUnavailable(): void {
     commit({ nsUnavailable: true, nsState: 'unavailable' });
 }
 
-export function recordAgcStats(stats: { gainDb: number; voiceActive: boolean }): void {
+export function recordAgcStats(stats: { gainDb: number; voiceActive: boolean; speechDb?: number | null }): void {
     commit({ agcGainDb: stats.gainDb, agcVoiceActive: stats.voiceActive });
 }
 

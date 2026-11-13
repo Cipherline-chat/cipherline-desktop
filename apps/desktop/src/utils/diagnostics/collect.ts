@@ -11,17 +11,20 @@
 import { APP_VERSION, BUILD_COMMIT } from '../../constants';
 import secureLocalStore from '../secureLocalStore';
 import { fetchFreezeLog } from '../freezeLog';
+import { netTiming, type NetTimingSnapshot } from '../netTiming';
 import { getScreenShareCodecPref, getStreamStatsHudEnabled } from '../streamDiagnosticsPrefs';
 import { getScreenShareSession } from '../screenShareDiagnostics';
 import { parseStartupFlagsState } from '../startupFlags';
+import { readKeybindsSnapshot, unboundGlobalActions } from '../../hooks/useKeybinds';
 import { buildDiagnosticReport, type BuiltReport, type PerfLogInput, type SettingsSnapshot } from './bundle';
 import { buildSettingsSnapshot, type NotificationPrefsLike, type VoiceSettingsLike } from './settingsSnapshot';
 import { collectSensitiveTerms } from './sensitiveTerms';
 import { getRecentErrors, type CapturedError } from './recentErrors';
 import { webrtcRing } from './webrtcRing';
-import { readCallEvents, type CallEventInput } from './callEventsSource';
+import { readCallEvents, readPinnedCallEvents, type CallEventInput } from './callEventsSource';
+import { startShareSnapshot, type ShareSnapshotHandle } from '../shareSnapshot';
 import { avSyncSnapshotEvents, sampleAvSyncNow } from '../avSyncMonitor';
-import { parsePendingCrashesReply, parseSystemInfoReply, type PendingCrashEntry } from './ipc';
+import { addUnboundShortcuts, parsePendingCrashesReply, parseSystemInfoReply, type PendingCrashEntry } from './ipc';
 import type { CrashInfo, DiagnosticCategory, DiagnosticTrigger, SystemInfo, WebrtcSummary } from './reportTypes';
 
 export interface LiveContext {
@@ -37,8 +40,18 @@ export interface PreparedInputs {
     settings: SettingsSnapshot;
     entitlement: LiveContext['entitlement'];
     perfLog: PerfLogInput[];
+    netTiming: NetTimingSnapshot;
     webrtc: WebrtcSummary;
     callEvents: CallEventInput[];
+    /** Share-context events (start / codec / clamp / display / decoder) that may have rotated out of `callEvents`. */
+    pinnedCallEvents: CallEventInput[];
+    /**
+     * ~10 s of 1 s samples of every active screen share (shareSnapshot.ts),
+     * filling in the background from the moment the reporter opened - read by
+     * buildFromPrepared, so the report carries whatever has been taken by then.
+     * Absent when no share is being sent or watched.
+     */
+    shareSnapshot?: ShareSnapshotHandle;
     pendingCrashes: PendingCrashEntry[];
     recentErrors: CapturedError[];
     sensitiveTerms: string[];
@@ -74,6 +87,8 @@ async function startupFlags() {
 
 export async function prepareReportInputs(ctx: LiveContext): Promise<PreparedInputs> {
     const api = typeof window !== 'undefined' ? window.electronAPI : undefined;
+    // Started first so its ~10 s window overlaps the IPC below and the user's typing.
+    const snapshot = startShareSnapshot();
     const [sysRaw, crashesRaw, perf, devices, flags, avSync] = await Promise.all([
         api?.diagGetSystemInfo?.().catch(() => null) ?? Promise.resolve(null),
         api?.diagGetPendingCrashes?.().catch(() => null) ?? Promise.resolve(null),
@@ -86,7 +101,10 @@ export async function prepareReportInputs(ctx: LiveContext): Promise<PreparedInp
         sampleAvSyncNow().catch(() => []),
     ]);
     const now = Date.now();
-    const { system, scrub } = parseSystemInfoReply(sysRaw, APP_VERSION, BUILD_COMMIT);
+    const parsed = parseSystemInfoReply(sysRaw, APP_VERSION, BUILD_COMMIT);
+    const scrub = parsed.scrub;
+    let system = parsed.system;
+    try { system = addUnboundShortcuts(system, unboundGlobalActions(readKeybindsSnapshot())); } catch { /* the report never fails over a keybind read */ }
     const session = getScreenShareSession();
     const settings = buildSettingsSnapshot({
         hardwareAcceleration: system.hardware_acceleration,
@@ -111,8 +129,11 @@ export async function prepareReportInputs(ctx: LiveContext): Promise<PreparedInp
         settings,
         entitlement: ctx.entitlement,
         perfLog: (perf ?? []).map(r => ({ at: r.at, source: r.source, ms: r.ms, activity: r.activity })),
+        netTiming: netTiming().snapshot(),
         webrtc: webrtcRing.summary(now),
         callEvents: [...readCallEvents(), ...avSyncSnapshotEvents(avSync)],
+        pinnedCallEvents: readPinnedCallEvents(),
+        ...(snapshot ? { shareSnapshot: snapshot } : {}),
         pendingCrashes: parsePendingCrashesReply(crashesRaw),
         recentErrors: getRecentErrors(),
         sensitiveTerms,
@@ -126,18 +147,24 @@ export function buildFromPrepared(p: PreparedInputs, o: {
     replyEmail?: string;
     crash?: CrashInfo | null;
 }): BuiltReport {
+    const snapEvents = p.shareSnapshot?.events() ?? [];
     return buildDiagnosticReport({
         category: o.category,
         trigger: o.trigger,
-        now: p.now,
+        // Samples are taken after the reporter opened; generated_at moves to the
+        // newest one so every t_s stays <= 0 (the other sections are relative to it too).
+        now: Math.max(p.now, p.shareSnapshot?.latestAt() ?? 0),
         description: o.description,
         replyEmail: o.replyEmail,
         system: p.system,
         settings: p.settings,
         entitlement: p.entitlement,
         perfLog: p.perfLog,
+        netTiming: p.netTiming,
         webrtc: p.webrtc,
         callEvents: p.callEvents,
+        pinnedCallEvents: p.pinnedCallEvents,
+        snapshotCallEvents: snapEvents,
         crash: o.crash ?? null,
         recentErrors: p.recentErrors,
         scrub: { sensitiveTerms: p.sensitiveTerms, homeDir: p.homeDir },

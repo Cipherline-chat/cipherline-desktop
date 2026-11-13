@@ -14,7 +14,7 @@ import {
     buildViewerIndex,
     initialViewerCueState,
     reduceViewerCues,
-    VIEWER_CUE_GRACE_MS,
+    VIEWER_CUE_GRACE_MS, VIEWER_CUE_RESTART_MS,
     VIEWER_CUE_COALESCE_MS,
     type ViewerRosterEntry,
 } from './screenShareViewers';
@@ -205,28 +205,24 @@ describe('reduceViewerCues', () => {
     });
 
     describe('no cue storm', () => {
-        it('absorbs the rush when a share starts into a room that piles straight in', () => {
-            // Three people click Watch within the first second of the track
-            // existing. That is the starting state of the stream, not three
-            // things that happened to the streamer.
+        it('a new share hears the first viewer at once, and a crowd stays one cue at a time', () => {
+            // Nobody is watching a share that just started, so the first click
+            // is news. Coalescing is what keeps three fast clicks from stuttering.
             let st = initialViewerCueState();
             const cues: string[] = [];
+            const t = Date.UTC(2026, 10, 2); // A real clock: the cooldown's zero is decades behind it.
             for (const [now, viewers] of [
                 [0, []],
                 [120, ['alice']],
                 [400, ['alice', 'bob']],
-                [900, ['alice', 'bob', 'carol']],
-            ] as Array<[number, string[]]>) {
-                const r = reduceViewerCues(st, { epoch: EPOCH, viewers, now });
+                [700, ['alice', 'bob', 'carol']],
+            ] as [number, string[]][]) {
+                const r = reduceViewerCues(st, { epoch: EPOCH, viewers, now: t + now });
                 st = r.state;
                 cues.push(...r.cues);
             }
-            expect(cues).toEqual([]);
-            // The baseline still tracked them, so nobody is double-counted and
-            // the first person to LEAVE still cues.
+            expect(cues).toEqual(['start']);
             expect(st.viewers).toEqual(['alice', 'bob', 'carol']);
-            expect(reduceViewerCues(st, { epoch: EPOCH, viewers: ['alice', 'bob'], now: ARMED }).cues)
-                .toEqual(['stop']);
         });
 
         it('says nothing on the streamer\'s own reconnect', () => {
@@ -282,11 +278,19 @@ describe('reduceViewerCues', () => {
     it('stopping the share clears the cooldowns so the next one starts clean', () => {
         const live = reduceViewerCues(armed(), { epoch: EPOCH, viewers: ['alice'], now: ARMED });
         const off = reduceViewerCues(live.state, { epoch: '', viewers: [], now: ARMED + 10 });
-        expect(off.state).toEqual(initialViewerCueState());
-        // A brand new share arms fresh rather than inheriting a cooldown.
+        expect(off.state).toEqual({ ...initialViewerCueState(), stoppedAt: ARMED + 10 });
+        // Starting again at once is the same share rebuilt: its watchers coming back are silent.
         const next = reduceViewerCues(off.state, { epoch: 'TR_sid9:live', viewers: ['alice'], now: ARMED + 20 });
         expect(next.cues).toEqual([]);
         expect(next.state.armedAt).toBe(ARMED + 20);
+        expect(reduceViewerCues(next.state, { epoch: 'TR_sid9:live', viewers: ['alice', 'bob'], now: ARMED + 500 }).cues).toEqual([]);
+    });
+
+    it('a share started long after the last one is new: its first viewer cues at once', () => {
+        const off = reduceViewerCues(armed(), { epoch: '', viewers: [], now: ARMED }).state;
+        const at = ARMED + VIEWER_CUE_RESTART_MS;
+        const next = reduceViewerCues(off, { epoch: EPOCH, viewers: [], now: at }).state;
+        expect(reduceViewerCues(next, { epoch: EPOCH, viewers: ['alice'], now: at + 200 }).cues).toEqual(['start']);
     });
 
     it('a late joiner who starts watching after the fact still cues', () => {

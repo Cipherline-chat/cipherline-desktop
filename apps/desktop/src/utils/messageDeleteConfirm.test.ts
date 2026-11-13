@@ -98,3 +98,14 @@ describe('buildDeleteConfirmCopy', () => {
         expect(buildDeleteConfirmCopy({ isOwnMessage: false }).confirmLabel).toBe('Delete');
     });
 });
+
+describe('buildDeleteConfirmCopy - client-only lines', () => {
+    it('localOnly says "remove from your view", not delete', () => {
+        const c = buildDeleteConfirmCopy({ isOwnMessage: false, localOnly: true });
+        expect(c.title).toMatch(/your view/);
+        expect(c.confirmLabel).toBe('Remove');
+    });
+    it('control: without localOnly the copy is unchanged', () => {
+        expect(buildDeleteConfirmCopy({ isOwnMessage: true }).title).toBe('Delete this message?');
+    });
+});

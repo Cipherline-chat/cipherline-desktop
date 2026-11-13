@@ -10,5 +10,9 @@
 // Importing LiveKit's worker module installs its `onmessage` handler.
 import 'livekit-client/e2ee-worker';
 import { installAnnexBCanonicalizer } from '../utils/e2eeAnnexB';
+import { installNativeInjector } from '../utils/nativeShareWorker';
 
 installAnnexBCanonicalizer(self as unknown as Parameters<typeof installAnnexBCanonicalizer>[0]);
+// Native share encoder (CIPHERLINE_NATIVE_SHARE_ENCODER, off by default). Outermost wrapper so its stage runs BEFORE the
+// canonicalizer and the cryptor; inert (pure pass-through) unless the page binds a native session with `cl:native-share`.
+installNativeInjector(self as unknown as Parameters<typeof installNativeInjector>[0]);

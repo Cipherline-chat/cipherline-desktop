@@ -1,3 +1,4 @@
+import type { NetTimingSnapshot } from '../netTiming';
 /**
  * Wire contract for a diagnostic report (crash / issue reporter), schema 1.
  *
@@ -69,7 +70,7 @@ export const DIAGNOSTIC_VERBATIM_KEYS: Readonly<Record<string, RegExp>> = {
     electron: /^\d{1,4}\.\d{1,4}\.\d{1,6}(?:-[0-9A-Za-z.]{1,20})?$/,
     chrome: /^\d{1,4}(?:\.\d{1,6}){1,3}$/,
     node: /^\d{1,4}\.\d{1,4}\.\d{1,6}$/,
-    os_version: /^[0-9A-Za-z._()-]{1,64}$/,
+    os_version: /^[0-9A-Za-z._()+~-]{1,64}$/,
     vendor_id: /^0x[0-9a-f]{1,8}$/i,
     device_id: /^0x[0-9a-f]{1,8}$/i,
     driver_version: /^[0-9A-Za-z._-]{1,40}$/,
@@ -88,9 +89,14 @@ export const DIAGNOSTIC_VERBATIM_KEYS: Readonly<Record<string, RegExp>> = {
     event: /^[a-z][a-z0-9_]{0,39}$/,
     trigger: /^(?:manual|crash_prompt|auto_crash|in_call|freeze_offer)$/,
     platform: /^(?:win32|darwin|linux)$/,
+    // `system.global_shortcuts.actions[].accelerator`: a key combo such as `CommandOrControl+Shift+F10`.
+    // Verbatim because the scrubber reads a long letters-and-digits run as a base64 blob and would
+    // blank the one fact the report exists to show. Printable ASCII without `@` or whitespace.
+    accelerator: /^[\x21-\x3f\x41-\x7e]{0,48}$/,
     // Local tracks are `screen-1` / `camera-1` in the WebRTC samples and
-    // `self-camera` / `self-screen` in call_events; remote ones `remote-video-1`.
-    track: /^(?:(?:screen|screen-audio|camera|mic|remote-video|remote-audio|track)-\d{1,4}|self-(?:camera|screen|screen-audio|mic)(?:-\d{1,4})?)$/,
+    // `self-camera` / `self-screen` in call_events; remote ones `remote-video-1` (a camera)
+    // and `remote-share-1` (a screen share).
+    track: /^(?:(?:screen|screen-audio|camera|mic|remote-video|remote-share|remote-audio|track)-\d{1,4}|self-(?:camera|screen|screen-audio|mic)(?:-\d{1,4})?)$/,
 };
 
 /** The POST body. */
@@ -118,6 +124,13 @@ export interface DiagnosticPayload {
     settings: Record<string, string | number | boolean | null>;
     entitlement?: EntitlementInfo;
     perf_log?: { rows: PerfRow[]; total_rows: number };
+    /**
+     * API timing for the session so far, as patterns only (`GET servers/:id/channels`):
+     * per-endpoint count / p50 / p95 / max (ms), the slowest requests, WebSocket
+     * connect times and click-to-messages times. OPTIONAL KEY (absent from older
+     * clients); no ids, names, queries or content. See utils/netTiming.ts.
+     */
+    net_timing?: NetTimingSnapshot;
     webrtc?: WebrtcSummary;
     crash?: CrashInfo;
     recent_errors?: RecentError[];
@@ -185,6 +198,32 @@ export interface SystemInfo {
     displays: Array<{ width: number; height: number; scale_factor: number; refresh_hz: number; primary: boolean }>;
     hardware_acceleration: boolean;
     uptime_s: number;
+    /**
+     * Linux only: which kind of session this is, so a screen-share report says whether the picker
+     * was the desktop's own chooser (Wayland portal) or Cipherline's grid (X11). Fixed vocabularies.
+     */
+    linux_session?: {
+        session_type: 'wayland' | 'x11' | 'tty' | 'unknown';
+        /** XDG_CURRENT_DESKTOP, letters/colons only: "KDE", "ubuntu:GNOME". */
+        desktop: string;
+        ozone: 'wayland' | 'x11' | 'default';
+        capture_path: 'portal' | 'x11';
+        restore_mode: 'listed' | 'single' | 'n/a';
+    };
+    /**
+     * Global (works-while-unfocused) shortcut state at the last sync: how keys can reach us on this
+     * session, what the Wayland portal really bound, and each call action's combo and outcome.
+     * Action ids, key combos and fixed reason codes only (electron/global-shortcut-report.ts).
+     */
+    global_shortcuts?: {
+        mode: 'native' | 'portal' | 'unavailable';
+        reason: string;
+        desktop: string;
+        app_id?: string;
+        bound?: string[];
+        not_bound?: string[];
+        actions: Array<{ action: string; accelerator: string; state: 'registered' | 'failed' | 'unbound' }>;
+    };
 }
 
 export interface EntitlementInfo {

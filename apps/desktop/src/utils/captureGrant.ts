@@ -39,6 +39,24 @@ export async function mintCaptureGrant(sourceId: string, audio: boolean): Promis
     }
 }
 
+/**
+ * The live share restarts on the capture it already has (no capture, so no resolve step that
+ * would renew the consent its native audio rides on). Main continues the share's own consent for
+ * that source only; any other source, or no live share, gets null and the caller mints a normal
+ * grant (and a new capture needs the user). `audio` is what main will allow: false when the live
+ * share carried none and nobody just clicked.
+ */
+export async function continueCaptureGrant(sourceId: string, audio: boolean): Promise<CaptureGrant | null> {
+    const api = window.electronAPI;
+    if (!api?.captureContinueGrant) return null;
+    try {
+        const res = await api.captureContinueGrant(sourceId, audio);
+        return res && typeof res.token === 'string' && res.token ? { token: res.token, sourceId } : null;
+    } catch {
+        return null;
+    }
+}
+
 /** The token to present for a capture of `sourceId`: only the grant minted for that very source. */
 export function grantTokenFor(grant: CaptureGrant | null, sourceId: string): string | undefined {
     return grant && grant.sourceId === sourceId ? grant.token : undefined;

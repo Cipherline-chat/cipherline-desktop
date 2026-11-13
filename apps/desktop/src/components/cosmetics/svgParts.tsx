@@ -1,9 +1,10 @@
 import React from 'react';
 import { shade, type HSL } from './colour';
+import { f1 } from './geometry';
 
 /**
  * Small SVG building blocks shared by the decoration art (decorations.tsx):
- * gradient helpers, the Keys mascot's head and paws, a moon jelly. Components
+ * gradient helpers and the Keys mascot's head and paws. Components
  * only (kept apart from the art table so Fast Refresh can hot-swap them).
  */
 
@@ -63,25 +64,37 @@ export const KeysPaws: React.FC<{ t: HSL }> = ({ t }) => (
         ))}
     </g>
 );
-/** A moon jelly (or two) drifting at the upper right, its bell pulsing. */
-export const Jelly: React.FC<{ u: string; t: HSL; x: number; y: number; s: number; delay: number }> = ({ u, t, x, y, s, delay }) => (
-    <g transform={`translate(${x} ${y}) scale(${s})`}>
-        <g className="pc-bob" style={{ animationDelay: `${delay}s` }}>
-            <g className="pc-jelly" style={{ animationDelay: `${delay}s` }}>
-                <g stroke={shade(t, 10)} fill="none" strokeLinecap="round">
-                    {[-10.5, -7, -3.5, 0, 3.5, 7, 10.5].map((dx, i) => (
-                        <path key={i} d={`M${dx} 3.6 q ${i % 2 ? 1.4 : -1.4} 6 0 12 t 0 ${8 + (i % 3) * 3}`} strokeOpacity=".32" strokeWidth=".35" />
-                    ))}
-                    <path d="M-3 4 q 3.4 6 -0.6 12 q -3.6 5.4 0.8 11" strokeOpacity=".7" strokeWidth="1.5" />
-                    <path d="M3 4 q -3.4 6 0.6 12 q 3.6 5.4 -0.8 11" strokeOpacity=".7" strokeWidth="1.5" />
-                </g>
-                <path d="M-14 4 C -14 -11, 14 -11, 14 4 C 11 2.4, 7.6 5, 4.6 3.6 C 2 5.2, -2 5.2, -4.6 3.6 C -7.6 5, -11 2.4, -14 4 Z" fill={`url(#${u}-jb)`} stroke={shade(t, 14)} strokeWidth=".9" strokeLinejoin="round" />
-                <g fill="none" stroke={shade(t, 26)} strokeOpacity=".85" strokeWidth=".9">
-                    <path d="M-6.6 -1.4 a2.3 2.3 0 1 1 3.8 1.6" /><path d="M6.6 -1.4 a2.3 2.3 0 1 0 -3.8 1.6" />
-                    <path d="M-3.2 -5.6 a2.2 2.2 0 1 1 3.4 -1.2" /><path d="M3.2 -5.6 a2.2 2.2 0 1 0 -3.4 -1.2" />
-                </g>
-                <path d="M-9 -4.4 C -7 -7.8, -3 -8.8, 0 -8.8" fill="none" stroke="#fff" strokeOpacity=".7" strokeWidth=".9" strokeLinecap="round" />
-            </g>
+
+/** A tilted orbit (cosmetics/halos.tsx): centre, tilt in degrees, semi-axes. */
+export interface OrbitFrame { cx: number; cy: number; tilt: number; rx: number; ry: number }
+
+/** One half of an orbit frame: everything inside is in the frame's own coordinates (centre 0,0, x along the major axis). */
+export const OrbitHalf: React.FC<{ id: string; f: OrbitFrame; half: 'far' | 'near'; children: React.ReactNode }> = ({ id, f, half, children }) => (
+    <g transform={`translate(${f1(f.cx)} ${f1(f.cy)}) rotate(${f1(f.tilt)})`}>
+        <defs>
+            <clipPath id={id} clipPathUnits="userSpaceOnUse">
+                <rect x={-f.rx - 20} y={half === 'far' ? -f.ry - 40 : 0} width={2 * f.rx + 40} height={f.ry + 40} />
+            </clipPath>
+        </defs>
+        <g clipPath={`url(#${id})`}>{children}</g>
+    </g>
+);
+
+const BAT_WING = 'M0 -0.6 C -1.6 -2.6, -4.2 -3.6, -7.6 -2.4 C -6.6 -1.6, -6.4 -0.6, -6.8 0.6 C -5.6 -0.2, -4.6 0, -4 0.9 C -3.2 0.1, -2.2 0.2, -1.4 1.2 Z';
+/**
+ * A bat seen from the front, wings beating (bat halo). `rimW` is the moonlit rim's width in the bat's own units: a
+ * hairline at card size, thicker at thumbnail size, where a dark silhouette on a dark tile shows only by its rim.
+ */
+export const Bat: React.FC<{ s: number; delay: number; rim: string; rimW?: number }> = ({ s, delay, rim, rimW = 0.35 }) => (
+    <g transform={`scale(${f1(s)})`}>
+        {/* Both wings beat as one group (one animation per bat, not per wing): the flap scales about the body's axis. */}
+        <g className="pc-flap" style={{ animationDelay: `${f1(delay)}s` }}>
+            <path d={BAT_WING} fill="#120B1F" stroke={rim} strokeWidth={f1(rimW)} strokeLinejoin="round" />
+            <path d={BAT_WING} transform="scale(-1 1)" fill="#120B1F" stroke={rim} strokeWidth={f1(rimW)} strokeLinejoin="round" />
         </g>
+        <ellipse cy=".3" rx="1.25" ry="1.9" fill="#120B1F" stroke={rim} strokeWidth={f1(rimW * 0.86)} />
+        <path d="M-1 -1.2 L-1.1 -2.9 L-0.35 -1.7 L0.35 -1.7 L1.1 -2.9 L1 -1.2 Z" fill="#120B1F" />
+        <circle cx="-.45" cy="-.9" r=".22" fill="#FFB34D" />
+        <circle cx=".45" cy="-.9" r=".22" fill="#FFB34D" />
     </g>
 );

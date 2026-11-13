@@ -27,11 +27,13 @@ describe('keysPlay: which state answers a click', () => {
         ['invisible = camo', { status: 'offline', transfer: true }, 'camo'],
         ['upload box beats the safe and the pile', { transfer: true, backup: true, unread: 120 }, 'box'],
         ['backup safe beats the pile', { backup: true, unread: 60 }, 'safe'],
-        ['the pile beats the garnish', { unread: 12, coffee: true, night: true, pro: true }, 'pile'],
-        ['coffee', { coffee: true, night: true, pro: true }, 'coffee'],
-        ['lantern', { night: true, pro: true }, 'lantern'],
-        ['crown', { pro: true }, 'crown'],
-        ['a calendar hat hides the crown: neutral', { pro: true, costume: true }, 'neutral'],
+        ['the pile beats the garnish', { unread: 12, coffee: true, night: true, hat: 'crown' }, 'pile'],
+        ['coffee', { coffee: true, night: true, hat: 'crown' }, 'coffee'],
+        ['lantern (and it takes his head from the crown)', { night: true, hat: 'crown' }, 'lantern'],
+        ['crown', { hat: 'crown' }, 'crown'],
+        ['a calendar hat hides the crown: neutral', { hat: 'crown', costume: true }, 'neutral'],
+        ['the other hats are no state of their own: neutral', { hat: 'beanie' }, 'neutral'],
+        ['…and keep the neutral egg', { hat: 'snorkel' }, 'neutral'],
     ])('%s', (_n, inputs, want) => {
         expect(stateOf(inputs)).toBe(want);
     });
@@ -40,7 +42,7 @@ describe('keysPlay: which state answers a click', () => {
         for (const s of PLAY_STATES) expect(CLAIMING.has(s) !== GARNISH.has(s)).toBe(true);
         expect(CLAIMING.has('neutral')).toBe(false);
         expect(GARNISH.has('neutral')).toBe(false);
-        // Pro and the unread pile are everyday: they must not take the Firewall egg away
+        // the crown (any Pro visit may draw it) and the unread pile are everyday: they must not take the Firewall egg away
         expect(GARNISH.has('crown')).toBe(true);
         expect(GARNISH.has('pile')).toBe(true);
     });

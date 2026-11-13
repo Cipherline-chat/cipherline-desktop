@@ -32,3 +32,8 @@ export async function preloadAvatarsBackground(): Promise<void> {}
 export const __preloadTuning = {};
 export function __preloadInFlightCount(): number { return 0; }
 export function __warmNetworkClaims(): number { return 0; }
+/** Mirrors hooks/useEncryptedAvatar's avatarUrlMime: the stub only hands out data: URLs, which carry their own type. */
+export const avatarUrlMime = (url: string | null | undefined): string | null => {
+    const m = url ? /^data:([^;,]+)/i.exec(url) : null;
+    return m ? m[1].toLowerCase() : null;
+};

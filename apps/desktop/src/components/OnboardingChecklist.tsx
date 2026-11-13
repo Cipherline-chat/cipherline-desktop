@@ -284,7 +284,7 @@ export const OnboardingChecklist: React.FC<Props> = ({ onOpenSettings, refreshSi
 
                     {/* 2 — Two-factor auth */}
                     <button
-                        onClick={() => { if (!twoFaDone) onOpenSettings('profile'); }}
+                        onClick={() => { if (!twoFaDone) onOpenSettings('devices'); }}
                         disabled={twoFaDone}
                         className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-left disabled:cursor-default transition-colors hover:bg-white/[0.04] disabled:hover:bg-transparent"
                         style={{ border: '1px solid var(--cl-border)', background: 'var(--cl-abyss)' }}

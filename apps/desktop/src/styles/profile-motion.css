@@ -29,12 +29,12 @@
 /* 1. Keep looping through input-idle: undo any idle pause (more specific than a
       [data-cl-motion="idle"] rule) unless the window itself is inactive. */
 :root[data-cl-motion="idle"]:not([data-cl-window="inactive"]) :is(.pc-spin, .pc-breathe, .pc-glint, .pc-dashflow, .pc-flicker, .pc-twinkle,
-  .pc-sway, .pc-stream, .pc-bob, .pc-jelly, .pc-glide, .pc-cloak, .pc-photophore) { animation-play-state: running; }
+  .pc-sway, .pc-bob, .pc-glide, .pc-orbit, .pc-flap, .pc-facet, .pc-trace, .pc-corona, .pc-neon-flicker) { animation-play-state: running; }
 :root[data-cl-motion="idle"]:not([data-cl-window="inactive"]) .pc-fx > i { animation-play-state: running; }
 
 /* 2. Window not in front: pause. !important so no looping shorthand can reset the play state. */
 :root[data-cl-window="inactive"] :is(.pc-spin, .pc-breathe, .pc-glint, .pc-dashflow, .pc-flicker, .pc-twinkle,
-  .pc-sway, .pc-stream, .pc-bob, .pc-jelly, .pc-glide, .pc-cloak, .pc-photophore) { animation-play-state: paused !important; }
+  .pc-sway, .pc-bob, .pc-glide, .pc-orbit, .pc-flap, .pc-facet, .pc-trace, .pc-corona, .pc-neon-flicker) { animation-play-state: paused !important; }
 :root[data-cl-window="inactive"] .pc-fx > i { animation-play-state: paused !important; }
 
 @media (prefers-reduced-motion: reduce) {

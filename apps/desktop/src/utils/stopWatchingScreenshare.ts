@@ -22,6 +22,7 @@
  * SidebarConference so they can be tested directly.
  */
 import { Track } from 'livekit-client';
+import { sharePublications } from './shareHold';
 
 /** Structural slice of a LiveKit RemoteParticipant — lets tests pass plain objects. */
 export interface ShareParticipantLike {
@@ -74,6 +75,11 @@ export function focusAfterStopWatching<T extends FocusedStreamLike>(focused: T |
  * nothing left to unsubscribe from.
  */
 export async function unsubscribeShareTracks(p: ShareParticipantLike): Promise<void> {
+    // Both halves of a codec swap in progress, not just the one getTrackPublication returns.
+    const swapping = sharePublications(p as { trackPublications?: { values(): Iterable<{ source?: unknown; setSubscribed?: (v: boolean) => unknown }> } });
+    for (const pub of swapping.slice(1)) {
+        try { await pub.setSubscribed?.(false); } catch (e) { console.warn('[ScreenShare] unsubscribe failed', e); }
+    }
     for (const source of [Track.Source.ScreenShare, Track.Source.ScreenShareAudio]) {
         try {
             const pub = p.getTrackPublication(source) as { setSubscribed?: (v: boolean) => unknown } | undefined;

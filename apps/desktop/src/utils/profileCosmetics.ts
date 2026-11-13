@@ -46,25 +46,30 @@ const FREE: UnlockRule = { kind: 'free' };
 const HALLOWEEN: UnlockRule = { kind: 'seasonal', season: 'halloween-2026' };
 const WINTER: UnlockRule = { kind: 'seasonal', season: 'winter-2026' };
 
+// Unlock ladder (owner, 2026-10-26): three basic items per category are free,
+// the rest are earned, and the best-looking are the hardest. A rule that gets
+// stricter never takes an item away from an account that has it equipped (the
+// server only checks a CHANGE; the picker keeps showing it as on).
 export const AVATAR_DECORATIONS: readonly CosmeticItem[] = [
     { id: 'lume-ring', label: 'Lume ring', rule: FREE, blurb: 'A clean ring of light with a glint that travels around it.' },
     { id: 'deep-dash', label: 'Deep dash', rule: FREE, blurb: 'A dashed ring that turns slowly. Try Morse.' },
     { id: 'keys-peek', label: 'Keys peeking', rule: FREE, blurb: 'Keys, peeking over the top of your avatar.' },
-    { id: 'dive-bezel', label: 'Dive bezel', rule: FREE, blurb: 'A diver\'s watch bezel with a lume pip at twelve.' },
-    { id: 'kelp', label: 'Kelp', rule: FREE, blurb: 'A kelp bed rising up your left side, swaying slowly.' },
-    { id: 'seagrass', label: 'Seagrass', rule: FREE, blurb: 'Long ribbons of eelgrass leaning in the current.' },
-    { id: 'starfish', label: 'Starfish', rule: FREE, blurb: 'A starfish holding on to the edge.' },
-    { id: 'sea-fan', label: 'Sea fan', rule: { kind: 'level', min: 3 }, blurb: 'A gorgonian fan, every branch grown, never drawn.' },
-    { id: 'bull-kelp', label: 'Bull kelp', rule: { kind: 'level', min: 5 }, blurb: 'A float and its blades streaming over your avatar.' },
-    { id: 'anglerfish', label: 'Anglerfish', rule: { kind: 'level', min: 7 }, blurb: 'Its lure glows over your avatar.' },
-    { id: 'aurora-ring', label: 'Aurora ring', rule: { kind: 'eggs', min: 3 }, blurb: 'Colours flowing around the ring.' },
-    { id: 'jellyfish', label: 'Jellyfish', rule: { kind: 'eggs', min: 5 }, blurb: 'A moon jelly drifting over your shoulder.' },
-    { id: 'abyss-halo', label: 'Abyss halo', rule: { kind: 'eggs', min: 8 }, blurb: 'A halo breathing slowly in the dark.' },
-    { id: 'manta', label: 'Manta', rule: { kind: 'eggs', min: 12 }, blurb: 'A manta banking over your avatar, lit from above.' },
-    { id: 'keys-crown', label: 'Keys, crowned', rule: { kind: 'egg', egg: 'keys-finale-crown' }, blurb: 'Keys, crowned.' },
+    { id: 'dive-bezel', label: 'Dive bezel', rule: { kind: 'level', min: 2 }, blurb: 'A diver\'s watch bezel with a lume pip at twelve.' },
+    { id: 'seagrass', label: 'Seagrass', rule: { kind: 'level', min: 3 }, blurb: 'Long ribbons of eelgrass leaning in the current.' },
+    { id: 'kelp', label: 'Kelp', rule: { kind: 'level', min: 4 }, blurb: 'A kelp bed rising up your left side, swaying slowly.' },
+    { id: 'sea-fan', label: 'Sea fan', rule: { kind: 'level', min: 6 }, blurb: 'A gorgonian fan growing up behind you, every branch grown, never drawn.' },
+    { id: 'neon-ring', label: 'Neon', rule: { kind: 'level', min: 7 }, blurb: 'Two tubes of neon, bent around you, humming.' },
+    { id: 'crystal-ring', label: 'Crystal ring', rule: { kind: 'level', min: 9 }, blurb: 'A faceted band of crystal with light running through the cuts.' },
+    { id: 'aurora-ring', label: 'Aurora ring', rule: { kind: 'eggs', min: 5 }, blurb: 'Colours flowing around the ring.' },
+    { id: 'star-chart', label: 'Star chart', rule: { kind: 'eggs', min: 12 }, blurb: 'Your own constellations, charted around you.' },
+    { id: 'abyss-halo', label: 'Abyss halo', rule: { kind: 'eggs', min: 20 }, blurb: 'A halo breathing slowly in the dark.' },
+    { id: 'manta', label: 'Manta', rule: { kind: 'eggs', min: 30 }, blurb: 'A manta banking over your avatar, lit from above.' },
+    { id: 'eclipse', label: 'Eclipse', rule: { kind: 'eggs', min: 40 }, blurb: 'You are the moon: the corona streams out around you.' },
+    { id: 'circlet', label: 'Circlet', rule: { kind: 'egg', egg: 'keys-finale-crown' }, blurb: 'A circlet of light floating over you, its gems turning.' },
     { id: 'pearl-string', label: 'Pearl string', rule: { kind: 'achievement', id: 'verify-15' }, blurb: 'A string of pearls, one for every safety number you checked.' },
+    { id: 'orrery', label: 'Orrery', rule: { kind: 'achievement', id: 'msgs-50000' }, blurb: 'Moons on a tilted orbit, passing behind you and in front.' },
     { id: 'jack-o-lantern', label: 'Jack-o\'-lantern', rule: HALLOWEEN, blurb: 'A carved pumpkin with a candle that flickers.' },
-    { id: 'vampire-squid', label: 'Vampire squid', rule: HALLOWEEN, blurb: 'The deep sea\'s own vampire, cloaked over your shoulder.' },
+    { id: 'bat-halo', label: 'Bat halo', rule: HALLOWEEN, blurb: 'Bats circling you under a rising moon.' },
     { id: 'frost-crown', label: 'Frost crown', rule: WINTER, blurb: 'Ice crystals growing along the top of your avatar.' },
     // Legacy colour variants (see CosmeticItem.legacy).
     { id: 'lume-ring-ember', label: 'Lume ring, ember', rule: { kind: 'level', min: 5 }, legacy: true },
@@ -79,17 +84,17 @@ export const PROFILE_EFFECTS: readonly CosmeticItem[] = [
     { id: 'bubbles', label: 'Bubbles', rule: FREE, blurb: 'Bubbles wobbling up through the card.' },
     { id: 'glimmer', label: 'Glimmer', rule: FREE, blurb: 'Points of light that catch and fade.' },
     { id: 'plankton', label: 'Plankton', rule: FREE, blurb: 'Tiny motes drifting up through the card.' },
-    { id: 'sonar', label: 'Sonar', rule: FREE, blurb: 'A slow ping out from your avatar.' },
-    { id: 'current', label: 'Current', rule: { kind: 'level', min: 3 }, blurb: 'Threads of light carried on a deep current.' },
-    { id: 'god-rays', label: 'God rays', rule: { kind: 'level', min: 6 }, blurb: 'Shafts of sunlight reaching down, with motes caught in them.' },
-    { id: 'keepsake-rain', label: 'Keepsake rain', rule: { kind: 'level', min: 10 }, blurb: 'Your avatar, or one of your own emojis, drifting down the card.' },
+    { id: 'sonar', label: 'Sonar', rule: { kind: 'level', min: 2 }, blurb: 'A slow ping out from your avatar.' },
+    { id: 'current', label: 'Current', rule: { kind: 'level', min: 4 }, blurb: 'Threads of light carried on a deep current.' },
+    { id: 'keepsake-rain', label: 'Keepsake rain', rule: { kind: 'level', min: 5 }, blurb: 'Your avatar, or one of your own emojis, drifting down the card.' },
+    { id: 'god-rays', label: 'God rays', rule: { kind: 'level', min: 7 }, blurb: 'Shafts of sunlight reaching down, with motes caught in them.' },
     { id: 'confetti', label: 'Confetti', rule: { kind: 'egg', egg: 'konami' }, blurb: 'A celebration that never quite ends.' },
-    { id: 'bioluminescence', label: 'Bioluminescence', rule: { kind: 'eggs', min: 6 }, blurb: 'Lights waking up across the card, in waves.' },
+    { id: 'bioluminescence', label: 'Bioluminescence', rule: { kind: 'eggs', min: 8 }, blurb: 'Lights waking up across the card, in waves.' },
     { id: 'abyss-snow', label: 'Abyss snow', rule: { kind: 'eggs', min: 15 }, blurb: 'Marine snow sinking into the deep.' },
     { id: 'shooting-stars', label: 'Shooting stars', rule: { kind: 'achievement', id: 'streak-30' }, blurb: 'A starry banner, and now and then a streak across it.' },
     { id: 'aurora', label: 'Aurora', rule: { kind: 'achievement', id: 'streak-100' }, blurb: 'Curtains of the northern lights folding over the card.' },
     { id: 'shoal', label: 'Shoal', rule: { kind: 'achievement', id: 'crowd-20' }, blurb: 'A school of fish turning together around you.' },
-    { id: 'whale-song', label: 'Whale song', rule: { kind: 'achievement', id: 'voice-500h' }, blurb: 'A great whale passing far below, singing.' },
+    { id: 'harmonograph', label: 'Harmonograph', rule: { kind: 'achievement', id: 'voice-500h' }, blurb: 'Two pendulums tuned to a musical interval, drawing in light.' },
     { id: 'web-of-trust', label: 'Web of trust', rule: { kind: 'achievement', id: 'verify-30' }, blurb: 'A constellation that links up around you.' },
     { id: 'ghost-lights', label: 'Ghost lights', rule: HALLOWEEN, blurb: 'Will-o\'-the-wisps drifting through the dark.' },
     { id: 'first-snow', label: 'First snow', rule: WINTER, blurb: 'Big, slow snowflakes, every one different.' },
@@ -181,10 +186,12 @@ const colour = (label: string, sw: readonly (readonly [string, string])[], def =
     ({ key: 'c', type: 'color', label, default: def, choices: sw.map(([l, hex], value) => ({ value, label: l, hex })) });
 
 /** Colourways (index = stored value). The art reads the same tables. */
-export const STARFISH_COLOURS = [['Coral', '#FF7A59'], ['Sunset', '#FFB341'], ['Violet', '#A77BFF'], ['Sand', '#E8C9A0']] as const;
 export const SEA_FAN_COLOURS = [['Violet', '#9C6BFF'], ['Crimson', '#FF4F6D'], ['Gold', '#FFC94D'], ['Ivory', '#F1E6D2']] as const;
 export const AURORA_RING_COLOURS = [['Lume', '#25E0C8'], ['Borealis', '#5CFF9D'], ['Dusk', '#B57BFF'], ['Ember', '#FF8A4D']] as const;
-export const CROWN_COLOURS = [['Gold', '#FFC94D'], ['Silver', '#DCE4F7'], ['Rose gold', '#F4A38C']] as const;
+export const CIRCLET_COLOURS = [['Gold', '#FFC94D'], ['Silver', '#DCE4F7'], ['Rose gold', '#F4A38C']] as const;
+/** Neon tube pairs: the swatch is the inner tube; the art takes the outer one from NEON_OUTER (same index). */
+export const NEON_COLOURS = [['Pink & cyan', '#FF4FB8'], ['Lime & violet', '#B6FF3C'], ['Amber & red', '#FFB23C'], ['Ice & blue', '#BDF4FF']] as const;
+export const NEON_OUTER = ['#3CE8FF', '#B07BFF', '#FF4D3C', '#4D7DFF'] as const;
 export const PEARL_COLOURS = [['Akoya', '#F4F1EA'], ['Golden', '#F2C979'], ['Tahitian', '#5B6478'], ['Rose', '#F6C6CF']] as const;
 export const AURORA_COLOURS = [['Borealis', '#5CFF9D'], ['Lume', '#25E0C8'], ['Dusk', '#B57BFF'], ['Ember', '#FF8A4D']] as const;
 export const GHOST_COLOURS = [['Wisp', '#9DFFCF'], ['Pumpkin', '#FF9A3C'], ['Spectral', '#9CC8FF']] as const;
@@ -196,18 +203,19 @@ export const DECORATION_OPTIONS: Readonly<Record<string, readonly OptionSpec[]>>
     'dive-bezel': [hue('Lume'), choice('Markings', ['First quarter', 'All around'])],
     'kelp': [hue(), density('Fronds', ['Few', 'Some', 'Lush']), speed('Sway')],
     'seagrass': [hue(), density('Blades', ['Few', 'Some', 'Lush']), speed('Sway')],
-    'starfish': [colour('Colour', STARFISH_COLOURS), choice('Texture', ['Spotted', 'Smooth'])],
     'sea-fan': [colour('Colour', SEA_FAN_COLOURS), density('Branches', ['Few', 'Some', 'Lush'])],
-    'bull-kelp': [hue(), speed('Drift')],
-    'anglerfish': [hue('Lure'), choice('Lure', ['Steady', 'Flicker'])],
+    'neon-ring': [colour('Tubes', NEON_COLOURS), choice('Hum', ['Steady', 'Flicker'])],
+    'crystal-ring': [hue('Crystal'), choice('Cut', ['Clear', 'Prism']), glow('Sparkle')],
     'aurora-ring': [colour('Palette', AURORA_RING_COLOURS), speed('Flow')],
-    'jellyfish': [hue(), choice('Jellies', ['One', 'Two'])],
+    'star-chart': [hue(), density('Stars', ['Few', 'Some', 'Lots']), choice('Lines', ['Linked', 'Stars only'])],
     'abyss-halo': [hue(), glow()],
     'manta': [choice('Species', ['Reef manta', 'Black manta']), hue('Rim light')],
-    'keys-crown': [colour('Metal', CROWN_COLOURS)],
+    'eclipse': [hue('Corona'), choice('Moment', ['Totality', 'Diamond ring']), glow('Brightness')],
+    'circlet': [colour('Metal', CIRCLET_COLOURS), hue('Gems')],
     'pearl-string': [colour('Pearls', PEARL_COLOURS)],
+    'orrery': [hue('Orbit'), choice('Moons', ['One', 'Two', 'Three'], 1), speed('Speed')],
     'jack-o-lantern': [choice('Carving', ['Grin', 'Spooky', 'Sweet']), glow('Candle')],
-    'vampire-squid': [hue('Glow')],
+    'bat-halo': [choice('Bats', ['Three', 'Five']), hue('Moon')],
     'frost-crown': [hue('Ice'), density('Crystals', ['Few', 'Some', 'Lots'])],
 };
 
@@ -225,7 +233,7 @@ export const EFFECT_OPTIONS: Readonly<Record<string, readonly OptionSpec[]>> = {
     'shooting-stars': [hue('Trails'), density('Stars')],
     'aurora': [colour('Palette', AURORA_COLOURS), glow('Brightness'), speed('Flow')],
     'shoal': [hue('Fish'), density('School', ['Small', 'Medium', 'Large'])],
-    'whale-song': [hue('Song'), choice('Whale', ['Humpback', 'Blue whale'])],
+    'harmonograph': [hue('Ink'), choice('Interval', ['Fifth', 'Fourth', 'Octave']), speed('Drift')],
     'web-of-trust': [hue(), density('Nodes')],
     'ghost-lights': [colour('Colour', GHOST_COLOURS), density()],
     'first-snow': [density(), speed()],

@@ -22,18 +22,26 @@ export interface EntranceListenerPrefs { enabled: boolean; muted: ReadonlySet<st
 
 export interface EntranceGate {
     decide(userId: string, nowMs: number, prefs: EntranceListenerPrefs): EntranceDecision;
+    /**
+     * Undo the `play` decision just made for `userId` (the sound did not
+     * actually start): the rejoin window and the global gap go back to what
+     * they were, so the next observation of this person can still play.
+     */
+    rollback(userId: string): void;
     reset(): void;
 }
 
 export function createEntranceGate(): EntranceGate {
     const lastJoin = new Map<string, number>();
     let lastPlayed = -Infinity;
+    let undo: { userId: string; prevJoin: number | undefined; prevPlayed: number } | null = null;
     return {
         decide(userId, nowMs, prefs) {
             if (!prefs.enabled) return 'disabled';
             const muted = prefs.muted instanceof Set ? prefs.muted.has(userId) : (prefs.muted as readonly string[]).includes(userId);
             if (muted) return 'muted';
             const prev = lastJoin.get(userId);
+            const snapshot = { userId, prevJoin: prev, prevPlayed: lastPlayed };
             lastJoin.set(userId, nowMs);
             if (lastJoin.size > MAX_TRACKED) {
                 for (const [id, at] of lastJoin) if (nowMs - at >= REJOIN_WINDOW_MS) lastJoin.delete(id);
@@ -41,8 +49,15 @@ export function createEntranceGate(): EntranceGate {
             if (prev !== undefined && nowMs - prev < REJOIN_WINDOW_MS) return 'rejoin';
             if (nowMs - lastPlayed < GLOBAL_GAP_MS) return 'busy';
             lastPlayed = nowMs;
+            undo = snapshot;
             return 'play';
         },
-        reset() { lastJoin.clear(); lastPlayed = -Infinity; },
+        rollback(userId) {
+            if (!undo || undo.userId !== userId) return;
+            if (undo.prevJoin === undefined) lastJoin.delete(userId); else lastJoin.set(userId, undo.prevJoin);
+            lastPlayed = undo.prevPlayed;
+            undo = null;
+        },
+        reset() { lastJoin.clear(); lastPlayed = -Infinity; undo = null; },
     };
 }

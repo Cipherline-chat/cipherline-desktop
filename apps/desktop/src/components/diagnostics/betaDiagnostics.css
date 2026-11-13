@@ -1,12 +1,9 @@
-/* Beta diagnostics — the call rating card and the one-time notice.
-   Both reuse the floating .rp-prompt card (reportProblem.css); this file adds
-   only the stars, the tag chips and the notice's small type. Tokens only
+/* Beta diagnostics — the call rating card and the settings row.
+   The rating card reuses the floating .rp-prompt card (reportProblem.css); this file adds
+   only the stars, the tag chips and the settings row. Tokens only
    ("glow in the deep"); no new colours. */
 
 .bd-card { width: 360px; }
-.bd-card .bd-beta { display: inline-block; margin-left: 6px; padding: 1px 7px; border-radius: 999px; vertical-align: 2px;
-  font: 800 10px/1.6 var(--cl-font-body); letter-spacing: .06em; text-transform: uppercase;
-  color: var(--cl-on-glow); background: var(--cl-glow); }
 
 /* ── stars ─────────────────────────────────────────────────────────────── */
 .bd-stars { display: flex; gap: 4px; margin-top: 12px; }
@@ -33,10 +30,8 @@
 
 .bd-thanks { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 13px; font-weight: 700; color: var(--cl-ok); }
 
-/* ── notice ────────────────────────────────────────────────────────────── */
-.bd-notice-list { margin: 10px 0 0; padding: 0; list-style: none; display: grid; gap: 6px; }
-.bd-notice-list li { display: flex; gap: 8px; align-items: flex-start; font-size: 12.5px; line-height: 1.45; color: var(--cl-muted); }
-.bd-notice-list svg { flex: none; margin-top: 2px; color: var(--cl-lume); }
+/* the low-rating follow-up reuses .bd-thanks; partial / in-progress states read as neutral text */
+.bd-sending, .bd-thanks-warn { color: var(--cl-muted); font-weight: 600; }
 
 /* ── settings row ──────────────────────────────────────────────────────── */
 .bd-setting-sub { display: block; }

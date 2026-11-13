@@ -12,7 +12,8 @@ import { useEffect, useState, useSyncExternalStore } from 'react';
 import { BACKUP_STATE_EVENT, getLastBackupMs } from '../services/driveBackup';
 import { BACKUP_RESTORED_EVENT } from '../services/backupRegistry';
 import { isAutoBackupConfigured, readBackupBlocked } from './useBackupAutoSchedule';
-import { computeBackupNudge, type BackupNudge, type BackupBlockedReason } from '../utils/backupNudge';
+import { computeBackupNudge, type BackupNudge, type BackupBlockedReason, type BackupDestIssue } from '../utils/backupNudge';
+import { readBackupIssues } from '../services/backupIssues';
 
 // One shared window subscription for every consumer, and a monotonically
 // increasing version as the store snapshot (stable between events, so
@@ -51,13 +52,19 @@ export interface BackupStateSnapshot {
     /** Automatic backups on, pointed at a real destination. */
     configured: boolean;
     blocked: BackupBlockedReason | null;
+    /** A destination only the user can fix (reconnect Drive / re-pick the folder). Drive wins. */
+    issue: BackupDestIssue | null;
 }
 
 /** Current backup state, re-read whenever it changes. */
 export function useBackupState(userId: string | null | undefined): BackupStateSnapshot {
     useBackupStateVersion();
-    if (!userId) return { lastBackupMs: null, configured: false, blocked: null };
-    return { lastBackupMs: getLastBackupMs(userId), configured: isAutoBackupConfigured(userId), blocked: readBackupBlocked(userId) };
+    if (!userId) return { lastBackupMs: null, configured: false, blocked: null, issue: null };
+    const issues = readBackupIssues(userId);
+    return {
+        lastBackupMs: getLastBackupMs(userId), configured: isAutoBackupConfigured(userId), blocked: readBackupBlocked(userId),
+        issue: issues.drive ? 'drive' : issues.local ? 'local' : null,
+    };
 }
 
 /** Time the tile's exit animation takes (home-deck.css `hd-tile-out`). */
@@ -85,7 +92,7 @@ export interface BackupNudgeView {
  */
 export function useBackupNudge(userId: string | null | undefined, muted: boolean): BackupNudgeView {
     const snap = useBackupState(userId);
-    const nudge = muted ? null : computeBackupNudge(snap.lastBackupMs, { configured: snap.configured, blocked: snap.blocked });
+    const nudge = muted ? null : computeBackupNudge(snap.lastBackupMs, { configured: snap.configured, blocked: snap.blocked, issue: snap.issue });
 
     // computeBackupNudge returns a fresh object every call, so track identity
     // by content. The state is adjusted during render (React's documented

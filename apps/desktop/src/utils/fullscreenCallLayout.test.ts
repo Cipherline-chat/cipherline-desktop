@@ -29,6 +29,9 @@ import {
     fullscreenConsoleMetrics,
     fullscreenConsoleScale,
     fullscreenTitleStripHeight,
+    fillTargetState,
+    orderStage,
+    ownShareOnStage,
     resolveFocus,
     stripCardSize,
     stripConsoleLaneWidthPx,
@@ -749,13 +752,15 @@ describe('the strip scrolls by wheel, trackpad and keyboard, with no layout-eati
         expect(stripBlock.slice(0, 200)).not.toContain('custom-scrollbar');
     });
 
-    it('paints NO background on the row (it floats over the video) and cues overflow with the "+N" chip', () => {
-        // The old local/scroll vignette used an opaque #05070F cover that, over
-        // a live picture, painted solid black blocks at the row's ends.
+    it('replaces the bar with a scroll cue that cannot disagree with scrollLeft', () => {
+        // The `local`/`scroll` background-attachment pair IS the state: there
+        // is no class to toggle, so the cue cannot drift out of sync the way a
+        // JS-managed one would. The strip sits on its own opaque band again
+        // (regression 0484caca floated it over the video), so the vignette is
+        // safe to paint.
         const row = CSS.slice(CSS.indexOf('.cl-fs-strip-row {'), CSS.indexOf('.cl-fs-strip-row::-webkit-scrollbar'));
-        expect(row).toMatch(/background:\s*none/);
-        expect(row).not.toContain('linear-gradient');
-        expect(OVERLAY).toContain('stripHiddenCount');
+        expect(row).toContain('no-repeat local');
+        expect(row).toContain('no-repeat scroll');
     });
 
     it('a focusable row has a VISIBLE focus ring — an invisible tab stop is a trap', () => {
@@ -1004,5 +1009,112 @@ describe('fullscreenConsoleBottom — centring is a property of the height it is
         const wrong = fullscreenConsoleBottom(height, nominal) + scaled / 2;
         expect(Math.abs(right - height / 2)).toBeLessThanOrEqual(0.5);
         expect(Math.abs(wrong - height / 2)).toBeGreaterThan(0.5);
+    });
+});
+
+describe('your own share on the stage', () => {
+    it('is a tile while you share, and hiding takes it off', () => {
+        expect(ownShareOnStage({ sharing: true, republishing: false, hidden: false })).toBe(true);
+        expect(ownShareOnStage({ sharing: true, republishing: false, hidden: true })).toBe(false);
+        expect(ownShareOnStage({ sharing: false, republishing: false, hidden: false })).toBe(false);
+    });
+
+    it('stays through your own announced republish, unless hidden', () => {
+        expect(ownShareOnStage({ sharing: false, republishing: true, hidden: false })).toBe(true);
+        expect(ownShareOnStage({ sharing: false, republishing: true, hidden: true })).toBe(false);
+    });
+
+    it('sits after the shares you chose to watch and before cameras and gates', () => {
+        expect(orderStage({ watchedShares: ['bob'], ownShare: 'me', cameras: ['me', 'amy'], gatedShares: ['cat'] })).toEqual([
+            share('bob'),
+            share('me'),
+            cam('me'),
+            cam('amy'),
+            { identity: 'cat', source: SS, gated: true },
+        ]);
+    });
+
+    it('leaves the order alone when you are not sharing', () => {
+        expect(orderStage({ watchedShares: [], ownShare: null, cameras: ['amy'], gatedShares: [] })).toEqual([cam('amy')]);
+    });
+
+    it('counts like your own camera: alone it is solo, and stage is not empty', () => {
+        const stage = orderStage({ watchedShares: [], ownShare: 'me', cameras: [], gatedShares: [] });
+        expect(stage).toHaveLength(1);
+        const layout = chooseFullscreenLayout({ stage, audioOnly: ['amy'], focused: null });
+        expect(layout).toEqual({ mode: 'solo', stage: share('me'), strip: [{ kind: 'audio', identity: 'amy' }] });
+        expect(focusToggleMeaningful(layout)).toBe(false);
+    });
+
+    it('with one other video it makes a grid, and can be focused', () => {
+        const stage = orderStage({ watchedShares: [], ownShare: 'me', cameras: ['amy'], gatedShares: [] });
+        expect(chooseFullscreenLayout({ stage, audioOnly: [], focused: null }).mode).toBe('grid');
+        const focused = chooseFullscreenLayout({ stage, audioOnly: [], focused: { identity: 'me', source: SS } });
+        expect(focused).toEqual({ mode: 'focus', stage: share('me'), strip: [{ kind: 'tile', tile: cam('amy') }] });
+    });
+
+    it('your share and your camera are separate tiles: focusing one does not take the other', () => {
+        const stage = [share('me'), cam('me')];
+        expect(resolveFocus(stage, { identity: 'me', source: CAM })).toEqual(cam('me'));
+        expect(resolveFocus(stage, { identity: 'me', source: SS })).toEqual(share('me'));
+    });
+});
+
+describe('one video filling the screen', () => {
+    const stage = [share('bob'), cam('amy'), cam('cat')];
+    const fillAmy = { identity: 'amy', source: CAM } as const;
+
+    it('is solo with an empty strip, so there is no band and no focus toggle', () => {
+        const layout = chooseFullscreenLayout({ stage, audioOnly: ['dan'], focused: null, fill: fillAmy });
+        expect(layout).toEqual({ mode: 'solo', stage: cam('amy'), strip: [] });
+        expect(focusToggleMeaningful(layout)).toBe(false);
+    });
+
+    it('wins over a focus, and the layout underneath comes straight back without it', () => {
+        const focused = { identity: 'bob', source: SS } as const;
+        const under = chooseFullscreenLayout({ stage, audioOnly: [], focused });
+        expect(chooseFullscreenLayout({ stage, audioOnly: [], focused, fill: fillAmy })).toEqual({ mode: 'solo', stage: cam('amy'), strip: [] });
+        expect(chooseFullscreenLayout({ stage, audioOnly: [], focused, fill: null })).toEqual(under);
+        expect(under.mode).toBe('focus');
+    });
+
+    it('still renders a target that is off the stage for now, instead of falling to the grid', () => {
+        expect(chooseFullscreenLayout({ stage: [cam('cat')], audioOnly: [], focused: null, fill: fillAmy }))
+            .toEqual({ mode: 'solo', stage: cam('amy'), strip: [] });
+    });
+
+    const present = { present: true, hidden: false };
+
+    it('no fill is none', () => {
+        expect(fillTargetState(stage, null, present)).toBe('none');
+    });
+
+    it('on the stage is live', () => {
+        expect(fillTargetState(stage, fillAmy, present)).toBe('live');
+    });
+
+    it('the same stream after a republish is the same target: it is matched by identity and source only', () => {
+        expect(fillTargetState([share('bob')], { identity: 'bob', source: SS }, present)).toBe('live');
+    });
+
+    it('off the stage with its owner still here is waiting: a republish or a camera restart may bring it back', () => {
+        expect(fillTargetState([cam('cat')], fillAmy, present)).toBe('waiting');
+    });
+
+    it('someone who left is gone at once', () => {
+        expect(fillTargetState([cam('cat')], fillAmy, { present: false, hidden: false })).toBe('gone');
+    });
+
+    it('a stream you hid is gone at once', () => {
+        expect(fillTargetState([cam('cat')], fillAmy, { present: true, hidden: true })).toBe('gone');
+    });
+
+    it('a share you stopped watching is a gate, and a gate cannot fill the screen', () => {
+        const gated: StageTileRef = { identity: 'bob', source: SS, gated: true };
+        expect(fillTargetState([gated], { identity: 'bob', source: SS }, present)).toBe('gone');
+    });
+
+    it('someone else\'s camera is not their share', () => {
+        expect(fillTargetState([cam('bob')], { identity: 'bob', source: SS }, present)).toBe('waiting');
     });
 });

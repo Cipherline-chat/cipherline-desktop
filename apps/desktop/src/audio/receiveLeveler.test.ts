@@ -6,8 +6,13 @@ import {
     dbToLinear,
     RX_TARGET_DB,
     RX_DEADBAND_DB,
+    RX_DEADBAND_ABOVE_DB,
     RX_MIN_GAIN_DB,
     RX_MAX_GAIN_DB,
+    RX_INITIAL_GAIN_DB,
+    RX_BOOTSTRAP_SEC,
+    RX_BOOTSTRAP_RATE_MULT,
+    RX_MIN_EVIDENCE_SEC,
     RX_RISE_DB_PER_SEC,
     RX_FALL_DB_PER_SEC,
     RX_BOOST_LATCH_SEC,
@@ -51,39 +56,43 @@ describe('ReceiveLeveler — converges toward the target, within its range', () 
 
     it('cuts a loud talker, capped at the max cut', () => {
         const l = new ReceiveLeveler();
-        const g = talk(l, -5, 60); // 15 dB over target
+        const g = talk(l, RX_TARGET_DB + 30, 60);
         expect(g[g.length - 1]).toBeCloseTo(RX_MIN_GAIN_DB, 1);
         expect(Math.min(...g)).toBeGreaterThanOrEqual(RX_MIN_GAIN_DB - 1e-9);
     });
 
-    it('brings a moderately loud talker to exactly the dead-band edge of the target', () => {
+    it('a very loud talker can be cut four times as far as a quiet one can be lifted', () => {
+        expect(-RX_MIN_GAIN_DB).toBe(4 * RX_MAX_GAIN_DB);
+    });
+
+    it('brings a moderately loud talker to the narrow upper edge of the target', () => {
         const l = new ReceiveLeveler();
-        const g = talk(l, -13, 60); // 7 dB over: after the dead band the correction is -4.5 dB
+        const g = talk(l, RX_TARGET_DB + 7, 60); // only 1 dB is left over the target
         const final = g[g.length - 1];
-        expect(final).toBeCloseTo(-(7 - RX_DEADBAND_DB), 0);
-        // i.e. the talker ends up 2.5 dB (the dead band) from target, not dead on it
-        expect(-13 + final - RX_TARGET_DB).toBeCloseTo(RX_DEADBAND_DB, 0);
+        expect(final).toBeCloseTo(-(7 - RX_DEADBAND_ABOVE_DB), 0);
+        expect(7 + final).toBeCloseTo(RX_DEADBAND_ABOVE_DB, 0);
     });
 
     it('treats an unspoken-for level as an attenuation target only when the talker really is that loud', () => {
         const a = new ReceiveLeveler();
         const b = new ReceiveLeveler();
-        talk(a, -8, 40);
-        talk(b, -20, 40);
+        talk(a, RX_TARGET_DB + 12, 40);
+        talk(b, RX_TARGET_DB, 40);
         expect(a.gainDb).toBeLessThan(-5);
         expect(Math.abs(b.gainDb)).toBeLessThan(0.1);
     });
 });
 
 describe('ReceiveLeveler — dead band (does not fight the sender AGC)', () => {
-    it('leaves a talker the sender AGC already put on target at exactly 0 dB', () => {
+    it('leaves a talker the sender AGC already put on target at exactly 0 dB (after the join gain has converged)', () => {
         const l = new ReceiveLeveler();
         const g = talk(l, RX_TARGET_DB, 60);
-        expect(Math.max(...g.map(Math.abs))).toBeLessThan(0.05);
+        expect(Math.max(...g.slice(Math.round(3 / POLL)).map(Math.abs))).toBeLessThan(0.05);
+        expect(g[g.length - 1]).toBe(0);
     });
 
-    it('stays at 0 dB across +-2 dB of sender-AGC wobble around the target', () => {
-        for (const offset of [-2, -1, 1, 2]) {
+    it('stays at 0 dB from 2 dB under the target to 1 dB over it', () => {
+        for (const offset of [-2, -1, 0.5]) {
             const l = new ReceiveLeveler();
             const g = talk(l, RX_TARGET_DB + offset, 60);
             expect(Math.abs(g[g.length - 1])).toBeLessThan(0.3);
@@ -107,14 +116,14 @@ describe('ReceiveLeveler — slew and evidence', () => {
         const g = talk(l, -31, 30, { pauses: false });
         const rate = (a: number, b: number) => Math.abs(b - a) / POLL;
         for (let i = 1; i < g.length; i++) {
-            const bootstrapping = i * POLL < 3.2;
-            const limit = RX_RISE_DB_PER_SEC * (bootstrapping ? 3 : 1);
+            const bootstrapping = i * POLL < RX_BOOTSTRAP_SEC + POLL;
+            const limit = RX_RISE_DB_PER_SEC * (bootstrapping ? RX_BOOTSTRAP_RATE_MULT : 1);
             expect(rate(g[i - 1], g[i])).toBeLessThanOrEqual(limit + 1e-6);
         }
         const l2 = new ReceiveLeveler();
         const g2 = talk(l2, -5, 30, { pauses: false });
         for (let i = 1; i < g2.length; i++) {
-            const limit = RX_FALL_DB_PER_SEC * (i * POLL < 3.2 ? 3 : 1);
+            const limit = RX_FALL_DB_PER_SEC * (i * POLL < RX_BOOTSTRAP_SEC + POLL ? RX_BOOTSTRAP_RATE_MULT : 1);
             expect(rate(g2[i - 1], g2[i])).toBeLessThanOrEqual(limit + 1e-6);
         }
     });
@@ -123,23 +132,73 @@ describe('ReceiveLeveler — slew and evidence', () => {
         expect(RX_FALL_DB_PER_SEC).toBeGreaterThan(RX_RISE_DB_PER_SEC);
     });
 
-    it('makes no change during the first second of speech', () => {
+    it('makes no change during the first syllable of speech (RX_MIN_EVIDENCE_SEC), staying at the join gain', () => {
         const l = new ReceiveLeveler();
-        const g = talk(l, -5, 0.9, { pauses: false });
-        expect(g.every(v => v === 0)).toBe(true);
+        const g = talk(l, -5, RX_MIN_EVIDENCE_SEC - POLL, { pauses: false });
+        expect(g.every(v => v === RX_INITIAL_GAIN_DB)).toBe(true);
     });
 
     it('moves in the right direction once there is evidence (control for the test above)', () => {
         const l = new ReceiveLeveler();
         const g = talk(l, -5, 3, { pauses: false });
-        expect(g[g.length - 1]).toBeLessThan(-2);
+        expect(g[g.length - 1]).toBeLessThan(RX_INITIAL_GAIN_DB - 2);
+    });
+});
+
+describe('ReceiveLeveler - joining: a new talker is neither loud nor slowly turned down', () => {
+    it('starts at a conservative join gain, below unity (we know nothing about them yet)', () => {
+        expect(RX_INITIAL_GAIN_DB).toBeLessThan(0);
+        expect(RX_INITIAL_GAIN_DB).toBeGreaterThanOrEqual(RX_MIN_GAIN_DB);
+        expect(new ReceiveLeveler().gainDb).toBe(RX_INITIAL_GAIN_DB);
+    });
+
+    it('a talker 14 dB over target is cut by >= 8 dB within 1.5 s of speech (it used to take ~5 s)', () => {
+        const l = new ReceiveLeveler();
+        const g = talk(l, RX_TARGET_DB + 14, 1.5, { pauses: false });
+        expect(g[g.length - 1]).toBeLessThanOrEqual(-8);
+    });
+
+    it('a talker 9 dB under target is boosted by >= 3 dB within 1.5 s of speech', () => {
+        const l = new ReceiveLeveler();
+        const g = talk(l, RX_TARGET_DB - 9, 1.5, { pauses: false });
+        expect(g[g.length - 1]).toBeGreaterThanOrEqual(3);
+    });
+
+    it('a talker already on target never ends louder than the join gain on the way to neutral', () => {
+        const l = new ReceiveLeveler();
+        const g = talk(l, RX_TARGET_DB, 10);
+        expect(Math.max(...g)).toBeLessThanOrEqual(1e-9);
+    });
+
+    it('snapshot()/restore() resumes a rebuilt chain where it was, instead of restarting the ramp', () => {
+        const a = new ReceiveLeveler();
+        talk(a, -3, 20);
+        const settled = a.gainDb;
+        expect(settled).toBeLessThan(-6);
+        const b = new ReceiveLeveler();
+        b.restore(a.snapshot());
+        expect(b.gainDb).toBe(settled);
+        // and keeps behaving like the original from there
+        const ga = talk(a, -6, 5);
+        const gb = talk(b, -6, 5);
+        expect(gb).toEqual(ga);
+        // a fresh one has to ramp from the join gain
+        expect(new ReceiveLeveler().gainDb).toBeGreaterThan(settled + 4);
+    });
+
+    it('restore() ignores a missing or corrupt snapshot', () => {
+        const l = new ReceiveLeveler();
+        l.restore(undefined);
+        l.restore(null);
+        l.restore({ gainDb: NaN, levelPower: 1, activeSec: 1, noiseFloorDb: -50 });
+        expect(l.gainDb).toBe(RX_INITIAL_GAIN_DB);
     });
 });
 
 describe('ReceiveLeveler — pauses and noise are not speech', () => {
     it('freezes the gain across a long silence (does not decay, does not jump)', () => {
         const l = new ReceiveLeveler();
-        talk(l, -8, 40);
+        talk(l, -3, 40);
         const settled = l.gainDb;
         expect(settled).toBeLessThan(-5); // control: it really had a gain to hold
         for (let i = 0; i < 20 * 60; i++) l.push(-90, POLL); // a full minute of silence
@@ -150,13 +209,13 @@ describe('ReceiveLeveler — pauses and noise are not speech', () => {
         const l = new ReceiveLeveler();
         // The sender has NS off; between words it sends a steady -48 dB hiss and never speaks.
         for (let i = 0; i < 20 * 60; i++) l.push(-48 + ((i % 3) - 1) * 0.5, POLL);
-        expect(l.gainDb).toBe(0);
+        expect(l.gainDb).toBe(RX_INITIAL_GAIN_DB);
     });
 
     it('ignores anything under the absolute floor even with no history', () => {
         const l = new ReceiveLeveler();
         for (let i = 0; i < 20 * 60; i++) l.push(-60, POLL);
-        expect(l.gainDb).toBe(0);
+        expect(l.gainDb).toBe(RX_INITIAL_GAIN_DB);
         expect(l.levelPower).toBe(0);
     });
 
@@ -175,7 +234,7 @@ describe('ReceiveLeveler — pauses and noise are not speech', () => {
 
     it('never lets a talker who never pauses teach the floor tracker that their voice is noise', () => {
         const l = new ReceiveLeveler();
-        const g = talk(l, -5, 90, { pauses: false });
+        const g = talk(l, RX_TARGET_DB + 30, 90, { pauses: false });
         expect(g[g.length - 1]).toBeCloseTo(RX_MIN_GAIN_DB, 1);
     });
 });
@@ -218,9 +277,9 @@ describe('ReceiveLeveler — inputs and state', () => {
     it('reset() forgets the talker', () => {
         const l = new ReceiveLeveler();
         talk(l, -8, 30);
-        expect(l.gainDb).not.toBe(0);
+        expect(l.gainDb).not.toBe(RX_INITIAL_GAIN_DB);
         l.reset();
-        expect(l.gainDb).toBe(0);
+        expect(l.gainDb).toBe(RX_INITIAL_GAIN_DB);
         expect(l.levelPower).toBe(0);
         expect(l.activeSec).toBe(0);
         expect(l.levelDb).toBe(-Infinity);

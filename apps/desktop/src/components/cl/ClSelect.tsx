@@ -1,9 +1,10 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { GripVertical } from 'lucide-react';
 import { useDismissOnOutsideClick } from '../../hooks/useDismissOnOutsideClick';
 import { useEscape } from '../../hooks/useEscape';
 import { playIco } from '../../utils/clPhysics';
+import { computeSelectPlacement } from './selectPlacement';
 import { DRAG_THRESHOLD_PX, computeReorderDropIndex, applyReorderDrop } from './reorderMath';
 
 export interface ClSelectOption<T extends string> {
@@ -89,7 +90,10 @@ export function ClSelect<T extends string>({
     const [picked, setPicked] = useState<T | null>(null);
     const [swapping, setSwapping] = useState(false);
     const [hl, setHl] = useState(-1);
-    const [menuPos, setMenuPos] = useState<{ top: number; left: number; width: number } | null>(null);
+    const [menuPos, setMenuPos] = useState<{ top: number; bottom: number; left: number; width: number; vh: number } | null>(null);
+    // Natural (uncapped) menu height, measured after mount so the placement can
+    // flip upward / clamp when the trigger is near the bottom of the window.
+    const [menuNatH, setMenuNatH] = useState(0);
 
     // Escape closes the open menu through the shared stack — the trigger's own
     // onKeyDown never sees the press once a layer above it is open (or once
@@ -176,7 +180,7 @@ export function ClSelect<T extends string>({
     const calcMenuPos = useCallback(() => {
         if (triggerRef.current) {
             const r = triggerRef.current.getBoundingClientRect();
-            setMenuPos({ top: r.bottom + 4, left: r.left, width: r.width });
+            setMenuPos({ top: r.top, bottom: r.bottom, left: r.left, width: r.width, vh: window.innerHeight });
         }
         let maxZ = 9999;
         document.querySelectorAll<HTMLElement>('.mod.open').forEach((el) => {
@@ -196,6 +200,14 @@ export function ClSelect<T extends string>({
         const t = setTimeout(() => setMenuMounted(false), 200);
         return () => clearTimeout(t);
     }, [open]);
+
+    useLayoutEffect(() => {
+        const el = menuRef.current;
+        if (!menuMounted || !el) return;
+        // scrollHeight ignores the inline max-height cap; +2 for the border.
+        const h = Math.min(280, el.scrollHeight + 2);
+        if (h !== menuNatH) setMenuNatH(h);
+    }, [menuMounted, menuPos, options.length, menuNatH]);
 
     // Keep the fixed-position menu aligned when the user scrolls or resizes.
     useEffect(() => {
@@ -362,7 +374,13 @@ export function ClSelect<T extends string>({
                     <Chev ref={chevRef} />
                 </button>
             </div>
-            {menuMounted && menuPos && createPortal(
+            {menuMounted && menuPos && (() => {
+                const pl = computeSelectPlacement(
+                    { top: menuPos.top, bottom: menuPos.bottom },
+                    menuNatH || Math.min(280, options.length * 38 + 14),
+                    menuPos.vh,
+                );
+                return createPortal(
                 <div className="cl-kit">
                     <div
                         ref={menuRef}
@@ -370,7 +388,8 @@ export function ClSelect<T extends string>({
                         role="listbox"
                         style={{
                             position: 'fixed',
-                            top: menuPos.top,
+                            ...(pl.openUp ? { top: 'auto', bottom: pl.bottom } : { top: pl.top }),
+                            maxHeight: pl.maxHeight,
                             left: menuPos.left,
                             width: menuPos.width,
                             right: 'auto',  // override CSS `right: 0`
@@ -447,7 +466,8 @@ export function ClSelect<T extends string>({
                     </div>
                 </div>,
                 document.body,
-            )}
+                );
+            })()}
         </span>
     );
 }

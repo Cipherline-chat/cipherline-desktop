@@ -4,7 +4,7 @@ import { useParticipants, useLocalParticipant } from '@livekit/components-react'
 import { Track, RemoteTrackPublication } from 'livekit-client';
 import { prewarmRemoteQuality } from '../../utils/remoteVideoQuality';
 import { useCallContext } from '../../contexts/CallContext';
-import { VideoTile } from './VideoTile';
+import { CallStreamTile } from './LocalScreenShareTile';
 import secureLocalStore from '../../utils/secureLocalStore';
 import {
     PublishOrder,
@@ -23,6 +23,7 @@ import {
 } from './focusBannerFit';
 import { focusSwap, FOCUS_CROSSFADE_MS } from './focusCrossfade';
 import { ROSTER_ONLY } from '../../utils/callRosterEvents';
+import { useShareHoldPhase } from '../../hooks/useShareHold';
 
 // Both clamps, and the auto-fit arithmetic they bound, live in
 // focusBannerFit.ts so they are unit-testable without a DOM.
@@ -153,6 +154,11 @@ export const FocusedStreamBanner = ({
         );
     }, [participants, hiddenVideoIds, hiddenScreenShareIds, watchedShares]);
 
+    // A share republishing after an announcement (utils/shareHold.ts) has not ended.
+    const focusHold = useShareHoldPhase(
+        focusedStream?.source === Track.Source.ScreenShare ? focusedStream.identity : null,
+    );
+
     // When the focused stream ends — camera off, share stopped, participant
     // gone — hand the pane to another live video if there is one, otherwise
     // clear focus so the layout falls back to the ordinary chat view.
@@ -173,6 +179,10 @@ export const FocusedStreamBanner = ({
             return;
         }
         if (isStreamLive(focusedParticipantLive as unknown as ParticipantLike, focusedStream.source)) return;
+        // The publisher said before the unpublish that it is coming back: the
+        // focus stays, the tile shows the placeholder. No hold = gone, now. A hold
+        // that times out lands back here (focusHold is a dep) and advances as normal.
+        if (focusHold !== 'idle') return;
         // If the sharer is mid-republish (Change Source / Adjust Quality /
         // toggle audio) don't tear the focus down — the new publication will
         // arrive within the adjusting window and the focus will pick it up.
@@ -181,7 +191,7 @@ export const FocusedStreamBanner = ({
         }
         advance();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- callCtx is a context value re-created per provider render; reacting to it would re-run the focus-advance check on every call-state tick
-    }, [focusedStream, focusedParticipantLive, participants]);
+    }, [focusedStream, focusedParticipantLive, participants, focusHold]);
 
     // Auto-unfocus if the stream is hidden via the popover menu
     React.useEffect(() => {
@@ -321,6 +331,10 @@ export const FocusedStreamBanner = ({
 
         const fit = () => {
             if (!video || !host) return;
+            // A share holding across a republish keeps its height: what the <video>
+            // reports now is the SFU's blank frames. focusHold is a dep, so the fit
+            // runs again against the new stream the moment the hold ends.
+            if (focusHold !== 'idle') return;
             const ratio = fitBannerRatio({
                 availableWidth: host.clientWidth,
                 videoWidth: video.videoWidth,
@@ -374,7 +388,7 @@ export const FocusedStreamBanner = ({
             }
         };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [displayFocus?.identity, displayFocus?.source, manualRatio]);
+    }, [displayFocus?.identity, displayFocus?.source, manualRatio, focusHold]);
 
     const bannerHeight = React.useMemo(() => {
         const ratio = manualRatio ?? autoRatio ?? DEFAULT_BANNER_RATIO;
@@ -433,7 +447,7 @@ export const FocusedStreamBanner = ({
                 style={{ opacity: crossfading ? 0 : 1, transition: crossfading ? 'opacity 0.14s ease-in' : 'opacity 0.0s' }}
             >
                 <div ref={videoHostRef} className="w-full h-full flex items-center justify-center">
-                <VideoTile
+                <CallStreamTile
                     key={`focused-${displayFocus.identity}-${displayFocus.source}`}
                     p={focusedParticipant}
                     source={displayFocus.source}
@@ -451,6 +465,7 @@ export const FocusedStreamBanner = ({
                     onHideVideoChange={(v) => onHideVideoChange(focusedParticipant.identity, v)}
                     onHideScreenShareChange={(v) => onHideScreenShareChange(focusedParticipant.identity, v)}
                     isFocusedView={true}
+                    onToggleFill={() => callCtx.requestFill({ identity: displayFocus.identity, source: displayFocus.source })}
                     onStopWatching={onStopWatchingScreenshare ? () => onStopWatchingScreenshare(focusedParticipant.identity) : undefined}
                     style={displayFocus.source === Track.Source.ScreenShare ? { height: '100%' } : undefined}
                 />

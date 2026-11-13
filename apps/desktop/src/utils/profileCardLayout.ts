@@ -73,8 +73,9 @@ export function featuredAchievements(
 export type AchievementFilter = 'unlocked' | 'locked';
 
 /**
- * The "View all" sheet: unlocked (rarest, then newest) or locked (closest to
- * done first when progress is known - your own card - else catalog order).
+ * The "View all" sheet: unlocked (rarest, then newest) or locked (on your own
+ * card: the first-day starters still to do, then closest to done; else
+ * catalog order, which also leads with the starters).
  */
 export function achievementsFor(
     filter: AchievementFilter,
@@ -94,7 +95,9 @@ export function achievementsFor(
         return p && p.target > 0 ? Math.min(1, p.current / p.target) : 0;
     };
     // Secret ones go last and never sort by progress (that would hint at what they are).
-    return [...locked].sort((a, b) => (Number(a.secret) - Number(b.secret)) || (a.secret ? 0 : frac(b) - frac(a)));
+    return [...locked].sort((a, b) => (Number(a.secret) - Number(b.secret))
+        || (Number(!!b.starter) - Number(!!a.starter))
+        || (a.secret ? 0 : frac(b) - frac(a)));
 }
 
 /** 0..1 ring fill for a level (the level ring on the card). */

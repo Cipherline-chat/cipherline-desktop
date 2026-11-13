@@ -1,11 +1,12 @@
 import React from 'react';
 import type { ItemOptions } from '../../utils/profileCosmetics';
 import {
-    AURORA_RING_COLOURS, CROWN_COLOURS, PEARL_COLOURS, SEA_FAN_COLOURS, STARFISH_COLOURS,
+    AURORA_RING_COLOURS, PEARL_COLOURS, SEA_FAN_COLOURS,
 } from '../../utils/profileCosmetics';
 import { hexToHsl, itemTint, shade, type HSL } from './colour';
 import { arcPath, bez, f1, gapHalf, gappedRing, inGap, polar, pt, ribbon, rng } from './geometry';
-import { Jelly, KeysHead, KeysPaws, Lin, Rad } from './svgParts';
+import { KeysHead, KeysPaws, Lin, Rad } from './svgParts';
+import { HALO_ART } from './halos';
 
 /**
  * Avatar decoration ART (SVG). Ids + unlock rules: utils/profileCosmetics.ts.
@@ -28,6 +29,13 @@ export interface DecoCtx {
     o: ItemOptions;
     /** "Match theme" colour from the card, or null. */
     tint: string | null;
+    /**
+     * Drawn at thumbnail size (the Settings picker's 26-44px avatars): items
+     * whose detail is finer than a pixel there (hairline orbits, corona
+     * streamers, bat silhouettes) draw a bolder version of the same picture.
+     * Most items ignore it.
+     */
+    compact?: boolean;
 }
 export type Draw = (c: DecoCtx) => React.ReactNode;
 export interface DecorationArt { back?: Draw; front?: Draw }
@@ -217,36 +225,12 @@ const pearlString: Draw = ({ u, o }) => {
 };
 
 
-// ── Keys (the mascot): exactly two items show him ────────────────────────────
+// ── Keys (the mascot): one item shows him ───────────────────────────────────
 
 const KEYS_STOCK = '#25E0C8';
 const keysPeek: DecorationArt = {
     back: ({ u, o, tint }) => <KeysHead u={u} t={itemTint(o.h, tint, KEYS_STOCK)} mood={o.p} />,
     front: ({ o, tint }) => <KeysPaws t={itemTint(o.h, tint, KEYS_STOCK)} />,
-};
-
-const keysCrown: DecorationArt = {
-    back: ({ u, o }) => {
-        const metal = hsl(pick(CROWN_COLOURS, o.c)[1]);
-        return (
-            <>
-                <KeysHead u={u} t={hsl(KEYS_STOCK)} />
-                <g transform="translate(0.5 -42) scale(0.9) rotate(-7 55 16)">
-                    <defs>
-                        <Lin id={`${u}-m`} stops={[[0, shade(metal, 16)], [0.45, shade(metal, 0)], [1, shade(metal, -30)]]} />
-                    </defs>
-                    <path d="M37 18 L39.5 0 L48 9 L55 -4 L62 9 L70.5 0 L73 18 Z" fill={`url(#${u}-m)`} stroke={shade(metal, -38)} strokeWidth="1" strokeLinejoin="round" />
-                    <path d="M38 14.5 L72 14.5" stroke={shade(metal, -30)} strokeWidth="1.1" />
-                    <path d="M41 4 L44 7.5 M55 0 L55 5 M69 4 L66 7.5" stroke="#fff" strokeOpacity=".45" strokeWidth="1" strokeLinecap="round" />
-                    <circle cx="39.5" cy="0" r="2.3" fill="#FF6B5E" stroke="#8C1D16" strokeWidth=".5" />
-                    <circle cx="55" cy="-4" r="2.6" fill="#7FD8FF" stroke="#1B5D7A" strokeWidth=".5" />
-                    <circle cx="70.5" cy="0" r="2.3" fill="#FF6B5E" stroke="#8C1D16" strokeWidth=".5" />
-                    <circle cx="54.2" cy="-4.8" r=".8" fill="#fff" />
-                </g>
-            </>
-        );
-    },
-    front: () => <KeysPaws t={hsl(KEYS_STOCK)} />,
 };
 
 // ── Plants ───────────────────────────────────────────────────────────────────
@@ -339,189 +323,92 @@ const seagrass: DecorationArt = {
     },
 };
 
-/** Starfish, lower LEFT (the dot is lower right), one arm reaching over the avatar's edge. */
-const starfish: Draw = ({ u, o }) => {
-    const col = hsl(pick(STARFISH_COLOURS, o.c)[1]);
-    const cx = 13, cy = 87, rot = 12, rv = 6.2;
-    const lens = [22, 20.5, 21.5, 20, 21];
-    const bend = [5, -4, 6, -5, 3];
-    let d = '';
-    for (let i = 0; i < 5; i++) {
-        const a = rot + i * 72 + bend[i];
-        const v0 = polar(rv, rot + i * 72 - 36, cx, cy), v1 = polar(rv, rot + i * 72 + 36, cx, cy);
-        const tl = polar(lens[i], a - 4.6, cx, cy), tr = polar(lens[i], a + 4.6, cx, cy);
-        const c1 = polar(rv * 1.55, rot + i * 72 - 20, cx, cy), c2 = polar(lens[i] * 0.72, a - 8, cx, cy);
-        const c3 = polar(lens[i] * 0.72, a + 8, cx, cy), c4 = polar(rv * 1.55, rot + i * 72 + 20, cx, cy);
-        if (i === 0) d += `M${pt(v0)} `;
-        d += `C ${pt(c1)}, ${pt(c2)}, ${pt(tl)} A 1.9 1.9 0 0 1 ${pt(tr)} C ${pt(c3)}, ${pt(c4)}, ${pt(v1)} `;
-    }
-    d += 'Z';
-    const bumps: React.ReactNode[] = [];
-    if ((o.p ?? 0) === 0) {
-        for (let i = 0; i < 5; i++) {
-            const a = rot + i * 72 + bend[i] * 0.6;
-            for (let r = 5; r < lens[i] - 2.5; r += 2.6) {
-                const [x, y] = polar(r, a, cx, cy);
-                bumps.push(<circle key={`${i}-${r}`} cx={f1(x)} cy={f1(y)} r={f1(1.05 - r * 0.025)} fill={shade(col, 26, 0.9, -10)} />);
-            }
-        }
-    }
-    return (
-        <>
-            <defs>
-                <Rad id={`${u}-s`} user cx={cx - 2} cy={cy - 3} r={20} stops={[[0, shade(col, 12)], [0.45, shade(col, 0)], [1, shade(col, -20)]]} />
-            </defs>
-            <path d={d} fill="#000" fillOpacity=".35" transform="translate(1.1 1.9)" />
-            <path d={d} fill={`url(#${u}-s)`} stroke={shade(col, -26)} strokeWidth=".6" strokeLinejoin="round" />
-            {(o.p ?? 0) === 1 && Array.from({ length: 5 }, (_, i) => {
-                const a = rot + i * 72 + bend[i] * 0.6;
-                return <path key={i} d={`M${pt(polar(4, a, cx, cy))} L${pt(polar(lens[i] - 3, a, cx, cy))}`} stroke={shade(col, 18, 0.5)} strokeWidth=".9" strokeLinecap="round" />;
-            })}
-            {bumps}
-            <circle cx={cx} cy={cy} r="2.2" fill={shade(col, 18)} />
-            <circle cx={cx + 2.6} cy={cy - 1.4} r=".9" fill={shade(col, -20)} />
-        </>
-    );
-};
-
-/** A gorgonian sea fan, grown by branching (seeded: the same fan every time), with cross-links like the real lattice. */
+/**
+ * A gorgonian sea fan rooted on the avatar's lower-left rim and opening up
+ * over its left side (owner: the old fan was "mostly off profile"). Grown by
+ * branching (seeded: the same fan every time) with the cross-links of the
+ * real lattice. It stays within the decoration's visible bounds: every branch
+ * turns along SEA_FAN_REACH (from the avatar centre) instead of crossing it,
+ * and growth keeps to upward directions, well clear of the status dot. Drawn
+ * in front of the avatar's edge but faded out towards its middle (a radial
+ * mask over the fan's sector), so it frames the face instead of covering it.
+ */
+export const SEA_FAN_REACH = 66;
 const seaFan: DecorationArt = {
-    back: ({ o }) => {
+    front: ({ u, o }) => {
         const col = hsl(pick(SEA_FAN_COLOURS, o.c)[1]);
-        const depthMax = 4 + (o.n ?? 2);
+        const depthMax = 5 + (o.n ?? 2);
         const rand = rng(1907);
         const byDepth: string[] = Array.from({ length: depthMax + 1 }, () => '');
         const tips: P[] = [];
         const levels: P[][] = Array.from({ length: depthMax + 1 }, () => []);
+        const R = SEA_FAN_REACH - 3.5; // room for a bent branch's bow and the polyp on its tip
+        const root: P = polar(52, 218);
+        const axis = -112, sector = 74;
         const grow = (x: number, y: number, ang: number, len: number, depth: number) => {
-            const a = ang * Math.PI / 180;
-            const ex = x + Math.cos(a) * len, ey = y + Math.sin(a) * len;
-            const bend = (rand() - 0.5) * len * 0.35;
-            const mx = (x + ex) / 2 - Math.sin(a) * bend, my = (y + ey) / 2 + Math.cos(a) * bend;
+            let ad = Math.max(axis - sector, Math.min(axis + sector, ang));
+            // At the reach circle a branch turns to run along it (towards its own side of the fan) instead of crossing it.
+            const side = ad >= axis ? 1 : -1;
+            const over = (d: number) => Math.hypot(x + Math.cos(d * Math.PI / 180) * len - 50, y + Math.sin(d * Math.PI / 180) * len - 50) > R;
+            for (let k2 = 0; k2 < 10 && over(ad); k2++) ad += side * 8;
+            const a = ad * Math.PI / 180;
+            const dx = Math.cos(a), dy = Math.sin(a);
+            const px = x - 50, py = y - 50;
+            const bq = px * dx + py * dy, cq = px * px + py * py - R * R;
+            const sMax = -bq + Math.sqrt(Math.max(0, bq * bq - cq));
+            const clipped = len >= sMax;
+            const L = clipped ? Math.max(0, sMax - 0.6) : len;
+            if (L < 1) { tips.push([x, y]); return; }
+            const ex = x + dx * L, ey = y + dy * L;
+            const bend = (rand() - 0.5) * L * 0.3;
+            const mx = (x + ex) / 2 - dy * bend, my = (y + ey) / 2 + dx * bend;
             byDepth[depth] += `M${f1(x)} ${f1(y)} Q ${f1(mx)} ${f1(my)} ${f1(ex)} ${f1(ey)} `;
             levels[depth].push([ex, ey]);
-            if (depth >= depthMax) { tips.push([ex, ey]); return; }
-            const spread = 17 + rand() * 13;
-            const kids = depth < 2 ? 2 : rand() < 0.82 ? 2 : 1;
+            if (clipped || depth >= depthMax) { tips.push([ex, ey]); return; }
+            const spread = 13 + rand() * 9;
+            const kids = depth < 2 ? 2 : rand() < 0.84 ? 2 : 1;
             for (let i = 0; i < kids; i++) {
-                let na = ang + (kids === 1 ? (rand() - 0.5) * 16 : (i ? spread : -spread)) + (rand() - 0.5) * 8;
-                na = Math.max(-178, Math.min(-44, na));
-                grow(ex, ey, na, len * (0.8 + rand() * 0.1), depth + 1);
+                const na = ad + (kids === 1 ? (rand() - 0.5) * 14 : (i ? spread : -spread)) + (rand() - 0.5) * 8;
+                grow(ex, ey, na, len * (0.85 + rand() * 0.07), depth + 1);
             }
         };
-        grow(-8, 102, -116, 19, 0);
-        // The lattice: link each node to its nearest same-level neighbour.
+        grow(root[0], root[1], axis + 8, 11, 0);
+        // The lattice: link each node to its nearest same-level neighbour (sorted round the holdfast).
         let mesh = '';
-        for (let d = 3; d <= depthMax; d++) {
-            const lv = [...levels[d]].sort((p, q) => Math.atan2(p[1] - 102, p[0] + 8) - Math.atan2(q[1] - 102, q[0] + 8));
+        for (let d = 2; d <= depthMax; d++) {
+            const lv = [...levels[d]].sort((p, q) => Math.atan2(p[1] - root[1], p[0] - root[0]) - Math.atan2(q[1] - root[1], q[0] - root[0]));
             for (let i = 1; i < lv.length; i++) {
-                const [a, b] = [lv[i - 1], lv[i]];
-                if (Math.hypot(a[0] - b[0], a[1] - b[1]) < 9) mesh += `M${f1(a[0])} ${f1(a[1])} L${f1(b[0])} ${f1(b[1])} `;
+                const [p1, p2] = [lv[i - 1], lv[i]];
+                if (Math.hypot(p1[0] - p2[0], p1[1] - p2[1]) < 8) mesh += `M${f1(p1[0])} ${f1(p1[1])} L${f1(p2[0])} ${f1(p2[1])} `;
             }
         }
-        const polyps = tips.map(([x, y]) => `M${f1(x - 0.9)} ${f1(y)} a.9 .9 0 1 0 1.8 0 a.9 .9 0 1 0 -1.8 0`).join(' ');
+        const polyps = tips.map(([x, y]) => `M${f1(x - 0.85)} ${f1(y)} a.85 .85 0 1 0 1.7 0 a.85 .85 0 1 0 -1.7 0`).join(' ');
+        // The fade: an annular sector over the fan's side only (never the dot's), bright outside the rim, gone by the face.
+        const a0 = 170, a1 = 420;
+        const sectorPath = `M${pt(polar(R + 4, a0))} A${R + 4} ${R + 4} 0 1 1 ${pt(polar(R + 4, a1))} L${pt(polar(30, a1))} A30 30 0 1 0 ${pt(polar(30, a0))} Z`;
         return (
-            <g className="pc-sway pc-sway--fan">
-                <path d={mesh} fill="none" stroke={shade(col, -8, 0.5)} strokeWidth=".45" strokeLinecap="round" />
-                {byDepth.map((p, dd) => p && (
-                    <path key={dd} d={p} fill="none" stroke={shade(col, -24 + dd * 5, 1, -30 + dd * 5)} strokeWidth={f1(Math.max(0.55, 3.1 - dd * 0.42))} strokeLinecap="round" />
-                ))}
-                <path d={polyps} fill={shade(col, 26)} />
-            </g>
-        );
-    },
-};
-
-/** Bull kelp: a float behind the upper left, its blades streaming over the top of the avatar. */
-const bullKelp: DecorationArt = {
-    back: ({ u, o, tint }) => {
-        const t = itemTint(o.h, tint, '#D9A94E');
-        const float: P = [0, -8];
-        // Blades stream to the right over the top; the longest ones reach past the avatar.
-        const blades: Array<[P, P, P, number]> = [
-            [[12, -30], [30, -46], [52, -50], 6.2],
-            [[16, -24], [40, -32], [68, -40], 7.2],
-            [[20, -16], [46, -20], [84, -30], 7.6],
-            [[20, -8], [52, -10], [100, -16], 7],
-            [[18, -2], [44, 0], [78, -4], 6.4],
-            [[14, 2], [30, 6], [50, 2], 5.2],
-        ];
-        return (
-            <g>
+            <>
                 <defs>
-                    <Lin id={`${u}-b`} x2={1} y2={0} stops={[[0, shade(t, -20)], [0.35, shade(t, -4)], [0.8, shade(t, 8)], [1, shade(t, 16, 0.7)]]} />
-                    <Lin id={`${u}-st`} x2={1} y2={0} stops={[[0, shade(t, -30)], [1, shade(t, -12)]]} />
-                    <Rad id={`${u}-f`} cx={0.36} cy={0.3} r={0.75} stops={[[0, shade(t, 30)], [0.45, shade(t, 0)], [1, shade(t, -28)]]} />
+                    <Rad id={`${u}-fade`} user cx={50} cy={50} r={R + 4} stops={[[0.46, '#000'], [0.68, '#555'], [0.78, '#fff']]} />
+                    <mask id={`${u}-fan`} maskUnits="userSpaceOnUse" x="-30" y="-30" width="160" height="160">
+                        <path d={sectorPath} fill={`url(#${u}-fade)`} />
+                    </mask>
                 </defs>
-                <path d={ribbon([-18, 120], [-30, 72], [-6, 34], [float[0] - 2, float[1] + 3], 4.4, 2.8)} fill={`url(#${u}-st)`} />
-                {blades.map(([p1, p2, p3, w], i) => (
-                    <g key={i} className="pc-stream" style={{ animationDelay: `${-i * 1.1}s` }}>
-                        <path d={ribbon(float, p1, p2, p3, w, 1.2, 22)} fill={`url(#${u}-b)`} />
-                        <path d={`M${pt(bez(float, p1, p2, p3, 0.12))} C ${pt(bez(float, p1, p2, p3, 0.4))}, ${pt(bez(float, p1, p2, p3, 0.7))}, ${pt(bez(float, p1, p2, p3, 0.95))}`} fill="none" stroke={shade(t, 22, 0.35)} strokeWidth=".5" strokeLinecap="round" />
+                <g mask={`url(#${u}-fan)`}>
+                    <g className="pc-sway pc-sway--fan" style={{ transformOrigin: `${f1(root[0])}px ${f1(root[1])}px` }}>
+                        <path d={mesh} fill="none" stroke={shade(col, -6, 0.55)} strokeWidth=".42" strokeLinecap="round" />
+                        {byDepth.map((p, dd) => p && (
+                            <path key={dd} d={p} fill="none" stroke={shade(col, -22 + dd * 5, 1, -30 + dd * 5)} strokeWidth={f1(Math.max(0.5, 2.8 - dd * 0.36))} strokeLinecap="round" />
+                        ))}
+                        <path d={polyps} fill={shade(col, 26)} />
                     </g>
-                ))}
-                <ellipse cx={float[0]} cy={float[1]} rx="6.4" ry="5.6" fill={`url(#${u}-f)`} />
-                <ellipse cx={float[0] - 2} cy={float[1] - 2.2} rx="2" ry="1.2" fill="#fff" fillOpacity=".55" />
-            </g>
+                </g>
+            </>
         );
     },
 };
 
 // ── Creatures ────────────────────────────────────────────────────────────────
-
-/** An anglerfish behind the upper left; its lure hangs over the avatar and lights it. */
-const anglerfish: DecorationArt = {
-    back: ({ u, o, tint }) => {
-        const L = itemTint(o.h, tint, '#FFC94D');
-        return (
-            <>
-                <defs>
-                    <Lin id={`${u}-ab`} stops={[[0, '#2B3A6E'], [0.5, '#18234A'], [1, '#0C1330']]} />
-                </defs>
-                <path d="M-2 -26 C 12 -50, 50 -46, 60 -16" fill="none" stroke="#3A4A7E" strokeWidth="1.4" strokeLinecap="round" />
-                <g transform="translate(-12 -4) scale(1.3) rotate(-22 4 0)">
-                    <path d="M-27 -2 L-36 -10 L-34 4 L-36 12 Z" fill="#141E40" stroke="#33437A" strokeWidth=".8" strokeLinejoin="round" />
-                    <path d="M-26 0 C -26 -16, -10 -22, 6 -20 C 18 -18.5, 27 -12, 28 -4 L 16 -2 L 27 3 C 22 10, 6 15, -8 12 C -18 10, -26 7, -26 0 Z" fill={`url(#${u}-ab)`} stroke="#3A4C86" strokeWidth="1" strokeLinejoin="round" />
-                    <path d="M-20 -10 C -12 -17, 0 -19, 12 -17" fill="none" stroke={shade(L, 10, 0.35)} strokeWidth=".9" strokeLinecap="round" />
-                    <path d="M-6 6 C -2 10, 4 10, 8 8" fill="none" stroke="#0A1024" strokeWidth="1" strokeLinecap="round" />
-                    <path d="M16 -2 L 18 -6 L 20 -2.6 L 22.2 -6.4 L 24 -3 L 26.4 -5.8" fill="none" stroke="#E8EEFC" strokeWidth=".9" strokeLinejoin="round" strokeLinecap="round" />
-                    <path d="M17 1 L 19 4.2 L 21 1.6 L 23 4.6 L 25 2.2" fill="none" stroke="#E8EEFC" strokeWidth=".9" strokeLinejoin="round" strokeLinecap="round" />
-                    <circle cx="9" cy="-10" r="3.4" fill="#070B1A" stroke="#4A5C95" strokeWidth=".8" />
-                    <circle cx="10" cy="-11" r="1.1" fill={shade(L, 10)} />
-                    <path d="M-14 -16 l 3 -6 l 2 5 l 3 -6 l 2 6" fill="none" stroke="#33437A" strokeWidth="1" strokeLinejoin="round" />
-                </g>
-            </>
-        );
-    },
-    front: ({ u, o, tint }) => {
-        const L = itemTint(o.h, tint, '#FFC94D');
-        return (
-            <>
-                <defs>
-                    <Rad id={`${u}-lg`} stops={[[0, shade(L, 20, 0.85)], [0.25, shade(L, 0, 0.45)], [1, shade(L, 0, 0)]]} />
-                    <Rad id={`${u}-ls`} stops={[[0, shade(L, 0, 0.32)], [1, shade(L, 0, 0)]]} />
-                </defs>
-                <ellipse data-glow="lure light" className={o.p === 1 ? 'pc-flicker' : 'pc-breathe'} cx="58" cy="4" rx="22" ry="11" fill={`url(#${u}-ls)`} />
-                <circle data-glow="lure" className={o.p === 1 ? 'pc-flicker' : 'pc-breathe'} cx="60" cy="-12.5" r="11" fill={`url(#${u}-lg)`} />
-                <circle cx="60" cy="-12.5" r="3.4" fill={shade(L, 12)} />
-                <circle cx="59" cy="-13.6" r="1.1" fill="#FFF8E6" />
-            </>
-        );
-    },
-};
-
-const jellyfish: Draw = ({ u, o, tint }) => {
-    const t = itemTint(o.h, tint, '#B7A4FF');
-    return (
-        <>
-            <defs>
-                <Rad id={`${u}-jb`} cx={0.5} cy={0.35} r={0.65} stops={[[0, shade(t, 24, 0.55)], [0.7, shade(t, 4, 0.28)], [1, shade(t, 0, 0.12)]]} />
-            </defs>
-            {o.p === 1 && <Jelly u={u} t={t} x={8} y={-18} s={1.0} delay={-2.1} />}
-            <Jelly u={u} t={t} x={95} y={-1} s={1.45} delay={0} />
-        </>
-    );
-};
 
 /** A manta banking over the top of the avatar, seen from above, its leading edges lit. */
 // Right half of a manta seen from above, nose up: cephalic fin, the long
@@ -616,58 +503,6 @@ const jackOLantern: Draw = ({ u, o }) => {
     );
 };
 
-/**
- * Vampire squid (Vampyroteuthis infernalis, "vampire squid from hell"): behind
- * the upper right, mantle up, its webbed cloak open towards the avatar, eyes
- * and arm-tip photophores glowing. Rim light keeps the dark red readable.
- */
-const vampireSquid: DecorationArt = {
-    back: ({ u, o, tint }) => {
-        const glow = itemTint(o.h, tint, '#6FB7FF');
-        const angles = [28, 44, 60, 76, 92, 108, 124, 140, 154];
-        const tips: P[] = angles.map((a, i) => {
-            const r = 25 + (i % 2 ? 1.6 : 0) - Math.abs(i - 4) * 0.5;
-            return [Math.cos(a * Math.PI / 180) * r, Math.sin(a * Math.PI / 180) * r];
-        });
-        let web = `M${pt(tips[0])} `;
-        for (let i = 1; i < tips.length; i++) {
-            const [ax, ay] = tips[i - 1], [bx, by] = tips[i];
-            web += `Q ${f1((ax + bx) * 0.38)} ${f1((ay + by) * 0.38)} ${pt(tips[i])} `;
-        }
-        web += 'L 0 0 Z';
-        return (
-            <g transform="translate(99 -14) rotate(40) scale(1.3)">
-                <defs>
-                    <Lin id={`${u}-vm`} stops={[[0, '#A3304A'], [0.55, '#5C1022'], [1, '#2A0610']]} />
-                    <Rad id={`${u}-vw`} user cx={0} cy={0} r={27} stops={[[0, '#7A1A30'], [0.65, '#4A0B1A'], [1, '#26040D']]} />
-                    <Rad id={`${u}-ph`} stops={[[0, shade(glow, 34)], [0.3, shade(glow, 8, 0.75)], [1, shade(glow, 0, 0)]]} />
-                </defs>
-                <path d="M-8 3 C -10.5 -10, -6 -25, 0 -28 C 6 -25, 10.5 -10, 8 3 Z" fill={`url(#${u}-vm)`} stroke="#160309" strokeWidth=".6" />
-                <path d="M-6.4 -17 C -15 -22, -16.4 -11, -7.6 -10 Z M6.4 -17 C 15 -22, 16.4 -11, 7.6 -10 Z" fill="#6E1428" stroke="#160309" strokeWidth=".5" />
-                <path d="M-3.4 -21 C -2 -24.6, 2 -25, 3.6 -22" fill="none" stroke="#fff" strokeOpacity=".3" strokeWidth="1" strokeLinecap="round" />
-                <g className="pc-cloak">
-                    <path d={web} fill={`url(#${u}-vw)`} stroke="#160309" strokeWidth=".5" strokeLinejoin="round" />
-                    <path d={web.replace(/L 0 0 Z$/, '')} fill="none" stroke={shade(glow, 10, 0.45)} strokeWidth=".8" />
-                    {tips.map((p, i) => (
-                        <path key={i} d={`M0 2 Q ${f1(p[0] * 0.5 + (i % 2 ? 1 : -1))} ${f1(p[1] * 0.5)} ${pt(p)}`} fill="none" stroke="#8E2440" strokeWidth="1" strokeLinecap="round" />
-                    ))}
-                    {tips.map((p, i) => (
-                        <circle key={`p${i}`} className="pc-photophore" style={{ animationDelay: `${-i * 0.41}s` }} cx={f1(p[0])} cy={f1(p[1])} r="3.4" fill={`url(#${u}-ph)`} />
-                    ))}
-                </g>
-                <ellipse cx="0" cy="1" rx="9" ry="6.4" fill="#5C1022" stroke="#160309" strokeWidth=".5" />
-                {[-4.2, 4.2].map((x) => (
-                    <g key={x}>
-                        <circle cx={x} cy="0.6" r="3.2" fill="#08020A" />
-                        <circle cx={x} cy="0.6" r="1.9" fill={shade(glow, 8)} />
-                        <circle cx={x - 0.6} cy="-0.1" r=".6" fill="#fff" />
-                    </g>
-                ))}
-            </g>
-        );
-    },
-};
-
 /** A six-fold snowflake: arms with side branches (one path), drawn at (x, y). */
 function flake(x: number, y: number, r: number, rot: number): string {
     let d = '';
@@ -736,19 +571,14 @@ export const DECORATION_ART: Readonly<Record<string, DecorationArt>> = {
     'dive-bezel': { front: diveBezel },
     'kelp': kelp,
     'seagrass': seagrass,
-    'starfish': { front: starfish },
     'sea-fan': seaFan,
-    'bull-kelp': bullKelp,
-    'anglerfish': anglerfish,
     'aurora-ring': { front: auroraRing },
-    'jellyfish': { front: jellyfish },
     'abyss-halo': { front: abyssHalo },
     'manta': manta,
-    'keys-crown': keysCrown,
     'pearl-string': { front: pearlString },
     'jack-o-lantern': { front: jackOLantern },
-    'vampire-squid': vampireSquid,
     'frost-crown': { front: frostCrown },
+    ...HALO_ART,
 };
 
 /**

@@ -1,5 +1,6 @@
 import axios from 'axios';
-import { APP_VERSION } from '../constants';
+import { APP_VERSION, API_BASE } from '../constants';
+import { initNetTiming } from './netTiming';
 import { dispatchSuspended, dispatchUpgradeRequired, isSuspendedResponse, toNotice } from './clientControl';
 
 /**
@@ -14,6 +15,24 @@ import { dispatchSuspended, dispatchUpgradeRequired, isSuspendedResponse, toNoti
 // Every request out of the renderer advertises our build version so the
 // server's VersionGuard can force-upgrade old clients.
 axios.defaults.headers.common['X-Cipherline-Version'] = APP_VERSION;
+
+// Network timing for the diagnostics report (utils/netTiming.ts): pattern-only,
+// no ids, no content. Registered BEFORE the attestation interceptor below
+// because axios runs request interceptors last-registered-first, so this one
+// runs after the attestation IPC and the stopwatch starts when the request is
+// really handed to the network stack.
+const netTimer = initNetTiming(API_BASE);
+type TimedConfig = { method?: string; url?: string; __clDone?: (status: number | null) => void };
+axios.interceptors.request.use((config) => {
+    try {
+        const c = config as unknown as TimedConfig;
+        c.__clDone = netTimer.begin(c.method ?? 'get', c.url ?? '');
+    } catch { /* timing is best-effort and must never fail a request */ }
+    return config;
+});
+const settleTimer = (config: unknown, status: number | null) => {
+    try { (config as TimedConfig | undefined)?.__clDone?.(status); } catch { /* best-effort */ }
+};
 
 // Stamp the official-build attestation header on every request. The secret
 // lives in the Electron main process; we ask it to sign over IPC. In dev / web
@@ -37,9 +56,10 @@ axios.interceptors.request.use(async (config) => {
 // "shut down" screen and polls for the switch to lift. Nothing here ever
 // signs out or clears anything: a shutdown is temporary by definition.
 axios.interceptors.response.use(
-    (response) => response,
+    (response) => { settleTimer(response.config, response.status); return response; },
     (error) => {
         const status = error?.response?.status as number | undefined;
+        settleTimer(error?.config, status ?? null);
         if (status === 426) {
             const minVersion = error.response?.data?.min_version as string | undefined;
             dispatchUpgradeRequired(minVersion);

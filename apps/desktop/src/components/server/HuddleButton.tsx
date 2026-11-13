@@ -163,7 +163,10 @@ export const HuddleButton: React.FC<Props> = ({
 
     return (
         <div
-            className={mergedTeal ? 'rounded-xl border border-cl-lume/35 bg-cl-lume/[0.05] overflow-hidden' : undefined}
+            // group/huddle: hovering the channel row OR any call under it shows
+            // the calls' "Join" hint (HuddleCallCard), so a click aimed at an
+            // open call doesn't land on the row above and start a new one.
+            className={mergedTeal ? 'group/huddle rounded-xl border border-cl-lume/35 bg-cl-lume/[0.05] overflow-hidden' : 'group/huddle'}
             style={mergedTeal ? { boxShadow: 'var(--cl-glow-lume)' } : undefined}
         >
             <div

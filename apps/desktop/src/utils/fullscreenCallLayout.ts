@@ -24,8 +24,9 @@ import { Track } from 'livekit-client';
 export type StageSource = Track.Source.Camera | Track.Source.ScreenShare;
 
 /**
- * Something that can occupy the big stage: a camera, a screen share you are
- * subscribed to, or an unsubscribed share's click-to-watch gate.
+ * Something that can occupy the big stage: a camera (your own included), a
+ * screen share you are subscribed to, your own screen share's preview, or an
+ * unsubscribed share's click-to-watch gate.
  */
 export interface StageTileRef {
     identity: string;
@@ -57,15 +58,20 @@ export type StripItem =
 
 export interface FullscreenLayoutInput {
     /**
-     * Stage-eligible tiles, already in the order they should render. The
-     * overlay's own collection pass puts subscribed screen shares first, then
-     * cameras, then gates — a share is what a room is usually looking at.
+     * Stage-eligible tiles, already in the order they should render — see
+     * `orderStage`.
      */
     stage: readonly StageTileRef[];
     /** Participants with no stage tile of their own (mic only, or everything hidden). */
     audioOnly: readonly string[];
     /** `CallContext.focusedStream`. */
     focused: FocusRef | null;
+    /**
+     * The one video the user asked to fill the whole screen, or null. Wins over
+     * everything else; `fillTargetState` decides whether it is still valid, and
+     * it deliberately need not be in `stage` while it is `waiting`.
+     */
+    fill?: FocusRef | null;
 }
 
 export type FullscreenLayout =
@@ -117,9 +123,17 @@ export function resolveFocus(
  *                               there is no second rendering to switch to)
  *   2+ and focused → `focus`
  *   2+ otherwise   → `grid`
+ *
+ * A fill comes before all of that and is `solo` with nothing in the strip: one
+ * tile, no click to toggle, no band for it to share the screen with. It never
+ * touches `focused`, so the layout underneath is exactly what comes back.
  */
 export function chooseFullscreenLayout(input: FullscreenLayoutInput): FullscreenLayout {
-    const { stage, audioOnly, focused } = input;
+    const { stage, audioOnly, focused, fill } = input;
+
+    if (fill) {
+        return { mode: 'solo', stage: { identity: fill.identity, source: fill.source, gated: false }, strip: [] };
+    }
 
     if (stage.length === 0) {
         return { mode: 'people', people: audioOnly };
@@ -153,6 +167,90 @@ export function chooseFullscreenLayout(input: FullscreenLayoutInput): Fullscreen
  */
 export function focusToggleMeaningful(layout: FullscreenLayout): boolean {
     return layout.mode === 'grid' || layout.mode === 'focus';
+}
+
+// ── Your own share on the stage ─────────────────────────────────────────────
+//
+// Owner: "Your own screenshare should show up in the full screen view." It is a
+// stage tile on exactly the terms your own camera is: it counts toward "how many
+// videos are there", so alone it is `solo` and it keeps fullscreen open. A self-
+// view that is the only picture on screen is a real thing to be looking at, and a
+// second rule for one of your two self-views would be one more thing to explain.
+// Hiding it is what takes it off the count, so hiding your only tile closes
+// fullscreen through the same empty-stage path as anything else.
+
+/**
+ * Is your own share a tile right now?
+ *
+ * `republishing` is the share's own announced republish (utils/shareRepublishSignal.ts,
+ * the attribute viewers hold on): between the unpublish and the new publish
+ * `isScreenShareEnabled` is false for seconds, and a tile that left the stage for
+ * that gap would throw a solo sharer out of fullscreen. Your own view of your own
+ * share gets the same "it has not ended" a viewer does. Paused is NOT an input:
+ * going to the background changes the picture, never the layout.
+ */
+export function ownShareOnStage(own: { sharing: boolean; republishing: boolean; hidden: boolean }): boolean {
+    return (own.sharing || own.republishing) && !own.hidden;
+}
+
+/**
+ * The stage, in order.
+ *
+ *   1. Shares you are watching: a room looking at a share is looking at the share.
+ *   2. Your own share: still a share, so it sits with them, but it never comes
+ *      ahead of one you chose to watch.
+ *   3. Cameras (your own first, as the overlay collects them).
+ *   4. Click-to-watch gates.
+ */
+export function orderStage(tiles: {
+    watchedShares: readonly string[];
+    ownShare: string | null;
+    cameras: readonly string[];
+    gatedShares: readonly string[];
+}): StageTileRef[] {
+    const SHARE = Track.Source.ScreenShare as StageSource;
+    const CAMERA = Track.Source.Camera as StageSource;
+    return [
+        ...tiles.watchedShares.map(identity => ({ identity, source: SHARE, gated: false })),
+        ...(tiles.ownShare ? [{ identity: tiles.ownShare, source: SHARE, gated: false }] : []),
+        ...tiles.cameras.map(identity => ({ identity, source: CAMERA, gated: false })),
+        ...tiles.gatedShares.map(identity => ({ identity, source: SHARE, gated: true })),
+    ];
+}
+
+// ── One video filling the screen ────────────────────────────────────────────
+//
+// Owner: "an option to right click a video in full screen and make it so that
+// window takes up the entire screen." The target is a STREAM (identity + source),
+// not a track, so a republish cannot lose it: the new publication is the same
+// target.
+
+/**
+ * What has become of the fill target:
+ *
+ *   none     there is no fill.
+ *   live     on the stage, showing.
+ *   waiting  off the stage but its owner is still here: a camera restarting, a
+ *            republish with no announcement. The tile keeps the screen for a grace
+ *            while it comes back.
+ *   gone     finished, no grace: they left the call, or you hid it or stopped
+ *            watching it (a gate is not a video to fill).
+ *
+ * A share holding across an announced republish stays `live`, because the overlay
+ * keeps it on the stage (utils/shareHold.ts).
+ */
+export type FillTargetState = 'none' | 'live' | 'waiting' | 'gone';
+
+export function fillTargetState(
+    stage: readonly StageTileRef[],
+    fill: FocusRef | null,
+    target: { present: boolean; hidden: boolean },
+): FillTargetState {
+    if (!fill) return 'none';
+    if (!target.present || target.hidden) return 'gone';
+    const tile = stage.find(t => matches(t, fill));
+    if (!tile) return 'waiting';
+    return tile.gated ? 'gone' : 'live';
 }
 
 // ── Focus across the fullscreen toggle ──────────────────────────────────────

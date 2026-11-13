@@ -100,6 +100,8 @@ export interface DeleteConfirmCopy {
 export interface DeleteCopyContext {
     /** False when a moderator is deleting somebody else's message. */
     isOwnMessage: boolean;
+    /** A client-only line (join/leave) removed from THIS user's view, not deleted for everyone. */
+    localOnly?: boolean;
 }
 
 /**
@@ -114,6 +116,9 @@ export interface DeleteCopyContext {
  * carries no modifier state), so the hint names that path.
  */
 export function buildDeleteConfirmCopy(ctx: DeleteCopyContext): DeleteConfirmCopy {
+    if (ctx.localOnly) {
+        return { title: 'Remove this message from your view?', confirmLabel: 'Remove', hint: 'Shift-click to skip' };
+    }
     return {
         title: ctx.isOwnMessage ? 'Delete this message?' : 'Delete this message as a moderator?',
         confirmLabel: 'Delete',

@@ -1,5 +1,5 @@
 import React from 'react';
-import { ShieldOff, Eye, MessageCircle, UserCheck, AlertCircle, ExternalLink, ImageIcon, Smartphone, Search } from 'lucide-react';
+import { ShieldOff, Eye, MessageCircle, UserCheck, ExternalLink, ImageIcon, Smartphone, Search } from 'lucide-react';
 import { type PrivacySettingsHook, type ImageAutoLoadMode } from '../hooks/usePrivacySettings';
 import type { ScreenLockHook } from '../hooks/useScreenLock';
 import type { KeybindHook } from '../hooks/useKeybinds';
@@ -139,9 +139,9 @@ const PrivacySettings: React.FC<PrivacySettingsProps> = ({ privacy, screenLock, 
                 </div>
             </div>
 
-            {/* App security + content */}
+            {/* App security */}
             <div className="sd-card">
-                <h3>This window &amp; content</h3>
+                <h3>This window</h3>
                 <div className="sd-row" style={{ borderTop: 'none' }}>
                     <span className={`sd-tile${settings.screenCaptureProtection ? '' : ' sd-tile--dim'}`}><ShieldOff size={16} /></span>
                     <div className="sd-rl">
@@ -153,16 +153,6 @@ const PrivacySettings: React.FC<PrivacySettingsProps> = ({ privacy, screenLock, 
                     </div>
                     <div className="sd-rc">
                         <ClToggle checked={settings.screenCaptureProtection} onChange={setScreenCaptureProtection} />
-                    </div>
-                </div>
-                <div className="sd-row">
-                    <span className="sd-tile sd-tile--warm"><AlertCircle size={16} /></span>
-                    <div className="sd-rl">
-                        <b>Show age-restricted content <span style={{ color: 'var(--cl-glow)', fontWeight: 700, fontSize: 11 }}>coming soon</span></b>
-                        <span>Allow channels and servers marked age-restricted to display their content. 18+ only.</span>
-                    </div>
-                    <div className="sd-rc">
-                        <ClToggle checked={false} onChange={() => {}} disabled />
                     </div>
                 </div>
             </div>

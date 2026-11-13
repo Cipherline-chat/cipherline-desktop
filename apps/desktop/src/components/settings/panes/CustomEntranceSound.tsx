@@ -16,7 +16,7 @@ import { saveOwnCallPersonalization } from '../../../utils/callPersonalizationSt
 import type { SoundsPrefs } from '../../../utils/notificationSounds';
 
 /**
- * Settings > Personalize > Calls > Entrance sound > Custom.
+ * Settings > Activity & Style > Style > Calls > Entrance sound > Custom.
  *
  * Pick an audio file, choose up to 2.5 s of it on a waveform strip (Start +
  * Length sliders, or click the strip), Preview what the others will hear,

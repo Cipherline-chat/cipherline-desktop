@@ -50,14 +50,16 @@ export const AvatarDecoration: React.FC<{
     tint?: string | null;
     /** The owner's knobs for this decoration (utils/profileCosmetics DECORATION_OPTIONS): a hue beats `tint`. */
     options?: ItemOptions | null;
-}> = ({ decoration, children, className, block, tint, options }) => {
+    /** Small avatars (Settings picker, ~40px list/status avatars): fine-detailed items draw a bolder version (cosmetics/decorations.tsx DecoCtx.compact). */
+    compact?: boolean;
+}> = ({ decoration, children, className, block, tint, options, compact }) => {
     const rawId = useId();
     const u = `pcd${rawId.replace(/[^a-zA-Z0-9_-]/g, '')}`;
     const resolved = hasDecorationArt(decoration) ? resolveDecoration(decoration) : null;
     const art = resolved ? DECORATION_ART[resolved.base] : null;
     const o: ItemOptions = { ...(options ?? {}) };
     if (resolved?.legacyHue != null) o.h = resolved.legacyHue;
-    const ctx = { u, o, tint: tint ?? null };
+    const ctx = { u, o, tint: tint ?? null, compact: !!compact };
     const style: Record<string, string> = {};
     if (o.s) style['--pc-speed'] = String(SPEED[o.s] ?? 1);
     // Surrounding CSS may still read `--pc-tint`; the art itself takes its colours from `o` / `tint`.

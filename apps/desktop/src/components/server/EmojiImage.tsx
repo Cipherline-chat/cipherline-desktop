@@ -12,6 +12,7 @@ import React, { useMemo } from 'react';
 import { Smile, Ghost } from 'lucide-react';
 import { useServerEmojiUrl } from '../../hooks/useServerEmojiUrl';
 import { evictEmoji } from '../../utils/serverEmojiLoader';
+import { useFrozenWhenAway } from '../../utils/animatedImage';
 import { useClTooltip } from '../cl/useClTooltip';
 import { useContextMenu } from '../../hooks/useContextMenu';
 import { useToast } from '../../contexts/ToastContext';
@@ -128,6 +129,7 @@ export const EmojiImage: React.FC<Props> = ({ name, serverId, attachmentId, keyB
         [serverId, attachmentId, keyB64, nonceB64],
     );
     const url = useServerEmojiUrl(ref, token);
+    const shown = useFrozenWhenAway(url);
     const ctx = useContextMenu();
     const { push } = useToast();
 
@@ -135,7 +137,7 @@ export const EmojiImage: React.FC<Props> = ({ name, serverId, attachmentId, keyB
         return (
             <>
             <img
-                src={url}
+                src={shown ?? url}
                 alt={`:${name}:`}
                 title={`:${name}:`}
                 className={`object-contain ${className ?? ''}`}

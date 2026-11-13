@@ -105,6 +105,13 @@ export const MOTIONS: Record<Motion, Spec> = {
     proud: { ms: 950, frames: [
         f(.3, 'translateY(-4%) scale(1.08)', OUT), f(.7, 'translateY(-4%) scale(1.08)', IO), f(1, 'none'),
     ] },
+    // the wardrobe: a hat comes off and/or another goes on. He stretches up
+    // to meet it while the old one leaves, then a small squash as the new one
+    // lands (the gear's entry waits GEAR_ENTER_DELAY_MS), and settles.
+    dress: { ms: 900, frames: [
+        f(.28, 'translateY(-3%) scale(.97, 1.04)', OUT), f(.5, 'translateY(2%) scale(1.05, .94)', IO),
+        f(.72, 'translateY(-1%) scale(.99, 1.01)', IO), f(1, 'none'),
+    ] },
     // the paper plane whooshed past: a jump, then he lands and settles
     startle: { ms: 750, frames: [
         f(.22, 'translateY(-20%) scale(.9, 1.12)', OUT), f(.5, 'translateY(0) scale(1.08, .92)', IN),

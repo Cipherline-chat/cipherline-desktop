@@ -52,7 +52,7 @@ describe('the normal flow adds no prompt (our share button -> our picker -> shar
         const g = mint(c, WIN, SCREEN.id, true);
         expect((await c.authorizeVideo(WIN, g.token, SCREEN, false)).allowed).toBe(true);
         advance(5_000);
-        const a = await c.authorizeAudio(WIN, g.token, sid => sid.startsWith('screen:'), { kind: 'audio-system' });
+        const a = c.authorizeAudio(WIN, g.token, sid => sid.startsWith('screen:'));
         expect(a).toEqual({ allowed: true, via: 'grant', grant: 'valid' });
         expect(confirm).not.toHaveBeenCalled();
     });
@@ -63,7 +63,7 @@ describe('the normal flow adds no prompt (our share button -> our picker -> shar
         const g = mint(c, WIN, WINDOW.id, true);
         await c.authorizeVideo(WIN, g.token, WINDOW, false);
         const pidOf = (sid: string) => sid === WINDOW.id; // main's addon mapping stand-in
-        expect((await c.authorizeAudio(WIN, g.token, pidOf, { kind: 'audio-app', name: WINDOW.name })).allowed).toBe(true);
+        expect((c.authorizeAudio(WIN, g.token, pidOf)).allowed).toBe(true);
         expect(confirm).not.toHaveBeenCalled();
     });
 
@@ -83,7 +83,7 @@ describe('the normal flow adds no prompt (our share button -> our picker -> shar
             click();
             const g = mint(c, WIN, src.id, true);
             expect((await c.authorizeVideo(WIN, g.token, src, false)).via).toBe('grant');
-            expect((await c.authorizeAudio(WIN, g.token, sid => sid === src.id, { kind: 'audio-app', name: src.name })).via).toBe('grant');
+            expect((c.authorizeAudio(WIN, g.token, sid => sid === src.id)).via).toBe('grant');
         }
         expect(confirm).not.toHaveBeenCalled();
     });
@@ -218,67 +218,64 @@ describe('an untrusted but legitimate share asks once, and the answer covers its
         const v = await c.authorizeVideo(WIN, g.token, SCREEN, false);
         expect(v).toEqual({ allowed: true, via: 'dialog', grant: 'valid' });
         expect(prompts[0]).toEqual({ kind: 'screen', name: 'Screen 1', withAudio: true });
-        const a = await c.authorizeAudio(WIN, g.token, sid => sid.startsWith('screen:'), { kind: 'audio-system' });
+        const a = c.authorizeAudio(WIN, g.token, sid => sid.startsWith('screen:'));
         expect(a).toEqual({ allowed: true, via: 'grant', grant: 'valid' });
         expect(confirm).toHaveBeenCalledTimes(1);
     });
 });
 
-describe('audio start', () => {
+describe('audio start: never a dialog, still guarded', () => {
+    const screenAudio = (sid: string) => sid.startsWith('screen:');
+
     it('is single-use per grant', async () => {
         const { c, click } = setup({ answer: false });
         click();
         const g = mint(c, WIN, SCREEN.id, true);
         await c.authorizeVideo(WIN, g.token, SCREEN, false);
-        const m = (sid: string) => sid.startsWith('screen:');
-        expect((await c.authorizeAudio(WIN, g.token, m, { kind: 'audio-system' })).via).toBe('grant');
-        expect(await c.authorizeAudio(WIN, g.token, m, { kind: 'audio-system' })).toMatchObject({ allowed: false, grant: 'unknown' });
+        expect(c.authorizeAudio(WIN, g.token, screenAudio).allowed).toBe(true);
+        expect(c.authorizeAudio(WIN, g.token, screenAudio)).toMatchObject({ allowed: false, why: 'no_grant', grant: 'unknown' });
     });
 
-    it('may follow the video by up to 2 minutes, not longer', async () => {
-        const m = (sid: string) => sid.startsWith('screen:');
+    it('may follow the video by up to 2 minutes, not longer - and a late start is refused WITHOUT a dialog', async () => {
         const ok = setup({ answer: false });
         ok.click();
         const g1 = mint(ok.c, WIN, SCREEN.id, true);
         await ok.c.authorizeVideo(WIN, g1.token, SCREEN, false);
         ok.advance(AUDIO_AFTER_VIDEO_MS);
-        expect((await ok.c.authorizeAudio(WIN, g1.token, m, { kind: 'audio-system' })).via).toBe('grant');
+        expect(ok.c.authorizeAudio(WIN, g1.token, screenAudio).via).toBe('grant');
 
         const late = setup({ answer: false });
         late.click();
         const g2 = mint(late.c, WIN, SCREEN.id, true);
         await late.c.authorizeVideo(WIN, g2.token, SCREEN, false);
         late.advance(AUDIO_AFTER_VIDEO_MS + 1);
-        expect(await late.c.authorizeAudio(WIN, g2.token, m, { kind: 'audio-system' })).toMatchObject({ allowed: false, grant: 'expired' });
-        expect(late.confirm).toHaveBeenCalledTimes(1);
+        expect(late.c.authorizeAudio(WIN, g2.token, screenAudio)).toMatchObject({ allowed: false, why: 'no_grant', grant: 'expired' });
+        expect(late.confirm).not.toHaveBeenCalled();
     });
 
-    it('a grant minted without audio cannot start audio', async () => {
+    it('a grant minted without audio cannot start audio (no dialog)', async () => {
         const { c, confirm, click } = setup({ answer: false });
         click();
         const g = mint(c, WIN, SCREEN.id, false);
         await c.authorizeVideo(WIN, g.token, SCREEN, false);
-        const d = await c.authorizeAudio(WIN, g.token, () => true, { kind: 'audio-system' });
-        expect(d).toMatchObject({ allowed: false, grant: 'audio' });
-        expect(confirm).toHaveBeenCalledTimes(1);
+        expect(c.authorizeAudio(WIN, g.token, () => true)).toMatchObject({ allowed: false, why: 'no_grant', grant: 'audio' });
+        expect(confirm).not.toHaveBeenCalled();
     });
 
-    it('is bound to the source: a screen grant does not start audio for a window process', async () => {
+    it('is bound to the source: a screen grant does not start audio for a window process (no dialog)', async () => {
         const { c, confirm, click } = setup({ answer: false });
         click();
         const g = mint(c, WIN, SCREEN.id, true);
         await c.authorizeVideo(WIN, g.token, SCREEN, false);
-        const d = await c.authorizeAudio(WIN, g.token, sid => sid === WINDOW.id, { kind: 'audio-app', name: 'Some app' });
-        expect(d).toMatchObject({ allowed: false, grant: 'source' });
-        expect(confirm).toHaveBeenCalledTimes(1);
-        expect(confirm.mock.calls[0][0]).toEqual({ kind: 'audio-app', name: 'Some app' });
+        expect(c.authorizeAudio(WIN, g.token, sid => sid === WINDOW.id)).toMatchObject({ allowed: false, why: 'no_grant', grant: 'source' });
+        expect(confirm).not.toHaveBeenCalled();
     });
 
-    it('with no grant at all, whole-system audio asks (and names what it is)', async () => {
-        const { c, prompts } = setup({ answer: false });
-        const d = await c.authorizeAudio(WIN, undefined, () => true, { kind: 'audio-system' });
-        expect(d).toEqual({ allowed: false, why: 'declined', grant: 'missing' });
-        expect(prompts).toEqual([{ kind: 'audio-system' }]);
+    it('with no grant at all it is refused silently - the old "wants to share your computer\'s audio" dialog is gone', () => {
+        const { c, confirm, prompts } = setup({ answer: true });
+        expect(c.authorizeAudio(WIN, undefined, () => true)).toEqual({ allowed: false, why: 'no_grant', grant: 'missing' });
+        expect(confirm).not.toHaveBeenCalled();
+        expect(prompts).toEqual([]);
     });
 
     it('another webContents cannot start audio on the main window\'s grant', async () => {
@@ -286,7 +283,118 @@ describe('audio start', () => {
         click();
         const g = mint(c, WIN, SCREEN.id, true);
         await c.authorizeVideo(WIN, g.token, SCREEN, false);
-        expect(await c.authorizeAudio(OTHER, g.token, () => true, { kind: 'audio-system' })).toMatchObject({ allowed: false, grant: 'sender' });
+        expect(c.authorizeAudio(OTHER, g.token, () => true)).toMatchObject({ allowed: false, why: 'no_grant', grant: 'sender' });
+    });
+});
+
+describe('turning audio on in the middle of a share (the "Enable audio" button) - the owner\'s case', () => {
+    const screenAudio = (sid: string) => sid.startsWith('screen:');
+
+    async function shareWithoutAudio() {
+        const h = setup({ answer: false });
+        h.click();
+        const g = mint(h.c, WIN, SCREEN.id, false);
+        await h.c.authorizeVideo(WIN, g.token, SCREEN, false);
+        return h;
+    }
+
+    it('click "Enable audio" an hour into the share: a fresh grant starts system audio with NO dialog', async () => {
+        const { c, confirm, click, advance } = await shareWithoutAudio();
+        advance(60 * 60 * 1000);
+        click();                                  // the click on the audio button
+        const g = mint(c, WIN, SCREEN.id, true);  // what applyAudioOnlyChange now does first
+        expect(g.trusted).toBe(true);
+        expect(c.authorizeAudio(WIN, g.token, screenAudio)).toEqual({ allowed: true, via: 'grant', grant: 'valid' });
+        expect(confirm).not.toHaveBeenCalled();
+    });
+
+    it('works again on every later toggle (off, on, off, on) - each press mints its own grant', async () => {
+        const { c, confirm, click, advance } = await shareWithoutAudio();
+        for (let i = 0; i < 4; i++) {
+            advance(45_000);
+            click();
+            const g = mint(c, WIN, SCREEN.id, true);
+            expect(c.authorizeAudio(WIN, g.token, screenAudio).allowed).toBe(true);
+        }
+        expect(confirm).not.toHaveBeenCalled();
+    });
+
+    it('control (the bug): re-using the share-start grant for the toggle is refused - which is what used to pop the dialog', async () => {
+        const { c, confirm, click, advance } = setup({ answer: false });
+        click();
+        const g = mint(c, WIN, SCREEN.id, true);
+        await c.authorizeVideo(WIN, g.token, SCREEN, false);
+        expect(c.authorizeAudio(WIN, g.token, screenAudio).allowed).toBe(true); // the share's own audio
+        advance(5 * 60_000);
+        click();
+        // the toggle presented the SPENT grant: unknown to main now. It is refused, and no dialog is shown.
+        expect(c.authorizeAudio(WIN, g.token, screenAudio)).toMatchObject({ allowed: false, why: 'no_grant' });
+        expect(confirm).not.toHaveBeenCalled();
+    });
+
+    it('protection kept: with no real input behind the grant, audio is refused silently (a script cannot do it on its own)', async () => {
+        const { c, confirm, advance } = await shareWithoutAudio();
+        advance(PRESENCE_WINDOW_MS + CONTINUATION_MS + 1); // no click for a long while, no recent capture
+        const g = mint(c, WIN, SCREEN.id, true);
+        expect(g.trusted).toBe(false);
+        expect(c.authorizeAudio(WIN, g.token, screenAudio)).toMatchObject({ allowed: false, why: 'untrusted' });
+        expect(confirm).not.toHaveBeenCalled();
+    });
+
+    it('protection kept: no audio without a live share - a click alone does not start system audio', () => {
+        const { c, confirm, click } = setup({ answer: true });
+        click();
+        const g = mint(c, WIN, SCREEN.id, true); // a real click, but no share was ever started
+        expect(c.authorizeAudio(WIN, g.token, screenAudio)).toMatchObject({ allowed: false, why: 'no_share' });
+        expect(confirm).not.toHaveBeenCalled();
+    });
+
+    it('protection kept: once the share ends, audio cannot be started again until a new share is authorized', async () => {
+        const { c, confirm, click } = await shareWithoutAudio();
+        expect(c._isShareLive(WIN)).toBe(true);
+        c.endShare(WIN);                          // the renderer reports the share gone
+        expect(c._isShareLive(WIN)).toBe(false);
+        click();
+        const g = mint(c, WIN, SCREEN.id, true);
+        expect(c.authorizeAudio(WIN, g.token, screenAudio)).toMatchObject({ allowed: false, why: 'no_share' });
+        // a NEW share from the picker makes audio available again
+        click();
+        const g2 = mint(c, WIN, SCREEN.id, true);
+        await c.authorizeVideo(WIN, g2.token, SCREEN, false);
+        click();
+        const g3 = mint(c, WIN, SCREEN.id, true);
+        expect(c.authorizeAudio(WIN, g3.token, screenAudio).allowed).toBe(true);
+        expect(confirm).not.toHaveBeenCalled();
+    });
+
+    it('protection kept: the live share is for ONE source - audio for a different source is refused', async () => {
+        const { c, click } = await shareWithoutAudio(); // sharing SCREEN
+        click();
+        const g = mint(c, WIN, WINDOW.id, true);
+        expect(c.authorizeAudio(WIN, g.token, sid => sid === WINDOW.id)).toMatchObject({ allowed: false, why: 'no_share' });
+    });
+
+    it('protection kept: a closed / reloaded window forgets its share', async () => {
+        const { c, click } = await shareWithoutAudio();
+        c.forgetSender(WIN);
+        click();
+        const g = mint(c, WIN, SCREEN.id, true);
+        expect(c.authorizeAudio(WIN, g.token, screenAudio)).toMatchObject({ allowed: false, why: 'no_share' });
+    });
+
+    it('protection kept: another webContents never inherits the main window\'s live share', async () => {
+        const { c } = await shareWithoutAudio();
+        c.notePresence(OTHER);
+        const g = mint(c, OTHER, SCREEN.id, true);
+        expect(c.authorizeAudio(OTHER, g.token, screenAudio)).toMatchObject({ allowed: false, why: 'no_share' });
+    });
+
+    it('a share confirmed in the video dialog (untrusted grant) still gets its audio, silently', async () => {
+        const { c, confirm } = setup({ answer: true });
+        const g = mint(c, WIN, SCREEN.id, true); // no click: the dialog decides the video
+        expect((await c.authorizeVideo(WIN, g.token, SCREEN, false)).via).toBe('dialog');
+        expect(c.authorizeAudio(WIN, g.token, screenAudio).allowed).toBe(true);
+        expect(confirm).toHaveBeenCalledTimes(1); // the video one only
     });
 });
 
@@ -342,6 +450,164 @@ describe('continuation (automatic republish) is narrow', () => {
         await c.authorizeVideo(WIN, undefined, SCREEN, false);
         advance(PRESENCE_WINDOW_MS + 1);
         expect(mint(c, WIN, SCREEN.id).trusted).toBe(false);
+    });
+});
+
+describe('a live share restarts on the capture it has (Wayland: no new capture, so no resolve step)', () => {
+    // Linux Wayland: a codec drift / encoder stall / hardware-encoder rule republishes the share on a
+    // clone of the capture that is already running, because a new capture is the desktop's chooser.
+    // That path never calls authorizeVideo, so nothing renews the consent the share's native audio
+    // rides on. continueLive is that renewal - for the live source only.
+    async function liveShareWithAudio(opts: { audio: boolean } = { audio: true }) {
+        const s = setup({ answer: false });
+        s.click();
+        const g = mint(s.c, WIN, WINDOW.id, opts.audio);
+        expect((await s.c.authorizeVideo(WIN, g.token, WINDOW, false)).allowed).toBe(true);
+        return { ...s, g };
+    }
+
+    it('hours later, with no click, the same live source continues and its native audio starts - no dialog', async () => {
+        const { c, confirm, advance } = await liveShareWithAudio();
+        advance(3 * 60 * 60_000); // the CONTINUATION_MS window is long gone
+        const plain = mint(c, WIN, WINDOW.id, true);
+        expect(plain.trusted).toBe(false); // the old route: a restart's own mint cannot be trusted
+        const r = c.continueLive(WIN, WINDOW.id, true);
+        expect(r.ok).toBe(true);
+        if (!r.ok) return;
+        expect(r.audio).toBe(true);
+        const a = c.authorizeAudio(WIN, r.token, sid => sid === WINDOW.id);
+        expect(a).toEqual({ allowed: true, via: 'grant', grant: 'valid' });
+        expect(confirm).not.toHaveBeenCalled();
+    });
+
+    it('the continued grant survives the share flag flipping off during the republish (its video half is spent)', async () => {
+        const { c, confirm, advance } = await liveShareWithAudio();
+        advance(10 * 60_000);
+        const r = c.continueLive(WIN, WINDOW.id, true);
+        if (!r.ok) throw new Error('continue failed');
+        c.endShare(WIN); // share:set-active(false) fires while the old publication is torn down
+        const a = c.authorizeAudio(WIN, r.token, sid => sid === WINDOW.id);
+        expect(a.allowed).toBe(true);
+        expect(confirm).not.toHaveBeenCalled();
+    });
+
+    it('a NEW source is not continued: it needs a new consent (mint + authorizeVideo, i.e. the dialog without a click)', async () => {
+        const { c, advance } = await liveShareWithAudio();
+        advance(PRESENCE_WINDOW_MS + 1);
+        expect(c.continueLive(WIN, SCREEN.id, true)).toEqual({ ok: false, reason: 'no_share' });
+        // and the ordinary path for it still asks: untrusted grant -> the native dialog (declined here)
+        const g = mint(c, WIN, SCREEN.id, false);
+        expect(g.trusted).toBe(false);
+        const d = await c.authorizeVideo(WIN, g.token, SCREEN, false);
+        expect(d.allowed).toBe(false);
+    });
+
+    it('nothing continues without a live share: not before one, not after it ended', async () => {
+        const { c } = setup({ answer: false });
+        expect(c.continueLive(WIN, SCREEN.id, false)).toEqual({ ok: false, reason: 'no_share' });
+        const s = await liveShareWithAudio();
+        s.c.endShare(WIN);
+        expect(s.c.continueLive(WIN, WINDOW.id, true)).toEqual({ ok: false, reason: 'no_share' });
+    });
+
+    it('a Change source that is cancelled leaves the running share continuable: the new source was ADDED, not swapped in', async () => {
+        const { c, click, advance } = await liveShareWithAudio();
+        advance(PRESENCE_WINDOW_MS + 1);
+        click();
+        // the new capture's consent is recorded when it starts (Wayland: before the chooser is answered)...
+        const g = mint(c, WIN, SCREEN.id, false);
+        expect((await c.authorizeVideo(WIN, g.token, SCREEN, false)).allowed).toBe(true);
+        // ...then the chooser is closed and the old share carries on; much later it restarts by itself
+        advance(30 * 60_000);
+        const r = c.continueLive(WIN, WINDOW.id, true);
+        expect(r.ok).toBe(true);
+        if (r.ok) expect(c.authorizeAudio(WIN, r.token, sid => sid === WINDOW.id).allowed).toBe(true);
+    });
+
+    it('but only until the share ends: endShare drops every source the sender had', async () => {
+        const { c, click } = await liveShareWithAudio();
+        click();
+        const g = mint(c, WIN, SCREEN.id, false);
+        await c.authorizeVideo(WIN, g.token, SCREEN, false);
+        c.endShare(WIN);
+        expect(c.continueLive(WIN, WINDOW.id, true)).toEqual({ ok: false, reason: 'no_share' });
+        expect(c.continueLive(WIN, SCREEN.id, false)).toEqual({ ok: false, reason: 'no_share' });
+        expect(c._isShareLive(WIN)).toBe(false);
+    });
+
+    it('the sources a sender can hold are bounded', async () => {
+        const { c, click } = await liveShareWithAudio();
+        for (let i = 0; i < 8; i++) {
+            click();
+            const id = `screen:portal-n${i}:0`;
+            const g = mint(c, WIN, id, false);
+            await c.authorizeVideo(WIN, g.token, { id, name: 'Screen or window' }, false);
+        }
+        expect(c.continueLive(WIN, 'screen:portal-n7:0', false).ok).toBe(true);   // the newest is there
+        expect(c.continueLive(WIN, WINDOW.id, false).ok).toBe(false);             // the oldest fell off
+    });
+
+    it('another webContents never continues the main window\'s share', async () => {
+        const { c } = await liveShareWithAudio();
+        expect(c.continueLive(OTHER, WINDOW.id, true)).toEqual({ ok: false, reason: 'no_share' });
+    });
+
+    it('a restart cannot add audio to a silent share: the continued grant carries none (until a real click)', async () => {
+        const { c, click, advance } = await liveShareWithAudio({ audio: false });
+        advance(PRESENCE_WINDOW_MS + 1);
+        const r = c.continueLive(WIN, WINDOW.id, true);
+        if (!r.ok) throw new Error('continue failed');
+        expect(r.audio).toBe(false);
+        expect(c.authorizeAudio(WIN, r.token, sid => sid === WINDOW.id)).toEqual({ allowed: false, why: 'no_grant', grant: 'audio' });
+        // the user turning it on right now (a real click) is allowed through the same call
+        click();
+        const r2 = c.continueLive(WIN, WINDOW.id, true);
+        if (!r2.ok) throw new Error('continue failed');
+        expect(r2.audio).toBe(true);
+        expect(c.authorizeAudio(WIN, r2.token, sid => sid === WINDOW.id).allowed).toBe(true);
+    });
+
+    it('a share the user turned audio on for keeps it across restarts (the toggle recorded it)', async () => {
+        const { c, click, advance } = await liveShareWithAudio({ audio: false });
+        advance(PRESENCE_WINDOW_MS + 1);
+        click();
+        const on = mint(c, WIN, WINDOW.id, true); // "Enable audio" mid-share
+        expect(c.authorizeAudio(WIN, on.token, sid => sid === WINDOW.id).allowed).toBe(true);
+        advance(60 * 60_000);
+        const r = c.continueLive(WIN, WINDOW.id, true);
+        if (!r.ok) throw new Error('continue failed');
+        expect(r.audio).toBe(true);
+    });
+
+    it('a continued grant is single-use for audio, bound to the sender and to the source', async () => {
+        const { c, advance } = await liveShareWithAudio();
+        advance(5 * 60_000);
+        const r = c.continueLive(WIN, WINDOW.id, true);
+        if (!r.ok) throw new Error('continue failed');
+        expect(c.authorizeAudio(OTHER, r.token, () => true).allowed).toBe(false);
+        expect(c.authorizeAudio(WIN, r.token, sid => sid === SCREEN.id).allowed).toBe(false); // another source's process
+        const r2 = c.continueLive(WIN, WINDOW.id, true);
+        if (!r2.ok) throw new Error('continue failed');
+        expect(c.authorizeAudio(WIN, r2.token, sid => sid === WINDOW.id).allowed).toBe(true);
+        expect(c.authorizeAudio(WIN, r2.token, sid => sid === WINDOW.id).allowed).toBe(false); // spent
+    });
+
+    it('rejects malformed requests without touching anything', async () => {
+        const { c } = await liveShareWithAudio();
+        expect(c.continueLive(WIN, 'not-a-source', true)).toEqual({ ok: false, reason: 'bad_request' });
+        expect(c.continueLive(WIN, WINDOW.id, 'yes')).toEqual({ ok: false, reason: 'bad_request' });
+        expect(c.continueLive(1.5, WINDOW.id, true)).toEqual({ ok: false, reason: 'bad_request' });
+    });
+
+    it('is wired: its own IPC, keyed by the sender, and exposed by the bridge', () => {
+        const main = readFileSync(join(__dirname, 'main.ts'), 'utf8');
+        const preload = readFileSync(join(__dirname, 'preload.ts'), 'utf8');
+        expect(main).toContain("ipcMain.handle('capture:continue-grant'");
+        expect(main).toContain('captureConsent.continueLive(event.sender.id, sourceId, audio)');
+        expect(preload).toContain("ipcRenderer.invoke('capture:continue-grant', sourceId, audio)");
+        // no IPC lets the renderer name a source that is not the live one: the check is main's
+        expect(main.slice(main.indexOf("ipcMain.handle('capture:continue-grant'"), main.indexOf("ipcMain.handle('desktop-capturer-resolve'")))
+            .not.toContain('cachedDesktopSources');
     });
 });
 
@@ -409,9 +675,17 @@ describe('dialog copy', () => {
     it('names the source and offers a clear choice', () => {
         expect(describePrompt({ kind: 'screen', name: 'Screen 1', withAudio: false }).message).toBe('Cipherline wants to share your screen: Screen 1');
         expect(describePrompt({ kind: 'window', name: 'Notes', withAudio: true }).message).toBe('Cipherline wants to share a window: Notes');
-        expect(describePrompt({ kind: 'audio-app', name: 'Spotify' }).message).toBe('Cipherline wants to share audio from: Spotify');
-        expect(describePrompt({ kind: 'audio-system' }).message).toContain('your computer');
         expect(describePrompt({ kind: 'screen', name: 'S', withAudio: true }).detail).toContain('Audio will be shared too');
+    });
+    it('there is no dialog copy for audio any more (the owner turned it off on purpose)', () => {
+        const source = readFileSync(join(__dirname, 'capture-consent.ts'), 'utf8');
+        const code = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '');
+        expect(code).not.toContain('audio-system');
+        expect(code).not.toContain('audio-app');
+        expect(code).not.toContain('share your computer');
+        // the type admits only video prompts: this does not compile if an audio kind comes back
+        const kinds: ConsentPrompt['kind'][] = ['screen', 'window'];
+        expect(kinds).toHaveLength(2);
     });
     it('a hostile window title cannot forge dialog text (newlines, bidi overrides, length)', () => {
         const evil = 'Notes\n\nCipherline is safe. Click Allow‮';
@@ -459,13 +733,33 @@ describe('wiring in main.ts / preload / renderer', () => {
         const h = main.slice(main.indexOf("ipcMain.handle('audio:start-window-capture'"), main.indexOf("ipcMain.handle('audio:stop-window-capture'"));
         const shape = h.indexOf('shapeOk');
         const consent = h.indexOf('captureConsent.authorizeAudio(');
+        // No dialog on the audio path: nothing awaits a prompt, and the old prompt kinds are gone.
+        expect(h).not.toContain('await captureConsent.authorizeAudio(');
+        expect(h).not.toContain("kind: 'audio-");
+        expect(h).not.toContain('approvedPidSourceId');
         const start = h.indexOf('audioCaptureAddon.startCapture(');
         expect(shape).toBeGreaterThan(-1);
         expect(consent).toBeGreaterThan(shape);
         expect(start).toBeGreaterThan(consent);
         // "exclude" (whole-system audio) is only ever our own pid.
         expect(h).toContain("mode === 'exclude' ? pid === process.pid");
-        expect(h).toContain("mode === 'exclude' ? { kind: 'audio-system' }");
+    });
+
+    it('the end of a share, a reload and a renderer crash all close the live share (and the last two stop the capture)', () => {
+        expect(main).toMatch(/ipcMain\.handle\('share:set-active', \(event, active: unknown\) => \{[\s\S]*?if \(active === false\) captureConsent\.endShare\(event\.sender\.id\);/);
+        expect(main).toMatch(/'did-navigate', \(\) => \{\s*captureConsent\.endShare\(mainContentsId\);[\s\S]*?audioCaptureAddon\?\.stopCapture\(\)/);
+        expect(main).toMatch(/hdrShare\.stop\('renderer_gone'\);[\s\S]*?captureConsent\.endShare\(mainContentsId\);[\s\S]*?audioCaptureAddon\?\.stopCapture\(\)/);
+        // a renderer saying "live" grants nothing: only the END is acted on
+        expect(main).not.toMatch(/captureConsent\.(startShare|beginShare|markLive)/);
+    });
+
+    it('the audio toggle mints a fresh grant before it starts the native audio (the regression behind the dialog)', () => {
+        const sc = readFileSync(join(__dirname, '..', 'src', 'components', 'SidebarConference.tsx'), 'utf8');
+        const fn = sc.slice(sc.indexOf('const applyAudioOnlyChange = async ('), sc.indexOf('// The body of a share start.'));
+        const mintAt = fn.indexOf('await mintShareGrant(options);');
+        const startAt = fn.indexOf('await startNativeWindowAudio(nativeMode, options.sourceId, options.appAudio?.handle);');
+        expect(mintAt).toBeGreaterThan(-1);
+        expect(startAt).toBeGreaterThan(mintAt);
     });
 
     it('real input is observed in the browser process, not reported by the renderer', () => {
@@ -475,7 +769,7 @@ describe('wiring in main.ts / preload / renderer', () => {
         // (both go through noteGlobalShortcutPress, which notes presence first - quick-share.wiring.test.ts)
         expect(main).toMatch(/function noteGlobalShortcutPress\(actionId: string\): void \{\s*captureConsent\.notePresence\(null\);/);
         expect(main).toMatch(/globalShortcut\.register\(accelerator, \(\) => \{\s*noteGlobalShortcutPress\(actionId\);/);
-        expect(main).toMatch(/syncKdeGlobalShortcuts\(map, \(actionId\) => \{\s*noteGlobalShortcutPress\(actionId\);/);
+        expect(main).toMatch(/new WaylandGlobalShortcuts\(\s*\(\) => dbusSessionBus\(\),\s*\(actionId\) => \{\s*noteGlobalShortcutPress\(actionId\);/);
         // No IPC channel lets the renderer claim presence.
         expect(strip(main)).not.toMatch(/ipcMain\.(handle|on)\('capture:(presence|user|input)/);
     });
@@ -495,12 +789,76 @@ describe('wiring in main.ts / preload / renderer', () => {
 
     it('the renderer mints before each capture and presents the token (and adds no click)', () => {
         const sc = readFileSync(join(__dirname, '..', 'src', 'components', 'SidebarConference.tsx'), 'utf8');
-        // (the 4th: a fresh grant after a failed HDR capture attempt spent the first one's video half)
-        expect(sc.match(/await mintShareGrant\(options\);/g)).toHaveLength(4);
+        // (the 4th: a fresh grant after a failed HDR capture attempt spent the first one's video half;
+        //  the 5th: the audio on/off toggle, which does not go through the republish;
+        //  the 6th: opening a new source to prove it, before the live share is taken down;
+        //  the 7th: acquireCaptureFirst, the Wayland portal's new source asked for before the live
+        //  share is touched - a capture like any other, so it presents its own grant)
+        expect(sc.match(/await mintShareGrant\(options\);/g)).toHaveLength(7);
         expect(sc).toContain('resolveDesktopSource(pending.sourceId, pending.audio, pending.grantToken ?? undefined)');
         expect(sc).toContain('startWindowAudioCapture(rootPid, wasapiMode, grantTokenFor(shareGrantRef.current, sourceId))');
         // every parked pending share carries the grant
-        expect(sc.match(/pendingScreenShareRef\.current = pendingShare\(/g)).toHaveLength(4);
+        expect(sc.match(/pendingScreenShareRef\.current = pendingShare\(/g)).toHaveLength(6);
         expect(sc).not.toMatch(/pendingScreenShareRef\.current = \{ \.\.\.options/);
+    });
+});
+
+describe('a NATIVE (portal) share binds its grant in main (reports bcde1655: every native share_audio start was refused)', () => {
+    // The native path never calls authorizeVideo: before beginNativeShare, the grant stayed unspent and no share was live -> 'no_share'.
+    const matchesScreen = (sid: string) => sid === SCREEN.id;
+    it('POSITIVE CONTROL: without the native bind the audio start IS refused (the reported bug)', () => {
+        const { c, click } = setup();
+        click(); const g = mint(c, WIN, SCREEN.id, true);
+        expect(c.authorizeAudio(WIN, g.token, matchesScreen)).toMatchObject({ allowed: false, why: 'no_share' });
+    });
+    it('a bound + committed native share lets exactly that grant start its audio, once', () => {
+        const { c, click } = setup();
+        click(); const g = mint(c, WIN, SCREEN.id, true);
+        const n = c.beginNativeShare(WIN, g.token, SCREEN.id)!;
+        expect(n).not.toBeNull();
+        expect(c._isShareLive(WIN)).toBe(false);                 // begin spends and marks nothing
+        expect(n.commit()).toBe(true);
+        expect(c._isShareLive(WIN)).toBe(true);
+        expect(c.authorizeAudio(WIN, g.token, matchesScreen)).toEqual({ allowed: true, via: 'grant', grant: 'valid' });
+        expect(c.authorizeAudio(WIN, g.token, matchesScreen)).toMatchObject({ allowed: false });   // spent
+    });
+    it('the chooser may outlive the 30 s grant: commit (at the first frame) restarts the audio window from then', () => {
+        const { c, click, advance } = setup();
+        click(); const g = mint(c, WIN, SCREEN.id, true);
+        const n = c.beginNativeShare(WIN, g.token, SCREEN.id)!;
+        advance(GRANT_TTL_MS + 20_000);                          // a person reading the portal dialog
+        expect(n.commit()).toBe(true);
+        expect(c.authorizeAudio(WIN, g.token, matchesScreen)).toMatchObject({ allowed: true });
+    });
+    it('NEGATIVE: a forged, missing, other-sender, other-source, expired or untrusted grant gets no bind and audio stays refused', () => {
+        const { c, click, advance } = setup();
+        click(); const g = mint(c, WIN, SCREEN.id, true);
+        expect(c.beginNativeShare(WIN, 'forged-token', SCREEN.id)).toBeNull();
+        expect(c.beginNativeShare(WIN, undefined, SCREEN.id)).toBeNull();
+        expect(c.beginNativeShare(OTHER, g.token, SCREEN.id)).toBeNull();            // another webContents' grant
+        expect(c.beginNativeShare(WIN, g.token, 'screen:9:9')).toBeNull();           // minted for a different source
+        expect(c.beginNativeShare(WIN, g.token, 'not a source')).toBeNull();
+        expect(c._isShareLive(WIN)).toBe(false);
+        expect(c.authorizeAudio(WIN, g.token, matchesScreen)).toMatchObject({ allowed: false, why: 'no_share' });
+        advance(GRANT_TTL_MS + PRESENCE_WINDOW_MS);
+        expect(c.beginNativeShare(WIN, g.token, SCREEN.id)).toBeNull();              // expired before the helper was even started
+        const stale = mint(c, WIN, SCREEN.id, true);                                 // minted with no real click just before: untrusted
+        expect(stale.trusted).toBe(false);
+        expect(c.beginNativeShare(WIN, stale.token, SCREEN.id)).toBeNull();
+    });
+    it('NEGATIVE: a grant minted WITHOUT audio never gains audio from the native bind', () => {
+        const { c, click } = setup();
+        click(); const g = mint(c, WIN, SCREEN.id, false);
+        c.beginNativeShare(WIN, g.token, SCREEN.id)!.commit();
+        expect(c.authorizeAudio(WIN, g.token, matchesScreen)).toMatchObject({ allowed: false, why: 'no_grant', grant: 'audio' });
+    });
+    it('NEGATIVE: commit is single-use and does not resurrect a grant that was already spent elsewhere', () => {
+        const { c, click } = setup();
+        click(); const g = mint(c, WIN, SCREEN.id, true);
+        const n = c.beginNativeShare(WIN, g.token, SCREEN.id)!;
+        expect(n.commit()).toBe(true);
+        expect(n.commit()).toBe(false);
+        const n2 = c.beginNativeShare(WIN, g.token, SCREEN.id);
+        expect(n2).toBeNull();                                   // video half used
     });
 });

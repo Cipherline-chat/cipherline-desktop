@@ -10,6 +10,8 @@
  * which at 90 fps (11 ms a frame) would otherwise be dropped frames.
  *
  * Protocol (every message is plain data except the two streams):
+ *   worker -> page  { type: 'ready' }                               (this script loaded and runs;
+ *                                                                     the page transfers nothing before it)
  *   page -> worker  { type: 'start', readable, writable, layout }  (streams transferred)
  *                   { type: 'layout', layout }                      (switch screens live)
  *                   { type: 'stop' }
@@ -72,3 +74,8 @@ scope.onmessage = (e: MessageEvent) => {
         });
     }
 };
+
+// Tell the page this script actually loaded and runs. The page holds on to
+// the capture's streams until it hears this (utils/shareCrop.ts): a worker
+// that never loads must not swallow them.
+scope.postMessage({ type: 'ready' });

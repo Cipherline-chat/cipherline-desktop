@@ -42,7 +42,7 @@ const PROCS = [
     { pid: 103, type: 'Utility' },
 ];
 
-function rig(opts: FakeOpts & { platform?: string; native?: GpuSchedNativeApi | null; procs?: Array<{ pid: number; type?: string }> } = {}) {
+function rig(opts: FakeOpts & { platform?: string; native?: GpuSchedNativeApi | null; procs?: Array<{ pid: number; type?: string; name?: string; serviceName?: string }> } = {}) {
     const native = fakeNative(opts);
     const reports: GpuSchedReport[] = [];
     const procs = [...(opts.procs ?? PROCS)];
@@ -72,6 +72,30 @@ describe('GpuSchedulingBoost: apply -> readback -> restore', () => {
         }]);
         // Every set was followed by a read of the same pid (the confirmation is real).
         expect(r.native.calls.filter(c => c[0] === 'get').map(c => c[1]).sort()).toEqual([100, 101]);
+    });
+
+    // "while playing game my camera freezes" (reports c344523e / 884b6045 / 14a5184a): the share ran
+    // 85-90 fps under the game while the camera's capture sat at 0-10. The webcam's D3D11 work happens in
+    // the Video Capture Utility process, which no GPU scheduling class covered.
+    it('also raises the Video Capture utility (the webcam\'s D3D11 device) - and no other utility process', () => {
+        const r = rig({
+            privileged: true,
+            procs: [
+                ...PROCS,
+                { pid: 104, type: 'Utility', name: 'Video Capture', serviceName: 'video_capture.mojom.VideoCaptureService' },
+                { pid: 105, type: 'Utility', name: 'Network Service' },
+                { pid: 106, type: 'Utility', name: 'Audio Service' },
+            ],
+        });
+        r.boost.setActive(true);
+        expect(r.boost.heldPids().sort()).toEqual([100, 101, 104]);
+        expect(r.native.levels.get(104)).toBe(GPU_SCHED_REALTIME);
+        expect(r.native.levels.has(105)).toBe(false);
+        expect(r.native.levels.has(106)).toBe(false);
+        expect(r.reports[0]).toMatchObject({ phase: 'apply', procs: 3 });
+        r.boost.setActive(false);
+        expect(r.native.levels.get(104)).toBe(GPU_SCHED_NORMAL);
+        expect(r.boost.heldPids()).toEqual([]);
     });
 
     it('unprivileged: REALTIME is refused (STATUS_PRIVILEGE_NOT_HELD) and HIGH is used instead, per process', () => {

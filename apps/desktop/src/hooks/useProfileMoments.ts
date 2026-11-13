@@ -58,8 +58,8 @@ export function useProfileMoments({ userId, accepted, isDnd, pushToast }: Option
             if (!d) return;
             invalidateProfile(userId); // the count moved
             if (!shouldCelebrateHighFive(dndRef.current(), null)) return;
+            // The overlay says "High five from <name>" (and is announced); no second toast.
             window.dispatchEvent(new CustomEvent(HIGH_FIVE_PLAY_EVENT, { detail: d }));
-            toastRef.current({ kind: 'info', message: `${d.from_username || 'Someone'} high-fived you` });
         };
         window.addEventListener(HIGH_FIVE_EVENT, onFive);
         return () => window.removeEventListener(HIGH_FIVE_EVENT, onFive);

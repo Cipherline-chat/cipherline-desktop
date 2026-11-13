@@ -139,9 +139,28 @@ ipcRenderer.on('perf:frame-ping', (_e, id: unknown) => {
     } catch { /* no DOM yet */ }
 });
 
+/**
+ * Subscribe a PAGE callback to a main->renderer channel that carries no payload.
+ *
+ * `ipcRenderer.on(channel, cb)` invokes `cb(event, ...args)` and `event.sender` is
+ * this preload's own `ipcRenderer` (with `send`/`invoke`). Registering a page-supplied
+ * callback directly therefore hands the page an object that can reach IPC channels
+ * main treats as preload-only (`fs:register-resolved-path` is what stops a compromised
+ * renderer from allowlisting an arbitrary path for encryption and upload). The wrapper
+ * drops the event; the page gets no arguments, and a function that unsubscribes.
+ */
+function subscribeNoArgs(channel: string, cb: () => void): () => void {
+    const wrapped = () => cb();
+    ipcRenderer.on(channel, wrapped);
+    return () => { ipcRenderer.removeListener(channel, wrapped); };
+}
+
 contextBridge.exposeInMainWorld('electronAPI', {
     // basic template for future IPC
-    onReady: (callback: () => void) => ipcRenderer.on('ready', callback),
+    // The page's callback is never registered directly (see subscribeNoArgs): it would be
+    // called with the IpcRendererEvent, whose `sender` is this preload's ipcRenderer. And
+    // this used to RETURN ipcRenderer.on(...), i.e. the ipcRenderer itself.
+    onReady: (callback: () => void): (() => void) => subscribeNoArgs('ready', callback),
     getLocalIdentity: () => ipcRenderer.invoke('crypto:get-local-identity'),
 
     // Host platform ('windows' | 'mac' | 'linux') and machine name, resolved
@@ -253,6 +272,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
         showNotice: boolean;
     }> => ipcRenderer.invoke('secure:get-key-protection'),
     ackKeyProtectionNotice: (): Promise<boolean> => ipcRenderer.invoke('secure:ack-key-protection-notice'),
+    // Linux wallet prompt: what the system wallet (KDE Wallet / GNOME Keyring)
+    // did at startup. Enums and booleans only, never key material.
+    getKeyringStatus: (): Promise<{
+        state: 'not-applicable' | 'unlocked' | 'denied' | 'no-service';
+        walletName: string | null;
+        firstRun: boolean;
+        degraded: boolean;
+    }> => ipcRenderer.invoke('secure:get-keyring-status'),
+    // "Try again" after a skipped wallet prompt: relaunches the app (Chromium
+    // caches the refusal for the life of the process). Resolves false when
+    // refused (no refused wallet, or asked again within the cooldown).
+    retryKeyringUnlock: (): Promise<boolean> => ipcRenderer.invoke('secure:keyring-action', { action: 'retry' }),
 
     // Backup / restore helpers — enumerate prefix-scoped secure-store entries
     // and read/write the on-disk GIF library so the encrypted vault can round-trip them.
@@ -334,12 +365,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     /** Tray → renderer: the user picked "Lock". Only reachable when the
      *  renderer told the tray a Screen Lock PIN is configured. */
     onTrayLock: (cb: () => void): (() => void) => {
-        ipcRenderer.on('tray:lock', cb);
-        return () => ipcRenderer.removeListener('tray:lock', cb);
+        return subscribeNoArgs('tray:lock', cb);
     },
     onTraySignOut: (cb: () => void): (() => void) => {
-        ipcRenderer.on('tray:sign-out', cb);
-        return () => ipcRenderer.removeListener('tray:sign-out', cb);
+        return subscribeNoArgs('tray:sign-out', cb);
     },
 
     // Google Drive OAuth — link/unlink the user's Google account.
@@ -360,21 +389,30 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // Without a valid one main asks the user in a native dialog.
     captureMintGrant: (sourceId: string, audio: boolean): Promise<{ token: string }> =>
         ipcRenderer.invoke('capture:mint-grant', sourceId, audio),
+    // The LIVE share restarts on the capture it already has (no new capture, no chooser): renews the
+    // consent its native audio rides on, for that source only (capture-consent.ts continueLive).
+    captureContinueGrant: (sourceId: string, audio: boolean): Promise<{ token: string; audio: boolean }> =>
+        ipcRenderer.invoke('capture:continue-grant', sourceId, audio),
     resolveDesktopSource: (sourceId: string | null, withAudio?: boolean, grantToken?: string) =>
         ipcRenderer.invoke('desktop-capturer-resolve', sourceId, withAudio, grantToken),
     onShowScreensharePicker: (callback: () => void): (() => void) => {
-        ipcRenderer.on('show-screenshare-picker', callback);
-        return () => ipcRenderer.removeListener('show-screenshare-picker', callback);
+        return subscribeNoArgs('show-screenshare-picker', callback);
     },
     // Desktop annotation overlay: strokes on your own screen share, drawn
     // over the real display (electron/annotation-overlay.ts). Resolves to the
     // show result: `{ ok, how, captured }` or `{ ok: false, reason }`.
-    annotationOverlayShow: (sourceId: string): Promise<unknown> =>
-        ipcRenderer.invoke('annot-overlay:show', sourceId),
+    // `frame` is the size of the shared frame (the capture track's settings): on Wayland the
+    // portal never says WHICH monitor was picked, so main matches the share to an output by
+    // size. A hint only - main validates it and refuses rather than guesses.
+    annotationOverlayShow: (sourceId: string, frame?: { width: number; height: number }, chosenDisplayId?: number, hint?: unknown): Promise<unknown> =>
+        ipcRenderer.invoke('annot-overlay:show', sourceId, frame, chosenDisplayId, hint),
     annotationOverlayHide: (): Promise<void> =>
         ipcRenderer.invoke('annot-overlay:hide'),
     annotationOverlayPush: (delta: unknown): void =>
         ipcRenderer.send('annot-overlay:delta', delta),
+    // Main took the overlay down by itself (X11: the compositing manager went away mid-share).
+    // Carries no payload: the only reason there is today is 'no_compositor'.
+    onAnnotationOverlayEnded: (callback: () => void): (() => void) => subscribeNoArgs('annot-overlay:ended', callback),
 
     /** macOS Screen Recording (TCC) status; 'not-applicable' on Windows/Linux. */
     getScreenCaptureAccess: (): Promise<string> =>
@@ -395,6 +433,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
         ipcRenderer.invoke('audio:start-window-capture', pid, mode, grantToken),
     stopWindowAudioCapture: (): Promise<void> =>
         ipcRenderer.invoke('audio:stop-window-capture'),
+    // Linux Wayland window shares: audio from one APPLICATION (electron/app-audio.ts). The list is
+    // [{ handle, name, binary }] with handles main issued; the start takes a handle, never a pid or a name.
+    listAudioApps: (): Promise<{ handle: string; name: string; binary: string }[]> =>
+        ipcRenderer.invoke('audio:list-apps'),
+    startAppAudioCapture: (handle: string, grantToken?: string): Promise<boolean> =>
+        ipcRenderer.invoke('audio:start-app-capture', handle, grantToken),
     onWindowAudioChunk: (
         callback: (chunk: { sampleRate: number; channels: number; data: ArrayBuffer }) => void
     ) => {
@@ -430,12 +474,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getDisplayRefreshRates: (): Promise<Array<{ id: string; displayFrequency: number; isPrimary: boolean; captureFpsCeiling?: number | null }>> =>
         ipcRenderer.invoke('display:get-refresh-rates'),
 
+    // Does a capture here go through the desktop's own portal chooser (a native
+    // Wayland client)? Decides whether a share may capture twice
+    // (utils/sharePlatformSupport.ts). A boolean; false off Linux.
+    getShareCapturePath: (): Promise<{ viaPortal: boolean; restoreListed?: boolean }> => ipcRenderer.invoke('share:capture-path'),
+
     // Stream-stats overlay: what the OS/Chromium side of a screen share looks
     // like (captured display's Hz, expected capturer, GPUs, HW-encode status),
     // and — when the capture timing log is on — Chromium's own per-frame
     // capture timing. Both read-only. Shapes: src/env.d.ts.
-    getScreenShareDiagnostics: (sourceId: string): Promise<unknown> =>
-        ipcRenderer.invoke('screenshare:get-diagnostics', sourceId),
+    getScreenShareDiagnostics: (sourceId: string, sharedRect?: { x: number; y: number; width: number; height: number } | null): Promise<unknown> =>
+        ipcRenderer.invoke('screenshare:get-diagnostics', sourceId, sharedRect ?? null),
     // HDR screen shares (Windows): our own tone-mapped capture of a screen in
     // HDR mode (electron/hdr-share.ts, src/utils/hdrSharePipeline.ts).
     hdrShare: {
@@ -466,8 +515,21 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // switches on the NEXT launch (electron/startup-flags.ts). Replies are
     // `unknown` on purpose — src/utils/startupFlags.ts narrows them.
     getStartupFlags: (): Promise<unknown> => ipcRenderer.invoke('app:get-startup-flags'),
-    setStartupFlags: (patch: { screenCapturer?: 'auto' | 'dxgi' | 'wgc'; captureLog?: boolean; gamingVideo?: boolean }): Promise<unknown> =>
+    setStartupFlags: (patch: { screenCapturer?: 'auto' | 'dxgi' | 'wgc'; captureLog?: boolean; gamingVideo?: boolean; linuxHwEncode?: boolean; linuxHwDecode?: boolean }): Promise<unknown> =>
         ipcRenderer.invoke('app:set-startup-flags', patch),
+    // Linux + NVIDIA: is the VA-API video driver missing, and "install it". Neither call carries an argument:
+    // main picks the package from /etc/os-release and asks PackageKit (polkit shows the password dialog).
+    // Replies are `unknown`; src/utils/nvidiaVaapi.ts narrows them.
+    getNvidiaVaapiStatus: (): Promise<unknown> => ipcRenderer.invoke('linux:nvidia-vaapi-status'),
+    installNvidiaVaapiDriver: (): Promise<unknown> => ipcRenderer.invoke('linux:nvidia-vaapi-install'),
+    // Linux + Intel/AMD: is the VA-API driver decode-only (no hardware ENCODE), and "install the encoder driver". No arguments;
+    // main picks the package. Replies are `unknown`; src/utils/videoEncodeDriver.ts narrows them.
+    getVideoEncodeDriverStatus: (): Promise<unknown> => ipcRenderer.invoke('linux:video-encode-driver-status'),
+    installVideoEncodeDriver: (): Promise<unknown> => ipcRenderer.invoke('linux:video-encode-driver-install'),
+    // Linux hardware (VA-API) video encode: the renderer saw the hardware encoder fail. One word from a
+    // fixed list; main records at most one ledger entry per launch (electron/linux-video-encode.ts).
+    reportLinuxHwEncodeFailure: (kind: 'gpu_crash' | 'hw_lost' | 'stall' | 'drift' | 'high_start'): Promise<boolean> =>
+        ipcRenderer.invoke('linux-hw-encode:report-failure', kind),
     // "Prioritize call video while gaming": tells main a call started/ended so
     // it can raise / restore process priority (electron/gaming-video-mode.ts).
     // Main rejects anything but a boolean.
@@ -479,11 +541,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // Narrow on purpose: one boolean, nothing else; main rejects anything else.
     setShareActive: (active: boolean): Promise<void> =>
         ipcRenderer.invoke('share:set-active', active),
+    // Same idea for OUR camera being published: main then keeps the webcam's
+    // Video Capture process out of OS throttling / at a higher GPU class, so a
+    // game in front cannot freeze it (electron/share-boost.ts). One boolean.
+    setCameraActive: (active: boolean): Promise<void> =>
+        ipcRenderer.invoke('camera:set-active', active),
     // What has the screen right now (Windows; null elsewhere): the Windows
     // notification state, the foreground program's basename, whether its
     // window covers its monitor / is ours / is on the shared screen. For the
-    // share_fps / share_background diagnostics and the "share the game window
-    // instead" hint. Takes only the share's capture source id (main validates
+    // share_fps / share_background diagnostics. Takes only the share's capture source id (main validates
     // it); returns no titles and no handles (electron/share-foreground.ts).
     getShareForegroundInfo: (sourceId?: string): Promise<unknown> =>
         ipcRenderer.invoke('share:get-foreground-info', sourceId),
@@ -492,10 +558,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // or null = use the fallback. Takes no arguments by design.
     getQuickShareForegroundSource: (): Promise<string | null> =>
         ipcRenderer.invoke('share:quick-share-foreground'),
-    // Which of these `window:` sources is the running program `exe`? Resolved
-    // natively in main; only the winning source id comes back.
-    findWindowSourceByExe: (exe: string, windowSourceIds: string[]): Promise<string | null> =>
-        ipcRenderer.invoke('share:find-window-source', exe, windowSourceIds),
     // Main applied / re-applied / restored the OS power-throttling opt-out for
     // the share (electron/share-boost.ts); the renderer logs it as the
     // `share_power` call event. Payload is `unknown` on purpose: the
@@ -564,6 +626,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
         const wrapped = () => callback();
         ipcRenderer.on('os-lock-screen', wrapped);
         return () => ipcRenderer.removeListener('os-lock-screen', wrapped);
+    },
+
+    // Continuity (cross-device attention routing): the four OS power/lock
+    // signals, one-for-one ('lock-screen' | 'unlock-screen' | 'suspend' |
+    // 'resume'), so useRealtime.ts can tell lock from suspend and keep a PC
+    // reported not-in-use until the matching unlock. The payload is a string
+    // from a closed set; the renderer's reducer ignores anything else.
+    onOsPowerSignal: (callback: (signal: string) => void): (() => void) => {
+        const wrapped = (_event: unknown, signal: unknown) => {
+            if (typeof signal === 'string') callback(signal);
+        };
+        ipcRenderer.on('os-power-signal', wrapped);
+        return () => ipcRenderer.removeListener('os-power-signal', wrapped);
     },
 
     // Wake counterpart to onOsLockScreen — fires on resume-from-sleep and on
@@ -672,8 +747,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // map: { accelerator: actionId } — synced whenever keybinds change. Returns
     // the action ids whose global registration failed (e.g. unsupported under
     // Wayland) so the renderer can fall back to a focused-window listener.
-    syncGlobalShortcuts: (map: Record<string, string>): Promise<{ failed: string[] }> =>
-        ipcRenderer.invoke('keybinds:sync-global-shortcuts', map),
+    syncGlobalShortcuts: (map: Record<string, string>, portalMap?: Record<string, string>): Promise<{ failed: string[]; status?: { mode: 'native' | 'portal' | 'unavailable'; reason: string; desktop: string; portal?: { bound: string[]; notBound: string[] }; appId?: string } }> =>
+        // portalMap: the stable set the Wayland portal binds (drawing-request pair always in).
+        ipcRenderer.invoke('keybinds:sync-global-shortcuts', map, portalMap),
+    // Wayland: open the desktop's own settings for Cipherline's shortcuts (resolves false when unavailable).
+    configureDesktopShortcuts: (): Promise<boolean> => ipcRenderer.invoke('keybinds:configure-desktop-shortcuts'),
     // Fired from main process when a global shortcut is pressed.
     onGlobalShortcut: (callback: (actionId: string) => void): (() => void) => {
         const wrapped = (_e: Electron.IpcRendererEvent, actionId: string) => callback(actionId);
@@ -711,13 +789,42 @@ contextBridge.exposeInMainWorld('electronAPI', {
         return () => ipcRenderer.removeListener('game:stopped', listener);
     },
     getCurrentGame: (): Promise<{ name: string; processName: string } | null> => ipcRenderer.invoke('game:get-current'),
+    // The detected game's picture + launcher, read from this computer by main
+    // (electron/game-art.ts). Checked again here at the bridge: only a small PNG
+    // data URL, a known launcher word and a plain Steam app number get through.
+    getCurrentGameArt: async (): Promise<{ name: string; icon: string | null; store: string | null; appId: number | null } | null> => {
+        const raw: unknown = await ipcRenderer.invoke('game:get-current-art');
+        if (!raw || typeof raw !== 'object') return null;
+        const r = raw as Record<string, unknown>;
+        if (typeof r.name !== 'string' || r.name.length === 0 || r.name.length > 200) return null;
+        const stores = ['steam', 'epic', 'riot', 'battlenet', 'xbox', 'ea', 'ubisoft', 'gog'];
+        return {
+            name: r.name,
+            icon: typeof r.icon === 'string' && r.icon.length <= 100_000 && /^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/.test(r.icon) ? r.icon : null,
+            store: typeof r.store === 'string' && stores.includes(r.store) ? r.store : null,
+            appId: typeof r.appId === 'number' && Number.isInteger(r.appId) && r.appId > 0 && r.appId <= 0x7fffffff ? r.appId : null,
+        };
+    },
 
     // "Listening to ..." — what music this machine is playing, from the OS
     // media session (electron/media-session.ts). Asked only while the user has
     // switched sharing on; `mediaStop` ends the Windows helper at once.
-    getNowPlaying: (opts: { includeBrowser: boolean }): Promise<unknown> =>
-        ipcRenderer.invoke('media:now-playing', { includeBrowser: opts?.includeBrowser === true }),
+    getNowPlaying: (opts: { includeBrowser: boolean; includeWatching?: boolean }): Promise<unknown> =>
+        ipcRenderer.invoke('media:now-playing', { includeBrowser: opts?.includeBrowser === true, includeWatching: opts?.includeWatching === true }),
     mediaStop: () => ipcRenderer.send('media:stop'),
+    // Before opting in, the renderer gets this and nothing else: is a music app
+    // playing, yes or no (electron/music-detect.ts). No track, no app name.
+    isMusicPlaying: (): Promise<boolean> => ipcRenderer.invoke('media:music-playing').then((v: unknown) => v === true),
+    // Sharing on (opts) / off (null): the main process polls on its own schedule
+    // (electron/media-watch.ts), in the background and the tray too, and pushes
+    // each read that matters to `onNowPlayingChanged`.
+    watchNowPlaying: (opts: { includeBrowser: boolean; includeWatching?: boolean } | null) =>
+        ipcRenderer.send('media:watch', opts ? { includeBrowser: opts.includeBrowser === true, includeWatching: opts.includeWatching === true } : null),
+    onNowPlayingChanged: (cb: (read: unknown) => void): (() => void) => {
+        const listener = (_event: Electron.IpcRendererEvent, read: unknown) => cb(read);
+        ipcRenderer.on('media:now-playing-changed', listener);
+        return () => ipcRenderer.removeListener('media:now-playing-changed', listener);
+    },
 
     // Game settings — custom games, ignored processes, and running process list
     getRunningProcesses: (): Promise<string[]> => ipcRenderer.invoke('game:get-processes'),
@@ -756,6 +863,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
         message_id?: string | null;
         sender_user_id?: string | null;
         sender_device_id?: string | null;
+        /** Server row created_at — the unbound-message cutoff reads it. */
+        created_at?: string | null;
     }): Promise<string> => ipcRenderer.invoke('channel:decrypt-message', params),
 
     /**
@@ -772,6 +881,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     /** Returns the highest epoch we have a key for, or null if no key yet. */
     getLatestChannelEpoch: (channelId: string): Promise<number | null> =>
         ipcRenderer.invoke('channel:get-latest-epoch', channelId),
+
+    /** ISO `rotatesAt` of the highest epoch held, or null — periodic rotation. */
+    getLatestChannelEpochRotatesAt: (channelId: string): Promise<string | null> =>
+        ipcRenderer.invoke('channel:get-latest-rotates-at', channelId),
 
     /** All epoch numbers we hold for this channel (ascending; [] if none).
      *  Used to back-fill FULL history to keyless members, not just latest. */
@@ -1104,8 +1217,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // Fires when the OS-level BrowserWindow gains focus (user switches back
     // from another app). More reliable than window 'focus' in the renderer.
     onWindowFocus: (cb: () => void): (() => void) => {
-        ipcRenderer.on('window:focus', cb);
-        return () => ipcRenderer.removeListener('window:focus', cb);
+        return subscribeNoArgs('window:focus', cb);
     },
 
     // Continuity (cross-device attention routing) — the immediate,
@@ -1114,22 +1226,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // BrowserWindow listeners for why these are pushed from main rather than
     // relying solely on the renderer's own window 'blur' DOM event.
     onWindowBlur: (cb: () => void): (() => void) => {
-        ipcRenderer.on('window:blur', cb);
-        return () => ipcRenderer.removeListener('window:blur', cb);
+        return subscribeNoArgs('window:blur', cb);
     },
     onWindowMinimize: (cb: () => void): (() => void) => {
-        ipcRenderer.on('window:minimize', cb);
-        return () => ipcRenderer.removeListener('window:minimize', cb);
+        return subscribeNoArgs('window:minimize', cb);
     },
     onWindowHide: (cb: () => void): (() => void) => {
-        ipcRenderer.on('window:hide', cb);
-        return () => ipcRenderer.removeListener('window:hide', cb);
+        return subscribeNoArgs('window:hide', cb);
     },
     // Fires from app.on('before-quit') — best-effort last chance to report
     // active:false before the socket dies with the process. See main.ts.
     onBeforeQuit: (cb: () => void): (() => void) => {
-        ipcRenderer.on('app:before-quit', cb);
-        return () => ipcRenderer.removeListener('app:before-quit', cb);
+        return subscribeNoArgs('app:before-quit', cb);
     },
 
     // Reliability audit (Phase J): the renderer's main thread has stopped
@@ -1138,11 +1246,35 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // surfaced as an informational banner with an opt-in reload, never an
     // auto-kill.
     onRendererUnresponsive: (cb: () => void): (() => void) => {
-        ipcRenderer.on('main:renderer-unresponsive', cb);
-        return () => ipcRenderer.removeListener('main:renderer-unresponsive', cb);
+        return subscribeNoArgs('main:renderer-unresponsive', cb);
     },
     onRendererResponsive: (cb: () => void): (() => void) => {
-        ipcRenderer.on('main:renderer-responsive', cb);
-        return () => ipcRenderer.removeListener('main:renderer-responsive', cb);
+        return subscribeNoArgs('main:renderer-responsive', cb);
     },
 });
+
+// Native (hardware) screen share, Linux only (or CIPHERLINE_NATIVE_SHARE_ENCODER=1 for the lab). Every call is validated in main
+// (electron/native-share-ipc.ts). A MessagePort cannot cross contextBridge, so it is handed to the page with window.postMessage
+// (the standard Electron pattern); events are plain data and come through onEvent/onExit. Using it is a renderer decision that is
+// off by default (utils/nativeShareSelect.ts).
+if (process.platform === 'linux' || process.env.CIPHERLINE_NATIVE_SHARE_ENCODER === '1') {
+    contextBridge.exposeInMainWorld('nativeShare', {
+        envFlag: process.env.CIPHERLINE_NATIVE_SHARE_ENCODER === '1',
+        available: () => ipcRenderer.invoke('native-share:available'),
+        start: (args: unknown) => ipcRenderer.invoke('native-share:start', args),
+        stop: () => ipcRenderer.invoke('native-share:stop'),
+        probe: (args?: unknown) => ipcRenderer.invoke('native-share:probe', args),
+        onEvent: (cb: (ev: unknown) => void): (() => void) => {
+            const h = (_e: unknown, ev: unknown) => cb(ev);
+            ipcRenderer.on('native-share:event', h);
+            return () => { ipcRenderer.removeListener('native-share:event', h); };
+        },
+        onExit: (cb: (x: { code: number; reason: string }) => void): (() => void) => {
+            const h = (_e: unknown, x: { code: number; reason: string }) => cb(x);
+            ipcRenderer.on('native-share:exit', h);
+            return () => { ipcRenderer.removeListener('native-share:exit', h); };
+        },
+    });
+    ipcRenderer.on('native-share:port', (e) => { window.postMessage({ kind: 'cl:native-share-port' }, '*', [...e.ports]); });
+    ipcRenderer.on('native-share:exit', (_e, x) => { window.postMessage({ kind: 'cl:native-share-exit', code: x?.code, reason: x?.reason }, '*'); });
+}

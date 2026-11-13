@@ -1,7 +1,9 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { ShieldAlert, KeyRound, Loader2 } from 'lucide-react';
 import { ClButton } from './ClButton';
 import secureLocalStore from '../utils/secureLocalStore';
+import { WalletLockedView } from './WalletLockedView';
+import { isWalletRefused, normalizeKeyringStatus, type KeyringStatus } from '../utils/walletPrompt';
 
 /**
  * Shown at boot when the device's encrypted storage exists but its master key
@@ -19,6 +21,22 @@ import secureLocalStore from '../utils/secureLocalStore';
  * wrong guess never destroys the still-recoverable ciphertext.
  */
 const StorageLockedScreen: React.FC = () => {
+    // Linux: was the lock caused by a system wallet the user did not unlock?
+    // undefined = still asking main (a few ms; render nothing rather than flash
+    // the wrong screen), null = not a wallet problem (every other platform and cause).
+    const [wallet, setWallet] = useState<KeyringStatus | null | undefined>(
+        () => (window.electronAPI?.getKeyringStatus ? undefined : null),
+    );
+    useEffect(() => {
+        let alive = true;
+        const api = window.electronAPI;
+        if (!api?.getKeyringStatus) return;
+        api.getKeyringStatus()
+            .then(raw => { if (alive) setWallet(normalizeKeyringStatus(raw)); })
+            .catch(() => { if (alive) setWallet(null); });
+        return () => { alive = false; };
+    }, []);
+
     const [key, setKey] = useState('');
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState('');
@@ -63,6 +81,9 @@ const StorageLockedScreen: React.FC = () => {
             setBusy(false);
         }
     };
+
+    if (wallet === undefined) return null;
+    if (isWalletRefused(wallet)) return <WalletLockedView status={wallet} />;
 
     return (
         <div

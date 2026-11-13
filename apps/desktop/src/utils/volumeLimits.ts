@@ -24,3 +24,8 @@ export function clampVolumePercent(v: unknown, fallback = 100): number {
 export function clampPerUserVolume(v: unknown, fallback = 1): number {
     return typeof v === 'number' && Number.isFinite(v) ? Math.max(0, Math.min(MAX_PER_USER_VOLUME, v)) : fallback;
 }
+
+/** A per-participant multiplier (0..2, 1 = unity) as a percentage label, e.g. 1 -> "100%", 0.35 -> "35%". */
+export function formatPerUserVolume(v: number): string {
+    return `${Math.round(v * 100)}%`;
+}

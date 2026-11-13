@@ -14,6 +14,7 @@ import {
     type NightDiveDetail,
 } from '../../utils/keysBeats';
 import type { KeysFace } from '../../utils/keysBrain';
+import type { Wear } from '../../utils/keysWardrobe';
 
 /**
  * What the Home deck tells Keys about you. Counts and flags only — see
@@ -25,6 +26,7 @@ export interface HomeKeysMirror {
     inCall: boolean;
     /** Unread messages owed to you (DMs + servers), a number. */
     unread: number;
+    /** Pro: the crown is in Keys' wardrobe draw (HomeKeys, utils/keysWardrobe.ts). */
     pro: boolean;
     /** Friends online right now (ids, compared set-to-set for arrivals). */
     onlineFriends?: ReadonlySet<string>;
@@ -66,6 +68,8 @@ export interface KeysMirrorView {
     playBody: (spec: Spec) => void;
     /** One of the puffs (the "!", the "shh", the stars, the ping). */
     puff: (k: Puff) => void;
+    /** A body gesture (scene, one-shot or click reaction) is in flight. */
+    gesturing: () => boolean;
 }
 
 /**
@@ -76,9 +80,11 @@ export interface KeysMirrorView {
  * dizzy, wave, call perk) behind their rate limits.
  *
  * `busy()` is true while the spam egg owns his body: scene gestures wait it
- * out (the scene itself still changes underneath; nothing is lost).
+ * out (the scene itself still changes underneath; nothing is lost). `hat` is
+ * the wardrobe's pick (HomeKeys owns when it changes; the scene decides
+ * whether his head is free to show it).
  */
-export function useKeysMirror(host: HomeKeysMirror | undefined, busy: () => boolean): KeysMirrorView {
+export function useKeysMirror(host: HomeKeysMirror | undefined, busy: () => boolean, hat: Wear = null): KeysMirrorView {
     const connected = useNetworkStatus();
     const costume = useEasterCostume();
 
@@ -116,7 +122,6 @@ export function useKeysMirror(host: HomeKeysMirror | undefined, busy: () => bool
     const gaming = !!host?.gaming;
     const inCall = !!host?.inCall;
     const unread = host?.unread ?? 0;
-    const pro = !!host?.pro;
 
     const pileRef = useRef<PileTier>(0);
     const sceneRef = useRef<Scene | null>(null);
@@ -124,12 +129,12 @@ export function useKeysMirror(host: HomeKeysMirror | undefined, busy: () => bool
         const inputs: MirrorInputs = {
             status, connected, gaming, inCall,
             speaking: inCall && media.speaking, sharing: inCall && media.sharing, video: inCall && media.video,
-            unread, transfer: acts.transfer, backup: acts.backup, night, pro, costume: !!costume, coffee,
+            unread, transfer: acts.transfer, backup: acts.backup, night, hat, costume: !!costume, coffee,
         };
         const next = sceneFor(inputs, pileRef.current);
         const prev = sceneRef.current;
         return prev && sameScene(prev, next) ? prev : next;
-    }, [status, connected, gaming, inCall, media, unread, acts, night, pro, costume, coffee]);
+    }, [status, connected, gaming, inCall, media, unread, acts, night, hat, costume, coffee]);
 
     // ── the gesture wrapper and the puffs ──────────────────────────────────
     const gestEl = useRef<HTMLDivElement | null>(null);
@@ -153,6 +158,7 @@ export function useKeysMirror(host: HomeKeysMirror | undefined, busy: () => bool
         if (reducedMotion() || unseen()) return;
         runner.current?.playSpec(spec);
     }, []);
+    const gesturing = useCallback(() => runner.current?.current != null, []);
     const puff = useCallback((k: Puff) => {
         const el = puffs.current[k] as (HTMLElement & { animate?: HTMLElement['animate'] }) | null | undefined;
         if (!el || typeof el.animate !== 'function' || reducedMotion() || unseen()) return;
@@ -292,5 +298,6 @@ export function useKeysMirror(host: HomeKeysMirror | undefined, busy: () => bool
         puffRef,
         playBody,
         puff,
+        gesturing,
     };
 }

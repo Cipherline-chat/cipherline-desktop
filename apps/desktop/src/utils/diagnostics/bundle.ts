@@ -29,6 +29,8 @@ import {
     type WebrtcSummary,
 } from './reportTypes';
 import type { CallEventInput } from './callEventsSource';
+import type { NetTimingSnapshot } from '../netTiming';
+import { SHARE_CONTEXT_KINDS } from '../callEventLog';
 import type { ScreenShareOptions } from '../../components/ScreenSharePickerModal';
 
 // ── Category matrix ──────────────────────────────────────────────────────────
@@ -75,7 +77,8 @@ export function describeCollection(category: DiagnosticCategory): string[] {
     if (spec.webrtc) lines.push('Call quality numbers from the last ~2 minutes of your current or most recent call: frame rates, resolution, codec and encoder, bitrate, packet loss, round-trip time — tracks are labelled “screen-1”, “remote-video-1”, never with who they belong to');
     if (spec.crash) lines.push('The crash: which process, Electron’s reason code and exit code, and the error name, message and stack with personal details removed');
     if (spec.recentErrors) lines.push(`Up to ${DIAGNOSTIC_LIMITS.maxRecentErrors} recent app errors, with personal details removed`);
-    if (spec.callEvents) lines.push(`The last ${DIAGNOSTIC_LIMITS.maxCallEvents} call events: what the call engine decided (connection type and whether a relay was used, codec choices and fallbacks, quality-limit changes, freezes) — with tracks labelled “self-camera” or “remote-video-1”, never who they belong to`);
+    if (spec.callEvents) lines.push(`The last ${DIAGNOSTIC_LIMITS.maxCallEvents} call events: what the call engine decided (connection type and whether a relay was used, codec choices and fallbacks, quality-limit changes, freezes) — with tracks labelled “self-camera”, “remote-video-1” or “remote-share-1” (a shared screen), never who they belong to`);
+    lines.push('How long this session’s requests to our servers took, grouped by kind of request (for example “GET servers/:id/channels: 12 requests, median 180 ms”), the 10 slowest, and how long the live connection took to open — never who, which server or channel, or any content');
     lines.push(`The last ${spec.perfRows} Performance log rows (freezes, window and power events, CPU and memory use)`);
     return lines;
 }
@@ -100,6 +103,9 @@ export interface PerfLogInput { at: number; source: PerfRow['source']; ms: numbe
 export type { CallEventInput } from './callEventsSource';
 export interface RecentErrorInput { at: number; kind: RecentError['kind']; name?: string; message: string; stack?: string }
 
+/** Endpoint rows kept in `net_timing` (the snapshot is sorted worst-first). */
+const NET_TIMING_MAX_ENDPOINTS = 40;
+
 export interface BundleInput {
     category: DiagnosticCategory;
     trigger: DiagnosticTrigger;
@@ -112,11 +118,20 @@ export interface BundleInput {
     entitlement?: { isPaid: boolean; canPublishVideo: boolean; maxUploadBytes: number } | null;
     /** Any order; newest are kept. */
     perfLog?: readonly PerfLogInput[];
+    /** utils/netTiming.ts snapshot (already pattern-only). */
+    netTiming?: NetTimingSnapshot | null;
     webrtc?: WebrtcSummary | null;
     crash?: CrashInfo | null;
     recentErrors?: readonly RecentErrorInput[];
     /** The call engine's event log (callEventsSource.ts). Any order; newest are kept. */
     callEvents?: readonly CallEventInput[];
+    /**
+     * Share-context events pinned past the ring (callEventLog PINNED_KINDS): merged
+     * into `call_events`, minus any the ring still holds, at most MAX_PINNED_IN_REPORT.
+     */
+    pinnedCallEvents?: readonly CallEventInput[];
+    /** Report-time 1 s samples of the active shares (shareSnapshot.ts); at most MAX_SNAPSHOT_IN_REPORT kept. */
+    snapshotCallEvents?: readonly CallEventInput[];
     scrub: { sensitiveTerms: readonly string[]; homeDir?: string };
 }
 
@@ -170,10 +185,10 @@ const CALL_EVENT_VOCAB = /^(?:relay|host|srflx|prflx|udp|tcp|tls|none|cpu|bandwi
  * most maxCallEventDetailKeys of them — nested values are dropped, never
  * stringified. Strings are scrubbed afterwards by scrubDeep, like everything else.
  */
-export function shapeCallEvents(input: readonly CallEventInput[] | undefined, now: number): CallEvent[] {
+export function shapeCallEvents(input: readonly CallEventInput[] | undefined, now: number, limit: number = DIAGNOSTIC_LIMITS.maxCallEvents): CallEvent[] {
     const ok = (input ?? []).filter(e => e && typeof e.t === 'number' && Number.isFinite(e.t)
         && typeof e.kind === 'string' && CALL_EVENT_NAME_RE.test(e.kind));
-    const kept = [...ok].sort((a, b) => a.t - b.t).slice(-DIAGNOSTIC_LIMITS.maxCallEvents);
+    const kept = limit > 0 ? [...ok].sort((a, b) => a.t - b.t).slice(-limit) : [];
     return kept.map(e => {
         const detail: Record<string, string | number | boolean> = {};
         let n = 0;
@@ -190,6 +205,26 @@ export function shapeCallEvents(input: readonly CallEventInput[] | undefined, no
         }
         return { t_s: tS(e.t, now), event: e.kind, ...(n > 0 ? { detail } : {}) };
     });
+}
+
+export const MAX_PINNED_IN_REPORT = 40;
+export const MAX_SNAPSHOT_IN_REPORT = 30;
+
+/**
+ * `call_events` = the ring (newest first-class), plus the share-context events that
+ * rotated out of it, plus the report-time share snapshot - never more than
+ * maxCallEvents in all (the API truncates to the newest 300, which would eat the
+ * old context first). Pinned events the ring still holds are not duplicated
+ * (matched on t + kind); a ring entry that the cap cuts does not count as held.
+ */
+export function mergeCallEvents(input: Pick<BundleInput, 'callEvents' | 'pinnedCallEvents' | 'snapshotCallEvents'>, now: number): CallEvent[] {
+    const max = DIAGNOSTIC_LIMITS.maxCallEvents;
+    const snap = shapeCallEvents(input.snapshotCallEvents, now, MAX_SNAPSHOT_IN_REPORT);
+    const pinnedAll = shapeCallEvents(input.pinnedCallEvents, now, MAX_PINNED_IN_REPORT);
+    const ring = shapeCallEvents(input.callEvents, now, max - snap.length - pinnedAll.length);
+    const held = new Set(ring.map(e => `${e.t_s}|${e.event}`));
+    const pinned = pinnedAll.filter(e => !held.has(`${e.t_s}|${e.event}`));
+    return [...pinned, ...ring, ...snap].map((e, i) => ({ e, i })).sort((a, b) => a.e.t_s - b.e.t_s || a.i - b.i).map(x => x.e);
 }
 
 /** Every string in the raw payload that our code or the OS produced (not free text). */
@@ -240,12 +275,23 @@ export function buildDiagnosticReport(input: BundleInput): BuiltReport {
         rows: perfKept.map(r => ({ t_s: tS(r.at, now), source: r.source, ms: Math.round(r.ms), activity: r.activity })),
     };
 
+    if (input.netTiming && input.netTiming.requests_total + input.netTiming.ws_connects > 0) {
+        const n = input.netTiming;
+        raw.net_timing = {
+            ...n,
+            endpoints: n.endpoints.slice(0, NET_TIMING_MAX_ENDPOINTS),
+            slowest: n.slowest.slice(0, 10),
+            ws: n.ws.slice(0, 12),
+            opens: n.opens.slice(0, 3),
+        };
+    }
+
     if (spec.webrtc) {
         const w = input.webrtc ?? { call_active: false, samples: [] };
         raw.webrtc = { ...w, samples: w.samples.slice(-DIAGNOSTIC_LIMITS.maxWebrtcSamples) };
     }
 
-    if (spec.callEvents) raw.call_events = shapeCallEvents(input.callEvents, now);
+    if (spec.callEvents) raw.call_events = mergeCallEvents(input, now);
 
     if (spec.crash && input.crash) raw.crash = { ...input.crash };
 
@@ -305,8 +351,15 @@ export function fitPayload(p: DiagnosticPayload, max: number): string[] {
         if (p.perf_log && p.perf_log.rows.length > 20) {
             p.perf_log.rows = p.perf_log.rows.slice(Math.ceil(p.perf_log.rows.length / 2));
             trimmed.add('perf_log');
-        } else if (p.call_events && p.call_events.length > 60) {
-            p.call_events = p.call_events.slice(Math.ceil(p.call_events.length / 2));
+        } else if (p.net_timing && p.net_timing.endpoints.length > 8) {
+            p.net_timing.endpoints = p.net_timing.endpoints.slice(0, Math.ceil(p.net_timing.endpoints.length / 2));
+            trimmed.add('net_timing');
+        } else if (p.call_events && p.call_events.length > 60 && p.call_events.some(e => !SHARE_CONTEXT_KINDS.has(e.event))) {
+            // The share context (start / codec / decoder / display / snapshot) is what makes the
+            // rest readable: drop the oldest half of everything ELSE first.
+            const idx = p.call_events.flatMap((e, i) => (SHARE_CONTEXT_KINDS.has(e.event) ? [] : [i]));
+            const drop = new Set(idx.slice(0, Math.ceil(idx.length / 2)));
+            p.call_events = p.call_events.filter((_, i) => !drop.has(i));
             trimmed.add('call_events');
         } else if (p.webrtc && p.webrtc.samples.length > 6) {
             p.webrtc.samples = p.webrtc.samples.slice(Math.ceil(p.webrtc.samples.length / 2));
@@ -332,6 +385,9 @@ export function fitPayload(p: DiagnosticPayload, max: number): string[] {
         } else if (p.call_events && p.call_events.length > 0) {
             p.call_events = p.call_events.slice(Math.ceil(p.call_events.length / 2));
             trimmed.add('call_events');
+        } else if (p.net_timing) {
+            delete p.net_timing;
+            trimmed.add('net_timing');
         } else {
             break;
         }

@@ -1,4 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import {
     ACTIONS, ACTION_CATEGORIES, GLOBAL_ACTIONS, ARMED_ONLY_ACTIONS, ANNOTATION_REQUEST_ACTIONS,
     buildGlobalShortcutMap, armedAnnotationActions, mergeKeybinds, comboToAccelerator, UNBOUND,
@@ -119,6 +121,30 @@ describe('pending-gated register / unregister (the IPC map)', () => {
         const v = validateGlobalShortcutMap(map);
         expect(v.ok).toBe(true);
         if (v.ok) { expect(v.map).toEqual(map); expect(v.rejected).toEqual([]); }
+    });
+});
+
+describe('Wayland portal map: the drawing-request pair bound permanently (owner 2026-11-10)', () => {
+    const src = readFileSync(join(__dirname, 'useKeybinds.ts'), 'utf8');
+
+    it('the renderer sends a second, stable map with the pair armed whether or not a request waits', () => {
+        expect(src).toContain('const portalMap = buildGlobalShortcutMap(binds, armedAnnotationActions(binds, true, pttKey));');
+        expect(src).toContain('api.syncGlobalShortcuts(globalMap, portalMap)');
+    });
+
+    it('that map is the same pending or not, so a draw request never changes the portal set', () => {
+        const all: KeybindMap = { ...DEFAULTS, [DECLINE]: 'ctrl+shift+n' };
+        const portalIdle = buildGlobalShortcutMap(all, armedAnnotationActions(all, true));
+        const portalPending = buildGlobalShortcutMap(all, armedAnnotationActions(all, true));
+        expect(portalPending).toEqual(portalIdle);
+        expect(Object.values(portalIdle)).toEqual(expect.arrayContaining([APPROVE, DECLINE, 'toggle-mute']));
+        // control: the X11 / Windows / macOS map still arms the pair only while a request waits
+        expect(Object.values(buildGlobalShortcutMap(all, armedAnnotationActions(all, false)))).not.toContain(APPROVE);
+    });
+
+    it('still never binds the push-to-talk combo, even permanently', () => {
+        const map = buildGlobalShortcutMap(DEFAULTS, armedAnnotationActions(DEFAULTS, true, 'ctrl+shift+y'));
+        expect(Object.values(map)).not.toContain(APPROVE);
     });
 });
 

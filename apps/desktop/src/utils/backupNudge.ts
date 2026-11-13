@@ -9,7 +9,14 @@
  * renders nothing at all rather than an "all good" row.
  */
 
-export interface BackupNudge { critical: boolean; chip: string; title: string; body: string }
+export interface BackupNudge {
+    critical: boolean; chip: string; title: string; body: string;
+    /** Label of the tile's button; the tile always opens Settings -> Storage. Default "Back up now". */
+    cta?: string;
+}
+
+/** A destination the user has to fix (services/backupIssues.ts), as the tile needs it. */
+export type BackupDestIssue = 'drive' | 'local';
 
 /** Why automatic backups aren't running, as recorded by useBackupAutoSchedule. */
 export type BackupBlockedReason = 'no-passphrase' | 'last-run-failed';
@@ -35,9 +42,18 @@ const BACKUP_STALLED_BODY =
  */
 export function computeBackupNudge(
     lastBackupAt: number | null,
-    opts: { configured?: boolean; blocked?: BackupBlockedReason | null; now?: number } = {},
+    opts: { configured?: boolean; blocked?: BackupBlockedReason | null; issue?: BackupDestIssue | null; now?: number } = {},
 ): BackupNudge | null {
-    const { configured = false, blocked = null, now = Date.now() } = opts;
+    const { configured = false, blocked = null, issue = null, now = Date.now() } = opts;
+
+    // A destination that cannot work until the user acts (Drive sign-in gone, saved
+    // folder not allowed on this install). Without this the scheduler failed in
+    // silence, run after run. A missing passphrase outranks it: that stalls every destination.
+    if (issue && blocked !== 'no-passphrase') {
+        return issue === 'drive'
+            ? { critical: true, chip: 'Action needed', title: 'Google Drive backups are paused', body: 'Google Drive needs to be reconnected on this device. Open Storage to sign in again; your existing backup in Drive is untouched.', cta: 'Reconnect' }
+            : { critical: true, chip: 'Action needed', title: "Cipherline can't use your backup folder", body: 'The saved backup folder is not available on this device. Open Storage to choose it again.', cta: 'Choose folder' };
+    }
 
     if (!lastBackupAt) {
         if (blocked === 'no-passphrase') {

@@ -223,7 +223,7 @@ export const ReportPreview: React.FC<{ body: DiagnosticReportBody; trimmed: stri
             {p.crash && (
                 <Section title="Crash">
                     <KV rows={[
-                        ['What', CRASH_KIND[p.crash.kind] ?? p.crash.kind],
+                        ['What', p.crash.reason === 'hung-exit' ? 'App stopped responding' : (CRASH_KIND[p.crash.kind] ?? p.crash.kind)],
                         ...(p.crash.process_type ? [['Process', p.crash.process_type] as [string, string]] : []),
                         ...(p.crash.reason ? [['Reason', p.crash.reason] as [string, string]] : []),
                         ...(p.crash.exit_code !== undefined ? [['Exit code', String(p.crash.exit_code)] as [string, string]] : []),
@@ -284,6 +284,7 @@ export const ReportPreview: React.FC<{ body: DiagnosticReportBody; trimmed: stri
                     ['App', `${sys.app_version} (${sys.build_commit}) · ${sys.channel}`],
                     ['Runtime', `Electron ${sys.electron} · Chrome ${sys.chrome}`],
                     ['System', `${sys.platform} ${sys.os_version} · ${sys.arch}`],
+                    ...(sys.linux_session ? [['Session', `${sys.linux_session.session_type}${sys.linux_session.desktop ? ` · ${sys.linux_session.desktop}` : ''} · screen share through ${sys.linux_session.capture_path === 'portal' ? "the desktop's chooser" : "Cipherline's own list"}`] as [string, string]] : []),
                     ['CPU', `${sys.cpu_model} · ${sys.cpu_cores} threads`],
                     ['Memory', `${sys.ram_gb} GB`],
                     ['GPU', gpu],
@@ -319,6 +320,26 @@ export const ReportPreview: React.FC<{ body: DiagnosticReportBody; trimmed: stri
                                 </table>
                             </div>
                         )}
+                </Section>
+            )}
+
+            {p.net_timing && (
+                <Section title="Request timing" count={`${p.net_timing.requests_total} requests`}>
+                    <div className="rp-tablewrap">
+                        <table className="rp-table">
+                            <tbody>
+                                {p.net_timing.endpoints.slice(0, 8).map((e, i) => (
+                                    <tr key={i}>
+                                        <td className="rp-wrap">{e.ep}</td>
+                                        <td className="rp-num">{e.n}×</td>
+                                        <td className="rp-num">p50 {e.p50} ms</td>
+                                        <td className="rp-num">p95 {e.p95} ms</td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                        {p.net_timing.endpoints.length > 8 && <div className="rp-help" style={{ marginTop: 6 }}>Plus {p.net_timing.endpoints.length - 8} more kinds of request, the slowest ones and socket times — all in Raw JSON.</div>}
+                    </div>
                 </Section>
             )}
 

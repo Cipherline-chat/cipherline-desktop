@@ -2,6 +2,8 @@ import type { ScreenShareOptions } from '../components/ScreenSharePickerModal';
 import { VideoPreset } from 'livekit-client';
 import { clampCaptureBox, planEncode } from './shareEncoderLimits';
 import { UNPROCESSED_TRACK_SETTINGS } from './audioInput';
+import { linuxHwEncodeDistrusted, noteLinuxHwEncodeFailure } from './linuxHwEncode';
+import { portalRetuneTouchesCapture, type CaptureAsk } from './portalCapturePlan';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Screen-share pipeline settings: capture box → codec → publish options →
@@ -104,7 +106,7 @@ export function ssFpsFactor(fps: number): number {
 
 /**
  * Absolute ceiling, in VP9-equivalent bits (times CODEC_BITRATE_FACTOR, like
- * the table): VP9 20, H.265 22, VP8 25, H.264 30 Mbps.
+ * the table): VP9 16.4, H.265 18, VP8 20.5, H.264 24.6 Mbps (20 / 22 / 25 / 30 before 2026-10-31, 12.8 / 14.1 / 16 / 19.2 until 2026-11-02).
  *
  * Why there is one at all (2026-10-23 diagnostic reports): a source-resolution
  * 1440p90 H.265 share was allowed 59.4 Mbps and the NVIDIA encoder spent
@@ -118,7 +120,70 @@ export function ssFpsFactor(fps: number): number {
  * of H.265 at 1440p90 is 0.066 bits per pixel per frame, so the cap trades
  * little picture for fitting a normal home connection with headroom.
  */
-export const SS_MAX_BITRATE_VP9_EQUIV = 20_000_000;
+export const SS_MAX_BITRATE_VP9_EQUIV = 16_400_000;
+
+/**
+ * 2026-10-31 owner decision: the 1440p90 H.265 full layer comes down from
+ * ~22 to ~14 Mbps. Reports 3b0b7b70 / 4667c6fa: a viewer on a 22 Mbps layer
+ * was moved to the 720p30 copy by the SFU after a 1.5 % loss blip and never
+ * got back up (the SFU cannot confirm ~20 Mbps of headroom on an ordinary
+ * downlink), and the layer spent its whole ceiling on game content. Every
+ * resolution from 1080p up (and the absolute cap above) is scaled by the same
+ * factor, so the codec ratios, the fps curve and the order of the presets are
+ * exactly as before; 720p and 480p are NOT scaled - the 720p30 figure is also
+ * the lighter copy's ceiling (shareLowLayer), which must not get thinner.
+ * 20 -> 12.8 Mbps VP9-equivalent: H.265 x1.1 = 14.08 Mbps.
+ *
+ * 2026-11-02 owner decision: up to ~18 Mbps (x0.82, 16.4 VP9-equivalent). A viewer
+ * saw a Mac's 90 fps H.265 share go blocky at times under the 14 Mbps ceiling, and
+ * that Mac's link estimated 37 Mbps in the next test. Not proven to be the cause.
+ * Still under the 22 that lost the viewer above; if a viewer
+ * drops to the lighter copy after a small loss blip again, this is the first
+ * number to look at.
+ */
+export const SS_HIGH_RES_SCALE = 0.82;
+
+/** The named presets that stand for a fixed picture size, smallest first, with the pixels of their capture box. */
+const SS_SIZED_TIERS = ([
+    ['480p', 854 * 480],
+    ['720p', 1280 * 720],
+    ['1080p', 1920 * 1080],
+    ['1440p', 2560 * 1440],
+] as const).map(([res, pixels]) => ({ res, pixels }));
+
+/**
+ * Which preset a captured picture of `width` x `height` is sized like: the
+ * NEAREST tier by pixel count on a ratio scale (so 1920x1200, 11 % over 1080p,
+ * is a 1080p share and 1366x768 is a 720p one), a tie going to the larger
+ * tier. Anything with more pixels than the 1440p tier - a 3024x1964 MacBook
+ * screen, 3440x1440, 4K, 8K - returns 'source': those keep the top ceiling
+ * (SS_MAX_BITRATE_VP9_EQUIV, raised on purpose on 2026-11-02 for exactly them).
+ * Unknown / invalid dimensions return 'source' too (today's behaviour).
+ */
+export function ssTierForPixels(width: number | undefined, height: number | undefined): ScreenShareOptions['resolution'] {
+    if (!width || !height || !Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return 'source';
+    const px = width * height;
+    const top = SS_SIZED_TIERS[SS_SIZED_TIERS.length - 1]!;
+    if (px > top.pixels) return 'source';
+    let chosen = SS_SIZED_TIERS[0]!.res as ScreenShareOptions['resolution'];
+    for (let i = 1; i < SS_SIZED_TIERS.length; i++) {
+        const lo = SS_SIZED_TIERS[i - 1]!;
+        const hi = SS_SIZED_TIERS[i]!;
+        // px is nearer (in ratio) to hi than to lo when px^2 >= lo*hi.
+        if (px * px >= lo.pixels * hi.pixels) chosen = hi.res;
+    }
+    return chosen;
+}
+
+/** The size of the picture a sender is handed: an explicit size (cropped / HDR shares, whose track reports none), else the track's own settings. */
+export function senderCaptureSize(
+    sender: RTCRtpSender | undefined,
+    sourceSize?: { width: number; height: number },
+): { width: number; height: number } | undefined {
+    if (sourceSize) return sourceSize;
+    const s = sender?.track?.getSettings?.();
+    return s?.width && s?.height ? { width: s.width, height: s.height } : undefined;
+}
 
 // Compute the RTP maxBitrate CEILING for a screen share. It is a ceiling, not
 // a target: the encoder only spends what the content needs and what the
@@ -130,15 +195,27 @@ export const SS_MAX_BITRATE_VP9_EQUIV = 20_000_000;
 // H.264 source 90 = 81 Mbps. That was set to stop 90 fps being starved when
 // it shared 60 fps's 2x ceiling; the measured starvation was a SOFTWARE
 // encoder dropping frames at 6 Mbps, far below anything here.)
+// `captured` is the size of the picture the encoder is really handed. The
+// 'source' preset is a LABEL ("whatever the screen is"), not a size: on a
+// 1920x1080 screen it used to get the ~18 Mbps ceiling meant for a 4K / Retina
+// capture, 1.7x what the explicit 1080p preset gets for the same pixels at the
+// same fps and codec (diagnostic reports, 2026-11: a 1080p 'source' 90 fps
+// H.265 share ramped from ~5 to 15-19 Mbps, a viewer 145-193 ms away lost 22 %
+// at ~15 Mbps and froze three times for 2-4 s each, with the encoder idle).
+// So a 'source' share is sized by ssTierForPixels(its real pixel count). The
+// named presets are unaffected, and so is a 'source' share whose size is not
+// known yet (the pre-capture publish options): both keep the label's ceiling.
 export function computeSSBitrate(
     res: ScreenShareOptions['resolution'],
     fps: number,
     codec: ScreenShareCodec = 'vp9',
+    captured?: { width?: number; height?: number },
 ): number {
+    if (res === 'source' && captured) res = ssTierForPixels(captured.width, captured.height);
     const base: Record<ScreenShareOptions['resolution'], number> = {
-        source:  18_000_000,
-        '1440p': 12_000_000,
-        '1080p':  6_000_000,
+        source:  18_000_000 * SS_HIGH_RES_SCALE,
+        '1440p': 12_000_000 * SS_HIGH_RES_SCALE,
+        '1080p':  6_000_000 * SS_HIGH_RES_SCALE,
         '720p':   2_000_000,
         '480p':    800_000,
     };
@@ -211,6 +288,10 @@ export async function probeHardwareEncoders(
             : undefined,
 ): Promise<HardwareEncoderSupport | null> {
     if (!encodingInfo) return null;
+    // Linux: the VA-API encoder failed earlier this session (linuxHwEncode.ts): do not take
+    // MediaCapabilities' word for "hardware" again until the app restarts. The camera's probe
+    // goes through here too.
+    if (linuxHwEncodeDistrusted()) return { h264: false, vp9: false, vp8: false, h264High: false };
     const w = Math.min(width, 3840);
     const h = Math.min(height, 2160);
     const ask = async (contentType: string, scalabilityMode: string) => {
@@ -471,6 +552,25 @@ export function installH264HighPreference(
     return () => { participant.off('localSenderCreated', onSender); };
 }
 
+/** One stats entry, narrowed to what the start check reads. */
+type StartCheckStat = {
+    type: string; kind?: string; framesEncoded?: number; active?: boolean;
+    qualityLimitationReason?: string;
+    /** candidate-pair */
+    nominated?: boolean; state?: string; availableOutgoingBitrate?: number;
+};
+
+/**
+ * Below this sender-side bandwidth estimate (bits/s) the allocator may leave
+ * the top layer of a simulcast share unstarted. A fresh publish starts at
+ * GCC's ~300 kbps (or falls back to it - measured: 369 kbps three seconds into
+ * an H.264 High 1440p90 share on a 66 Mbps link) and only climbs over tens of
+ * seconds, so for that long ONLY the 720p lighter copy is fed.
+ */
+export const START_CHECK_STARVED_BPS = 2_000_000;
+/** How long a bandwidth-starved top layer is given to wake up before the check stops waiting (and does not call it a failure). */
+export const START_CHECK_STARVED_WAIT_MS = 30_000;
+
 /**
  * After publishing with H.264 High, confirm the hardware encoder is really
  * producing frames. There is no software fallback for High in Chromium (its
@@ -480,13 +580,28 @@ export function installH264HighPreference(
  * VAAPI High encoder died and framesEncoded stayed 0 for the whole run).
  * Resolves 'ok' as soon as framesEncoded > 0, 'failed' when it is still 0
  * after `timeoutMs`, 'gone' if the sender stops answering (share ended).
+ *
+ * A silent layer is NOT a dead encoder when the SENDER is bandwidth-starved
+ * and another layer is already encoding: libwebrtc's allocator hands the
+ * first bits to the 720p copy and starts the full layer only once the
+ * estimate can carry it. Owner reports 479af6c7 / 438f97a1 (1.0.24-staging.178):
+ * 1440p90 H.264 High on an RTX 2080 Ti, `quality_limitation to=bandwidth`,
+ * `avail_kbps=369`, only the 720p layer sending (30 fps) - and the 6 s check
+ * called the High encoder dead, marked it failed for the WHOLE app session,
+ * and every share after that was software VP8 (then clamped to 30 fps). The
+ * same encoder started fine whenever the estimate was already a few Mbps
+ * (report 884b6045). So under starvation the check keeps waiting (up to
+ * START_CHECK_STARVED_WAIT_MS) and, if the layer is still unstarted, resolves
+ * 'limited' - not a verdict on the encoder; the caller leaves the share
+ * alone. Without starvation a silent layer is exactly the failure it was.
  */
 export async function watchH264HighStart(
-    getStats: () => Promise<RTCStatsReport | Iterable<{ type: string; kind?: string; framesEncoded?: number; active?: boolean }>>,
-    opts: { timeoutMs?: number; intervalMs?: number; sleep?: (ms: number) => Promise<void> } = {},
-): Promise<'ok' | 'failed' | 'gone'> {
+    getStats: () => Promise<RTCStatsReport | Iterable<StartCheckStat>>,
+    opts: { timeoutMs?: number; intervalMs?: number; starvedWaitMs?: number; sleep?: (ms: number) => Promise<void> } = {},
+): Promise<'ok' | 'failed' | 'gone' | 'limited'> {
     const timeoutMs = opts.timeoutMs ?? 6000;
     const intervalMs = opts.intervalMs ?? 1000;
+    const starvedWaitMs = opts.starvedWaitMs ?? START_CHECK_STARVED_WAIT_MS;
     const sleep = opts.sleep ?? (ms => new Promise<void>(r => setTimeout(r, ms)));
     // Per LAYER since the share got a lower layer: each layer is its own
     // hardware encoder session, and a dead full layer next to a working 720p
@@ -496,20 +611,32 @@ export async function watchH264HighStart(
     for (let waited = 0; ; waited += intervalMs) {
         let layers = 0;
         let silent = 0;
+        let limitedByBandwidth = false;
+        let availBps = NaN; // sender-side bandwidth estimate, bits/s; NaN = not reported
         try {
             const report = await getStats();
-            const each = (s: { type: string; kind?: string; framesEncoded?: number; active?: boolean }) => {
+            const each = (s: StartCheckStat) => {
+                if (s.type === 'candidate-pair') {
+                    if (s.nominated === true && s.state === 'succeeded' && typeof s.availableOutgoingBitrate === 'number') availBps = s.availableOutgoingBitrate;
+                    return;
+                }
                 if (s.type !== 'outbound-rtp' || s.kind !== 'video' || s.active === false) return;
                 layers++;
                 if (!((s.framesEncoded ?? 0) > 0)) silent++;
+                if (s.qualityLimitationReason === 'bandwidth') limitedByBandwidth = true;
             };
-            if (typeof (report as RTCStatsReport).forEach === 'function') (report as RTCStatsReport).forEach(each);
-            else for (const s of report as Iterable<{ type: string; kind?: string; framesEncoded?: number; active?: boolean }>) each(s);
+            if (typeof (report as RTCStatsReport).forEach === 'function') (report as RTCStatsReport).forEach(each as (s: unknown) => void);
+            else for (const s of report as Iterable<StartCheckStat>) each(s);
         } catch {
             return 'gone';
         }
         if (layers > 0 && silent === 0) return 'ok';
-        if (waited >= timeoutMs) return 'failed';
+        // Starved sender with at least one layer already encoding: the silent one is waiting for bits, not broken.
+        const starved = silent < layers && (limitedByBandwidth || (Number.isFinite(availBps) && availBps < START_CHECK_STARVED_BPS));
+        if (waited >= timeoutMs) {
+            if (!starved) return 'failed';
+            if (waited >= starvedWaitMs) return 'limited';
+        }
         await sleep(intervalMs);
     }
 }
@@ -518,7 +645,12 @@ export async function watchH264HighStart(
  *  this app session (a driver that failed once will fail again; retrying it
  *  on every share would cost each one a 6 s black start). */
 let h264HighFailedThisSession = false;
-export function markH264HighFailed(): void { h264HighFailedThisSession = true; }
+export function markH264HighFailed(): void {
+    h264HighFailedThisSession = true;
+    // High has no software encoder: if it was the hardware one that died, that is the
+    // hardware encoder failing (counted only on Linux with hardware encode on).
+    void noteLinuxHwEncodeFailure('high_start', { codec: 'h264' });
+}
 export function hasH264HighFailed(): boolean { return h264HighFailedThisSession; }
 /** Test-only reset. */
 export function resetH264HighFailedForTests(): void { h264HighFailedThisSession = false; h264CbSoftwareThisSession = false; }
@@ -572,6 +704,21 @@ export function captureFrameRateFor(targetFps: number, ceiling?: number | null):
     // as it delivers can alias and drop frames, which is what the headroom is for.
     const base = ceiling && ceiling > 0 ? Math.min(targetFps, ceiling) : targetFps;
     return Math.min(240, Math.ceil(base * 1.25));
+}
+
+/**
+ * The frame rate a capture through the Wayland portal is OPENED at: the one the person chose.
+ *
+ * Not captureFrameRateFor's 1.25x: that headroom is for a capturer polled by a timer that fires
+ * late (DXGI, WGC). The PipeWire capturer is pushed by the compositor and Chromium samples its
+ * newest frame once per period, so a 30 fps request is 30 fps (measured, Electron 43.8.1, sway and
+ * GNOME: asked max 30, delivered 29.8-30; the stream underneath stays negotiated at 60 whatever is
+ * asked - webrtc never lowers maxFramerate - so the request is what keeps the frames reaching the
+ * encoder at the chosen rate). Above 30 the headroom stays (aliasing near the 60 ceiling).
+ */
+export function portalCaptureFps(frameRate: number, ceiling?: number | null): number {
+    if (!Number.isFinite(frameRate) || frameRate <= 0) return frameRate;
+    return frameRate <= 30 ? frameRate : captureFrameRateFor(frameRate, ceiling);
 }
 
 // ── The lower layer ─────────────────────────────────────────────────────────
@@ -636,8 +783,14 @@ export function shareLowEncoding(
     const short = Math.min(captureWidth ?? 0, captureHeight ?? 0);
     if (!(short > 0)) return { scaleResolutionDownBy: 2, ...base };
     const scale = short >= 1000 ? short / SHARE_LOW_SHORT_SIDE : 2;
-    const lowShort = short / scale;
-    const area = Math.min(1, (lowShort / SHARE_LOW_SHORT_SIDE) ** 2);
+    // By the layer's REAL pixel count against a 1280x720 frame. It used to be
+    // (short side / 720)^2, which is the same number for 16:9 and 3x too small
+    // for a 5.33:1 Surround share (1920x360 = 0.75 of 720p, not 0.25): the lower
+    // layer got ~550 kbps for a racing game and the hardware encoder dropped it
+    // to 9-12 fps from a 30 fps source (report 6b3ddab6, 2026-11-10).
+    const longSide = Math.max(captureWidth ?? 0, captureHeight ?? 0);
+    const lowPixels = (short / scale) * (longSide / scale);
+    const area = Math.min(1, lowPixels / (1280 * SHARE_LOW_SHORT_SIDE));
     return {
         scaleResolutionDownBy: Math.round(scale * 1000) / 1000,
         maxFramerate: base.maxFramerate,
@@ -677,7 +830,7 @@ export function buildScreenSharePublishOptions(
     res: ScreenShareOptions['resolution'],
     frameRate: number,
     codec: ScreenShareCodec,
-    opts: { lowerLayer?: boolean } = {},
+    opts: { lowerLayer?: boolean; /** The picture's real size, when the track exists already (a codec switch): sizes a 'source' share (computeSSBitrate). */ captured?: { width?: number; height?: number } } = {},
 ): ScreenSharePublishOptions {
     const layered = !!opts.lowerLayer && shareHasLowerLayer(res, codec);
     const low = shareLowLayer(frameRate, codec);
@@ -686,7 +839,7 @@ export function buildScreenSharePublishOptions(
         videoCodec: codec,
         backupCodec: false,
         screenShareEncoding: {
-            maxBitrate: computeSSBitrate(res, frameRate, codec),
+            maxBitrate: computeSSBitrate(res, frameRate, codec, opts.captured),
             maxFramerate: frameRate,
             priority: 'high',
         },
@@ -803,6 +956,14 @@ export async function applyScreenShareSenderParams(
  * Neither touches the RTCRtpSender's track identity, so subscribers keep the
  * same publication and never see the share drop.
  *
+ * Through the Wayland portal (opts.viaPortal) a changed constraint is a new portal
+ * session (measured: +1 ScreenCast.Start per change, up and down), and a re-open stalls
+ * the capture (portalCapturePlan.ts has the numbers). The capture is opened once at the
+ * SOURCE's size and the chosen rate (sharePlatformSupport.portalCaptureRequest); the size
+ * is then the sender's alone (scaleResolutionDownBy from the user's box), a lower rate is
+ * the sender's (maxFramerate), and only a HIGHER rate than the capture was opened at
+ * re-opens it (opts.onReopen says so first, so the caller can show "Applying...").
+ *
  * Returns true when the retune landed. Returns false — having changed nothing
  * observable — when there is no live track/sender to retune, or when the
  * platform refuses the constraints (OverconstrainedError, a track that went
@@ -822,7 +983,27 @@ export async function retuneScreenShareInPlace(
     track: { mediaStreamTrack?: MediaStreamTrack; sender?: RTCRtpSender; codec?: string } | undefined,
     resolution: ScreenShareOptions['resolution'],
     frameRate: ScreenShareOptions['frameRate'],
-    opts: { step?: number } = {},
+    // `captured`: the size the share is delivering at NATIVE size, for a 'source'
+    // retune (computeSSBitrate). Only the caller knows whether the track's
+    // current settings are native - after a switch FROM a named preset they
+    // still read that preset's box until the next frame - so it is passed in,
+    // and absent means the label's ceiling.
+    // `viaPortal`: the capture is the desktop portal's (Linux Wayland). Its capturer answers a changed
+    // constraint with a NEW portal session - the desktop's chooser again - so a retune there never
+    // touches the capture: the frame rate is the sender's maxFramerate and the size is the sender's
+    // scaleResolutionDownBy, from the capture the share was started with (sharePlatformSupport
+    // retuneTouchesCapture / portalCaptureRequest). Off the portal: unchanged.
+    //
+    // Whether the capture is re-opened on the portal is portalCapturePlan.portalRetuneTouchesCapture: on a
+    // desktop whose portal restores a listed source with no dialog (`restoreListed`) it always follows the new
+    // quality, up and down; elsewhere only when the new quality needs more than the capture was asked for
+    // (`asked`). `onAsked` receives what the capture was asked for after a re-open.
+    opts: {
+        step?: number; captured?: { width?: number; height?: number }; viaPortal?: boolean;
+        restoreListed?: boolean; asked?: CaptureAsk | null; ceiling?: number | null; onAsked?: (a: CaptureAsk) => void;
+        /** The capture is about to be re-opened (portal only): a short stall the caller may want to say out loud. */
+        onReopen?: () => void;
+    } = {},
 ): Promise<boolean> {
     const msTrack = track?.mediaStreamTrack;
     const sender  = track?.sender;
@@ -832,25 +1013,37 @@ export async function retuneScreenShareInPlace(
     }
     const t0 = performance.now();
     try {
-        const dims = captureBoxFor(resolution, asScreenShareCodec(track.codec) ?? 'vp8');
-        await msTrack.applyConstraints({
-            width:     { max: dims.width },
-            height:    { max: dims.height },
-            // Capture above the target (captureFrameRateFor); the encoder's
-            // maxFramerate below stays at the target.
-            frameRate: { max: captureFrameRateFor(frameRate) },
-        });
+        const codecNow = asScreenShareCodec(track.codec) ?? 'vp8';
+        const dims = captureBoxFor(resolution, codecNow);
+        // Through the portal the capture is the SOURCE's size and the picked resolution is the sender's scale
+        // (portalCapturePlan): only a higher frame rate than the capture was opened at re-opens it.
+        const native = opts.viaPortal ? captureBoxFor('source', codecNow) : dims;
+        const wantAsk: CaptureAsk = { fps: opts.viaPortal ? portalCaptureFps(frameRate, opts.ceiling) : captureFrameRateFor(frameRate), width: native.width, height: native.height };
+        const touchCapture = !opts.viaPortal || portalRetuneTouchesCapture({ restoreListed: opts.restoreListed === true, asked: opts.asked ?? null, want: wantAsk });
+        if (touchCapture) {
+            if (opts.viaPortal) opts.onReopen?.();
+            await msTrack.applyConstraints({
+                width:     { max: wantAsk.width },
+                height:    { max: wantAsk.height },
+                // Capture above the target (captureFrameRateFor); the encoder's
+                // maxFramerate below stays at the target. (The portal's capture is
+                // asked for exactly the chosen rate: portalCaptureFps.)
+                frameRate: { max: wantAsk.fps },
+            });
+            if (opts.viaPortal) opts.onAsked?.(wantAsk);
+        }
         const tConstraints = performance.now();
         await applyScreenShareSenderParams(
-            sender, frameRate, computeSSBitrate(resolution, frameRate, asScreenShareCodec(track.codec)),
-            { codec: asScreenShareCodec(track.codec), step: opts.step },
+            sender, frameRate, computeSSBitrate(resolution, frameRate, asScreenShareCodec(track.codec), opts.captured),
+            // Through the portal the capture is always the source's size, so the chosen size is a scale on the sender.
+            { codec: asScreenShareCodec(track.codec), step: opts.step, ...(opts.viaPortal ? { box: dims } : {}) },
         );
         const tParams = performance.now();
 
         const applied = msTrack.getSettings();
         console.info(
             `[ScreenShare] quality retuned in place in ${(tParams - t0).toFixed(0)}ms ` +
-            `(applyConstraints ${(tConstraints - t0).toFixed(0)}ms, ` +
+            `(${!touchCapture ? 'capture untouched (portal)' : `applyConstraints ${(tConstraints - t0).toFixed(0)}ms`}, ` +
             `setParameters ${(tParams - tConstraints).toFixed(0)}ms) — ` +
             `capture now ${applied.width ?? '?'}x${applied.height ?? '?'}@${applied.frameRate ?? '?'}fps`
         );
@@ -859,4 +1052,31 @@ export async function retuneScreenShareInPlace(
         console.warn('[ScreenShare] in-place retune failed, falling back to republish:', err);
         return false;
     }
+}
+
+/**
+ * The highest frame rate a share of this source may ask for. A single window
+ * goes through Windows.Graphics.Capture, which delivered 55-58 fps on the owner's
+ * PC with the encoder running at 85+ (window capture also needs a capture path of
+ * our own to go faster, owner 2026-10-31: later). So 90 is offered for an entire
+ * screen only, instead of promising what a window share cannot deliver.
+ */
+export function maxShareFps(
+    sourceId: string | null | undefined,
+    platform: string | undefined = typeof window !== 'undefined' ? window.electronAPI?.platform : undefined,
+): 60 | 90 {
+    // Linux: the cap is a Windows.Graphics.Capture measurement and does not apply
+    // there, and the id cannot be trusted to tell a screen from a window: the
+    // owner picked an entire screen on Linux (2026-11-03, 1.0.24-staging.192) and
+    // the picker called it a window and refused 90.
+    if (platform === 'linux') return 90;
+    return sourceId?.startsWith('window:') ? 60 : 90;
+}
+
+/** `frameRate`, held to what this source can deliver. */
+export function clampShareFps(
+    frameRate: ScreenShareOptions['frameRate'],
+    sourceId: string | null | undefined,
+): ScreenShareOptions['frameRate'] {
+    return frameRate > maxShareFps(sourceId) ? maxShareFps(sourceId) : frameRate;
 }

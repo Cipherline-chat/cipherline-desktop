@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { evaluateSafetyNumberEmbed } from './safetyNumberEmbed';
+import { evaluateSafetyNumberEmbed, settledSafetyCardIds } from './safetyNumberEmbed';
 import { computeContactCode, formatCode, CODE_LENGTH } from './verificationCode';
 
 /**
@@ -256,5 +256,43 @@ describe('liveMatchCaution — a live match is amber while an identity problem i
             compared: [{ deviceId: 'd1', pub: 'P' }, { deviceId: 'd2', pub: 'Q' }],
             verdict: 'first_contact',
         })).toBeNull();
+    });
+});
+
+describe('settledSafetyCardIds', () => {
+    type Row = { id: string; mine?: boolean; content: { type: string } | null };
+    const card = (id: string, mine = false): Row => ({ id, mine, content: { type: 'safety_number' } });
+    const text = (id: string, mine = false): Row => ({ id, mine, content: { type: 'text' } });
+    const settled = (rows: Row[]) => [...settledSafetyCardIds(rows, r => !!r.mine)].sort();
+
+    it('an unanswered card from them still asks', () => {
+        expect(settled([card('a1')])).toEqual([]);
+        expect(settled([text('t', true), card('a1'), text('u', true)])).toEqual([]);
+    });
+
+    it('sharing after their card settles it, even with chat in between', () => {
+        expect(settled([card('a1'), text('t'), text('u', true), card('b1', true)])).toEqual(['a1']);
+    });
+
+    it('a share settles every earlier card of theirs, not only the nearest', () => {
+        expect(settled([card('a1'), card('a2'), card('b1', true)])).toEqual(['a1', 'a2']);
+    });
+
+    it('one exchange finishes settled on both sides, so it cannot ping-pong', () => {
+        // The same two messages as each person sees them.
+        expect(settled([card('alice', true), card('bob')])).toEqual(['bob']);
+        expect(settled([card('alice'), card('bob', true)])).toEqual(['alice']);
+    });
+
+    it('a chat line between my share and their answer does not break the link', () => {
+        expect(settled([card('b1', true), text('t'), card('a1')])).toEqual(['a1']);
+    });
+
+    it('their second card after that answer asks again', () => {
+        expect(settled([card('b1', true), card('a1'), card('a2')])).toEqual(['a1']);
+    });
+
+    it('ignores rows with no content', () => {
+        expect(settled([{ id: 'x', content: null }, card('a1')])).toEqual([]);
     });
 });

@@ -9,9 +9,10 @@ import { AvatarDecoration } from './ProfileCosmetics';
 import { useClTooltip } from './cl/useClTooltip';
 import { ProfileLinkIcon } from './ProfileLinkIcon';
 import {
-    displayHandle, openProfileLink, platformLabel, profileLinkUrl, sanitizeLinks, type ProfileLink,
+    displayHandle, openProfileLink, platformLabel, profileLinkUrl, sanitizeLinks, steamProfileUrl, type ProfileLink,
 } from '../utils/profileLinks';
-import type { ProfileWidgets } from '../utils/profileCosmetics';
+import { openExternalLink } from '../utils/openExternalLink';
+import type { ItemOptions, ProfileWidgets } from '../utils/profileCosmetics';
 import { formatLocalTime, isFriendsOnly } from '../utils/profileVisibility';
 import { interestLabel, youBothLikeLine } from '../utils/profileExtras';
 import { splitFold } from '../utils/profileCardLayout';
@@ -109,9 +110,11 @@ export const ProfileCardAvatar: React.FC<{
     decoration?: string | null;
     /** "Match theme" colour for the free ring decorations (utils/profileTheme.matchTint). */
     decorationTint?: string | null;
-}> = ({ ariaLabel, title, onClick, interactionClassName, children, badge, className, decoration, decorationTint }) => (
+    /** The owner's per-item knobs (hue, glow...); a hue beats the tint. */
+    decorationOptions?: ItemOptions | null;
+}> = ({ ariaLabel, title, onClick, interactionClassName, children, badge, className, decoration, decorationTint, decorationOptions }) => (
     <div className={cx('px-5 -mt-6 flex justify-center', className)} data-hx-layer="avatar">
-        <AvatarDecoration decoration={decoration} block tint={decorationTint}>
+        <AvatarDecoration decoration={decoration} block tint={decorationTint} options={decorationOptions}>
             <button
                 type="button"
                 aria-label={ariaLabel}
@@ -372,9 +375,9 @@ const VerifiedSteamChip: React.FC<{ steam: VerifiedSteam; onOpen: (steamId: stri
 export interface VerifiedSteam { steamId: string; personaName: string | null; avatar: string | null }
 
 /**
- * Steam + socials the owner listed. Renders nothing when there are none. A
- * verified Steam account (`steam`) leads with a ticked chip and replaces any
- * unverified Steam handle the owner typed.
+ * Verified Steam + socials the owner listed. Renders nothing when there are
+ * none. A verified Steam account (`steam`) leads with a ticked chip; Steam is
+ * never a typed link (sanitizeLinks drops any stored `steam` entry).
  */
 export const ProfileCardLinks: React.FC<{
     links: readonly ProfileLink[] | null | undefined;
@@ -385,12 +388,12 @@ export const ProfileCardLinks: React.FC<{
     steam?: VerifiedSteam | null;
     onOpenSteam?: (steamId: string) => void;
 }> = ({ links, friendsOnly, className, onOpen = openProfileLink, steam, onOpenSteam }) => {
-    const safe = sanitizeLinks(links).filter((l) => !(steam && l.platform === 'steam'));
+    const safe = sanitizeLinks(links);
     if (safe.length === 0 && !steam) return null;
     return (
         <ProfileCardSection title="Links" friendsOnly={friendsOnly} className={className} testId="profile-links">
             <ul className="pcd-chips">
-                {steam && <VerifiedSteamChip steam={steam} onOpen={onOpenSteam ?? (() => onOpen({ platform: 'steam', handle: steam.steamId }))} />}
+                {steam && <VerifiedSteamChip steam={steam} onOpen={onOpenSteam ?? ((id) => { openExternalLink(steamProfileUrl(id)); })} />}
                 {safe.map((l) => <ProfileLinkChip key={`${l.platform}:${l.handle}`} link={l} onOpen={onOpen} />)}
             </ul>
         </ProfileCardSection>
@@ -403,7 +406,9 @@ export const ProfileCardSteam: React.FC<{
     friendsOnly?: boolean;
     onOpen: (steamId: string) => void;
     className?: string;
-}> = ({ steam, friendsOnly, onOpen, className }) => (
+    /** Under the identity row: the Steam stats highlight (integrations/SteamShowcase SteamHighlight). */
+    children?: React.ReactNode;
+}> = ({ steam, friendsOnly, onOpen, className, children }) => (
     <ProfileCardSection title="Steam" friendsOnly={friendsOnly} className={className} testId="profile-steam">
         <button
             type="button" className="pcd-steam" aria-label={`${steam.personaName ?? 'Steam account'}, verified on Steam. Opens in your browser.`}
@@ -418,6 +423,7 @@ export const ProfileCardSteam: React.FC<{
             </span>
             <span className="pcd-steam-go" aria-hidden="true">Open</span>
         </button>
+        {children}
     </ProfileCardSection>
 );
 

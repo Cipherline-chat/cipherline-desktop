@@ -58,6 +58,21 @@ export function isTrustedHandoffRequest(
     return true;
 }
 
+/**
+ * Should the local app server answer this request at all? Only when the Host
+ * header names exactly the loopback origin the app is loaded from.
+ *
+ * DNS rebinding: a page on attacker.example can re-point its own hostname at
+ * 127.0.0.1 and then read responses from this server as same-origin. Today
+ * that exposes only the public dist/ bundle, but nothing about this server
+ * should depend on that staying true. Electron's own loads and the second-
+ * instance handoff both send `127.0.0.1:<port>`; a rebinding page sends its
+ * own hostname. A missing Host (HTTP/1.0) is refused too.
+ */
+export function isExpectedLoopbackHost(hostHeader: unknown, port: number): boolean {
+    return typeof hostHeader === 'string' && hostHeader.toLowerCase() === `127.0.0.1:${port}`;
+}
+
 /** Body shape both sides agree on. */
 export function encodeHandoffBody(deepLink: string | null): string {
     return JSON.stringify({ url: deepLink });

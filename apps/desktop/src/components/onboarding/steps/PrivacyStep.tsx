@@ -29,8 +29,9 @@ import './privacy.css';
  * The dot sculpture (a gold key sealed in a teal lattice sphere, the three
  * "friends can see" icons in orbit) changes ONLY when one of those three
  * toggles is pressed: off folds the icon into the sphere as a dim bead and
- * leaves a faint ring; on flies it back out. Never on hover (the pointer only tilts the camera, like the invite step). With no WebGL
- * (`dots === null`) the step works the same, without the sculpture.
+ * leaves a faint ring; on flies it back out. Never on hover (the pointer only tilts the camera, like the invite step). Without WebGL the
+ * Canvas 2D fallback draws the same sculpture; with no field at all
+ * (`dots === null`) the step works the same, without it.
  */
 
 const SAT_KEYS: readonly SatKey[] = ['receipts', 'playing', 'mobile'];

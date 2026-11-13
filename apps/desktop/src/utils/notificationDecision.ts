@@ -135,6 +135,33 @@ export function resolveNotification(input: NotifDecisionInput): NotifDecision {
     };
 }
 
+/**
+ * Owner rule R6: while one of the user's phones is attentive (the mobile app is
+ * open in their hand), this PC stays silent: no OS toast, no notification
+ * sound, no taskbar flash. Badges and in-app unread are NOT touched; the
+ * message is still counted and shown, it just does not interrupt (the same
+ * asymmetry as Do Not Disturb, see resolveNotification).
+ *
+ * Applied on top of resolveNotification's decision, in the one place that
+ * fires alerts (useNotificationDispatch's notify()), so the caller's badge
+ * counters, which share the original decision object, are unaffected.
+ *
+ * `mobileAttentive` is the server's answer (utils/remoteAttention.ts), already
+ * collapsed to false when unknown, so an old server, a stale answer or a closed
+ * socket all leave this a no-op: today's behaviour. A call is never silenced by
+ * this: a ringing call must reach every device the user might answer on, and
+ * the incoming-call UI owns its own ringtone.
+ */
+export function gateOnOtherDeviceAttention(
+    decision: NotifDecision,
+    input: { category: string; mobileAttentive: boolean },
+): NotifDecision {
+    if (!input.mobileAttentive) return decision;
+    if (input.category === 'call') return decision;
+    if (!decision.playsSound && !decision.showsToast) return decision;
+    return { ...decision, playsSound: false, showsToast: false };
+}
+
 /** Content types that are actions ON another message, never a new message. */
 const CHANNEL_ACTION_TYPES = new Set(['edit', 'delete', 'reaction']);
 

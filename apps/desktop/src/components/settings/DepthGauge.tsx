@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-    UserCircle, Plug, Monitor, Palette, Laptop, Volume2, Bell, Keyboard, Gamepad2,
+    UserCircle, Sparkles, Monitor, Laptop, Volume2, Bell, Keyboard, Gamepad2,
     Shield, HardDrive, CreditCard, FlaskConical, AlertTriangle, Search,
     type LucideIcon,
 } from 'lucide-react';
@@ -40,16 +40,16 @@ export const ZONES: ZoneDef[] = [
     {
         name: 'Surface', depth: 0, label: '0 m',
         items: [
-            { id: 'profile',    label: 'Profile',    Icon: UserCircle },
-            { id: 'connections', label: 'Connections', Icon: Plug },
-            { id: 'appearance', label: 'Appearance', Icon: Monitor },
-            { id: 'personalize', label: 'Personalize', Icon: Palette },
+            { id: 'profile',       label: 'Profile',          Icon: UserCircle },
+            // Connections + Personalize, merged (owner, 2026-10-28). Old ids alias here: paneAliases.ts.
+            { id: 'activityStyle', label: 'Activity & Style', Icon: Sparkles },
+            { id: 'appearance',    label: 'Appearance',       Icon: Monitor },
         ],
     },
     {
         name: 'Twilight', depth: 200, label: '−200 m',
         items: [
-            { id: 'devices',       label: 'Devices',       Icon: Laptop },
+            { id: 'devices',       label: 'Security & devices', Icon: Laptop },
             { id: 'voice',         label: 'Voice & Video', Icon: Volume2 },
             { id: 'notifications', label: 'Notifications', Icon: Bell },
             { id: 'keybinds',      label: 'Keybinds',      Icon: Keyboard },

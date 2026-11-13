@@ -27,7 +27,6 @@ const Tumbleweed: React.FC = () => (
 
 export const EchoEveryoneMoment: React.FC = () => (
     <div className="mo-echo mo-view" aria-hidden="true">
-        <div className="mo-dim" />
         <div className="mo-anchor">
             <div className="mo-echo-word mo-echo-w1 mo-punch">@everyone</div>
             <div className="mo-echo-word mo-echo-w2 mo-punch">…everyone</div>

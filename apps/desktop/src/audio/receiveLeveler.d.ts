@@ -3,8 +3,10 @@ export function linearToDb(linear: number): number;
 
 export const RX_TARGET_DB: number;
 export const RX_DEADBAND_DB: number;
+export const RX_DEADBAND_ABOVE_DB: number;
 export const RX_MIN_GAIN_DB: number;
 export const RX_MAX_GAIN_DB: number;
+export const RX_INITIAL_GAIN_DB: number;
 export const RX_RISE_DB_PER_SEC: number;
 export const RX_FALL_DB_PER_SEC: number;
 export const RX_LEVEL_SMOOTHING_SEC: number;
@@ -27,6 +29,7 @@ export function stepBoostLatch(
 export interface ReceiveLevelerOptions {
     targetDb?: number;
     deadbandDb?: number;
+    deadbandAboveDb?: number;
     minGainDb?: number;
     maxGainDb?: number;
     riseDbPerSec?: number;
@@ -38,13 +41,24 @@ export interface ReceiveLevelerOptions {
     floorDb?: number;
     noiseMarginDb?: number;
     biasDb?: number;
+    /** Gain a talker we have never heard starts at (dB). */
+    initialGainDb?: number;
+}
+
+export interface ReceiveLevelerSnapshot {
+    gainDb: number;
+    levelPower: number;
+    activeSec: number;
+    noiseFloorDb: number;
 }
 
 export class ReceiveLeveler {
     targetDb: number;
     deadbandDb: number;
+    deadbandAboveDb: number;
     minGainDb: number;
     maxGainDb: number;
+    initialGainDb: number;
     gainDb: number;
     levelPower: number;
     activeSec: number;
@@ -54,6 +68,9 @@ export class ReceiveLeveler {
     constructor(opts?: ReceiveLevelerOptions);
 
     reset(): void;
+    /** State to resume this talker with after their tile/chain is rebuilt. */
+    snapshot(): ReceiveLevelerSnapshot;
+    restore(snap: ReceiveLevelerSnapshot | undefined | null): void;
     /** `audioLevel`: linear 0..1 from getSynchronizationSources(). Returns the gain (dB). */
     pushLinear(audioLevel: number | undefined, dtSec: number): number;
     /** `levelDb`: the RTP level already in dBov/dBFS RMS. Returns the gain (dB). */

@@ -4,12 +4,13 @@
  * screen and listens for this; the call controls live deep inside the call
  * tree and have no prop path to it.
  */
-import type { PaneId } from '../components/settings/SettingsScreen';
+import type { SettingsTarget } from '../components/settings/paneAliases';
 
 export const OPEN_SETTINGS_EVENT = 'cipherline:open-settings';
 
-export interface OpenSettingsDetail { pane: PaneId }
+/** `pane` may be an old id ('connections', 'personalize') or 'steam': SettingsScreen resolves it (paneAliases.ts). */
+export interface OpenSettingsDetail { pane: SettingsTarget }
 
-export function requestOpenSettings(pane: PaneId): void {
+export function requestOpenSettings(pane: SettingsTarget): void {
     try { window.dispatchEvent(new CustomEvent<OpenSettingsDetail>(OPEN_SETTINGS_EVENT, { detail: { pane } })); } catch { /* no window */ }
 }

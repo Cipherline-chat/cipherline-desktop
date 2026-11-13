@@ -77,3 +77,22 @@ export function safeImageSrc(raw: string | null | undefined): string | undefined
     }
     return undefined;
 }
+
+/**
+ * The normalised URL when `raw` is an https URL on the Cipherline media host
+ * itself (TRUSTED_IMAGE_HTTPS_HOSTS, NOT KLIPY), else `undefined`.
+ *
+ * For values that arrive from OTHER users and would be fetched with no click,
+ * such as a legacy `https:` avatar_url: fetching an arbitrary host there
+ * reveals the viewer's IP and online presence to whoever set the value, and
+ * proxying through the main process does not help (it fetches from the same
+ * machine). KLIPY is excluded too: it is opt-in, and a peer's avatar must not
+ * opt the viewer in.
+ */
+export function cipherlineMediaUrl(raw: string | null | undefined): string | undefined {
+    if (typeof raw !== 'string' || raw === '' || hasControlChar(raw) || !NO_SPECIAL_RE.test(raw)) return undefined;
+    const u = parse(raw);
+    if (u === null || u.protocol !== 'https:') return undefined;
+    if (u.username !== '' || u.password !== '' || u.port !== '') return undefined;
+    return TRUSTED_IMAGE_HTTPS_HOSTS.includes(u.hostname) ? u.href : undefined;
+}

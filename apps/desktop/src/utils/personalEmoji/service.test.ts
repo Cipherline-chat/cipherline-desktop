@@ -143,6 +143,21 @@ describe('PersonalEmojis', () => {
         expect(await pe.store.read(r.entry.id)).toBeNull();
         expect(pe.store.has(r.entry.id)).toBe(false);
     });
+
+    it('a read that FAILS (not a missing file) keeps the entry, its key and its file', async () => {
+        const r = await pe.add(png(1), 'aa');
+        if (!r.ok) throw new Error();
+        const id = r.entry.id;
+        const realRead = f.io.readFile;
+        f.io.readFile = async () => { throw new Error("Error invoking remote method 'fs:read-gif-file': EBUSY"); };
+        expect(await pe.store.read(id)).toBeNull();
+        expect(pe.store.has(id)).toBe(true);
+        expect(f.kv.has(emojiKeyKey('u1', id))).toBe(true);
+        expect(f.files.has(emojiFileName(id))).toBe(true);
+        // ...and it shows again once reads work.
+        f.io.readFile = realRead;
+        expect(await pe.store.read(id)).toEqual(png(1));
+    });
 });
 
 describe('cache bounds', () => {

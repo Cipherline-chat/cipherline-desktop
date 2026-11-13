@@ -22,6 +22,164 @@ bakes it in at build time and shows it as the "What's new in X.Y.Z" dialog on th
 
 ### Security
 
+## [0.1.0] - 2026-11-14
+
+### What's new
+
+- **Cipherline 0.1.0 is the first public release.** Earlier test builds were numbered 1.0.x and now show as 0.0.x; this version carries on from them, and your account, keys and settings come along.
+- **Subscriptions, clearly.** Pick monthly or yearly, see the total with tax before you pay, and read the renewal terms right above the Pay button. Early subscribers get a Founder badge and a founding price that stays locked in while they stay subscribed.
+- **Friends and activity.** A redesigned Friends page with Online and Offline groups and a panel showing who is in a call, playing or listening. Friends can see "Listening to" and "Watching" with album covers, off until you turn it on.
+- **Import a Discord server.** Paste a Discord template link when creating a server, preview the channels, roles and permissions, and create it in one go.
+- **Clearer, louder voice.** Voices are louder and more even, quiet microphones are lifted, the voice gate follows your room's noise, and light noise suppression is now the default.
+- **Smoother screen sharing.** Share audio on Linux, graphics-card encoding by default on Linux, steadier switching of quality or source, and a prompt that suggests a setting your computer can keep up with.
+- **Reports you can trust.** Reporting a message now proves it really came from the sender, and reports can include screenshots.
+- **Animated pictures everywhere.** Animated server icons and banners for everyone, with a proper cropper for animated avatars and banners.
+
+### Changes
+
+#### Subscription and billing
+
+- Subscribing shows the monthly price plus tax, the renewal terms and where to cancel in plain text above the Pay button, with a box to tick before you can pay; the total including tax is shown once your address is known.
+- Pro can be bought monthly or yearly, and you can switch between them in Settings, Subscription; monthly to yearly is charged pro rata straight away, yearly to monthly takes effect at the end of the paid year.
+- Founding members keep their price for as long as the subscription stays active; Settings, Subscription explains what keeps and what ends the lock in plain words.
+- Cancelling as a founding member is a "slide to cancel" prompt that spells out what you give up before anything is sent.
+- A permanent Founder badge for the earliest subscribers shows next to their name on profiles and the Friends list.
+- A one-time prompt in the last days of a Pro trial, never during a call.
+- Checkout notes that Apple Pay and Google Pay are available on cipherline.chat.
+
+#### Friends, activity and profiles
+
+- The Friends page is redesigned: Online and Offline groups with counts, thin rows with Message, Call and More always visible, a search box, and clearer pending requests that fit in narrow windows.
+- A friends activity panel shows friends in a call you can see (with Join), playing a game or listening to music.
+- "Watching" shows a video, show or film playing on your computer, with its own switch next to "Listening to".
+- Album covers show on profile views, and rows open the song or video, or search for it on its own platform; the platform's logo is shown in lists.
+- The first time a music app is detected, a card asks once whether to show what you are listening to.
+- "Listening to" works with any music player, keeps updating while Cipherline is in the background, and on Linux no longer needs playerctl.
+- Steam is verified-only: connect it under Profile, Showcase to show level, XP, games, hours, badges and recent achievements; the Playing line disappears shortly after you stop.
+- Press anyone's level to see their progress and what they have unlocked; reaching a new level plays a short celebration, and four starter achievements cover your first days.
+- Your profile style (halo color, glow, theme) now shows everywhere your avatar appears, and animated avatars play when someone is talking in a call.
+- The DM side panel and onboarding use the new profile card look.
+- Settings, Connections and Personalize are merged into one "Activity & Style" section, and the Security tab moved to a combined "Security & devices" page.
+
+#### Servers and invites
+
+- Create a Server can import a Discord template: preview channels, categories, roles and permissions, and see what cannot be carried over.
+- Animated server icons and banners (GIF and animated WebP) are free for everyone; they play on hover and while Cipherline is in front.
+- Picking an animated image for an avatar, banner or server opens the normal cropper and saves one animated image.
+- Invite People lists recent friends you can invite with one click, and changing expiry or max uses updates the link by itself.
+- Right-click a server and choose "Invite people" without opening it first.
+- Join, leave, kick and ban lines now reach everyone in the channel, and can be deleted from their right-click menu (for everyone, with Manage Messages).
+- Server voice moderation: server deafen only stops that person hearing microphones and leaves their mic and shares alone.
+- Create, join, invite, report, delete, transfer, rename and other dialogs share one new, clearer style; Kick and Ban now open their confirmation again.
+- Block user and Remove friend ask first from every place they appear.
+
+#### Messaging and emoji
+
+- Typing a full `:name:` and pressing Enter sends the emoji, and emoji names use letters, numbers and underscores.
+- Hovering an emoji in the picker shows its code, and "+ Add" in My Emojis adds one without closing the picker.
+- The emoji picker no longer lists the same emoji twice, and custom emojis in Frequently Used show without hovering.
+- DM and group previews show your custom emoji picture instead of `:name:`.
+- A group icon set at creation shows straight away.
+- A full inbox now says "Their inbox is full" instead of a generic failure.
+- The "Message" hint in the box no longer disappears after sending.
+- Home pins can be rearranged by dragging or with Alt+Arrow keys.
+
+#### Calls and voice
+
+- Voices are louder and more even: quiet microphones are lifted further, loud ones are turned down harder, and everyone plays at the same level.
+- Auto gain recovers within a fraction of a second, no longer over-boosts after a quiet stretch, and no longer stays turned down after one loud moment.
+- The mic volume slider feeds auto gain, so 150 to 200% no longer clips or gets squashed.
+- Voice gate has an Automatic switch that follows your room's noise level; your own threshold is kept for when you turn it off.
+- Light noise suppression is the default and no longer crackles on loud speech; existing users move to it once, with echo cancellation off by default.
+- Switching noise suppression during a call takes effect immediately, and a prompt offers Strong if your room stays noisy.
+- Notifications, Idle timeout decides when you go Away (1 to 30 minutes).
+- People joining and leaving now animate everywhere they appear, and someone who joins while you are viewing another server shows with their name and avatar.
+- The per-person volume slider shows 0 to 200% while you drag.
+- In large calls only the 25 most relevant cameras are decoded at once; the rest show avatars until they speak.
+- Turning on your camera while another app holds it says so.
+- Calls no longer end at 0:00 on a computer with no microphone.
+- The 10-minute key change no longer freezes other people's camera and screen share for a moment.
+- Screen lock no longer triggers while you are watching a video.
+- Join sounds no longer go silent at random, and Settings, Notifications has one Ringtone volume slider instead of per-event sounds.
+- Windows laptops with two graphics cards use the faster one while "Prioritize call video while gaming" is on, which costs some battery.
+- The default camera shortcut moved from Ctrl+Shift+V to Ctrl+Shift+F10 so Paste as plain text works.
+
+#### Screen sharing
+
+- The share picker offers a lower setting when your encoder cannot keep up, and on Windows explains when a game in front is starving the share; nothing changes without a click.
+- Screen share never lowers your quality by itself.
+- Changing quality, source or codec during a share keeps viewers where they were instead of closing and reopening the stream, and a source that will not open leaves the share running.
+- Viewers can hover the eye on a share to see who is watching.
+- A viewer whose H.265 decoder stalls gets the picture back by itself, and the lighter copy shows a small note saying so.
+- Your own share shows as a tile in the fullscreen call view, and right-click offers Fill Entire Screen on any video.
+- Quality now follows your real screen size, with a higher ceiling for H.265, lower ceilings above 720p, and a stronger start for large shares.
+- 90 fps is offered for a whole screen; a window share tops out at 60.
+- Turning share audio on or off no longer restarts the capture or shows an extra permission box.
+- Fixed crashes when starting or changing a whole-screen share, a blank share after an encoder failure, and a share that captured nothing being blamed on the encoder.
+- Ultra-wide and Surround displays share sharper and more reliably.
+- On Windows, a share no longer goes silent for viewers while a full-screen program is in front, and you are told when it happens.
+- Laptops with an Intel and an NVIDIA or AMD graphics card no longer capture at 4 to 5 fps.
+- A still screen keeps re-sending its last picture so viewers' tiles do not look frozen (Linux and macOS).
+- Drawing on someone's share is faster, and sharers are told when their desktop cannot show it.
+- A notice appears when the capture itself, not the encoder, limits the frame rate.
+- Quality problem reports show which side froze a share.
+
+#### Linux
+
+- Screen shares can include audio on PipeWire desktops, and on Wayland a window share can include one app's audio.
+- Hardware screen share is on by default and uses NVIDIA (NVENC) or AMD and Intel (VA-API) when a self-test passes, with the normal share as fallback; it also sends the lighter copy for viewers.
+- A first-share card on each computer asks for test data and explains which encoder was used.
+- Hardware video decoding for watching shares and cameras, with a one-time offer to install the NVIDIA or encoder driver when it is missing.
+- The annotation overlay works on Wayland (KDE Plasma, GNOME, Sway, Hyprland, COSMIC) and for single windows on X11.
+- On Xorg the screen picker no longer shows blank tiles.
+- Wayland: one system picker per share, capture at the quality you choose, and changing a share no longer freezes it.
+- Call keys work while another window is focused on KDE Plasma and desktops with the GlobalShortcuts portal; Settings, Keybinds says what your desktop really does.
+- The "Cipherline is ready" notification at every login on GNOME is gone, and the first launch no longer hangs after you create a keyring.
+- The .deb shows its app icon, a failing update offers Retry or a direct download, and the AppImage no longer needs libfuse2.
+- KDE users no longer show as "Playing Dolphin Emulator", and the wallet password prompt is explained.
+- Camera on a hardware encoder no longer freezes after a few seconds.
+- A killed or crashed Cipherline no longer leaves a background process behind.
+- Reports from Debian and Ubuntu kernels can be sent.
+
+#### Settings, backups and updates
+
+- Beta diagnostics are off unless you turn them on in Settings, Advanced; the call rating card appears every 25th call.
+- Backups tell you when a destination needs you, such as a Google Drive sign-in Google no longer accepts.
+- Backups restore the listening and watching switches, never include another account's custom sounds, and never roll back achievement progress or notes on a device that already has newer ones.
+- Restoring a backup made by a newer version skips the part it does not know and restores the rest.
+- Syncing history from another device also brings over your custom notification sounds, and the Send history button shows progress and cannot start twice.
+- When Cipherline restarts to install an update it shows an "Applying update" card.
+- Select menus open upward or shrink to fit instead of being cut off.
+- Local data can no longer be overwritten after a failed load at launch or sign-in.
+- Settings, Privacy no longer has the age-restricted content toggle.
+
+#### Fixes
+
+- Chats no longer show spurious "A message couldn't be shown" rows, and older join and leave lines show again.
+- Screen lock, Idle and Away are named consistently; the yellow moon status is "Idle" everywhere.
+- High fives show one notification, and pressing it twice in a day says so.
+- Share your profile, Copy image now works in the app.
+- Block, Remove friend, Kick and Ban confirmations no longer fire on a stray click.
+- Animated avatars and icons freeze when Cipherline is not in front and stop playing after you leave a server.
+- The server rail selector no longer stretches when you come back from Home or Settings.
+- The fullscreen call grid picks the best layout again, and Home's Happening now card no longer offers Return on the call you are in.
+- An incoming call opens its Accept and Decline panel on Home.
+- The setup dot field no longer shows blank on some graphics cards and plays on computers without a working one.
+
+### Security
+
+No publicly known vulnerabilities fixed in this release.
+
+- A group member can no longer forge edits, deletes or messages as another member.
+- A contact can no longer set an avatar address that makes your app fetch from their server and reveal your IP.
+- The update signature check no longer passes the file name through a shell.
+- Call keys, avatar keys and the replay ledger are bounded, and document previews refuse zips that lie about their size.
+- Third-party frames are denied permissions by default, the local app server refuses requests for other hosts, and backup restore checks every record against the sealed index.
+- Channel keys also rotate every 7 days, not only when someone loses access.
+- Reports carry a cryptographic proof, so a message cannot be faked in a report.
+- Beta diagnostics are opt-in and off by default.
+- Electron updated to a current release.
+
 ## [1.0.23] - 2026-10-25
 
 ### What's new

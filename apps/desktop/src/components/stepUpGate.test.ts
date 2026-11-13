@@ -45,6 +45,9 @@ vi.mock('../services/driveBackup', () => ({
     getDestinationStamps: () => ({}),
     backupFileName: (b: string) => `${b}.enc`,
     DEFAULT_MAX_ATTACHMENT_BYTES: 25 * 1024 * 1024,
+    // Read by services/backupIssues (the per-destination "needs you" state).
+    BACKUP_STATE_EVENT: 'cipherline:backup-state',
+    notifyBackupStateChanged: () => {},
 }));
 vi.mock('../hooks/useBackupAutoSchedule', () => ({
     readBackupCfg: () => ({

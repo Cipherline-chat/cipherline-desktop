@@ -146,7 +146,7 @@ export const ReportProblemHost: React.FC = () => {
 
     return (
         <>
-            {prompt && !request && <CrashPrompt count={prompt.entry.count} onReview={onReview} onNotNow={onNotNow} />}
+            {prompt && !request && <CrashPrompt count={prompt.entry.count} hung={prompt.entry.crash.reason === 'hung-exit'} onReview={onReview} onNotNow={onNotNow} />}
             {request && (
                 <ReportProblemModal
                     key={request.nonce}

@@ -46,6 +46,7 @@ export interface StoreIO {
     kvGet(key: string): string | null;
     kvSet(key: string, value: string): void;
     kvRemove(key: string): void;
+    /** null ONLY when the file does not exist; any other failure must reject. */
     readFile(name: string): Promise<Uint8Array | null>;
     writeFile(name: string, bytes: Uint8Array): Promise<void>;
     deleteFile(name: string): Promise<void>;
@@ -137,16 +138,20 @@ export class EmojiBlobStore {
     /**
      * Store plaintext bytes for `id`. The CALLER has already verified that the
      * bytes hash to `id` (token.ts validateWireEmoji) or produced them itself.
-     * Idempotent: an id already stored is only touched.
+     * Idempotent: an id already stored AND readable is only touched. One that is
+     * listed but cannot be read back (file gone, key that no longer opens it) is
+     * written again, so a fresh copy - from a message or the own-device sync -
+     * repairs it instead of being ignored.
      */
     async put(id: string, bytes: Uint8Array, meta: PutMeta): Promise<void> {
         if (!isPersonalEmojiId(id) || !this.io.uid()) return;
         if (bytes.length === 0 || bytes.length > PERSONAL_EMOJI_MAX_BYTES || !sniffImageMime(bytes)) return;
-        if (this.has(id) && this.getKeyB64(id)) { this.touch(id); return; }
+        if (this.has(id) && this.getKeyB64(id) && await this.read(id)) { this.touch(id); return; }
         const { sealed, keyB64 } = await sealBytes(bytes);
         await this.io.writeFile(emojiFileName(id), sealed);
         this.putKeyB64(id, keyB64);
         this.record(id, meta, bytes.length);
+        this.inflight.delete(id);
         await this.evict();
         this.emit(id);
     }
@@ -157,13 +162,19 @@ export class EmojiBlobStore {
         this.saveIndex(idx);
     }
 
-    /** Decrypted bytes, or null if absent / unreadable (a missing file is dropped from the index). */
+    /**
+     * Decrypted bytes, or null if absent / unreadable. Only a file the disk says
+     * is NOT THERE (readFile resolved null) is dropped from the index. A read that
+     * FAILS (rejected: IPC not ready, a locked or busy file, anything else) leaves
+     * the entry, its key and its file alone: it used to be treated as missing and
+     * deleted all three, so one bad moment destroyed the emoji for good.
+     */
     async read(id: string): Promise<Uint8Array | null> {
         if (!this.has(id)) return null;
         const keyB64 = this.getKeyB64(id);
         if (!keyB64) return null;
-        let sealed: Uint8Array | null = null;
-        try { sealed = await this.io.readFile(emojiFileName(id)); } catch { sealed = null; }
+        let sealed: Uint8Array | null;
+        try { sealed = await this.io.readFile(emojiFileName(id)); } catch { return null; }
         if (!sealed) { await this.remove(id); return null; }
         try { return await openBytes(sealed, keyB64); } catch { return null; }
     }

@@ -3,6 +3,7 @@ import axios from 'axios';
 import { apiUrl } from '../utils/apiPath';
 import type { ServerInfo } from './useServers';
 import { RETRY_DELAYS_MS, isPermanentInviteFailure, resolveRetryDelayMs } from '../utils/invitePreviewRetry';
+import { sharedInvitePreview } from '../utils/invitePreviewCache';
 
 /**
  * Shared invite-preview fetch, used by both the in-chat invite card
@@ -44,6 +45,12 @@ import { RETRY_DELAYS_MS, isPermanentInviteFailure, resolveRetryDelayMs } from '
  *     from TRANSIENT failure (429/5xx/network — we just couldn't tell) and
  *     retries the latter automatically, honoring the throttler's
  *     `Retry-After` header on a 429 rather than guessing.
+ *
+ * Later: honoring Retry-After is what made a channel full of invites "take
+ * forever" (the sixth card waited out the rest of the minute). A signed-in
+ * caller now gets 60/min on this route, and a card that remounts (scrolling,
+ * switching channels and back) reuses a recent answer instead of spending the
+ * budget again (utils/invitePreviewCache.ts).
  */
 
 export interface InvitePreview {
@@ -75,17 +82,19 @@ export function useInvitePreview(code: string, token: string | null, servers: Se
     // A scheduled retry calls back into `load` — routed through a ref
     // (kept fresh below) rather than a direct self-reference so `load`
     // isn't recursively self-referential in its own closure.
-    const loadRef = useRef<() => Promise<void>>(async () => {});
+    const loadRef = useRef<(fresh?: boolean) => Promise<void>>(async () => {});
 
-    const load = useCallback(async () => {
+    const load = useCallback(async (fresh = false) => {
         cancelledRef.current = false;
         try {
-            const res = await axios.get(apiUrl`/invites/${code}/preview`, {
-                headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-            });
+            const data = await sharedInvitePreview<InvitePreview>(code, async () => {
+                const res = await axios.get(apiUrl`/invites/${code}/preview`, {
+                    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+                });
+                return res.data;
+            }, fresh);
             if (cancelledRef.current) return;
             attemptRef.current = 0;
-            const data: InvitePreview = res.data;
             setPreview(data);
             setState('valid'); // membership reconciled by the effect below, not refetched
         // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
@@ -139,7 +148,7 @@ export function useInvitePreview(code: string, token: string | null, servers: Se
         attemptRef.current = 0;
         cancelledRef.current = false;
         setState('loading');
-        void load();
+        void load(true);
     }, [load]);
 
     return { preview, state, reload };

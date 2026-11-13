@@ -30,14 +30,32 @@ describe('decoration + effect art', () => {
             expect(out).not.toContain('<svg');
         }
     });
-    it('Keys decorations draw the mascot behind the avatar; rings draw in front', () => {
+    it('Keys draws behind the avatar; rings in front; orbits on both sides (far half behind, near half in front)', () => {
         expect(html(h(AvatarDecoration, { decoration: 'keys-peek' }, 'x'))).toContain('pc-deco-back');
         expect(html(h(AvatarDecoration, { decoration: 'lume-ring' }, 'x'))).toContain('pc-deco-front');
-        const crown = html(h(AvatarDecoration, { decoration: 'keys-crown' }, 'x'));
-        expect(crown).toMatch(/pc-deco-back[\s\S]*pc-deco-front/);
+        for (const id of ['orrery', 'circlet', 'bat-halo']) {
+            const out = html(h(AvatarDecoration, { decoration: id }, 'x'));
+            expect([id, /pc-deco-back[\s\S]*pc-deco-front/.test(out), (out.match(/data-orbit="spin"/g) ?? []).length > 1]).toEqual([id, true, true]);
+        }
+    });
+    it('thumbnail size: the hairline items draw a bolder compact version; the rest are unchanged; the picker asks for it', () => {
+        // useId differs per render tree, so compare with the per-instance ids normalised.
+        const norm = (s: string) => s.replace(/pcd[A-Za-z0-9_-]*?(?=[bf]?-|[bf]")/g, 'U');
+        const art = (id: string, compact: boolean) => norm(html(h(AvatarDecoration, { decoration: id, compact }, 'x')));
+        for (const id of ['orrery', 'bat-halo', 'eclipse']) expect([id, art(id, true) !== art(id, false)]).toEqual([id, true]);
+        for (const id of ['lume-ring', 'neon-ring', 'circlet', 'star-chart']) expect([id, art(id, true) === art(id, false)]).toEqual([id, true]);
+        // Positive control for the normaliser: the same item, same size, compares equal.
+        expect(art('orrery', false)).toBe(art('orrery', false));
+        expect(read('./settings/panes/ProfileCosmeticsSection.tsx')).toMatch(/const DecoThumb[\s\S]*?<AvatarDecoration[^>]*\bcompact\b/);
+    });
+    it('retired ids render nothing (an account still holding one shows no decoration / effect, never an error)', () => {
+        for (const id of ['starfish', 'bull-kelp', 'anglerfish', 'jellyfish', 'keys-crown', 'vampire-squid']) {
+            expect(html(h(AvatarDecoration, { decoration: id }, h('i', { id: 'av' })))).not.toContain('<svg');
+        }
+        expect(html(h(ProfileEffect, { effect: 'whale-song' }))).toBe('');
     });
     it('decorations are decorative: hidden from assistive tech, never take the pointer', () => {
-        const out = html(h(AvatarDecoration, { decoration: 'keys-crown' }, 'x'));
+        const out = html(h(AvatarDecoration, { decoration: 'circlet' }, 'x'));
         expect(out).toContain('aria-hidden="true"');
         expect(read('../styles/profile-cosmetics.css')).toMatch(/\.pc-deco-art\s*\{[^}]*pointer-events:\s*none/);
     });
@@ -72,6 +90,16 @@ describe('motion rules (CSS contract)', () => {
         const block = /:root\[data-cl-window="inactive"\]([\s\S]*?)\{\s*animation-play-state:\s*paused/.exec(css)?.[1] ?? "";
         expect(css).not.toMatch(/:root\[data-cl-motion="idle"\][^{]*\{\s*animation-play-state:\s*paused/);
         for (const c of animated) expect([c, block.includes(c)]).toEqual([c, true]);
+    });
+    it('profile-motion.css keeps every loop running through input idleness and pauses it with the window', () => {
+        const motion = read('../styles/profile-motion.css');
+        const running = /data-cl-motion="idle"\]:not\(\[data-cl-window="inactive"\]\)([\s\S]*?)\{\s*animation-play-state:\s*running/.exec(motion)?.[1] ?? '';
+        const paused = /:root\[data-cl-window="inactive"\]([\s\S]*?)\{\s*animation-play-state:\s*paused/.exec(motion)?.[1] ?? '';
+        for (const c of animated) expect([c, running.includes(c), paused.includes(c)]).toEqual([c, true, true]);
+    });
+    it('an orbit body and its counter-rotation share one animation (so the body stays upright)', () => {
+        expect(css).toMatch(/\.pc-orbit\s*\{[^}]*transform-origin:\s*0 0;[^}]*animation:\s*pc-spin/);
+        expect(css).toMatch(/\.pc-orbit--counter\s*\{\s*animation-direction:\s*reverse;\s*\}/);
     });
     it('only cheap properties are animated (transform, opacity, stroke-dashoffset)', () => {
         for (const [, name, body] of keyframes) {

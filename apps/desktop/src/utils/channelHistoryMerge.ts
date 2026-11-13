@@ -14,6 +14,7 @@
  * window (as well as producing a visible empty→content flash in the pane).
  */
 
+import { frankingFieldsAfterEdit, withoutFranking, type StoredFranking } from './franking';
 import { adoptServerCopy } from './pendingSend';
 import { sanitizeChannelRefs } from './channelRefs';
 
@@ -34,6 +35,8 @@ export interface ChannelRow {
     /** Instant-send marker on a row this device sent (utils/pendingSend.ts). */
     send_state?: 'sending' | 'failed';
     send_error?: string;
+    /** Message franking: what lets a report of this row be verified (utils/franking.ts). */
+    franking?: StoredFranking;
 }
 
 interface EditContent { type: 'edit'; target_id: string; text: string; channel_refs?: unknown }
@@ -104,7 +107,14 @@ export function applyChannelEditDelete<T extends ChannelRow>(thread: T[], action
     if (idx === -1 || !channelActionAllowed(thread[idx], action, c.type, opts)) return thread;
     const next = [...thread];
     if (c.type === 'edit') {
-        next[idx] = { ...next[idx], content: editedContent(next[idx].content, c.text, c.channel_refs), edited: true };
+        // The edited text is vouched for by the EDIT's own commitment, never the
+        // original's (utils/franking.ts frankingFieldsAfterEdit).
+        next[idx] = {
+            ...withoutFranking(next[idx]),
+            content: editedContent(next[idx].content, c.text, c.channel_refs),
+            edited: true,
+            ...frankingFieldsAfterEdit(action),
+        } as T;
     } else {
         next.splice(idx, 1);
     }

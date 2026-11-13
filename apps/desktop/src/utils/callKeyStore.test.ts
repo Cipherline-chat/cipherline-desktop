@@ -177,7 +177,7 @@ describe('CallKeyStore — key sharing', () => {
         expect(t.entry(CONV, CALL)?.rotatesAtMs).toBe(now + 10 * 60_000);
         const u = new CallKeyStore();
         u.recordRemote({ conversationId: CONV, callId: CALL, keyB64: k(), epoch: 1, senderUserId: BOB, rotatesAt: new Date(now + 99 * 3_600_000).toISOString(), nowMs: now });
-        expect(u.entry(CONV, CALL)?.rotatesAtMs).toBe(now + 3_600_000); // capped at an hour
+        expect(u.entry(CONV, CALL)?.rotatesAtMs).toBe(now + 10 * 60_000 + 2 * 60_000); // capped at one rotation interval + skew margin (was 1 h; audit run 2 lead 10)
     });
 });
 

@@ -5,8 +5,11 @@ import * as path from 'path';
 import { parseDn } from 'builder-util-runtime';
 import {
     createAuthenticodeVerifier,
-    authenticodeCommand,
     powershellInvocation,
+    encodePowerShell,
+    SIGNATURE_SCRIPT,
+    PROBE_SCRIPT,
+    UPDATE_FILE_ENV,
     evaluateSignatureJson,
     CHECK_UNAVAILABLE_CODE,
     VERIFY_TIMEOUT_MS,
@@ -38,6 +41,9 @@ const sigJson = (over: Record<string, unknown> = {}) => JSON.stringify({
     ...over,
 });
 
+/** The script PowerShell would run: decode the -EncodedCommand argument. */
+const scriptOf = (args: string[]) => Buffer.from(args[args.indexOf('-EncodedCommand') + 1], 'base64').toString('utf16le');
+
 type Reply = { error?: Error | null; stdout?: string; stderr?: string } | 'hang' | 'throw';
 
 function harness(signature: Reply, probe: Reply = { stdout: '"test"' }) {
@@ -48,7 +54,7 @@ function harness(signature: Reply, probe: Reply = { stdout: '"test"' }) {
     const deps: VerifierDeps = {
         execFile: (file, args, options, cb: ExecCallback) => {
             calls.push({ file, args, options });
-            const command = args[args.length - 1];
+            const command = scriptOf(args);
             const reply = command.includes('Get-AuthenticodeSignature') ? signature : probe;
             if (reply === 'hang') return;
             if (reply === 'throw') throw new Error('spawn cmd.exe ENOENT');
@@ -75,25 +81,78 @@ function timeoutError(): Error {
     return e;
 }
 
-describe('the PowerShell invocation is upstream\'s, with a realistic timeout', () => {
-    it('same command line as electron-updater (PSModulePath reset, UTF-8, non-interactive)', () => {
-        const [exe, args] = powershellInvocation('X');
-        expect(exe).toBe('set "PSModulePath=" & chcp 65001 >NUL & powershell.exe');
-        expect(args).toEqual(['-NoProfile', '-NonInteractive', '-InputFormat', 'None', '-Command', 'X']);
+describe('the PowerShell invocation: upstream\'s flags, a realistic timeout, and NO shell', () => {
+    it('same flags as electron-updater, PSModulePath dropped from the child env, no cmd.exe wrapper', () => {
+        const inv = powershellInvocation('X', undefined, { PSModulePath: 'C:\\pwsh7', psmodulepath: 'x', Path: 'C:\\Windows', SystemRoot: 'C:\\Windows' });
+        expect(inv.exe).toBe('C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe');
+        expect(inv.args.slice(0, 4)).toEqual(['-NoProfile', '-NonInteractive', '-InputFormat', 'None']);
+        expect(inv.args[4]).toBe('-EncodedCommand');
+        expect(Buffer.from(inv.args[5], 'base64').toString('utf16le')).toBe('X');
+        expect(Object.keys(inv.env).some(k => k.toUpperCase() === 'PSMODULEPATH')).toBe(false);
+        expect(inv.env.Path).toBe('C:\\Windows');
+        expect(inv.exe).not.toMatch(/cmd|&|set /);
     });
 
-    it('escapes single quotes in the path (it is spliced into a single-quoted literal)', () => {
-        const cmd = authenticodeCommand("C:\\a';calc;'b.exe");
-        expect(cmd).toBe(`"Get-AuthenticodeSignature -LiteralPath 'C:\\a'';calc;''b.exe' | ConvertTo-Json -Compress"`);
+    it('falls back to the bare executable name when SystemRoot is unknown', () => {
+        expect(powershellInvocation('X').exe).toBe('powershell.exe');
     });
 
-    it('runs with a 120 s timeout (upstream: 20 s), hidden, via the shell', async () => {
-        const h = harness({ stdout: sigJson() });
+    it('the file path travels in the environment, never in the script or the argv', () => {
+        const hostile = 'C:\\u\\x\u2019; Start-Process calc; \u2018.exe';
+        const inv = powershellInvocation(SIGNATURE_SCRIPT, hostile, { SystemRoot: 'C:\\Windows' });
+        expect(inv.env[UPDATE_FILE_ENV]).toBe(hostile);
+        expect(inv.args.join(' ')).not.toContain('calc');
+        expect(Buffer.from(inv.args[5], 'base64').toString('utf16le')).not.toContain('calc');
+    });
+
+    it('a caller-supplied env value of the same name cannot override the file path', () => {
+        const inv = powershellInvocation(SIGNATURE_SCRIPT, 'C:\\real.exe', { [UPDATE_FILE_ENV.toLowerCase()]: 'C:\\evil.exe', SystemRoot: 'C:\\Windows' });
+        expect(inv.env[UPDATE_FILE_ENV]).toBe('C:\\real.exe');
+        expect(Object.keys(inv.env).filter(k => k.toUpperCase() === UPDATE_FILE_ENV)).toHaveLength(1);
+    });
+
+    it('the signature script is a constant: no interpolation point, reads the path from the environment, ASCII-only output', () => {
+        expect(SIGNATURE_SCRIPT).toContain(`-LiteralPath $env:${UPDATE_FILE_ENV}`);
+        expect(SIGNATURE_SCRIPT).toContain('Get-AuthenticodeSignature');
+        expect(SIGNATURE_SCRIPT).toContain('ConvertTo-Json -Compress');
+        expect(SIGNATURE_SCRIPT).toContain('[^\\x00-\\x7F]');
+        expect(PROBE_SCRIPT).toBe("'test' | ConvertTo-Json");
+        expect(encodePowerShell('a')).toBe('YQA=');
+    });
+
+    // Negative control: this is what the OLD code did, and why it was injectable.
+    // PowerShell ends a single-quoted literal at U+2018/2019/201A/201B, but the
+    // old escape doubled only the ASCII apostrophe.
+    it('negative control: the old splice-and-escape scheme let a curly quote end the literal', () => {
+        const oldCommand = (file: string) => `Get-AuthenticodeSignature -LiteralPath '${file.replace(/'/g, "''")}' | ConvertTo-Json -Compress`;
+        const hostile = 'x\u2019; Start-Process calc; \u2018.exe';
+        const cmd = oldCommand(hostile);
+        const isQuote = (c: string) => "'\u2018\u2019\u201A\u201B".includes(c);
+        const quoteCount = [...cmd].filter(isQuote).length;
+        const asciiOnly = [...cmd].filter(c => c === "'").length;
+        expect(quoteCount).toBeGreaterThan(asciiOnly + 1); // the payload adds quotes the escaper never saw
+        // The new scheme: the hostile name appears nowhere in anything PowerShell parses.
+        const inv = powershellInvocation(SIGNATURE_SCRIPT, hostile);
+        expect(Buffer.from(inv.args[5], 'base64').toString('utf16le')).not.toContain('Start-Process');
+    });
+
+    it('runs with a 120 s timeout (upstream: 20 s), hidden, with NO shell', async () => {
+        const h = harness({ stdout: sigJson() }, { stdout: '"test"' });
         await expect(h.verify(PUBLISHERS, FILE)).resolves.toBeNull();
         expect(VERIFY_TIMEOUT_MS).toBe(120_000);
         expect(h.calls).toHaveLength(1);
-        expect(h.calls[0].options).toEqual({ shell: true, timeout: VERIFY_TIMEOUT_MS, windowsHide: true });
-        expect(h.calls[0].args.at(-1)).toContain(FILE.replace(/'/g, "''"));
+        const opts = h.calls[0].options as { shell?: unknown; timeout: number; windowsHide: boolean; env: Record<string, string> };
+        expect(opts.shell).toBeUndefined();
+        expect(opts.timeout).toBe(VERIFY_TIMEOUT_MS);
+        expect(opts.windowsHide).toBe(true);
+        expect(opts.env[UPDATE_FILE_ENV]).toBe(FILE);
+        expect(scriptOf(h.calls[0].args)).toBe(SIGNATURE_SCRIPT);
+    });
+
+    it('a verdict whose JSON has a BOM and escaped backslashes still parses and matches', () => {
+        const json = JSON.stringify({ Status: 0, Path: FILE, SignerCertificate: { Subject: SUBJECT } });
+        const v = evaluateSignatureJson('\uFEFF' + json, PUBLISHERS, FILE, { parseDn, normalizePath: path.win32.normalize });
+        expect(v.kind).toBe('valid');
     });
 });
 
@@ -147,7 +206,7 @@ describe('"could not check" is retryable, never a signature verdict', () => {
         const h = harness({ error: timeoutError() });
         await expect(h.verify(PUBLISHERS, FILE)).rejects.toMatchObject({ code: CHECK_UNAVAILABLE_CODE, message: expect.stringContaining('(timed out)') });
         // The probe ran with its own bounded timeout.
-        expect(h.calls[1].args.at(-1)).toBe('ConvertTo-Json test');
+        expect(scriptOf(h.calls[1].args)).toBe(PROBE_SCRIPT);
         expect((h.calls[1].options as { timeout: number }).timeout).toBe(PROBE_TIMEOUT_MS);
     });
 

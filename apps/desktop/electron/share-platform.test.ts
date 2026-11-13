@@ -20,14 +20,14 @@ describe('shareBoostSupport - the table', () => {
     it('Windows has every part, including the D3DKMT GPU scheduling priority', () => {
         expect(shareBoostSupport('win32')).toEqual({
             priorityBoost: true, powerThrottleOptOut: true, powerBlocker: true, backgroundSwitches: true,
-            occlusionFeatureOff: true, gpuPriority: true, foreground: 'native', fullscreenHint: true,
+            occlusionFeatureOff: true, gpuPriority: true, foreground: 'native',
         });
     });
 
     it.each(['linux', 'darwin'])('%s: the Chromium switches and the power request only', (platform) => {
         expect(shareBoostSupport(platform)).toEqual({
             priorityBoost: false, powerThrottleOptOut: false, powerBlocker: true, backgroundSwitches: true,
-            occlusionFeatureOff: false, gpuPriority: false, foreground: 'unavailable', fullscreenHint: false,
+            occlusionFeatureOff: false, gpuPriority: false, foreground: 'unavailable',
         });
     });
 
@@ -40,12 +40,6 @@ describe('shareBoostSupport - the table', () => {
         for (const p of ['linux', 'darwin', 'freebsd']) expect(shareBoostSupport(p).gpuPriority).toBe(false);
     });
 
-    it('the hint exists exactly where the foreground answer does', () => {
-        for (const p of ['win32', 'linux', 'darwin']) {
-            const s = shareBoostSupport(p);
-            expect(s.fullscreenHint).toBe(s.foreground === 'native');
-        }
-    });
 });
 
 describe('launch switches per platform (setting ON)', () => {

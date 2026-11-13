@@ -1,68 +1,46 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import axios from 'axios';
-import { Check, Globe, Headphones, ListMusic, X } from 'lucide-react';
+import { Check, Globe, Headphones, ListMusic, Tv, X } from 'lucide-react';
 import { ClButton, ClInput, ClToggle } from '../cl';
 import { API_BASE } from '../../constants';
 import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
 import { SettingsDisclosure } from '../settings/SettingsDisclosure';
-import { SteamConnect } from '../settings/panes/SteamConnect';
-import { useSteamCard } from '../../hooks/useProfileRelations';
 import { forgetUserIntegrations, useMyIntegrations } from '../../hooks/useIntegrations';
 import { patchErrorMessage } from '../../utils/patchErrorMessage';
 import { parseSpotifyLink, readSpotifyItems, SPOTIFY_SHOWCASE_MAX, spotifyItemUrl, type SpotifyItem } from '../../utils/integrations/api';
-import { SOURCE_LABEL, useListening } from '../../utils/integrations/listening';
+import { ACTIVITY_LABEL, SOURCE_LABEL, useListening } from '../../utils/integrations/listening';
 import { setListeningPrefs, useListeningPrefs } from '../../utils/integrations/listeningPrefs';
-import { canReadNowPlaying, getNowPlaying, type NowPlayingRead } from '../../utils/integrations/nowPlaying';
-import { MusicNoteIcon } from './MusicNoteIcon';
+import { canReadNowPlaying, getNowPlaying, nowPlayingStatus, type NowPlaying, type NowPlayingRead } from '../../utils/integrations/nowPlaying';
+import { ActivitySourceIcon } from './PlatformLogo';
 import { IntegrationArt } from './IntegrationArt';
-import { SteamShowcase } from './SteamShowcase';
 import { SpotifyShowcase } from './SpotifyShowcase';
-// SteamConnect's rows (ps-steam) and the settings rows (su-row) live in these sheets.
+// The settings rows (su-row) live in these sheets.
 import '../../styles/settings-ui.css';
-import '../../styles/profile-settings.css';
 import '../../styles/integrations.css';
 
 /**
- * Settings > Connections: everything a profile can pull in from elsewhere.
+ * Settings > Activity & Style > Activity: what friends can see you up to,
+ * pulled in from elsewhere (this was the whole Connections pane until it was
+ * merged with Personalize, 2026-10-28; ActivityStylePane draws it).
  *
- *  - Steam: the verified link (Steam OpenID, always available) and, when the
- *    server has STEAM_WEB_API_KEY, a preview of the showcase it adds.
+ *  - Steam is NOT here any more: it lives under Settings > Profile > Showcase
+ *    (ProfileSteamSection.tsx, owner 2026-10-28).
  *  - Listening status: share what this computer is playing with friends
- *    (OS media session; OFF by default; per device).
+ *    (OS media session; OFF by default; restored with a backup).
  *  - Spotify showcase: up to three public playlists / albums (public links,
  *    no Spotify account).
  *
  * Anything the server does not offer is simply not drawn (dormant).
  */
 export const ConnectionsPane: React.FC = () => {
-    const { user, token, refreshProfile } = useAuth();
+    const { user, token } = useAuth();
     const userId = user?.user_id ?? null;
     const mine = useMyIntegrations(token ?? null);
-    const steamLinked = !!user?.steam;
-    const steamCard = useSteamCard(steamLinked ? userId : null, token ?? null);
     const available = mine.data?.available ?? null;
 
     return (
         <div className="ig-pane" data-testid="connections-pane">
-            <SettingsDisclosure
-                id="connections.steam" variant="card" title="Steam" defaultOpen
-                summary={steamLinked ? `Verified${steamCard?.persona_name ? `: ${steamCard.persona_name}` : ''}` : 'Not connected'}
-                labels={['Steam', 'Connect Steam', 'Steam level', 'Recently played']}
-            >
-                <SteamConnect token={token ?? null} userId={userId ?? undefined} linked={steamLinked} card={steamCard} onChanged={refreshProfile} />
-                {steamLinked && available?.steamData && (
-                    steamCard?.activity ? (
-                        <div className="ig-preview">
-                            <p className="su-hint">Shown on your profile to whoever can see your links. Remove the Steam block from your profile showcase to hide it.</p>
-                            <SteamShowcase activity={steamCard.activity} token={token ?? null} isSelf />
-                        </div>
-                    ) : (
-                        <p className="su-hint">Your Steam level and recent games show on your profile while the Steam block is in your showcase.</p>
-                    )
-                )}
-            </SettingsDisclosure>
-
             <ListeningSection userId={userId} />
 
             {available?.spotifyShowcase && (
@@ -80,42 +58,68 @@ export const ConnectionsPane: React.FC = () => {
 
 // ── Listening status ────────────────────────────────────────────────────────
 
+/** How often the pane re-reads while it is open and the window is focused (the reader caches 3 s). */
+export const PANE_POLL_MS = 4000;
+
+const sourceLabel = (p: NowPlaying) => p.player ?? SOURCE_LABEL[p.source] ?? 'your player';
+
 const ListeningSection: React.FC<{ userId: string | null }> = ({ userId }) => {
     const prefs = useListeningPrefs(userId);
     const live = useListening(prefs.share ? userId : null);
     const bridge = canReadNowPlaying();
-    // With sharing off, a one-off read shows what WOULD be shared (nothing is sent).
+    // A live read while this pane is open and the window focused, so the status
+    // follows the music (start a song, it shows). Nothing is sent from here: the
+    // publisher (useListeningShare) is the only thing that talks to the API.
     const [probe, setProbe] = useState<NowPlayingRead | null>(null);
     useEffect(() => {
-        if (!bridge || prefs.share) return;
+        if (!bridge) return;
         let cancelled = false;
-        getNowPlaying(prefs.includeBrowser).then((r) => { if (!cancelled) setProbe(r); });
-        return () => { cancelled = true; };
-    }, [bridge, prefs.share, prefs.includeBrowser]);
+        let timer: ReturnType<typeof setTimeout> | null = null;
+        const tick = async () => {
+            if (cancelled) return;
+            if (document.visibilityState === 'visible' && document.hasFocus()) {
+                const r = await getNowPlaying({ includeBrowser: prefs.includeBrowser, includeWatching: prefs.includeWatching });
+                if (cancelled) return;
+                setProbe(r);
+            }
+            timer = setTimeout(() => void tick(), PANE_POLL_MS);
+        };
+        const onFocus = () => { if (timer) clearTimeout(timer); timer = setTimeout(() => void tick(), 150); };
+        window.addEventListener('focus', onFocus);
+        void tick();
+        return () => { cancelled = true; if (timer) clearTimeout(timer); window.removeEventListener('focus', onFocus); };
+    }, [bridge, prefs.includeBrowser, prefs.includeWatching]);
 
-    const unsupported = !bridge || (!prefs.share && probe?.supported === false);
-    const preview = prefs.share
-        ? (live ? { title: live.track, artist: live.artist, app: SOURCE_LABEL[live.source], art: live.art ?? null } : null)
-        : !prefs.share && probe?.supported && probe.playing
-            ? { title: probe.playing.title, artist: probe.playing.artist, app: SOURCE_LABEL[probe.playing.source], art: probe.playing.art }
+    const read: NowPlayingRead | null = bridge ? probe : { supported: false, reason: 'old_app' };
+    const status = nowPlayingStatus(read, sourceLabel);
+    const unsupported = status.kind === 'unsupported';
+    // With sharing on, what friends see (the published record); otherwise what WOULD be shared.
+    const preview = prefs.share && live
+        ? { kind: live.kind, source: live.source, title: live.track, artist: live.artist, app: SOURCE_LABEL[live.source], art: live.art ?? null }
+        : read?.supported && read.playing
+            ? { kind: read.playing.kind, source: read.playing.source, title: read.playing.title, artist: read.playing.artist, app: SOURCE_LABEL[read.playing.source], art: read.playing.art }
             : null;
+    const previewDetail = !preview ? ''
+        : preview.kind === 'watching'
+            ? `${preview.artist}${preview.app && preview.app !== preview.artist ? ` on ${preview.app}` : ''}`
+            : `by ${preview.artist}${preview.app ? ` on ${preview.app}` : ''}`;
 
     return (
         <SettingsDisclosure
             id="connections.listening" variant="card" title="Listening status" defaultOpen
             summary={prefs.share ? 'Shared with friends' : 'Off'}
-            labels={['Share what I’m listening to', 'Listening to', 'Music status', 'Spotify status', 'Include music in my browser']}
+            labels={['Share what I’m listening to', 'Listening to', 'Music status', 'Spotify status', 'Include my browser', 'Also share what I’m watching', 'Watching', 'YouTube status']}
         >
             <p className="su-hint" style={{ margin: '0 0 4px' }}>
                 Shows &ldquo;Listening to&rdquo; with the song and artist under your name, to friends only, like a game.
                 It is read from your computer&rsquo;s media controls, so it works with Spotify, Apple Music, TIDAL and more, without signing in anywhere.
-                The cover stays on this device.
+                Your player&rsquo;s cover stays on this device; friends see the album&rsquo;s official cover when Cipherline can find it in a public music catalogue.
             </p>
             <div className="su-row">
                 <span className={`sd-tile${prefs.share ? '' : ' sd-tile--dim'}`}><Headphones size={16} /></span>
                 <div className="su-row-text">
                     <span className="su-row-label">Share what I&rsquo;m listening to</span>
-                    <span className="su-row-hint">{prefs.share ? 'On for this computer. Pauses while you are away.' : 'Off. Nothing is read or shared.'}</span>
+                    <span className="su-row-hint">{prefs.share ? 'On for this computer, also while Cipherline is in the background or the tray. Clears when nothing is playing.' : 'Off. Nothing is shared. (This page checks what is playing only while it is open.)'}</span>
                 </div>
                 <div className="su-row-ctl">
                     <ClToggle checked={prefs.share} disabled={!userId || unsupported} onChange={(v) => userId && setListeningPrefs(userId, { share: v })} aria-label="Share what I'm listening to" />
@@ -124,32 +128,55 @@ const ListeningSection: React.FC<{ userId: string | null }> = ({ userId }) => {
             <div className="su-row">
                 <span className={`sd-tile${prefs.includeBrowser ? '' : ' sd-tile--dim'}`}><Globe size={16} /></span>
                 <div className="su-row-text">
-                    <span className="su-row-label">Include music playing in my browser</span>
-                    <span className="su-row-hint">YouTube and web players report whatever is playing, videos included.</span>
+                    <span className="su-row-label">Include my browser</span>
+                    <span className="su-row-hint">Music in web players such as YouTube Music, Spotify or SoundCloud, and videos too if you share what you watch.</span>
                 </div>
                 <div className="su-row-ctl">
-                    <ClToggle checked={prefs.includeBrowser} disabled={!userId || unsupported} onChange={(v) => userId && setListeningPrefs(userId, { includeBrowser: v })} aria-label="Include music playing in my browser" />
+                    <ClToggle checked={prefs.includeBrowser} disabled={!userId || unsupported} onChange={(v) => userId && setListeningPrefs(userId, { includeBrowser: v })} aria-label="Include my browser" />
+                </div>
+            </div>
+            <div className="su-row">
+                <span className={`sd-tile${prefs.share && prefs.includeWatching ? '' : ' sd-tile--dim'}`}><Tv size={16} /></span>
+                <div className="su-row-text">
+                    <span className="su-row-label">Also share what I&rsquo;m watching</span>
+                    <span className="su-row-hint">
+                        {prefs.share
+                            ? prefs.includeWatching && !prefs.includeBrowser
+                                ? 'Videos in apps (Netflix, VLC…) are shared. YouTube and other sites in your browser also need “Include my browser” above.'
+                                : 'Videos and shows: “Watching” with the title and the channel or app (YouTube, Netflix, VLC…). Off: videos are never shared.'
+                            : 'Turn on sharing above first. Videos are never shared while this is off.'}
+                    </span>
+                </div>
+                <div className="su-row-ctl">
+                    <ClToggle checked={prefs.includeWatching} disabled={!userId || unsupported || !prefs.share} onChange={(v) => userId && setListeningPrefs(userId, { includeWatching: v })} aria-label="Also share what I'm watching" />
                 </div>
             </div>
 
-            <div className="ig-now" data-state={unsupported ? 'unsupported' : preview ? 'playing' : 'idle'} aria-live="polite" data-testid="listening-preview">
-                {unsupported ? (
-                    <p>{bridge
-                        ? 'This computer does not report what is playing. On Linux, install playerctl.'
-                        : 'Update Cipherline to share what you’re listening to.'}</p>
-                ) : preview ? (
-                    <>
-                        <IntegrationArt refs={null} src={preview.art} token={null} className="ig-now-art" fallback={<MusicNoteIcon size={18} />} />
-                        <span className="ig-now-txt">
-                            <span className="ig-now-kind">{prefs.share ? 'Friends see' : 'Would share'}</span>
-                            <b><MusicNoteIcon size={12} className="ig-note" />Listening to {preview.title}</b>
-                            <span>by {preview.artist}{preview.app ? ` on ${preview.app}` : ''}</span>
-                        </span>
-                    </>
-                ) : (
-                    <p>Nothing is playing right now.</p>
-                )}
-            </div>
+            {/* A long title is cut to two lines here (full text on hover); every other state's text is shown whole. */}
+            <p className="ig-detect" data-state={status.kind} role="status" aria-live="polite" data-testid="listening-status"
+                title={status.kind === 'playing' ? status.text : undefined}>
+                <span className="ig-detect-t">{status.text}</span>
+            </p>
+            {preview && !unsupported && (
+                <div className="ig-now" data-state="playing" data-testid="listening-preview">
+                    <IntegrationArt refs={null} src={preview.art} token={null} className="ig-now-art" fallback={<ActivitySourceIcon kind={preview.kind} source={preview.source} size={18} />} />
+                    <span className="ig-now-txt">
+                        <span className="ig-now-kind">{prefs.share ? 'Friends see' : 'Would share'}</span>
+                        <b title={`${ACTIVITY_LABEL[preview.kind]} ${preview.title}`}>
+                            <ActivitySourceIcon kind={preview.kind} source={preview.source} size={14} className="ig-note" />
+                            <span className="ig-now-t">{ACTIVITY_LABEL[preview.kind]} {preview.title}</span>
+                        </b>
+                        <span title={previewDetail}>{previewDetail}</span>
+                    </span>
+                </div>
+            )}
+            {preview?.art && !unsupported && (
+                <p className="su-hint" style={{ margin: 0 }}>
+                    {preview.kind === 'watching'
+                        ? 'Only you see the thumbnail. Friends see the title, the channel or app and a TV.'
+                        : 'This cover is only for you. Friends see the album\u2019s official cover from a public music catalogue when Cipherline finds one, otherwise a music note.'}
+                </p>
+            )}
         </SettingsDisclosure>
     );
 };

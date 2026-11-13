@@ -89,7 +89,11 @@ export type ShareStartErrorView =
  * user changed their mind, so no error. On macOS the same error means Screen
  * Recording is not granted (or was granted after launch).
  */
-export function describeShareStartError(err: unknown, platform: string | undefined): ShareStartErrorView {
+export function describeShareStartError(
+    err: unknown,
+    platform: string | undefined,
+    opts: { stillSharing?: boolean } = {},
+): ShareStartErrorView {
     const name = (err as { name?: unknown } | null)?.name;
     if (name === 'NotAllowedError') {
         if (platform === 'linux') return { kind: 'cancelled' };
@@ -102,7 +106,12 @@ export function describeShareStartError(err: unknown, platform: string | undefin
         return { kind: 'failed', text: 'Screen share didn’t start: capture was refused. Pick the screen or window again.' };
     }
     if (name === 'NotReadableError' || name === 'AbortError' || name === 'NotFoundError') {
-        return { kind: 'failed', text: 'Couldn’t capture that screen or window — it may have closed. Pick it again.' };
+        return {
+            kind: 'failed',
+            text: opts.stillSharing
+                ? 'Couldn’t capture that screen or window — it may have closed. Your share is still running.'
+                : 'Couldn’t capture that screen or window — it may have closed. Pick it again.',
+        };
     }
     return { kind: 'failed', text: 'Screen share couldn’t start. Try again.' };
 }

@@ -10,8 +10,10 @@ import { useIntegrationActivity } from './useIntegrationActivity';
  *
  * SEAM (components/profile/INTEGRATION_SLOTS.md), filled by the integrations
  * work (hooks/useIntegrationActivity.ts), in display order:
- *   1. Playing - the game this app detected, else (only then) what Steam says
- *      they are in, with the store art (verified Steam + STEAM_WEB_API_KEY);
+ *   1. Playing - the game this app detected (yours: its executable icon, then
+ *      the store picture; a friend's: the catalogue's store picture by name -
+ *      hooks/useGameArt.ts), else (only then) what Steam says they are in,
+ *      with the store art (verified Steam + STEAM_WEB_API_KEY);
  *   2. Listening to - friends only, from their own computer's media session.
  * Cheap on every open: the Steam card and art are cached per session, and
  * "listening" is a local store read.
@@ -26,13 +28,15 @@ export interface ProfileActivityInput {
     status: UserStatus;
 }
 
-export function useProfileActivity({ userId, profile, liveGame, status }: ProfileActivityInput): ProfileActivity[] {
+export function useProfileActivity({ userId, isSelf, profile, liveGame, status }: ProfileActivityInput): ProfileActivity[] {
     const token = useOptionalToken();
     return useIntegrationActivity({
         userId,
         token: token ?? null,
         steamId: profile?.steam?.steam_id ?? null,
         liveGame,
+        isSelf,
         offline: status === 'offline',
+        username: profile?.username ?? null,
     });
 }

@@ -37,7 +37,8 @@ const tick = () => body('// Safety net behind the event triggers', '// One re-ch
 describe('the sweep asks through the planner and the paced queue, not an inline loop', () => {
     it('plans from the freshly fetched VIEW-filtered channel list and enqueues the asks', () => {
         const fn = sweep();
-        expect(fn).toContain("const res = await axios.get(apiUrl`/servers/${serverId}/channels`");
+        expect(fn).toContain("shareInflight(`ch:${token}:${serverId}`, () => axios.get(apiUrl`/servers/${serverId}/channels`");
+        expect(fn).toContain('const res = await listP;');
         expect(fn).toContain('const plan = planKeyPrefetch({');
         expect(fn).toContain('channels,');
         expect(fn).toContain('held: localLatest,');

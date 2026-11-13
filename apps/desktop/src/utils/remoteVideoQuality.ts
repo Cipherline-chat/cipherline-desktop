@@ -125,6 +125,19 @@ export function parseIncomingVideoMode(raw: string | null | undefined): Incoming
 }
 /** Remote cameras decoded at once in 'reduced' / 'datasaver'. */
 export const DECODE_CAP = 9;
+/**
+ * Remote cameras decoded at once in 'auto' (many-camera calls). Without a cap a
+ * 50-camera call decodes 50 streams and runs 50 E2EE decrypt transforms: measured
+ * in harness/many-cameras (README) the viewer's CPU grows linearly with tiles even
+ * at the lowest layer. Past this many, the rest show as avatars until they speak
+ * (chooseDecodedSet: the focused camera, then recent speakers, then roster order),
+ * and their tiles unmount so remoteVideoDemand pauses them at the SFU.
+ */
+export const AUTO_DECODE_CAP = 25;
+/** The decode cap for a mode. */
+export function decodeCapFor(mode: IncomingVideoMode): number {
+    return mode === 'auto' ? AUTO_DECODE_CAP : DECODE_CAP;
+}
 /** Screen-share receive frame-rate cap in 'datasaver'. */
 export const DATASAVER_SHARE_FPS = 30;
 

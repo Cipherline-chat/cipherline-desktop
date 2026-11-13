@@ -148,47 +148,88 @@ export function resolveCapturedDisplay(opts: {
 // ── Linux ───────────────────────────────────────────────────────────────────
 
 /**
- * Desktops whose window manager composites by default on X11. A transparent
- * BrowserWindow needs an ARGB visual, which only exists under a compositing
- * manager; without one Chromium paints the "transparent" window OPAQUE BLACK —
- * a display-sized black window over the whole shared screen (and, since X11
- * has no capture exclusion, inside the share too). Nothing in Electron
- * reports whether a compositor is running, so the overlay is offered only on
- * desktops that composite out of the box. Matched against each
- * colon-separated entry of XDG_CURRENT_DESKTOP, case-insensitively.
+ * FALLBACK ONLY (see linuxOverlayVerdict): desktops whose window manager composites by default
+ * on X11. A transparent BrowserWindow needs an ARGB visual, which only exists under a
+ * compositing manager; without one Chromium paints the "transparent" window OPAQUE BLACK — a
+ * display-sized black window over the whole shared screen (and, since X11 has no capture
+ * exclusion, inside the share too). A desktop's name does not say whether compositing is on
+ * (XFCE can switch it off, KDE on Xorg suspends it, MATE / LXQt / i3 + picom composite without
+ * being listed), so the real answer is the run-time probe (annotation-overlay-x11.ts: an owner of
+ * `_NET_WM_CM_S<screen>`). This list is used only when that probe could not run at all. Matched
+ * against each colon-separated entry of XDG_CURRENT_DESKTOP, case-insensitively.
  */
 export const LINUX_COMPOSITING_DESKTOPS: readonly string[] = [
     'gnome', 'ubuntu', 'kde', 'cinnamon', 'x-cinnamon', 'xfce', 'unity', 'budgie', 'pantheon', 'deepin', 'dde', 'cosmic',
 ];
+
+function linuxSessionIsWayland(env: Readonly<Record<string, string | undefined>>): boolean {
+    return (env.XDG_SESSION_TYPE ?? '').toLowerCase() === 'wayland' || !!env.WAYLAND_DISPLAY;
+}
+
+/**
+ * Whether the run-time X11 compositor probe applies to this session. It does not under a forced
+ * `CIPHERLINE_ANNOT_OVERLAY` (the user has already said), and not in ANY Wayland session — not even
+ * an Electron forced onto XWayland with `--ozone-platform=x11`: XWayland windows composite through
+ * the Wayland compositor, which does not necessarily own `_NET_WM_CM_S<n>` on the X side, so a
+ * "no owner" there would be a false "no compositor".
+ */
+export function shouldProbeX11Compositor(env: Readonly<Record<string, string | undefined>>): boolean {
+    const force = (env.CIPHERLINE_ANNOT_OVERLAY ?? '').trim();
+    if (force === '0' || force === '1') return false;
+    return !linuxSessionIsWayland(env);
+}
+
+/**
+ * Whether a Linux WINDOW share can be overlaid: only on a real X11 session, where a window's
+ * position is a query away (`window:<XID>:0`). Wayland (portal) shares expose no window position
+ * to anyone; XWayland-under-Wayland is excluded for the same reason as in shouldProbeX11Compositor.
+ */
+export function x11WindowShareAllowed(env: Readonly<Record<string, string | undefined>>, ozonePlatform: string): boolean {
+    if (ozonePlatform.trim().toLowerCase() === 'wayland') return false;
+    return !linuxSessionIsWayland(env);
+}
 
 /**
  * Whether the Linux desktop overlay may be shown in this session, or why not.
  *
  *   - `CIPHERLINE_ANNOT_OVERLAY=0` → off ('platform'); `=1` → on, skipping
  *     both checks below (a user who knows their compositor is running).
- *   - Wayland → 'wayland'. Under Wayland (Electron here runs with
+ *   - Wayland → 'wayland' ONLY when this install has no Wayland overlay helper
+ *     (`waylandHelper` false). With the helper (src-native/wayland_overlay, see
+ *     annotation-overlay-wayland.ts) a Wayland session is allowed and the helper itself
+ *     decides at run time whether the compositor can host an overlay. The reasoning below is
+ *     why an ELECTRON window cannot: under Wayland (Electron here runs with
  *     --ozone-platform-hint=auto, so it is a native Wayland client whenever
  *     WAYLAND_DISPLAY is set or the session says wayland) a client can
  *     neither choose its window's position nor keep it above other windows —
  *     xdg-shell has no such requests — so the overlay would land wherever the
  *     compositor placed it and strokes would be drawn in the wrong place.
  *     An explicit `--ozone-platform=x11` (XWayland) is treated as X11.
- *   - X11 on a desktop not in LINUX_COMPOSITING_DESKTOPS → 'no_compositor'.
+ *   - X11: decided by the REAL signal, `compositor` — the run-time probe of the
+ *     `_NET_WM_CM_S<screen>` selection owner: false → 'no_compositor', true → show. Only when
+ *     the probe could not run (`compositor` null / undefined) does the desktop's NAME decide,
+ *     as before: not in LINUX_COMPOSITING_DESKTOPS → 'no_compositor'.
  *
- * null = show it. Pure (env injected) so it is unit tested.
+ * null = show it. Pure (env and probe result injected) so it is unit tested.
  */
 export function linuxOverlayVerdict(opts: {
     env: Readonly<Record<string, string | undefined>>;
     /** `app.commandLine.getSwitchValue('ozone-platform')` ('' when unset). */
     ozonePlatform: string;
+    /** The native Wayland overlay helper binary exists in this install. */
+    waylandHelper?: boolean;
+    /** X11 compositor probe: true / false = a compositing manager is / is not running; null / undefined = could not ask. */
+    compositor?: boolean | null;
 }): 'platform' | 'wayland' | 'no_compositor' | null {
     const { env } = opts;
     const force = (env.CIPHERLINE_ANNOT_OVERLAY ?? '').trim();
     if (force === '0') return 'platform';
     if (force === '1') return null;
     const ozone = opts.ozonePlatform.trim().toLowerCase();
-    const waylandSession = (env.XDG_SESSION_TYPE ?? '').toLowerCase() === 'wayland' || !!env.WAYLAND_DISPLAY;
-    if (ozone === 'wayland' || (ozone !== 'x11' && waylandSession)) return 'wayland';
+    const waylandSession = linuxSessionIsWayland(env);
+    if (ozone === 'wayland' || (ozone !== 'x11' && waylandSession)) return opts.waylandHelper ? null : 'wayland';
+    if (opts.compositor === true) return null;
+    if (opts.compositor === false) return 'no_compositor';
     const desktops = (env.XDG_CURRENT_DESKTOP ?? '').toLowerCase().split(':').map(s => s.trim()).filter(Boolean);
     if (!desktops.some(d => LINUX_COMPOSITING_DESKTOPS.includes(d))) return 'no_compositor';
     return null;

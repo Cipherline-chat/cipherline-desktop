@@ -38,6 +38,10 @@ export interface PersonalizationTransport {
 export const CACHE_TTL_MS = 5 * 60_000;
 export const BATCH_WINDOW_MS = 60;
 export const MAX_IDS_PER_REQUEST = 50;
+/** A save waits this long for the next click. */
+export const SAVE_SETTLE_MS = 500;
+/** PATCH /me/personalization allows 5 per 10 s; this spacing can never reach that, however the clicks are timed. */
+export const SAVE_MIN_GAP_MS = 2_100;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const DEFAULTS: CallPersonalization = Object.freeze({ ring_color: null, entrance_sound: null, theme: null });
@@ -128,6 +132,24 @@ export async function freshCallPersonalization(uid: string, maxAgeMs = 30_000): 
     return getCallPersonalization(uid);
 }
 
+/**
+ * Like freshCallPersonalization, but a failure REJECTS (transport unbound, 429,
+ * network) instead of silently returning the cached default. The entrance-sound
+ * path needs to tell "this person has no sound" from "we could not find out":
+ * the first is silence, the second is retried and then defaults.
+ */
+export async function readCallPersonalizationStrict(uid: string, maxAgeMs = 30_000): Promise<CallPersonalization> {
+    const t = transport;
+    if (!t) throw new Error('personalization transport not bound');
+    if (!UUID.test(uid)) return getCallPersonalization(uid);
+    if (!isFresh(uid, maxAgeMs)) {
+        const res = await t.read([uid]);
+        slots.set(uid, { value: sanitizeEntry(res?.[uid]), fetchedAt: now() });
+        notify(uid);
+    }
+    return getCallPersonalization(uid);
+}
+
 /** Apply the caller's own values locally (after a save, or the boot read). */
 export function setOwnCallPersonalization(uid: string, patch: Partial<Pick<CallPersonalization, 'ring_color' | 'entrance_sound'>>): void {
     const prev = getCallPersonalization(uid);
@@ -140,22 +162,69 @@ export function setOwnCallPersonalization(uid: string, patch: Partial<Pick<CallP
  * the previous value is restored and the rejection is rethrown so the picker
  * can say so.
  */
-export async function saveOwnCallPersonalization(
-    uid: string,
-    patch: { ring_color?: string | null; entrance_sound?: string | null },
-): Promise<void> {
+type SavePatch = { ring_color?: string | null; entrance_sound?: string | null };
+interface PendingSave {
+    uid: string;
+    patch: SavePatch;
+    before: CallPersonalization;
+    waiters: { resolve: () => void; reject: (e: unknown) => void }[];
+}
+let pendingSave: PendingSave | null = null;
+let saveTimer: ReturnType<typeof setTimeout> | null = null;
+let saving = false;
+let lastSaveAt = -Infinity;
+
+function armSave(): void {
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = null;
+    if (saving) return; // the save in flight re-arms when it lands
+    saveTimer = setTimeout(() => { void sendSave(); }, Math.max(SAVE_SETTLE_MS, lastSaveAt + SAVE_MIN_GAP_MS - now()));
+}
+
+async function sendSave(): Promise<void> {
+    saveTimer = null;
+    const job = pendingSave;
     const t = transport;
-    if (!t) throw new Error('offline');
-    const before = getCallPersonalization(uid);
-    setOwnCallPersonalization(uid, patch);
+    if (!job || !t) return;
+    pendingSave = null;
+    saving = true;
+    lastSaveAt = now();
+    // Read fresh after the await: a pick can arrive while this save is in flight.
+    const newer = (): PendingSave | null => pendingSave;
     try {
-        const saved = await t.save(patch);
-        setOwnCallPersonalization(uid, saved);
+        const saved = await t.save(job.patch);
+        // A newer pick made meanwhile stays on screen; its own save is coming.
+        if (!newer()) setOwnCallPersonalization(job.uid, saved);
+        job.waiters.forEach(w => w.resolve());
     } catch (err) {
-        slots.set(uid, { value: before, fetchedAt: now() });
-        notify(uid);
-        throw err;
+        const next = newer();
+        if (next) next.before = job.before;
+        else { slots.set(job.uid, { value: job.before, fetchedAt: now() }); notify(job.uid); }
+        job.waiters.forEach(w => w.reject(err));
+    } finally {
+        saving = false;
+        if (newer()) armSave();
     }
+}
+
+/**
+ * Optimistic: the pick shows at once. The network follows once the clicking
+ * stops, merged into one save, so swapping through every style costs one or two
+ * requests instead of one per click.
+ */
+export function saveOwnCallPersonalization(uid: string, patch: SavePatch): Promise<void> {
+    if (!transport) return Promise.reject(new Error('offline'));
+    const before = pendingSave?.before ?? getCallPersonalization(uid);
+    setOwnCallPersonalization(uid, patch);
+    return new Promise((resolve, reject) => {
+        if (pendingSave) {
+            Object.assign(pendingSave.patch, patch);
+            pendingSave.waiters.push({ resolve, reject });
+        } else {
+            pendingSave = { uid, patch: { ...patch }, before, waiters: [{ resolve, reject }] };
+        }
+        armSave();
+    });
 }
 
 export function bindCallPersonalizationTransport(t: PersonalizationTransport | null): void {
@@ -167,6 +236,11 @@ export function clearCallPersonalization(): void {
     const ids = [...slots.keys()];
     slots.clear(); queued.clear(); inFlight.clear();
     if (timer) { clearTimeout(timer); timer = null; }
+    // Signed out: an unsent save must not land on whoever signs in next.
+    if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
+    pendingSave?.waiters.forEach(w => w.reject(new Error('offline')));
+    pendingSave = null;
+    lastSaveAt = -Infinity;
     ids.forEach(notify);
 }
 

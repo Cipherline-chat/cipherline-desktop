@@ -73,12 +73,20 @@ import {
     FALLBACK_PLAN_AMOUNT_MINOR,
     FALLBACK_PLAN_CURRENCY,
     WEBSITE_ACCOUNT_URL,
+    CONSENT_STALE_CODE,
     apiErrorMessage,
     formatConfirmedTotal,
     formatPlanPrice,
+    formatPreviewTotalLine,
+    previewAddressFromChange,
     formatTotalBreakdown,
     prepareOneStepSubscription,
+    renewalConsentAdvertised,
+    renewalConsentPayload,
+    intervalPeriod,
+    type BillingInterval,
     type CheckoutConfig,
+    type CheckoutPreview,
     type SubscribeResult,
 } from '@cipherline/shared';
 import { API_BASE } from '../../constants';
@@ -90,6 +98,9 @@ import type { KeysSignal } from '../mascot/Keys';
 import { STRIPE_APPEARANCE, STRIPE_FONTS } from './stripeAppearance';
 import { DESKTOP_PAYMENT_ELEMENT_OPTIONS, desktopPaymentMethodTypes } from './checkoutPaymentMethods';
 import { CheckoutShell, CheckoutSummary } from './CheckoutLayout';
+import { RenewalConsent } from './RenewalConsent';
+import { IntervalPicker } from './IntervalPicker';
+import { checkoutIntervals, quoteFor, type IntervalPrices } from './planInterval';
 import { useCheckoutWide } from './useCheckoutLayout';
 
 // Shared with the card-update modal (and available to the website) so the
@@ -113,9 +124,16 @@ export interface InAppCheckoutProps {
 interface Mounted {
     stripe: Promise<Stripe | null>;
     options: StripeElementsOptions;
-    /** Minor units the Pay button quotes (the plan price, before tax). */
+    /** Minor units the Pay button quotes for MONTHLY (the plan price, before tax). */
     amount: number;
     currency: string;
+    /** Quote per interval. `year` is present only when the API offers yearly
+     *  (and quoted it); absent = no picker, monthly exactly as before. */
+    prices: IntervalPrices;
+    /** The API advertised that it requires renewal consent (GET /billing/status).
+     *  Only then are the disclosure + checkbox shown and `consent` sent: an older
+     *  API rejects the unknown field with a 400. */
+    consentRequired: boolean;
 }
 
 export const InAppCheckout: React.FC<InAppCheckoutProps> = ({ context, onSuccess, onClose, authToken, inline }) => {
@@ -145,10 +163,21 @@ export const InAppCheckout: React.FC<InAppCheckoutProps> = ({ context, onSuccess
                 }
                 const amount = cfg.amount ?? FALLBACK_PLAN_AMOUNT_MINOR;
                 const currency = (cfg.currency ?? FALLBACK_PLAN_CURRENCY).toLowerCase();
+                const { prices } = checkoutIntervals(cfg, { amount, currency });
+                // Feature detection. Any failure = "not advertised" = today's
+                // behaviour (no checkbox, no consent field).
+                let consentRequired = false;
+                try {
+                    const st = await axios.get(`${API_BASE}/billing/status`, { headers: { Authorization: `Bearer ${token}` } });
+                    consentRequired = renewalConsentAdvertised(st?.data);
+                } catch { /* old API or transient: behave as before */ }
+                if (cancelled) return;
                 setMounted({
                     stripe: Promise.resolve(stripeInst),
                     amount,
                     currency,
+                    prices,
+                    consentRequired,
                     options: {
                         // Deferred intent: Elements first, subscription second.
                         mode: 'subscription',
@@ -192,7 +221,7 @@ export const InAppCheckout: React.FC<InAppCheckoutProps> = ({ context, onSuccess
         <Elements stripe={mounted.stripe} options={mounted.options}>
             <CheckoutForm
                 context={context} onSuccess={onSuccess} onClose={onClose} token={token}
-                amount={mounted.amount} currency={mounted.currency}
+                amount={mounted.amount} currency={mounted.currency} prices={mounted.prices} consentRequired={mounted.consentRequired}
                 inline={inline} onBusyChange={onBusyChange} onEscape={inline ? undefined : requestClose}
             />
         </Elements>
@@ -300,18 +329,38 @@ const CheckoutForm: React.FC<{
     token: string | null;
     amount: number;
     currency: string;
+    prices: IntervalPrices;
+    consentRequired: boolean;
     inline?: boolean;
     /** Tells the host a charge is in flight (so a stray Esc can't abandon it). */
     onBusyChange?: (busy: boolean) => void;
     /** Stripe's iframe swallows keydown, so it reports Escape through this. */
     onEscape?: () => void;
-}> = ({ onSuccess, onClose, token, amount, currency, inline, onBusyChange, onEscape }) => {
+}> = ({ onSuccess, onClose, token, amount: monthlyAmount, currency: monthlyCurrency, prices, consentRequired, inline, onBusyChange, onEscape }) => {
     const stripe = useStripe();
     const elements = useElements();
     const reduced = useReducedMotion();
     const wide = useCheckoutWide() && !inline;
-    /** "$2.50/mo + tax" — the base price plus an explicit tax qualifier. */
-    const priceLabel = useMemo(() => formatPlanPrice(amount, currency), [amount, currency]);
+    /** Monthly unless the customer picks yearly (the picker exists only when the API offers it). */
+    const [interval, setIntervalState] = useState<BillingInterval>('month');
+    const yearlyAvailable = !!prices.year;
+    // The quote for the chosen interval: everything below (Pay label, consent
+    // text + payload, tax preview, confirm total) follows it.
+    const { amount, currency } = interval === 'year' ? quoteFor('year', prices) : { amount: monthlyAmount, currency: monthlyCurrency };
+    /** Display-only tax preview (POST /billing/checkout-preview). null = none
+     *  yet / unavailable, and the "plus tax" wording stays. NEVER gates payment. */
+    const [preview, setPreview] = useState<Extract<CheckoutPreview, { available: true }> | null>(null);
+    const previewKey = useRef('');
+    /** What the customer has been shown: the previewed total when there is one,
+     *  else the base price. The server-computed total is still compared against
+     *  this before charging, so a stale preview only costs a confirm step. */
+    const quoteAmount = preview ? preview.amount_total : amount;
+    /** "$2.50/mo + tax" until a real total is known, then "$2.68/mo". */
+    const period = intervalPeriod(interval);
+    const priceLabel = useMemo(
+        () => (preview ? formatPlanPrice(preview.amount_total, preview.currency, { period, tax: false }) : formatPlanPrice(amount, currency, { period })),
+        [preview, amount, currency, period],
+    );
     // "Everything unlocks the moment this goes through." is no longer one of the
     // rotating lines: it is a fixed line in the summary (CheckoutSummary).
     const readyBubbles = useMemo(() => [
@@ -319,6 +368,9 @@ const CheckoutForm: React.FC<{
         'Your card never touches our servers. Promise.',
     ], []);
     const [phase, setPhase] = useState<Phase>('ready');
+    /** The auto-renewal consent box. Starts UNCHECKED, always: Pay stays disabled
+     *  until it is ticked. (The server refuses a subscription without it too.) */
+    const [consented, setConsented] = useState(false);
     const [elementReady, setElementReady] = useState(false);
     const [complete, setComplete] = useState(false);
     const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -334,6 +386,46 @@ const CheckoutForm: React.FC<{
     useEffect(() => () => { if (pollTimer.current) clearTimeout(pollTimer.current); }, []);
 
     const authHeaders = useMemo(() => (token ? { Authorization: `Bearer ${token}` } : undefined), [token]);
+
+    /** Ask for a tax preview. Failure of any kind leaves the "plus tax" copy. */
+    const lastAddress = useRef<{ country: string; postal_code?: string; state?: string } | null>(null);
+    const requestPreview = useCallback(async (address?: { country: string; postal_code?: string; state?: string } | null) => {
+        if (address) lastAddress.current = address;
+        const addr = address ?? lastAddress.current;
+        const key = JSON.stringify([addr ?? null, interval]);
+        if (previewKey.current === key) return;
+        previewKey.current = key;
+        try {
+            const res = await axios.post<CheckoutPreview>(
+                `${API_BASE}/billing/checkout-preview`,
+                // `interval` only for yearly: a monthly request is byte-identical to before.
+                { platform: 'desktop', ...(interval === 'year' ? { interval } : {}), ...(addr ?? {}) },
+                { headers: authHeaders },
+            );
+            if (previewKey.current !== key) return; // the customer switched interval meanwhile
+            setPreview(res.data?.available === true && typeof res.data.amount_total === 'number' ? res.data : null);
+        } catch {
+            if (previewKey.current === key) setPreview(null); // display-only: fall back to "plus tax"
+        }
+    }, [authHeaders, interval]);
+    // On open and on every interval change: a returning customer's address on
+    // file may already price it, and a yearly total is a different number.
+    useEffect(() => { void requestPreview(null); }, [requestPreview]);
+
+    /** Monthly <-> yearly. A consent is per interval: it is cleared, the
+     *  preview and any prepared quote are dropped, and Stripe's Elements are
+     *  told the new amount. */
+    const chooseInterval = useCallback((next: BillingInterval) => {
+        if (next === interval || (next === 'year' && !yearlyAvailable) || phase === 'preparing' || phase === 'processing') return;
+        setIntervalState(next);
+        setConsented(false);
+        setPreview(null);
+        setPrepared(null);
+        setPhase((p) => (p === 'confirm' || p === 'error' ? 'ready' : p));
+        setErrorMsg(null);
+        const q = next === 'year' ? quoteFor('year', prices) : { amount: monthlyAmount, currency: monthlyCurrency };
+        elements?.update({ amount: q.amount });
+    }, [interval, yearlyAvailable, phase, prices, monthlyAmount, monthlyCurrency, elements]);
 
     /** True once the server agrees the subscription is live. */
     const isActivated = useCallback(async (): Promise<boolean> => {
@@ -436,7 +528,7 @@ const CheckoutForm: React.FC<{
 
     /** Steps 1–4: validate, tokenise, let the server tax it, then charge or ask. */
     const submit = useCallback(async () => {
-        if (!stripe || !elements || phase === 'preparing' || phase === 'processing') return;
+        if (!stripe || !elements || (consentRequired && !consented) || phase === 'preparing' || phase === 'processing') return;
         setPhase('preparing');
         setErrorMsg(null);
         const out = await prepareOneStepSubscription({
@@ -444,10 +536,20 @@ const CheckoutForm: React.FC<{
             createToken: () => stripe.createConfirmationToken({ elements }),
             subscribe: async (id) => (await axios.post<SubscribeResult>(
                 `${API_BASE}/billing/subscribe`,
-                { confirmation_token_id: id, platform: 'desktop' },
+                {
+                    confirmation_token_id: id,
+                    platform: 'desktop',
+                    // The terms exactly as shown above the button: the price the
+                    // API quoted this account (founder price included).
+                    // Only when the API advertised it; an older API 400s on it.
+                    // The consent interval must match the subscribe interval (the
+                    // server refuses a mismatch as renewal_consent_stale).
+                    ...(interval === 'year' ? { interval } : {}),
+                    ...(consentRequired ? { consent: renewalConsentPayload({ priceMinor: amount, currency, interval }) } : {}),
+                },
                 { headers: authHeaders },
             )).data,
-        }, { amount, currency });
+        }, { amount: quoteAmount, currency: preview ? preview.currency : currency });
 
         if (out.kind === 'error') {
             // Inline, in the payment panel — a missing country is fixed where
@@ -455,7 +557,15 @@ const CheckoutForm: React.FC<{
             // Raw message: it is either Stripe's own field validation or the
             // API's wording (e.g. "Enter your country and ZIP..."), both already
             // user-facing. friendlyError only knows card-decline strings.
-            setErrorMsg(out.message);
+            if (out.code === CONSENT_STALE_CODE) {
+                // The price or wording moved while this was open. Make the
+                // customer look again rather than re-sending a consent to
+                // terms they can no longer see.
+                setConsented(false);
+                setErrorMsg('The price or terms changed. Please close and reopen checkout to review them.');
+            } else {
+                setErrorMsg(out.message);
+            }
             setPhase('error');
             return;
         }
@@ -466,7 +576,7 @@ const CheckoutForm: React.FC<{
             return;
         }
         await charge(out.result);
-    }, [stripe, elements, phase, authHeaders, amount, currency, charge]);
+    }, [stripe, elements, consented, consentRequired, phase, authHeaders, amount, currency, interval, quoteAmount, preview, charge]);
 
     /** Confirm click on the tax step. */
     const confirmTotal = useCallback(async () => {
@@ -518,6 +628,10 @@ const CheckoutForm: React.FC<{
         <CheckoutSummary
             wide={wide}
             priceLabel={priceLabel}
+            interval={interval}
+            intervalPicker={yearlyAvailable ? (
+                <IntervalPicker prices={prices} value={interval} onChange={chooseInterval} disabled={busy || phase === 'activating'} />
+            ) : undefined}
             total={phase === 'ready' ? null : prepared}
             signal={keysSignal}
             bubble={bubble}
@@ -587,6 +701,25 @@ const CheckoutForm: React.FC<{
                 </div>
             )}
 
+            {/* Auto-renewal disclosure + consent, directly above the button it
+                governs (body-size text, box starts unchecked). Also covers the
+                Terms §7.7 immediate-performance acknowledgment, which therefore
+                still sits adjacent to the pay button. Stays on screen (locked)
+                through the tax-confirm step. */}
+            {consentRequired ? (
+                <RenewalConsent
+                    amount={amount} currency={currency} interval={interval}
+                    checked={consented} onChange={setConsented}
+                    disabled={busy || phase === 'confirm'}
+                />
+            ) : null}
+
+            {preview && phase !== 'confirm' && (
+                <p className="text-[13.5px] font-bold text-cl-text text-center mb-2.5" data-testid="total-today">
+                    {formatPreviewTotalLine(preview)}
+                </p>
+            )}
+
             {phase === 'confirm' && prepared ? (
                 /* Only shown when the real total differs from the quote (tax). */
                 <div data-testid="tax-confirm">
@@ -595,11 +728,11 @@ const CheckoutForm: React.FC<{
                             <div className="text-[11px] uppercase tracking-wide text-cl-muted">Your total</div>
                             <div className="text-[12px] text-cl-muted" data-testid="tax-confirm-breakdown">{formatTotalBreakdown(prepared)}</div>
                         </div>
-                        <div className="text-2xl font-extrabold text-cl-text" data-testid="tax-confirm-total">{formatConfirmedTotal(prepared)}</div>
+                        <div className="text-2xl font-extrabold text-cl-text" data-testid="tax-confirm-total">{formatConfirmedTotal(prepared, interval)}</div>
                     </div>
                     <ClButton fullWidth size="lg" onClick={() => { void confirmTotal(); }}>
                         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-                            <Lock size={16} /> Confirm {formatConfirmedTotal(prepared)}
+                            <Lock size={16} /> Confirm {formatConfirmedTotal(prepared, interval)}
                         </span>
                     </ClButton>
                     <div className="mt-2">
@@ -613,7 +746,7 @@ const CheckoutForm: React.FC<{
                     fullWidth
                     size="lg"
                     onClick={() => { void submit(); }}
-                    disabled={!stripe || !elementReady || (!complete && phase === 'ready')}
+                    disabled={!stripe || !elementReady || (consentRequired && !consented) || (!complete && phase === 'ready')}
                     loading={busy}
                 >
                     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
@@ -622,23 +755,33 @@ const CheckoutForm: React.FC<{
                 </ClButton>
             )}
 
-            <p className="ckt-fine">
-                Recurring subscription — your payment method is charged $2.50/month plus any
-                applicable tax, and renews automatically until you cancel. Cancel anytime in
-                Settings → Billing.
-            </p>
-
-            {/* Express request for immediate performance. Terms §7.7 makes the EU/UK/EEA
-                withdrawal waiver rest on this acknowledgment being shown before payment,
-                so it must stay adjacent to the pay button and must not be collapsed. */}
-            <p className="ckt-fine" style={{ marginTop: 4 }}>
-                By subscribing you agree to the Terms of Service and ask for access to begin
-                immediately.
-            </p>
+            {!consentRequired && (
+                /* Older API (no consent support): the pre-consent fine print, unchanged. */
+                <>
+                    <p className="ckt-fine">
+                        Recurring subscription — your payment method is charged {interval === 'year' ? `${formatPlanPrice(amount, currency, { period: 'year', tax: false })}` : '$2.50/month'} plus any
+                        applicable tax, and renews automatically until you cancel. Cancel anytime in
+                        Settings → Billing.
+                    </p>
+                    <p className="ckt-fine" style={{ marginTop: 4 }}>
+                        By subscribing you agree to the Terms of Service and ask for access to begin
+                        immediately.
+                    </p>
+                </>
+            )}
 
             <div className="ckt-secured">
                 <ShieldCheck size={12} aria-hidden /> Secured by Stripe · cancel anytime
             </div>
+
+            {/* Apple Pay / Google Pay need a browser payment sheet Electron lacks
+                (see checkoutPaymentMethods.ts); point wallet users at the website. */}
+            <p className="ckt-wallet-hint" data-testid="wallet-hint">
+                Prefer Apple Pay or Google Pay?{' '}
+                <button type="button" className="ckt-wallet-link" onClick={() => { openExternalLink(WEBSITE_ACCOUNT_URL); }}>
+                    Subscribe at cipherline.chat
+                </button>
+            </p>
         </>
     );
 
@@ -654,7 +797,11 @@ const CheckoutForm: React.FC<{
                     onReady={(el) => { setElementReady(true); focusWhenIdle(el); }}
                     onFocus={() => setFocused(true)}
                     onBlur={() => setFocused(false)}
-                    onChange={(e) => setComplete(e.complete)}
+                    onChange={(e) => {
+                        setComplete(e.complete);
+                        const addr = previewAddressFromChange(e.value as Parameters<typeof previewAddressFromChange>[0]);
+                        if (addr) void requestPreview(addr);
+                    }}
                     onEscape={onEscape}
                 />
             </div>

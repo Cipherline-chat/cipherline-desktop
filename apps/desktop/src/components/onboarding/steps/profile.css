@@ -50,38 +50,28 @@
 @keyframes pf-bub { from { opacity: 0; transform: translateY(6px) scale(.85); } }
 .ob .pv-cap { margin: 16px 0 0; text-align: center; font: 600 10.5px var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--faint); }
 
-/* ---- the card, in 3D (frame + parts from ProfileCardParts) ---- */
+/* ---- the card: the NEW profile preview (profile/ProfilePopoutCard), tilted as one piece ---- */
 .ob .obpc-persp { perspective: 1100px; display: flex; justify-content: center; }
 /* The tilt writes the card's inline `transform` and the sheen's own --sx/--sy/--sh
    (set on the childless sheen, not inherited through the card: no subtree restyle per frame). */
-.ob .obpc { position: relative; width: 360px; max-width: 100%; transform-style: preserve-3d; }
-.ob .obpc-3d { transform-style: preserve-3d; }
-/* layer depths: banner 4, avatar 34, name 24, status 18, About 12, button 20, sheen 40 */
-.ob .obpc-banner { position: relative; display: block; width: 100%; padding: 0; border: 0; border-radius: 20px 20px 0 0; background: transparent; cursor: pointer; transform: translateZ(4px); }
-.ob .obpc-l-av { position: relative; transform: translateZ(34px); }
-.ob .obpc-l-id { transform: translateZ(24px); }
-.ob .obpc-l-st { transform: translateZ(18px); }
-.ob .obpc-l-ab { transform: translateZ(12px); }
-.ob .obpc-l-act { transform: translateZ(20px); pointer-events: none; }
-.ob .obpc-ph { color: var(--faint); font-weight: 500; }
+.ob .obpc { position: relative; width: 340px; max-width: 100%; border-radius: 18px; }
+.ob .obpc .ppo { box-shadow: 0 18px 48px rgba(3, 6, 16, .55), 0 3px 10px rgba(3, 6, 16, .35); }
+/* no name yet: the placeholder reads as a placeholder */
+.ob .obpc[data-name-empty="true"] .ppo-name { color: var(--faint); font-weight: 500; }
 
-/* banner: "Add a banner" hint on hover / focus */
-.ob .obpc-hint { position: absolute; right: 12px; top: 12px; display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; border-radius: 9px;
-  background: rgba(5, 8, 19, .62); color: var(--text); font: 700 12px var(--body); opacity: 0; transform: translateY(-3px); pointer-events: none;
+/* banner: the whole strip is the picker; "Add a banner" hint on hover / focus */
+.ob .ppo-banner-pick { position: absolute; inset: 0; z-index: 1; padding: 0; border: 0; background: transparent; cursor: pointer; }
+.ob .ppo-banner-pick::after { content: attr(aria-label); position: absolute; right: 12px; top: 12px; padding: 5px 10px; border-radius: 9px;
+  background: rgba(5, 8, 19, .62); color: var(--text); font: 700 12px var(--body); opacity: 0; transform: translateY(-3px);
   transition: opacity .18s, transform .25s var(--spr); }
-.ob .obpc-banner:hover .obpc-hint, .ob .obpc-banner:focus-visible .obpc-hint { opacity: 1; transform: none; }
-.ob .obpc-banner:focus-visible { outline: 2px solid var(--lume); outline-offset: -2px; }
-/* avatar: a camera on hover / focus */
-.ob .obpc-av { position: relative; }
-.ob .obpc-av:focus-visible { outline: 2px solid var(--lume); outline-offset: 4px; }
-.ob .obpc-avhint { position: absolute; inset: 0; display: grid; place-items: center; border-radius: 50%; background: rgba(0, 0, 0, .45); color: #fff; opacity: 0; transition: opacity .2s; pointer-events: none; }
-.ob .obpc-av:hover .obpc-avhint, .ob .obpc-av:focus-visible .obpc-avhint { opacity: 1; }
+.ob .ppo-banner-pick:hover::after, .ob .ppo-banner-pick:focus-visible::after { opacity: 1; transform: none; }
+.ob .ppo-banner-pick:focus-visible { outline: 2px solid var(--lume); outline-offset: -2px; }
 
 /* a soft specular sheen that follows the tilt */
-.ob .obpc-sheen { --sx: 50%; --sy: 30%; --sh: 0; position: absolute; inset: 0; border-radius: 20px; pointer-events: none; transform: translateZ(40px); opacity: calc(var(--sh) * .9);
-  background: radial-gradient(70% 55% at var(--sx) var(--sy), rgba(255, 255, 255, .10), rgba(255, 255, 255, .03) 45%, transparent 70%); mix-blend-mode: screen; }
+.ob .obpc-sheen { --sx: 50%; --sy: 30%; --sh: 0; position: absolute; inset: 0; border-radius: 18px; pointer-events: none; opacity: calc(var(--sh) * .9);
+  background: radial-gradient(70% 55% at var(--sx) var(--sy), rgba(255, 255, 255, .10), rgba(255, 255, 255, .03) 45%, transparent 70%); mix-blend-mode: screen; z-index: 10; }
 
-/* the entrance: rise out of depth with a slight swing that settles, layers assemble in order */
+/* the entrance: rise out of depth with a slight swing that settles */
 .ob .obpc.obpc-enter { animation: pf-rise 1.05s cubic-bezier(.2, .8, .25, 1) both; }
 @keyframes pf-rise {
   0% { opacity: 0; transform: translate3d(0, 46px, -240px) rotateX(24deg) rotateY(-16deg); }
@@ -90,19 +80,7 @@
   82% { transform: translate3d(0, 0, 0) rotateX(1deg) rotateY(-1.2deg); }
   100% { transform: none; }
 }
-.ob .obpc-enter .obpc-banner { animation: pf-l-banner .5s cubic-bezier(.2, .8, .25, 1) .12s both; }
-.ob .obpc-enter .obpc-l-av { animation: pf-l-av .55s cubic-bezier(.2, .8, .25, 1) .3s both; }
-.ob .obpc-enter .obpc-l-id { animation: pf-l-id .45s cubic-bezier(.2, .8, .25, 1) .46s both; }
-.ob .obpc-enter .obpc-l-st { animation: pf-l-st .45s cubic-bezier(.2, .8, .25, 1) .54s both; }
-.ob .obpc-enter .obpc-l-ab { animation: pf-l-ab .45s cubic-bezier(.2, .8, .25, 1) .62s both; }
-.ob .obpc-enter .obpc-l-act { animation: pf-l-act .45s cubic-bezier(.2, .8, .25, 1) .7s both; }
-.ob .obpc-enter .obpc-sheen { animation: pf-l-sheen 1.05s ease-out both; }
-@keyframes pf-l-banner { from { opacity: 0; transform: translateZ(4px) translateY(-12px); } to { opacity: 1; transform: translateZ(4px); } }
-@keyframes pf-l-av { from { opacity: 0; transform: translateZ(90px) translateY(14px); } to { opacity: 1; transform: translateZ(34px); } }
-@keyframes pf-l-id { from { opacity: 0; transform: translateZ(60px) translateY(10px); } to { opacity: 1; transform: translateZ(24px); } }
-@keyframes pf-l-st { from { opacity: 0; transform: translateZ(50px) translateY(8px); } to { opacity: 1; transform: translateZ(18px); } }
-@keyframes pf-l-ab { from { opacity: 0; transform: translateZ(40px) translateY(8px); } to { opacity: 1; transform: translateZ(12px); } }
-@keyframes pf-l-act { from { opacity: 0; transform: translateZ(50px) translateY(10px); } to { opacity: 1; transform: translateZ(20px); } }
+.ob .obpc.obpc-enter .obpc-sheen { animation: pf-l-sheen 1.05s ease-out both; }
 @keyframes pf-l-sheen { 0%, 40% { opacity: 0; } 70% { opacity: .9; } 100% { opacity: 0; } }
 
 /* ---- reduced motion: a flat card, no entrance, no bounce, no bubble pop ---- */

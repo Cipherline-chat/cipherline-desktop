@@ -18,8 +18,13 @@ describe('channelKeyContentMatchesEnvelope', () => {
         const c = buildChannelKeyContent({ channelId: 'chan-A', epoch: 2, keyB64: 'k', deviceId: 'd', rotationReason: 'initial' });
         expect(channelKeyContentMatchesEnvelope(c, env)).toBe(false);
     });
-    it('tolerates absent fields, rejects present-but-different values', () => {
-        expect(channelKeyContentMatchesEnvelope({}, env)).toBe(true);
+    it('requires both fields: an envelope without them is not one any client produces', () => {
+        expect(channelKeyContentMatchesEnvelope({}, env)).toBe(false);
+        expect(channelKeyContentMatchesEnvelope({ channel_id: 'chan-A' }, env)).toBe(false);
+        expect(channelKeyContentMatchesEnvelope({ epoch: 3 }, env)).toBe(false);
+        expect(channelKeyContentMatchesEnvelope({ channel_id: 'chan-A', epoch: null }, env)).toBe(false);
+    });
+    it('rejects present-but-different values', () => {
         expect(channelKeyContentMatchesEnvelope({ channel_id: 'chan-A', epoch: '3' }, env)).toBe(true);
         expect(channelKeyContentMatchesEnvelope({ channel_id: null }, env)).toBe(false);
         expect(channelKeyContentMatchesEnvelope({ channel_id: 'chan-A', epoch: 'x' }, env)).toBe(false);

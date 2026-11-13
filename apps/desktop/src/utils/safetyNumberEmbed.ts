@@ -41,6 +41,35 @@ import { computeContactCode, checkCode } from './verificationCode';
 import { deriveContactTrust, type ContactTrust } from './contactTrust';
 import type { SenderVerdict } from './senderTrust';
 
+/**
+ * Which received safety-code cards no longer need "Share mine back", worked out
+ * from the conversation itself so it survives a reopen with no new storage.
+ *
+ * A received card is settled when the user's own share comes after it (they
+ * answered), or when the nearest safety code before it is their own (the card IS
+ * the answer to theirs). Without the second rule each share would ask for another
+ * and two people could trade codes forever.
+ *
+ * `rows` must be in display order. A row paged out of `rows` simply is not seen,
+ * and the worst that does is offer the button again: sending takes a click.
+ */
+export function settledSafetyCardIds<T extends { id: string; content?: { type?: string } | null }>(
+    rows: readonly T[],
+    isOwn: (row: T) => boolean,
+): Set<string> {
+    const settled = new Set<string>();
+    const cards = rows.filter(r => r.content?.type === 'safety_number');
+    let ownSeenLater = false;
+    for (let i = cards.length - 1; i >= 0; i--) {
+        if (isOwn(cards[i])) {
+            ownSeenLater = true;
+            continue;
+        }
+        if (ownSeenLater || (i > 0 && isOwn(cards[i - 1]))) settled.add(cards[i].id);
+    }
+    return settled;
+}
+
 export type SafetyEmbedVerdict =
     /** Well-formed, and identical to what this client computes for the sender. */
     | { kind: 'match' }

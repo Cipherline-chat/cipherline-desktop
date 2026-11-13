@@ -20,7 +20,6 @@ import '../../../styles/moment-self-friend.css';
  */
 export const SelfFriendMoment: React.FC = () => (
     <div className="mo-sf mo-view" aria-hidden="true">
-        <div className="mo-dim" />
         <div className="mo-anchor">
             <span className="mo-notice" />
             <div className="mo-sf-all">

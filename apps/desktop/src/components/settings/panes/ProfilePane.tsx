@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect, useLayoutEffect, useMemo, useCallba
 import { createPortal } from 'react-dom';
 import { useAuth } from '../../../contexts/AuthContext';
 import { Image as ImageIcon, Camera, Trash2, Lock, Check, Loader2, AlertCircle, Maximize2, Share2 } from 'lucide-react';
-import { ClButton, ClInput, ClTextarea, ClImageCropper, ClSegment, ClToggle } from '../../cl';
+import { ClInput, ClTextarea, ClImageCropper, ClSegment, ClToggle } from '../../cl';
 import { SettingsDisclosure } from '../SettingsDisclosure';
 import { SettingsDisclosureFlatCards } from '../settingsDisclosureFlat';
 import { REVEAL_EVENT } from '../revealSetting';
@@ -18,9 +18,6 @@ import { getTracker } from '../../../utils/achievements/tracker';
 import { useSubscription } from '../../../contexts/SubscriptionContext';
 import { EncryptedAvatar } from '../../EncryptedAvatar';
 import { Banner } from '../../Banner';
-import RecoveryKeyCard from '../../RecoveryKeyCard';
-import { TotpSettingsCard } from '../../auth/TotpSettingsCard';
-import { ChangePasswordModal } from '../../auth/ChangePasswordModal';
 import axios from 'axios';
 import { API_BASE } from '../../../constants';
 import { useAttachments } from '../../../hooks/useAttachments';
@@ -36,9 +33,11 @@ import { padDiscriminator } from '@cipherline/shared';
 import { ProfileVisibilitySection, type PreviewVisibility } from './ProfileVisibilitySection';
 import { ProfileCosmeticsSection } from './ProfileCosmeticsSection';
 import { ProfileExtrasSection } from './ProfileExtrasSection';
+import { ProfileSteamSection } from './ProfileSteamSection';
 import { sanitizeLinks } from '../../../utils/profileLinks';
 import { AnimatedImageDialog } from './AnimatedImageDialog';
 import { isAnimatedFile, animatedPickError } from '../../../utils/animatedImage';
+import { supportsAnimatedCrop } from '../../../utils/animatedCrop/client';
 import { readTheme } from '../../../utils/profileTheme';
 import { showcaseBlocksOf } from '../../../utils/profileExtras';
 import { deviceTimeZone, isValidTimeZone, listTimeZones, type ViewAs } from '../../../utils/profileVisibility';
@@ -54,7 +53,7 @@ import { readItemOptions } from '../../../utils/profileCosmetics';
  * one): the SAME card other people see when they click you (the preview
  * popover), drawn from your drafts, as "Everyone" or "A friend", with "Full
  * profile" and "Share" under it. Beside it, tabs - Basics, Style, Showcase,
- * Privacy, Security - so every part is one click away and none sits below the
+ * Privacy - so every part is one click away and none sits below the
  * fold (owner, 2026-10-24: the customization was missed because it was a
  * scroll away). Hidden tabs stay mounted; the settings search opens the right
  * one (revealSetting, data-reveal-closed):
@@ -70,10 +69,11 @@ import { readItemOptions } from '../../../utils/profileCosmetics';
  *  - Style: theme, decoration, effect - an inline studio: pick one, its
  *    options appear right beside the preview (ProfileCosmeticsSection).
  *  - Showcase: your level, and the sections of your card in order, each opening
- *    its own content editor (games, links, interests, eggs, achievements).
+ *    its own content editor (games, links, interests, eggs, achievements); then
+ *    Steam (ProfileSteamSection) - the only place Steam is connected / managed.
  *  - Who can see this: one preset, per-field overrides folded below.
  *
- * Below: one Security card (2FA, recovery key, password).
+ * Security (2FA, recovery key, password) lives on the Security & devices page.
  */
 
 /** Bio placeholder pool — rotates per focus (personality doctrine: owned slot, ≥3 lines). */
@@ -84,13 +84,12 @@ const BIO_PLACEHOLDERS = [
     'The bio is optional. The mystery is free.',
 ];
 
-type PaneTab = 'basics' | 'style' | 'showcase' | 'privacy' | 'security';
+type PaneTab = 'basics' | 'style' | 'showcase' | 'privacy';
 const PANE_TABS: ReadonlyArray<{ id: PaneTab; label: string }> = [
     { id: 'basics', label: 'Basics' },
     { id: 'style', label: 'Style' },
     { id: 'showcase', label: 'Showcase' },
     { id: 'privacy', label: 'Privacy' },
-    { id: 'security', label: 'Security' },
 ];
 
 /** A tab's body. Stays mounted while hidden; a settings-search hit inside it brings it forward. */
@@ -149,7 +148,6 @@ export const ProfilePane: React.FC<{ onDirtyChange?: (dirty: boolean) => void }>
     const [avatarUrl, setAvatarUrl] = useState<string | null>(user?.avatar_url ?? null);
     const [bannerUrl, setBannerUrl] = useState<string | null>(user?.banner_url ?? null);
     const [saveState, setSaveState] = useState<SaveState>({ kind: 'idle' });
-    const [showPwModal, setShowPwModal] = useState(false);
     const [bioPlaceholder, setBioPlaceholder] = useState(BIO_PLACEHOLDERS[0]);
     /** A username rejection from the last save (filter / cooldown / clash),
      *  for the value it was rejected on. */
@@ -160,7 +158,7 @@ export const ProfilePane: React.FC<{ onDirtyChange?: (dirty: boolean) => void }>
     const [now, setNow] = useState(() => Date.now());
     /** The image awaiting crop, and which surface it was picked for. */
     const [cropTarget, setCropTarget] = useState<{ kind: 'avatar' | 'banner'; file: File } | null>(null);
-    /** An animated pick (GIF / animated WebP): kept as-is, previewed instead of cropped. */
+    /** An animated pick on a runtime that cannot crop animations (no WebCodecs): kept as-is, previewed instead of cropped. */
     const [animatedTarget, setAnimatedTarget] = useState<{ kind: 'avatar' | 'banner'; file: File } | null>(null);
     const bioFocusCount = useRef(0);
     const fileInputRef = useRef<HTMLInputElement>(null);
@@ -309,8 +307,9 @@ export const ProfilePane: React.FC<{ onDirtyChange?: (dirty: boolean) => void }>
             return;
         }
         if (!result.file) return;
-        // Animated files skip the crop (it would flatten them to a still JPEG).
-        if (await isAnimatedFile(result.file)) {
+        // Animated files go through the cropper too (it crops every frame). Only a
+        // runtime without WebCodecs falls back to keeping them as-is.
+        if (!supportsAnimatedCrop() && await isAnimatedFile(result.file)) {
             const tooBig = animatedPickError(result.file);
             if (tooBig) {
                 toast.push({ kind: 'error', title: kind === 'avatar' ? 'Invalid avatar' : 'Invalid banner', message: tooBig });
@@ -399,7 +398,7 @@ export const ProfilePane: React.FC<{ onDirtyChange?: (dirty: boolean) => void }>
     // Your verified Steam, as the card shows it (persona + avatar from the server).
     const ownSteam = useSteamCard(user?.steam ? user.user_id : null, token ?? null);
 
-    // Your most played reaches friends only while you share it (Personalize > Activity).
+    // Your most played reaches friends only while you share it (Activity & Style > Activity).
     const mostPlayed = useMostPlayed(user?.user_id, true);
     const sharesMostPlayed = getTracker()?.getState().prefs.mostPlayed ?? false;
 
@@ -409,6 +408,7 @@ export const ProfilePane: React.FC<{ onDirtyChange?: (dirty: boolean) => void }>
         decorationOptions: readItemOptions(user?.cosmetic_options?.d, 'decoration', user?.avatar_decoration),
         effectOptions: readItemOptions(user?.cosmetic_options?.e, 'effect', user?.profile_effect),
         level: user?.profile_level?.level ?? 0,
+        levelPoints: user?.profile_level?.points ?? null,
         games: user?.widget_games ?? [], links: sanitizeLinks(user?.profile_links),
         steam: user?.steam ? { steamId: user.steam.steam_id, personaName: ownSteam?.persona_name ?? null, avatar: ownSteam?.avatar ?? null } : null,
         blocks: showcaseBlocksOf(user?.profile_showcase).blocks, topAchievements: showcaseBlocksOf(user?.profile_showcase).top_achievements,
@@ -703,6 +703,8 @@ export const ProfilePane: React.FC<{ onDirtyChange?: (dirty: boolean) => void }>
                         onPreview={onPreview}
                         onSaved={refreshAfter}
                     />
+                    {/* Steam lives ONLY here (owner, 2026-10-28): connect / unlink, and the stats switch. */}
+                    <ProfileSteamSection token={token ?? null} userId={user?.user_id} linked={!!user?.steam} onChanged={refreshProfile} />
                     </PaneTabPanel>
 
                     {/* ── Who can see this ───────────────────────────────────── */}
@@ -716,27 +718,6 @@ export const ProfilePane: React.FC<{ onDirtyChange?: (dirty: boolean) => void }>
                     />
                     </PaneTabPanel>
 
-                    {/* ── Security ───────────────────────────────────────────── */}
-                    <PaneTabPanel id="security" idBase={tabsId} active={tab === 'security'} onReveal={() => setTab('security')}>
-                    <div className="sd-card">
-                        <h3>Security</h3>
-                        <p className="sd-sub">Second factors and the keys that guard this device.</p>
-                        <div className="flex flex-col gap-3">
-                            <TotpSettingsCard bare />
-                            <RecoveryKeyCard />
-                            <div className="sd-secrow" style={{ paddingBottom: 0 }}>
-                                <span className="sd-sic"><Lock size={16} /></span>
-                                <div className="sd-smeta">
-                                    <b>Change password</b>
-                                    <span>You will be signed out of all other sessions.</span>
-                                </div>
-                                <ClButton size="sm" variant="ghost" onClick={() => setShowPwModal(true)}>
-                                    Change…
-                                </ClButton>
-                            </div>
-                        </div>
-                    </div>
-                    </PaneTabPanel>
                     </SettingsDisclosureFlatCards.Provider>
                 </div>
             </div>
@@ -761,8 +742,6 @@ export const ProfilePane: React.FC<{ onDirtyChange?: (dirty: boolean) => void }>
                 document.body,
             )}
 
-            <ChangePasswordModal open={showPwModal} onClose={() => setShowPwModal(false)} />
-
             <ClImageCropper
                 open={!!cropTarget}
                 file={cropTarget?.file ?? null}
@@ -770,6 +749,7 @@ export const ProfilePane: React.FC<{ onDirtyChange?: (dirty: boolean) => void }>
                 outputHeight={cropTarget?.kind === 'banner' ? BANNER_OUTPUT.height : AVATAR_OUTPUT.height}
                 shape={cropTarget?.kind === 'banner' ? 'rect' : 'circle'}
                 title={cropTarget?.kind === 'banner' ? 'Position your banner' : 'Position your avatar'}
+                allowAnimated
                 onCancel={() => setCropTarget(null)}
                 onConfirm={(blob) => handleCropped(blob)}
             />

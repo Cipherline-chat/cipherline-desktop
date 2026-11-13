@@ -1,5 +1,7 @@
 import React, { useEffect } from 'react';
 import { Keys } from './mascot/Keys';
+import { EggScrim } from './EggScrim';
+import { useEggSkip } from '../hooks/useEggSkip';
 import '../styles/egg-party.css';
 
 /**
@@ -10,11 +12,18 @@ import '../styles/egg-party.css';
  *
  * Deterministic field (no Math.random: same reasoning as seasonal.ts), 6 s,
  * then `onDone`. Under reduced motion (rule 9) nothing travels or falls: a
- * still Keys in his hat sits in the corner for a moment instead — the same
+ * still Keys in his hat sits in the middle for a moment instead — the same
  * hello, without the motion.
+ *
+ * Like every egg moment it plays on the shared egg scrim (EggScrim: the app
+ * dims behind it) at the moments' layer (z 50000, under the toasts), and it is
+ * passive: clicks go through to the app, and a click or Escape ends it early.
  */
 export const PARTY_MS = 6200;
 export const PARTY_STILL_MS = 3000;
+/** The scrim lifts with the swimmer's exit (the last ~0.7 s). */
+const SCRIM_OUT_AT_MS = 5500;
+const SCRIM_OUT_MS = 700;
 
 const COLORS = ['#25E0C8', '#5e8ee0', '#FFC94D', '#4ADE80', '#FF8FB1', '#FF6B5E'];
 const PIECES = Array.from({ length: 28 }, (_, i) => ({
@@ -38,18 +47,21 @@ export const KeysParty: React.FC<{ reduced: boolean; onDone: () => void }> = ({ 
         const t = window.setTimeout(onDone, reduced ? PARTY_STILL_MS : PARTY_MS);
         return () => window.clearTimeout(t);
     }, [reduced, onDone]);
+    useEggSkip(onDone);
 
     if (reduced) {
         return (
             <div className="egg-party egg-party--still" aria-hidden="true" data-testid="keys-party">
+                <EggScrim />
                 <div className="egg-party-still">
-                    <Keys size={84} costume="party" interactive={false} waveOnMount={false} idleSway={false} />
+                    <Keys size={112} costume="party" interactive={false} waveOnMount={false} idleSway={false} />
                 </div>
             </div>
         );
     }
     return (
         <div className="egg-party" aria-hidden="true" data-testid="keys-party">
+            <EggScrim outAtMs={SCRIM_OUT_AT_MS} outMs={SCRIM_OUT_MS} />
             {BUBBLES.map((b, i) => (
                 <span
                     key={`b${i}`}

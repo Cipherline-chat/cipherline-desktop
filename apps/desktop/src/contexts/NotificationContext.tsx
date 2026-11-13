@@ -15,6 +15,7 @@ import React, { createContext, useContext, useEffect, useState, useCallback, use
 import type { ReactNode } from 'react';
 import { useAuth } from './AuthContext';
 import { soundGroupOf, buildDefaultSoundCategoryPrefs } from '../utils/notificationSounds';
+import { DEFAULT_IDLE_TIMEOUT_MINUTES, normalizeIdleTimeoutMinutes, setIdleTimeoutMinutes } from '../utils/idleThreshold';
 import type { SoundCategory, CollapsedSoundGroup, SoundGroupPrefs } from '../utils/notificationSounds';
 
 // ── Prefs shape ───────────────────────────────────────────────────────────────
@@ -69,6 +70,16 @@ export interface NotificationPrefs {
     flash_taskbar: boolean;
     badge_only_mentions: boolean;
     badge_includes_muted: boolean;
+    /**
+     * "Idle timeout", in minutes: how long the PC can go without keyboard or
+     * mouse input before it counts as idle. ONE value drives both the
+     * auto-Away status and cross-device attention (utils/idleThreshold.ts):
+     * past it, this PC stops suppressing the phone and new messages go there.
+     * One of IDLE_TIMEOUT_CHOICES_MINUTES (1, 2, 5, 10, 15, 30); anything else
+     * stored is snapped to the default on load. New field 2026-11; older
+     * stored blobs pick up the default through mergeStoredPrefs.
+     */
+    idle_timeout_minutes: number;
 }
 
 // eslint-disable-next-line react-refresh/only-export-components -- co-located helper export; splitting the file would only affect dev Fast Refresh, not runtime behaviour
@@ -132,6 +143,7 @@ export const DEFAULT_PREFS: NotificationPrefs = {
     flash_taskbar: false,
     badge_only_mentions: false,
     badge_includes_muted: false,
+    idle_timeout_minutes: DEFAULT_IDLE_TIMEOUT_MINUTES,
 };
 
 // ── Context ───────────────────────────────────────────────────────────────────
@@ -191,7 +203,10 @@ function load(userId: string): NotificationPrefs {
         // crashed NotificationsTab (`prefs.sounds[cat].enabled` on undefined)
         // for every account with saved prefs — see notificationPrefsMerge.ts.
         const parsed = JSON.parse(raw);
-        return deriveSoundGroups(mergeStoredPrefs(DEFAULT_PREFS, parsed), parsed, soundGroupOf);
+        const merged = deriveSoundGroups(mergeStoredPrefs(DEFAULT_PREFS, parsed), parsed, soundGroupOf);
+        // A stored value outside the menu (hand-edited, a later build's extra
+        // choice) is not trusted to decide when to buzz a phone: back to default.
+        return { ...merged, idle_timeout_minutes: normalizeIdleTimeoutMinutes(merged.idle_timeout_minutes) };
     } catch {
         return { ...DEFAULT_PREFS };
     }
@@ -208,6 +223,13 @@ export const NotificationProvider: React.FC<{ children: ReactNode }> = ({ childr
     const [prefs, setPrefs] = useState<NotificationPrefs>(() =>
         userId ? load(userId) : { ...DEFAULT_PREFS }
     );
+
+    // Mirror the Idle timeout into the shared idle module so every consumer
+    // (auto-Away, attention heartbeat, listening share) reads ONE live value.
+    // Runs on load, on change, and on sign-out (prefs reset to the default).
+    useEffect(() => {
+        setIdleTimeoutMinutes(prefs.idle_timeout_minutes);
+    }, [prefs.idle_timeout_minutes]);
 
     // Reload from storage when user changes
     useEffect(() => {

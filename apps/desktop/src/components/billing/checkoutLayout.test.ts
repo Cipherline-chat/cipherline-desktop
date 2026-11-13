@@ -74,7 +74,13 @@ vi.mock('../../constants', async (importOriginal) => ({
 type Handler = (url: string) => unknown;
 const routes: { get: Handler; post: Handler } = { get: () => ({ data: {} }), post: () => ({ data: {} }) };
 vi.mock('axios', () => {
-    const get = vi.fn(async (url: string) => routes.get(url));
+    const get = vi.fn(async (url: string) => {
+        const res = routes.get(url) as { data?: Record<string, unknown> };
+        // The (fake) API advertises renewal consent on /billing/status, like the new API.
+        return url.endsWith('/billing/status') && res?.data
+            ? { ...res, data: { ...res.data, renewal_consent: { required: true, version: 'ar-2026-11-10', text_hash: null } } }
+            : res;
+    });
     const post = vi.fn(async (url: string) => routes.post(url));
     return { default: { get, post, isAxiosError: () => false } };
 });
@@ -98,6 +104,14 @@ const click = async (label: RegExp) => {
     await act(async () => { b.click(); });
     await flush();
 };
+
+/** Tick the (initially unchecked) auto-renewal consent box, then press Pay. */
+const tickConsent = async () => {
+    const box = document.body.querySelector('[data-testid="renewal-consent-checkbox"]') as HTMLInputElement | null;
+    if (!box) throw new Error('no consent checkbox on screen');
+    if (!box.checked) await act(async () => { box.click(); });
+};
+const pay = async () => { await tickConsent(); await click(/^Pay /); };
 const pressEscape = async () => {
     await act(async () => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); });
 };
@@ -192,7 +206,7 @@ describe('checkout layout: wide window = summary | payment', () => {
         const pay = button(/^Pay /)!;
         expect(footer.contains(pay)).toBe(true);
         expect(scroll.contains(pay)).toBe(false);
-        expect(footer.textContent).toContain('Recurring subscription');
+        expect(footer.textContent).toContain('renews automatically every month');
         // Terms §7.7: the immediate-performance acknowledgment stays adjacent to Pay
         expect(footer.textContent).toContain('ask for access to begin immediately');
         expect(footer.textContent).toContain('Secured by Stripe');
@@ -237,7 +251,7 @@ describe('checkout layout: narrow window = one column, compact summary on top', 
 describe('checkout layout: the tax-confirm step stays in the pinned footer', () => {
     it('shows the exact total + Confirm in the footer, and the exact total in the summary', async () => {
         await mount();
-        await click(/^Pay /);
+        await pay();
         const footer = $('[data-testid="checkout-footer"]')!;
         expect(footer.contains($('[data-testid="tax-confirm"]'))).toBe(true);
         expect(footer.contains(button(/Confirm \$2\.68\/mo/)!)).toBe(true);
@@ -430,7 +444,7 @@ describe('checkout accessibility', () => {
         stripeFake.confirmPayment.mockReturnValue(new Promise((r) => { release = r; }));
         routes.post = (url) => (url.endsWith('/billing/subscribe') ? { data: quote({ amount_tax: 0, amount_total: 250 }) } : { data: { subscription_status: 'active' } });
         await mount();
-        await click(/^Pay /);
+        await pay();
         expect(stripeFake.confirmPayment).toHaveBeenCalledTimes(1);
         await pressEscape();
         await act(async () => { (paymentElementProps!.onEscape as () => void)(); });
@@ -451,7 +465,7 @@ describe('checkout accessibility', () => {
     it('the error is announced once: role=alert in the footer, the speech bubble is hidden from AT', async () => {
         stripeFake.createConfirmationToken.mockResolvedValue({ error: { message: 'Your card number is incomplete.' } });
         await mount();
-        await click(/^Pay /);
+        await pay();
         const alert = $('[data-testid="checkout-footer"] [role="alert"]');
         expect(alert?.textContent).toContain('incomplete');
         expect($('.ckt-bubble')!.getAttribute('aria-hidden')).toBe('true');

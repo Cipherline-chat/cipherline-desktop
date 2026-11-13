@@ -6,7 +6,7 @@ import {
 import * as http from 'http';
 import * as https from 'https';
 import { assertPublicHttpUrl, assertRemoteImageUrlShape, pinnedLookup } from './net-guard';
-import { appOriginsFor, decidePermissionRequest } from './permission-policy';
+import { appOriginsFor, decidePermissionCheck, decidePermissionRequest } from './permission-policy';
 import { isPathInside } from './path-containment';
 import { writePrivatePage } from './private-page-file';
 import { parseInviteUrl, parseReferralUrl, extractDeepLinkFromArgv, externalUrlToOpen } from './deep-link';
@@ -24,8 +24,19 @@ import * as nodeCrypto from 'crypto';
 import { getLocalIdentityPub, migrateSpkPubIfMissing, ensureSignalIdentity, signIdentityMessage, generateRotationBundle, lowestHeldOtpId, type StatusAwareRotationOptions } from './signal-identity';
 import { SpkCandidateOrder } from './spk-candidates';
 import { MediaSessionReader } from './media-session';
-import { detectCurrentGame, getCurrentGameCached, getRunningProcessList, setCustomGames, setIgnoredProcesses, resetHeuristicSessions, nextGamePollDelayMs, GAME_POLL_MS, GAME_POLL_SETTLE_MS } from './game-detector';
+import { MediaWatcher, parseWatchOpts, describeRead, describeWatch } from './media-watch';
+import { MusicPresenceProbe } from './music-detect';
+import { detectCurrentGame, getCurrentGameCached, getRunningProcessList, setCustomGames, setIgnoredProcesses, resetHeuristicSessions, nextGamePollDelayMs, GAME_POLL_MS, GAME_POLL_SETTLE_MS, getSteamAppId, peekDetectedGame } from './game-detector';
+import { GameArtResolver, type ImageLike } from './game-art';
 import { secureStore } from './storage';
+import { showKeyringNotice } from './keyring-notice';
+import { keyringPreflight } from './keyring-preflight';
+import { busctlExec } from './keyring-bus';
+import { probeWallet } from './keyring-probe';
+import { AUTO_RETRY_ARG, shouldWatchWallet, startWalletWatcher, type WalletWatcher } from './keyring-autoretry';
+import { keyringNoticeGuard } from './keyring-notice-guard';
+import { clearMarker, readBootId, readMarker, shouldPreannounce, writeMarker } from './keyring-marker';
+import { KEYRING_ACTION_CHANNEL, KEYRING_RETRY_COOLDOWN_MS, KEYRING_STATUS_CHANNEL, parseKeyringAction, relaunchOptions } from './keyring-ipc';
 import { shouldShowKeyProtectionNotice, keyProtectionNoticeToken } from './key-protection';
 import { KvCrypto } from './kv-crypto';
 import { isRendererSecureKey, filterRendererSecureKeys } from './secure-store-policy';
@@ -40,11 +51,15 @@ import { startOAuth, getAccessToken, revokeTokens, getLinkedAccount, getCachedFo
 import { createDriveApi } from './drive-api';
 import { checkUploadUrl, devUploadHosts } from './upload-host-policy';
 import { createCaptureConsent, describePrompt, isCaptureSourceId, type ConsentPrompt } from './capture-consent';
+import { isPortalSourceId, portalCaptureVideo, PORTAL_SOURCE_NAME } from './portal-source';
+import { createPortalPicks, planPortalPick, pickFromListing } from './portal-pick';
+import { createAppAudio, authorizeAppStart } from './app-audio';
 import { createQuickShareForegroundStore, hasForegroundCandidate, resolveForegroundSource } from './quick-share-foreground';
 import { uploadFileResumable, downloadFileToPath, request as driveRequest } from './driveTransfer';
-import { showAnnotationOverlay, hideAnnotationOverlay, pushAnnotationOverlayDelta, setAnnotationOverlayNative, annotationOverlayPrecheck, type OverlayDelta, type OverlayShowResult } from './annotation-overlay';
+import { effectiveDisplayHz } from './wayland-refresh';
+import { showAnnotationOverlay, hideAnnotationOverlay, pushAnnotationOverlayDelta, setAnnotationOverlayNative, setAnnotationOverlayEndedListener, annotationOverlayPrecheck, getWaylandDisplayRefresh, type OverlayDelta, type OverlayShowResult } from './annotation-overlay';
 import { thumbnailJpegDataUrl } from './thumbnailDataUrl';
-import { createDesktopSourcesBroker } from './desktop-sources';
+import { createDesktopSourcesBroker, DESKTOP_SOURCES_TIMEOUT_MS } from './desktop-sources';
 import { parseAttributionClipboard, parseAttributionArgv } from './attribution-link';
 import {
   showNotification,
@@ -64,11 +79,10 @@ import {
   windowsLoginItemNeedsRetrofit,
   leftoverWindowsLaunchItemNames,
   xdgAutostartPath,
-  buildXdgDesktopEntry,
   interpretXdgEntry,
-  xdgEntryNeedsRewrite,
   shouldApplyLoginDefault,
   wasLaunchedAtLogin,
+  keepLoginWindowUnmapped,
   shouldStartMinimized,
   shouldHideToTrayOnClose,
   resolveBoolPref,
@@ -78,8 +92,10 @@ import {
   type LoginItemTarget,
   type LoginItemState,
 } from './login-item';
+import { setXdgAutostart, reconcileXdgAutostart } from './linux-autostart';
+import { ensureMainDesktopEntry, MAIN_DESKTOP_FILE } from './linux-identity';
 import { encryptForDevices, decryptWithRetainedSpks, encryptChannelMessage, decryptChannelMessage, flushReplayCache, type DevicePub } from './e2ee-engine';
-import { setChannelKey, getChannelKey, getLatestEpoch, listChannelEpochs, rotateChannelKey, pruneOldKeys, getChannelKeyFingerprint, listChannelEpochFingerprints, discardChannelKey, setProtectedEpochs } from './channel-keys';
+import { setChannelKey, getChannelKey, getLatestEpoch, getLatestEpochRotatesAt, isValidChannelId, listChannelEpochs, rotateChannelKey, pruneOldKeys, getChannelKeyFingerprint, listChannelEpochFingerprints, discardChannelKey, setProtectedEpochs } from './channel-keys';
 import { installerSplashHtml } from './installer-splash';
 import { shouldGiveUpOnCrashLoop } from './crashLoopPolicy';
 import { watchLinuxScreenLock } from './linux-screensaver';
@@ -90,6 +106,7 @@ import {
   decodeHandoffBody,
   handoffResponseBody,
   handOffToRunningInstance,
+  isExpectedLoopbackHost,
   MAX_HANDOFF_BODY,
 } from './instance-handoff';
 import {
@@ -100,6 +117,9 @@ import {
   onUpdateError,
   onInstallError,
   classifyUpdateError,
+  classifyInstallError,
+  linuxPackageKind,
+  debDownloadUrl,
   isUpdateInFlight,
   updaterErrorDetail,
   toDiagnosticDetail,
@@ -108,25 +128,36 @@ import {
   pickDownloadUrl,
   UPDATE_BASE_URL,
   RETRY_DELAYS_MS,
+  type LinuxPackageKind,
   type UpdateState as UpdateStateT,
   type UpdateFileInfo as UpdateFileInfoT,
 } from './updater-state';
 import { UpdateCheckScheduler, type CheckReason } from './update-check-scheduler';
 import { UpdateInstallCoordinator, INSTALL_ATTEMPT_FILE } from './update-install';
+import { ApplyingUpdatePopup } from './update-applying';
+import { openApplyingUpdateWindow } from './applying-update-window';
 import { createAuthenticodeVerifier } from './authenticode-verify';
 import { UPDATE_MANIFEST_PUBLIC_KEYS, REQUIRE_MANIFEST_SIG, type ManifestChannel } from './update-manifest-keys';
 import { isManifestSignatureRequired, ManifestVerificationError } from './update-manifest-signature';
 import { createMainErrorHandler, networkErrorCode, updaterErrorCode } from './net-error';
 import { createHandledUpdateCheck } from './update-check';
 import { withManifestSignatureCheck, describeManifestReport, type GenericProviderCtor } from './signed-update-provider';
-import { syncKdeGlobalShortcuts, teardownKdeGlobalShortcuts } from './kde-global-shortcuts';
+import {
+  decideGlobalShortcutMode, statusAfterPortalSetup, sanitizeDesktopName, withPortalResult,
+  type GlobalShortcutStatus, type PortalProbeResult,
+} from './global-shortcut-mode';
+import { buildGlobalShortcutsReport, type GlobalShortcutSyncRecord } from './global-shortcut-report';
+import { probeGlobalShortcutsPortal } from './global-shortcut-portal';
+import {
+  WaylandGlobalShortcuts, buildPortalShortcuts, ensureDesktopEntry, dbusSessionBus, cleanupLegacyKdeComponent, PORTAL_APP_ID,
+} from './wayland-global-shortcuts';
 import { validateGlobalShortcutMap } from './global-shortcut-payload';
 import { isTrustedSenderUrl, channelRequiresSenderCheck } from './ipc-guard';
 import { validateClipboardPng } from './clipboard-image';
 import {
-  buildChromiumMediaSwitches, captureLogSwitches, expectedScreenCapturer, captureFpsCeiling, isNativeWaylandClient,
+  buildChromiumMediaSwitches, captureLogSwitches, expectedScreenCapturer, captureFpsCeiling, isNativeWaylandClient, capturesViaPortal, portalRestoreMode,
   windowsBuildFromRelease, parseCaptureTimingLog, validateCaptureTimingWindow, summarizeGpuDevices,
-  decideAutoScreenCapturer, gpuTopologyFromInfo, parseGpuTopologyHint, serializeGpuTopologyHint,
+  decideAutoScreenCapturer, linuxSessionInfo, gpuTopologyFromInfo, parseGpuTopologyHint, serializeGpuTopologyHint,
   resolveCapturedDisplayHz, GPU_TOPOLOGY_FILENAME, GPU_TOPOLOGY_MAX_BYTES,
   pickerEnumeration, parseSourcesHelperFailure, serializeSourcesHelperFailure,
   SOURCES_HELPER_FAILURE_FILENAME, SOURCES_HELPER_FAILURE_MAX_BYTES,
@@ -143,12 +174,27 @@ import { startMainLoopDiagnostics } from './main-loop-diagnostics';
 import {
   validateCallMediaActive, CallPriorityBooster, PRIORITY_REAPPLY_MS,
 } from './gaming-video-mode';
-import { launchThrottleSwitches, validateShareActive, applyGamingSetting, ShareBoostController, PowerThrottleOptOut, GpuSchedulingBoost, type SharePowerReport, type GpuSchedReport } from './share-boost';
+import { GPU_PREFERENCE_MARKER_FILENAME, HIGH_PERFORMANCE_GPU_SWITCH, activeGpuVendor, ensureHighPerformancePreference, highPerformanceGpuSwitches } from './hybrid-gpu';
+import { launchThrottleSwitches, validateShareActive, validateCameraActive, applyGamingSetting, ShareBoostController, PowerThrottleOptOut, GpuSchedulingBoost, boostProcFromMetric, type SharePowerReport, type GpuSchedReport } from './share-boost';
 import {
-  validateForegroundRequest, describeForeground, validateFindWindowRequest, pickWindowByExe, cleanExeName, foregroundAnswerWithoutAddon, type WindowCandidate,
+  validateForegroundRequest, describeForeground, foregroundAnswerWithoutAddon,
 } from './share-foreground';
-import { decideLinuxHwEncode, parseLinuxHwEncodeMode, LINUX_HW_ENCODE_ENV } from './linux-video-encode';
-import { parseScreenSourceIndex, parseWindowSourceHandle, cleanRect } from './annotation-overlay-target';
+import { chromiumLoopbackAudioMode } from './share-platform';
+import { warnIfAppImageUnsandboxed } from './linux-sandbox';
+import {
+  decideLinuxHwEncode, parseLinuxHwEncodeMode, LINUX_HW_ENCODE_ENV, LINUX_HW_ENCODE_LEDGER_FILENAME,
+  readLinuxHwEncodeLedgerFile, writeLinuxHwEncodeLedgerFile, clearLinuxHwEncodeLedgerFile,
+  recordLinuxHwEncodeFailure, isLinuxHwEncodeLockedOut, isLinuxHwEncodeFailureKind, activeLedgerEntries, LinuxHwEncodeFailureGate, isGpuCrashForHwEncode,
+  type LinuxHwEncodeFailureKind,
+} from './linux-video-encode';
+import {
+  decideLinuxHwDecode, parseLinuxHwDecodeMode, probeLinuxGpus, LINUX_HW_DECODE_ENV, LINUX_HW_DECODE_LEDGER_FILENAME,
+  readLinuxHwDecodeLedgerFile, writeLinuxHwDecodeLedgerFile, clearLinuxHwDecodeLedgerFile,
+  recordLinuxHwDecodeFailure, isLinuxHwDecodeLockedOut, activeDecodeLedgerEntries, LinuxHwDecodeFailureGate, isGpuCrashForHwDecode,
+} from './linux-video-decode';
+import { computeNvidiaVaapiStatus, installNvidiaVaapiDriver, type NvidiaVaapiStatus } from './nvidia-vaapi-install';
+import { computeVideoEncodeDriverStatus, detectEncodeGap, installVideoEncodeDriver, runListVa, NONE_ENCODE_STATUS, type EncodeGap, type VideoEncodeDriverStatus } from './video-encode-driver';
+import { parseScreenSourceIndex, cleanRect } from './annotation-overlay-target';
 import { PowerCoordinator, type PowerSignal } from './power-events';
 import { wireWindowDiagnostics, summarizeAppMetrics, summarizeGpuFeatureStatus, describeChildProcessGone } from './lifecycle-diagnostics';
 import {
@@ -160,10 +206,18 @@ import {
   PendingCrashStore, mainScrubber, parseSignatures, buildSystemInfo,
   reportChannel, validateReportFile, defaultReportFileName, UNCLEAN_EXIT_MARKER_FILE,
   isOsSessionEndExit,
-  type GpuInfoLike,
+  type GpuInfoLike, type CrashInfoLike,
 } from './diagnostics';
+import { AddonOffload } from './addon-offload';
+import { MainWatchdog, FREEZE_RECORD_FILE, crashFromFreezeRecord } from './freeze-evidence';
 import { SessionLifecycle, crashRecordFor, type CrashEvent, type QuitTrigger } from './session-lifecycle';
 import { beginLinkSession, bindLinkSession, openActiveLinkSession, endLinkSession, sealLinkGrant, type LinkGrantPayload } from './link-grant';
+import { applyAvatarKey } from './avatar-key-policy';
+import { isNativeShareEncoderEnabled } from './native-share-encoder';
+import { registerNativeShareIpc } from './native-share-ipc';
+import { resolveNativeShareHelper, allowNativeShareTestBackend } from './native-share-helper-path';
+import { MessageChannelMain } from 'electron';
+import { installRenumberBridge } from './renumber-bridge';
 import {
   STAGING_VERIFIER, verifyPassword, isAcceptablePasswordInput, createAttemptLimiter,
   readUnlockFileSync, removeUnlockFile, UNLOCK_FILENAME, PREVIEW_UNLOCK_FILENAME,
@@ -233,26 +287,37 @@ const autoUpdater = new Proxy({} as AppUpdater, {
 
 // Native per-app audio capture: WASAPI ApplicationLoopback on Windows
 // (src-native/audio_capture.cc), ScreenCaptureKit on macOS 13+
-// (src-native/audio_capture_mac.mm). Same addon name and JS surface on both;
-// absent on Linux, where the renderer falls back to Chromium loopback.
+// (src-native/audio_capture_mac.mm), PipeWire on Linux (src-native/audio_capture_linux.cc,
+// libpipewire dlopen()ed at run time). Same addon name and JS surface on all three;
+// where the addon is missing or unsupported the renderer falls back to Chromium loopback
+// (not on Linux: there the share goes ahead without audio, see sharePlatformSupport.ts).
 // Loaded inside app.whenReady() — see below — so that Electron's COM apartment and
 // audio subsystems are fully initialized before mmdevapi.dll is pulled in.
 let audioCaptureAddon: {
-  // macOS only: false below macOS 13 (the addon still loads there). The Windows
+  // macOS and Linux: false below macOS 13 / without a usable PipeWire (the addon still loads). The Windows
   // addon has no such export — being loaded is being supported.
   isSupported?(): boolean;
   getPidFromSourceId(sourceId: string): number | null;
+  // Linux only (PipeWire): the applications playing audio right now, one entry per application, with
+  // the process tree of `ownPid` (Cipherline) left out. Optional: an addon built before it lacks it.
+  // electron/app-audio.ts validates whatever comes back and turns it into handles.
+  listApps?(ownPid: number): unknown;
   startCapture(
     pid: number,
-    mode: 'include' | 'exclude',
+    // 'app' (Linux Wayland window share): audio of ONE application, named by the 4th argument
+    // (a key main took from listApps() - never from the renderer). `pid` is then Cipherline's own
+    // and is still excluded.
+    mode: 'include' | 'exclude' | 'app',
     // Either a normal PCM chunk, or one of two one-shot, terminal signals:
     // { processExited: true } (Phase K — the include-target quit; see
     // audio_capture.cc's IsProcessAlive) and, macOS only, { failed: true, … }
-    // (Screen Recording not granted, ScreenCaptureKit stopped, target not found).
+    // (Screen Recording not granted, ScreenCaptureKit stopped, target not found) and, Linux only,
+    // reason "unavailable" / "unsupported" (the PipeWire daemon went away / is not there).
     callback: (chunk:
       | { sampleRate: number; channels: number; data: Buffer }
       | { processExited: true }
-      | { failed: true; reason: string; message: string }) => void
+      | { failed: true; reason: string; message: string }) => void,
+    appKey?: string,
   ): void;
   stopCapture(): void;
   // Screen-share boost probes (src-native/share_power.cc). Optional: an addon
@@ -269,10 +334,40 @@ let audioCaptureAddon: {
   getScreenRectFromDeviceIndex?(index: number): unknown;
 } & HdrNative | null = null;
 
+/**
+ * Linux: the addon's isSupported() / listApps() wait on the PipeWire daemon, so
+ * they run in a worker thread with a deadline (electron/addon-offload.ts) and
+ * main only ever reads the cached answer. null until the addon has loaded, or
+ * when it could not be loaded in a worker (then the old direct call is used).
+ */
+let pipewireOffload: AddonOffload | null = null;
+
 /** True when the native addon is loaded AND this OS can actually run it. */
+let lastNativeAudioAnswer: boolean | null = null;
+function noteNativeAudioAnswer(answer: boolean): boolean {
+  // A change of answer, once per change (a boolean and the platform: nothing else). Without it a report
+  // could not say whether the addon ever answered "yes", or only stopped saying it mid-session.
+  if (answer !== lastNativeAudioAnswer) {
+    lastNativeAudioAnswer = answer;
+    console.log(`[Main/Audio] native audio capture is ${answer ? 'available' : 'NOT available'} (platform=${process.platform})`);
+  }
+  return answer;
+}
 function nativeAudioCaptureAvailable(): boolean {
   if (!audioCaptureAddon) return false;
-  return audioCaptureAddon.isSupported ? audioCaptureAddon.isSupported() : true;
+  // Never blocks: the cached answer (a refresh runs in the background when it is stale).
+  if (pipewireOffload?.usable) return noteNativeAudioAnswer(pipewireOffload.supportedNow() === true);
+  const answer = audioCaptureAddon.isSupported ? audioCaptureAddon.isSupported() : true;
+  return noteNativeAudioAnswer(answer);
+}
+/** Same answer for async callers: waits (bounded) for a fresh probe instead of trusting a stale "no". */
+async function nativeAudioCaptureReady(): Promise<boolean> {
+  if (!audioCaptureAddon) return false;
+  if (pipewireOffload?.usable) {
+    const v = await pipewireOffload.isSupported();
+    if (pipewireOffload.usable) return noteNativeAudioAnswer(v);
+  }
+  return nativeAudioCaptureAvailable();
 }
 
 // ── Crash / issue reporter: pending crash records (electron/diagnostics.ts) ──
@@ -316,12 +411,47 @@ const recordCrash = (event: CrashEvent): void => {
 };
 /** This instance is THE live one: judge the previous session, arm ours. */
 const startSessionMarker = (): void => {
-  try { pendingCrashes.add(sessionLifecycle.start()); } catch (e) { console.error('[Main] session marker:', e); }
+  try {
+    const leftover = sessionLifecycle.start();
+    // A freeze record outranks the plain unclean exit: it says WHAT hung (and
+    // survives a quit request, which drops the marker). electron/freeze-evidence.ts.
+    pendingCrashes.add(startFreezeEvidence() ?? leftover);
+  } catch (e) { console.error('[Main] session marker:', e); }
+};
+// Freeze evidence (electron/freeze-evidence.ts): a watchdog thread keeps a tiny
+// record on disk WHILE the app is hung (main blocked > 6 s, or the renderer
+// unresponsive), so a kill — SIGTERM from the taskbar, SIGKILL — cannot take the
+// evidence with it. Same gates as the quit marker: packaged (or opted in), never
+// the smoke test (no startup disk writes), and only THE live instance.
+let mainWatchdog: MainWatchdog | null = null;
+/** Consume the previous session's freeze record, then start this session's watchdog. */
+const startFreezeEvidence = (): CrashInfoLike | null => {
+  if (!SESSION_MARKER_ENABLED || mainWatchdog) return null;
+  const file = path.join(app.getPath('userData'), FREEZE_RECORD_FILE);
+  let previous: CrashInfoLike | null = null;
+  try {
+    let text: string | null = null;
+    try { text = fs.readFileSync(file, 'utf8'); } catch { text = null; }
+    previous = crashFromFreezeRecord(text, Date.now(), app.getVersion());
+    if (text !== null) { try { fs.unlinkSync(file); } catch { /* already gone */ } }
+  } catch { /* evidence only */ }
+  try {
+    const wd = new MainWatchdog({ fs, file, version: app.getVersion(), onLog: (m) => console.warn(m) }, true);
+    wd.start();
+    freezeMonitor.inflightHook = wd.board;
+    const ctxTimer = setInterval(() => {
+      wd.setContext(freezeMonitor.recentActivityLabels(), { in_call: callMediaActive, sharing: sharingActive, camera_live: cameraLiveActive });
+    }, 2000);
+    ctxTimer.unref?.();
+    mainWatchdog = wd;
+  } catch (e) { console.error('[Main] freeze evidence:', e); }
+  return previous;
 };
 /** A quit was asked for — the marker goes now, synchronously. */
 const beginQuit = (trigger: QuitTrigger): void => {
   setIsQuitting(true);
   try { sessionLifecycle.beginQuit(trigger); } catch { /* never block a quit */ }
+  try { mainWatchdog?.noteQuit(); } catch { /* evidence only */ }
 };
 /**
  * How long a negotiated-but-unconfirmed shutdown ('query-session-end') keeps
@@ -462,10 +592,68 @@ const STARTUP_FLAGS = resolveStartupFlags({
   env: {
     CIPHERLINE_SCREEN_CAPTURER: process.env.CIPHERLINE_SCREEN_CAPTURER,
     CIPHERLINE_CAPTURE_LOG: process.env.CIPHERLINE_CAPTURE_LOG,
+    CIPHERLINE_LINUX_HW_ENCODE: process.env.CIPHERLINE_LINUX_HW_ENCODE,
+    CIPHERLINE_LINUX_HW_DECODE: process.env.CIPHERLINE_LINUX_HW_DECODE,
   },
   packaged: IS_PACKAGED,
 });
 const CAPTURE_LOG_ENABLED = STARTUP_FLAGS.captureLog;
+
+// ── Linux hardware video encode (VA-API): launch decision + failure ledger ─
+// Decided HERE, before app.ready, because AcceleratedVideoEncoder is a Chromium
+// feature read once at startup. ON by default; off by CIPHERLINE_LINUX_HW_ENCODE=0,
+// the Settings -> Advanced toggle (startup-flags.json), --disable-gpu /
+// --disable-accelerated-video-encode, or when earlier launches on this app
+// version recorded repeated hardware-encoder failures (linux-video-encode.ts).
+// The smoke test uses the defaults like every other flag: it never reads the
+// ledger, so a stale file on a runner cannot change what the gate measures.
+const LINUX_HW_ENCODE_LEDGER_PATH = path.join(USER_DATA_DIR, LINUX_HW_ENCODE_LEDGER_FILENAME);
+const LINUX_HW_ENCODE = decideLinuxHwEncode({
+  platform: process.platform,
+  mode: parseLinuxHwEncodeMode(process.env[LINUX_HW_ENCODE_ENV]),
+  setting: STARTUP_FLAGS.linuxHwEncode,
+  hasSwitch: (name) => app.commandLine.hasSwitch(name),
+  ledger: IS_SMOKE_TEST || process.platform !== 'linux' ? null : readLinuxHwEncodeLedgerFile(LINUX_HW_ENCODE_LEDGER_PATH),
+  appVersion: app.getVersion(),
+  now: Date.now(),
+});
+/** One ledger entry per launch, however many symptoms the renderer / the GPU process report. */
+const linuxHwFailureGate = new LinuxHwEncodeFailureGate();
+function recordLinuxHwEncodeFailureNow(kind: LinuxHwEncodeFailureKind): void {
+  if (IS_SMOKE_TEST || !linuxHwFailureGate.accept(LINUX_HW_ENCODE.enable, kind)) return;
+  const next = recordLinuxHwEncodeFailure(readLinuxHwEncodeLedgerFile(LINUX_HW_ENCODE_LEDGER_PATH), { at: Date.now(), version: app.getVersion(), kind });
+  writeLinuxHwEncodeLedgerFile(LINUX_HW_ENCODE_LEDGER_PATH, next);
+  freezeMonitor.event('linux_hw_encode:failure', 0, `kind=${kind} launches=${activeLedgerEntries(next, app.getVersion(), Date.now()).length}`);
+  console.warn(`[Main] Linux hardware video encode failure recorded (${kind}); ${activeLedgerEntries(next, app.getVersion(), Date.now()).length} launch(es) on this version`);
+}
+
+// ── Linux hardware video DECODE (VA-API): launch decision + failure ledger ─
+// Chromium has AcceleratedVideoDecodeLinuxGL on by default, so Intel/AMD already decode in hardware;
+// NVIDIA needs its own opt-in feature + nvidia-vaapi-driver + LIBVA_DRIVER_NAME (all decided in linux-video-decode.ts).
+// Decided HERE, before app.ready: the features and the libva env are read once by the GPU process at spawn.
+// The smoke test uses defaults and never reads the ledger or probes the machine.
+const LINUX_HW_DECODE_LEDGER_PATH = path.join(USER_DATA_DIR, LINUX_HW_DECODE_LEDGER_FILENAME);
+const LINUX_HW_DECODE = decideLinuxHwDecode({
+  platform: process.platform,
+  mode: parseLinuxHwDecodeMode(process.env[LINUX_HW_DECODE_ENV]),
+  setting: STARTUP_FLAGS.linuxHwDecode,
+  hasSwitch: (name) => app.commandLine.hasSwitch(name),
+  probe: IS_SMOKE_TEST || process.platform !== 'linux' ? null : probeLinuxGpus(process.env),
+  env: process.env,
+  ledger: IS_SMOKE_TEST || process.platform !== 'linux' ? null : readLinuxHwDecodeLedgerFile(LINUX_HW_DECODE_LEDGER_PATH),
+  appVersion: app.getVersion(),
+  now: Date.now(),
+});
+// Child processes (the GPU process) inherit process.env: set what libva needs now, never over a user's own value.
+for (const [k, v] of Object.entries(LINUX_HW_DECODE.env)) if (process.env[k] === undefined) process.env[k] = v;
+for (const [name, value] of LINUX_HW_DECODE.switches) { if (value) app.commandLine.appendSwitch(name, value); else app.commandLine.appendSwitch(name); }
+const linuxHwDecodeFailureGate = new LinuxHwDecodeFailureGate();
+function recordLinuxHwDecodeFailureNow(): void {
+  if (IS_SMOKE_TEST || !linuxHwDecodeFailureGate.accept(LINUX_HW_DECODE.enable)) return;
+  const next = recordLinuxHwDecodeFailure(readLinuxHwDecodeLedgerFile(LINUX_HW_DECODE_LEDGER_PATH), { at: Date.now(), version: app.getVersion(), kind: 'gpu_crash' });
+  writeLinuxHwDecodeLedgerFile(LINUX_HW_DECODE_LEDGER_PATH, next);
+  freezeMonitor.event('linux_hw_decode:failure', 0, `kind=gpu_crash launches=${activeDecodeLedgerEntries(next, app.getVersion(), Date.now()).length}`);
+}
 
 // ── Staging lock (Settings → Advanced → Update channel; staging builds) ──
 // A password gate on pre-release access, owned HERE rather than in the
@@ -673,6 +861,8 @@ const callPriority = new CallPriorityBooster({
   listProcesses: () => app.getAppMetrics().map(m => ({ pid: m.pid, type: m.type })),
   getPriority: (pid) => os.getPriority(pid),
   setPriority: (pid, priority) => os.setPriority(pid, priority),
+  // Performance log: the priorities a share really got (event `share:priority`).
+  report: (detail) => freezeMonitor.event('share:priority', 0, detail),
 });
 // Screen-share boost: priority (GPU HIGH, the rest ABOVE_NORMAL) + a
 // prevent-app-suspension power request while (setting on) AND (a share is
@@ -689,7 +879,7 @@ const sharePriority = new ShareBoostController(callPriority, {
   // loads after app.whenReady(), so it is read on every use.
   platform: process.platform,
   native: () => audioCaptureAddon,
-  listProcesses: () => app.getAppMetrics().map(m => ({ pid: m.pid, type: m.type })),
+  listProcesses: () => app.getAppMetrics().map(boostProcFromMetric),
   selfPid: process.pid,
   report: (r) => sendSharePower(r),
 }), new GpuSchedulingBoost({
@@ -698,7 +888,7 @@ const sharePriority = new ShareBoostController(callPriority, {
   // (main process) and the encode (GPU process). REALTIME if allowed, else HIGH.
   platform: process.platform,
   native: () => audioCaptureAddon,
-  listProcesses: () => app.getAppMetrics().map(m => ({ pid: m.pid, type: m.type })),
+  listProcesses: () => app.getAppMetrics().map(boostProcFromMetric),
   selfPid: process.pid,
   report: (r) => sendShareGpuSched(r),
 }));
@@ -723,11 +913,17 @@ let callPriorityTimer: ReturnType<typeof setInterval> | null = null;
 // (the updater never installs under an active call). Every place that ends a
 // call (reload, crash, navigation) already goes through syncCallPriority.
 let callMediaActive = false;
-const syncCallPriority = (change: { enabled?: boolean; inCall?: boolean; sharing?: boolean }) => {
+// Same idea for the freeze record's state flags (freeze-evidence.ts).
+let sharingActive = false;
+let cameraLiveActive = false;
+const syncCallPriority = (change: { enabled?: boolean; inCall?: boolean; sharing?: boolean; cameraLive?: boolean }) => {
   // ONE setting drives the call-time boost AND the screen-share boost.
   if (change.enabled !== undefined) applyGamingSetting(change.enabled, callPriority, sharePriority);
   if (change.inCall !== undefined) { callPriority.setInCall(change.inCall); callMediaActive = change.inCall; }
-  if (change.sharing !== undefined) sharePriority.setSharing(change.sharing);
+  if (change.sharing !== undefined) { sharePriority.setSharing(change.sharing); sharingActive = change.sharing; }
+  if (change.cameraLive !== undefined) cameraLiveActive = change.cameraLive;
+  // Our camera published: the webcam's (Video Capture) process gets the throttle opt-out + GPU class with NO share running.
+  if (change.cameraLive !== undefined) sharePriority.setCameraLive(change.cameraLive);
   if (callPriority.active && !callPriorityTimer) {
     callPriorityTimer = setInterval(() => callPriority.tick(), PRIORITY_REAPPLY_MS);
     callPriorityTimer.unref?.();
@@ -750,15 +946,15 @@ syncCallPriority({ enabled: GAMING_VIDEO_AT_LAUNCH });
 {
   const gamingSwitches = launchThrottleSwitches(GAMING_VIDEO_AT_LAUNCH, process.platform);
   for (const name of gamingSwitches.switches) app.commandLine.appendSwitch(name);
-  // Linux hardware H.264 encode (VA-API): opt-in, see ./linux-video-encode.ts for
-  // why it is off by default and what it needs. Merged into the one list.
-  const linuxHwEncode = decideLinuxHwEncode({
-    platform: process.platform,
-    mode: parseLinuxHwEncodeMode(process.env[LINUX_HW_ENCODE_ENV]),
-    hasSwitch: (name) => app.commandLine.hasSwitch(name),
-  });
+  for (const name of highPerformanceGpuSwitches(GAMING_VIDEO_AT_LAUNCH, process.platform, GPU_TOPOLOGY_AT_START)) app.commandLine.appendSwitch(name);
+  // Linux hardware video encode (VA-API): decided above (LINUX_HW_ENCODE), merged
+  // into the one --enable-features list here.
+  const linuxHwEncode = LINUX_HW_ENCODE;
   const media = buildChromiumMediaSwitches(process.platform, SCREEN_CAPTURER_PREF, AUTO_CAPTURER.backend, linuxHwEncode.features);
   media.disableFeatures.push(...gamingSwitches.disableFeatures);
+  // Linux hardware video decode: features decided above (LINUX_HW_DECODE), merged into the same two lists.
+  for (const f of LINUX_HW_DECODE.enableFeatures) if (!media.enableFeatures.includes(f)) media.enableFeatures.push(f);
+  for (const f of LINUX_HW_DECODE.disableFeatures) if (!media.disableFeatures.includes(f)) media.disableFeatures.push(f);
   if (GAMING_VIDEO_AT_LAUNCH) {
     console.log(`[Main] Prioritize-while-gaming switches ON at launch: ${[...gamingSwitches.switches, ...gamingSwitches.disableFeatures.map(f => `disable-features=${f}`)].join(', ')}`);
   }
@@ -784,7 +980,7 @@ syncCallPriority({ enabled: GAMING_VIDEO_AT_LAUNCH });
   // In the Performance log too, so a diagnostics report says which capturer
   // (and whether DXGI was in the process at all) without a console.
   freezeMonitor.event('capture:switches', 0,
-    `pref=${SCREEN_CAPTURER_PREF} auto=${AUTO_CAPTURER.backend} enable=${media.enableFeatures.join(',') || '-'} disable=${media.disableFeatures.join(',') || '-'} picker=${PICKER_ENUMERATION}${SOURCES_HELPER_FAILED_AT_START ? ' helper-failed-last-launch' : ''}${process.platform === 'linux' ? ` linux_hw_encode=${linuxHwEncode.reason}` : ''}`);
+    `pref=${SCREEN_CAPTURER_PREF} auto=${AUTO_CAPTURER.backend} enable=${media.enableFeatures.join(',') || '-'} disable=${media.disableFeatures.join(',') || '-'} picker=${PICKER_ENUMERATION}${SOURCES_HELPER_FAILED_AT_START ? ' helper-failed-last-launch' : ''}${process.platform === 'linux' ? ` linux_hw_encode=${linuxHwEncode.reason} linux_hw_decode=${LINUX_HW_DECODE.reason} gpus=${LINUX_HW_DECODE.gpus || '-'} nvidia_decode=${LINUX_HW_DECODE.nvidia}` : ''}`);
   if (linuxHwEncode.enable) console.log(`[Main] Linux hardware video encode requested at launch (${linuxHwEncode.reason}): enable-features=${linuxHwEncode.features.join(',')}`);
   if (SCREEN_CAPTURER_PREF !== 'auto') {
     console.log(`[Main] Screen capturer forced: ${SCREEN_CAPTURER_PREF} (${STARTUP_FLAGS.source.screenCapturer})`);
@@ -838,9 +1034,14 @@ if (process.platform === 'linux') {
 
 let mainWindow: BrowserWindow | null = null;
 
-// Who may start a screen / window / app-audio capture. See capture-consent.ts:
-// our picker mints a one-time grant, the capture presents it, and anything
-// without a valid grant gets this native (non-renderer-forgeable) dialog.
+// The apps a Linux Wayland window share can take audio from: the handles main issued for the
+// addon's list, and the rules for starting one. See app-audio.ts. Ends with the share, like the grant.
+const appAudio = createAppAudio();
+
+// Who may start a screen / window capture, and under what silent conditions
+// audio may follow. See capture-consent.ts: our picker mints a one-time grant,
+// the capture presents it, and a SCREEN/WINDOW capture without a valid grant
+// gets this native (non-renderer-forgeable) dialog. Audio never gets a dialog.
 const captureConsent = createCaptureConsent({
   confirm: async (prompt: ConsentPrompt): Promise<boolean> => {
     const text = describePrompt(prompt);
@@ -1002,20 +1203,9 @@ function writeLoginItem(enabled: boolean, target: LoginItemTarget = currentLogin
     case 'mac':
       app.setLoginItemSettings(electronLoginItemSettings(target, enabled));
       return;
-    case 'xdg': {
-      const file = xdgAutostartFile();
-      if (enabled) {
-        fs.mkdirSync(path.dirname(file), { recursive: true });
-        const tmp = `${file}.tmp`;
-        fs.writeFileSync(tmp, buildXdgDesktopEntry(target.exec), { mode: 0o644 });
-        fs.renameSync(tmp, file);
-      } else {
-        try { fs.unlinkSync(file); } catch (e) {
-          if ((e as NodeJS.ErrnoException)?.code !== 'ENOENT') throw e;
-        }
-      }
+    case 'xdg':
+      setXdgAutostart(fs, path.dirname(xdgAutostartFile()), target.exec, enabled);
       return;
-    }
     default:
       return;
   }
@@ -1103,7 +1293,9 @@ function saveWindowState(win: BrowserWindow): void {
 /** This process serves dist/ on CIPHERLINE_PROD_PORT (set once, never cleared). */
 let prodServerListening = false;
 
-async function createWindow(csp: string, startHidden = false) {
+// `unmapped`: a Linux login launch with "start minimized" never maps the window (login-item.ts
+// keepLoginWindowUnmapped); it is built hidden and mapped by the first raise (second launch, tray).
+async function createWindow(csp: string, startHidden = false, unmapped = false) {
   // NOT here: the unclean-exit marker is taken over only once this instance
   // has won the loopback port below (startSessionMarker). A second launch that
   // slipped past the single-instance lock gets this far, then hands off and
@@ -1121,7 +1313,7 @@ async function createWindow(csp: string, startHidden = false) {
     title: 'Cipherline',
     // When the installer splash is showing, the main window is built up behind
     // it and only revealed once startup work completes (see finalizeInstaller).
-    show: !startHidden,
+    show: !startHidden && !unmapped,
     x: savedState.x,
     y: savedState.y,
     width: savedState.width,
@@ -1212,7 +1404,11 @@ async function createWindow(csp: string, startHidden = false) {
   // maximises right after revealing the window) instead.
   if (savedState.isMaximized) {
     if (startHidden) pendingMainMaximize = true;
-    else mainWindow.maximize();
+    else if (unmapped) {
+      // Maximising a hidden window can be dropped on show(): apply it when the first raise maps it.
+      const w = mainWindow;
+      w.once('show', () => { if (!w.isDestroyed()) w.maximize(); });
+    } else mainWindow.maximize();
   }
 
   // Persist window geometry on move/resize (debounced to avoid hammering disk
@@ -1360,6 +1556,7 @@ async function createWindow(csp: string, startHidden = false) {
   mainWindow.webContents.once('destroyed', () => {
     captureConsent.forgetSender(mainContentsId);
     hdrShare.stop('renderer_gone');
+    appAudio.forgetSender(mainContentsId);
   });
 
   // HIGH-16: DevTools in dev only. In production, block the shortcut and close
@@ -1423,6 +1620,11 @@ async function createWindow(csp: string, startHidden = false) {
       '.wav': 'audio/wav',  '.mp3': 'audio/mpeg',  '.webp': 'image/webp',
     };
     const prodServer = http.createServer((req, res) => {
+      // DNS-rebinding guard: answer only requests addressed to our exact
+      // loopback origin (instance-handoff.ts isExpectedLoopbackHost).
+      if (!isExpectedLoopbackHost(req.headers.host, CIPHERLINE_PROD_PORT)) {
+        res.writeHead(421); res.end(); return;
+      }
       const urlPath = (req.url || '/').split('?')[0];
 
       // ── Second-instance handoff ────────────────────────────────────────────
@@ -1661,12 +1863,21 @@ async function createWindow(csp: string, startHidden = false) {
   // A renderer that is gone or has navigated (reload) has no call any more:
   // put the gaming-video priority boost back now rather than waiting for a
   // `call:set-media-active false` that will never come.
-  mainWindow.webContents.on('did-navigate', () => syncCallPriority({ inCall: false, sharing: false }));
+  mainWindow.webContents.on('did-navigate', () => syncCallPriority({ inCall: false, sharing: false, cameraLive: false }));
+  // A reloaded page has no share: nothing may keep capturing audio for it.
+  mainWindow.webContents.on('did-navigate', () => {
+    captureConsent.endShare(mainContentsId);
+    appAudio.endShare(mainContentsId);
+    try { audioCaptureAddon?.stopCapture(); } catch { /* addon already stopped */ }
+  });
   mainWindow.webContents.on('render-process-gone', (event, details) => {
     console.error(`[Main] Renderer process gone: ${details.reason} (${details.exitCode})`);
     noteOsSessionEndExit(details);
-    syncCallPriority({ inCall: false, sharing: false });
+    syncCallPriority({ inCall: false, sharing: false, cameraLive: false });
     hdrShare.stop('renderer_gone'); // its frames had nowhere to go
+    captureConsent.endShare(mainContentsId);
+    appAudio.endShare(mainContentsId);
+    try { audioCaptureAddon?.stopCapture(); } catch { /* addon already stopped */ }
     // Crash reporter: a pending record the reloaded renderer offers to send.
     // Recording only — the recovery behaviour below is unchanged.
     recordCrash({ source: 'render-process-gone', details });
@@ -1713,12 +1924,14 @@ async function createWindow(csp: string, startHidden = false) {
   // and let them decide whether to force a reload.
   mainWindow.webContents.on('unresponsive', () => {
     console.warn('[Main] Renderer unresponsive');
+    mainWatchdog?.setRendererUnresponsive(true);
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('main:renderer-unresponsive');
     }
   });
   mainWindow.webContents.on('responsive', () => {
     console.log('[Main] Renderer responsive again');
+    mainWatchdog?.setRendererUnresponsive(false);
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('main:renderer-responsive');
     }
@@ -1964,8 +2177,22 @@ ipcMain.on('perf:breadcrumb', (_e, name: unknown, detail: unknown) => { freezeMo
 // here uploads anything: the renderer builds, scrubs, previews and sends the
 // report itself through the authenticated API client.
 //
+/**
+ * Electron's displays with `displayFrequency` filled from the compositor where Electron says 0
+ * (Wayland: wl_output.mode via wayland-refresh.ts). Unchanged everywhere else and on any failure.
+ */
+async function displaysWithRealRefresh(): Promise<Electron.Display[]> {
+  const displays = screen.getAllDisplays();
+  if (process.platform !== 'linux' || displays.every(d => (d.displayFrequency ?? 0) > 0)) return displays;
+  const wl = await getWaylandDisplayRefresh().catch(() => new Map<number, number>());
+  if (wl.size === 0) return displays;
+  return displays.map(d => ({ ...d, displayFrequency: effectiveDisplayHz(d.displayFrequency, d.id, wl) }));
+}
+
 // diag:get-system-info — SystemInfo for a report, plus { homeDir, osUsername }
 // which the renderer uses ONLY as scrubber input (never placed in a payload).
+// The last global-shortcut sync (set by keybinds:sync-global-shortcuts), for the report's system block.
+let lastGlobalShortcutSync: GlobalShortcutSyncRecord | null = null;
 ipcMain.handle('diag:get-system-info', async () => {
   let gpuInfo: GpuInfoLike | null = null;
   try { gpuInfo = await app.getGPUInfo('basic') as GpuInfoLike; } catch { gpuInfo = null; }
@@ -1975,7 +2202,7 @@ ipcMain.handle('diag:get-system-info', async () => {
   try { stored = secureStore.get('updateChannel'); } catch { /* store not ready */ }
   let displays: Electron.Display[] = [];
   let primaryId: number | null = null;
-  try { displays = screen.getAllDisplays(); primaryId = screen.getPrimaryDisplay().id; } catch { /* headless */ }
+  try { displays = await displaysWithRealRefresh(); primaryId = screen.getPrimaryDisplay().id; } catch { /* headless */ }
   const system = buildSystemInfo({
     appVersion: app.getVersion(),
     versions: { electron: process.versions.electron, chrome: process.versions.chrome, node: process.versions.node },
@@ -1992,7 +2219,20 @@ ipcMain.handle('diag:get-system-info', async () => {
     uptimeS: process.uptime(),
     channel: reportChannel(IS_PACKAGED, stored, app.getVersion()),
   });
-  return { system, scrub: { homeDir: os.homedir(), osUsername: safeOsUsername() ?? null } };
+  const linuxSession = linuxSessionInfo(process.platform, process.env, app.commandLine.getSwitchValue('ozone-platform'));
+  const globalShortcuts = buildGlobalShortcutsReport(lastGlobalShortcutSync);
+  const linuxHwDecode = process.platform === 'linux' ? {
+    active: LINUX_HW_DECODE.enable, reason: LINUX_HW_DECODE.reason.slice(0, 120), nvidia: LINUX_HW_DECODE.nvidia, gpus: LINUX_HW_DECODE.gpus,
+    libva_driver: process.env.LIBVA_DRIVER_NAME ? String(process.env.LIBVA_DRIVER_NAME).slice(0, 16) : null,
+    hint: LINUX_HW_DECODE.hint?.kind ?? null, failure_this_launch: linuxHwDecodeFailureGate.hasRecorded,
+  } : null;
+  const withExtras = {
+    ...system,
+    ...(linuxSession ? { linux_session: linuxSession } : {}),
+    ...(globalShortcuts ? { global_shortcuts: globalShortcuts } : {}),
+    ...(linuxHwDecode ? { linux_hw_decode: linuxHwDecode } : {}),
+  };
+  return { system: withExtras, scrub: { homeDir: os.homedir(), osUsername: safeOsUsername() ?? null } };
 });
 ipcMain.handle('diag:get-pending-crashes', () => pendingCrashes.all());
 // No argument = all; otherwise only the given signatures.
@@ -2101,6 +2341,7 @@ power.onPhase((phase) => {
     try { secureStore.flush(); } catch { /* logged by the store */ }
   } else {
     freezeMonitor.unpause();
+    mainWatchdog?.resume();
   }
 });
 freezeMonitor.onClockJump = (ms) => power.noteClockJump(ms);
@@ -2210,6 +2451,15 @@ if (!gotInstanceLock) {
 // Driven entirely from the main process via executeJavaScript — no preload,
 // so it keeps the secure sandbox defaults.
 let installerSplash: BrowserWindow | null = null;
+// "Applying update" popup held for ~1.8 s before an already-downloaded update is
+// handed to the installer (update-applying.ts). Never under the smoke test; a
+// window that cannot be created means the install runs immediately, as before.
+const applyingUpdate = new ApplyingUpdatePopup({
+  smokeTest: IS_SMOKE_TEST,
+  open: openApplyingUpdateWindow,
+  setTimer: (fn, ms) => { setTimeout(fn, ms); },
+  log: (line) => console.warn(line),
+});
 let splashReady = false;       // splash webContents finished loading
 let splashLatestPct = 0;       // highest target % seen (queued until ready)
 let installerFinalized = false;
@@ -2380,10 +2630,11 @@ function makeInstallerGate(startTs: number) {
   const MIN_VISIBLE_MS = 1900;
   const SAFETY_MS = 20_000;
   const done = { store: false, renderer: false };
-  const safety = setTimeout(() => {
+  const armSafety = () => setTimeout(() => {
     console.warn('[Installer] safety timeout reached — finalizing splash');
     finalizeInstaller();
   }, SAFETY_MS);
+  let safety = armSafety();
   const maybeFinish = () => {
     if (!done.store || !done.renderer) return;
     clearTimeout(safety);
@@ -2391,6 +2642,14 @@ function makeInstallerGate(startTs: number) {
     setTimeout(finalizeInstaller, wait);
   };
   return {
+    // The Linux wallet prompt is a HUMAN wait (a password, or KDE's wallet
+    // creation wizard) and, now that we ask the wallet asynchronously, the
+    // event loop keeps running through it: without this the 20 s timer fires
+    // mid-wizard, finalizes the splash before the main window exists, and the
+    // window is never revealed. The wait is bounded (keyring-probe.ts), and the
+    // timer is re-armed as soon as the wallet has answered.
+    holdSafety: () => { clearTimeout(safety); },
+    releaseSafety: () => { if (!(done.store && done.renderer)) { clearTimeout(safety); safety = armSafety(); } },
     storeDone: () => { done.store = true; maybeFinish(); },
     rendererDone: () => { done.renderer = true; maybeFinish(); },
   };
@@ -2404,6 +2663,22 @@ app.whenReady().then(async () => {
   process.stderr.write('[Main] app.ready fired\n');
   console.log('[Main] app ready — starting initialization');
   freezeMonitor.event('startup:app-ready', Math.round(process.uptime() * 1000), 'ms since process start');
+  // An AppImage on a Linux that blocks its sandbox (Ubuntu 24.04+) is started with --no-sandbox by
+  // electron-builder's AppRun, silently. Say so (never blocks startup; electron/linux-sandbox.ts).
+  if (process.platform === 'linux') {
+    const sandboxNoticeMarker = path.join(app.getPath('userData'), 'sandbox-notice-dismissed');
+    void warnIfAppImageUnsandboxed({
+      facts: {
+        platform: process.platform, packaged: app.isPackaged, appImageEnv: process.env.APPIMAGE,
+        noSandboxSwitch: app.commandLine.hasSwitch('no-sandbox'), smokeTest: !!process.env.CIPHERLINE_SMOKE_TEST,
+      },
+      suppressed: () => fs.existsSync(sandboxNoticeMarker),
+      remember: () => fs.writeFileSync(sandboxNoticeMarker, '1'),
+      showMessageBox: (opts) => dialog.showMessageBox(opts),
+      quit: () => app.quit(),
+      log: (line) => console.warn(line),
+    });
+  }
   // GPU process death → the renderer recovers a call's video
   // (electron/gpu-restart.ts). Its own listener: recording the crash (below)
   // is unchanged and independent of it.
@@ -2417,6 +2692,12 @@ app.whenReady().then(async () => {
     sampleMetrics('process-gone', 0);
     // Crash reporter: GPU / Utility / … deaths with a crash reason only.
     recordCrash({ source: 'child-process-gone', details });
+    // Linux hardware video encode: with the VA-API encoder feature on, the GPU process dying (a driver
+    // that aborts inside libva takes it down, wherever the call came from) is evidence against it. One
+    // ledger entry per launch; two such launches on one version keep the feature off afterwards.
+    if (LINUX_HW_ENCODE.enable && isGpuCrashForHwEncode(details)) recordLinuxHwEncodeFailureNow('gpu_crash');
+    // Same for hardware DECODE: a libva driver that aborts takes the GPU process down. One entry per launch.
+    if (LINUX_HW_DECODE.enable && isGpuCrashForHwDecode(details)) recordLinuxHwDecodeFailureNow();
   });
   // macOS / Linux OS shutdown: a clean end of the session, not a crash.
   powerMonitor.on('shutdown', () => beginQuit('os-shutdown'));
@@ -2433,8 +2714,30 @@ app.whenReady().then(async () => {
   // never delay or fail startup.
   if (process.platform === 'win32' && !IS_SMOKE_TEST) {
     void app.getGPUInfo('basic').then(info => {
-      const hint = gpuTopologyFromInfo(info);
+      const hint = gpuTopologyFromInfo(info, screen.getAllDisplays().some(d => d.internal));
       if (!hint) return;
+      // A laptop with two GPUs: ask Windows for the faster one (./hybrid-gpu.ts), and
+      // log the GPU really in use so a report shows whether it took.
+      const markerPath = path.join(USER_DATA_DIR, GPU_PREFERENCE_MARKER_FILENAME);
+      void ensureHighPerformancePreference({
+        platform: process.platform,
+        enabled: GAMING_VIDEO_AT_LAUNCH,
+        topology: hint,
+        exePath: process.execPath,
+        markerExists: () => fs.existsSync(markerPath),
+        writeMarker: () => fs.writeFileSync(markerPath, '', { mode: 0o600 }),
+        reg: (args) => new Promise((resolve) => {
+          const reg = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'reg.exe');
+          execFile(reg, args, { windowsHide: true, timeout: 10_000 }, (err) => {
+            resolve(err ? (typeof err.code === 'number' ? err.code : 1) : 0);
+          });
+        }),
+      }).then(async (outcome) => {
+        if (outcome === 'skipped') return;
+        let active = 'unknown';
+        try { active = activeGpuVendor(await app.getGPUInfo('complete')); } catch { /* unknown */ }
+        freezeMonitor.event('gpu:preference', 0, `outcome=${outcome} active=${active} switch=${app.commandLine.hasSwitch(HIGH_PERFORMANCE_GPU_SWITCH) ? 1 : 0}`);
+      });
       const text = serializeGpuTopologyHint(hint);
       if (GPU_TOPOLOGY_AT_START && serializeGpuTopologyHint(GPU_TOPOLOGY_AT_START) === text) return;
       return fs.promises.writeFile(GPU_TOPOLOGY_PATH, text, { mode: 0o600 });
@@ -2480,13 +2783,29 @@ app.whenReady().then(async () => {
     // (src-native/window_geometry.cc on Windows, window_geometry_mac.mm on
     // macOS); an older build simply lacks it.
     setAnnotationOverlayNative(audioCaptureAddon);
+    // Linux: PipeWire probes run off the main thread (see pipewireOffload above). Warm the answer now.
+    if (process.platform === 'linux' && !IS_SMOKE_TEST) {
+      try {
+        pipewireOffload = new AddonOffload({
+          addonPath: path.join(__dirname, '../build/Release/audio_capture.node'),
+          makeWorker: (source, data) => {
+            // eslint-disable-next-line @typescript-eslint/no-require-imports -- node built-in, Linux only
+            const { Worker } = require('worker_threads') as typeof import('worker_threads');
+            return new Worker(source, { eval: true, workerData: data }) as unknown as import('./addon-offload').OffloadWorker;
+          },
+          onEvent: (e) => freezeMonitor.event('audio:offload', 0, e.replace(/[^a-z0-9 _.:=,()-]/gi, '').slice(0, 60)),
+        });
+        void pipewireOffload.isSupported();
+        app.on('will-quit', () => pipewireOffload?.dispose());
+      } catch (err) { console.warn('[Main] PipeWire offload unavailable:', err instanceof Error ? err.message : err); pipewireOffload = null; }
+    }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
   } catch (e: any) {
     const addonPath = path.join(__dirname, '../build/Release/audio_capture.node');
     console.warn(`[Main] Native audio capture addon NOT loaded — screenshare will fall back to Chromium loopback.`);
     console.warn(`[Main]   Path attempted: ${addonPath}`);
     console.warn(`[Main]   Reason: ${e.message}`);
-    console.warn(`[Main]   Fix: run "npm run rebuild-native" (Windows, MSVC) or "npm run rebuild-native:mac" (macOS, Xcode) inside apps/desktop/`);
+    console.warn(`[Main]   Fix: run "npm run rebuild-native" (Windows MSVC, or Linux g++/make/python3) or "npm run rebuild-native:mac" (macOS, Xcode) inside apps/desktop/`);
   }
 
   // Kick off SecureStore initialization. It genuinely runs in the background
@@ -2513,10 +2832,65 @@ app.whenReady().then(async () => {
   // SecureStore.initialize() is promise-idempotent, so signal-identity.ts
   // calling it again in migrateSpkPubIfMissing() gets the same in-flight promise.
   if (showInstaller) splashSendProgress(24);
+  // Linux: the first safeStorage call can make the OS ask for the wallet
+  // password, and it blocks this thread until the user answers. On Wayland that
+  // also freezes Chromium's surface commits, so a window created just before the
+  // call never maps. keyring-preflight.ts therefore asks the secret service
+  // ASYNCHRONOUSLY over D-Bus first (busctl child process): a locked / missing
+  // wallet gets its explanation put up and ON SCREEN before safeStorage runs; an
+  // unlocked one shows nothing; KWallet with no wallet at all gets KDE's own
+  // creation wizard opened (asynchronously) behind our notice. When the probe
+  // cannot tell it falls back to the old behaviour (delayed notice, announced
+  // once per boot: keyring-marker.ts). SecureStore calls this hook only on Linux
+  // with a real keyring backend, never under the smoke test (it returns before
+  // the call), and disposes the window the moment the call returns.
+  secureStore.setKeyringProbeHook(async (backend) => {
+    installerGate?.holdSafety();
+    try {
+      return await keyringPreflight(backend, {
+        exec: busctlExec,
+        showNotice: async (b, o) => {
+          // Stack order: a window mapped LATER lands on top. The first-run /
+          // update splash is created before the store opens, but under load it
+          // can still be mid-load; if it maps after the notice it covers it
+          // (seen at 800x600 on KDE). Give it a bounded moment to be up first.
+          for (let i = 0; i < 24 && installerSplash && !installerSplash.isDestroyed() && !splashReady; i++) await new Promise<void>(r => setTimeout(r, 50));
+          return showKeyringNotice(b, o);
+        },
+        legacyShouldAnnounce: () => shouldPreannounce(readBootId(), readMarker(app.getPath('userData'))),
+        appId: app.getName(),
+        log: (m) => console.log(m),
+      });
+    } finally {
+      installerGate?.releaseSafety();
+    }
+  });
+  let keyringWatcher: WalletWatcher | null = null;
   const storeReady = freezeMonitor.track('startup:securestore', () => secureStore.initialize());
   storeReady
     .then(() => {
       console.log('[Main] secureStore initialized');
+      // Linux wallet: remember that this boot's wallet answered (or forget it
+      // when it did not), so the next launch knows whether to announce the prompt.
+      if (process.platform === 'linux' && !IS_SMOKE_TEST) {
+        const kr = secureStore.keyringStatus().state;
+        if (kr === 'unlocked') writeMarker(app.getPath('userData'), readBootId());
+        else if (kr === 'denied' || kr === 'no-service') clearMarker(app.getPath('userData'));
+        // The wallet may be unlocked a moment after Chromium's 25 s deadline gave up. Watch
+        // (read-only, no prompt, no writes) and reopen by ourselves once it is.
+        if (shouldWatchWallet({ platform: process.platform, keyringState: kr, storeStatus: secureStore.status(), argv: process.argv })) {
+          const backend = secureStore.keyringBackend();
+          keyringWatcher = startWalletWatcher({
+            probe: () => probeWallet(backend, busctlExec),
+            stillLocked: () => secureStore.status() === 'locked',
+            onUnlocked: () => {
+              console.log('[keyring] the wallet is open now: reopening to unlock the store');
+              app.relaunch(relaunchOptions(process.env, process.argv, [AUTO_RETRY_ARG]));
+              app.quit();
+            },
+          });
+        }
+      }
       // Pending crash records go to the encrypted store from here on (and the
       // ones captured during startup are merged in). Not under the smoke test
       // (its store is pathless — CLAUDE.md), and not while locked. The
@@ -3313,6 +3687,7 @@ app.whenReady().then(async () => {
     message_id?: unknown;
     sender_user_id?: unknown;
     sender_device_id?: unknown;
+    created_at?: unknown;
   }) => {
     return decryptChannelMessage({
       channel_id: params.channel_id,
@@ -3324,6 +3699,7 @@ app.whenReady().then(async () => {
       message_id: optId(params.message_id),
       sender_user_id: optId(params.sender_user_id),
       sender_device_id: optId(params.sender_device_id),
+      created_at: typeof params.created_at === 'string' && params.created_at.length <= 64 ? params.created_at : null,
     });
   });
 
@@ -3337,6 +3713,11 @@ app.whenReady().then(async () => {
 
   ipcMain.handle('channel:get-latest-epoch', (event, channelId: string) => {
     return getLatestEpoch(channelId);
+  });
+
+  ipcMain.handle('channel:get-latest-rotates-at', (_event, channelId: unknown) => {
+    if (!isValidChannelId(channelId)) return null;
+    return getLatestEpochRotatesAt(channelId);
   });
 
   ipcMain.handle('channel:list-epochs', (event, channelId: string) => {
@@ -3405,9 +3786,17 @@ app.whenReady().then(async () => {
     return data ? JSON.parse(data) : null;
   });
 
+  // Sender-chosen ids reach this channel (profile_update / group_update), so
+  // the policy — UUID id, exact key/nonce shapes, identical re-sends ignored,
+  // global entry cap that refuses rather than evicts — is enforced HERE, in
+  // main (electron/avatar-key-policy.ts). Resolves false for a refused write.
   ipcMain.handle('secure:set-avatar-key', async (event, attachmentId, keyB64, nonceB64) => {
-    secureStore.set(`avatar_key:${attachmentId}`, JSON.stringify({ keyB64, nonceB64 }));
-    await secureStore.whenDurable();
+    const outcome = applyAvatarKey(secureStore, attachmentId, keyB64, nonceB64);
+    if (outcome === 'refused_invalid' || outcome === 'refused_full') {
+      console.warn(`[Main] avatar key write refused (${outcome})`);
+      return false;
+    }
+    if (outcome !== 'unchanged') await secureStore.whenDurable();
     return true;
   });
 
@@ -3666,7 +4055,10 @@ app.whenReady().then(async () => {
       return kvCrypto.open(clean);
     } catch (e) {
       console.error('[securekv] open threw', e);
-      return clean.map(r => ({ k: r.k, v: null }));
+      // Reject rather than answering null for every record: null means "this
+      // one record is unreadable, skip it", and a whole batch of them would let
+      // the renderer report the account as loaded with its records missing.
+      throw e;
     }
   });
 
@@ -3735,6 +4127,38 @@ app.whenReady().then(async () => {
     await secureStore.initialize();
     if (secureStore.status() !== 'ok') return false;
     secureStore.set(KEYPROT_ACK_KEY, keyProtectionNoticeToken(secureStore.keyProtection()));
+    return true;
+  });
+
+  // Linux wallet prompt (keyring-prompt.ts). What the system wallet did when the
+  // first safeStorage call asked it to open: enums and flags only, no key
+  // material. On Windows / macOS (and basic_text) it is `not-applicable`.
+  ipcMain.handle(KEYRING_STATUS_CHANNEL, async () => {
+    await secureStore.initialize();
+    // `watching`: the wallet watcher is running, so the screen can say Cipherline will reopen by itself.
+    return { ...secureStore.keyringStatus(), watching: keyringWatcher?.active() === true };
+  });
+  // "Try again". Chromium caches a refused wallet for the life of the process
+  // (measured: a second call five seconds later is still refused and shows no
+  // new dialog), so the only retry is a clean relaunch, which asks the wallet
+  // again at startup. Validated strictly and rate-limited; it only does
+  // anything when the wallet really was refused.
+  let lastKeyringRetryAt = 0;
+  ipcMain.handle(KEYRING_ACTION_CHANNEL, async (_event, payload: unknown) => {
+    const parsed = parseKeyringAction(payload);
+    if (!parsed) { console.warn('[secure] keyring-action refused: malformed payload'); return false; }
+    await secureStore.initialize();
+    if (secureStore.keyringStatus().state !== 'denied') return false;
+    const t = Date.now();
+    if (t - lastKeyringRetryAt < KEYRING_RETRY_COOLDOWN_MS) return false;
+    lastKeyringRetryAt = t;
+    // Whatever the vault still owes the disk goes out first (the degraded,
+    // recovery-key session may hold unsaved changes).
+    try { secureStore.flush(); } catch { /* best effort: before-quit flushes too */ }
+    // app.quit(), not app.exit(): every quit path but the four fatal ones must
+    // emit `quit` so a downloaded update still installs (auto-update-flow.wiring.test.ts).
+    app.relaunch(relaunchOptions(process.env, process.argv));
+    app.quit();
     return true;
   });
 
@@ -3833,6 +4257,7 @@ app.whenReady().then(async () => {
     confirm: vaultConfirm,
     factoryReset: () => secureStore.factoryReset(),
     recoverWithKey: (k) => secureStore.recoverWithKey(k),
+    walletDenied: () => secureStore.keyringStatus().state === 'denied',
   });
 
   // Adopt a user-supplied recovery key on a locked device. Validates against an
@@ -4641,34 +5066,31 @@ app.whenReady().then(async () => {
   // drawing-request approve/decline keys, armed only while a request is
   // waiting), so this now runs on every arm/disarm as well as on rebinds.
   let registeredGlobalShortcuts: string[] = [];
-  // The KDE half awaits D-Bus; serialize it so two quick syncs (arm, then
-  // disarm a moment later) cannot interleave their unRegister/doRegister
-  // calls and leave the earlier map registered.
-  let kdeSyncChain: Promise<void> = Promise.resolve();
+  // How global keys reach us on THIS session (global-shortcut-mode.ts). Linux
+  // Wayland asks the desktop's GlobalShortcuts portal (never Electron's
+  // globalShortcut, which silently does nothing there); X11, Windows and macOS
+  // are exactly what they were. The portal answer is read once, asynchronously,
+  // with a timeout, and only on a native Wayland session.
+  const gsOzone = () => app.commandLine.getSwitchValue('ozone-platform');
+  const gsBaseDecision = (portal: PortalProbeResult) => decideGlobalShortcutMode(process.platform, process.env, gsOzone(), portal);
+  let gsPortalProbe: Promise<PortalProbeResult> | null = null;
+  const gsPortal = (): Promise<PortalProbeResult> => (gsPortalProbe ??= probeGlobalShortcutsPortal());
+  let waylandShortcuts: WaylandGlobalShortcuts | null = null;
+  // Syncs await D-Bus on Wayland; serialize them so two quick syncs (arm, then
+  // disarm a moment later) cannot interleave and leave the earlier map bound.
+  let gsSyncChain: Promise<unknown> = Promise.resolve();
+  const gsDesktop = sanitizeDesktopName(process.env.XDG_CURRENT_DESKTOP);
 
-  ipcMain.handle('keybinds:sync-global-shortcuts', async (_event, rawMap: unknown) => {
-    // Validate BEFORE unregistering anything: a malformed payload is rejected
-    // and leaves the current registrations exactly as they were.
-    const validated = validateGlobalShortcutMap(rawMap);
-    if (!validated.ok) {
-      console.warn(`[GlobalShortcut] rejected sync payload: ${validated.reason}`);
-      throw new Error('invalid global shortcut map');
-    }
-    const map = validated.map;
-
+  const syncNativeGlobalShortcuts = (map: Record<string, string>, rejected: string[]): { failed: string[] } => {
     // Unregister all previously registered shortcuts
     for (const accel of registeredGlobalShortcuts) {
       try { globalShortcut.unregister(accel); } catch { /* best-effort; failure is non-fatal and intentionally ignored */ }
     }
     registeredGlobalShortcuts = [];
-
-    // Register new ones. Registration commonly fails on Linux Wayland
-    // compositors (no stable global-shortcut portal support in Electron yet)
-    // — report failed action ids back so the renderer can fall back to a
-    // focused-window-only local listener for those instead of going silent.
-    // Entries the validator refused were never registered: report them as
-    // failed so the renderer's focused-window tier covers them.
-    const failedActionIds: string[] = [...validated.rejected];
+    // `register()` returning false = the combo is taken (another app grabbed it).
+    // Report those action ids back so the renderer's focused-window tier covers them.
+    // Entries the validator refused were never registered: failed too.
+    const failedActionIds: string[] = [...rejected];
     for (const [accelerator, actionId] of Object.entries(map)) {
       try {
         const ok = globalShortcut.register(accelerator, () => {
@@ -4688,31 +5110,87 @@ app.whenReady().then(async () => {
       }
     }
     console.log(`[GlobalShortcut] Registered ${registeredGlobalShortcuts.length} global shortcuts`);
-
-    // Additionally register with KDE's own KGlobalAccel on Linux — Electron's
-    // globalShortcut above can report success without the shortcut ever
-    // actually firing on some Wayland compositors, so this is genuinely
-    // additive, not just a fallback for reported failures. See
-    // kde-global-shortcuts.ts for the (unverified-live) caveats. Never lets
-    // a KDE-side failure affect what's reported as `failed` above — the
-    // renderer's focused-window listener is the real safety net either way.
-    const kdeSync = kdeSyncChain.then(() => syncKdeGlobalShortcuts(map, (actionId) => {
-      noteGlobalShortcutPress(actionId); // KDE delivered the key press, not renderer code
-      mainWindow?.webContents.send('global-shortcut-fired', actionId);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
-    })).catch((err: any) => {
-      console.warn('[KGlobalAccel] sync failed:', err?.message ?? err);
-    });
-    kdeSyncChain = kdeSync;
-    await kdeSync;
-
     return { failed: failedActionIds };
+  };
+
+  const syncWaylandGlobalShortcuts = async (map: Record<string, string>, rejected: string[]): Promise<{ failed: string[]; status: GlobalShortcutStatus }> => {
+    const decision = gsBaseDecision(await gsPortal());
+    if (decision.mode !== 'portal') {
+      return { failed: [...rejected, ...Object.values(map)], status: { ...decision, desktop: gsDesktop } };
+    }
+    ensureDesktopEntry(process.env.APPIMAGE || process.execPath);
+    if (!waylandShortcuts) {
+      waylandShortcuts = new WaylandGlobalShortcuts(
+        () => dbusSessionBus(),
+        (actionId) => {
+          noteGlobalShortcutPress(actionId); // the desktop delivered the key press, not renderer code
+          mainWindow?.webContents.send('global-shortcut-fired', actionId);
+        },
+        undefined,
+        (m) => console.warn(m),
+      );
+      void cleanupLegacyKdeComponent();
+    }
+    const { specs, skipped } = buildPortalShortcuts(map);
+    const setup = await waylandShortcuts.sync(specs);
+    const status = withPortalResult({ ...statusAfterPortalSetup(decision, setup), desktop: gsDesktop }, setup, PORTAL_APP_ID);
+    const failed = [...rejected, ...skipped, ...(setup.ok ? setup.denied : specs.map((x) => x.id))];
+    // The user changed a key and the desktop (KDE) kept the old one without asking: open the desktop's own
+    // shortcut dialog so the change can take effect there. Never at startup (ignoredChanges is empty on the
+    // first sync of a launch) and never twice for one change (a repeat sync returns ignoredChanges: []).
+    if (setup.ok && (setup.ignoredChanges?.length ?? 0) > 0) {
+      void waylandShortcuts.configure().then((opened) => console.log(`[GlobalShortcut] key changed but the desktop kept the old one; opened desktop shortcut settings: ${opened}`));
+    }
+    console.log(`[GlobalShortcut] Wayland portal: ${setup.ok ? `bound ${setup.granted.length}, not granted ${setup.denied.length}` : `not set up (${setup.reason})`}`);
+    return { failed, status };
+  };
+
+  ipcMain.handle('keybinds:sync-global-shortcuts', async (_event, rawMap: unknown, rawPortalMap?: unknown) => {
+    const result = await runGlobalShortcutSync(rawMap, rawPortalMap);
+    lastGlobalShortcutSync = { status: result.status, map: result.map, failed: result.failed };
+    return { failed: result.failed, status: result.status };
+  });
+  const runGlobalShortcutSync = async (rawMap: unknown, rawPortalMap?: unknown): Promise<{ failed: string[]; status: GlobalShortcutStatus; map: Record<string, string> }> => {
+    // Validate BEFORE unregistering anything: a malformed payload is rejected
+    // and leaves the current registrations exactly as they were.
+    const validated = validateGlobalShortcutMap(rawMap);
+    if (!validated.ok) {
+      console.warn(`[GlobalShortcut] rejected sync payload: ${validated.reason}`);
+      throw new Error('invalid global shortcut map');
+    }
+    const map = validated.map;
+    // The Wayland portal binds the renderer's STABLE set (drawing-request pair
+    // included, armed or not) so a draw request never changes the portal session
+    // (= no desktop dialog mid-share; see wayland-global-shortcuts.ts). Same
+    // validation; absent or malformed = the armed map, as before.
+    const portalValidated = rawPortalMap === undefined ? null : validateGlobalShortcutMap(rawPortalMap);
+    const portalMap = portalValidated && portalValidated.ok ? portalValidated : validated;
+    // Native Wayland client: the portal path. Everything else: Electron's globalShortcut.
+    if (!(process.platform === 'linux' && isNativeWaylandClient(process.env, gsOzone()))) {
+      return { ...syncNativeGlobalShortcuts(map, validated.rejected), status: { ...gsBaseDecision('absent'), desktop: gsDesktop }, map };
+    }
+    const run = gsSyncChain.then(() => syncWaylandGlobalShortcuts(portalMap.map, portalMap.rejected));
+    gsSyncChain = run.catch(() => undefined);
+    try {
+      return { ...(await run), map };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic; only the message is read
+    } catch (err: any) {
+      console.warn('[GlobalShortcut] Wayland sync failed:', err?.message ?? err);
+      return { failed: [...portalMap.rejected, ...Object.values(portalMap.map)], status: { mode: 'unavailable', reason: 'wayland-portal-error', desktop: gsDesktop }, map };
+    }
+  };
+
+  // Settings → Keybinds "Open desktop shortcut settings": a key the desktop remembers can only be changed
+  // there (KDE ignores a later preferred_trigger). Wayland portal sessions only; false = not available.
+  ipcMain.handle('keybinds:configure-desktop-shortcuts', async (event) => {
+    if (!isTrustedSender(event)) return false;
+    return (await waylandShortcuts?.configure()) ?? false;
   });
 
   // Clean up global shortcuts when the app quits
   app.on('will-quit', () => {
     globalShortcut.unregisterAll();
-    teardownKdeGlobalShortcuts().catch(() => {});
+    void waylandShortcuts?.dispose().catch(() => undefined);
   });
 
   // --- Screen Lock: notify the renderer when the OS locks/sleeps ---
@@ -4726,7 +5204,26 @@ app.whenReady().then(async () => {
   const notifyOsLock = () => mainWindow?.webContents.send('os-lock-screen');
   powerMonitor.on('lock-screen', notifyOsLock);
   powerMonitor.on('suspend', notifyOsLock);
-  const stopWatchingLinuxScreenLock = watchLinuxScreenLock(notifyOsLock);
+  // Continuity (cross-device attention routing): the SAME four power signals,
+  // forwarded one-for-one on their own channel so the renderer can keep lock
+  // and suspend as independent facts (utils/attentionState.ts
+  // reduceSessionPowerState). `os-lock-screen` above merges lock+suspend and
+  // `os-resume` below merges resume+unlock, so neither can say "still locked
+  // after the lid reopened" — which matters because a locked PC must report
+  // not-in-use immediately and keep doing so until the matching unlock. Linux
+  // has no 'lock-screen'/'unlock-screen' events, so the screensaver D-Bus
+  // signal supplies both edges there. Push-only, no renderer input, so no
+  // isTrustedSender check (nothing privileged is granted).
+  const notifyOsPowerSignal = (signal: 'lock-screen' | 'unlock-screen' | 'suspend' | 'resume') =>
+    mainWindow?.webContents.send('os-power-signal', signal);
+  powerMonitor.on('lock-screen', () => notifyOsPowerSignal('lock-screen'));
+  powerMonitor.on('unlock-screen', () => notifyOsPowerSignal('unlock-screen'));
+  powerMonitor.on('suspend', () => notifyOsPowerSignal('suspend'));
+  powerMonitor.on('resume', () => notifyOsPowerSignal('resume'));
+  const stopWatchingLinuxScreenLock = watchLinuxScreenLock(
+    () => { notifyOsLock(); notifyOsPowerSignal('lock-screen'); },
+    () => notifyOsPowerSignal('unlock-screen'),
+  );
   app.on('will-quit', () => stopWatchingLinuxScreenLock());
 
   // --- Wake: tell the renderer to force a fresh WebSocket connection ---
@@ -4841,12 +5338,19 @@ app.whenReady().then(async () => {
   };
   const desktopSources = createDesktopSourcesBroker<ListedSource>({
     getSources: (req) => (sourcesHelper ? sourcesHelper.getSources(req) : listSourcesInProcess(req)),
+    timeoutMs: DESKTOP_SOURCES_TIMEOUT_MS,
     onTiming: (t) => {
       freezeMonitor.event('capture:get-sources', t.runMs,
         `${t.key} n=${t.count} queued=${t.queuedMs}ms shared=${t.sharers} via=${PICKER_ENUMERATION}${t.ok ? '' : ' FAILED'}`);
     },
   });
   let cachedDesktopSources: ListedSource[] = [];
+  // How many portal captures main has answered: each is handed Chromium a NEW id (portal-source.ts
+  // portalCaptureVideo), or a second capture would attach to the running one and never ask the desktop.
+  let portalCaptureSeq = 0;
+  // The pick each portal placeholder resolved to (portal-pick.ts): on a desktop whose portal re-opens a listed
+  // source with no dialog, a share captures with the id it LISTED, so its restarts are silent and exact.
+  const portalPicks = createPortalPicks();
   // PIDs the native audio addon may capture: populated only when
   // audio:get-pid-from-source-id resolves a sourceId that was actually in
   // cachedDesktopSources (i.e. offered by the screen-share picker this
@@ -4854,15 +5358,14 @@ app.whenReady().then(async () => {
   // from the renderer with no link back to anything the user picked — any
   // JS running in the renderer could request another process's audio by PID.
   const capturedApprovedPids = new Set<number>();
-  // ...and which offered source each came from, so a consent prompt can name
-  // the app (main's own list, never a renderer-supplied label).
-  const approvedPidSourceId = new Map<number, string>();
 
   ipcMain.handle('desktop-capturer-get-sources', async (
     event,
     types?: Array<'window' | 'screen'>,
     opts?: { thumbnails?: boolean },
   ) => {
+    // (Off the portal - the guard above - these two paragraphs describe the old Wayland listing; they
+    // stay for the record: it is why a listing is never made there any more.)
     // types lets the picker ask for JUST 'window' up front. On Wayland,
     // requesting 'screen' at all is what makes Chromium's PipeWire capturer
     // invoke the xdg-desktop-portal ScreenCast chooser — that's the native
@@ -4874,6 +5377,15 @@ app.whenReady().then(async () => {
     // on top of our own picker. See ScreenSharePickerModal.tsx.
     // Renderer input: keep only the two real types (never coerce anything
     // else into a request).
+    // Through the Wayland portal a listing IS the desktop's chooser, and the capture that follows
+    // opens it AGAIN (measured, Electron 43.8.1: list + capture = 2 ScreenCast.Start, a capture
+    // alone = 1). So nothing lists there: the picker hands the share a placeholder and the
+    // capture's own chooser is the one and only (electron/portal-source.ts). A stray caller gets
+    // an empty list, never a dialog.
+    if (captureViaPortal()) {
+      console.log('[IPC] Not listing desktop sources through the portal (the capture asks the desktop once)');
+      return [];
+    }
     const validTypes = Array.isArray(types)
       ? types.filter((t): t is 'window' | 'screen' => t === 'window' || t === 'screen')
       : [];
@@ -5011,6 +5523,21 @@ app.whenReady().then(async () => {
   // origin (main frame only for media / speaker-selection), so an embedded
   // third-party frame cannot inherit the app's mic/camera/fullscreen grants.
   const permissionAppOrigins = appOriginsFor(DEV_SERVER_URL, CIPHERLINE_PROD_PORT);
+  // Synchronous permission CHECKS (navigator.permissions.query, device labels,
+  // clipboard). Electron's default answers yes to every frame; third-party
+  // iframes now get only what permission-policy.ts allows them.
+  session.defaultSession.setPermissionCheckHandler((webContents, permission, requestingOrigin, details) => {
+    let topLevelUrl: string | undefined;
+    try { topLevelUrl = webContents?.getURL(); } catch { topLevelUrl = undefined; }
+    const d = details as { embeddingOrigin?: string; isMainFrame?: boolean } | undefined;
+    return decidePermissionCheck({
+      permission,
+      requestingOrigin,
+      embeddingOrigin: d?.embeddingOrigin,
+      isMainFrame: d?.isMainFrame,
+      topLevelUrl,
+    }, permissionAppOrigins);
+  });
   session.defaultSession.setPermissionRequestHandler(async (webContents, permission, callback, details) => {
     const d = details as { requestingUrl?: string; isMainFrame?: boolean; securityOrigin?: string } | undefined;
     let topLevelUrl: string | undefined;
@@ -5135,32 +5662,68 @@ app.whenReady().then(async () => {
     return { token: minted.token };
   });
 
+  // The share that is ALREADY LIVE restarts on the capture it has (Linux Wayland: a codec
+  // drift, an encoder stall, a hardware-encoder rule, an audio change - none of which may open
+  // the desktop's chooser again). No capture happens, so there is no authorizeVideo to renew the
+  // consent that the share's native audio rides on; this renews it, for the live source only
+  // (capture-consent.ts continueLive). A different source gets nothing from here and goes
+  // through mint + resolve like any new share.
+  ipcMain.handle('capture:continue-grant', (event, sourceId: unknown, audio: unknown): { token: string; audio: boolean } => {
+    const r = captureConsent.continueLive(event.sender.id, sourceId, audio);
+    if (!r.ok) throw new Error(r.reason === 'no_share' ? 'No live share to continue' : 'Invalid capture request');
+    return { token: r.token, audio: r.audio };
+  });
+
   ipcMain.handle('desktop-capturer-resolve', async (event, sourceId: string | null, withAudio?: boolean, grantToken?: unknown) => {
     // Take ownership of the pending callback up front: the consent dialog can
     // sit open for a long time, and a newer request must not be answered (or
     // nulled) by this one.
     const cb = currentScreenshareCallback;
-    if (!cb) return;
+    if (!cb) return 'no_request';
     currentScreenshareCallback = null;
+    const resolveStartedAt = Date.now();
+    // One row per capture that reaches main, with whether the source came from the picker's
+    // list, so a report can count the captures one pick cost and see which of them waited on a
+    // person (ms includes a consent dialog). On the portal (Wayland) path every extra one is
+    // a chooser the user sees again.
+    let resolveCache: 'hit' | 'miss' | 'n/a' = 'n/a';
+    const noteResolve = (outcome: string) => {
+      freezeMonitor.event('capture:resolve', Date.now() - resolveStartedAt,
+        `${outcome} cache=${resolveCache} portal=${captureViaPortal() ? 1 : 0} kind=${typeof sourceId === 'string' ? sourceId.split(':')[0].slice(0, 8) : '-'}`);
+    };
     try {
       if (!sourceId) {
         // User cancelled
         cb(null);
-        return;
+        noteResolve('cancelled');
+        return 'cancelled';
       }
       if (typeof sourceId !== 'string' || !isCaptureSourceId(sourceId)) {
         console.error('[IPC] Refusing a malformed source id');
         cb(null);
-        return;
+        noteResolve('malformed');
+        return 'malformed';
       }
       // Use cached sources first to avoid race with windows opening/closing
       let match = cachedDesktopSources.find(s => s.id === sourceId);
-      if (!match) {
+      resolveCache = match ? 'hit' : 'miss';
+      // Through the portal there is no list to be on: the source is a placeholder the renderer made
+      // up (src/utils/portalSource.ts) and the desktop's chooser, opened by the capture itself,
+      // decides what is shared. Only that shape is admitted; consent below is the same as ever.
+      const portalPlaceholder = captureViaPortal() && isPortalSourceId(sourceId);
+      if (portalPlaceholder) {
+        match = { id: sourceId, name: PORTAL_SOURCE_NAME, display_id: '', thumbnailDataUrl: '' };
+        resolveCache = 'n/a';
+      }
+      if (!match && !captureViaPortal()) {
         // id + name only: the default 150x150 thumbnail would capture EVERY
         // window and screen just to look one id up.
         const fresh = await desktopSources.request({ types: ['window', 'screen'], thumbnailSize: { width: 0, height: 0 } });
         match = fresh.find(s => s.id === sourceId);
       }
+      // Through the Wayland portal a list request IS the desktop's chooser. A source the picker
+      // never offered is refused (below) rather than looked up, so a capture that cannot be
+      // matched never puts a second dialog in front of someone who already chose.
       if (match) {
         // Consent. A valid grant for exactly this source (minted from a real
         // click in our picker) passes silently; anything else - no grant, a
@@ -5174,7 +5737,8 @@ app.whenReady().then(async () => {
         if (!decision.allowed) {
           console.warn(`[Capture] screen capture denied (${decision.why}, grant=${decision.grant})`);
           cb(null);
-          return;
+          noteResolve(`denied_${decision.why}`);
+          return `denied_${decision.why}`;
         }
         if (decision.via === 'dialog') console.log(`[Capture] screen capture allowed by the user (grant=${decision.grant})`);
         // This branch only runs for the Chromium getDisplayMedia fallback path —
@@ -5198,23 +5762,60 @@ app.whenReady().then(async () => {
         // for audio and passes audio:false to setScreenShareEnabled, so withAudio
         // should already be false. But if a timing edge case lets withAudio=true
         // reach here anyway, this guard prevents Cipherline from muting locally.
-        const effectiveWithAudio = withAudio && !nativeAudioCaptureAvailable();
+        const effectiveWithAudio = withAudio && !(await nativeAudioCaptureReady());
         // macOS has no Chromium loopback (Electron documents it as Windows-only),
-        // so there is nothing to ask for there — never request one.
-        const audioMode: 'loopbackWithMute' | undefined = effectiveWithAudio && process.platform !== 'darwin'
-          ? (isWindow ? undefined : 'loopbackWithMute')
-          : undefined;
+        // so there is nothing to ask for there — never request one. Linux has
+        // none either, and on Linux 'loopbackWithMute' did not settle (measured, 25 s) or
+        // failed: it left getDisplayMedia pending (share-platform.ts).
+        const audioMode = chromiumLoopbackAudioMode({
+          platform: process.platform, withAudio: !!effectiveWithAudio, isWindow, nativeAudioAvailable: false,
+        });
         console.log(`[IPC] desktop-capturer-resolve: sourceId=${sourceId} withAudio=${withAudio} effectiveWithAudio=${effectiveWithAudio} audioMode=${audioMode} addonLoaded=${!!audioCaptureAddon} nativeAvailable=${nativeAudioCaptureAvailable()}`);
         // Electron reads only `id` and `name` here (electron_browser_context.cc
         // DisplayMediaDeviceChosen); a helper-listed source works the same.
-        cb({ video: { id: match.id, name: match.name }, audio: audioMode });
+        // A portal placeholder is answered one of two ways (electron/portal-pick.ts has the measurements):
+        //  - 'listed' (a desktop measured to restore silently): a NEW placeholder is a new pick - the desktop's
+        //    listing is the ONE dialog - and the capture uses the id it listed, so the capture, every later
+        //    applyConstraints and every republish of the same placeholder re-open exactly that source with no
+        //    dialog. The same placeholder again is answered from the pick it already has; it never lists.
+        //  - 'single' (everywhere else): an id Chromium can parse and the capturer ignores (portalCaptureVideo);
+        //    the capture's own chooser picks - one chooser, not two - and the capture is never re-opened.
+        let portalVideo: { id: string; name: string } | null = null;
+        if (portalPlaceholder && portalRestoreMode(process.env) === 'listed') {
+          const plan = planPortalPick(portalPicks, sourceId);
+          if (plan.action === 'reuse') {
+            portalVideo = plan.source;
+          } else {
+            let listed: ListedSource[] = [];
+            try {
+              listed = await desktopSources.request({ types: ['screen', 'window'], thumbnailSize: { width: 0, height: 0 } });
+            } catch (err) {
+              console.warn('[Capture] the desktop\'s chooser ended without a source:', err instanceof Error ? err.message : err);
+            }
+            const pick = pickFromListing(listed);
+            if (!pick) {
+              cb(null);
+              noteResolve('portal_pick_closed');
+              return 'cancelled';
+            }
+            portalPicks.set(sourceId, pick);
+            portalVideo = pick;
+          }
+        }
+        cb({ video: portalVideo ?? (portalPlaceholder ? portalCaptureVideo(++portalCaptureSeq) : { id: match.id, name: match.name }), audio: audioMode });
+        noteResolve(decision.via === 'dialog' ? 'ok_dialog' : 'ok');
+        return 'ok';
       } else {
         console.error('[IPC] Source not found:', sourceId);
         cb(null);
+        noteResolve('no_source');
+        return 'no_source';
       }
     } catch (err) {
       console.error('[IPC] Failed to resolve source:', err);
       cb(null);
+      noteResolve('error');
+      return 'error';
     }
   });
 
@@ -5225,23 +5826,33 @@ app.whenReady().then(async () => {
   // picker actually offered are accepted (same admission rule as
   // desktop-capturer-resolve). Anything that cannot be overlaid (window
   // shares off Windows or without the addon's window_geometry, an unknown
-  // display, Wayland, an X11 desktop without a compositor) resolves to a
+  // display, a Wayland build without the overlay helper or a compositor that
+  // can host neither a layer surface nor an XWayland one, an X11 desktop
+  // without a compositor) resolves to a
   // refusal WITH a reason enum, which the renderer records as an
   // `annot_overlay` call event — a refused overlay used to be a bare `false`
   // plus a main-process console line nobody sees in a packaged build. On
   // Linux the overlay is captured into the share (no exclusion exists) and
   // the result says `captured: true`. Deltas are fire-and-forget: a dropped
   // frame is just a slightly later line.
-  ipcMain.handle('annot-overlay:show', async (event, sourceId: unknown): Promise<OverlayShowResult> => {
+  ipcMain.handle('annot-overlay:show', async (event, sourceId: unknown, frameHint?: unknown, chosenDisplay?: unknown, showHint?: unknown): Promise<OverlayShowResult> => {
     if (typeof sourceId !== 'string' || sourceId.length > 64) return { ok: false, reason: 'bad_source' };
     const kind: 'screen' | 'window' | null =
       sourceId.startsWith('screen:') ? 'screen' : sourceId.startsWith('window:') ? 'window' : null;
     if (!kind) return { ok: false, reason: 'bad_source' };
     // Platform refusals BEFORE admission: a cache miss below asks for a fresh
     // source list, and on Wayland asking for screens opens the portal chooser.
-    const pre = annotationOverlayPrecheck(kind);
+    const pre = await annotationOverlayPrecheck(kind);
     if (pre) return pre;
     let src = cachedDesktopSources.find(s => s.id === sourceId);
+    // Wayland (portal) screen share: a miss must NOT fall through to a fresh listing, which opens
+    // the desktop's chooser in front of someone mid-call. The overlay never captures from this
+    // id (the portal already did) - it only names which share to lay a surface over - so a
+    // well-formed screen id is enough; WHICH output it is comes from the frame size and the
+    // compositor's outputs, never from the id.
+    if (!src && kind === 'screen' && process.platform === 'linux' && captureViaPortal()) {
+      src = { id: sourceId, name: '', display_id: '', thumbnailDataUrl: '' };
+    }
     if (!src) {
       try {
         // No thumbnail: the overlay needs id + display_id only, and the
@@ -5254,10 +5865,18 @@ app.whenReady().then(async () => {
       } catch { src = undefined; }
     }
     if (!src) return { ok: false, reason: 'not_offered' };
-    return showAnnotationOverlay(src);
+    return showAnnotationOverlay(src, frameHint, chosenDisplay, showHint);
   });
   ipcMain.handle('annot-overlay:hide', () => {
     hideAnnotationOverlay();
+  });
+  // The overlay went down on its own (X11: the compositing manager stopped mid-share, so a transparent
+  // window would now paint black over the share). Tell the renderer why: it records the refusal like any
+  // other and its next stroke asks again.
+  setAnnotationOverlayEndedListener((reason) => {
+    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
+      mainWindow.webContents.send('annot-overlay:ended', reason);
+    }
   });
   ipcMain.on('annot-overlay:delta', (event, delta: OverlayDelta) => {
     if (!delta || typeof delta !== 'object') return;
@@ -5271,17 +5890,41 @@ app.whenReady().then(async () => {
     // Only resolve (and admit for capture) sourceIds the picker actually
     // offered — mirrors desktop-capturer-resolve's same check for video.
     if (!cachedDesktopSources.some(s => s.id === sourceId)) return null;
+    // Linux through the desktop's portal (Wayland): the id is the portal's, not an X11 window id, so
+    // reading it as one could land on an unrelated X window. There is no pid to be had - say so (null)
+    // and the renderer tells the user, rather than guess one.
+    if (process.platform === 'linux' && captureViaPortal()) return null;
     const pid = audioCaptureAddon.getPidFromSourceId(sourceId);
-    if (typeof pid === 'number') { capturedApprovedPids.add(pid); approvedPidSourceId.set(pid, sourceId); }
+    if (typeof pid === 'number') capturedApprovedPids.add(pid);
     return pid;
   });
 
   ipcMain.handle('audio:get-own-pid', () => process.pid);
 
+  // Native (hardware) screen share on Linux. The IPC exists on Linux whenever the helper binary does; whether a share USES it is the
+  // renderer's decision (Settings -> Advanced -> "Hardware screen share", or CIPHERLINE_NATIVE_SHARE_ENCODER=1), off by default.
+  // CIPHERLINE_NATIVE_SHARE_HELPER overrides the path (UNPACKAGED only). The software test backend is accepted only unpackaged with
+  // CIPHERLINE_NATIVE_SHARE_TEST_BACKEND=1 (the lab harness), never from an install.
+  let nativeShareHelperPath: string | null = null;   // also what the Intel/AMD encoder-driver prompt asks (--list-va)
+  if (process.platform === 'linux' || isNativeShareEncoderEnabled()) {
+    // Packaged builds use ONLY <resources>/share-encoder-helper; the env override and the userData drop-in are dev/lab/tester paths
+    // (a swappable helper would inherit the user's portal consent and restore_token). See electron/native-share-helper-path.ts.
+    const helper = resolveNativeShareHelper({
+      isPackaged: app.isPackaged, envHelper: process.env.CIPHERLINE_NATIVE_SHARE_HELPER, resourcesPath: process.resourcesPath,
+      devBuildPath: path.join(__dirname, '../native/share-encoder/build/share-encoder-helper'),
+      userDataPath: app.getPath('userData'), exists: (p) => fs.existsSync(p),
+    });
+    if (helper) {
+      nativeShareHelperPath = helper.path;
+      registerNativeShareIpc(ipcMain as never, () => new MessageChannelMain() as never, helper.path,
+        { allowTestBackend: allowNativeShareTestBackend(app.isPackaged, process.env.CIPHERLINE_NATIVE_SHARE_TEST_BACKEND), consent: captureConsent });
+    }
+  }
+
   // Renderer capability probe — lets the screenshare audio path decide at runtime
   // whether to go through the native WASAPI addon (Windows) or fall back to
   // Electron/Chromium's getDisplayMedia audio (other platforms / missing addon).
-  ipcMain.handle('audio:is-capture-supported', () => nativeAudioCaptureAvailable());
+  ipcMain.handle('audio:is-capture-supported', () => nativeAudioCaptureReady());
 
   // Display refresh rates. Screen capture is fundamentally sampling the
   // compositor's output, so it can never produce more distinct frames per
@@ -5295,8 +5938,20 @@ app.whenReady().then(async () => {
   // Linux/virtual setups — callers treat 0 as "unknown", not as a limit.
   //
   // `captureFpsCeiling`: a limit of the OS capturer ITSELF, independent of any
-  // display (null = none). Linux Wayland/PipeWire: 60 - see captureFpsCeiling().
-  ipcMain.handle('display:get-refresh-rates', () => {
+  // display (null = none). Linux Wayland/PipeWire: 60, except KDE Plasma (none) - see captureFpsCeiling().
+  // Does a capture here go through the xdg-desktop-portal ScreenCast chooser
+  // (a native Wayland client)? The renderer reads this to avoid asking the
+  // portal twice for one share (utils/sharePlatformSupport.ts). A boolean, derived
+  // from the launch environment; false on Windows / macOS / X11.
+  const captureViaPortal = () => capturesViaPortal(process.platform, process.env, app.commandLine.getSwitchValue('ozone-platform'));
+  // restoreListed: this portal re-opens a source the share LISTED with no dialog (capture-flags.ts
+  // portalRestoreMode), so a quality change may re-open the capture; false = the capture is opened once.
+  ipcMain.handle('share:capture-path', () => ({
+    viaPortal: captureViaPortal(),
+    restoreListed: captureViaPortal() && portalRestoreMode(process.env) === 'listed',
+  }));
+
+  ipcMain.handle('display:get-refresh-rates', async () => {
     const ceiling = captureFpsCeiling(
       process.platform === 'linux'
         ? expectedScreenCapturer({
@@ -5304,8 +5959,9 @@ app.whenReady().then(async () => {
             waylandSession: isNativeWaylandClient(process.env, app.commandLine.getSwitchValue('ozone-platform')),
           }).backend
         : null,
+      process.env.XDG_CURRENT_DESKTOP,
     );
-    return screen.getAllDisplays().map(d => ({
+    return (await displaysWithRealRefresh()).map(d => ({
       id: String(d.id),
       displayFrequency: d.displayFrequency ?? 0,
       isPrimary: d.id === screen.getPrimaryDisplay().id,
@@ -5389,7 +6045,14 @@ app.whenReady().then(async () => {
   });
   ipcMain.handle('share:hdr-stats', () => hdrShare.stats());
 
-  ipcMain.handle('screenshare:get-diagnostics', async (_event, sourceId: unknown) => {
+  ipcMain.handle('screenshare:get-diagnostics', async (_event, sourceId: unknown, sharedRect?: unknown) => {
+    const rectOf = (v: unknown) => {
+      if (!v || typeof v !== 'object') return null;
+      const o = v as Record<string, unknown>;
+      const c = (n: unknown) => (typeof n === 'number' && Number.isInteger(n) && Math.abs(n) <= 100000 ? n : null);
+      const x = c(o.x), y = c(o.y), w = c(o.width), h = c(o.height);
+      return x !== null && y !== null && w !== null && h !== null && w > 0 && h > 0 ? { x, y, width: w, height: h } : null;
+    };
     const id = typeof sourceId === 'string' ? sourceId : '';
     const sourceKind: 'screen' | 'window' | 'unknown' =
       id.startsWith('screen:') ? 'screen' : id.startsWith('window:') ? 'window' : 'unknown';
@@ -5399,7 +6062,11 @@ app.whenReady().then(async () => {
     // source of the "? Hz" report. Look screens up afresh (id+display_id
     // only, no thumbnails: ~16 ms) rather than give up. Read-only: this only
     // yields a refresh rate, it admits nothing.
-    if (!offered && sourceKind === 'screen') {
+    // Not through the portal: on Wayland, asking for screens opens the desktop's
+    // own chooser, and this is a read-only metric - it must never put a dialog in
+    // front of someone who just started a share (it would also replace the
+    // selection the capture is about to use).
+    if (!offered && sourceKind === 'screen' && !captureViaPortal()) {
       try {
         const fresh = await desktopSources.request({ types: ['screen'], thumbnailSize: { width: 0, height: 0 } });
         offered = fresh.find(s => s.id === id);
@@ -5411,8 +6078,9 @@ app.whenReady().then(async () => {
       const r = resolveCapturedDisplayHz({
         sourceKind,
         displayId: offered?.display_id ?? null,
-        displays: screen.getAllDisplays(),
+        displays: await displaysWithRealRefresh(),
         primaryId: screen.getPrimaryDisplay().id,
+        sharedRect: rectOf(sharedRect),
       });
       displayHz = r.hz;
       displayHzSource = r.how;
@@ -5445,7 +6113,7 @@ app.whenReady().then(async () => {
       gpus,
       videoEncode,
       h264CbpHwEnabled: process.platform === 'win32' || process.platform === 'linux',
-      captureFpsCeiling: captureFpsCeiling(capturer.backend),
+      captureFpsCeiling: captureFpsCeiling(capturer.backend, process.env.XDG_CURRENT_DESKTOP),
       captureLog: CAPTURE_LOG_ENABLED,
     };
   });
@@ -5466,16 +6134,74 @@ app.whenReady().then(async () => {
         captureLog: STARTUP_FLAGS.captureLog,
         // The launch-time switches only; the runtime half follows `saved`.
         gamingVideo: GAMING_VIDEO_AT_LAUNCH,
+        // The SETTING this launch was decided from (not whether it ended up on - see `linuxHwEncode` below).
+        linuxHwEncode: STARTUP_FLAGS.linuxHwEncode,
+        linuxHwDecode: STARTUP_FLAGS.linuxHwDecode,
       },
       envOverride: {
         screenCapturer: STARTUP_FLAGS.source.screenCapturer === 'env',
         captureLog: STARTUP_FLAGS.source.captureLog === 'env',
+        linuxHwEncode: STARTUP_FLAGS.source.linuxHwEncode === 'env',
+        linuxHwDecode: STARTUP_FLAGS.source.linuxHwDecode === 'env',
+      },
+      // Linux hardware video decode, this launch (linux-video-decode.ts): on/off + why, the NVIDIA state, and a
+      // one-line hint (missing nvidia-vaapi-driver / modeset) for the Settings row. Shown nowhere else (no nagging).
+      linuxHwDecode: process.platform !== 'linux' ? null : {
+        active: LINUX_HW_DECODE.enable,
+        reason: LINUX_HW_DECODE.reason,
+        nvidia: LINUX_HW_DECODE.nvidia,
+        gpus: LINUX_HW_DECODE.gpus,
+        lockedOut: LINUX_HW_DECODE.lockedOut === true,
+        lockoutCleared: LINUX_HW_DECODE.lockedOut === true
+          && !isLinuxHwDecodeLockedOut(readLinuxHwDecodeLedgerFile(LINUX_HW_DECODE_LEDGER_PATH), app.getVersion(), Date.now()),
+        failureThisLaunch: linuxHwDecodeFailureGate.hasRecorded,
+        hint: LINUX_HW_DECODE.hint ?? null,
+      },
+      // Linux hardware video encode, this launch: whether the VA-API encoder feature is on, why, whether the
+      // failure ledger is what kept it off, and whether the user has since cleared that lockout.
+      linuxHwEncode: process.platform !== 'linux' ? null : {
+        active: LINUX_HW_ENCODE.enable,
+        reason: LINUX_HW_ENCODE.reason,
+        lockedOut: LINUX_HW_ENCODE.lockedOut === true,
+        lockoutCleared: LINUX_HW_ENCODE.lockedOut === true
+          && !isLinuxHwEncodeLockedOut(readLinuxHwEncodeLedgerFile(LINUX_HW_ENCODE_LEDGER_PATH), app.getVersion(), Date.now()),
+        failureThisLaunch: linuxHwFailureGate.hasRecorded,
       },
       captureLogPath: CAPTURE_LOG_FILE,
       captureLogMaxBytes: CAPTURE_LOG_MAX_BYTES,
     };
   };
   ipcMain.handle('app:get-startup-flags', () => startupFlagsState());
+  // NVIDIA VA-API driver prompt (nvidia-vaapi-install.ts). Both handlers take NO renderer input on purpose:
+  // the package is chosen here from /etc/os-release, never from the renderer. Always a fresh probe, so a
+  // driver installed since launch is seen.
+  const nvidiaVaapiStatus = (): NvidiaVaapiStatus => computeNvidiaVaapiStatus({
+    platform: process.platform,
+    probe: IS_SMOKE_TEST || process.platform !== 'linux' ? null : probeLinuxGpus(process.env),
+    decodeEnabledAtLaunch: LINUX_HW_DECODE.enable,
+    launchNvidia: LINUX_HW_DECODE.nvidia,
+  });
+  ipcMain.handle('linux:nvidia-vaapi-status', () => nvidiaVaapiStatus());
+  ipcMain.handle('linux:nvidia-vaapi-install', () => installNvidiaVaapiDriver({ status: nvidiaVaapiStatus }));
+  // Intel / AMD video ENCODER driver prompt (video-encode-driver.ts): same rules (no renderer input, package chosen here). The native
+  // share helper's --list-va says what each VA-API driver can encode; the FIRST answer of this launch is the baseline "restart" is
+  // measured against. Never two cards: it stays silent while the NVIDIA card has something to say.
+  let encodeLaunchGap: EncodeGap | null | undefined;   // undefined = not probed yet
+  const videoEncodeDriverStatus = async (): Promise<VideoEncodeDriverStatus> => {
+    if (IS_SMOKE_TEST || process.platform !== 'linux' || !nativeShareHelperPath) return NONE_ENCODE_STATUS;
+    const nodesNow = await runListVa(nativeShareHelperPath);
+    if (encodeLaunchGap === undefined && nodesNow) encodeLaunchGap = detectEncodeGap(nodesNow);
+    return computeVideoEncodeDriverStatus({
+      platform: process.platform,
+      distro: probeLinuxGpus(process.env).distro,
+      nodesNow,
+      launchGap: encodeLaunchGap ?? null,
+      encodeEnabledAtLaunch: LINUX_HW_ENCODE.enable,
+      nvidia: nvidiaVaapiStatus(),
+    });
+  };
+  ipcMain.handle('linux:video-encode-driver-status', () => videoEncodeDriverStatus());
+  ipcMain.handle('linux:video-encode-driver-install', () => installVideoEncodeDriver({ status: videoEncodeDriverStatus }));
   // Merge a validated patch into the file. validateStartupFlagsPatch throws
   // on anything but known keys with exact values (the rejection reaches the
   // renderer as a failed invoke). Takes effect on the next launch only.
@@ -5483,6 +6209,9 @@ app.whenReady().then(async () => {
     const change = validateStartupFlagsPatch(patch);
     if (!IS_SMOKE_TEST) {
       writeStartupFlagsFile(STARTUP_FLAGS_PATH, { ...readStartupFlagsFile(STARTUP_FLAGS_PATH), ...change });
+      // Turning hardware video encode (back) ON is the "try again" after an automatic lockout.
+      if (change.linuxHwEncode === true && process.platform === 'linux') clearLinuxHwEncodeLedgerFile(LINUX_HW_ENCODE_LEDGER_PATH);
+      if (change.linuxHwDecode === true && process.platform === 'linux') clearLinuxHwDecodeLedgerFile(LINUX_HW_DECODE_LEDGER_PATH);
     }
     // The gaming-video mode's runtime half (process priority during a call)
     // follows the saved value at once; only its Chromium switches wait for
@@ -5499,12 +6228,35 @@ app.whenReady().then(async () => {
   // Drives the screen-share boost (./share-boost.ts): process priority and a
   // prevent-app-suspension power request, both released the moment this goes
   // false, the setting goes off, the renderer reloads or crashes, or we quit.
-  ipcMain.handle('share:set-active', (_event, active: unknown) => {
+  ipcMain.handle('share:set-active', (event, active: unknown) => {
     syncCallPriority({ sharing: validateShareActive(active) });
+    // (validateShareActive throws on a non-boolean, so `active` is one here.)
+    // The share ended: audio can no longer be started until a new share is
+    // authorized from the picker (capture-consent.ts liveShare). Only the END
+    // is acted on; a renderer saying "live" grants nothing.
+    if (active === false) captureConsent.endShare(event.sender.id);
+    if (active === false) appAudio.endShare(event.sender.id);
+  });
+  // The renderer says OUR camera is published / off (ShareBoostGuard). Same
+  // setting, same release rules as the share boost, but only the webcam's
+  // Video Capture process is handled (./share-boost.ts BoostMode 'capture');
+  // a share running at the same time upgrades it to the full scope, and the
+  // share ending leaves the camera's. One boolean; anything else throws.
+  ipcMain.handle('camera:set-active', (_event, active: unknown) => {
+    syncCallPriority({ cameraLive: validateCameraActive(active) });
+  });
+  // The renderer saw the Linux hardware video encoder fail (linuxHwEncode.ts in src/utils): a hardware
+  // encoder that went software mid-share, an H.264 High encoder that produced nothing, an encoder stall,
+  // a codec drift. Only the kind word crosses; anything outside the allowlist is ignored, and a launch
+  // that did not enable hardware encode has nothing to record. At most one ledger entry per launch.
+  ipcMain.handle('linux-hw-encode:report-failure', (_event, kind: unknown): boolean => {
+    if (process.platform !== 'linux') return false;
+    if (!isLinuxHwEncodeFailureKind(kind)) return false;
+    recordLinuxHwEncodeFailureNow(kind);
+    return true;
   });
   // What has the screen right now (Windows)? Feeds the `fg_*` fields of the
-  // share_fps / share_background call events and the "share the game window
-  // instead" hint (src/utils/shareFullscreenHint.ts). `sourceId` is the share's
+  // share_fps / share_background call events. `sourceId` is the share's
   // capture source id, used only to say whether the foreground window is on
   // the SHARED monitor. Returns null off Windows / without the addon. Program
   // basename + booleans only - no titles, no handles (./share-foreground.ts).
@@ -5547,34 +6299,6 @@ app.whenReady().then(async () => {
       return null;
     }
   });
-  // Which of these window sources is the running program `exe`? (The picker
-  // pre-selects the game's window.) Reads each window's process basename and
-  // size natively; the renderer never learns anything but the winning id.
-  ipcMain.handle('share:find-window-source', (_event, exe: unknown, ids: unknown) => {
-    const req = validateFindWindowRequest(exe, ids);
-    const addon = audioCaptureAddon;
-    if (process.platform !== 'win32' || !addon || typeof addon.getWindowExe !== 'function') return null;
-    const candidates: WindowCandidate[] = [];
-    for (const id of req.ids) {
-      const hwnd = parseWindowSourceHandle(id);
-      if (!hwnd) continue;
-      let name = '';
-      try { name = cleanExeName(addon.getWindowExe(hwnd)); } catch { name = ''; }
-      if (name.toLowerCase() !== req.exe.toLowerCase()) continue;
-      let usable = true;
-      let area = 0;
-      try {
-        const w = addon.getWindowInfo?.(hwnd) as { exists?: boolean; visible?: boolean; minimized?: boolean; cloaked?: boolean; frame?: unknown } | null | undefined;
-        if (w) {
-          usable = w.exists === true && w.visible === true && w.minimized !== true && w.cloaked !== true;
-          const f = cleanRect(w.frame);
-          if (f) area = f.width * f.height;
-        }
-      } catch { /* keep the defaults: matched by name alone */ }
-      candidates.push({ id, exe: name, area, usable });
-    }
-    return pickWindowByExe(candidates, req.exe);
-  });
   // "Restart Cipherline to apply". A normal quit (before-quit handlers run:
   // replay-cache flush, presence goodbye), not app.exit — then Electron's
   // relauncher starts the app again once this process has exited, so the new
@@ -5588,7 +6312,9 @@ app.whenReady().then(async () => {
       console.log('[Main/Updater] relaunch requested with an update downloaded — installing it');
       beginQuit('relaunch');
       installRequested = true;
-      setImmediate(() => autoUpdater.quitAndInstall(true, true));
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.hide();
+      applyingUpdate.show(updateState.version);
+      applyingUpdate.install(() => autoUpdater.quitAndInstall(true, true));
       return;
     }
     beginQuit('relaunch');
@@ -5641,45 +6367,13 @@ app.whenReady().then(async () => {
     }
   });
 
-  ipcMain.handle('audio:start-window-capture', async (event, pid: number, mode: 'include' | 'exclude' = 'include', grantToken?: unknown) => {
-    if (!audioCaptureAddon || !nativeAudioCaptureAvailable()) {
-      console.warn('[Main/Audio] start-window-capture called but the native addon is not loaded/supported');
-      return false;
-    }
-    if (!Number.isInteger(pid) || pid <= 0 || (mode !== 'include' && mode !== 'exclude')) {
-      console.warn('[Main/Audio] Refusing a malformed capture request');
-      return false;
-    }
-    // Confine capture to exactly the two shapes the app uses, and never an
-    // arbitrary renderer-supplied PID:
-    //   'exclude' + our own pid  - a screen share's system audio minus Cipherline
-    //   'include' + a picker-offered app's pid (resolved by
-    //             audio:get-pid-from-source-id above; may be our own window)
-    // 'exclude' of anyone else's tree would be whole-system audio too.
-    const shapeOk = mode === 'exclude' ? pid === process.pid : capturedApprovedPids.has(pid);
-    if (!shapeOk) {
-      console.warn(`[Main/Audio] Refusing capture of unapproved pid=${pid} mode=${mode}`);
-      return false;
-    }
-    // Consent: the grant minted when the user picked this share covers its
-    // audio start (once); without a valid one the user is asked, natively,
-    // and the dialog names the app from main's own source list.
-    const approvedSourceId = approvedPidSourceId.get(pid);
-    const appName = (approvedSourceId && cachedDesktopSources.find(s => s.id === approvedSourceId)?.name) || `process ${pid}`;
-    const decision = await captureConsent.authorizeAudio(
-      event.sender.id, grantToken,
-      (sourceId) => {
-        if (mode === 'exclude') return sourceId.startsWith('screen:');
-        try { return audioCaptureAddon?.getPidFromSourceId(sourceId) === pid; } catch { return false; }
-      },
-      mode === 'exclude' ? { kind: 'audio-system' } : { kind: 'audio-app', name: appName },
-    );
-    if (!decision.allowed) {
-      console.warn(`[Capture] audio capture denied (${decision.why}, grant=${decision.grant})`);
-      return false;
-    }
+  // The addon's chunk callback, shared by the two ways a capture starts (audio:start-window-capture by pid,
+  // audio:start-app-capture by app). `label` is for the log only: a pid for the first, "app" for the second -
+  // never an application name.
+  type AudioChunk = Parameters<Parameters<NonNullable<typeof audioCaptureAddon>['startCapture']>[2]>[0];
+  const makeAudioChunkSink = (label: string) => {
     let chunkCount = 0;
-    audioCaptureAddon.startCapture(pid, mode, (chunk) => {
+    return (chunk: AudioChunk): void => {
       // The `in` check alone is the complete discriminant — `processExited` is
       // typed as the literal `true`, so the redundant `&& chunk.processExited`
       // that used to be here only broke narrowing: negating `A && B` leaves TS
@@ -5703,7 +6397,7 @@ app.whenReady().then(async () => {
         // call stopCapture() anyway to release the addon's IAudioClient/tsfn
         // deterministically from here rather than relying on the native
         // thread's own cleanup ordering.
-        console.log(`[Main/Audio] capture target pid=${pid} exited — ending capture (chunks delivered=${chunkCount})`);
+        console.log(`[Main/Audio] capture target ${label} exited — ending capture (chunks delivered=${chunkCount})`);
         audioCaptureAddon?.stopCapture();
         if (mainWindow && !mainWindow.isDestroyed()) {
           mainWindow.webContents.send('audio:capture-process-exited');
@@ -5729,7 +6423,46 @@ app.whenReady().then(async () => {
           data:       ab,
         });
       }
-    });
+    };
+  };
+
+  ipcMain.handle('audio:start-window-capture', async (event, pid: number, mode: 'include' | 'exclude' = 'include', grantToken?: unknown) => {
+    if (!audioCaptureAddon || !(await nativeAudioCaptureReady())) {
+      console.warn(`[Main/Audio] start-window-capture called but the native addon is not loaded/supported (addonLoaded=${!!audioCaptureAddon})`);
+      return false;
+    }
+    if (!Number.isInteger(pid) || pid <= 0 || (mode !== 'include' && mode !== 'exclude')) {
+      console.warn('[Main/Audio] Refusing a malformed capture request');
+      return false;
+    }
+    // Confine capture to exactly the two shapes the app uses, and never an
+    // arbitrary renderer-supplied PID:
+    //   'exclude' + our own pid  - a screen share's system audio minus Cipherline
+    //   'include' + a picker-offered app's pid (resolved by
+    //             audio:get-pid-from-source-id above; may be our own window)
+    // 'exclude' of anyone else's tree would be whole-system audio too.
+    const shapeOk = mode === 'exclude' ? pid === process.pid : capturedApprovedPids.has(pid);
+    if (!shapeOk) {
+      console.warn(`[Main/Audio] Refusing capture of unapproved pid=${pid} mode=${mode}`);
+      return false;
+    }
+    // Authorization, with NO dialog (owner decision 2026-10-31: enabling audio
+    // in Cipherline's own UI just starts it). The start needs a valid, trusted
+    // grant minted for this very source when audio was turned on, and a share
+    // started from our picker must be live; otherwise it is refused silently
+    // (the renderer shows its usual "audio could not be started" notice).
+    const decision = captureConsent.authorizeAudio(
+      event.sender.id, grantToken,
+      (sourceId) => {
+        if (mode === 'exclude') return sourceId.startsWith('screen:');
+        try { return audioCaptureAddon?.getPidFromSourceId(sourceId) === pid; } catch { return false; }
+      },
+    );
+    if (!decision.allowed) {
+      console.warn(`[Capture] audio capture refused (${decision.why}, grant=${decision.grant})`);
+      return false;
+    }
+    audioCaptureAddon.startCapture(pid, mode, makeAudioChunkSink(`pid=${pid}`));
     console.log(`[Main/Audio] startCapture requested pid=${pid} mode=${mode}`);
     return true;
   });
@@ -5737,6 +6470,53 @@ app.whenReady().then(async () => {
   ipcMain.handle('audio:stop-window-capture', () => {
     if (!audioCaptureAddon) return;
     audioCaptureAddon.stopCapture();
+  });
+
+  // ── Linux, Wayland window shares: audio from one APPLICATION ──────────────────────────────────
+  // The portal gives a window no pid, so the picker offers the apps that are playing audio right now
+  // instead (app-audio.ts for the rules; src-native/audio_capture_linux.cc listApps() / 'app' mode).
+  //
+  // Listing: the NAMES go to the renderer (the sharer's own machine, to fill the picker's list) as
+  // opaque handles main issues; they are never logged - only a count, and only when it changes.
+  let lastListedAppCount = -1;
+  ipcMain.handle('audio:list-apps', async (event) => {
+    if (process.platform !== 'linux' || !captureViaPortal()) return [];
+    if (!audioCaptureAddon || typeof audioCaptureAddon.listApps !== 'function' || !(await nativeAudioCaptureReady())) return [];
+    // Off the main thread, with a deadline (addon-offload.ts): a wedged PipeWire answers "[]" late, not a frozen UI.
+    // appAudio.list only calls fetch when its own per-window cache is stale, so the answer is fetched first and
+    // handed over; a failed fetch is an empty list (and is not cached as one by the offload).
+    let fetched: unknown = [];
+    if (pipewireOffload?.usable) fetched = (await pipewireOffload.listApps(process.pid)) ?? [];
+    const apps = appAudio.list(event.sender.id, () => {
+      if (pipewireOffload?.usable) return fetched;
+      try { return audioCaptureAddon?.listApps?.(process.pid); } catch { return []; }
+    });
+    if (apps.length !== lastListedAppCount) {
+      lastListedAppCount = apps.length;
+      console.log(`[Main/Audio] ${apps.length} application(s) playing audio (window share picker)`);
+    }
+    return apps;
+  });
+
+  // Starting: needs a handle main issued to THIS window and the same share grant every audio start
+  // needs (a live WINDOW share). The renderer supplies no pid and no application name - only the
+  // handle - and Cipherline's own process tree stays excluded inside the addon.
+  ipcMain.handle('audio:start-app-capture', async (event, handle: unknown, grantToken?: unknown) => {
+    if (!audioCaptureAddon || !(await nativeAudioCaptureReady())) {
+      console.warn(`[Main/Audio] start-app-capture called but the native addon is not loaded/supported (addonLoaded=${!!audioCaptureAddon})`);
+      return false;
+    }
+    const decision = authorizeAppStart(
+      { platform: process.platform, viaPortal: captureViaPortal(), appAudio, consent: captureConsent },
+      event.sender.id, handle, grantToken,
+    );
+    if (!decision.ok) {
+      console.warn(`[Capture] app audio refused (${decision.why}${decision.detail ? `, ${decision.detail}` : ''})`);
+      return false;
+    }
+    audioCaptureAddon.startCapture(process.pid, 'app', makeAudioChunkSink('app'), decision.key);
+    console.log('[Main/Audio] startCapture requested mode=app');
+    return true;
   });
 
   // ── Auto-updates (production only) ────────────────────────────────────
@@ -5799,6 +6579,17 @@ app.whenReady().then(async () => {
   // depend on surviving a version bump). Cleared once we know we don't need
   // it, so a later unrelated error can't accidentally reuse a stale list.
   let lastKnownUpdateFiles: UpdateFileInfoT[] | null = null;
+  // Which Linux package this is (AppImage / .deb / other), read the way electron-updater picks its
+  // own updater: `package-type` in resources, `$APPIMAGE`. A .deb gets a .deb download link when its
+  // pkexec install fails; an AppImage the AppImage link; anything else none. Read once, lazily.
+  let linuxPackageCache: LinuxPackageKind | null = null;
+  const readLinuxPackage = (): LinuxPackageKind => {
+    if (process.platform !== 'linux') return 'other';
+    if (linuxPackageCache) return linuxPackageCache;
+    let typeFile: string | null = null;
+    try { typeFile = fs.readFileSync(path.join(process.resourcesPath, 'package-type'), 'utf8'); } catch { /* not a package install */ }
+    return (linuxPackageCache = linuxPackageKind(process.env.APPIMAGE, typeFile));
+  };
 
   // ── In-app retry bookkeeping (policy: electron/updater-state.ts) ──
   // Failures for `failureVersion` in this session; reset on a new version, a
@@ -5986,21 +6777,26 @@ app.whenReady().then(async () => {
     attemptPath: () => path.join(app.getPath('userData'), INSTALL_ATTEMPT_FILE),
     beginQuit: (trigger) => beginQuit(trigger),
     markInstallRequested: () => { installRequested = true; },
-    showInstallingUi: () => {
+    showInstallingUi: (version) => {
       if (mainWindow && !mainWindow.isDestroyed()) mainWindow.hide();
+      // The small "Applying update" popup; only if it cannot be shown does the
+      // legacy installing splash take its place.
+      if (applyingUpdate.show(version)) return;
       try {
         if (!installerSplash || installerSplash.isDestroyed()) installerSplash = createInstallerSplash(true);
         splashSendProgress(40);
       } catch (e) { console.warn('[Main/Updater] installing splash unavailable:', (e as Error)?.message || e); }
     },
     quitAndInstall: () => autoUpdater.quitAndInstall(true, true),
-    defer: (fn) => { setImmediate(fn); },
+    // Held ~1.8 s behind the popup when it is up; next tick when it is not.
+    defer: (fn) => applyingUpdate.install(fn),
     onInstallStalled: () => autoUpdater.emit('error', new Error('the update installer did not take over in time')),
     log: (line) => console.log(line),
     record: (name, detail) => freezeMonitor.event(name, 0, toDiagnosticDetail(detail)),
   });
   /** The install could not start (or never quit us): drop the splash; the error listener restores the window. */
   const dismissInstallingUi = () => {
+    applyingUpdate.dismiss();
     if (installerSplash && !installerSplash.isDestroyed()) installerSplash.close();
     installerSplash = null;
     splashReady = false;
@@ -6058,6 +6854,9 @@ app.whenReady().then(async () => {
     // origin could otherwise serve an OLDER, known-vulnerable Cipherline and
     // have every client install it as an "update". Pin it explicitly.
     autoUpdater.allowDowngrade = false;
+    // …except the one-way 1.0.x → 0.1.x launch renumbering, which would
+    // otherwise strand every beta install on 1.0.x (renumber-bridge.ts).
+    installRenumberBridge(autoUpdater, () => app.getVersion(), (m) => console.log(m));
     // No differential/blockmap download path. It is a second, more complex
     // parser fed by the same untrusted origin (a `.blockmap` whose contents
     // steer ranged reads and reassembly), bought for bandwidth we do not need.
@@ -6113,6 +6912,7 @@ app.whenReady().then(async () => {
             },
             parseDn,
             normalizePath: path.win32.normalize,
+            baseEnv: process.env,
             log: updaterLog,
             onSkipped: (why) => freezeMonitor.event('updater:verify-skipped', 0, toDiagnosticDetail(scrubUpdaterText(why))),
           });
@@ -6206,7 +7006,14 @@ app.whenReady().then(async () => {
         // The quit is off: re-arm the unclean-exit marker and crash capture.
         sessionLifecycle.cancelQuit();
         showAndFocusWindow(mainWindow);
-        const next = onInstallError(updateState);
+        // .deb (DebUpdater runs `pkexec dpkg -i`): a dismissed password prompt is the user's choice (Retry
+        // asks again); any other failure gets this version's .deb link, since a Retry would only fail the same
+        // way (no polkit agent on a minimal WM, apt refusing, ...). Everything else keeps Retry.
+        const debInstall = readLinuxPackage() === 'deb';
+        const failedVersion = 'version' in updateState ? updateState.version : '';
+        const next = onInstallError(updateState, debInstall
+          ? { kind: classifyInstallError(e), manualDownloadUrl: debDownloadUrl(lastKnownUpdateFiles, failedVersion, process.arch) }
+          : undefined);
         freezeMonitor.event('updater:error', 0, updaterErrorDetail(e, { state: next, retryInMs: null }, scrubForDiag));
         pushUpdateState(next);
         return;
@@ -6243,7 +7050,17 @@ app.whenReady().then(async () => {
         failures: updateFailures,
         platform: process.platform,
         now: Date.now(),
-        buildDownloadUrl: () => (lastKnownUpdateFiles ? pickDownloadUrl(lastKnownUpdateFiles, process.platform, process.arch) : null),
+        // An AppImage can be stuck where it cannot replace itself (-> its AppImage); a .deb whose download keeps
+        // failing gets ITS package (-> the .deb for that version, never the AppImage); any other Linux install
+        // has no artifact of ours to point at.
+        buildDownloadUrl: (version) => {
+          if (process.platform !== 'linux') return lastKnownUpdateFiles ? pickDownloadUrl(lastKnownUpdateFiles, process.platform, process.arch) : null;
+          const pkg = readLinuxPackage();
+          if (pkg === 'deb') return debDownloadUrl(lastKnownUpdateFiles, version, process.arch);
+          if (pkg === 'appimage') return lastKnownUpdateFiles ? pickDownloadUrl(lastKnownUpdateFiles, 'linux', process.arch) : null;
+          return null;
+        },
+        linuxPackage: process.platform === 'linux' ? readLinuxPackage() : undefined,
       });
       freezeMonitor.event(inFlight ? 'updater:error' : 'updater:check-error', 0, updaterErrorDetail(e, decision, scrubForDiag));
       cancelScheduledRetry();
@@ -6360,11 +7177,13 @@ app.whenReady().then(async () => {
     // Hide the main window immediately so the old app doesn't bleed through
     // behind the NSIS installer dialog while it waits for windows to close.
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.hide();
-    // Defer one tick so this IPC handler can return before quitAndInstall
-    // starts closing windows. Calling it synchronously deadlocks: the renderer
-    // is blocked waiting for the IPC reply while the main process is waiting
-    // for windows to close.
-    setImmediate(() => autoUpdater.quitAndInstall(false, true));
+    // "Applying update" popup for ~1.8 s when a download is ready (nothing is
+    // shown otherwise). Either way the install runs on a LATER tick, so this
+    // IPC handler returns before quitAndInstall starts closing windows. Calling
+    // it synchronously deadlocks: the renderer is blocked waiting for the IPC
+    // reply while the main process is waiting for windows to close.
+    if (updateState.phase === 'ready') applyingUpdate.show(updateState.version);
+    applyingUpdate.install(() => autoUpdater.quitAndInstall(false, true));
   });
   ipcMain.handle('updater:get-channel', () => {
     return readChannel();
@@ -6505,8 +7324,24 @@ app.whenReady().then(async () => {
     return stagingLockStatus();
   });
 
+  // Start-minimized preference — applied ONLY to login-item launches. A manual open (double-clicking
+  // the icon, the installer's "Run Cipherline", the first open after install) always shows the
+  // window. Login launches are identified by the `--autostart` arg the login item carries (Windows,
+  // Linux) or wasOpenedAtLogin (macOS). Skipped during the installer flow — the splash owns window
+  // visibility and reveals the main window itself. Decided here, before the window exists, because
+  // on Linux a minimized login launch never maps a window (keepLoginWindowUnmapped).
+  const launchedAtLogin = wasLaunchedAtLogin(
+    process.argv,
+    process.platform,
+    process.platform === 'darwin' && app.getLoginItemSettings().wasOpenedAtLogin,
+  );
+  let startMinimizedStored: string | null = null;
+  if (storeOk) { try { startMinimizedStored = secureStore.get('startMinimized'); } catch { /* default */ } }
+  const startMinimizedNow = shouldStartMinimized({ launchedAtLogin, showInstaller, storeOk, startMinimizedStored });
+  const loginWindowUnmapped = keepLoginWindowUnmapped(process.platform, startMinimizedNow);
+
   console.log('[Main] all IPC handlers registered — creating window');
-  await createWindow(csp, showInstaller);
+  await createWindow(csp, showInstaller, loginWindowUnmapped);
   startUpdateSchedule().catch((e) => console.warn('[Main/Updater] could not start the update schedule:', (e as Error)?.message || e));
 
   // When the installer splash is up, the main window starts hidden. Treat its
@@ -6539,6 +7374,18 @@ app.whenReady().then(async () => {
   // absent and this would re-enable an item the user deliberately turned off.
   // The first launch after install is never a login launch, so it still shows
   // the window (shouldStartMinimized below) — a new user can sign up.
+  // Linux identity: KDE names our prompts (wallet, portal, notifications) through
+  // `cipherline.desktop`; the .deb ships it, an AppImage run writes a user-level one
+  // (linux-identity.ts). Before the login item so both agree on the install.
+  if (process.platform === 'linux' && IS_PACKAGED && !IS_SMOKE_TEST) {
+    try {
+      app.setDesktopName(MAIN_DESKTOP_FILE);
+      const r = ensureMainDesktopEntry(fs, process.env, os.homedir());
+      if (r === 'written' || r === 'error') console.log(`[Identity] cipherline.desktop: ${r}`);
+    } catch (err) {
+      console.warn('[Identity] desktop entry check failed:', err);
+    }
+  }
   {
     const target = currentLoginItemTarget();
     let defaultFlag: string | null = null;
@@ -6560,7 +7407,7 @@ app.whenReady().then(async () => {
             writeLoginItem(true, target);
           }
         } else if (target.kind === 'xdg') {
-          if (xdgEntryNeedsRewrite(readXdgAutostart(), target.exec)) writeLoginItem(true, target);
+          reconcileXdgAutostart(fs, path.dirname(xdgAutostartFile()), target.exec);
         }
       }
     } catch (err) {
@@ -6568,20 +7415,8 @@ app.whenReady().then(async () => {
     }
   }
 
-  // Apply the start-minimized preference — but ONLY to login-item launches.
-  // A manual open (double-clicking the icon, the installer's "Run Cipherline",
-  // the first open after install) always shows the window. Login launches are
-  // identified by the `--autostart` arg the login item carries (Windows,
-  // Linux) or wasOpenedAtLogin (macOS). Skipped during the installer flow —
-  // the splash owns window visibility and reveals the main window itself.
-  const launchedAtLogin = wasLaunchedAtLogin(
-    process.argv,
-    process.platform,
-    process.platform === 'darwin' && app.getLoginItemSettings().wasOpenedAtLogin,
-  );
-  let startMinimizedStored: string | null = null;
-  if (storeOk) { try { startMinimizedStored = secureStore.get('startMinimized'); } catch { /* default */ } }
-  if (shouldStartMinimized({ launchedAtLogin, showInstaller, storeOk, startMinimizedStored })) {
+  // Windows / macOS: the window is shown, then minimized. Linux never mapped it (loginWindowUnmapped).
+  if (startMinimizedNow && !loginWindowUnmapped) {
     mainWindow?.minimize();
   }
 
@@ -6702,6 +7537,30 @@ app.whenReady().then(async () => {
   // almost always answered within the last poll interval; reuse that instead
   // of starting a second full scan.
   ipcMain.handle('game:get-current', () => getCurrentGameCached(GAME_POLL_MS));
+  // The picture + launcher of the game that was just detected (electron/game-art.ts).
+  // No argument on purpose: the renderer cannot name a process or a path, it can
+  // only ask about the game THIS process detected. The executable's path is used
+  // here and stays here; the answer is { name, icon (small PNG data URL),
+  // store (one word), appId }.
+  const gameArt = new GameArtResolver({
+    platform: process.platform,
+    exec: (file, args, env) => new Promise<string>((resolve, reject) => {
+      execFile(file, args, { env: { ...process.env, ...env }, timeout: 8000, windowsHide: true, maxBuffer: 64 * 1024 },
+        (err, stdout) => (err ? reject(err) : resolve(String(stdout))));
+    }),
+    exists: (p) => fs.promises.access(p).then(() => true, () => false),
+    fileIcon: (p) => app.getFileIcon(p, { size: 'large' }) as Promise<ImageLike>,
+    thumbnail: process.platform === 'win32' || process.platform === 'darwin'
+      ? (p, px) => nativeImage.createThumbnailFromPath(p, { width: px, height: px }) as Promise<ImageLike>
+      : undefined,
+    steamAppId: getSteamAppId,
+    env: process.env,
+    now: () => Date.now(),
+  });
+  ipcMain.handle('game:get-current-art', async () => {
+    const game = peekDetectedGame();
+    return game ? gameArt.get({ name: game.name, processName: game.processName }) : null;
+  });
   // Settings → Game activity off: stop scanning in the background entirely.
   ipcMain.on('game:set-enabled', (_e, enabled: unknown) => {
     const on = enabled !== false;
@@ -6712,14 +7571,81 @@ app.whenReady().then(async () => {
   });
 
   // "Listening to ..." (electron/media-session.ts): the OS media session,
-  // read only when the renderer asks — which it does only while the user has
-  // switched sharing on and is using the app. `includeBrowser` must be a
-  // literal boolean; anything else reads as false.
-  const mediaSession = new MediaSessionReader();
-  ipcMain.handle('media:now-playing', (_e, opts: unknown) =>
-    mediaSession.read(!!opts && typeof opts === 'object' && (opts as { includeBrowser?: unknown }).includeBrowser === true));
+  // read only while the user has switched sharing on (the schedule below) or
+  // has Settings > Connections open (its own probe). The one look before that
+  // is `media:music-playing` below, which never reads a title. `includeBrowser` and
+  // `includeWatching` must be literal booleans; anything else reads as false.
+  // Browsers hand Windows a lossless PNG of the page's artwork (often over 0.5 MB):
+  // shrink it to a 300 px JPEG here, in the main process, before it goes anywhere.
+  const mediaSession = new MediaSessionReader(undefined, undefined, undefined, undefined, undefined, undefined, undefined, (bytes) => {
+    const img = nativeImage.createFromBuffer(bytes);
+    if (img.isEmpty()) return null;
+    const { width, height } = img.getSize();
+    const k = Math.min(1, 300 / Math.max(width, height, 1));
+    const out = k < 1 ? img.resize({ width: Math.max(1, Math.round(width * k)), height: Math.max(1, Math.round(height * k)), quality: 'good' }) : img;
+    return out.toJPEG(85);
+  });
+  ipcMain.handle('media:now-playing', (_e, opts: unknown) => {
+    const o = !!opts && typeof opts === 'object' ? (opts as { includeBrowser?: unknown; includeWatching?: unknown }) : {};
+    return mediaSession.read({ includeBrowser: o.includeBrowser === true, includeWatching: o.includeWatching === true });
+  });
   ipcMain.on('media:stop', () => mediaSession.stop());
   app.on('will-quit', () => mediaSession.stop());
+  // Sharing on: the main process keeps the schedule (electron/media-watch.ts),
+  // so the status follows the music with the window in the background, minimised
+  // or in the tray, and pushes a read to the renderer only when it matters. The
+  // renderer that configured it is the one told; a reload / crash of that page
+  // stops the schedule (the new page configures again if it still shares).
+  let mediaWatchTarget: Electron.WebContents | null = null;
+  const mediaWatchBound = new WeakSet<Electron.WebContents>();
+  // Content-free breadcrumbs for a diagnostic report (Performance log): that the schedule is
+  // on, what each CHANGE in the read looked like (found / nothing / why not), and whether a
+  // push had a window to go to. Never a title, artist or player (media-watch.ts describeRead).
+  const mediaBreadcrumb = (() => {
+    const last = new Map<string, string>();
+    return (name: string, line: string) => {
+      if (last.get(name) === line) return;
+      last.set(name, line);
+      freezeMonitor.event(name, 0, line);
+    };
+  })();
+  const mediaWatch = new MediaWatcher(
+    (o) => mediaSession.read(o).then(
+      (r) => { mediaBreadcrumb('media:read', describeRead(r)); return r; },
+      (e: unknown) => { mediaBreadcrumb('media:read', 'threw'); throw e; },
+    ),
+    (r) => {
+      const wc = mediaWatchTarget;
+      if (wc && !wc.isDestroyed()) { wc.send('media:now-playing-changed', r); mediaBreadcrumb('media:push', 'delivered'); }
+      else mediaBreadcrumb('media:push', 'no_window');
+    },
+    () => mediaSession.stop(),
+  );
+  ipcMain.on('media:watch', (e, opts: unknown) => {
+    const o = parseWatchOpts(opts);
+    const wc = e.sender;
+    if (!o) {
+      if (mediaWatchTarget === wc) { mediaWatchTarget = null; mediaWatch.stop(); mediaBreadcrumb('media:watch', describeWatch(null)); }
+      return;
+    }
+    if (!mediaWatchBound.has(wc)) {
+      mediaWatchBound.add(wc);
+      const off = () => { if (mediaWatchTarget === wc) { mediaWatchTarget = null; mediaWatch.stop(); mediaBreadcrumb('media:watch', 'off_page_gone'); } };
+      wc.on('did-navigate', off);
+      wc.on('render-process-gone', off);
+      wc.once('destroyed', off);
+    }
+    mediaWatchTarget = wc;
+    mediaBreadcrumb('media:watch', describeWatch(o));
+    mediaWatch.configure(o);
+  });
+  app.on('will-quit', () => mediaWatch.stop());
+  // Before the user has answered "Show what you're listening to?": is a music
+  // app playing, yes or no (electron/music-detect.ts: playback state only, no
+  // titles, nothing kept). Takes no arguments, returns one boolean, and runs only
+  // when the renderer asks. The sender check comes from installIpcSenderGuard.
+  const musicProbe = new MusicPresenceProbe();
+  ipcMain.handle('media:music-playing', () => (mediaWatch.active ? false : musicProbe.check()));
 
   // Game settings — custom games and ignored processes from renderer
   ipcMain.handle('game:get-processes', () => getRunningProcessList());
@@ -6868,7 +7794,7 @@ app.on('before-quit', () => beginQuit('before-quit'));
 // so the renderer gets the earliest possible signal.
 app.on('before-quit', () => {
   // Gaming-video priority boost: restore before the processes start exiting.
-  syncCallPriority({ inCall: false, sharing: false });
+  syncCallPriority({ inCall: false, sharing: false, cameraLive: false });
   mainWindow?.webContents.send('app:before-quit');
 });
 
@@ -6898,6 +7824,9 @@ app.on('will-quit', () => {
 });
 
 app.on('window-all-closed', () => {
+  // The Linux wallet notice is the only window until the main window exists;
+  // closing it must not quit the app (keyring-notice-guard.ts).
+  if (keyringNoticeGuard.holdsApp()) return;
   // On macOS the convention is to keep the process alive after all windows
   // close, UNLESS we're intentionally quitting (e.g. tray "Quit" or an
   // auto-update install triggered via `quitAndInstall`). Without this check

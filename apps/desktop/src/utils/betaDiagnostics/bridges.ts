@@ -36,7 +36,29 @@ export function deliveryEntryToBeta(entry: Pick<DiagnosticEntry, 'kind' | 'code'
     switch (entry.kind) {
         case 'message_decrypt': return { kind: 'key_decrypt_failed', detail: { scope: 'dm', ...base } };
         case 'channel_key_decrypt': return { kind: 'key_decrypt_failed', detail: { scope: 'channel_key', ...base } };
-        case 'message_process': return { kind: 'msg_fetch_gap', detail: { stage: 'process', ...base } };
+        case 'message_process': {
+            // A message that decrypted but could not be shown or applied
+            // (utils/unshowableContent.ts): counted by reason + content type
+            // name, and whether it became a placeholder row or was dropped.
+            // Only these enum fields leave the device — never the ids that
+            // the local entry's ctx also holds.
+            const reason = enumish(entry.ctx?.unshowable_reason, 32);
+            if (reason) {
+                const ctype = enumish(entry.ctx?.content_type, 32);
+                const scope = enumish(entry.ctx?.scope, 16);
+                const outcome = enumish(entry.ctx?.outcome, 16);
+                const field = enumish(entry.ctx?.problem_field, 48);
+                return {
+                    kind: 'msg_fetch_gap',
+                    detail: {
+                        stage: 'unshowable', reason,
+                        ...(ctype ? { ctype } : {}), ...(scope ? { scope } : {}),
+                        ...(outcome ? { outcome } : {}), ...(field ? { field } : {}),
+                    },
+                };
+            }
+            return { kind: 'msg_fetch_gap', detail: { stage: 'process', ...base } };
+        }
         case 'message_persist': return { kind: 'msg_fetch_gap', detail: { stage: 'persist', ...base } };
         case 'message_ack': return { kind: 'msg_fetch_gap', detail: { stage: 'ack', ...base } };
         case 'message_encrypt': return { kind: 'msg_send_failed', detail: { stage: 'encrypt', ...base } };

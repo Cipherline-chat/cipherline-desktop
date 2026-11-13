@@ -322,20 +322,27 @@ export interface GpuTopologyHint {
     hybrid: boolean;
     /** Vendor names, for the log and the overlay. */
     vendors: string[];
+    /**
+     * A built-in panel (Electron's `Display.internal`) was present: this is a laptop. Optional: a
+     * file written by an older build has no such field and reads as "not known".
+     */
+    internalDisplay?: boolean;
 }
 
 export const GPU_TOPOLOGY_FILENAME = 'gpu-topology.json';
 export const GPU_TOPOLOGY_MAX_BYTES = 2 * 1024;
 
-/** From app.getGPUInfo('basic'). null when it carries no GPU at all. */
-export function gpuTopologyFromInfo(info: unknown): GpuTopologyHint | null {
+/** From app.getGPUInfo('basic'). null when it carries no GPU at all. `internalDisplay`: a built-in panel is attached. */
+export function gpuTopologyFromInfo(info: unknown, internalDisplay?: boolean): GpuTopologyHint | null {
     const gpus = summarizeGpuDevices(info);
     if (gpus.length === 0) return null;
     const aux = (info as { auxAttributes?: Record<string, unknown> } | null)?.auxAttributes ?? {};
-    return {
+    const hint: GpuTopologyHint = {
         hybrid: aux.optimus === true || aux.amdSwitchable === true,
         vendors: gpus.map(g => g.vendor),
     };
+    if (typeof internalDisplay === 'boolean') hint.internalDisplay = internalDisplay;
+    return hint;
 }
 
 /** Trust nothing read from disk: a malformed file is "unknown", never an error. */
@@ -347,14 +354,20 @@ export function parseGpuTopologyHint(text: string | null | undefined): GpuTopolo
         const vendors = Array.isArray(v.vendors)
             ? v.vendors.filter((x): x is string => typeof x === 'string').map(s => s.slice(0, 40)).slice(0, 8)
             : [];
-        return { hybrid: v.hybrid, vendors };
+        return typeof v.internalDisplay === 'boolean'
+            ? { hybrid: v.hybrid, vendors, internalDisplay: v.internalDisplay }
+            : { hybrid: v.hybrid, vendors };
     } catch {
         return null;
     }
 }
 
 export function serializeGpuTopologyHint(h: GpuTopologyHint): string {
-    return JSON.stringify({ hybrid: h.hybrid, vendors: h.vendors.slice(0, 8) }) + '\n';
+    return JSON.stringify({
+        hybrid: h.hybrid,
+        vendors: h.vendors.slice(0, 8),
+        ...(typeof h.internalDisplay === 'boolean' ? { internalDisplay: h.internalDisplay } : {}),
+    }) + '\n';
 }
 
 export interface AutoCapturerDecision {
@@ -402,6 +415,16 @@ export function decideAutoScreenCapturer(opts: {
     }
     if (!opts.gpu) return { backend: 'wgc', why: 'auto: WGC, no DXGI (GPU layout not known yet — next launch decides)' };
     if (opts.gpu.hybrid) return { backend: 'wgc', why: 'auto: WGC, no DXGI (hybrid GPU — Desktop Duplication can fail there)' };
+    // Chromium's flag misses laptops whose panel hangs off an integrated GPU beside a discrete one (an
+    // i5-13600HX + NVIDIA laptop it reported as NOT hybrid): there DuplicateOutput fails, DXGI's
+    // fallback is GDI, and a share ran at 4-5 fps at ANY resolution (diagnostics report, 2026-11-04).
+    // A built-in panel + an Intel iGPU beside an NVIDIA / AMD GPU is the laptop; a desktop with two
+    // cards has no built-in panel and keeps DXGI. An older hint file does not say (internalDisplay
+    // undefined) and keeps DXGI until the next launch has written it.
+    if (opts.gpu.internalDisplay === true && opts.gpu.vendors.includes('Intel')
+        && (opts.gpu.vendors.includes('NVIDIA') || opts.gpu.vendors.includes('AMD'))) {
+        return { backend: 'wgc', why: 'auto: WGC, no DXGI (laptop with two GPUs — Desktop Duplication falls back to a few fps there)' };
+    }
     return { backend: 'dxgi', why: 'auto: DXGI for the share (grabs ~2.7× faster than WGC), picker out of process' };
 }
 
@@ -461,9 +484,10 @@ export function parseSourcesHelperFailure(text: string | null | undefined, appVe
 }
 
 /** How the captured display's refresh rate was found (shown in the overlay). */
-export type DisplayHzSource = 'matched' | 'only-display' | 'primary';
+/** `shared` = matched by the portal stream's own rectangle (a native share on Wayland: the display the person actually picked). */
+export type DisplayHzSource = 'shared' | 'matched' | 'only-display' | 'primary';
 
-export interface DisplayLike { id: number | string; displayFrequency?: number }
+export interface DisplayLike { id: number | string; displayFrequency?: number; bounds?: { x: number; y: number; width: number; height: number } }
 
 /**
  * Refresh rate of the display a share captures. A screen source carries its
@@ -480,10 +504,18 @@ export function resolveCapturedDisplayHz(opts: {
     displayId?: string | null;
     displays: readonly DisplayLike[];
     primaryId?: number | string | null;
+    /** The shared monitor's compositor rectangle (logical px) when the portal stream said so (native share): beats every guess. */
+    sharedRect?: { x: number; y: number; width: number; height: number } | null;
 }): { hz: number | null; how: DisplayHzSource | null } {
     const hzOf = (d: DisplayLike | undefined) =>
         d && typeof d.displayFrequency === 'number' && Number.isFinite(d.displayFrequency) && d.displayFrequency > 0
             ? d.displayFrequency : null;
+    if (opts.sharedRect) {
+        const r = opts.sharedRect, near = (a: number, b: number) => Math.abs(a - b) <= 2;
+        const hits = opts.displays.filter(d => d.bounds && near(d.bounds.x, r.x) && near(d.bounds.y, r.y) && near(d.bounds.width, r.width) && near(d.bounds.height, r.height));
+        const hz = hits.length === 1 ? hzOf(hits[0]) : null;
+        if (hz !== null) return { hz, how: 'shared' };
+    }
     if (opts.sourceKind === 'screen' && opts.displayId) {
         const hz = hzOf(opts.displays.find(d => String(d.id) === opts.displayId));
         if (hz !== null) return { hz, how: 'matched' };
@@ -519,6 +551,85 @@ export function isNativeWaylandClient(
 }
 
 /**
+ * Does a capture on this machine go through the xdg-desktop-portal ScreenCast
+ * portal? True for a native Wayland client on Linux (Chromium's PipeWire
+ * capturer), false everywhere else - X11 / XWayland reads the screen directly
+ * and never asks anyone. A portal capture is a conversation with the desktop's
+ * own chooser: it can open a dialog nobody is watching, which is why the
+ * renderer must not capture twice for one share (utils/sharePlatformSupport.ts).
+ */
+export function capturesViaPortal(
+    platform: string,
+    env: Readonly<Record<string, string | undefined>>,
+    ozonePlatform: string,
+): boolean {
+    return platform === 'linux' && isNativeWaylandClient(env, ozonePlatform);
+}
+
+/**
+ * The Linux session a report describes: Wayland or X11, the desktop, and which capture path the share
+ * takes (the desktop's own chooser, or Cipherline's grid). Fixed vocabularies only - nothing from the
+ * environment is copied that is not one of these words or a sanitised desktop name. null off Linux.
+ */
+export function linuxSessionInfo(
+    platform: string,
+    env: Readonly<Record<string, string | undefined>>,
+    ozonePlatform: string,
+): {
+    session_type: 'wayland' | 'x11' | 'tty' | 'unknown';
+    desktop: string;
+    ozone: 'wayland' | 'x11' | 'default';
+    capture_path: 'portal' | 'x11';
+    restore_mode: 'listed' | 'single' | 'n/a';
+} | null {
+    if (platform !== 'linux') return null;
+    const t = (env.XDG_SESSION_TYPE ?? '').trim().toLowerCase();
+    const ozone = ozonePlatform.trim().toLowerCase();
+    const viaPortal = capturesViaPortal(platform, env, ozonePlatform);
+    return {
+        session_type: t === 'wayland' || t === 'x11' || t === 'tty' ? t : 'unknown',
+        desktop: (env.XDG_CURRENT_DESKTOP ?? '').replace(/[^A-Za-z:]/g, '').slice(0, 40),
+        ozone: ozone === 'wayland' || ozone === 'x11' ? ozone : 'default',
+        capture_path: viaPortal ? 'portal' : 'x11',
+        restore_mode: viaPortal ? portalRestoreMode(env) : 'n/a',
+    };
+}
+
+/**
+ * Does the desktop's portal re-open a source the user already picked WITHOUT a dialog, so that a share's
+ * capture can be changed (frame rate, size: applyConstraints) and re-opened while it runs?
+ *
+ * Chromium's PipeWire capturer sends `persist_mode=1` on every portal session and a `restore_token` for a
+ * source that came out of a LISTING, and a backend that honours it starts that session with no dialog.
+ * Measured with the shipping Electron 43.8.1 (harness/linux-share-matrix, `rate` + `restore` stages), the
+ * dialogs counted from each backend's own log:
+ *   GNOME (mutter + xdg-desktop-portal-gnome): a listing = 1 dialog; the capture by the listed id and every
+ *                       applyConstraints (fps and size, up and down) after it = 0 dialogs, the track stays live.
+ *                       The same applyConstraints on a capture answered with a made-up id = 1 dialog each.
+ *   KDE (kwin 6.8 + xdg-desktop-portal-kde 6.8.2, a REAL Plasma Wayland session in a KVM guest, 2026-11-04; the portal calls counted
+ *                       with dbus-monitor, the chooser dialogs counted from KWin's window list): the first listing = 1 dialog;
+ *                       EVERY later SelectSources that carried Chromium's restore_token (9 of 9, in both modes: the capture by the listed
+ *                       id, and each applyConstraints re-open for 30 -> 60 -> 90 fps and 1080p -> source -> 720p) was restored with
+ *                       0 dialogs and the capture followed (share_clamp cap_res 1920x1080 / 3840x2160 / 1280x720); a SelectSources
+ *                       with no token (Change source = a new listing, and a share restarted after Stop) opened the chooser again: 1 dialog each.
+ *   wlroots (xdg-desktop-portal-wlr): the harness runs it with `chooser_type=none`, which never shows a dialog,
+ *                       so it proves nothing about a user's own chooser.
+ * 'listed' is therefore on only where it was measured (GNOME and KDE Plasma) or where the person says so
+ * (CIPHERLINE_PORTAL_RESTORE=on); `off` forces the single-capture path everywhere. Anything else
+ * is 'single': the capture is opened once, at the quality the person picked, and a quality change that fits inside
+ * it is the encoder's (no portal session, no dialog) - see utils/sharePlatformSupport.ts.
+ * Pure: env injected.
+ */
+export type PortalRestoreMode = 'listed' | 'single';
+export function portalRestoreMode(env: Readonly<Record<string, string | undefined>>): PortalRestoreMode {
+    const forced = (env.CIPHERLINE_PORTAL_RESTORE ?? '').trim().toLowerCase();
+    if (['on', '1', 'true', 'yes'].includes(forced)) return 'listed';
+    if (['off', '0', 'false', 'no'].includes(forced)) return 'single';
+    const desktops = (env.XDG_CURRENT_DESKTOP ?? '').toLowerCase().split(':').map(t => t.trim()).filter(Boolean);
+    return desktops.includes('gnome') || desktops.includes('kde') ? 'listed' : 'single';
+}
+
+/**
  * The highest frame rate the OS capturer can DELIVER, whatever is asked for;
  * null = no fixed ceiling of its own (the display refresh rate and the
  * per-grab cost still apply).
@@ -536,9 +647,25 @@ export function isNativeWaylandClient(
  * (xdg-desktop-portal-wlr: its own max_fps, 60 by default). X11 (XShm) and
  * macOS (ScreenCaptureKit minimumFrameInterval = 1/requested) have no such
  * fixed ceiling: X11 delivered 59.4 of a 60 Hz source at a requested 90.
+ *
+ * KDE Plasma is the exception, and it is measured too (diagnostic reports from a
+ * CachyOS / Plasma / Wayland PC, 1.0.24-staging.196, 2026-11-04; Electron 43.8.1 =
+ * Chromium 150): at a requested 75 (the 60 ceiling x 1.25) the capture handed the
+ * encoder 65-75 fps for minutes (`share_fps` src_fps 65, 71, 72, 75; the viewer
+ * decoded 75.4 fps of the 1440p share), and at 720p, where the encoder idles, it
+ * still stopped at 55-69 - tracking the REQUEST, not a 60 wall. So the ceiling was
+ * a wlroots measurement stated as a law: on Plasma it only capped the request,
+ * and the picker told a Plasma user "screen sharing is limited to 60 fps here"
+ * while their share ran at 72. `desktop` is XDG_CURRENT_DESKTOP.
  */
-export function captureFpsCeiling(backend: string | null | undefined): number | null {
-    return backend === 'pipewire' ? 60 : null;
+export function captureFpsCeiling(backend: string | null | undefined, desktop?: string | null): number | null {
+    if (backend !== 'pipewire') return null;
+    return isKdePlasma(desktop) ? null : 60;
+}
+
+/** XDG_CURRENT_DESKTOP is a colon-separated list ("KDE", "ubuntu:GNOME"); Plasma sessions carry "KDE". */
+export function isKdePlasma(desktop: string | null | undefined): boolean {
+    return typeof desktop === 'string' && desktop.toLowerCase().split(':').some(d => d.trim() === 'kde');
 }
 
 export type CaptureBackend =

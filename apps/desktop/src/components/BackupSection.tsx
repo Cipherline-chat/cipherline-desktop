@@ -16,10 +16,14 @@ import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import {
     runBackup, restoreFromDrive, restoreFromLocalFile, getCachedPassword, setCachedPassword,
-    getLastBackupAt, getDriveBackupInfo, getDestinationStamps, backupFileName, DEFAULT_MAX_ATTACHMENT_BYTES, DEFAULT_DRIVE_FOLDER,
+    getLastBackupAt, getDriveBackupInfo, notifyBackupStateChanged, getDestinationStamps, backupFileName, DEFAULT_MAX_ATTACHMENT_BYTES, DEFAULT_DRIVE_FOLDER,
     type DriveBackupProgress, type DestinationLabel, type DestinationStamp, type BackupStaleWarning,
 } from '../services/driveBackup';
 import { readBackupCfg, writeBackupCfg, type BackupCfg } from '../hooks/useBackupAutoSchedule';
+import { useBackupStateVersion } from '../hooks/useBackupState';
+import {
+    readBackupIssues, setBackupIssue, checkLocalFolderGrant, BACKUP_ISSUE_COPY, type BackupIssueKind,
+} from '../services/backupIssues';
 import { RestorePasswordModal } from './RestorePasswordModal';
 import { StaleBackupModal } from './StaleBackupModal';
 import { BackupProgressBars } from './BackupProgressBars';
@@ -30,7 +34,7 @@ import { useStepUp } from '../hooks/useStepUp';
 import { BackupWrongPasswordError } from '../utils/backupErrors';
 import { loadZxcvbn, useZxcvbn } from '../utils/passwordStrength';
 import { judgeBackupPassphrase } from '../utils/backupPassphrasePolicy';
-import { ClToggle, ClButton, ClInput, ClSelect } from './cl';
+import { ClToggle, ClButton, ClInput, ClSelect, ClNote } from './cl';
 import type { ClSelectOption } from './cl';
 import { SettingsDisclosure } from './settings/SettingsDisclosure';
 
@@ -118,6 +122,8 @@ export const BackupSection: React.FC = () => {
     const userId = user?.user_id;
 
     const [linked, setLinked] = useState<{ linked: boolean; email?: string }>(_linkedCache);
+    // Re-render whenever a backup run / the scheduler records or clears an issue.
+    useBackupStateVersion();
     const [connecting, setConnecting] = useState(false);
     const [password, setPassword] = useState('');
     const [hasSavedPw, setHasSavedPw] = useState(false);
@@ -191,13 +197,14 @@ export const BackupSection: React.FC = () => {
 
     useEffect(() => {
         if (!window.electronAPI) return;
-        if (!_linkedCacheLoaded) {
-            window.electronAPI.gdriveAuthStatus?.().then(s => {
-                _linkedCache = s; _linkedCacheLoaded = true; setLinked(s);
-            }).catch((err: unknown) => {
-                console.error('[BackupSection] gdriveAuthStatus failed:', err);
-            });
-        }
+        // Asked on EVERY mount, not once per session: the main process drops the
+        // Drive link on its own when Google revokes the sign-in, and a cache that
+        // is only filled once kept showing "connected" for the rest of the session.
+        window.electronAPI.gdriveAuthStatus?.().then(s => {
+            _linkedCache = s; _linkedCacheLoaded = true; setLinked(s);
+        }).catch((err: unknown) => {
+            console.error('[BackupSection] gdriveAuthStatus failed:', err);
+        });
         if (!_hostnameCache) {
             window.electronAPI.getDeviceName?.().then(h => { _hostnameCache = h || ''; }).catch(() => {});
         }
@@ -225,6 +232,11 @@ export const BackupSection: React.FC = () => {
                 setCfg(c);
             }
             setLastBackup(getLastBackupAt(userId));
+            // Is the saved folder one THIS install may write to? A restored backup
+            // brings back a path nobody picked here; say so now, not at the next run.
+            if (c.localEnabled && c.localDir) {
+                void checkLocalFolderGrant(userId, c.localDir).then(r => { if (r.changed) notifyBackupStateChanged(); });
+            }
             getDriveBackupInfo(c.driveFolderId, c.backupFileBase).then(info => {
                 if (info?.exists && info.modifiedTime) {
                     setLastBackup(prev => prev ?? info.modifiedTime!);
@@ -252,6 +264,7 @@ export const BackupSection: React.FC = () => {
                 const s = { linked: true as const, email: info.email };
                 _linkedCache = s; _linkedCacheLoaded = true; setLinked(s);
                 persist({ driveEnabled: true });
+                if (userId && setBackupIssue(userId, 'drive', null)) notifyBackupStateChanged();
             }
         // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (err: any) {
@@ -263,19 +276,24 @@ export const BackupSection: React.FC = () => {
                 : '';
             toast.push({ kind: 'error', title: 'Google Drive', message: msg || 'Connection failed or was cancelled.' });
         } finally { setConnecting(false); }
-    }, [toast, persist]);
+    }, [toast, persist, userId]);
 
     const onDisconnect = useCallback(async () => {
         await window.electronAPI?.gdriveDisconnect?.().catch(() => {});
         _linkedCache = { linked: false }; _linkedCacheLoaded = true;
         setLinked({ linked: false });
         persist({ driveEnabled: false });
-    }, [persist]);
+        if (userId && setBackupIssue(userId, 'drive', null)) notifyBackupStateChanged();
+    }, [persist, userId]);
 
     const onPickFolder = useCallback(async () => {
         const r = await window.electronAPI?.showOpenDialog?.({ title: 'Choose backup folder', properties: ['openDirectory', 'createDirectory'] });
-        if (r && !r.canceled && r.filePaths[0]) persist({ localDir: r.filePaths[0], localEnabled: true });
-    }, [persist]);
+        if (r && !r.canceled && r.filePaths[0]) {
+            persist({ localDir: r.filePaths[0], localEnabled: true });
+            // The picker just granted this folder to this install.
+            if (userId && setBackupIssue(userId, 'local', null)) notifyBackupStateChanged();
+        }
+    }, [persist, userId]);
 
     // Accounts that picked their own folder under the old folder browser keep
     // writing their existing backup there (see resolveDriveBackupTarget); say
@@ -285,6 +303,11 @@ export const BackupSection: React.FC = () => {
     const wantLocal = cfg.localEnabled && !!cfg.localDir;
     const wantDrive = cfg.driveEnabled && linked.linked;
     const destinationsReady = wantLocal || wantDrive;
+    // What the last runs recorded, plus the one thing visible from here: Drive
+    // switched on but no longer linked (the main process drops a revoked link).
+    const stored = userId ? readBackupIssues(userId) : {};
+    const driveIssue: BackupIssueKind | null = cfg.driveEnabled ? (stored.drive ?? (_linkedCacheLoaded && !linked.linked ? 'reconnect' : null)) : null;
+    const localIssue: BackupIssueKind | null = cfg.localEnabled && cfg.localDir ? (stored.local ?? null) : null;
 
     const onBackupNow = useCallback(async () => {
         if (!userId || !token) return;
@@ -293,16 +316,33 @@ export const BackupSection: React.FC = () => {
         // F9: a newly chosen passphrase must be strong; a saved one keeps working.
         const weak = await checkNewPassphrase();
         if (weak) { toast.push({ kind: 'error', title: 'Backup', message: weak }); return; }
+        // A saved folder this install may not write to (it came back inside a
+        // restored backup) fails in main with "Path outside allowed root" after a
+        // full export + encrypt. Find out first, and tell the user what to do.
+        let runLocal = wantLocal;
+        if (wantLocal && cfg.localDir) {
+            const { grant, changed } = await checkLocalFolderGrant(userId, cfg.localDir);
+            if (changed) notifyBackupStateChanged();
+            if (grant === 'denied') {
+                runLocal = false;
+                toast.push({
+                    kind: wantDrive ? 'warning' : 'error',
+                    title: BACKUP_ISSUE_COPY['folder-denied'].title,
+                    message: wantDrive ? 'Skipped the local folder; backing up to Google Drive. Choose the folder again to include it.' : 'Choose the backup folder again, then back up.',
+                });
+                if (!wantDrive) return;
+            }
+        }
         setBusy('backup'); setProgress(null);
         if (rowsHideTimer.current) { clearTimeout(rowsHideTimer.current); rowsHideTimer.current = null; }
-        setRows(initProgressRows([...(wantLocal ? ['local' as const] : []), ...(wantDrive ? ['drive' as const] : [])]));
+        setRows(initProgressRows([...(runLocal ? ['local' as const] : []), ...(wantDrive ? ['drive' as const] : [])]));
         try {
             await setCachedPassword(password); setSavedPw(password); setHasSavedPw(true); setShowPw(false);
             // Labelled for Settings → Advanced → Performance log, like backup:auto.
             const res = await trackActivity('backup:manual', () => runBackup({
                 userId, token, password,
                 includeAttachments: cfg.includeAttachments, maxAttachmentBytes: cfg.maxAttachmentBytes,
-                destinations: { localDir: wantLocal ? cfg.localDir : null, drive: wantDrive, driveFolderId: cfg.driveFolderId, fileName: cfg.backupFileBase },
+                destinations: { localDir: runLocal ? cfg.localDir : null, drive: wantDrive, driveFolderId: cfg.driveFolderId, fileName: cfg.backupFileBase },
                 onProgress: ev => { setProgress(ev); setRows(r => (r ? advanceProgressRows(r, ev) : r)); },
             }));
             setRows(r => (r ? finishProgressRows(r, res) : r));
@@ -527,6 +567,17 @@ export const BackupSection: React.FC = () => {
                             </div>
                             <ClToggle checked={cfg.localEnabled} onChange={v => persist({ localEnabled: v })} />
                         </div>
+                        {localIssue && (
+                            <div className="px-3.5 pb-3.5" data-testid="backup-local-issue">
+                                <ClNote
+                                    tone="warn"
+                                    action={<ClButton size="sm" variant="ghost" onClick={onPickFolder}><FolderOpen size={13} /> {BACKUP_ISSUE_COPY[localIssue].action}</ClButton>}
+                                >
+                                    <strong style={{ color: 'var(--cl-text)', fontWeight: 600 }}>{BACKUP_ISSUE_COPY[localIssue].title}.</strong>{' '}
+                                    {BACKUP_ISSUE_COPY[localIssue].body}
+                                </ClNote>
+                            </div>
+                        )}
                         <AnimatePresence initial={false}>
                             {cfg.localEnabled && (
                                 <motion.div {...reveal} className="overflow-hidden">
@@ -591,6 +642,17 @@ export const BackupSection: React.FC = () => {
                                     </ClButton>
                                 )}
                         </div>
+                        {driveIssue && (
+                            <div className="px-3.5 pb-3.5" data-testid="backup-drive-issue">
+                                <ClNote
+                                    tone="warn"
+                                    action={<ClButton size="sm" variant="ghost" onClick={onConnect} disabled={connecting} loading={connecting}>{BACKUP_ISSUE_COPY[driveIssue].action}</ClButton>}
+                                >
+                                    <strong style={{ color: 'var(--cl-text)', fontWeight: 600 }}>{BACKUP_ISSUE_COPY[driveIssue].title}.</strong>{' '}
+                                    {BACKUP_ISSUE_COPY[driveIssue].body}
+                                </ClNote>
+                            </div>
+                        )}
                         <AnimatePresence initial={false}>
                             {linked.linked && cfg.driveEnabled && (
                                 <motion.div {...reveal} className="overflow-hidden">

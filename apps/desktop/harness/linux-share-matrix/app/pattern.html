@@ -1,0 +1,44 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>CL-MATRIX-PATTERN</title>
+<style>html,body{margin:0;background:#000;overflow:hidden}canvas{display:block}</style></head>
+<body><canvas id="c"></canvas>
+<script>
+// Timestamped animated test pattern. The top-left 24 blocks of 8x8 px are a binary frame counter (white = 1);
+// the capture side decodes them from the delivered frames, so "unique source frames delivered per second" is
+// measured, not inferred from the frame rate the capturer claims. One counter tick per requestAnimationFrame.
+const q = new URLSearchParams(location['hash'].slice(1));
+const W = +q.get('w') || 1280, H = +q.get('h') || 720;
+const c = document.getElementById('c'); c.width = W; c.height = H;
+const g = c.getContext('2d', { alpha: false });
+function makeDoc(w, h) {
+  // A scrolling "document": light page, ragged lines of word-sized dark blocks, a few gradient "images". Realistic screen
+  // content (sparse, high-contrast, structured) - NOT white noise, which is the encoder's worst case and not what a share is.
+  const base = document.createElement('canvas'); base.width = w; base.height = h * 2;
+  const bg = base.getContext('2d'); const tile = document.createElement('canvas'); tile.width = w; tile.height = h;
+  const g = tile.getContext('2d'); g.fillStyle = '#f2f3f5'; g.fillRect(0, 0, w, h);
+  let seed = 12345; const rnd = () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296;
+  for (let y = 16; y < h - 16; y += 22) {
+    if (rnd() < 0.08) { const gr = g.createLinearGradient(0, y, w, y + 120); gr.addColorStop(0, `hsl(${(rnd() * 360) | 0} 70% 55%)`); gr.addColorStop(1, `hsl(${(rnd() * 360) | 0} 70% 35%)`); g.fillStyle = gr; g.fillRect(40, y, w - 80, 100); y += 100; continue; }
+    let x = 40 + (rnd() < 0.3 ? 40 : 0);
+    while (x < w - 120) { const ww = 18 + rnd() * 70; g.fillStyle = `rgb(${30 + rnd() * 80 | 0},${30 + rnd() * 80 | 0},${40 + rnd() * 90 | 0})`; g.fillRect(x, y, ww, 11); x += ww + 8; }
+  }
+  bg.drawImage(tile, 0, 0); bg.drawImage(tile, 0, h);
+  return base;
+}
+const base = makeDoc(W, H);
+let n = 0, lastStat = 0;
+function frame(now) {
+  n = (n + 1) & 0xffffff;
+  g.drawImage(base, 0, -((n * 3) % H));
+  for (let k = 0; k < 6; k++) {
+    g.fillStyle = `hsl(${(n * 4 + k * 60) % 360} 90% 55%)`;
+    const x = (Math.sin(n / 40 + k) * 0.5 + 0.5) * (W - 160), y = 40 + (Math.cos(n / 55 + k * 1.3) * 0.5 + 0.5) * (H - 240);
+    g.fillRect(x, y, 160, 160);
+  }
+  g.fillStyle = '#fff'; g.font = '48px monospace'; g.fillText(`#${n}  t=${(now | 0)}ms`, 24, H - 32);
+  for (let i = 0; i < 24; i++) { g.fillStyle = (n >> i) & 1 ? '#fff' : '#000'; g.fillRect(i * 8, 0, 8, 8); }
+  if (now - lastStat > 250) { lastStat = now; window.matrix && window.matrix.stat(n, performance.timeOrigin + now); }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script></body></html>

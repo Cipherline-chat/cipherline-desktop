@@ -14,6 +14,17 @@ its own section at the end.
 | Full profile, **Integrations** tab | One card per connection, then your extra panels | `ProfileIntegrationsSection` + `ProfileIntegrationsExtras` |
 | Settings > Profile preview | Same as the preview popover (it is the same card) | - |
 
+Steam (2026-10-26): the preview popover also draws a one-row Steam highlight
+(`SteamHighlight`: level, playing now / most played, games, hours, years) under
+the mutuals, the overview's Steam block draws the same row under the verified
+identity, and the Integrations tab draws the full panel (`SteamShowcase`:
+level + XP, member since, games / hours / badges, playing now, most played,
+last two weeks, recent achievements). All of it comes from
+`GET /v1/users/:id/steam` `activity` and shows by default for a verified link
+(the owner hides it with Settings > Connections > Show Steam stats; the
+`steam` showcase block only places the card on the overview). Use
+`visibleSteamActivity(card, isSelf)` so your own profile follows your switch.
+
 The Integrations tab shows when `connections.length > 0` or
 `ProfileIntegrationsExtras` is known to have content (see below), and always on
 your own profile (with a "Connect accounts" call to action).
@@ -39,6 +50,17 @@ interface ProfileActivity {
   url?: string | null;        // opened via openExternalLink (validated)
 }
 ```
+
+Playing rows (2026-10-31): the detected game's row carries a picture, a source
+label and a link only when they are true - `hooks/useGameArt.ts` +
+`utils/gameRow.ts`. Your own game: its executable icon (read by main on this
+computer, `electron/game-art.ts`) at once, then its Steam store picture;
+a friend's: the Steam picture by name from the bundled text-only catalogue
+`utils/gameCatalog.ts` (no artwork shipped). `artShape: 'icon' | 'cover'` picks
+contain vs fill in the fixed-size art box; `glyph: 'block'` is the cube stand-in
+for Minecraft. Pictures are cached per game on this device (`utils/gameArt.ts`,
+not in backups). `linkLabel` always names where the link goes ("Open X on
+Steam", "Open X's website"); no `url`, no link.
 
 Label rules the row applies: `playing` -> "Playing", `listening` -> "Listening to",
 `watching` -> "Watching", `streaming` -> "Streaming". Source icons exist for

@@ -63,6 +63,73 @@
 .ig-game-hours b { font-size: 13px; font-weight: 800; color: var(--cl-text, #F4F7FF); }
 .ig-game-hours span { font-size: 11px; color: var(--cl-faint, #5E6B8F); white-space: nowrap; }
 
+/* Steam: identity row extras (avatar, level + XP to the next level) */
+.ig-steam-av {
+  width: 40px; height: 40px; flex: none; border-radius: 10px; overflow: hidden;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--cl-sink, #0A1120); color: var(--cl-faint, #5E6B8F);
+}
+.ig-steam-av img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.ig-steam-head .ig-steam-id { flex: 1; }
+.ig-steam-lvl { display: flex; align-items: center; gap: 10px; flex: none; }
+.ig-xp { display: flex; flex-direction: column; gap: 4px; width: 112px; }
+.ig-xp-bar {
+  display: block; height: 4px; border-radius: 2px; overflow: hidden;
+  background: color-mix(in srgb, var(--cl-text, #F4F7FF) 8%, transparent);
+}
+.ig-xp-bar i { display: block; height: 100%; background: var(--cl-lume, #25E0C8); transform-origin: left center; }
+.ig-xp-txt { font-size: 11px; color: var(--cl-faint, #5E6B8F); font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+/* Steam: the headline numbers */
+.ig-stats {
+  list-style: none; margin: 0; padding: 0;
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(84px, 1fr)); gap: 8px;
+}
+.ig-stats li {
+  display: flex; flex-direction: column; gap: 2px; padding: 8px 10px;
+  border-radius: var(--cl-r-sm, 11px); background: var(--cl-sink, #0A1120);
+}
+.ig-stats b {
+  font-family: var(--cl-font-display, 'Fredoka', sans-serif); font-weight: 600; font-size: 18px; line-height: 1.1;
+  color: var(--cl-text, #F4F7FF); font-variant-numeric: tabular-nums;
+}
+.ig-stats span { font-size: 11px; color: var(--cl-muted, #A7B3D4); }
+.ig-steam-private[data-self="true"] { color: var(--cl-text, #F4F7FF); padding: 8px 10px; border-radius: var(--cl-r-sm, 11px); background: var(--cl-sink, #0A1120); }
+
+.ig-steam-sec { display: flex; flex-direction: column; gap: 6px; }
+.ig-sub { display: inline-flex; align-items: center; gap: 6px; }
+.ig-steam-now {
+  display: flex; align-items: center; gap: 12px; padding: 8px 10px;
+  border-radius: var(--cl-r-sm, 11px); background: color-mix(in srgb, var(--cl-ok, #4ADE80) 8%, transparent);
+}
+.ig-steam-now > span:last-child { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ig-steam-now b { font-size: 13px; font-weight: 800; color: var(--cl-text, #F4F7FF); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ig-steam-now .ig-now-kind { color: var(--cl-ok, #4ADE80); }
+
+/* Steam: achievements in the top recent game */
+.ig-ach-sum { display: flex; align-items: center; gap: 10px; }
+.ig-ach-sum .ig-xp-bar { flex: 1; }
+.ig-ach-n { font-size: 12px; font-weight: 800; color: var(--cl-text, #F4F7FF); font-variant-numeric: tabular-nums; }
+.ig-ach { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.ig-ach li { display: grid; grid-template-columns: 32px minmax(0, 1fr) auto; align-items: center; gap: 10px; }
+.ig-ach-ico { width: 32px; height: 32px; border-radius: 6px; }
+.ig-ach-txt { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.ig-ach-txt b { font-size: 13px; font-weight: 800; color: var(--cl-text, #F4F7FF); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ig-ach-txt span { font-size: 11px; color: var(--cl-muted, #A7B3D4); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ig-ach time { font-size: 11px; color: var(--cl-faint, #5E6B8F); font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+/* Steam: the one-row highlight (profile preview, overview block) */
+.ig-hl-wrap .ppo-hl-title { display: inline-flex; align-items: center; gap: 4px; }
+.ig-hl-wrap .ig-hl-steam { gap: 6px; font-size: 14px; font-weight: 800; color: var(--cl-text, #F4F7FF); }
+.ig-hl { flex: 1; min-width: 0; display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+.ig-hl-txt { display: flex; flex-direction: column; align-items: flex-end; min-width: 0; gap: 1px; text-align: right; }
+.ig-hl-txt b { max-width: 100%; font-size: 13px; font-weight: 800; color: var(--cl-text, #F4F7FF); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ig-hl-txt > span { font-size: 11px; color: var(--cl-muted, #A7B3D4); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ig-hl-live { color: var(--cl-ok, #4ADE80); font-weight: 800; }
+.pcd-steam-hl { margin-top: 8px; }
+.ig-steam-preview { display: flex; flex-direction: column; gap: 8px; }
+.ig-steam-preview[data-state="hidden"] .ig-steam { opacity: .55; }
+
 /* ── Spotify showcase ─────────────────────────────────────────────────────── */
 .ig-sp { list-style: none; margin: 0 -8px; padding: 0; display: flex; flex-direction: column; gap: 4px; }
 .ig-sp-item { border-radius: var(--cl-r-md, 14px); transition: background-color 160ms ease; }
@@ -131,11 +198,27 @@
 }
 .ig-now p { margin: 0; font-size: 13px; color: var(--cl-muted, #A7B3D4); }
 .ig-now-art { width: 44px; height: 44px; border-radius: 8px; }
-.ig-now-txt { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ig-now-txt { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 1 auto; }
+/* The title is its own text box: text-overflow does nothing on the flex <b> itself (a flex container's text is an anonymous item). */
+.ig-now-t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ig-now-kind { font-size: 11px; font-weight: 800; color: var(--cl-faint, #5E6B8F); }
 .ig-now-txt b { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 800; color: var(--cl-text, #F4F7FF); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ig-now-txt > span:last-child { font-size: 12px; color: var(--cl-muted, #A7B3D4); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ig-note { color: var(--cl-ok, #4ADE80); flex: none; }
+.ig-detect {
+  display: flex; align-items: flex-start; gap: 8px; margin: 8px 0 0; padding: 8px 12px;
+  border-radius: var(--cl-r-sm, 10px); font-size: 13px; line-height: 1.45; color: var(--cl-muted, #A7B3D4);
+  background: var(--cl-sink, #0A1120); border: 1px solid var(--cl-border, #2A3558);
+}
+.ig-detect-t { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+/* "Detected: <app> - <a very long video title> (<channel>)": two lines at most, the rest on hover. */
+.ig-detect[data-state='playing'] .ig-detect-t { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; }
+.ig-detect::before { content: ''; flex: none; width: 8px; height: 8px; margin-top: 6px; border-radius: 50%; background: var(--cl-faint, #5E6B8F); }
+.ig-detect[data-state='playing'] { color: var(--cl-text, #F4F7FF); }
+.ig-detect[data-state='playing']::before { background: var(--cl-ok, #4ADE80); }
+.ig-detect[data-state='blocked'] { color: var(--cl-text, #F4F7FF); border-color: rgba(251, 191, 36, 0.35); }
+.ig-detect[data-state='blocked']::before { background: var(--cl-warn, #FBBF24); }
+.ig-detect[data-state='unsupported']::before { background: var(--cl-danger, #F87171); }
 
 .ig-links { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
 .ig-link { display: flex; align-items: center; gap: 8px; }

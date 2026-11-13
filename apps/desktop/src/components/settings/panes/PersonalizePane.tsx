@@ -3,23 +3,21 @@ import { SmilePlus, Pencil, Trash2, ChevronLeft, ChevronRight } from 'lucide-rea
 import { ClButton, ClConfirm, ClInput } from '../../cl';
 import { PersonalEmojiImage } from '../../PersonalEmoji';
 import { AddEmojiDialog } from './AddEmojiDialog';
-import { MostPlayedSetting } from './MostPlayedSetting';
-import { CallPersonalizeCard } from './CallPersonalizeCard';
 import { SettingsDisclosure } from '../SettingsDisclosure';
 import '../../../styles/settings-ui.css';
 import { usePersonalEmojiLibrary } from '../../../hooks/usePersonalEmojis';
 import { useEscape } from '../../../hooks/useEscape';
 import { personalEmojis } from '../../../utils/personalEmoji/service';
 import { PERSONAL_EMOJI_LIBRARY_MAX, isPersonalEmojiName } from '../../../utils/personalEmoji/token';
-import { EMOJI_INPUT_MAX_BYTES } from '../../../utils/personalEmoji/process/protocol';
+import { sanitizeEmojiNameInput } from '../../../utils/emojiNames';
+import { emojiFileProblem } from '../../../utils/personalEmoji/pickFile';
 import type { LibraryError } from '../../../utils/personalEmoji/library';
 
 /**
- * Surface · Personalize - things that are yours alone. Home of My Emojis now
- * and of future personalization features.
- *
- * Calm layout: three accordion sections (only the one you are editing is open).
- * My Emojis shows its first two rows and folds the rest under "Show all".
+ * Settings > Activity & Style > Style > My Emojis (this file was the whole
+ * Personalize pane until it merged with Connections, 2026-10-28; the pane is
+ * ActivityStylePane now). My Emojis shows its first two rows and folds the
+ * rest under "Show all".
  *
  * My Emojis: up to 100, free for everyone, usable in every chat and as
  * reactions. Add from any picture (shrunk on this computer), rename, reorder
@@ -33,7 +31,7 @@ const ERROR_TEXT: Record<LibraryError, string> = {
     not_found: 'That emoji is gone.',
 };
 
-const MyEmojisCard: React.FC = () => {
+export const MyEmojisCard: React.FC = () => {
     const { entries } = usePersonalEmojiLibrary();
     const lib = personalEmojis();
     const fileRef = useRef<HTMLInputElement>(null);
@@ -76,8 +74,8 @@ const MyEmojisCard: React.FC = () => {
     const chooseFile = (f: File | null | undefined) => {
         setPickError('');
         if (!f) return;
-        if (!f.type.startsWith('image/') || f.type === 'image/svg+xml') { setPickError('Pick a picture: PNG, JPG, GIF, WebP or similar.'); return; }
-        if (f.size > EMOJI_INPUT_MAX_BYTES) { setPickError('That file is bigger than 25 MB.'); return; }
+        const problem = emojiFileProblem(f);
+        if (problem) { setPickError(problem); return; }
         setPending(f);
     };
 
@@ -252,7 +250,7 @@ const MyEmojisCard: React.FC = () => {
                                 style={{ width: 200 }}
                                 error={!isPersonalEmojiName(renameValue)}
                                 aria-label="Emoji name"
-                                onChange={ev => { setRenameValue(ev.target.value.toLowerCase().replace(/[^a-z0-9_]/g, '_')); setActionError(''); }}
+                                onChange={ev => { setRenameValue(sanitizeEmojiNameInput(ev.target.value)); setActionError(''); }}
                                 onKeyDown={ev => {
                                     if (ev.key === 'Enter') { ev.preventDefault(); commitRename(); }
                                 }}
@@ -292,10 +290,3 @@ const MyEmojisCard: React.FC = () => {
     );
 };
 
-export const PersonalizePane: React.FC = () => (
-    <div className="pz-main">
-        <MyEmojisCard />
-        <CallPersonalizeCard />
-        <MostPlayedSetting />
-    </div>
-);

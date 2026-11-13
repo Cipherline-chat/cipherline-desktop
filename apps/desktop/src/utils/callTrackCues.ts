@@ -233,6 +233,15 @@ export class TrackCueController {
         if (cue) this.d.play(cue);
     }
 
+    /**
+     * A held republish closed with no stream to resume (utils/shareHold.ts): the
+     * stop cue its unpublish held back. Now rather than after SHARE_STOP_DELAY_MS:
+     * that delay exists to catch a leave or a swap, and this is neither.
+     */
+    shareHoldClosed(): void {
+        if (this.d.isReady()) this.d.play('screenshare_off');
+    }
+
     participantDisconnected(participant: { identity: string }): void {
         // A leave is not a republish: someone who rejoins and turns their
         // camera on is cued normally.

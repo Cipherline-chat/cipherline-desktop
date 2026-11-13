@@ -24,7 +24,11 @@
  */
 import { Track } from 'livekit-client';
 import { annotationStore, trackKey, type Stroke } from './annotationStore';
-import type { OverlayDelta, OverlayShowResult } from './annotationOverlayTypes';
+import type { OverlayDelta, OverlayShowResult, OverlayScreenChoice, OverlayRect } from './annotationOverlayTypes';
+import {
+    buildShowHint, loadRememberedScreen, saveRememberedScreen, preselectFromMemory,
+    type OverlayShareFacts,
+} from './screenChoiceMemory';
 import { logCallEvent } from './callEventLog';
 export type { OverlayDelta } from './annotationOverlayTypes';
 
@@ -113,6 +117,11 @@ export const HIDE_AFTER_IDLE_MS = 15_000;
 let showing: Promise<void> | null = null;
 let idleTimer: ReturnType<typeof setTimeout> | null = null;
 let sourceIdCur = '';
+/** The shared frame's size, read when the overlay is (re)shown — see attachDesktopAnnotationOverlay. */
+let frameGetter: (() => { width: number; height: number } | null) | null = null;
+/** What the share's portal said about the stream (native hardware share), read each time the overlay is shown. */
+let factsGetter: (() => OverlayShareFacts | null) | null = null;
+const factsNow = (): OverlayShareFacts | null => { try { return factsGetter?.() ?? null; } catch { return null; } };
 
 function clearIdleTimer(): void {
     if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
@@ -153,11 +162,104 @@ export function normalizeShowResult(raw: unknown): OverlayShowResult {
                 reason: r.reason.slice(0, 32) as Extract<OverlayShowResult, { ok: false }>['reason'],
                 ...(typeof r.displays === 'number' ? { displays: r.displays } : {}),
                 ...(typeof r.addon === 'boolean' ? { addon: r.addon } : {}),
+                ...(cleanScreenChoice(r.choice) ? { choice: cleanScreenChoice(r.choice)! } : {}),
             };
         }
     }
     return { ok: false, reason: 'create_failed' };
 }
+
+/** Validate the choice main sent (own process, but the renderer still never trusts a shape it did not check). */
+export function cleanScreenChoice(raw: unknown): OverlayScreenChoice | null {
+    if (!raw || typeof raw !== 'object') return null;
+    const r = raw as Record<string, unknown>;
+    if (!Array.isArray(r.displays) || !Array.isArray(r.candidates)) return null;
+    const num = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && Math.abs(v) < 1e6;
+    const displays: OverlayScreenChoice['displays'] = [];
+    for (const d of r.displays.slice(0, 16)) {
+        if (!d || typeof d !== 'object') return null;
+        const o = d as Record<string, unknown>;
+        if (!num(o.id) || !num(o.x) || !num(o.y) || !num(o.width) || !num(o.height) || o.width <= 0 || o.height <= 0) return null;
+        displays.push({ id: o.id, x: o.x, y: o.y, width: o.width, height: o.height, primary: o.primary === true });
+    }
+    const ids = new Set(displays.map(d => d.id));
+    const candidates = r.candidates.filter((c): c is number => typeof c === 'number' && ids.has(c));
+    // A question with fewer than two answers is not a question.
+    return displays.length >= 2 && candidates.length >= 2 ? { displays, candidates } : null;
+}
+
+// ── "Which screen are you sharing?" ──────────────────────────────────────────
+// On Wayland the portal never says which monitor was picked. When two monitors are
+// indistinguishable by size, main asks (needs_choice); the sharer answers once per share and
+// the answer is remembered until the share's attachment ends. Declining keeps the in-app preview
+// and records WHY the desktop overlay is off, so the viewer is told instead of left guessing.
+export type OverlayStatus =
+    | { kind: 'idle' }
+    /** Waiting for the sharer to pick a screen. */
+    /** `preselect`: the display the sharer picked last time on this layout (highlighted, never picked for them). */
+    | { kind: 'choose'; choice: OverlayScreenChoice; preselect?: number }
+    /** Desktop overlay is not showing and will not on its own: why, as an enum. */
+    | { kind: 'off'; reason: string };
+let status: OverlayStatus = { kind: 'idle' };
+let chosenDisplayId: number | null = null;
+const statusListeners = new Set<(s: OverlayStatus) => void>();
+function setStatus(next: OverlayStatus): void {
+    const same = next.kind === status.kind
+        && (next.kind === 'idle' || (next.kind === 'off' && status.kind === 'off' && status.reason === next.reason));
+    status = next;
+    if (same) return;
+    for (const l of statusListeners) { try { l(status); } catch { /* listener's problem */ } }
+}
+export function getOverlayStatus(): OverlayStatus { return status; }
+export function onOverlayStatusChange(cb: (s: OverlayStatus) => void): () => void {
+    statusListeners.add(cb);
+    return () => { statusListeners.delete(cb); };
+}
+/** Refusals that will not fix themselves for the rest of the share: worth telling viewers about. */
+const STABLE_REFUSALS = new Set(['no_display_match', 'not_whole_screen', 'no_layer_shell', 'helper_failed', 'wayland', 'create_failed', 'addon_missing', 'no_compositor', 'platform']);
+/** The sharer's answer to the chooser: a display id, or null to decline (in-app preview only). */
+export function answerScreenChoice(displayId: number | null): void {
+    if (status.kind !== 'choose') return;
+    if (displayId === null) {
+        declined = true;
+        carry = { sourceId: sourceIdCur, aspect: carry?.aspect ?? null, answer: null, declined: true, savedAt: Date.now() };
+        setStatus({ kind: 'off', reason: 'declined' });
+        return;
+    }
+    if (!status.choice.candidates.includes(displayId)) return;
+    chosenDisplayId = displayId;
+    const picked = status.choice.displays.find(d => d.id === displayId);
+    if (picked) {
+        const answer = { layout: status.choice.displays.map(d => ({ x: d.x, y: d.y, width: d.width, height: d.height })), chosen: { x: picked.x, y: picked.y, width: picked.width, height: picked.height } };
+        let aspect: string | null = null;
+        try { aspect = aspectOf(frameGetter?.() ?? undefined); } catch { /* no frame */ }
+        carry = { sourceId: sourceIdCur, aspect, answer, declined: false, savedAt: Date.now() };
+        // Across shares the answer is trusted only for a portal grant we can bind it to (native path); otherwise it only preselects.
+        saveRememberedScreen({ ...answer, grant: factsNow()?.nextGrant ?? null });
+    }
+    setStatus({ kind: 'idle' });
+    retryAt = 0;
+    if (refs > 0) schedule();
+}
+let declined = false;
+
+// One share, many internal restarts (quality change, keep-alive, hardware -> normal fallback, re-publish): the attachment is
+// released and re-made each time, and the sharer must not be asked again for a share that has not changed. The answer (and a
+// decline) is therefore carried over a restart of the SAME source seen again within RESTART_CARRY_MS, at the same aspect (a
+// quality change re-sizes the frame but never re-shapes it). A new share - the sharer picked a source - calls
+// forgetScreenAnswer() and starts clean.
+export const RESTART_CARRY_MS = 30_000;
+interface Carry { sourceId: string; aspect: string | null; answer: { layout: OverlayRect[]; chosen: OverlayRect } | null; declined: boolean; savedAt: number }
+let carry: Carry | null = null;
+const aspectOf = (f: { width: number; height: number } | undefined): string | null => (f && f.height > 0 ? (f.width / f.height).toFixed(2) : null);
+function liveCarry(frame: { width: number; height: number } | undefined): Carry | null {
+    if (!carry || carry.sourceId !== sourceIdCur || Date.now() - carry.savedAt > RESTART_CARRY_MS) return null;
+    const a = aspectOf(frame);
+    return carry.aspect === null || a === null || carry.aspect === a ? carry : null;
+}
+/** The sharer chose a (possibly different) source: whatever was answered for the previous share no longer applies. */
+export function forgetScreenAnswer(): void { carry = null; }
+export const _testResetScreenAnswer = (): void => { carry = null; };
 
 const shareKind = (sourceId: string): string => (sourceId.startsWith('window:') ? 'window' : 'screen');
 
@@ -201,7 +303,18 @@ async function showWindow(gen: number): Promise<void> {
     let res: OverlayShowResult;
     if (!api?.annotationOverlayShow) res = { ok: false, reason: 'platform' };
     else {
-        try { res = normalizeShowResult(await api.annotationOverlayShow(sourceIdCur)); } catch { res = { ok: false, reason: 'create_failed' }; }
+        let frame: { width: number; height: number } | undefined;
+        try { frame = frameGetter?.() ?? undefined; } catch { frame = undefined; }
+        const facts = factsNow();
+        const hint = buildShowHint(facts, chosenDisplayId === null ? liveCarry(frame)?.answer ?? null : null, loadRememberedScreen());
+        try {
+            const raw = hint
+                ? await api.annotationOverlayShow(sourceIdCur, frame, chosenDisplayId ?? undefined, hint)
+                : chosenDisplayId !== null && frame
+                    ? await api.annotationOverlayShow(sourceIdCur, frame, chosenDisplayId)
+                    : frame ? await api.annotationOverlayShow(sourceIdCur, frame) : await api.annotationOverlayShow(sourceIdCur);
+            res = normalizeShowResult(raw);
+        } catch { res = { ok: false, reason: 'create_failed' }; }
     }
     if (gen !== generation || refs === 0) {
         // Released (or re-targeted) while the window was being created.
@@ -210,11 +323,30 @@ async function showWindow(gen: number): Promise<void> {
     }
     logOutcome(res);
     if (!res.ok) {
+        if (res.reason === 'needs_choice' && res.choice) {
+            // Ask once; until answered there is nothing to retry (the question IS the retry).
+            chosenDisplayId = null;       // a stale answer (display unplugged) is no answer
+            if (!declined) {
+                const pre = preselectFromMemory(loadRememberedScreen(), res.choice);
+                setStatus({ kind: 'choose', choice: res.choice, ...(pre !== null ? { preselect: pre } : {}) });
+            }
+            retryAt = Date.now() + REFUSED_RETRY_MS;
+            return;
+        }
+        if (STABLE_REFUSALS.has(res.reason)) setStatus({ kind: 'off', reason: res.reason });
         retryAt = Date.now() + REFUSED_RETRY_MS;
         return;
     }
+    if (status.kind !== 'idle') setStatus({ kind: 'idle' });
     retryAt = 0;
     shown = true;
+    if (res.how.endsWith('remembered')) {
+        // A silently restored grant re-binds the answer to the token the next share will offer (the portal rotates it).
+        const next = factsNow()?.nextGrant ?? null;
+        const stored = loadRememberedScreen();
+        if (stored && next && stored.grant !== next) saveRememberedScreen({ ...stored, grant: next });
+    }
+    if (carry && carry.sourceId === sourceIdCur) carry.savedAt = Date.now();
     if (res.captured) setCaptured(true);
     sent.clear();
     // Full state first, then live diffs.
@@ -230,6 +362,8 @@ function flush(): void {
     if (list.length > 0) {
         clearIdleTimer();
         if (!shown) {
+            // Waiting on the sharer's answer, or they declined: no point asking main again.
+            if (status.kind === 'choose' || declined) return;
             const wait = retryAt - Date.now();
             if (wait > 0) {
                 // Refused recently: one deferred retry, not one per store change.
@@ -298,20 +432,50 @@ function schedule(): void {
     }
 }
 
+/**
+ * Main took the overlay down by itself: on X11 the compositing manager stopped mid-share, so a
+ * transparent window would now paint black over the shared screen. Reported the way a refusal at
+ * the start is (status "off" with the reason, one `annot_overlay` call event), and the overlay is
+ * treated as not shown, so the next stroke asks main again — which shows it once the compositor
+ * is back and refuses ('no_compositor') while it is not.
+ */
+export function onOverlayEndedByMain(): void {
+    if (refs === 0) return;
+    clearIdleTimer();
+    sent.clear();
+    shown = false;
+    const k = 'ended:no_compositor';
+    if (!logged.has(k)) {
+        logged.add(k);
+        logCallEvent('annot_overlay', { result: 'ended', reason: 'no_compositor', share: shareKind(sourceIdCur) });
+    }
+    setStatus({ kind: 'off', reason: 'no_compositor' });
+    retryAt = Date.now() + REFUSED_RETRY_MS;
+    schedule();      // strokes already waiting get their deferred retry
+}
+let unsubscribeEnded: (() => void) | null = null;
+
 function start(identity: string, sourceId: string): void {
     if (!window.electronAPI?.annotationOverlayShow) return;
+    unsubscribeEnded?.();
+    unsubscribeEnded = window.electronAPI.onAnnotationOverlayEnded?.(onOverlayEndedByMain) ?? null;
     generation++;
     key = trackKey(identity, Track.Source.ScreenShare);
     sourceIdCur = sourceId;
     sent.clear();
     logged.clear();
     retryAt = 0;
+    chosenDisplayId = null;
+    declined = !!carry && carry.sourceId === sourceId && carry.declined && Date.now() - carry.savedAt <= RESTART_CARRY_MS;
+    setStatus(declined ? { kind: 'off', reason: 'declined' } : { kind: 'idle' });
     unsubscribe = annotationStore.subscribe(schedule);
     // Strokes may already exist (drawn on the in-app tile before this attach).
     schedule();
 }
 
 function stop(): void {
+    unsubscribeEnded?.();
+    unsubscribeEnded = null;
     generation++;
     unsubscribe?.();
     unsubscribe = null;
@@ -320,6 +484,10 @@ function stop(): void {
     retryAt = 0;
     hideWindow();
     setCaptured(false);
+    if (carry) carry.savedAt = Date.now();      // the restart window counts from the moment the attachment went away
+    chosenDisplayId = null;
+    declined = false;
+    setStatus({ kind: 'idle' });
 }
 
 /**
@@ -329,15 +497,26 @@ function stop(): void {
  * neither a screen nor a window; the main process then decides whether it can
  * actually overlay that source (window shares: Windows and macOS).
  */
-export function attachDesktopAnnotationOverlay(identity: string, sourceId: string): () => void {
+export function attachDesktopAnnotationOverlay(
+    identity: string,
+    sourceId: string,
+    /**
+     * The size of the shared frame (the capture track's settings), read each time the overlay is
+     * shown. On Wayland the portal never says which monitor was picked, so main matches the
+     * share to an output by this size (and refuses when it cannot tell); other platforms ignore it.
+     */
+    getFrame?: () => { width: number; height: number } | null,
+    /** What the share's portal said about the stream (native hardware share): its monitor rectangle, and whether the grant was restored silently. */
+    getFacts?: () => OverlayShareFacts | null,
+): () => void {
     if (!window.electronAPI?.annotationOverlayShow || !isOverlayableSourceId(sourceId)) return () => {};
     refs++;
-    if (refs === 1) start(identity, sourceId);
+    if (refs === 1) { frameGetter = getFrame ?? null; factsGetter = getFacts ?? null; start(identity, sourceId); }
     let released = false;
     return () => {
         if (released) return;
         released = true;
         refs--;
-        if (refs === 0) stop();
+        if (refs === 0) { stop(); frameGetter = null; factsGetter = null; }
     };
 }

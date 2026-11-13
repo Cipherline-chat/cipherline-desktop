@@ -25,6 +25,10 @@
  * marks the store locked and performs NO reads or writes — callers show a
  * recovery screen rather than overwriting unrecoverable ciphertext.
  *
+ * FAILED LOADS: a batch decrypt that fails (the `securekv:open` IPC rejecting,
+ * or IndexedDB refusing the read) says nothing about what is on disk, so it must
+ * never read as "this account has no data". See `unreadAccount`.
+ *
  * WHERE THE CRYPTO LIVES — AND WHY THE FACADE DID NOT CHANGE
  * The records are AES-256-GCM, but this file no longer holds the key and never
  * sees it. The device master key stays in the main process; this store sends
@@ -98,7 +102,13 @@ const IMMEDIATE_KEYS = new Set<string>([
 
 /** Key prefixes that skip the debounce — small, rarely-written records the
  *  user notices losing (home pins) if the process dies inside the window. */
-const IMMEDIATE_PREFIXES = ['cipherline_home_pins_'];
+const IMMEDIATE_PREFIXES = [
+    'cipherline_home_pins_',
+    // The Firewall game's best score and its unsent-to-server queue (utils/flappyBest.ts): a few bytes,
+    // written once per new best, and the thing a player notices losing if the app is quit inside the window.
+    'cipherline_firewall_best_',
+    'cipherline_flappy_sync_',
+];
 
 const FLUSH_DEBOUNCE_MS = 300;
 /** Delay before legacy records flagged by main are re-written bound (see noteRebind). */
@@ -203,6 +213,33 @@ class SecureLocalStore {
      *  this before mounting the app, so no component reads a cold namespace. */
     private accountReady: Promise<void> = Promise.resolve();
     private readyUserId: string | null = null;
+    /**
+     * The account whose records failed to load this session; `storeUnread` is
+     * the same for the whole store (the master tier, or IndexedDB itself).
+     *
+     * WHY THIS HOLDS EVERY WRITE TO THE NAMESPACE, not just the keys that failed:
+     * a not-ready account's restore effects bail out, so React state stays empty
+     * even for records that DID decrypt, and the message persist path has no
+     * readiness check of its own. One sent DM would then replace a real thread
+     * with `[sent]`. Anything built on a failed load is a stand-in, so it stays
+     * in memory for this session and the records on disk stay exactly as they
+     * were. A record the store has never seen is held too: it was built on the
+     * same stand-in.
+     *
+     * WHY A FAILED SESSION NEVER BECOMES READY LATER: components that read during
+     * the failure keep their empty state, and flipping to ready would let their
+     * next persist write it out, which is the very loss this prevents. Recovery
+     * is a reload (StoreLoadFailureHost, StorageReadFailedScreen), which rebuilds
+     * every reader from disk. Signing out of the account drops its held writes
+     * and its next sign-in loads afresh.
+     *
+     * This does not lock anyone out: the app stays up, and a delivered message
+     * is simply not ACKed (flushDurable throws for a held key), so it stays on
+     * the server until a launch that can store it.
+     */
+    private unreadAccount: string | null = null;
+    private storeUnread = false;
+    private loadFailureListeners = new Set<() => void>();
     private hydrated = false;
     private locked = false;
     private status: MasterKeyStatus = 'absent';
@@ -316,9 +353,13 @@ class SecureLocalStore {
             this.readyUserId = this.activeUserId;
 
         } catch (e) {
-            // A read/decrypt failure must not crash boot — degrade to an empty
-            // in-memory store rather than blocking the app. Nothing is deleted.
-            console.error('[secureLocalStore] hydrate failed — continuing with empty store', e);
+            // A read/decrypt failure must not crash boot, so the app comes up
+            // on what did load. Nothing is deleted, and nothing built on this
+            // can reach disk: see `unreadAccount`. No active account here means
+            // the failure was at or before the master tier, so the whole store
+            // is unread rather than one account.
+            console.error('[secureLocalStore] hydrate failed — continuing without those records', e);
+            this.noteLoadFailure(this.activeUserId);
         }
 
         this.hydrated = true;
@@ -403,8 +444,11 @@ class SecureLocalStore {
             } catch (e) {
                 // Same contract as hydrate(): a decrypt failure degrades to
                 // "no cached history" rather than breaking the app. Nothing
-                // is deleted, so a later launch can still recover it.
+                // is deleted, so a later launch can still recover it. Unless
+                // the account has already moved on, in which case this says
+                // nothing about whoever is active now.
                 console.error('[secureLocalStore] hydrateMessages failed — continuing without cached history', e);
+                if (this.generation === gen && this.activeUserId) this.noteLoadFailure(this.activeUserId);
             } finally {
                 this.deferred = [];        // release the ciphertext either way
                 // Only latch "phase 2 is done" when this run is still the
@@ -571,7 +615,7 @@ class SecureLocalStore {
     private async onUserChanged(prevId: string | null, nextId: string | null): Promise<void> {
         // Synchronous with the setItem/removeItem that triggered us, so an
         // in-flight hydrateMessages() sees this before its next write.
-        this.generation++;
+        const gen = ++this.generation;
         try {
             if (prevId) {
                 // Flush what the previous account still has pending BEFORE its
@@ -584,6 +628,15 @@ class SecureLocalStore {
                     console.error('[secureLocalStore] pre-switch flush failed', err),
                 );
                 await this.flushChain;
+                // Writes that flush held back were built on a failed load. They
+                // leave with the account rather than outliving the hold.
+                if (this.unreadAccount === prevId) {
+                    for (const k of [...this.dirty]) {
+                        if (keyIsNamedFor(k, prevId)) { this.dirty.delete(k); this.dirtyOwner.delete(k); }
+                    }
+                    for (const k of [...this.tombstones]) if (keyIsNamedFor(k, prevId)) this.tombstones.delete(k);
+                    this.unreadAccount = null;
+                }
                 for (const k of [...this.map.keys()]) {
                     if (k !== 'cipherline_user_id' && keyIsNamedFor(k, prevId)) this.map.delete(k);
                 }
@@ -630,7 +683,7 @@ class SecureLocalStore {
                     if (!this.map.has(k) && !this.detached.has(k) && !this.tombstones.has(k)) this.map.set(k, plain);
                 }
             }
-            if (this.activeUserId === nextId) this.readyUserId = nextId;
+            if (this.activeUserId === nextId && !this.storeUnread) this.readyUserId = nextId;
             // This path loads message history eagerly (an account switch is
             // already a full teardown/re-render, so there's no first-paint to
             // protect) — mark phase 2 satisfied so a later await is a no-op.
@@ -638,6 +691,9 @@ class SecureLocalStore {
             this.messagesHydrating = null;
         } catch (e) {
             console.error('[secureLocalStore] account-switch rehydrate failed', e);
+            // Only if it is still this account's load: a failure from a switch
+            // the user has since moved on from says nothing about the new one.
+            if (nextId && this.generation === gen && this.activeUserId === nextId) this.noteLoadFailure(nextId);
         }
     }
 
@@ -645,8 +701,41 @@ class SecureLocalStore {
      *  (immediately if no switch is in flight). */
     whenAccountReady(): Promise<void> { return this.accountReady; }
     /** True when `userId` is the active account AND its records are loaded -
-     *  the condition a persist effect must see before it may write. */
+     *  the condition a persist effect must see before it may write. False for
+     *  the rest of the session after a failed load, so a caller that awaits
+     *  whenAccountReady() must not wait for this to turn true. */
     isAccountReady(userId: string): boolean { return !!userId && this.readyUserId === userId; }
+
+    /** True when the whole store failed to load, including the session pointers,
+     *  so the app cannot tell a signed-out device from an unreadable one. */
+    isStoreUnread(): boolean { return this.storeUnread; }
+
+    /** Be told about a failed load: now if one has happened, else when it does.
+     *  Returns the unsubscribe. */
+    onLoadFailure(fn: () => void): () => void {
+        if (this.storeUnread || this.unreadAccount !== null) fn();
+        this.loadFailureListeners.add(fn);
+        return () => { this.loadFailureListeners.delete(fn); };
+    }
+
+    /** Record a failed load for `account`, or for the whole store when null. */
+    private noteLoadFailure(account: string | null): void {
+        const first = !this.storeUnread && this.unreadAccount === null;
+        if (account) {
+            this.unreadAccount = account;
+            if (this.readyUserId === account) this.readyUserId = null;
+        } else {
+            this.storeUnread = true;
+            this.readyUserId = null;
+        }
+        if (first) for (const fn of this.loadFailureListeners) fn();
+    }
+
+    /** May this key not be written to disk, because of a failed load? */
+    private isWriteHeld(key: string): boolean {
+        if (this.storeUnread) return true;
+        return this.unreadAccount !== null && keyIsNamedFor(key, this.unreadAccount);
+    }
 
     /**
      * Destroy ALL locally stored data (the encrypted key/value store) and reset
@@ -676,6 +765,9 @@ class SecureLocalStore {
         this.tombstones.clear();
         this.activeUserId = null;
         this.readyUserId = null;
+        // The records those failures were about no longer exist.
+        this.unreadAccount = null;
+        this.storeUnread = false;
         // Phase-2 state belongs to the account that was just wiped. Leaving it
         // set worked only by accident — hydrateMessages() short-circuits on the
         // now-null activeUserId — which is not something to rely on.
@@ -824,12 +916,22 @@ class SecureLocalStore {
     private async flushOnce(): Promise<void> {
         if (this.dirty.size === 0 && this.tombstones.size === 0) return;
 
-        const dirtyKeys = [...this.dirty];
-        const owners = new Map(dirtyKeys.map(k => [k, this.dirtyOwner.has(k) ? this.dirtyOwner.get(k)! : this.ownerFor(k)] as const));
-        const tombstoneKeys = [...this.tombstones];
+        const owners = new Map([...this.dirty].map(k => [k, this.dirtyOwner.has(k) ? this.dirtyOwner.get(k)! : this.ownerFor(k)] as const));
+        // After a failed load, what would replace or delete a record stays
+        // queued instead (see `unreadAccount`). flushDurable sees it still dirty
+        // and refuses, so nothing is ACKed on the strength of it. The exception
+        // is removing a session pointer, which only sign-out and a server
+        // rejection do: a session the user ended must not come back on the next
+        // launch because the real pointers were unread when they signed out.
+        const isTombstoneHeld = (k: string) => this.isWriteHeld(k) && !IMMEDIATE_KEYS.has(k);
+        const dirtyKeys = [...this.dirty].filter(k => !this.isWriteHeld(k));
+        const tombstoneKeys = [...this.tombstones].filter(k => !isTombstoneHeld(k));
+        const heldKeys = [...this.dirty].filter(k => this.isWriteHeld(k));
+        const heldTombstones = [...this.tombstones].filter(isTombstoneHeld);
         this.dirty.clear();
         this.dirtyOwner.clear();
         this.tombstones.clear();
+        this.requeue(heldKeys, owners, heldTombstones);
 
         // Snapshot the VALUES synchronously, before any await. The previous
         // version read `this.map.get(key)` after awaiting the key material, so
@@ -969,6 +1071,11 @@ class SecureLocalStore {
      * Decrypt stored records via main. Returns only the records that opened —
      * an unreadable one is dropped, matching the previous per-record soft
      * failure, so one bad record cannot fail hydrate for the whole store.
+     *
+     * A REJECTION is a different thing and propagates: main answered for no
+     * record at all, so returning [] here would read as "these records do not
+     * exist" and let the caller report the account as loaded. Every caller
+     * handles it through noteLoadFailure().
      */
     private async openRecords(entries: Array<[string, KvRecord]>): Promise<Array<[string, string]>> {
         if (entries.length === 0) return [];
@@ -980,14 +1087,9 @@ class SecureLocalStore {
                 return v === null ? [] : ([[k, v]] as Array<[string, string]>);
             });
         }
-        try {
-            const opened = await api.secureKvOpen(entries.map(([k, rec]) => ({ k, o: rec.o, b: rec.b })));
-            this.noteRebind(entries, opened);
-            return opened.flatMap(({ k, v }) => (v === null ? [] : ([[k, v]] as Array<[string, string]>)));
-        } catch (e) {
-            console.warn('[secureLocalStore] batch decrypt failed — skipping', e);
-            return [];
-        }
+        const opened = await api.secureKvOpen(entries.map(([k, rec]) => ({ k, o: rec.o, b: rec.b })));
+        this.noteRebind(entries, opened);
+        return opened.flatMap(({ k, v }) => (v === null ? [] : ([[k, v]] as Array<[string, string]>)));
     }
 
     /**
@@ -1085,6 +1187,10 @@ class SecureLocalStore {
         this.locked = false;
         this.status = 'absent';
         this.activeUserId = null;
+        this.readyUserId = null;
+        this.unreadAccount = null;
+        this.storeUnread = false;
+        this.loadFailureListeners.clear();
         if (this.flushTimer) { clearTimeout(this.flushTimer); this.flushTimer = null; }
         if (this.rebindTimer) { clearTimeout(this.rebindTimer); this.rebindTimer = null; }
         this.rebind.clear();

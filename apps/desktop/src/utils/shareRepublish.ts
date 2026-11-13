@@ -42,7 +42,18 @@ export async function swapShareCodec(
         makeTrack: (mst: MediaStreamTrack) => unknown;
         /** Publish the 720p lighter copy (screenShare.shareHasLowerLayer + the HW / setting gate). */
         lowerLayer: boolean;
+        /**
+         * The user's size choice as a box, when the capture is NOT fitted to it - the Wayland portal's capture
+         * stays at the share's maximum (sharePlatformSupport.portalCaptureRequest) - so the new sender scales
+         * it to the choice instead of encoding the display's own size.
+         */
+        box?: { width: number; height: number };
         reason: string;
+        /**
+         * Tell viewers just before the old track goes, so they hold through it
+         * (utils/shareHold.ts). Returns what takes the announcement back.
+         */
+        announce?: () => Promise<() => void>;
         log?: (m: string) => void;
         holdMs?: number;
         sleep?: (ms: number) => Promise<void>;
@@ -55,7 +66,10 @@ export async function swapShareCodec(
     const clone = old.mediaStreamTrack.clone();
     clone.contentHint = 'motion';
     const fresh = deps.makeTrack(clone) as ShareTrackLike;
-    const opts = buildScreenSharePublishOptions(share.resolution, share.frameRate, codec, { lowerLayer: deps.lowerLayer });
+    const opts = buildScreenSharePublishOptions(share.resolution, share.frameRate, codec, {
+        lowerLayer: deps.lowerLayer,
+        captured: old.mediaStreamTrack.getSettings?.(),
+    });
     try {
         await lp.publishTrack(fresh as never, { source: Track.Source.ScreenShare, ...opts });
     } catch (e) {
@@ -64,13 +78,18 @@ export async function swapShareCodec(
         return false;
     }
     if (fresh.sender) {
-        await applyScreenShareSenderParams(fresh.sender, share.frameRate, opts.screenShareEncoding.maxBitrate, { codec }).catch(() => {});
+        await applyScreenShareSenderParams(fresh.sender, share.frameRate, opts.screenShareEncoding.maxBitrate, { codec, ...(deps.box ? { box: deps.box } : {}) }).catch(() => {});
     }
     // Hold both while viewers subscribe to the new one (see cameraPublish
     // REPUBLISH_HOLD_MS), then stop the old track object — the clone keeps
     // the capture source alive.
     await (deps.sleep ?? sleepMs)(deps.holdMs ?? REPUBLISH_HOLD_MS);
+    const announced = await deps.announce?.();
     try { await lp.unpublishTrack(old as never, true); } catch { /* already gone */ }
+    // Not yet: the unpublish resolves here before viewers have seen it, and a flag
+    // cleared ahead of the unpublish tells them the hold is off. A stop in this
+    // window clears it itself (shareRepublishSignal.cancel).
+    if (announced) void (deps.sleep ?? sleepMs)(deps.holdMs ?? REPUBLISH_HOLD_MS).then(announced);
     logCallEvent('h265_switch', { track: 'self-screen', codec, reason: deps.reason });
     log(`[ScreenShare] codec switched to ${codec} (${deps.reason})`);
     return true;

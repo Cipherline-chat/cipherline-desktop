@@ -69,6 +69,17 @@ describe('backupRegistry — classification', () => {
         expect(collectIncludedKv(store, UID)).toEqual({});
     });
 
+    it('the per-device game picture cache is classified and stays out of backups', () => {
+        // utils/gameArt.ts writes it through an injected store, so the source scan below cannot see it.
+        expect(classifyKvKey('cipherline_game_art_v1', UID)).toBe('exclude');
+        const rule = KV_RULES.find(r => r.pattern === 'cipherline_game_art_v1');
+        expect(rule?.include).toBe(false);
+        expect(rule?.why).toMatch(/device/i);
+        const map = new Map([['cipherline_game_art_v1', '{}']]);
+        const store = { keysWithPrefix: (p: string) => [...map.keys()].filter(k => k.startsWith(p)), getItem: (k: string) => map.get(k) ?? null };
+        expect(collectIncludedKv(store, UID)).toEqual({});
+    });
+
     it('a new field inside the notification prefs blob rides along in the backup', () => {
         // Notification prefs are one JSON object under one key, so `sound_groups`
         // — the collapsed "App sounds" enable + volume — is backed up by the

@@ -57,6 +57,19 @@ const SPEEX_FRAME = ${SPEEX_FRAME};
 const SPEEX_NOISE_SUPPRESS_DB = ${SPEEX_NOISE_SUPPRESS_DB};
 // Enable/disable crossfade length in samples (one render quantum).
 const MIX_SAMPLES = 128;
+// Speex runs on int16, and the vendored glue fills an Int16Array with
+// sample * 32767 - which WRAPS past full scale instead of saturating: 1.02
+// becomes -0.98, a full-scale polarity flip on every hot sample. Windows
+// drivers do deliver float input past 1.0 (one owner session peaked at
+// +18.8 dBFS), and Off passes it untouched for the AGC/limiter to bring down,
+// so only Light crackled on loud speech. A peak limiter in front of Speex keeps
+// it inside int16: the gain drops at once to hold the peak at the ceiling and
+// recovers over ~40 ms, so a burst past full scale comes out turned down, not
+// squared off. Below the ceiling it is exactly unity - Speex's denoiser is
+// level-dependent (scaling everything down cost a -38 dBFS whisper 12 dB), so
+// nothing that fits is touched.
+const SPEEX_IN_CEIL = 0.97;
+const SPEEX_IN_RELEASE = Math.exp(-1 / (0.04 * sampleRate));
 
 class SpeexLightWorklet extends AudioWorkletProcessor {
     constructor() {
@@ -76,6 +89,8 @@ class SpeexLightWorklet extends AudioWorkletProcessor {
         this.qw = 0;
         // 0 = raw, 1 = processed.
         this.mix = 0;
+        // Input peak limiter gain (see SPEEX_IN_CEIL).
+        this.inGain = 1;
 
         this.port.onmessage = ({ data }) => {
             if (data.type === 'toggle') {
@@ -153,7 +168,13 @@ class SpeexLightWorklet extends AudioWorkletProcessor {
 
         // 1. Feed input; every full frame is denoised in place and queued.
         for (let i = 0; i < n; i++) {
-            this.acc[this.accN++] = inp[i];
+            let x = inp[i];
+            const a = x < 0 ? -x : x;
+            let gIn = 1 - (1 - this.inGain) * SPEEX_IN_RELEASE;
+            if (a * gIn > SPEEX_IN_CEIL) gIn = SPEEX_IN_CEIL / a;
+            this.inGain = gIn;
+            x *= gIn;
+            this.acc[this.accN++] = x > 1 ? 1 : (x < -1 ? -1 : x);
             if (this.accN === F) {
                 sp.process(this.acc);
                 for (let j = 0; j < F; j++) {

@@ -19,14 +19,34 @@
  *    the show result says `captured: true`; the renderer then publishes that
  *    on the participant (utils/annotationOverlayCapture.ts) so viewers stop
  *    drawing OTHER people's strokes over a video that already contains them
- *    (their own stay, as an instant local echo). Screen shares only (Electron
- *    cannot read another X11 client's window geometry, and there is no
- *    addon on Linux). Refused under Wayland (a client can neither position a
- *    window nor keep it above others there — the overlay would land wherever
- *    the compositor put it) and on an X11 desktop not known to composite (a
- *    transparent window without a compositor paints BLACK over the whole
- *    display, into the share); CIPHERLINE_ANNOT_OVERLAY=1 / 0 overrides both
- *    checks either way — see linuxOverlayVerdict.
+ *    (their own stay, as an instant local echo). Screens on X11 and Wayland;
+ *    single WINDOWS on X11 only (a Wayland/portal share exposes no window
+ *    position to anyone).
+ *      - X11: an Electron window, shown only while a compositing manager is
+ *        RUNNING (a transparent window without one paints BLACK over the whole
+ *        display, into the share). That is asked of the X server at run time
+ *        (an owner of `_NET_WM_CM_S<n>`, annotation-overlay-x11.ts) — not
+ *        guessed from the desktop's name, which cannot tell whether XFCE's
+ *        compositing is on or KDE has suspended it — and re-checked while the
+ *        overlay is up: when the compositor goes away mid-share the overlay is
+ *        taken down at once and the renderer is told (`annot-overlay:ended`),
+ *        so it is reported like any other refusal; the next stroke shows it
+ *        again once the compositor is back. The desktop-name list is only the
+ *        fallback for a build / session where the probe cannot run. A window
+ *        share is placed on the window's frame as the helper reports it
+ *        (moves, resizes, minimize, other workspace, close).
+ *      - WAYLAND: a client can neither position a window nor keep it above
+ *        others, so an Electron window cannot do it — a small native helper
+ *        (src-native/wayland_overlay, driven by annotation-overlay-wayland.ts)
+ *        draws it instead: a wlr-layer-shell OVERLAY-layer surface on KWin,
+ *        Sway, Hyprland, other wlroots desktops and COSMIC, or an XWayland
+ *        override-redirect window on GNOME's Mutter (no layer-shell). Whole
+ *        screens only; WHICH output is matched by the shared frame's size; with
+ *        several identical screens the SHARER is asked once per share
+ *        (`needs_choice`), never guessed. A build without the helper keeps the old
+ *        refusal ('wayland').
+ *    CIPHERLINE_ANNOT_OVERLAY=1 / 0 overrides the X11 checks either way — see
+ *    linuxOverlayVerdict.
  *  - It never takes input: `setIgnoreMouseEvents(true)` + `focusable: false`.
  *    Right-click, drag, type — everything falls through to whatever is
  *    underneath.
@@ -71,6 +91,8 @@
  * suite.
  */
 import { app, BrowserWindow, screen, type DesktopCapturerSource, type Display } from 'electron';
+import * as fs from 'fs';
+import { spawn, execFile } from 'child_process';
 
 /** What the overlay needs from a picker source (in-process or helper-listed). */
 export type OverlaySource = Pick<DesktopCapturerSource, 'id' | 'display_id'>;
@@ -83,14 +105,20 @@ import * as path from 'path';
 import type { OverlayDelta, OverlayShowResult, OverlayRefusal } from '../src/utils/annotationOverlayTypes';
 export type { OverlayPoint, OverlayStroke, OverlayDelta, OverlayShowResult, OverlayRefusal } from '../src/utils/annotationOverlayTypes';
 import { lockPageZoom } from './page-zoom-lock';
+import { createWaylandRefreshProbe, type WaylandRefreshProbe } from './wayland-refresh';
+import { createWaylandOverlay, type WaylandOverlay, type HelperProc } from './annotation-overlay-wayland';
+import { cleanFrameHint, cleanDisplayChoice, cleanShowHint } from './annotation-overlay-wayland-protocol';
+import { isNativeWaylandClient } from './capture-flags';
 import { writePrivatePage, type PrivatePage } from './private-page-file';
 import { overlayCanvasLayout, type OverlayCanvasLayout, type Rect } from './annotation-overlay-projection';
 import {
     resolveCapturedDisplay, parseScreenSourceIndex, parseWindowSourceHandle, cleanRect,
     cleanWindowInfo, windowOverlayPlacement, nativeHandleToDecimal, linuxOverlayVerdict,
-    windowOverlayBackend, macOverlayBounds, sameRect,
+    windowOverlayBackend, macOverlayBounds, sameRect, shouldProbeX11Compositor, x11WindowShareAllowed,
     WINDOW_TRACK_INTERVAL_MS, TOPMOST_REASSERT_MS, type DisplayCandidate,
 } from './annotation-overlay-target';
+import { createX11CompositorProbe, createX11Watcher, type X11CompositorProbe, type X11Watcher, type X11WindowReport } from './annotation-overlay-x11';
+import { parseX11WindowId, x11WindowInfo, x11FrameToDip } from './annotation-overlay-x11-protocol';
 
 /** The addon functions this module uses (src-native/window_geometry.cc on
  *  Windows, src-native/window_geometry_mac.mm on macOS). */
@@ -276,6 +304,7 @@ function syncGeometry(): void {
  * the strokes.
  */
 function trackWindow(): void {
+    if (process.platform === 'linux') { trackX11Window(); return; }
     const win = overlay;
     const t = target;
     const n = native;
@@ -325,12 +354,276 @@ function stopTracking(): void {
  * Windows, Wayland, an X11 desktop not known to composite. The caller then
  * keeps the in-app preview only.
  */
-export function showAnnotationOverlay(source: OverlaySource): OverlayShowResult {
+export function showAnnotationOverlay(source: OverlaySource, frameHint?: unknown, chosenDisplay?: unknown, showHint?: unknown): OverlayShowResult | Promise<OverlayShowResult> {
     const kind = source.id.startsWith('screen:') ? 'screen' : source.id.startsWith('window:') ? 'window' : null;
     if (!kind) return refuse('bad_source');
+    const proceed = (): OverlayShowResult | Promise<OverlayShowResult> => {
+        // Wayland: the helper draws it (see waylandOverlay()); a window share was refused above.
+        if (kind === 'screen' && shouldUseWaylandHelper()) return waylandOverlay().show(source, cleanFrameHint(frameHint), cleanDisplayChoice(chosenDisplay), cleanShowHint(showHint));
+        if (kind === 'window') return process.platform === 'linux' ? showForX11Window(source) : showForWindow(source);
+        return showForScreen(source);
+    };
     const pre = annotationOverlayPrecheck(kind);
+    // Synchronous everywhere except a Linux X11 session with no fresh compositor answer yet (a Promise then).
+    if (pre instanceof Promise) return pre.then(r => r ?? proceed());
     if (pre) return pre;
-    return kind === 'screen' ? showForScreen(source) : showForWindow(source);
+    return proceed();
+}
+
+// ── Linux / X11: run-time compositor check + window shares ──────────────────
+//
+// Both come from the native helper's plain-X11 modes (annotation-overlay-x11.ts). The helper
+// binary is the Wayland overlay's (waylandOverlayHelperPath below); these modes never touch Wayland.
+
+/** Called when the overlay was taken down by something other than the renderer asking (see setAnnotationOverlayEndedListener). */
+let endedListener: ((reason: 'no_compositor') => void) | null = null;
+
+/**
+ * main.ts hands over a callback that tells the renderer the overlay is gone and why, so the
+ * share's status reads "off: no compositor" (the same refusal, and the same viewer notice, as
+ * when the overlay is refused at the start) and its next stroke tries again.
+ */
+export function setAnnotationOverlayEndedListener(cb: ((reason: 'no_compositor') => void) | null): void {
+    endedListener = cb;
+}
+
+let x11Watcher: X11Watcher | null = null;
+let x11Win: X11WindowReport | null = null;
+
+let x11ProbeInstance: X11CompositorProbe | null = null;
+/**
+ * true / false = a compositing manager is / is not running on this X server; null = could not ask.
+ * One-shot `--x11-probe`, run ASYNCHRONOUSLY (execFile with a deadline: a synchronous child process on the
+ * main thread is banned in electron/); peek() answers without a Promise whenever a fresh answer is cached.
+ */
+function x11Probe(): X11CompositorProbe {
+    return (x11ProbeInstance ??= createX11CompositorProbe({
+        available: () => waylandOverlayHelperPath() !== null,
+        run: () => new Promise<string | null>(resolve => {
+            const bin = waylandOverlayHelperPath();
+            if (!bin) { resolve(null); return; }
+            try {
+                // A non-zero exit still carries the helper's own `ERR <code>` line on stdout, which is what gets logged.
+                execFile(bin, ['--x11-probe'], { env: waylandHelperEnv(), timeout: 1500, encoding: 'utf8', maxBuffer: 4096 },
+                    (_err, stdout) => resolve(typeof stdout === 'string' ? stdout : null));
+            } catch { resolve(null); }
+        }),
+        now: () => Date.now(),
+        log: (m) => console.warn(m),
+    }));
+}
+
+/** Chromium on X11 has one device scale factor for the whole desktop (see x11FrameToDip). */
+function x11ScaleFactor(): number {
+    try { return screen.getPrimaryDisplay().scaleFactor || 1; } catch { return 1; }
+}
+
+function makeX11Watcher(watchCompositor: boolean): X11Watcher {
+    const self: X11Watcher = createX11Watcher({
+        spawnHelper: () => {
+            const bin = waylandOverlayHelperPath();
+            if (!bin) return null;
+            try {
+                return spawn(bin, ['--x11-watch'], { stdio: ['pipe', 'pipe', 'ignore'], env: waylandHelperEnv() }) as unknown as HelperProc;
+            } catch { return null; }
+        },
+        log: (m) => console.log(m),
+    }, {
+        onCompositor: (compositor) => {
+            if (x11Watcher !== self || !watchCompositor || compositor) return;
+            // The compositor went away mid-share: from this moment a transparent window paints black
+            // over the shared screen (and into it). Take the overlay down NOW and say so.
+            console.warn('[annot-overlay] the X11 compositing manager stopped; desktop overlay taken down (a transparent window would paint black over the share)');
+            hideAnnotationOverlay();
+            endedListener?.('no_compositor');
+        },
+        onWindow: (report) => {
+            if (x11Watcher !== self) return;
+            x11Win = report;
+            if (target?.kind === 'window') trackX11Window();
+        },
+        onLost: () => { if (x11Watcher === self) x11Watcher = null; },
+    });
+    return self;
+}
+
+function stopX11Watcher(): void {
+    const w = x11Watcher;
+    x11Watcher = null;
+    x11Win = null;
+    w?.stop();
+}
+
+/**
+ * Screen share on X11: watch the compositor for as long as the overlay is up. (A window share
+ * starts its watcher in showForX11Window, which needs the same helper for the window's rectangle.)
+ */
+function watchCompositorForScreen(): void {
+    if (process.platform !== 'linux' || !shouldProbeX11Compositor(process.env)) return;
+    if (isNativeWaylandClient(process.env, safeSwitch('ozone-platform'))) return;
+    stopX11Watcher();
+    const w = makeX11Watcher(true);
+    x11Watcher = w;
+    void w.start().then(compositor => {
+        if (x11Watcher !== w) return;
+        if (compositor === null) { x11Watcher = null; return; }       // helper unavailable: the launch-time answer stands
+        if (compositor === false) {
+            console.warn('[annot-overlay] the X11 compositing manager is gone; desktop overlay taken down');
+            hideAnnotationOverlay();
+            endedListener?.('no_compositor');
+        }
+    });
+}
+
+/**
+ * X11 window share (`window:<XID>:0`, the picker's own grid; Wayland/portal shares never get here).
+ * Same shape as the Windows / macOS backends: the helper reports the window's frame and whether it
+ * can be seen, `windowOverlayPlacement` decides close / hide / show, and the overlay covers the
+ * frame exactly. X11 has no way to stack OUR window directly above ANOTHER client's, so the overlay
+ * is a normal always-on-top window: a window covering the shared one would not cover the strokes.
+ * `captured: false`: a compositing X11 capture reads the window's own pixmap, which does not
+ * contain a separate window drawn over it. (If a capturer did include it, viewers would draw
+ * the same stroke on the same spot twice — harmless; the opposite mistake would lose strokes.)
+ */
+async function showForX11Window(source: OverlaySource): Promise<OverlayShowResult> {
+    const xid = parseX11WindowId(source.id);
+    if (!xid) return refuse('bad_source');
+    if (overlay && !overlay.isDestroyed() && target?.kind === 'window' && target.hwnd === xid && x11Watcher?.isRunning()) {
+        trackX11Window();
+        return { ok: true, how: 'x11-window', captured: false };
+    }
+    if (!waylandOverlayHelperPath()) {
+        console.warn('[annot-overlay] X11 window share not overlaid: the native helper (cl-wayland-overlay) is not built into this install');
+        return refuse('helper_failed');
+    }
+    if (overlay) hideAnnotationOverlay();
+    stopX11Watcher();
+    const w = makeX11Watcher((process.env.CIPHERLINE_ANNOT_OVERLAY ?? '').trim() !== '1');
+    x11Watcher = w;
+    const compositor = await w.start();
+    if (x11Watcher !== w) return refuse('create_failed');            // released while it was starting
+    const fail = (r: OverlayShowResult): OverlayShowResult => { if (x11Watcher === w) stopX11Watcher(); return r; };
+    if (compositor === null) return fail(refuse('helper_failed'));
+    if (compositor === false && (process.env.CIPHERLINE_ANNOT_OVERLAY ?? '').trim() !== '1') return fail(refuse('no_compositor'));
+    const report = await w.track(xid);
+    if (x11Watcher !== w) return refuse('create_failed');
+    if (!report) return fail(refuse('helper_failed'));
+    if (report.state === 'gone') return fail(refuse('window_gone'));
+    x11Win = report;
+    target = { kind: 'window', hwnd: xid };
+    captureRect = null;
+    const initial = report.frame ? x11FrameToDip(report.frame, x11ScaleFactor()) : { x: 0, y: 0, width: 320, height: 240 };
+    if (!createOverlay(initial, true)) { stopX11Watcher(); return refuse('create_failed'); }
+    console.log(`[annot-overlay] ${source.id} -> X11 window ${xid} (${report.state})`);
+    return { ok: true, how: 'x11-window', captured: false };
+}
+
+/** One placement step for an X11 window share, driven by the helper's reports (no timer). */
+function trackX11Window(): void {
+    const win = overlay;
+    const t = target;
+    if (!win || win.isDestroyed() || t?.kind !== 'window') return;
+    const p = windowOverlayPlacement(x11WindowInfo(x11Win?.state ?? null, x11Win?.frame ?? null));
+    if (p.action === 'close') { hideAnnotationOverlay(); return; }
+    if (p.action === 'hide') {
+        try { if (win.isVisible()) win.hide(); } catch { /* closing */ }
+        return;
+    }
+    if (!overlayReady) return;
+    // Bounds BEFORE the show, so it never appears at the previous spot for a frame.
+    const want = x11FrameToDip(p.rect, x11ScaleFactor());
+    try { if (!sameRect(win.getBounds(), want)) win.setBounds(want); } catch { return; }
+    try { if (!win.isVisible()) win.showInactive(); } catch { return; }
+    syncGeometry();
+}
+
+// ── Linux / Wayland: the native helper ──────────────────────────────────────
+
+const WAYLAND_HELPER_NAME = 'cl-wayland-overlay';
+
+/**
+ * Where the helper binary is, or null when this install has none (an unbuilt dev tree, a
+ * non-Linux package). node-gyp builds it next to audio_capture.node (binding.gyp target
+ * `cl_wayland_overlay`); electron-builder unpacks it from the asar (it has to be executed).
+ * A dev build may point CIPHERLINE_WAYLAND_OVERLAY_HELPER at one, honoured only unpackaged.
+ */
+export function waylandOverlayHelperPath(): string | null {
+    if (process.platform !== 'linux') return null;
+    const candidates: string[] = [];
+    if (!app.isPackaged && process.env.CIPHERLINE_WAYLAND_OVERLAY_HELPER) candidates.push(process.env.CIPHERLINE_WAYLAND_OVERLAY_HELPER);
+    candidates.push(path.join(__dirname, '..', 'build', 'Release', WAYLAND_HELPER_NAME).replace(`app.asar${path.sep}`, `app.asar.unpacked${path.sep}`));
+    for (const c of candidates) {
+        try {
+            if (fs.statSync(c).isFile()) { fs.accessSync(c, fs.constants.X_OK); return c; }
+        } catch { /* not there / not executable */ }
+    }
+    return null;
+}
+
+/** A native Wayland session on a build that has the helper (and the user has not switched the overlay off). */
+function shouldUseWaylandHelper(): boolean {
+    if (process.platform !== 'linux') return false;
+    if ((process.env.CIPHERLINE_ANNOT_OVERLAY ?? '').trim() === '0') return false;
+    if (!isNativeWaylandClient(process.env, safeSwitch('ozone-platform'))) return false;
+    return waylandOverlayHelperPath() !== null;
+}
+
+/** Only what the helper needs to find the compositor — nothing else of ours leaks into it. */
+function waylandHelperEnv(): NodeJS.ProcessEnv {
+    const out: NodeJS.ProcessEnv = {};
+    for (const k of ['WAYLAND_DISPLAY', 'XDG_RUNTIME_DIR', 'DISPLAY', 'XAUTHORITY', 'HOME']) {
+        if (process.env[k]) out[k] = process.env[k];
+    }
+    return out;
+}
+
+let wayland: WaylandOverlay | null = null;
+function waylandOverlay(): WaylandOverlay {
+    return (wayland ??= createWaylandOverlay({
+        spawnHelper: () => {
+            const bin = waylandOverlayHelperPath();
+            if (!bin) return null;
+            try {
+                // stderr is not read (the helper logs counts and states on stdout's protocol only).
+                return spawn(bin, [], { stdio: ['pipe', 'pipe', 'ignore'], env: waylandHelperEnv() }) as unknown as HelperProc;
+            } catch { return null; }
+        },
+        getDisplays: () => {
+            let primary = -1;
+            try { primary = screen.getPrimaryDisplay().id; } catch { /* no primary */ }
+            return screen.getAllDisplays().map(d => ({ id: d.id, bounds: d.bounds, scaleFactor: d.scaleFactor, primary: d.id === primary }));
+        },
+        now: () => Date.now(),
+        log: (m) => console.log(m),
+        onEnded: () => console.warn('[annot-overlay] the Wayland overlay ended (compositor closed it or the helper stopped); the next stroke starts it again'),
+    }));
+}
+
+let refreshProbe: WaylandRefreshProbe | null = null;
+/**
+ * Display id -> real refresh (Hz) on a native Wayland session, read from wl_output.mode by a one-shot
+ * `cl-wayland-overlay --outputs` (cached ~30 s, no resident process). Electron reports 0 there. Empty on
+ * anything else, without the helper, or on any failure: callers keep today's "unknown". Never rejects.
+ */
+export function getWaylandDisplayRefresh(): Promise<Map<number, number>> {
+    if (process.platform !== 'linux' || !isNativeWaylandClient(process.env, safeSwitch('ozone-platform'))) return Promise.resolve(new Map());
+    refreshProbe ??= createWaylandRefreshProbe({
+        run: () => new Promise<string | null>(resolve => {
+            const bin = waylandOverlayHelperPath();
+            if (!bin) { resolve(null); return; }
+            try {
+                execFile(bin, ['--outputs'], { env: waylandHelperEnv(), timeout: 1500, encoding: 'utf8', maxBuffer: 16384 },
+                    (_err, stdout) => resolve(typeof stdout === 'string' ? stdout : null));
+            } catch { resolve(null); }
+        }),
+        getDisplays: () => {
+            let primary = -1;
+            try { primary = screen.getPrimaryDisplay().id; } catch { /* none */ }
+            return screen.getAllDisplays().map(d => ({ id: d.id, bounds: d.bounds, scaleFactor: d.scaleFactor, primary: d.id === primary }));
+        },
+        now: () => Date.now(),
+    });
+    return refreshProbe.get();
 }
 
 /**
@@ -338,16 +631,32 @@ export function showAnnotationOverlay(source: OverlaySource): OverlayShowResult 
  * the source — checked by main's IPC handler before it looks the source up
  * (a fresh lookup of screens opens the portal chooser under Wayland).
  */
-export function annotationOverlayPrecheck(kind: 'screen' | 'window'): OverlayShowResult | null {
-    if (kind === 'window' && process.platform !== 'win32' && process.platform !== 'darwin') return refuse('platform');
-    if (process.platform === 'linux') {
-        const verdict = linuxOverlayVerdict({ env: process.env, ozonePlatform: safeSwitch('ozone-platform') });
-        if (verdict) {
-            console.warn(`[annot-overlay] desktop overlay off on this Linux session (${verdict}); in-app preview unaffected`);
-            return refuse(verdict);
-        }
-    }
-    return null;
+export function annotationOverlayPrecheck(kind: 'screen' | 'window'): OverlayShowResult | null | Promise<OverlayShowResult | null> {
+    // Linux window shares: only on a real X11 session (the position of a window is a query away
+    // there; Wayland / portal shares expose none to anyone, so they stay refused).
+    if (kind === 'window' && process.platform !== 'win32' && process.platform !== 'darwin'
+        && !(process.platform === 'linux' && x11WindowShareAllowed(process.env, safeSwitch('ozone-platform')))) return refuse('platform');
+    if (process.platform !== 'linux') return null;
+    const ozonePlatform = safeSwitch('ozone-platform');
+    const decide = (compositor: boolean | null): OverlayShowResult | null => {
+        const verdict = linuxOverlayVerdict({
+            env: process.env,
+            ozonePlatform,
+            waylandHelper: waylandOverlayHelperPath() !== null,
+            compositor,
+        });
+        if (!verdict) return null;
+        console.warn(`[annot-overlay] desktop overlay off on this Linux session (${verdict}); in-app preview unaffected`);
+        return refuse(verdict);
+    };
+    // The REAL compositor signal (an owner of _NET_WM_CM_S<n>) where it applies; null = could not ask, and the
+    // desktop-name list decides as before. Answered synchronously whenever a fresh answer is cached (or there is
+    // no helper to ask), otherwise through one asynchronous spawn.
+    if (!shouldProbeX11Compositor(process.env) || isNativeWaylandClient(process.env, ozonePlatform)) return decide(null);
+    const probe = x11Probe();
+    const known = probe.peek();
+    if (known !== undefined) return decide(known);
+    return probe.get().then(decide);
 }
 
 function safeSwitch(name: string): string {
@@ -379,7 +688,9 @@ function showForScreen(source: OverlaySource): OverlayShowResult {
     if (overlay) hideAnnotationOverlay();                        // was over a window
     target = { kind: 'screen', displayId: display.id };
     captureRect = display.bounds;
-    return createOverlay(display.bounds, true) ? { ok: true, how, captured: overlayInCapture() } : refuse('create_failed');
+    if (!createOverlay(display.bounds, true)) return refuse('create_failed');
+    watchCompositorForScreen();       // Linux X11: take it down if the compositor goes away mid-share
+    return { ok: true, how, captured: overlayInCapture() };
 }
 
 function showForWindow(source: OverlaySource): OverlayShowResult {
@@ -534,6 +845,7 @@ function createOverlay(b: Rect, topmost: boolean): boolean {
         page.cleanup();
         if (overlay === win) {
             stopTracking();
+            stopX11Watcher();
             overlay = null; target = null; captureRect = null; overlayHwnd = null;
             overlayReady = false; queued = [];
         }
@@ -545,8 +857,10 @@ function createOverlay(b: Rect, topmost: boolean): boolean {
 }
 
 export function hideAnnotationOverlay(): void {
+    wayland?.hide();
     const win = overlay;
     stopTracking();
+    stopX11Watcher();
     overlay = null;
     target = null;
     captureRect = null;
@@ -576,6 +890,7 @@ function reassertTopmost(win: BrowserWindow): void {
 }
 
 export function pushAnnotationOverlayDelta(delta: OverlayDelta): void {
+    if (wayland?.isActive()) { wayland.push(delta); return; }
     if (!overlay) return;
     if (!overlayReady) {
         // A reset supersedes everything queued before it.
@@ -587,5 +902,6 @@ export function pushAnnotationOverlayDelta(delta: OverlayDelta): void {
 }
 
 export function isAnnotationOverlayShown(): boolean {
+    if (wayland?.isShown()) return true;
     return !!overlay && !overlay.isDestroyed();
 }

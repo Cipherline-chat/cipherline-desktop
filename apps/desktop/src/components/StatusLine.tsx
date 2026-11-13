@@ -3,8 +3,8 @@ import { GameControllerIcon } from './GameControllerIcon';
 import { customStatusLabel, parseStatusEmoji, statusLineModel } from '../utils/customStatus';
 import type { FriendStatusEntry } from '../utils/userStatusModel';
 import { personalStatusEmoji } from './personalStatusEmoji';
-import { MusicNoteIcon } from './integrations/MusicNoteIcon';
-import { listeningDetail, useListening } from '../utils/integrations/listening';
+import { ActivitySourceIcon } from './integrations/PlatformLogo';
+import { ACTIVITY_LABEL, activityTip, useListening } from '../utils/integrations/listening';
 
 /**
  * The status emoji slot. A unicode emoji renders as text. A personal custom
@@ -53,14 +53,20 @@ export const StatusLine: React.FC<StatusLineProps> = ({ entry, className, style,
     // sits beside it as the controller does. Surfaces that keep the game OFF this
     // line (renderGame returns null) keep the listening text off it too.
     const heard = useListening(entry && entry.status !== 'offline' ? userId : null);
-    const listeningTip = heard ? `Listening to ${heard.track} — ${listeningDetail(heard)}` : null;
+    const listeningTip = heard ? activityTip(heard) : null;
+    // The platform's logo (Spotify, YouTube, ...; else the note / the TV), never the cover:
+    // album art is for profile views only (ProfileActivityRow), and a list of status
+    // lines must not fetch a cover per row (utils/integrations/listeningArt.ts).
     const activityText = !renderGame || renderGame('') !== null;
     if (m.kind === 'none') {
         if (heard && activityText) {
             return (
-                <span className={['inline-flex items-center gap-1 min-w-0', className ?? ''].filter(Boolean).join(' ')} style={style} title={listeningTip ?? undefined} data-testid="status-line-listening">
-                    <MusicNoteIcon size={iconSize} className="shrink-0 text-cl-ok" />
-                    <span className="truncate min-w-0">Listening to {heard.track}</span>
+                // A block-level flex row (not inline-flex): an inline-flex box sizes to its text,
+                // so inside a truncating parent a long video title was clipped mid-letter with no
+                // ellipsis; as a block it takes the parent's width and the title ellipsizes.
+                <span className={['flex items-center gap-1 min-w-0 max-w-full overflow-hidden', className ?? ''].filter(Boolean).join(' ')} style={style} title={listeningTip ?? undefined} data-testid="status-line-listening">
+                    <ActivitySourceIcon kind={heard.kind} source={heard.source} size={iconSize} className="shrink-0 text-cl-ok" />
+                    <span className="truncate min-w-0">{ACTIVITY_LABEL[heard.kind]} {heard.track}</span>
                 </span>
             );
         }
@@ -81,7 +87,7 @@ export const StatusLine: React.FC<StatusLineProps> = ({ entry, className, style,
             {m.text && <span className="truncate min-w-0">{m.text}</span>}
             {m.kind === 'custom' && heard && (
                 <span className="shrink-0 inline-flex items-center text-cl-ok" title={listeningTip ?? undefined} data-testid="status-line-listening">
-                    <MusicNoteIcon size={iconSize} />
+                    <ActivitySourceIcon kind={heard.kind} source={heard.source} size={iconSize} />
                 </span>
             )}
             {m.kind === 'custom+game' && (

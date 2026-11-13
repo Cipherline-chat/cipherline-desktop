@@ -65,6 +65,37 @@ describe('PowerThrottleOptOut: opt-out / restore lifecycle', () => {
         expect(throttleCalls(addon.calls).some(([pid]) => pid === 13)).toBe(false);
     });
 
+    // "while playing game my camera freezes" (reports c344523e / 884b6045 / 14a5184a): the
+    // screen share ran 85-90 fps under the game while the camera's capture sat at 0-10 fps.
+    // The camera comes through Chromium's Video Capture Utility process, which no boost covered.
+    it('also opts the Video Capture utility (the webcam) out - and no OTHER utility process', () => {
+        const { opt, addon } = setup({
+            procs: [
+                ...PROCS,
+                { pid: 14, type: 'Utility', name: 'Video Capture', serviceName: 'video_capture.mojom.VideoCaptureService' } as Proc,
+                { pid: 15, type: 'Utility', name: 'Network Service' } as Proc,
+                { pid: 16, type: 'Utility', name: 'Audio Service' } as Proc,
+            ],
+        });
+        opt.setActive(true);
+        expect(throttleCalls(addon.calls)).toEqual([[10, false], [11, false], [12, false], [14, false]]);
+        addon.calls.length = 0;
+        opt.setActive(false);
+        expect(throttleCalls(addon.calls).map(([pid]) => pid).sort()).toEqual([10, 11, 12, 14]);
+    });
+
+    it('finds the Video Capture utility by serviceName alone, and a restarted one on the next tick', () => {
+        const { opt, addon, state } = setup({
+            procs: [...PROCS, { pid: 14, type: 'Utility', serviceName: 'video_capture.mojom.VideoCaptureService' } as Proc],
+        });
+        opt.setActive(true);
+        expect(opt.optedOutPids()).toContain(14);
+        addon.calls.length = 0;
+        state.procs = state.procs.map(p => (p.pid === 14 ? { pid: 24, type: 'Utility', name: 'Video Capture' } as Proc : p));
+        opt.tick();
+        expect(throttleCalls(addon.calls)).toEqual([[24, false]]);
+    });
+
     it('hands every opted-out process back to the OS (enabled=true) on deactivate, and clears', () => {
         const { opt, addon } = setup();
         opt.setActive(true);

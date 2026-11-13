@@ -1,0 +1,43 @@
+/* "Screen sharing on Linux is new" — the one-time card (LinuxShareIntroCard.tsx).
+   Reuses the floating .rp-prompt surface (reportProblem.css) and its entrance; this file adds the
+   video frame, the backend line and the footer. Tokens only ("glow in the deep"). */
+
+.lsi-card { width: 400px; padding: 16px 16px 14px; }
+.lsi-card .rp-prompt-head { align-items: center; padding-right: 30px; }
+.lsi-card .rp-close { position: absolute; top: 12px; right: 12px; margin: 0; }
+.lsi-card .rp-prompt-head h3 { font-size: 16.5px; }
+
+.lsi-new { display: inline-block; margin-left: 7px; padding: 1px 7px; border-radius: 999px; vertical-align: 2px;
+  font: 800 10px/1.6 var(--cl-font-body); letter-spacing: .06em; text-transform: uppercase;
+  color: var(--cl-on-lume); background: var(--cl-lume); }
+
+/* ── video ─────────────────────────────────────────────────────────────── */
+.lsi-video { position: relative; margin-top: 12px; aspect-ratio: 16 / 9; border-radius: 12px; overflow: hidden;
+  background: var(--cl-sink); border: 1px solid var(--cl-border); isolation: isolate; }
+.lsi-video video, .lsi-video img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.lsi-play { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; border: none; padding: 0;
+  background: rgba(10,17,32,.35); cursor: pointer; color: var(--cl-on-lume); }
+.lsi-play span { display: flex; align-items: center; justify-content: center; width: 52px; height: 52px; border-radius: 50%;
+  background: var(--cl-lume); box-shadow: 0 8px 24px rgba(0,0,0,.45); transition: transform .3s var(--cl-spring); }
+.lsi-play span svg { margin-left: 3px; }
+.lsi-play:hover span { transform: scale(1.06); }
+.lsi-play:focus-visible { outline: none; }
+.lsi-play:focus-visible span { box-shadow: 0 0 0 3px var(--cl-deep), 0 0 0 5px var(--cl-lume); }
+
+/* ── copy ──────────────────────────────────────────────────────────────── */
+.lsi-card .lsi-body { margin: 12px 0 0; font-size: 13px; line-height: 1.55; color: var(--cl-muted); }
+.lsi-card .lsi-body b { color: var(--cl-text); font-weight: 800; }
+.lsi-backend { display: flex; align-items: flex-start; gap: 8px; margin-top: 10px; padding: 8px 10px; border-radius: 10px;
+  background: var(--cl-sink); border: 1px solid rgba(42,53,88,.6); font-size: 12.5px; line-height: 1.45; color: var(--cl-muted); }
+.lsi-backend svg { flex: none; margin-top: 1px; color: var(--cl-lume); }
+.lsi-backend--vaapi svg { color: var(--cl-glow); }
+
+.lsi-foot { display: flex; align-items: center; gap: 12px; margin-top: 14px; }
+.lsi-never { flex: 1; min-width: 0; display: flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 700; line-height: 1.4; color: var(--cl-muted); }
+.lsi-never svg { flex: none; color: var(--cl-ok); }
+.lsi-foot > :last-child { flex: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  .lsi-play span { transition: none; }
+  .lsi-play:hover span { transform: none; }
+}

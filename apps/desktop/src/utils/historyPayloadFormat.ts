@@ -119,6 +119,9 @@ const OPTIONAL_FIELD_CHECKS: Array<[field: string, ok: (v: unknown) => boolean]>
     ['localChannelPins', isPlainObject],
     ['kv', isPlainObject],
     ['appPrefs', isPlainObject],
+    ['customSounds', isStringMap],
+    ['voiceDefaultsMigrated', v => typeof v === 'boolean'],
+    ['keybindsMigrated', v => typeof v === 'boolean'],
     ['userStatus', v => isPlainObject(v)
         && ['status', 'text', 'emoji'].every(k => absent(v[k]) || typeof v[k] === 'string')],
 ];

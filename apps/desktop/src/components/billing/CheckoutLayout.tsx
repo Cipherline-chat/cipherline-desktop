@@ -15,7 +15,7 @@
 import React from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Check, MonitorUp, ShieldCheck, Sparkles, Upload, Video, HardDrive } from 'lucide-react';
-import { formatConfirmedTotal, formatTotalBreakdown, type SubscribeResult } from '@cipherline/shared';
+import { formatConfirmedTotal, formatTotalBreakdown, type BillingInterval, type SubscribeResult } from '@cipherline/shared';
 import { Keys, type KeysSignal } from '../mascot/Keys';
 import { FREE_UPLOAD_LIMIT_LABEL, PRO_UPLOAD_LIMIT_LABEL } from '../../utils/uploadLimitCopy';
 import '../../styles/checkout.css';
@@ -56,6 +56,10 @@ export interface CheckoutSummaryProps {
     wide: boolean;
     /** "$2.50/mo + tax" */
     priceLabel: string;
+    /** Which interval the price / total is for. Default monthly. */
+    interval?: BillingInterval;
+    /** The Monthly / Yearly picker, only when the API offers yearly. */
+    intervalPicker?: React.ReactNode;
     /** The server's exact quote once known; replaces the "+ tax" label. */
     total?: SubscribeResult | null;
     signal: KeysSignal;
@@ -64,7 +68,7 @@ export interface CheckoutSummaryProps {
     announceBubble?: boolean;
 }
 
-export const CheckoutSummary: React.FC<CheckoutSummaryProps> = ({ wide, priceLabel, total, signal, bubble, announceBubble = true }) => (
+export const CheckoutSummary: React.FC<CheckoutSummaryProps> = ({ wide, priceLabel, interval = 'month', intervalPicker, total, signal, bubble, announceBubble = true }) => (
     <aside className="ckt-summary" data-testid="checkout-summary" aria-labelledby="ckt-plan-title">
         <div className="ckt-brand">
             <div className="ckt-keys">
@@ -73,11 +77,13 @@ export const CheckoutSummary: React.FC<CheckoutSummaryProps> = ({ wide, priceLab
             <div className="ckt-plan">
                 <h2 id="ckt-plan-title" className="ckt-plan-title">Cipherline Pro</h2>
                 <div className="ckt-price" data-testid="checkout-price">
-                    {total ? formatConfirmedTotal(total) : priceLabel}
+                    {total ? formatConfirmedTotal(total, interval) : priceLabel}
                 </div>
                 {total && <div className="ckt-price-sub">{formatTotalBreakdown(total)}</div>}
             </div>
         </div>
+
+        {intervalPicker}
 
         <KeysBubble text={bubble} announce={announceBubble} />
 
@@ -95,7 +101,7 @@ export const CheckoutSummary: React.FC<CheckoutSummaryProps> = ({ wide, priceLab
                     ))}
                 </ul>
                 <ul className="ckt-reassure" data-testid="checkout-reassure">
-                    <li><Check size={13} aria-hidden /> Cancel anytime in Settings → Billing</li>
+                    <li><Check size={13} aria-hidden /> Cancel anytime in Settings → Subscription</li>
                     <li><ShieldCheck size={13} aria-hidden /> Card details go straight to Stripe, never to our servers</li>
                     <li><Check size={13} aria-hidden /> Text, audio calls and servers stay free</li>
                 </ul>

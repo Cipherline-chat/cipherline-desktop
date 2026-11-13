@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
     AudioLagTracker, createAudioLagStage, audioRtpTimestamp, audioLagStatsFromMessage,
-    AUDIO_LAG_CAP_MS, AUDIO_LAG_CAP_RECV_MS, REBASE_AFTER_MS, AUDIO_LAG_STATS_KIND, AUDIO_LAG_STATS_EVERY_MS,
+    AUDIO_LAG_CAP_MS, AUDIO_LAG_CAP_RECV_MS, REBASE_AFTER_MS, IMPLAUSIBLE_LAG_MS, AUDIO_LAG_STATS_KIND, AUDIO_LAG_STATS_EVERY_MS,
     type AudioLagStats,
 } from './e2eeAudioLag';
 import { installAnnexBCanonicalizer } from './e2eeAnnexB';
@@ -63,6 +63,40 @@ describe('AudioLagTracker', () => {
         // Dropping lasted about REBASE_AFTER_MS of frames, then stopped.
         expect(rebased - 100).toBeLessThanOrEqual(REBASE_AFTER_MS / 20 + 2);
         expect(v.slice(rebased + 1).every(x => !x.drop)).toBe(true);
+    });
+
+    describe('a timestamp jump of hours is a new RTP timeline, not a queue (staging.178-187: "lag 41,566,318 ms")', () => {
+        // The jump the field reports show, as RTP ticks BACKWARDS (offset up => "late").
+        const jumpTicks = (ms: number) => Math.round((ms / 1000) * 48_000);
+
+        it.each([4_824_165, 11_085_787, 19_328_278, 34_908_048, 41_566_318])('a %i ms step is re-based on the spot and not one frame is dropped', (ms) => {
+            const t = new AudioLagTracker(AUDIO_LAG_CAP_RECV_MS);
+            const v: ReturnType<AudioLagTracker['observe']>[] = [];
+            for (let i = 0; i < 400; i++) {
+                const ts = (1000 + i * TICK - (i >= 100 ? jumpTicks(ms) : 0)) >>> 0;
+                v.push(t.observe(ts, 10_000 + i * 20));
+            }
+            expect(v.filter(x => x.drop)).toHaveLength(0);
+            expect(v.filter(x => x.rebased)).toHaveLength(1);
+            expect(v.findIndex(x => x.rebased)).toBe(100);
+            // And the lag it reports is not the jump (the stats window must not say "41 million ms").
+            expect(v[100].excessMs).toBe(0);
+        });
+
+        it('before the fix this cost 100 frames: a step just under the limit still takes the old drop-then-rebase path (control)', () => {
+            const t = new AudioLagTracker(AUDIO_LAG_CAP_RECV_MS);
+            const v: ReturnType<AudioLagTracker['observe']>[] = [];
+            for (let i = 0; i < 400; i++) {
+                const ts = (1000 + i * TICK - (i >= 100 ? jumpTicks(IMPLAUSIBLE_LAG_MS - 1000) : 0)) >>> 0;
+                v.push(t.observe(ts, 10_000 + i * 20));
+            }
+            expect(v.filter(x => x.drop).length).toBe(REBASE_AFTER_MS / 20); // the 2 s hole
+        });
+
+        it('a genuine multi-second backlog is still dropped to catch up', () => {
+            const v = run(new AudioLagTracker(AUDIO_LAG_CAP_RECV_MS), 300, i => (i >= 100 && i < 105 ? 8000 : 0));
+            expect(v.slice(100, 105).every(x => x.drop)).toBe(true);
+        });
     });
 
     it('clock drift within 500 ppm never trips the cap over an hour', () => {

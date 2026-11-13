@@ -24,6 +24,7 @@ import { importKeyFromBase64, decryptBlob } from '../utils/crypto';
 import { openExternalLink } from '../utils/openExternalLink';
 import { getEncryptedAttachment, putEncryptedAttachment } from '../utils/attachmentCache';
 import { downloadEncryptedAttachment } from '../utils/attachmentDownload';
+import { acquireDecryptedMedia, putDecryptedMediaBlob, releaseDecryptedMedia } from '../utils/decryptedMediaCache';
 import { API_BASE } from '../constants';
 import { saveReceivedFile } from './executableDownloadGuard';
 import { safeDisplayFilename } from '../utils/fileSafety';
@@ -109,8 +110,16 @@ function openUrl(url: string) {
     }
 }
 
-/** Cache-first decrypt to an object URL. Throws on failure. */
-async function decryptToUrl(item: AttachmentItem, token: string | null): Promise<string> {
+/**
+ * The attachment's decrypted object URL, HELD by the caller (release it with
+ * releaseDecryptedMedia). Shares the session cache with the chat pane
+ * (utils/decryptedMediaCache.ts), so media already open in the chat - or seen
+ * here before - shows without another decrypt. Otherwise the ciphertext comes
+ * from the local encrypted cache, else the network. Throws on failure.
+ */
+async function acquireDecryptedUrl(item: AttachmentItem, token: string | null): Promise<string> {
+    const cached = acquireDecryptedMedia(item.attachmentId);
+    if (cached) return cached;
     let encBlob: Blob | null = await getEncryptedAttachment(item.attachmentId);
     if (!encBlob) {
         encBlob = await downloadEncryptedAttachment(item.attachmentId, token!, API_BASE);
@@ -118,7 +127,7 @@ async function decryptToUrl(item: AttachmentItem, token: string | null): Promise
     }
     const key = await importKeyFromBase64(item.fileKeyB64);
     const blob = await decryptBlob(encBlob, key, item.fileNonceB64, item.mime);
-    return URL.createObjectURL(blob);
+    return putDecryptedMediaBlob(item.attachmentId, blob);
 }
 
 /** In-memory poster cache — regenerating a frame on every remount is wasteful. */
@@ -277,12 +286,14 @@ const MediaCell: React.FC<{
     const isVideo = item.mime.startsWith('video/');
 
     useEffect(() => {
-        let revoked: string | null = null;
+        const id = item.attachmentId;
+        let held = false;
         let cancelled = false;
-        decryptToUrl(item, token)
-            .then(u => { if (cancelled) { URL.revokeObjectURL(u); return; } revoked = u; setUrl(u); })
+        acquireDecryptedUrl(item, token)
+            .then(u => { if (cancelled) { releaseDecryptedMedia(id); return; } held = true; setUrl(u); })
             .catch(() => { if (!cancelled) setFailed(true); });
-        return () => { cancelled = true; if (revoked) URL.revokeObjectURL(revoked); };
+        // Released, not revoked: the cache keeps it for the next visit until its budget pushes it out.
+        return () => { cancelled = true; if (held) releaseDecryptedMedia(id); };
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [item.attachmentId]);
 
@@ -404,11 +415,11 @@ const FileRow: React.FC<{
         setBusy(true);
         setFailed(false);
         try {
-            const url = await decryptToUrl(item, token);
+            const url = await acquireDecryptedUrl(item, token);
             // Safe save name + a confirmation for executables.
             await saveReceivedFile(url, item.filename);
             // Give the save a beat before releasing the blob.
-            setTimeout(() => URL.revokeObjectURL(url), 10_000);
+            setTimeout(() => releaseDecryptedMedia(item.attachmentId), 10_000);
         } catch {
             setFailed(true);
         } finally {

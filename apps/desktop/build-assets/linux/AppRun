@@ -1,0 +1,64 @@
+#!/bin/bash
+# Cipherline AppImage entry point (shipped as <AppDir>/AppRun; electron-builder copies the unpacked
+# app over the stage dir AFTER it writes its own AppRun, so this file replaces the generated one).
+#
+# Why we own it: the generated AppRun of the static-runtime toolset (`toolsets.appimage` 1.0.x, the one
+# that needs no libfuse2) just exec()s the binary. The legacy AppRun additionally probed whether
+# unprivileged user namespaces work and, if not, added --no-sandbox. Without that probe Chromium dies
+# at start on Ubuntu 24.04+ ("The SUID sandbox helper binary was found, but is not configured
+# correctly": AppArmor denies the userns that would replace the setuid helper an AppImage cannot carry).
+#
+# Contract (identical to the legacy AppRun): --no-sandbox is added ONLY when a user namespace cannot be
+# created. Where userns works (Fedora, Arch, Debian, Ubuntu <= 22.04) the Chromium sandbox stays ON.
+# electron/linux-sandbox.ts tells the user when the fallback was taken.
+#
+# The rest mirrors electron-builder's generated AppRun (APPDIR discovery, PATH/XDG/LD_LIBRARY_PATH).
+set -e
+
+THIS="$0"
+
+if [ -z "$APPDIR" ] ; then
+  # Find the AppDir: the directory that contains AppRun. The AppImage runtime normally sets $APPDIR already.
+  path="$(dirname "$(readlink -f "${THIS}")")"
+  while [[ "$path" != "" && ! -e "$path/AppRun" ]]; do
+    path=${path%/*}
+  done
+  APPDIR="$path"
+fi
+
+export PATH="${APPDIR}:${APPDIR}/usr/sbin:${PATH}"
+export XDG_DATA_DIRS="./share/:/usr/share/gnome:/usr/local/share/:/usr/share/:${XDG_DATA_DIRS}"
+export LD_LIBRARY_PATH="${APPDIR}/usr/lib:${LD_LIBRARY_PATH}"
+export XDG_DATA_DIRS="${APPDIR}"/usr/share/:"${XDG_DATA_DIRS}":/usr/share/gnome/:/usr/local/share/:/usr/share/
+export GSETTINGS_SCHEMA_DIR="${APPDIR}/usr/share/glib-2.0/schemas:${GSETTINGS_SCHEMA_DIR}"
+
+BIN="$APPDIR/cipherline"
+
+# Can this process create an unprivileged user namespace? (what Chromium's sandbox needs)
+userns_usable()
+{
+  if command -v unshare >/dev/null 2>&1 ; then
+    # The authoritative probe: the same syscall Chromium makes, from the same (unconfined) context.
+    LD_LIBRARY_PATH="" unshare -Ur true >/dev/null 2>&1
+    return $?
+  fi
+  # No unshare binary: read the kernel switches instead.
+  [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null)" = "1" ] && return 1
+  [ "$(cat /proc/sys/kernel/unprivileged_userns_clone 2>/dev/null)" = "0" ] && return 1
+  [ "$(cat /proc/sys/user/max_user_namespaces 2>/dev/null)" = "0" ] && return 1
+  return 0
+}
+
+extra=()
+if ! userns_usable ; then
+  already=0
+  for a in "$@" ; do
+    [ "$a" = "--no-sandbox" ] && already=1
+  done
+  if [ "$already" = "0" ] ; then
+    echo "Cipherline: unprivileged user namespaces are blocked on this system; starting with --no-sandbox (the Chromium sandbox is OFF)." >&2
+    extra=(--no-sandbox)
+  fi
+fi
+
+exec "$BIN" "${extra[@]}" "$@"

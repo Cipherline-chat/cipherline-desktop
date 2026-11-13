@@ -154,7 +154,7 @@ describe('main.ts wiring', () => {
         expect(MAIN).toContain('new PowerThrottleOptOut({');
         expect(MAIN).toContain('native: () => audioCaptureAddon,');
         expect(MAIN).toContain('selfPid: process.pid,');
-        expect(MAIN).toContain("listProcesses: () => app.getAppMetrics().map(m => ({ pid: m.pid, type: m.type })),\n  selfPid");
+        expect(MAIN).toContain("listProcesses: () => app.getAppMetrics().map(boostProcFromMetric),\n  selfPid");
         expect(MAIN.match(/new PowerThrottleOptOut\(/g)?.length).toBe(1);
     });
 
@@ -174,8 +174,8 @@ describe('main.ts wiring', () => {
     it('restore rides the same paths as the priority boost: navigation, renderer crash, quit', () => {
         // Each of these already calls syncCallPriority({ inCall:false, sharing:false }) (share-boost.wiring.test.ts);
         // that reaches ShareBoostController.setSharing(false) -> PowerThrottleOptOut.setActive(false).
-        expect(SHARE_BOOST).toContain('this.throttle?.setActive(this.active);');
-        expect(MAIN).toMatch(/app\.on\('before-quit', \(\) => \{\n {2}\/\/ Gaming-video priority boost: restore before the processes start exiting\.\n {2}syncCallPriority\(\{ inCall: false, sharing: false \}\);/);
+        expect(SHARE_BOOST).toContain('this.throttle?.setMode(this.mode);');
+        expect(MAIN).toMatch(/app\.on\('before-quit', \(\) => \{\n {2}\/\/ Gaming-video priority boost: restore before the processes start exiting\.\n {2}syncCallPriority\(\{ inCall: false, sharing: false, cameraLive: false \}\);/);
     });
 
     it('share:get-foreground-info validates first, is Windows-only, and is a guarded handler', () => {
@@ -187,19 +187,10 @@ describe('main.ts wiring', () => {
         expect(MAIN.indexOf("ipcMain.handle('share:get-foreground-info'")).toBeGreaterThan(MAIN.indexOf('installIpcSenderGuard();'));
     });
 
-    it('share:find-window-source validates first, is Windows-only, and is a guarded handler', () => {
-        const body = handlerSource('share:find-window-source');
-        expect(body.indexOf('validateFindWindowRequest(exe, ids)')).toBeGreaterThan(-1);
-        expect(body).toContain("process.platform !== 'win32'");
-        expect(body).toContain('pickWindowByExe(candidates, req.exe)');
-        expect(UNGUARDED_IPC_CHANNELS.has('share:find-window-source')).toBe(false);
-        expect(MAIN.indexOf("ipcMain.handle('share:find-window-source'")).toBeGreaterThan(MAIN.indexOf('installIpcSenderGuard();'));
-    });
-
-    it('the preload bridge is three narrow channels and nothing is opened or executed from them', () => {
+    it('the preload bridge is narrow and nothing is opened or executed from it', () => {
         expect(PRELOAD).toContain("ipcRenderer.invoke('share:get-foreground-info', sourceId)");
-        expect(PRELOAD).toContain("ipcRenderer.invoke('share:find-window-source', exe, windowSourceIds)");
-        for (const body of [handlerSource('share:get-foreground-info'), handlerSource('share:find-window-source')]) {
+        expect(PRELOAD).not.toContain('share:find-window-source');
+        for (const body of [handlerSource('share:get-foreground-info')]) {
             expect(body).not.toMatch(/shell\.openExternal|execFile|spawn\(|exec\(/);
         }
     });
@@ -290,7 +281,7 @@ describe('main.ts wiring: the GPU scheduling class', () => {
     it('the addon type declares both exports, and the raise/restore ride the existing setSharing(false) paths', () => {
         expect(MAIN).toContain('setGpuSchedulingPriority?(pid: number, level: number): unknown;');
         expect(MAIN).toContain('getGpuSchedulingPriority?(pid: number): unknown;');
-        expect(SHARE_BOOST).toContain('this.gpuSched?.setActive(this.active);');
+        expect(SHARE_BOOST).toContain('this.gpuSched?.setMode(this.mode);');
         // Same timer as the power opt-out re-apply: a GPU restart is picked up within seconds.
         expect(SHARE_BOOST).toContain('this.throttle?.tick();\n        this.gpuSched?.tick();');
         expect(SHARE_BOOST).toContain('this.throttle?.active === true || this.gpuSched?.active === true');

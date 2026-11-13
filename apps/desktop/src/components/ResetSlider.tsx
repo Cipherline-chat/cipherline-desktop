@@ -13,12 +13,15 @@ interface ResetSliderProps extends Omit<React.InputHTMLAttributes<HTMLInputEleme
     value: number;
     resetValue: number;
     onChangeValue: (v: number) => void;
+    /** Bubble / readout text for a value; forwarded to ClSlider (default rounds to an integer). */
+    formatLabel?: (v: number) => string;
 }
 
 export const ResetSlider: React.FC<ResetSliderProps> = ({
     value,
     resetValue,
     onChangeValue,
+    formatLabel,
     min,
     max,
     step,
@@ -39,6 +42,7 @@ export const ResetSlider: React.FC<ResetSliderProps> = ({
             max={max !== undefined ? Number(max) : 100}
             step={step !== undefined ? Number(step) : undefined}
             resetValue={resetValue}
+            formatLabel={formatLabel}
             disabled={disabled}
         />
     </div>

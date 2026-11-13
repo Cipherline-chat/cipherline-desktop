@@ -5,7 +5,6 @@ import { NoteToSelfMoment } from './NoteToSelfMoment';
 import { EchoEveryoneMoment } from './EchoEveryoneMoment';
 import { SelfPingMoment } from './SelfPingMoment';
 import { WishMoment } from './WishMoment';
-import { EmptyPartyMoment } from './EmptyPartyMoment';
 import { VolumeCeilingMoment } from './VolumeCeilingMoment';
 import { SchoolMoment } from './SchoolMoment';
 import { ReefMoment } from './ReefMoment';
@@ -16,8 +15,6 @@ import { SelfFanMoment } from './SelfFanMoment';
 import { DoubleGeneralMoment } from './DoubleGeneralMoment';
 import { RevolvingDoorMoment } from './RevolvingDoorMoment';
 import { FirstBanMoment } from './FirstBanMoment';
-import { FirstMessageMoment } from './FirstMessageMoment';
-import { FirstCallMoment } from './FirstCallMoment';
 import { FirstServerMoment } from './FirstServerMoment';
 import { Call100Moment } from './Call100Moment';
 import { PiDayMoment } from './PiDayMoment';
@@ -32,7 +29,6 @@ export const MOMENT_VIEWS: Record<MomentId, React.FC> = {
     'echo-everyone': EchoEveryoneMoment,
     'self-ping': SelfPingMoment,
     'wish': WishMoment,
-    'empty-party': EmptyPartyMoment,
     'volume-ceiling': VolumeCeilingMoment,
     'friends-100': SchoolMoment,
     'servers-10': ReefMoment,
@@ -43,8 +39,6 @@ export const MOMENT_VIEWS: Record<MomentId, React.FC> = {
     'double-general': DoubleGeneralMoment,
     'revolving-door': RevolvingDoorMoment,
     'first-ban': FirstBanMoment,
-    'first-message': FirstMessageMoment,
-    'first-call': FirstCallMoment,
     'first-server': FirstServerMoment,
     'call-100': Call100Moment,
     'pi-day': PiDayMoment,

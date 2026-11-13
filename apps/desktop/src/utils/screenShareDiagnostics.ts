@@ -24,7 +24,7 @@ export interface MainShareDiagnostics {
     displayHz: number | null;
     /** How displayHz was found: the captured display itself, or a guess
      *  (the only display / the primary). null with displayHz null. */
-    displayHzSource: 'matched' | 'only-display' | 'primary' | null;
+    displayHzSource: 'shared' | 'matched' | 'only-display' | 'primary' | null;
     capturer: { backend: CaptureBackend; why: string };
     capturerPref: 'auto' | 'dxgi' | 'wgc';
     gpus: Array<{ vendor: string; vendorId: number; deviceId: number; name?: string; active: boolean }>;
@@ -54,7 +54,7 @@ export interface CaptureTiming {
 const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
 const numOrNull = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
 const BACKENDS: readonly CaptureBackend[] = ['wgc', 'dxgi', 'pipewire', 'x11', 'macos', 'unknown'];
-const HZ_SOURCES = ['matched', 'only-display', 'primary'] as const;
+const HZ_SOURCES = ['shared', 'matched', 'only-display', 'primary'] as const;
 
 /** Trust nothing from IPC: take the fields we know, typed, and drop the rest. */
 export function parseMainDiagnostics(v: unknown): MainShareDiagnostics | null {
@@ -151,11 +151,12 @@ export function getScreenShareSession(): ScreenShareSession | null {
     return current;
 }
 
-function subscribe(l: () => void): () => void {
+/** Notified on every set / update of the session (outside React; the hook below uses it too). */
+export function subscribeScreenShareSession(l: () => void): () => void {
     listeners.add(l);
     return () => { listeners.delete(l); };
 }
 
 export function useScreenShareSession(): ScreenShareSession | null {
-    return useSyncExternalStore(subscribe, getScreenShareSession, getScreenShareSession);
+    return useSyncExternalStore(subscribeScreenShareSession, getScreenShareSession, getScreenShareSession);
 }

@@ -4,7 +4,7 @@ import {
 } from './annotationStore';
 import {
     diffLocalForWire, applyRemote, SnapshotAssembler, applySnapshot, snapshotOf, remoteId, isAllowed,
-    grantsOf, type SentState,
+    grantsOf, coalesceAppends, type SentState,
 } from './annotationTransport';
 import { chunkSnapshot, type AnnotMsg } from './annotationCodec';
 
@@ -489,4 +489,38 @@ describe('a grantee draws on the streamer tile: sender -> wire -> every receiver
             expect(onStranger, 'an ungranted peer got a stroke through').toHaveLength(0);
         });
     }
+});
+
+describe('coalesceAppends - ~30 Hz sender batching never reorders or loses a point', () => {
+    const app = (id: string, ...xs: number[]): AnnotMsg => ({ t: 'stroke.append', room: ROOM, track: MY_SHARE, id, pts: xs.map(x => ({ x, y: 0.5 })) });
+    const end = (id: string): AnnotMsg => ({ t: 'stroke.end', room: ROOM, track: MY_SHARE, id });
+    const begin = (id: string): AnnotMsg => ({ t: 'stroke.begin', room: ROOM, track: MY_SHARE, id, tool: 'laser', color: '#25E0C8', width: 4, p: { x: 0, y: 0 } });
+    const flat = (m: AnnotMsg[]) => m.flatMap(x => (x.t === 'stroke.append' ? x.pts.map(p => `a${p.x}`) : [x.t]));
+
+    it('240 Hz worth of one-point appends of one stroke become ONE packet', () => {
+        const burst = Array.from({ length: 8 }, (_, i) => app('s', i / 10));
+        const out = coalesceAppends(burst);
+        expect(out).toHaveLength(1);
+        expect(flat(out)).toEqual(flat(burst));
+    });
+
+    it('never merges across a stroke.end (an append may not overtake it) or across different strokes', () => {
+        const msgs = [app('s', 0.1), app('s', 0.2), end('s'), app('t', 0.3), app('u', 0.4)];
+        const out = coalesceAppends(msgs);
+        expect(out.map(m => m.t)).toEqual(['stroke.append', 'stroke.end', 'stroke.append', 'stroke.append']);
+        expect(flat(out)).toEqual(flat(msgs));
+    });
+
+    it('respects the codec cap of 64 points per append (the receiver would reject a bigger one)', () => {
+        const msgs = Array.from({ length: 150 }, (_, i) => app('s', i / 1000));
+        const out = coalesceAppends(msgs);
+        for (const m of out) if (m.t === 'stroke.append') expect(m.pts.length).toBeLessThanOrEqual(64);
+        expect(flat(out)).toEqual(flat(msgs));
+    });
+
+    it('passes begin/grant-style messages through untouched and in order (negative control: nothing but appends is merged)', () => {
+        const msgs = [begin('s'), app('s', 0.1), app('s', 0.2), end('s')];
+        const out = coalesceAppends(msgs);
+        expect(out.map(m => m.t)).toEqual(['stroke.begin', 'stroke.append', 'stroke.end']);
+    });
 });

@@ -255,8 +255,9 @@ export interface GuestCall {
 }
 
 /** The floating call header's server/channel line for a guest: the server they
- *  are in, the call's own name, and an explicit "Private channel" — never a
- *  lookup into a channel list that does not contain it. */
+ *  are in and the call's own name, which is what anyone else's header shows
+ *  (Dashboard callServerInfo) — never a lookup into a channel list that does not
+ *  contain it. "Private channel" only when the call has no name to show. */
 export function guestCallServerInfo(
     g: GuestCall,
     servers: { server_id: string; name?: string | null }[],
@@ -266,7 +267,7 @@ export function guestCallServerInfo(
     return {
         serverId: g.serverId,
         serverName: srv?.name ?? null,
-        channelName: g.callName ? `${g.callName} · Private channel` : 'Private channel',
+        channelName: g.callName || 'Private channel',
         iconName: null,
         iconEmoji: null,
         maxCalls: null,

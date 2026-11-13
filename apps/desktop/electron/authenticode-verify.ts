@@ -52,7 +52,7 @@ export type ExecCallback = (error: Error | null, stdout: string, stderr: string)
 export type ExecFileLike = (
     file: string,
     args: string[],
-    options: { shell: true; timeout: number; windowsHide: true },
+    options: { timeout: number; windowsHide: true; env: Record<string, string> },
     cb: ExecCallback,
 ) => void;
 
@@ -68,25 +68,76 @@ export interface VerifierDeps {
     /** path.win32.normalize in production. */
     normalizePath: (p: string) => string;
     log: VerifierLog;
+    /** The environment PowerShell inherits (process.env in production). */
+    baseEnv?: Record<string, string | undefined>;
     /** Called when the check is skipped because PowerShell is unusable (fail-open parity). */
     onSkipped?: (why: string) => void;
     setTimer?: (fn: () => void, ms: number) => { unref?: () => void } | unknown;
     clearTimer?: (t: unknown) => void;
 }
 
-/** Same command line as electron-updater's preparePowerShellExec (incl. the
- *  PSModulePath reset and UTF-8 code page — see its linked issues). */
-export function powershellInvocation(command: string): [string, string[]] {
-    return [
-        'set "PSModulePath=" & chcp 65001 >NUL & powershell.exe',
-        ['-NoProfile', '-NonInteractive', '-InputFormat', 'None', '-Command', command],
-    ];
+/** Environment variable that carries the file path into the script. */
+export const UPDATE_FILE_ENV = 'CIPHERLINE_UPDATE_FILE';
+
+/**
+ * The signature script. It is a FIXED string: the downloaded file's path is
+ * never spliced into it, it is read from $env:CIPHERLINE_UPDATE_FILE.
+ *
+ * Why not splice it (what this used to do): the file name comes from the
+ * update feed (electron-updater names the download after the feed URL's last
+ * path segment, percent-decoded), so it is not ours to trust. It was escaped
+ * only for the ASCII apostrophe, but PowerShell also ends a single-quoted
+ * literal at U+2018/U+2019/U+201A/U+201B, all valid in a Windows file name, so
+ * a feed that named the installer `x<U+2019>; <command>; <U+2018>.exe` ran
+ * <command> in PowerShell during the signature check, before any signature
+ * was judged. The whole thing also went through cmd.exe (shell: true), which
+ * expands %VAR% in the path. An environment value is never parsed, so no
+ * file name can become code.
+ *
+ * Output is forced to pure ASCII (non-ASCII becomes a \uXXXX escape, which
+ * JSON.parse undoes) so the result does not depend on the console code page;
+ * this replaces the `chcp 65001` the cmd wrapper used to do.
+ */
+export const SIGNATURE_SCRIPT =
+    "$ProgressPreference = 'SilentlyContinue'; " +
+    `$j = Get-AuthenticodeSignature -LiteralPath $env:${UPDATE_FILE_ENV} | ConvertTo-Json -Compress; ` +
+    "[regex]::Replace($j, '[^\\x00-\\x7F]', { param($m) '\\u{0:x4}' -f [int][char]$m.Value })";
+
+/** The "can PowerShell run at all" probe (upstream's ConvertTo-Json test). */
+export const PROBE_SCRIPT = "'test' | ConvertTo-Json";
+
+/** -EncodedCommand takes base64 of UTF-16LE: no quoting layer to get wrong. */
+export function encodePowerShell(script: string): string {
+    return Buffer.from(script, 'utf16le').toString('base64');
 }
 
-/** Single quotes doubled: the path is spliced into a single-quoted PS literal. */
-export function authenticodeCommand(file: string): string {
-    const escaped = file.replace(/'/g, "''");
-    return `"Get-AuthenticodeSignature -LiteralPath '${escaped}' | ConvertTo-Json -Compress"`;
+/**
+ * Direct spawn of Windows PowerShell, NO shell. Keeps upstream's PSModulePath
+ * reset (it is removed from the child's environment, as `set "PSModulePath="`
+ * did) and its flags. `filePath`, when given, travels in the environment.
+ */
+export function powershellInvocation(
+    script: string,
+    filePath?: string,
+    baseEnv: Record<string, string | undefined> = {},
+): { exe: string; args: string[]; env: Record<string, string> } {
+    const env: Record<string, string> = {};
+    for (const [k, v] of Object.entries(baseEnv)) {
+        if (v === undefined) continue;
+        // Windows env names are case-insensitive; drop PSModulePath whatever its case.
+        if (k.toUpperCase() === 'PSMODULEPATH') continue;
+        if (k.toUpperCase() === UPDATE_FILE_ENV) continue;
+        env[k] = v;
+    }
+    if (filePath !== undefined) env[UPDATE_FILE_ENV] = filePath;
+    const root = baseEnv.SystemRoot || baseEnv.SYSTEMROOT || baseEnv.windir || baseEnv.WINDIR;
+    // Absolute path when we can build one: no PATH search for the executable.
+    const exe = root ? `${root}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe` : 'powershell.exe';
+    return {
+        exe,
+        args: ['-NoProfile', '-NonInteractive', '-InputFormat', 'None', '-EncodedCommand', encodePowerShell(script)],
+        env,
+    };
 }
 
 export type Verdict =
@@ -112,7 +163,7 @@ export function evaluateSignatureJson(
 ): Verdict {
     let data: SignatureJson;
     try {
-        data = JSON.parse(stdout) as SignatureJson;
+        data = JSON.parse(stdout.replace(/^﻿/, '')) as SignatureJson;
     } catch {
         return { kind: 'no-verdict', why: 'output was not JSON' };
     }
@@ -162,7 +213,7 @@ function unavailable(message: string): Error {
 }
 
 /** Run one PowerShell command; never rejects, always settles (hard ceiling). */
-function runPowerShell(command: string, timeout: number, deps: VerifierDeps): Promise<{ error: Error | null; stdout: string; stderr: string }> {
+function runPowerShell(script: string, filePath: string | undefined, timeout: number, deps: VerifierDeps): Promise<{ error: Error | null; stdout: string; stderr: string }> {
     const setT = deps.setTimer ?? ((fn: () => void, ms: number) => setTimeout(fn, ms));
     const clearT = deps.clearTimer ?? ((t: unknown) => clearTimeout(t as ReturnType<typeof setTimeout>));
     return new Promise(resolve => {
@@ -173,9 +224,9 @@ function runPowerShell(command: string, timeout: number, deps: VerifierDeps): Pr
             resolve({ error: new Error(`PowerShell did not finish within ${Math.round((timeout + HARD_CEILING_SLACK_MS) / 1000)}s`), stdout: '', stderr: '' });
         }, timeout + HARD_CEILING_SLACK_MS);
         (ceiling as { unref?: () => void } | null)?.unref?.();
-        const [exe, args] = powershellInvocation(command);
         try {
-            deps.execFile(exe, args, { shell: true, timeout, windowsHide: true }, (error, stdout, stderr) => {
+            const { exe, args, env } = powershellInvocation(script, filePath, deps.baseEnv);
+            deps.execFile(exe, args, { timeout, windowsHide: true, env }, (error, stdout, stderr) => {
                 if (settled) return;
                 settled = true;
                 clearT(ceiling);
@@ -200,7 +251,7 @@ export function createAuthenticodeVerifier(deps: VerifierDeps): (publisherNames:
     return async (publisherNames, file) => {
         const started = Date.now();
         deps.log.info(`Verifying update signature (timeout ${VERIFY_TIMEOUT_MS / 1000}s)`);
-        const run = await runPowerShell(authenticodeCommand(file), VERIFY_TIMEOUT_MS, deps);
+        const run = await runPowerShell(SIGNATURE_SCRIPT, file, VERIFY_TIMEOUT_MS, deps);
         const took = Date.now() - started;
         if (run.stderr.trim()) deps.log.warn(`Get-AuthenticodeSignature wrote to stderr: ${run.stderr.trim().slice(0, 500)}`);
 
@@ -216,7 +267,7 @@ export function createAuthenticodeVerifier(deps: VerifierDeps): (publisherNames:
         }
 
         // No verdict. Is PowerShell usable at all? (Upstream's fail-open rule.)
-        const probe = await runPowerShell('ConvertTo-Json test', PROBE_TIMEOUT_MS, deps);
+        const probe = await runPowerShell(PROBE_SCRIPT, undefined, PROBE_TIMEOUT_MS, deps);
         if (probe.error) {
             const why = `PowerShell unusable (${probe.error.message.slice(0, 200)})`;
             deps.log.warn(`Cannot execute ConvertTo-Json: ${why}. Skipping signature validation, as electron-updater does.`);

@@ -13,9 +13,11 @@ import './reportProblem.css';
  */
 export const CrashPrompt: React.FC<{
     count: number;
+    /** The previous session was killed while hung (reason `hung-exit`), not a crash. */
+    hung?: boolean;
     onReview: () => void;
     onNotNow: () => void;
-}> = ({ count, onReview, onNotNow }) => {
+}> = ({ count, hung, onReview, onNotNow }) => {
     const [leaving, setLeaving] = useState<null | 'review' | 'later'>(null);
     const primaryRef = useRef<HTMLDivElement>(null);
 
@@ -45,7 +47,7 @@ export const CrashPrompt: React.FC<{
                 <div className="rp-prompt-head">
                     <div className="rp-tile rp-tile--flash" style={{ width: 38, height: 38, borderRadius: 12 }} aria-hidden><Bug size={18} /></div>
                     <div style={{ minWidth: 0 }}>
-                        <h3 id="rp-crash-title">Cipherline closed unexpectedly</h3>
+                        <h3 id="rp-crash-title">{hung ? 'Cipherline stopped responding last time' : 'Cipherline closed unexpectedly'}</h3>
                         <p id="rp-crash-desc">
                             Send a crash report so we can fix it? You’ll see exactly what’s in it first — no messages, files or names.
                             {count > 1 ? ` This has happened ${count} times.` : ''}

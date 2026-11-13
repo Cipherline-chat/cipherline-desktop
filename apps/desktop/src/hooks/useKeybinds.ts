@@ -1,4 +1,5 @@
 import secureLocalStore from '../utils/secureLocalStore';
+import { readGlobalShortcutStatus, type GlobalShortcutStatus } from '../utils/globalShortcutNotice';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 // ── Bindable actions ──────────────────────────────────────────────────────────
@@ -41,14 +42,14 @@ export const ACTIONS: ActionMeta[] = [
     // Controls — global shortcuts (work even when Cipherline is not focused)
     { id: 'toggle-mute',        label: 'Mute / Unmute',            category: 'controls', description: 'Toggle your microphone',                        global: true },
     { id: 'toggle-deafen',      label: 'Deafen / Undeafen',       category: 'controls', description: 'Toggle deafen (mutes audio from others)',       global: true },
-    { id: 'toggle-camera',      label: 'Camera On / Off',          category: 'controls', description: 'Toggle your camera',                            global: true },
+    { id: 'toggle-camera',      label: 'Camera On / Off',          category: 'controls', description: 'Toggle your camera (during a call)',                          global: true },
     { id: 'toggle-screenshare', label: 'Screen Share',             category: 'controls', description: 'Open the screen share picker',                  global: true },
     { id: 'leave-call',         label: 'Leave Call',               category: 'controls', description: 'Leave the current call',                        global: true },
     { id: 'quick-screenshare',  label: 'Quick Screen Share',       category: 'controls', description: 'Share the active window with audio (default quality)', global: true },
     { id: 'lock-screen',       label: 'Lock Cipherline',          category: 'controls', description: 'Instantly lock the app (requires your PIN to reopen)', global: true },
     // Drawing requests — global, but only registered while someone is waiting on an answer
-    { id: 'approve-annotation-request', label: 'Allow drawing request',   category: 'annotation', description: 'Allow the oldest waiting request to draw on your screen or video', global: true, armedOnly: true },
-    { id: 'decline-annotation-request', label: 'Decline drawing request', category: 'annotation', description: 'Decline the oldest waiting request to draw',                        global: true, armedOnly: true },
+    { id: 'approve-annotation-request', label: 'Allow drawing request',   category: 'annotation', description: 'Allow the oldest waiting request to draw on your screen or video. Only works while someone is asking to draw on your share', global: true, armedOnly: true },
+    { id: 'decline-annotation-request', label: 'Decline drawing request', category: 'annotation', description: 'Decline the oldest waiting request to draw. Only works while someone is asking to draw on your share', global: true, armedOnly: true },
     // Navigation — local shortcuts (only when Cipherline is focused)
     { id: 'open-settings',      label: 'Open Settings',            category: 'navigation', description: 'Open the settings panel',                     global: false },
     { id: 'close-panel',        label: 'Close / Go Back',          category: 'navigation', description: 'Close the current modal or panel (Escape)',   global: false },
@@ -88,7 +89,9 @@ const STORAGE_KEY = 'cipherline_keybinds';
 const DEFAULT_KEYBINDS: KeybindMap = {
     'toggle-mute':        'ctrl+shift+m',
     'toggle-deafen':      'ctrl+shift+d',
-    'toggle-camera':      'ctrl+shift+v',
+    // Not Ctrl+Shift+V: as a GLOBAL shortcut it took "paste as plain text" away from every other app
+    // while Cipherline ran (browsers, editors, terminals). See migrateCameraKeybind.
+    'toggle-camera':      'ctrl+shift+f10',
     // Not Ctrl+Shift+S: as a GLOBAL shortcut it took "Save As" away from every
     // other app (and AMD's overlay) while Cipherline ran. See migrateKeybinds.
     'toggle-screenshare': 'ctrl+shift+f9',
@@ -212,6 +215,8 @@ export function mergeKeybinds(saved: unknown, defaults: KeybindMap = DEFAULT_KEY
 }
 
 const MIGRATION_KEY = 'cipherline_keybinds_migrated_v1';
+/** Exported for the backup vault, which carries the marker with the binds it describes (utils/crypto.ts). */
+export const KEYBINDS_MIGRATION_KEY = MIGRATION_KEY;
 
 /**
  * One-time fixes to SAVED binds. The whole map is persisted, so a changed
@@ -231,14 +236,61 @@ export function migrateKeybinds(saved: unknown, alreadyMigrated: boolean): unkno
     return out;
 }
 
+const CAMERA_MIGRATION_KEY = 'cipherline_keybinds_migrated_v2';
+/** The camera's new default first, then fallbacks for a user who already uses it for something else. */
+const CAMERA_MIGRATION_CANDIDATES: readonly string[] = ['ctrl+shift+f10', 'ctrl+shift+f11', 'ctrl+shift+f8', 'ctrl+alt+f10'];
+
+/**
+ * v2, the same fix for the camera: its old default Ctrl+Shift+V (a global shortcut that took "paste as
+ * plain text" from every other app) moves to the new default, unless that combo is already in use.
+ * Once per account; a user who re-binds Ctrl+Shift+V afterwards keeps it.
+ */
+export function migrateCameraKeybind(saved: unknown, alreadyMigrated: boolean): unknown {
+    if (alreadyMigrated || !saved || typeof saved !== 'object' || Array.isArray(saved)) return saved;
+    const out = { ...(saved as Record<string, unknown>) };
+    if (out['toggle-camera'] === 'ctrl+shift+v') {
+        // The new default, else the next free one of a short list: leaving the user with NO camera key
+        // (and nothing saying so) is the worst outcome, so UNBOUND is only the last resort.
+        const inUse = new Set(Object.entries(out).filter(([a]) => a !== 'toggle-camera').map(([, c]) => c));
+        out['toggle-camera'] = CAMERA_MIGRATION_CANDIDATES.find(c => !inUse.has(c)) ?? UNBOUND;
+    }
+    return out;
+}
+
+/**
+ * Global actions the user has NO combo for (cleared, or a migration that found the new default taken).
+ * Armed-only actions are left out: unbound-until-armed is their normal state. For the diagnostic
+ * report, so "the key does nothing" can be told from "there is no key".
+ */
+export function unboundGlobalActions(binds: KeybindMap): BindableAction[] {
+    return ACTIONS.filter(a => a.global && !a.armedOnly && !binds[a.id]).map(a => a.id);
+}
+
+/** The saved (or default) binds as the keybinds hook would load them. */
+export function readKeybindsSnapshot(): KeybindMap {
+    return loadKeybinds();
+}
+
 function loadKeybinds(): KeybindMap {
     try {
         const raw = secureLocalStore.getItem(STORAGE_KEY);
-        if (!raw) return { ...DEFAULT_KEYBINDS };
+        if (!raw) {
+            // Nothing saved yet: the defaults ARE the current ones, so there is nothing to migrate. Mark it done, or the
+            // first launch after the user saves a combo that happens to be an OLD default (Ctrl+Shift+V) rewrites it.
+            try {
+                secureLocalStore.setItem(MIGRATION_KEY, '1');
+                secureLocalStore.setItem(CAMERA_MIGRATION_KEY, '1');
+            } catch { /* best-effort */ }
+            return { ...DEFAULT_KEYBINDS };
+        }
         const migrated = secureLocalStore.getItem(MIGRATION_KEY) === '1';
-        const merged = mergeKeybinds(migrateKeybinds(JSON.parse(raw), migrated));
+        const cameraMigrated = secureLocalStore.getItem(CAMERA_MIGRATION_KEY) === '1';
+        const merged = mergeKeybinds(migrateCameraKeybind(migrateKeybinds(JSON.parse(raw), migrated), cameraMigrated));
         if (!migrated) {
             try { secureLocalStore.setItem(MIGRATION_KEY, '1'); } catch { /* retried next launch; the fix is idempotent for the old default */ }
+        }
+        if (!cameraMigrated) {
+            try { secureLocalStore.setItem(CAMERA_MIGRATION_KEY, '1'); } catch { /* retried next launch; idempotent for the old default */ }
         }
         return merged;
     } catch {
@@ -302,6 +354,8 @@ export function useKeybinds(opts: UseKeybindsOptions = {}) {
     // app). useGlobalKeybindListener falls back to a focused-window-only
     // local listener for these instead of going silent.
     const [failedGlobalActions, setFailedGlobalActions] = useState<Set<BindableAction>>(new Set());
+    // How system-wide keys can reach us on this session (null until main answers).
+    const [globalShortcutStatus, setGlobalShortcutStatus] = useState<GlobalShortcutStatus | null>(null);
 
     // Persist to localStorage
     useEffect(() => {
@@ -323,9 +377,13 @@ export function useKeybinds(opts: UseKeybindsOptions = {}) {
 
         const armedNow = new Set((armedKey ? armedKey.split(',') : []) as BindableAction[]);
         const globalMap = buildGlobalShortcutMap(binds, armedNow);
+        // Wayland portal: one stable set with the drawing-request pair always in,
+        // so a draw request never re-asks the desktop (main uses it only there).
+        const portalMap = buildGlobalShortcutMap(binds, armedAnnotationActions(binds, true, pttKey));
         const seq = ++syncSeqRef.current;
-        api.syncGlobalShortcuts(globalMap).then((result: { failed?: string[] } | void) => {
+        api.syncGlobalShortcuts(globalMap, portalMap).then((result: { failed?: string[]; status?: unknown } | void) => {
             if (seq !== syncSeqRef.current) return;
+            setGlobalShortcutStatus(readGlobalShortcutStatus(result && result.status));
             setFailedGlobalActions(new Set((result?.failed ?? []) as BindableAction[]));
         // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
         }).catch((e: any) => {
@@ -334,7 +392,7 @@ export function useKeybinds(opts: UseKeybindsOptions = {}) {
             // Unknown state — assume every global action needs the local fallback.
             setFailedGlobalActions(new Set(Object.values(globalMap) as BindableAction[]));
         });
-    }, [binds, armedKey]);
+    }, [binds, armedKey, pttKey]);
 
     const setBind = useCallback((action: BindableAction, combo: KeyCombo | null) => {
         setBinds(prev => {
@@ -391,9 +449,10 @@ export function useKeybinds(opts: UseKeybindsOptions = {}) {
         comboToAction,
         defaults: DEFAULT_KEYBINDS,
         failedGlobalActions,
+        globalShortcutStatus,
         /** Armed-only actions currently registered (see armedAnnotationActions). */
         armed,
-    }), [binds, setBind, resetAll, resetOne, comboToAction, failedGlobalActions, armed]);
+    }), [binds, setBind, resetAll, resetOne, comboToAction, failedGlobalActions, globalShortcutStatus, armed]);
 }
 
 export type KeybindHook = ReturnType<typeof useKeybinds>;

@@ -25,17 +25,20 @@ describe('reduceViewerCues — the sid arriving in the same render as the first 
         expect(r.state.epoch).toBe(SID);
     });
 
-    it('the run keeps its grace window across the sid arrival (no second grace)', () => {
-        const s0 = reduceViewerCues(initialViewerCueState(), { epoch: PENDING, viewers: [], now: 0 }).state;
-        const s1 = reduceViewerCues(s0, { epoch: SID, viewers: [], now: VIEWER_CUE_GRACE_MS - 100 }).state;
-        expect(s1.armedAt).toBe(0);
-        const r = reduceViewerCues(s1, { epoch: SID, viewers: ['bob'], now: VIEWER_CUE_GRACE_MS + 50 });
+    it('a restart keeps its grace window across the sid arrival (no second grace)', () => {
+        const off = reduceViewerCues(reduceViewerCues(initialViewerCueState(), { epoch: SID, viewers: [], now: 0 }).state, { epoch: '', viewers: [], now: 100 }).state;
+        const s0 = reduceViewerCues(off, { epoch: PENDING, viewers: [], now: 200 }).state;
+        const s1 = reduceViewerCues(s0, { epoch: SID, viewers: [], now: 200 + VIEWER_CUE_GRACE_MS - 100 }).state;
+        expect(s1.armedAt).toBe(200);
+        const r = reduceViewerCues(s1, { epoch: SID, viewers: ['bob'], now: 200 + VIEWER_CUE_GRACE_MS + 50 });
         expect(r.cues).toEqual(['start']);
     });
 
-    it('a viewer inside the first grace window is still absorbed (no pile-in storm)', () => {
-        const s0 = reduceViewerCues(initialViewerCueState(), { epoch: PENDING, viewers: [], now: 0 }).state;
-        expect(reduceViewerCues(s0, { epoch: SID, viewers: ['alice'], now: 1000 }).cues).toEqual([]);
+    it('a viewer right after a new share starts cues, in the same render as the sid or not', () => {
+        const t = Date.UTC(2026, 10, 2); // A real clock: the cooldown's zero is decades behind it.
+        const s0 = reduceViewerCues(initialViewerCueState(), { epoch: PENDING, viewers: [], now: t }).state;
+        expect(reduceViewerCues(s0, { epoch: SID, viewers: ['alice'], now: t + 300 }).cues).toEqual(['start']);
+        expect(reduceViewerCues(s0, { epoch: PENDING, viewers: ['alice'], now: t + 300 }).cues).toEqual(['start']);
     });
 
     it('a reconnect or a republish (a different sid) is still a new, silent epoch', () => {

@@ -166,13 +166,6 @@ export const MOMENTS = {
         headline: '11:11.',
         line: 'Make a wish.',
     }),
-    /** Joining a voice channel in a server where nobody else is online. */
-    'empty-party': moment({
-        mode: 'passive', waitForIdle: false, timeline: tl(500, 3200, 3600, 1000, 600),
-        shown: 'Snacks are out. Guests: any minute now.',
-        headline: 'Nobody else is online.',
-        line: 'Keys put the snacks out anyway.',
-    }),
     /** Pushing a volume slider past its 200% ceiling, three times in a few seconds. */
     'volume-ceiling': moment({
         mode: 'passive', waitForIdle: false, timeline: tl(500, 1300, 2500, 1000, 600),
@@ -242,20 +235,6 @@ export const MOMENTS = {
         shown: 'Justice has been served.',
         headline: 'Your first ban.',
         line: 'Justice has been served.',
-    }),
-    /** The first message this (new) account ever delivered. */
-    'first-message': moment({
-        mode: 'passive', waitForIdle: false, timeline: tl(500, 2600, 3300, 1000, 600),
-        shown: 'Encrypted, like everything else.',
-        headline: 'Your first message.',
-        line: 'Encrypted, like everything else.',
-    }),
-    /** The first call that connected on this (new) account. */
-    'first-call': moment({
-        mode: 'passive', waitForIdle: false, timeline: tl(500, 2800, 3200, 1000, 600),
-        shown: 'You’re connected. Say something.',
-        headline: 'Your first call.',
-        line: 'You’re connected. Say something.',
     }),
     /** The first server you create. */
     'first-server': moment({
@@ -374,7 +353,6 @@ export const MOMENT_RARITY = {
     'echo-everyone':  { cooldownMs: 30 * DAY },                                    // first time always (Invite friends helps), then monthly
     'self-ping':      { chance: 1 / 3, cooldownMs: 7 * DAY },                      // 1 in 3, at most weekly
     'wish':           { cooldownMs: 7 * DAY },                                     // at most weekly
-    'empty-party':    { cooldownMs: 14 * DAY },                                    // at most every two weeks
     'volume-ceiling': { cooldownMs: 30 * DAY },                                    // at most monthly
     'friends-100':    { maxTimes: 1 },                                             // once ever
     'servers-10':     { maxTimes: 1 },                                             // once ever
@@ -385,8 +363,6 @@ export const MOMENT_RARITY = {
     'double-general': { cooldownMs: 30 * DAY },                                    // at most monthly
     'revolving-door': { cooldownMs: 30 * DAY },                                    // at most monthly
     'first-ban':      { maxTimes: 1 },                                             // once ever
-    'first-message':  { maxTimes: 1 },                                             // once ever (and only for an account under a day old)
-    'first-call':     { maxTimes: 1 },                                             // once ever (and only for an account under a day old)
     'first-server':   { maxTimes: 1 },                                             // once ever
     'call-100':       { maxTimes: 1 },                                             // once ever
     'pi-day':         { oncePerDay: true },                                        // Mar 14 only, so once a year
@@ -560,21 +536,9 @@ export function isWishTime(d: Date): boolean {
     return d.getHours() % 12 === 11 && d.getMinutes() === 11;
 }
 
-const OFFLINE = new Set(['offline', 'invisible', '']);
-
-/**
- * Which moment (if any) joining a voice channel earns. Facts: the local clock,
- * and the server roster's presence statuses (null = roster not loaded → no
- * party). The wish outranks the party.
- */
-export function voiceJoinMoment(
-    now: Date,
-    members: ReadonlyArray<{ user_id: string; status?: string | null }> | null,
-    me: string | null | undefined,
-): MomentId | null {
-    if (isWishTime(now)) return 'wish';
-    if (me && members && members.length > 0 && !members.some(m => m.user_id !== me && !OFFLINE.has(m.status ?? ''))) return 'empty-party';
-    return null;
+/** Which moment (if any) joining a voice channel earns: only the 11:11 wish, from the local clock. */
+export function voiceJoinMoment(now: Date): MomentId | null {
+    return isWishTime(now) ? 'wish' : null;
 }
 
 /**
@@ -663,25 +627,7 @@ export function yieldMoments(store: EggStore, id: MomentId, now: number): void {
     try { store.setItem(EGG_LEDGER_KEY, JSON.stringify(ledger)); } catch { /* the cost is a double up, nothing more */ }
 }
 
-// ── milestones: the "firsts" and the 100th call ────────────────────────────
-
-/**
- * "Your first message / call" is only a first for an account that is NEW. The
- * client has no sent-message history to consult (messages are deleted on
- * delivery and the device-local ledger cannot tell a new device from an old
- * one), so the account's own age is the structural fact: created within the
- * last day. An older account — someone moving to a new machine, or a tester who
- * has been here for months — is never told its tenth-thousandth message is its
- * first. (A few minutes of clock skew either way are tolerated.)
- */
-export const NEWCOMER_MS = DAY;
-export function isNewcomer(createdIso: string | null | undefined, now: number = Date.now()): boolean {
-    if (!createdIso) return false;
-    const c = Date.parse(createdIso);
-    if (!Number.isFinite(c)) return false;
-    const age = now - c;
-    return age >= -5 * MIN && age < NEWCOMER_MS;
-}
+// ── milestones: the first server and the 100th call ────────────────────────
 
 /** The call that earns `call-100`. */
 export const CALL_MILESTONE = 100;
@@ -692,21 +638,12 @@ export function parseCallCount(raw: string | null | undefined): number {
 }
 
 /**
- * Which "first / 100th" moment (if any) a call that just CONNECTED earns.
- * `before` is the account's connected-call count before this one. Facts only:
- * a count, the account's age, and what the account has already found (so a
- * second machine, or a restore, never plays a once-ever moment again).
+ * Whether a call that just CONNECTED is the 100th. `before` is the account's
+ * connected-call count before this one; `found` is what the account has
+ * already found (so a second machine, or a restore, never replays it).
  */
-export function callConnectedMoment(before: number, createdIso: string | null | undefined, found: readonly string[], now: number = Date.now()): MomentId | null {
-    if (before + 1 === CALL_MILESTONE && !found.includes('call-100')) return 'call-100';
-    if (before === 0 && isNewcomer(createdIso, now) && !found.includes('first-call')) return 'first-call';
-    return null;
-}
-
-/** A message was DELIVERED (server accepted it): the first one, for a new account, outside your own notes. */
-export function messageDeliveredMoment(createdIso: string | null | undefined, found: readonly string[], isSelfChat: boolean, now: number = Date.now()): MomentId | null {
-    if (isSelfChat || found.includes('first-message')) return null;
-    return isNewcomer(createdIso, now) ? 'first-message' : null;
+export function callConnectedMoment(before: number, found: readonly string[]): MomentId | null {
+    return before + 1 === CALL_MILESTONE && !found.includes('call-100') ? 'call-100' : null;
 }
 
 /**

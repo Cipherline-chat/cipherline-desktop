@@ -541,6 +541,15 @@
 .vv-meter{flex:1;min-width:0}
 .vv-gate{flex:1;min-width:0;width:auto}
 .vv-gate.vv-off{opacity:.35;pointer-events:none}
+.vv-gate.vv-auto{pointer-events:none;cursor:default}
+.vv-gate.vv-auto .sthw{opacity:.7}
+.vv-gate-drop{display:flex;align-items:center;gap:12px;padding:2px 0 10px var(--vv-lab);margin-left:16px;animation:vv-gate-drop .18s ease-out}
+.vv-gate-drop>*{flex:1;min-width:0}
+@keyframes vv-gate-drop{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:none}}
+@media (prefers-reduced-motion:reduce){.vv-gate-drop{animation:none}}
+@container vv (max-width:640px){.vv-gate-drop{padding-left:0;margin-left:0}}
+.vv-dev-edit .vv-gate-drop{--vv-lab:168px}
+.vv-gate-drop+.vv-row{border-top:1px solid rgba(42,53,88,.5)}
 .vv-gate:focus-visible{outline:2px solid var(--cl-lume);outline-offset:3px;border-radius:8px}
 .vv-note{margin:0 0 8px calc(var(--vv-lab) + 16px);font-size:12px;font-weight:600;line-height:1.45;color:var(--cl-faint)}
 .vv-actions{display:flex;justify-content:flex-end;padding:4px 0 8px}

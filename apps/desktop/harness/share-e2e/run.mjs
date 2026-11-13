@@ -4,7 +4,7 @@
  * processes) against a THROWAWAY LiveKit container, the viewer's downlink
  * impaired with tc netem inside the SFU's network namespace. See README.md.
  *
- *   node run.mjs --mode incident|baseline|quick --out <file.jsonl> [--fps 60] [--codec h264]
+ *   node run.mjs --mode incident|baseline|quick|stall --out <file.jsonl> [--fps 60] [--codec h264]
  *   node run.mjs --summarize <file.jsonl>
  *
  * Env: LK_KEY, LK_SECRET (the throwaway server's key pair), DIST (built page),
@@ -105,9 +105,10 @@ async function token(identity) {
 
 // tc inside the SFU's netns, on the interface that carries the viewer's network.
 function sh(cmd) { return execFileSync('docker', ['exec', SIDE, 'sh', '-c', cmd], { encoding: 'utf8' }).trim(); }
-const IFACE = () => sh(`ip -o -4 addr show | awk '$4 ~ /^${VIEW_IP.replace(/\./g, '\\.')}\\// {print $2}'`);
+const IFACE = () => sh(`ip -o -4 addr show | awk '$4 ~ /^${VIEW_IP.replace(/[\\.]/g, '\\$&')}\\// {print $2}'`);
 let iface = '';
 function netem(spec) {
+    if (SIDE === 'none') return; // TC_SIDECAR=none: a run that impairs nothing (--mode stall) needs no sidecar
     if (!iface) iface = IFACE();
     if (!spec) { try { sh(`tc qdisc del dev ${iface} root`); } catch { /* none */ } return; }
     sh(`tc qdisc replace dev ${iface} root netem ${spec}`);
@@ -119,6 +120,8 @@ const MODES = {
     probe: [['clean', Number(args.secs ?? 40), null]],
     quick: [['clean', 40, null], ['throttle', 60, `rate ${RATE} delay 15ms limit 150`], ['recover', 70, null]],
     baseline: [['baseline', Number(args.secs ?? 600), null]],
+    // shareRxStallRecovery.ts, one rung per stall (see the page's fakeDecoderStall). --stall-kind stuck: the pause does not drain it.
+    stall: [['clean', 15, null], ['stall1', 25, { stall: args['stall-kind'] ?? 'drain' }], ['stall2', 40, { stall: args['stall-kind'] ?? 'drain' }], ['stall3', 40, { stall: args['stall-kind'] ?? 'drain' }]],
     incident: [
         ['clean1', 180, null],
         ['throttle8M', 180, `rate ${RATE} delay 15ms limit 150`],
@@ -181,6 +184,9 @@ netem(null);
 const pubInfo = await pub.page.evaluate(o => window.H.startPublisher(o), {
     url: `ws://${PUB_IP}:7880`, token: await token('pub'), keyB64, codec: CODEC, fps: FPS, width: Number(args.w ?? 2560), height: Number(args.h ?? 1440),
     resolution: args.res ?? '1440p', viewers: Number(args.viewers ?? 1), source: args.clip ? 'file' : 'canvas', gate: args.gate !== 'off', simulateHardware: args.hw !== 'false',
+    crop: args.crop ?? null,
+    driftAtS: args['drift-at'] ? Number(args['drift-at']) : undefined, driftW: args['drift-w'] ? Number(args['drift-w']) : undefined, driftH: args['drift-h'] ? Number(args['drift-h']) : undefined,
+    driftWatch: args['drift-watch'] === 'true', recoverCodec: args['recover-codec'],
 });
 write({ t: Date.now(), role: 'meta', pubInfo, fps: FPS, codec: CODEC, e2ee: E2EE, mode: args.mode, phases: phases.map(p => [p[0], p[1]]) });
 await view.page.evaluate(o => window.H.startViewer(o), { url: `ws://${VIEW_IP}:7880`, token: await token('view'), keyB64 });
@@ -210,7 +216,10 @@ for (const [name, secs, spec] of phases) {
     phase = name; phaseStart = Date.now();
     write({ t: phaseStart, role: 'phase', phase: name, secs, spec });
     console.log(`[${new Date().toISOString()}] phase ${name} ${secs}s ${JSON.stringify(spec)}`);
-    if (spec && typeof spec === 'object' && spec.burst) {
+    if (spec && typeof spec === 'object' && spec.stall) {
+        await view.page.evaluate(k => window.H.fakeDecoderStall(k), spec.stall);
+        await new Promise(r => setTimeout(r, secs * 1000));
+    } else if (spec && typeof spec === 'object' && spec.burst) {
         const [bad, good, badS, goodS] = spec.burst;
         const end = phaseStart + secs * 1000;
         while (Date.now() < end) {

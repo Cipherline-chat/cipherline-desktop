@@ -230,6 +230,20 @@ export function getLatestEpoch(channelId: string): number | null {
 }
 
 /**
+ * `rotatesAt` (ISO) of the highest epoch we hold for this channel, or null if
+ * none. Drives periodic rotation (src/utils/channelKeyDistribution.ts
+ * isEpochDueForPeriodicRotation). It is the distributor-supplied value from
+ * the channel_key content (or our own mint time + 7 days), so a holder that
+ * received the key later sees a later date — the earliest holder triggers
+ * first, which is what spreads the rotation instead of every member firing.
+ */
+export function getLatestEpochRotatesAt(channelId: string): string | null {
+    const m = getOrLoad(channelId);
+    if (m.size === 0) return null;
+    return m.get(Math.max(...m.keys()))?.rotatesAt ?? null;
+}
+
+/**
  * All epoch numbers we hold a key for in this channel, ascending. Used by
  * distribution flows that back-fill FULL history to a keyless member (a
  * new joiner / newly-permitted device), not just the latest epoch.

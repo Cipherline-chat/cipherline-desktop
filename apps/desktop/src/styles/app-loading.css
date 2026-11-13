@@ -252,6 +252,17 @@
   font-size: clamp(17px, 2.2vmin, 24px);
   color: #F4F7FF;
 }
+.lo-newbest {
+  display: inline-block;
+  margin-bottom: 8px;
+  padding: 3px 14px;
+  border-radius: 99px;
+  font-weight: 800;
+  font-size: 14px;
+  color: #EFFFFC;
+  background: rgba(37, 224, 200, .2);
+  animation: lo-pop 480ms cubic-bezier(.2, 1.4, .4, 1) 600ms backwards;
+}
 .lo-over-sub {
   margin-top: 8px;
   font-weight: 700;

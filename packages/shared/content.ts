@@ -99,6 +99,15 @@ export type ClientContent =
         file_nonce_b64: string;
         enc_alg: 'xchacha20poly1305' | 'aes256gcm';
         chunk_size: number;
+        /**
+         * Message franking (additive, optional): SHA-256 of the PLAINTEXT file,
+         * base64 (44 chars). Part of what the sender's franking commitment covers,
+         * so a reporter-uploaded copy of the file can be checked against what was
+         * sent (utils/franking.ts attachmentBody; apps/api franking.protocol.ts).
+         * Absent for files above the client's hashing cap and from older clients;
+         * an older reader ignores it.
+         */
+        content_sha256_b64?: string;
     }
     | {
         client_msg_id?: string;

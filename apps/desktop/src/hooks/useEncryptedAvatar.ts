@@ -1,10 +1,12 @@
 import { useState, useEffect } from 'react';
 import axios from 'axios';
 import { apiUrl } from '../utils/apiPath';
+import { cipherlineMediaUrl } from '../utils/safeMediaUrl';
 import { importKeyFromBase64, decryptBlob } from '../utils/crypto';
 import { loadAvatarKey, saveAvatarKey, deleteAvatarKey } from '../utils/avatarKeyStore';
 import { useHydrationGeneration } from '../contexts/HydrationContext';
 import { getAvatarBlob, putAvatarBlob, deleteAvatarBlob, type AvatarBlobKind } from '../utils/attachmentCache';
+import { primeStill } from '../utils/animatedImage';
 import { PrioritySemaphore, TokenBucket } from '../utils/avatarWarmQueue';
 
 // ── Session-level memory cache ─────────────────────────────────────────────
@@ -17,10 +19,26 @@ const avatarBytes = new Map<string, number>();
 /** Decrypted blob type per URL, so views can tell an animated-capable image
  *  (GIF / WebP) without re-reading it. See utils/animatedImage.ts. */
 const avatarMimeByUrl = new Map<string, string>();
-export const avatarUrlMime = (url: string | null | undefined): string | null => (url ? avatarMimeByUrl.get(url) ?? null : null);
-const cacheAvatarUrl = (id: string, blob: Blob): string => {
+/** The type of a decrypted image URL. Our own blob URLs are looked up; a `data:` URL
+ *  (the https proxy path) carries its own. null = unknown, which the still gate
+ *  treats as possibly animated (never as static). */
+export const avatarUrlMime = (url: string | null | undefined): string | null => {
+    if (!url) return null;
+    const known = avatarMimeByUrl.get(url);
+    if (known) return known;
+    const m = /^data:([^;,]+)/i.exec(url);
+    return m ? m[1].toLowerCase() : null;
+};
+/**
+ * Register a decrypted blob under `id` and return its object URL. For a GIF /
+ * animated WebP the first frame is made BEFORE the URL is handed out, so the
+ * first render of every view already has its still (no flash of the animation,
+ * no extra download or decrypt: it is the blob already in hand).
+ */
+const cacheAvatarUrl = async (id: string, blob: Blob): Promise<string> => {
     const url = URL.createObjectURL(blob);
     avatarMimeByUrl.set(url, blob.type);
+    await primeStill(url, blob);
     avatarMemoryCache.set(id, url);
     avatarBytes.set(id, blob.size);
     return url;
@@ -159,7 +177,7 @@ export async function loadAvatarToCache(
     try {
         const cachedBlob = await getAvatarBlob(attachmentId);
         if (cachedBlob) {
-            return cacheAvatarUrl(attachmentId, cachedBlob);
+            return await cacheAvatarUrl(attachmentId, cachedBlob);
         }
     } catch {
         // IDB unavailable or corrupt entry — fall through to network.
@@ -227,7 +245,7 @@ export async function loadAvatarToCache(
         putAvatarBlob(attachmentId, decryptedBlob, opts?.kind ? { kind: opts.kind } : undefined).catch(e =>
             console.warn('[useEncryptedAvatar] IndexedDB persist failed', e),
         );
-        return cacheAvatarUrl(attachmentId, decryptedBlob);
+        return await cacheAvatarUrl(attachmentId, decryptedBlob);
     } catch {
         // A stale or corrupt LOCALLY cached key fails decrypt every time, and
         // every retry used to reuse it - a permanent blank. Purge it and go
@@ -373,7 +391,7 @@ export async function warmAvatarsFromDiskCache(attachmentIds: string[]): Promise
                 const blob = await getAvatarBlob(id);
                 if (!blob) continue;
                 if (avatarMemoryCache.has(id)) continue;
-                cacheAvatarUrl(id, blob);
+                await cacheAvatarUrl(id, blob);
                 restored++;
             } catch {
                 // Unreadable record (keystore locked, corrupt entry) — a miss,
@@ -490,12 +508,17 @@ export function useEncryptedAvatar(
         }
         // Legacy: plain HTTP URLs are rejected — insecure and a zero-click IP beacon.
         if (attachmentId.startsWith('http:')) return;
-        // Legacy: remote HTTPS URL — proxy through the main-process SSRF guard
-        // (net:fetch-binary) instead of a direct <img> src, which would auto-fetch
-        // and reveal the user's IP to the third-party host on every render.
+        // Legacy: remote HTTPS URL. Only the Cipherline media host is fetched.
+        // This value is chosen by ANOTHER user and fetched with no click, and
+        // net:fetch-binary still makes the request from this machine, so any
+        // other host would learn this viewer's IP and when they are online.
+        // The API now accepts only attachment ids here; this guards values
+        // already stored and any server that still serves one.
         if (attachmentId.startsWith('https:')) {
+            const mediaUrl = cipherlineMediaUrl(attachmentId);
+            if (!mediaUrl) { setAvatarUrl(null); return; }
             let cancelled = false;
-            window.electronAPI?.fetchBinary(attachmentId).then(res => {
+            window.electronAPI?.fetchBinary(mediaUrl).then(res => {
                 if (!cancelled && res) setAvatarUrl(`data:${res.mimeType};base64,${res.b64}`);
             }).catch(() => {});
             return () => { cancelled = true; };

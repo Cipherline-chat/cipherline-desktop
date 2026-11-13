@@ -16,7 +16,7 @@
  * Two signals, both required:
  *   1. `navigator.onLine !== false` — the OS says an interface is up (fast, but
  *      true on a captive portal, a dead router or a VPN still reconnecting);
- *   2. a cheap reachability probe — `GET /v1/health/live`, which is public,
+ *   2. a cheap reachability probe — `GET /health/live` (outside the /v1 prefix), which is public,
  *      skips attestation / version / throttle and touches no dependency. ANY
  *      HTTP answer counts as reachable (a 503 from an unhealthy origin is still
  *      "the network is up"; retrying into an outage would only add load). Only
@@ -62,13 +62,16 @@ export function isLikelyOnline(): boolean {
 }
 
 /**
- * Default probe: GET /v1/health/live with a short timeout. Resolves true on ANY
+ * Default probe: GET /health/live (the API serves it outside the /v1 prefix; /v1/health/live is a 404) with a short timeout. Resolves true on ANY
  * HTTP response (including 5xx), false on a transport failure or timeout.
  * Never throws.
  */
+/** The health route lives at the API origin root, not under the /v1 prefix. */
+export const HEALTH_LIVE_URL = `${API_BASE.replace(/\/v1$/, '')}/health/live`;
+
 export async function probeApiReachable(timeoutMs: number = HEALTH_PROBE_TIMEOUT_MS): Promise<boolean> {
     try {
-        await axios.get(`${API_BASE}/health/live`, {
+        await axios.get(HEALTH_LIVE_URL, {
             timeout: timeoutMs,
             // Any status is "reachable"; only a transport failure rejects.
             validateStatus: () => true,

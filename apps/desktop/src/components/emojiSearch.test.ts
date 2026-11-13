@@ -18,6 +18,22 @@ describe('emojiSearch (dataset loads on demand, results unchanged once loaded)',
         expect(r[0].native).toBe('😄');
     });
 
+    it('never offers a custom emoji emoji-mart registered into the shared dataset (no blank duplicate row)', async () => {
+        const data = await loadEmojiData();
+        // What emoji-mart's init({ custom }) does when the picker opens with My Emojis.
+        const emojis = data.emojis as Record<string, unknown>;
+        emojis['tough_ass_emoji_x1'] = {
+            id: 'tough_ass_emoji_x1', name: 'tough_ass_emoji', keywords: ['tough_ass_emoji'],
+            skins: [{ src: 'blob:fake' }], version: 1,
+        };
+        try {
+            expect(searchEmoji('tough_ass_emoji')).toEqual([]);
+            expect(searchEmoji('smile', 3)[0].native).toBe('😄');
+        } finally {
+            delete emojis['tough_ass_emoji_x1'];
+        }
+    });
+
     it('queries shorter than 2 characters return nothing', async () => {
         await loadEmojiData();
         expect(searchEmoji('s')).toEqual([]);

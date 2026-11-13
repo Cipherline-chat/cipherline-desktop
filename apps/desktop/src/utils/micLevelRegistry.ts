@@ -17,9 +17,28 @@
  */
 
 let currentDbfs = -Infinity;
+/** Loudest reading since the last takePipelinePeak(). */
+let peakDbfs = -Infinity;
+/** When the meter last reported (epoch ms); 0 = not this call. */
+let lastReportAt = 0;
 
-export function setCurrentPipelineDbfs(dbfs: number): void {
+export function setCurrentPipelineDbfs(dbfs: number, nowMs: number = Date.now()): void {
     currentDbfs = dbfs;
+    if (dbfs > peakDbfs) peakDbfs = dbfs;
+    lastReportAt = nowMs;
+}
+
+/**
+ * The silence watchdog's view of the meter: the LOUDEST reading since it last
+ * asked (a 1 s sample of a 100 ms meter must not miss a word that fell between
+ * two reads), and how long ago the meter last reported at all. A meter that has
+ * gone quiet because its timer died looks like a quiet user in `currentDbfs`
+ * forever; the age is what tells them apart. Resets the peak.
+ */
+export function takePipelinePeak(nowMs: number = Date.now()): { dbfs: number; ageMs: number } {
+    const dbfs = peakDbfs;
+    peakDbfs = -Infinity;
+    return { dbfs, ageMs: lastReportAt === 0 ? Infinity : Math.max(0, nowMs - lastReportAt) };
 }
 
 export function getCurrentPipelineDbfs(): number {
@@ -31,4 +50,6 @@ export function getCurrentPipelineDbfs(): number {
  *  reported anything fresh. */
 export function resetPipelineDbfs(): void {
     currentDbfs = -Infinity;
+    peakDbfs = -Infinity;
+    lastReportAt = 0;
 }

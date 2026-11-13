@@ -1,32 +1,52 @@
 import { describe, it, expect } from 'vitest';
-import { computeIsAttentive, IDLE_THRESHOLD_SECONDS } from './attentionState';
+import {
+    computeIsAttentive, heartbeatPayload, IDLE_THRESHOLD_SECONDS,
+    reduceSessionPowerState, isSessionInUse, SESSION_AVAILABLE, OS_POWER_SIGNALS,
+    nextIdlePollDelayMs, type SessionPowerState,
+} from './attentionState';
 
 /**
- * The attention state machine's one decision, tested per the continuity
- * spec's own acceptance list: "focused+recent input → true; blurred →
- * immediate false; idle past threshold → false."
+ * The attention state machine's one decision. Owner's rules R1-R4: the PC is
+ * "in use" when input idle time is under the idle timeout and the session is
+ * available, REGARDLESS of which window has focus (a person working in another
+ * app on the same PC does not need a phone buzz); a locked or suspended
+ * session is never in use; idle at or past the timeout is not in use; unknown
+ * readings fail conservative.
  */
 describe('computeIsAttentive', () => {
-    it('focused with recent input → true', () => {
+    it('session available with recent input → true (window focus is not an input)', () => {
         expect(computeIsAttentive(true, 0)).toBe(true);
         expect(computeIsAttentive(true, 5)).toBe(true);
     });
 
-    it('blurred (not focused) → false, regardless of idle time', () => {
+    it('UNFOCUSED but actively using the PC (idle ~0) → attentive: working in another app counts', () => {
+        // The function takes no focus argument at all: that is the contract.
+        // Cipherline minimised/behind a browser is indistinguishable here from
+        // Cipherline in front, and both must read attentive while input is fresh.
+        expect(computeIsAttentive(true, 1)).toBe(true);
+        expect(computeIsAttentive(true, IDLE_THRESHOLD_SECONDS - 1)).toBe(true);
+    });
+
+    it('locked / suspended session → false, regardless of how recent the input was', () => {
         expect(computeIsAttentive(false, 0)).toBe(false);
         expect(computeIsAttentive(false, 0, 999_999)).toBe(false);
     });
 
-    it('idle past the threshold → false, even while focused', () => {
+    it('idle at or past the threshold → false', () => {
         expect(computeIsAttentive(true, IDLE_THRESHOLD_SECONDS)).toBe(false);
         expect(computeIsAttentive(true, IDLE_THRESHOLD_SECONDS + 1)).toBe(false);
     });
 
-    it('idle just under the threshold → true while focused', () => {
+    it('boundary: one second under the threshold is attentive, exactly the threshold is not', () => {
         expect(computeIsAttentive(true, IDLE_THRESHOLD_SECONDS - 1)).toBe(true);
+        expect(computeIsAttentive(true, IDLE_THRESHOLD_SECONDS)).toBe(false);
+        // fractional readings straddle the edge too
+        expect(computeIsAttentive(true, IDLE_THRESHOLD_SECONDS - 0.001)).toBe(true);
+        expect(computeIsAttentive(true, IDLE_THRESHOLD_SECONDS + 0.001)).toBe(false);
     });
 
     it('uses the real default threshold (300s) when none is passed', () => {
+        expect(IDLE_THRESHOLD_SECONDS).toBe(300);
         expect(computeIsAttentive(true, 299)).toBe(true);
         expect(computeIsAttentive(true, 300)).toBe(false);
     });
@@ -35,53 +55,130 @@ describe('computeIsAttentive', () => {
         expect(computeIsAttentive(true, NaN)).toBe(false);
         expect(computeIsAttentive(true, -1)).toBe(false);
         expect(computeIsAttentive(true, Infinity)).toBe(false);
+        expect(computeIsAttentive(true, Number.POSITIVE_INFINITY)).toBe(false);
+        expect(computeIsAttentive(true, -Infinity)).toBe(false);
     });
 
-    it('a custom threshold is honored (test-only override)', () => {
-        expect(computeIsAttentive(true, 10, 5)).toBe(false);
-        expect(computeIsAttentive(true, 4, 5)).toBe(true);
+    it('the user\'s threshold is honoured, in both directions', () => {
+        // 1-minute timeout: 61 s idle is idle, though the default would say active.
+        expect(computeIsAttentive(true, 61, 60)).toBe(false);
+        expect(computeIsAttentive(true, 59, 60)).toBe(true);
+        // 30-minute timeout: 10 minutes idle is still in use.
+        expect(computeIsAttentive(true, 600, 1800)).toBe(true);
+        expect(computeIsAttentive(true, 1800, 1800)).toBe(false);
+    });
+
+    it('a nonsensical threshold never makes anyone attentive', () => {
+        expect(computeIsAttentive(true, 0, NaN)).toBe(false);
+        expect(computeIsAttentive(true, 0, 0)).toBe(false);
+        expect(computeIsAttentive(true, 0, -5)).toBe(false);
     });
 });
 
 /**
- * A hidden, minimised or unfocused window must NEVER report `active: true`
- * (orchestrator, 2026-09-24; the server's push routing — "don't wake the phone
- * while the user is active elsewhere" — reads exactly this flag). The hook used
- * to send a cached ref that only focus/blur EVENTS updated, so a missed event
- * (a tray hide on a platform that fires no blur, a window hidden while already
- * unfocused, a throttled idle poll) left `true` on the wire from a window
- * nobody could see. The verdict is now recomputed from the live window state
- * at the moment every heartbeat is sent.
+ * Lock / suspend / quit must still report not-attentive IMMEDIATELY and stay
+ * that way until the matching unlock/resume. Lock and suspend are independent
+ * facts: a laptop locked then closed emits lock → suspend → resume, and after
+ * that resume the screen is still locked.
  */
-describe('isWindowAttendable — live window state, read at send time', () => {
-    it('visible and focused (both by event and by the document) → attendable', async () => {
-        const { isWindowAttendable } = await import('./attentionState');
-        expect(isWindowAttendable({ focusedByEvent: true, documentHasFocus: true, visibilityState: 'visible' })).toBe(true);
+describe('session power state', () => {
+    const run = (signals: string[], from: SessionPowerState = SESSION_AVAILABLE) =>
+        signals.reduce(reduceSessionPowerState, from);
+
+    it('starts available', () => {
+        expect(isSessionInUse(SESSION_AVAILABLE)).toBe(true);
     });
 
-    it.each([
-        ['hidden (tray)', { focusedByEvent: true, documentHasFocus: true, visibilityState: 'hidden' }],
-        ['minimised (Chromium reports hidden)', { focusedByEvent: true, documentHasFocus: false, visibilityState: 'hidden' }],
-        ['unfocused, blur event missed', { focusedByEvent: true, documentHasFocus: false, visibilityState: 'visible' }],
-        ['unfocused by event', { focusedByEvent: false, documentHasFocus: true, visibilityState: 'visible' }],
-        ['unknown visibility', { focusedByEvent: true, documentHasFocus: true, visibilityState: undefined }],
-    ])('%s → never attendable', async (_label, state) => {
-        const { isWindowAttendable, computeIsAttentive } = await import('./attentionState');
-        const attendable = isWindowAttendable(state as Parameters<typeof isWindowAttendable>[0]);
-        expect(attendable).toBe(false);
-        // …so even zero idle time cannot make it attentive.
-        expect(computeIsAttentive(attendable, 0)).toBe(false);
+    it('lock-screen → not in use; unlock-screen → in use again', () => {
+        expect(isSessionInUse(run(['lock-screen']))).toBe(false);
+        expect(isSessionInUse(run(['lock-screen', 'unlock-screen']))).toBe(true);
+    });
+
+    it('suspend → not in use; resume → in use again', () => {
+        expect(isSessionInUse(run(['suspend']))).toBe(false);
+        expect(isSessionInUse(run(['suspend', 'resume']))).toBe(true);
+    });
+
+    it('lock → suspend → resume is STILL not in use (the lock screen is still up)', () => {
+        const s = run(['lock-screen', 'suspend', 'resume']);
+        expect(s).toEqual({ locked: true, suspended: false });
+        expect(isSessionInUse(s)).toBe(false);
+        // only the unlock ends it
+        expect(isSessionInUse(reduceSessionPowerState(s, 'unlock-screen'))).toBe(true);
+    });
+
+    it('the pair arrives in either order: unlock before resume leaves it suspended', () => {
+        const s = run(['lock-screen', 'suspend', 'unlock-screen']);
+        expect(isSessionInUse(s)).toBe(false);
+        expect(isSessionInUse(reduceSessionPowerState(s, 'resume'))).toBe(true);
+    });
+
+    it('repeated signals are idempotent', () => {
+        expect(run(['lock-screen', 'lock-screen'])).toEqual({ locked: true, suspended: false });
+        expect(run(['unlock-screen', 'unlock-screen'])).toEqual(SESSION_AVAILABLE);
+        expect(run(['suspend', 'suspend', 'resume'])).toEqual(SESSION_AVAILABLE);
+    });
+
+    it('an unknown signal changes nothing (never unlocks, never locks)', () => {
+        const locked = run(['lock-screen']);
+        expect(reduceSessionPowerState(locked, 'shutdown')).toBe(locked);
+        expect(reduceSessionPowerState(locked, '')).toBe(locked);
+        expect(reduceSessionPowerState(SESSION_AVAILABLE, 'bogus')).toBe(SESSION_AVAILABLE);
+    });
+
+    it('the reducer does not mutate the state it is given', () => {
+        const before = { locked: false, suspended: false };
+        reduceSessionPowerState(before, 'lock-screen');
+        expect(before).toEqual({ locked: false, suspended: false });
+    });
+
+    it('feeds the decision: a locked PC with idle 0 is not attentive, unlocked it is', () => {
+        const locked = run(['lock-screen']);
+        expect(computeIsAttentive(isSessionInUse(locked), 0)).toBe(false);
+        expect(computeIsAttentive(isSessionInUse(reduceSessionPowerState(locked, 'unlock-screen')), 0)).toBe(true);
+    });
+
+    it('exports exactly the four signals main forwards', () => {
+        expect([...OS_POWER_SIGNALS].sort()).toEqual(['lock-screen', 'resume', 'suspend', 'unlock-screen']);
+    });
+});
+
+describe('nextIdlePollDelayMs', () => {
+    it('attentive: sleeps until just after the threshold, so the idle edge is precise', () => {
+        // 290 s idle of a 300 s timeout → ~10.25 s, not a full 30 s slot.
+        expect(nextIdlePollDelayMs(290, 300)).toBe(10_250);
+    });
+
+    it('attentive and far from the threshold: capped at the slow cadence', () => {
+        expect(nextIdlePollDelayMs(0, 300)).toBe(30_000);
+        expect(nextIdlePollDelayMs(0, 1800)).toBe(30_000);
+    });
+
+    it('about to elapse: never below the floor (no hot loop)', () => {
+        expect(nextIdlePollDelayMs(299.9, 300)).toBe(1_000);
+    });
+
+    it('already idle: polls fast so a return to the keyboard is noticed in seconds', () => {
+        expect(nextIdlePollDelayMs(300, 300)).toBe(10_000);
+        expect(nextIdlePollDelayMs(900, 300)).toBe(10_000);
+    });
+
+    it('unknown reading or bad threshold: the fast idle cadence, never a long sleep', () => {
+        expect(nextIdlePollDelayMs(NaN, 300)).toBe(10_000);
+        expect(nextIdlePollDelayMs(Infinity, 300)).toBe(10_000);
+        expect(nextIdlePollDelayMs(-1, 300)).toBe(10_000);
+        expect(nextIdlePollDelayMs(5, NaN)).toBe(10_000);
+        expect(nextIdlePollDelayMs(5, 0)).toBe(10_000);
     });
 });
 
 describe('the heartbeat on the wire', () => {
-    it('is exactly { event: "presence:heartbeat", data: { active } }', async () => {
-        const { heartbeatPayload } = await import('./attentionState');
+    it('is exactly { event: "presence:heartbeat", data: { active } }', () => {
         expect(JSON.parse(heartbeatPayload(true))).toEqual({ event: 'presence:heartbeat', data: { active: true } });
         expect(JSON.parse(heartbeatPayload(false))).toEqual({ event: 'presence:heartbeat', data: { active: false } });
     });
 
-    it('useRealtime sends every heartbeat through it, recomputing attention from the live window', async () => {
+    it('useRealtime sends every heartbeat through it, from the idle/lock inputs, with no focus gate', async () => {
         const { readFileSync } = await import('node:fs');
         const { join } = await import('node:path');
         const src = readFileSync(join(__dirname, '..', 'hooks', 'useRealtime.ts'), 'utf8')
@@ -89,11 +186,22 @@ describe('the heartbeat on the wire', () => {
         // No hand-built heartbeat left, and no cached verdict sent as-is.
         expect(src).not.toMatch(/event:\s*'presence:heartbeat'/);
         expect(src).not.toContain('active: attentiveRef.current');
-        // Connect + periodic heartbeats read the live state; loss events send false.
+        // Connect + periodic heartbeats read the live inputs; loss events send false.
         expect(src.match(/ws\.send\(heartbeatPayload\(currentAttention\(\)\)\)/g)?.length).toBe(2);
         expect(src).toContain('heartbeatPayload(active)');
-        // Hiding the window (tray, minimise, any platform) reports at once.
-        expect(src).toContain("document.visibilityState === 'hidden'");
-        expect(src).toContain('onWindowHide');
+        // The verdict is idle + session state against the USER's threshold.
+        expect(src).toContain('computeIsAttentive(isSessionInUse(powerStateRef.current), idleSecondsRef.current, getIdleThresholdSeconds())');
+        // Focus / blur / minimise / hide no longer clear attention.
+        expect(src).not.toContain('onWindowBlur');
+        expect(src).not.toContain('onWindowMinimize');
+        expect(src).not.toContain('onWindowHide');
+        expect(src).not.toContain('focusedRef');
+        expect(src).not.toContain('isWindowAttendable');
+        expect(src).not.toContain("document.visibilityState === 'hidden'");
+        // Lock / suspend / quit still report at once.
+        expect(src).toContain('onOsPowerSignal');
+        expect(src).toContain('onBeforeQuit');
+        // A threshold change must reach the poller: it reads the live getter, not a constant.
+        expect(src).not.toMatch(/\bIDLE_THRESHOLD_SECONDS\b/);
     });
 });

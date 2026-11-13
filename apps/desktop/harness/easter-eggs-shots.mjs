@@ -62,21 +62,8 @@ const SCENES = {
         const off = await open('?scene=gauge&eggs=off', { viewport: { width: 360, height: 860 } });
         await off.page.fill('input[aria-label="Find a setting"]', 'octopus');
         await off.page.waitForTimeout(300);
-        check('octopus with the switch off → no note', (await off.page.textContent('.cl-fmsg')) === '');
+        check('octopus with a stale retired-switch "0" → still a note (there is no switch)', (await off.page.textContent('.cl-fmsg')).length > 0);
         await off.ctx.close();
-    },
-    async appearance() {
-        const { ctx, page } = await open('?scene=appearance', { viewport: { width: 900, height: 700 } });
-        const row = page.locator('.sd-row', { hasText: 'Easter eggs & playful touches' });
-        check('toggle row present', (await row.count()) === 1);
-        await row.scrollIntoViewIfNeeded();
-        await page.screenshot({ path: `${OUT}/appearance-toggle.png` });
-        const tog = row.locator('[role=switch], button, input').first();
-        await tog.click();
-        await page.waitForTimeout(300);
-        const stored = await page.evaluate(async () => (await import('/src/utils/secureLocalStore.ts')).secureLocalStore.getItem('cipherline_easter_eggs'));
-        check('turning it off stores "0"', stored === '0', String(stored));
-        await ctx.close();
     },
     async status() {
         const { ctx, page } = await open('?scene=status', { viewport: { width: 520, height: 520 } });
@@ -105,7 +92,7 @@ const SCENES = {
         await ctx.close();
         const off = await open('?scene=version&eggs=off', { viewport: { width: 760, height: 280 } });
         for (let i = 0; i < 8; i++) { await off.page.click('#chip'); await off.page.waitForTimeout(100); }
-        check('switch off: no badge, no note', (await off.page.$('[data-testid=keys-dev-badge]')) === null && (await off.page.textContent('[role=status]')) === '');
+        check('stale retired-switch "0": the badge still appears (there is no switch)', (await off.page.$('[data-testid=keys-dev-badge]')) !== null);
         await off.ctx.close();
     },
     async composer() {
@@ -122,7 +109,7 @@ const SCENES = {
         check('12:30 → plain', noon.v === 'Message…', noon.v);
         await noon.ctx.close();
         const off = await ph('&date=2026-10-20T03:30:00&eggs=off');
-        check('03:30 with the switch off → plain', off.v === 'Message…', off.v);
+        check('03:30 with a stale retired-switch "0" → still the late-night line (there is no switch)', off.v !== 'Message…', off.v);
         await off.ctx.close();
     },
     async alone() {

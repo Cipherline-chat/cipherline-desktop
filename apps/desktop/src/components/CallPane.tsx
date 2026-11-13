@@ -6,7 +6,7 @@ import {
     useLocalParticipant,
     useRoomContext,
 } from '@livekit/components-react';
-import { ExternalE2EEKeyProvider, VideoPresets, VideoPreset, Track, RoomEvent, DisconnectReason, LocalAudioTrack, type RemoteTrackPublication } from 'livekit-client';
+import { VideoPresets, VideoPreset, Track, RoomEvent, DisconnectReason, LocalAudioTrack, type RemoteTrackPublication } from 'livekit-client';
 import { annotationStore } from '../utils/annotationStore';
 import { useAnnotationTransport } from '../hooks/useAnnotationTransport';
 import { AnnotationRequestsDock } from './call/AnnotationRequestsDock';
@@ -30,6 +30,8 @@ import { playSound, playLoopingSound } from '../utils/notificationSounds';
 import { micCaptureConstraints, resolveEchoCancellation, resolveMicDeviceId } from '../utils/audioInput';
 import type { VoiceSettingsHook } from '../hooks/useVoiceSettings';
 import * as voiceProcessorManager from '../utils/voiceProcessorManager';
+import { NoiseFloorWatcher, noisePromptApplies, noisePromptAllowed, snoozeNoisePrompt } from '../utils/noiseFloorPrompt';
+import { recordMicLevelSecond, resetMicLevelLog } from '../utils/micLevelLog';
 import * as audioHealth from '../utils/audioHealth';
 import { setCurrentPipelineDbfs, resetPipelineDbfs } from '../utils/micLevelRegistry';
 import { decideDisconnectHandling } from '../utils/callTransition';
@@ -41,7 +43,9 @@ import { attachAnnexBStatsLog, attachDataPacketErrorLog, attachAudioLagLog } fro
 import { installE2EESenderCodecPin, e2eeWorkerOf, type CodecPinRoom } from '../utils/e2eeSenderCodec';
 import { describeE2EEActivationFailure, type E2EEActivationFailure } from '../utils/e2eeActivation';
 import { E2EEActivator } from './E2EEActivator';
+import { RotatingKeyProvider } from '../utils/e2eeKeyRing';
 import { TrackCueController, type CuePublication, type CueParticipant } from '../utils/callTrackCues';
+import { shareHold, attachShareHoldToRoom, type ShareHoldRoom } from '../utils/shareHold';
 import { ROSTER_ONLY } from '../utils/callRosterEvents';
 import { noteRemoteVideoSubscribed } from '../utils/remoteVideoDemand';
 import { GamingVideoGuard } from './call/GamingVideoGuard';
@@ -51,6 +55,7 @@ import { CallMilestones } from './call/CallMilestones';
 import { CallEventMonitor } from './call/CallEventMonitor';
 import { GpuRecoveryController } from './call/GpuRecoveryController';
 import { publishGrants } from '../utils/livekitPublishGrants';
+import { isMediaDeviceUnavailableError, describeMediaDeviceUnavailable } from '../utils/callMediaDeviceErrors';
 import { markCallJoinTrace, finishCallJoinTrace } from '../utils/callJoinTrace';
 import { releaseMicPrewarm } from '../utils/micPrewarm';
 import { ringbackWanted, createRingbackDriver } from '../utils/ringback';
@@ -244,6 +249,8 @@ interface CallPaneProps {
     token: string;
     apiToken: string;
     e2eeKeyB64: string;
+    /** The call-key store's epoch for `e2eeKeyB64` (DM/group calls); undefined otherwise. */
+    e2eeKeyEpoch?: number;
     onDisconnect: (wasLastPerson?: boolean, deliberate?: boolean) => void;
     /** Forwarded to SidebarConference's onInactivityWarning — see its doc
      *  comment for why Dashboard needs this to avoid a duplicate SoloKickDialog. */
@@ -453,7 +460,11 @@ const CallAudioEffects = ({ isInitiator, noRinging, roomConnected }: { isInitiat
         const onData = (payload: Uint8Array, participant?: { identity: string }) => {
             try {
                 const msg = JSON.parse(new TextDecoder().decode(payload));
-                if (msg?.type === 'ss-adjust' && participant?.identity) {
+                // `hold`: the sender also set the republish flag, which covers
+                // this gap exactly (utils/shareHold.ts). The timed window here is
+                // for publishers on an older build, and would only blur a real
+                // stop that follows within it.
+                if (msg?.type === 'ss-adjust' && !msg.hold && participant?.identity) {
                     // Grace window longer than the worst-case republish gap in
                     // handleScreenShareSelect (50 ms sleep + stop + start +
                     // native-audio restart ≈ a few hundred ms). 2s is generous
@@ -467,8 +478,8 @@ const CallAudioEffects = ({ isInitiator, noRinging, roomConnected }: { isInitiat
         // participant's own data packets back, so SidebarConference fires
         // this window event alongside the data broadcast.
         const onLocalAdjust = (e: Event) => {
-            const identity = (e as CustomEvent).detail?.identity;
-            if (identity) ctxRef.current?.markAdjusting(identity, 2000);
+            const detail = (e as CustomEvent).detail;
+            if (detail?.identity && !detail.hold) ctxRef.current?.markAdjusting(detail.identity, 2000);
         };
 
         // Which cue each camera / share event plays lives in
@@ -488,7 +499,7 @@ const CallAudioEffects = ({ isInitiator, noRinging, roomConnected }: { isInitiat
         //    changes never publish, so they never cue.
         const cues = new TrackCueController({
             isReady: () => readyRef.current,
-            isAdjusting: identity => !!ctxRef.current?.isAdjusting(identity),
+            isAdjusting: identity => !!ctxRef.current?.isAdjusting(identity) || shareHold.isGapExpected(identity),
             play: cue => playSound(cue, soundsPrefs()),
             now: () => Date.now(),
             setTimer: (fn, ms) => setTimeout(fn, ms),
@@ -548,6 +559,12 @@ const CallAudioEffects = ({ isInitiator, noRinging, roomConnected }: { isInitiat
         room.on(RoomEvent.Reconnecting, onReconnecting);
         room.on(RoomEvent.Reconnected,  onReconnected);
         window.addEventListener('cipherline:ss-adjust', onLocalAdjust);
+        // After the cue listeners, which must see the state from before each event.
+        const detachShareHold = attachShareHoldToRoom(room as unknown as ShareHoldRoom);
+        // A hold that ended with no stream to resume is the stop the cue was held back for.
+        const offHoldEnded = shareHold.onEnded((_identity, end) => {
+            if (end === 'timeout' || end === 'cancelled') cues.shareHoldClosed();
+        });
 
         // Defer enabling the cues past the first microtask so publications
         // already in progress at mount time don't play a spurious "started".
@@ -557,6 +574,8 @@ const CallAudioEffects = ({ isInitiator, noRinging, roomConnected }: { isInitiat
             clearTimeout(readyTimer);
             if (reconnectReadyTimer) clearTimeout(reconnectReadyTimer);
             readyRef.current = false;
+            offHoldEnded();
+            detachShareHold();
             // Flush any still-pending screenshare-end cues so we don't leak them.
             cues.dispose();
             room.off(RoomEvent.DataReceived, onData);
@@ -601,6 +620,7 @@ export const CallPane = ({
     token,
     apiToken,
     e2eeKeyB64,
+    e2eeKeyEpoch,
     onDisconnect,
     onInactivityWarning,
     videoByDefault = false,
@@ -632,7 +652,7 @@ export const CallPane = ({
     joinDeafened = false,
     onRoomConnected,
 }: CallPaneProps) => {
-    const [keyProvider] = useState(() => new ExternalE2EEKeyProvider());
+    const [keyProvider] = useState(() => new RotatingKeyProvider());
 
     // ── Instant join ─────────────────────────────────────────────────────
     // The in-call UI (SidebarConference: tiles + the real ControlBar) mounts
@@ -723,6 +743,8 @@ export const CallPane = ({
         return () => { window.clearTimeout(joinCap); endJoin(); endInCall(); };
     }, []);
     const toast = useToast();
+    // One watcher per call (this component is keyed by the call): the prompt shows at most once per call.
+    const noiseWatcherRef = useRef(new NoiseFloorWatcher());
 
     // ── Capture device ids, ONCE, at mount ────────────────────────────────────
     // These are deliberately NOT reactive and deliberately NOT in roomOptions'
@@ -866,8 +888,30 @@ export const CallPane = ({
                 audioHealth.recordRenderUnderrun(underrunMs);
                 logCallEvent('audio_render', { underrun_ms: underrunMs, underrun_events: underrunEvents, window_s: windowS, ns });
             },
+            onNoiseFloor: (minDb) => {
+                const st = voice?.settings;
+                if (!st) return;
+                if (!noiseWatcherRef.current.observe(minDb, noisePromptApplies(st))) return;
+                const now = Date.now();
+                if (!noisePromptAllowed(now)) return;
+                snoozeNoisePrompt(now);
+                toast.push({
+                    kind: 'info',
+                    title: 'Lots of background noise',
+                    message: "There's a lot of background noise. Switch to Strong noise suppression?",
+                    durationMs: 20000,
+                    action: {
+                        label: 'Switch',
+                        onClick: () => {
+                            voice?.setNoiseSuppression(true);
+                            voice?.setNoiseSuppressionMode('strong');
+                        },
+                    },
+                });
+            },
             onNsStats: (stats) => audioHealth.recordNsStats(stats),
             onAgcStats: (stats) => audioHealth.recordAgcStats(stats),
+            onMicLevelStats: (stats) => recordMicLevelSecond(stats),
         });
     }, [voice, toast]);
 
@@ -879,6 +923,7 @@ export const CallPane = ({
     // even when nobody happened to notice it live.
     useEffect(() => {
         audioHealth.resetForCall();
+        resetMicLevelLog();
         resetPipelineDbfs();
     }, []);
 
@@ -1189,6 +1234,17 @@ export const CallPane = ({
                     if (handling.teardown) onDisconnect();
                 }}
                 onError={(err) => {
+                    // A microphone / camera that can't be opened is not a failed
+                    // connection: the room is (or is about to be) connected. Stay in
+                    // the call with that device off instead of leaving at 0:00
+                    // (utils/callMediaDeviceErrors.ts). The join handover's own
+                    // mic-wait timer finishes the join without the mic.
+                    if (isMediaDeviceUnavailableError(err)) {
+                        console.warn('[CallPane] media device unavailable — staying in the call without it:', err.name);
+                        const { title, message } = describeMediaDeviceUnavailable(err, !!(videoByDefault && grants.camera));
+                        toast.push({ kind: 'warning', title, message });
+                        return;
+                    }
                     console.error('[CallPane] LiveKit connection error:', err);
                     failConnection(err.message || "Couldn't connect to the call.", 'connect', err);
                 }}
@@ -1208,6 +1264,7 @@ export const CallPane = ({
                     <E2EEActivator
                         keyProvider={keyProvider}
                         keyB64={e2eeKeyB64}
+                        keyEpoch={e2eeKeyEpoch}
                         onFailure={failEncryption}
                     />
 

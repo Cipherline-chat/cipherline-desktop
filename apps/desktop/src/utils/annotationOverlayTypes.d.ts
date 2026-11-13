@@ -65,14 +65,22 @@ export type OverlayRefusal =
     | 'bad_source'
     /** The id was never offered by this session's picker (admission). */
     | 'not_offered'
-    /** This OS cannot overlay this kind of share (window shares on Linux). */
+    /** This OS cannot overlay this kind of share (Linux window shares outside a real X11 session: Wayland / portal shares expose no window position). */
     | 'platform'
-    /** Linux under Wayland: a client can neither place nor stack its windows. */
+    /** Linux under Wayland with no overlay helper built into this install: a client can neither place nor stack its windows. */
     | 'wayland'
-    /** Linux X11 without a known compositing desktop: a transparent window would paint black over the share. */
+    /** Wayland compositor with neither wlr-layer-shell nor a usable XWayland (GNOME without XWayland): in-app preview only. */
+    | 'no_layer_shell'
+    /** The Wayland overlay helper could not start or did not answer (missing libwayland, no socket, crash). */
+    | 'helper_failed'
+    /** Wayland: the shared frame is not the whole of any output (a single window chosen in the portal). */
+    | 'not_whole_screen'
+    /** Linux X11 with no compositing manager running (probed at run time, and again while the overlay is up): a transparent window would paint black over the share. */
     | 'no_compositor'
     /** Several displays and no signal saying which one the share captures. */
     | 'no_display_match'
+    /** Wayland: several identical displays fit the share; the sharer must say which one (OverlayScreenChoice). */
+    | 'needs_choice'
     /** The audio_capture addon (window_geometry) is missing or predates it. */
     | 'addon_missing'
     /** The shared window is gone. */
@@ -80,11 +88,37 @@ export type OverlayRefusal =
     /** BrowserWindow creation / content protection / page write failed. */
     | 'create_failed';
 
+/**
+ * The "Which screen are you sharing?" question, sent to the renderer when the share cannot be
+ * told apart from the compositor's outputs (two identical monitors on Wayland, where the portal
+ * never says which one was picked). Geometry only, in Electron's logical (DIP) space.
+ */
+export interface OverlayScreenChoice {
+    displays: Array<{ id: number; x: number; y: number; width: number; height: number; primary: boolean }>;
+    /** Ids from `displays` the sharer may pick (the ones that fit the shared frame). */
+    candidates: number[];
+}
+
+/** A display or stream rectangle in logical (DIP) pixels. */
+export interface OverlayRect { x: number; y: number; width: number; height: number }
+
+/**
+ * Optional extra facts for `annot-overlay:show` (Wayland), all validated again in main:
+ *  - `stream`: the portal's own statement of the monitor rectangle it streams (native hardware share only).
+ *  - `remembered`: the sharer's earlier answer to "which screen?" - the layout they were shown and the rectangle they picked.
+ *    Main uses it only while the display layout is still exactly that layout.
+ */
+export interface OverlayShowHint {
+    stream?: OverlayRect;
+    remembered?: { layout: OverlayRect[]; chosen: OverlayRect };
+}
+
 /** `annot-overlay:show`'s answer. A main process older than this answers a bare boolean. */
 export type OverlayShowResult =
     | {
         ok: true;
-        /** How the target was resolved: display-id | monitor-rect | only-display | window. */
+        /** How the target was resolved: display-id | monitor-rect | only-display | window; on Wayland
+         *  `wl-layer-` / `wl-x11-` + display-id | only-display | stream-size. */
         how: string;
         /**
          * The overlay window is INSIDE the captured stream, because this OS has
@@ -100,4 +134,6 @@ export type OverlayShowResult =
         /** Diagnostics only: how many displays main sees, and whether the addon's geometry calls exist. */
         displays?: number;
         addon?: boolean;
+        /** Present with `reason: 'needs_choice'`. */
+        choice?: OverlayScreenChoice;
     };

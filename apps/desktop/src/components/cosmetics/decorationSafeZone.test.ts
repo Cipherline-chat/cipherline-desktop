@@ -8,7 +8,12 @@
  *   1. structurally: every layer is wrapped in the safe-zone mask;
  *   2. geometrically: the rendered SVG is walked with its transforms, every
  *      shape's outline is sampled (arcs converted properly, stroke widths
- *      included) and no sample - and no filled interior - may reach the zone.
+ *      included) and no sample - and no filled interior - may reach the zone;
+ *      bodies riding an orbit (halos.tsx, `data-orbit`) are checked at every
+ *      10 degrees of the loop, not just where they start.
+ *
+ * It also bounds every decoration to VISIBLE_REACH from the avatar centre
+ * (owner, 2026-10-26: the sea fan was "mostly off profile").
  *
  * Soft glow fills (`data-glow`) are the one exemption: they are light, not
  * objects, and the mask (1) is what keeps them off the dot.
@@ -19,6 +24,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { AvatarDecoration } from '../ProfileCosmetics';
 import { AVATAR_DECORATIONS, optionSpecsFor, type ItemOptions } from '../../utils/profileCosmetics';
 import { SAFE_ZONE } from './geometry';
+import { SEA_FAN_REACH } from './decorations';
 
 type M = [number, number, number, number, number, number];
 const I: M = [1, 0, 0, 1, 0, 0];
@@ -144,19 +150,37 @@ const inside = (pt: [number, number], poly: Array<[number, number]>): boolean =>
 };
 
 interface Hit { tag: string; at: [number, number]; dist: number }
+/** One sampled point of drawn geometry (absolute coordinates) and the half stroke width around it. */
+type Visit = (p: [number, number], half: number, tag: string) => void;
+const rot = (deg: number): M => { const r = (deg * Math.PI) / 180, c = Math.cos(r), s = Math.sin(r); return [c, s, -s, c, 0, 0]; };
+/** Orbits (cosmetics/halos.tsx) are sampled all the way round, this many degrees apart. */
+const ORBIT_STEP = 10;
 
-/** Every way the zone is touched by the drawn geometry under `el`. */
-function violations(el: Element, m: M, strokeW: number, out: Hit[]): void {
+/**
+ * Walk the drawn geometry under `el`: every outline sample (with its stroke
+ * half-width) goes to `visit`, every filled closed shape to `filled`.
+ * `data-orbit="spin"` groups ride a CSS rotation: their content is visited at
+ * every ORBIT_STEP of it, and `data-orbit="counter"` undoes the same angle,
+ * exactly as the animation does.
+ */
+function walk(el: Element, m: M, strokeW: number, visit: Visit, filled: (poly: Array<[number, number]>, tag: string) => void, theta?: number): void {
     const tag = el.tagName.toLowerCase();
-    if (tag === 'defs' || tag === 'mask' || tag.endsWith('gradient') || el.hasAttribute('data-glow')) return;
-    const mm = mul(m, parseTransform(el.getAttribute('transform')));
+    if (tag === 'defs' || tag === 'mask' || tag === 'clippath' || tag.endsWith('gradient') || el.hasAttribute('data-glow')) return;
+    let mm = mul(m, parseTransform(el.getAttribute('transform')));
+    const orbit = el.getAttribute('data-orbit');
+    if (orbit === 'spin' && theta === undefined) {
+        for (let a = 0; a < 360; a += ORBIT_STEP) walk(el, mm, strokeW, visit, filled, a);
+        return;
+    }
+    if (orbit === 'spin') mm = mul(mm, rot(theta!));
+    if (orbit === 'counter') mm = mul(mm, rot(-(theta ?? 0)));
     // Content under an art mask (not the safe mask) is only visible through
     // the mask's shape: check that shape instead of what it reveals.
     const mk = /^url\(#(.+)\)$/.exec(el.getAttribute('mask') ?? '');
     if (mk && !/-safe-[bf]$/.test(mk[1])) {
         const mask = el.ownerDocument.getElementById(mk[1]);
         if (!mask) throw new Error(`mask ${mk[1]} not found`);
-        for (const c of Array.from(mask.children)) violations(c, mm, strokeW, out);
+        for (const c of Array.from(mask.children)) walk(c, mm, strokeW, visit, filled, theta);
         return;
     }
     const sw = el.hasAttribute('stroke-width') ? Number(el.getAttribute('stroke-width')) : strokeW;
@@ -176,14 +200,44 @@ function violations(el: Element, m: M, strokeW: number, out: Hit[]): void {
         const half = stroke && stroke !== 'none' ? (sw * scale) / 2 : 0;
         for (const sub of subs) {
             const pts = sub.map(([x, y]) => apply(mm, x, y));
-            for (const p of pts) {
-                const d = Math.hypot(p[0] - SAFE_ZONE.cx, p[1] - SAFE_ZONE.cy) - half;
-                if (d < SAFE_ZONE.r) out.push({ tag, at: p, dist: d });
-            }
-            if (fill !== 'none' && pts.length > 2 && inside([SAFE_ZONE.cx, SAFE_ZONE.cy], pts)) out.push({ tag: `${tag} (filled over the dot)`, at: [SAFE_ZONE.cx, SAFE_ZONE.cy], dist: 0 });
+            for (const p of pts) visit(p, half, tag);
+            if (fill !== 'none' && pts.length > 2) filled(pts, tag);
         }
     }
-    for (const c of Array.from(el.children)) violations(c, mm, sw, out);
+    for (const c of Array.from(el.children)) walk(c, mm, sw, visit, filled, theta);
+}
+
+/** Every way the zone is touched by the drawn geometry under `el`. */
+function violations(el: Element, m: M, strokeW: number, out: Hit[]): void {
+    walk(el, m, strokeW, (p, half, tag) => {
+        const d = Math.hypot(p[0] - SAFE_ZONE.cx, p[1] - SAFE_ZONE.cy) - half;
+        if (d < SAFE_ZONE.r) out.push({ tag, at: p, dist: d });
+    }, (pts, tag) => {
+        if (inside([SAFE_ZONE.cx, SAFE_ZONE.cy], pts)) out.push({ tag: `${tag} (filled over the dot)`, at: [SAFE_ZONE.cx, SAFE_ZONE.cy], dist: 0 });
+    });
+}
+
+/**
+ * The box the cards leave visible around the avatar (avatar = 0..100; soft
+ * glows exempt, they are light). Plants may root below the avatar and rise
+ * past its side, rings sit just outside it; nothing may wander off across the
+ * card the way the old sea fan did (it grew out to x = -80: "mostly off
+ * profile").
+ */
+export const VISIBLE_BOX = { x0: -45, y0: -40, x1: 135, y1: 125 } as const;
+function bounds(el: Element): { x0: number; y0: number; x1: number; y1: number } {
+    const b = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
+    walk(el, I, 1, (p, h) => {
+        b.x0 = Math.min(b.x0, p[0] - h); b.y0 = Math.min(b.y0, p[1] - h); b.x1 = Math.max(b.x1, p[0] + h); b.y1 = Math.max(b.y1, p[1] + h);
+    }, () => {});
+    return b;
+}
+const inBox = (b: ReturnType<typeof bounds>) => b.x0 >= VISIBLE_BOX.x0 && b.y0 >= VISIBLE_BOX.y0 && b.x1 <= VISIBLE_BOX.x1 && b.y1 <= VISIBLE_BOX.y1;
+/** Furthest drawn point from the avatar centre. */
+function reach(el: Element): number {
+    let max = 0;
+    walk(el, I, 1, (p, half) => { max = Math.max(max, Math.hypot(p[0] - 50, p[1] - 50) + half); }, () => {});
+    return max;
 }
 
 /** Every combination of a decoration's choice / colour / range options (hue does not move geometry). */
@@ -197,8 +251,10 @@ function variants(id: string): ItemOptions[] {
     return out;
 }
 
-const render = (id: string, o: ItemOptions) =>
-    new DOMParser().parseFromString(renderToStaticMarkup(React.createElement(AvatarDecoration, { decoration: id, options: o, children: 'x' })), 'text/html');
+const render = (id: string, o: ItemOptions, compact = false) =>
+    new DOMParser().parseFromString(renderToStaticMarkup(React.createElement(AvatarDecoration, { decoration: id, options: o, compact, children: 'x' })), 'text/html');
+/** Card size and the picker's bolder thumbnail version (DecoCtx.compact): both must keep clear of the dot. */
+const SIZES = [false, true] as const;
 
 describe('status-dot safe zone', () => {
     const ids = AVATAR_DECORATIONS.map((d) => d.id);
@@ -206,9 +262,9 @@ describe('status-dot safe zone', () => {
         expect(ids.length).toBeGreaterThanOrEqual(19);
     });
     for (const id of ids) {
-        it(`${id}: every layer is masked, and no shape reaches the dot in any variant`, () => {
-            for (const o of variants(id)) {
-                const doc = render(id, o);
+        it(`${id}: every layer is masked, and no shape reaches the dot in any variant, card or thumbnail (orbits sampled all the way round)`, () => {
+            for (const o of variants(id)) for (const compact of SIZES) {
+                const doc = render(id, o, compact);
                 const layers = Array.from(doc.querySelectorAll('svg.pc-deco-art'));
                 expect(layers.length).toBeGreaterThan(0);
                 for (const svg of layers) {
@@ -219,11 +275,36 @@ describe('status-dot safe zone', () => {
                     expect([hole?.getAttribute('cx'), hole?.getAttribute('cy'), hole?.getAttribute('r')]).toEqual([String(SAFE_ZONE.cx), String(SAFE_ZONE.cy), String(SAFE_ZONE.r)]);
                     const hits: Hit[] = [];
                     violations(g!, I, 1, hits);
-                    expect({ id, o, hits: hits.slice(0, 3) }).toEqual({ id, o, hits: [] });
+                    expect({ id, o, compact, hits: hits.slice(0, 3) }).toEqual({ id, o, compact, hits: [] });
                 }
             }
         });
     }
+});
+
+describe('visible bounds (owner: the sea fan was "mostly off profile")', () => {
+    for (const d of AVATAR_DECORATIONS) {
+        it(`${d.id}: stays inside the visible box around the avatar in every variant, card or thumbnail`, () => {
+            for (const o of variants(d.id)) for (const compact of SIZES) {
+                for (const svg of Array.from(render(d.id, o, compact).querySelectorAll('svg.pc-deco-art > g[data-safe-zone]'))) {
+                    const b = bounds(svg);
+                    expect({ id: d.id, o, compact, b, inside: inBox(b) }).toEqual({ id: d.id, o, compact, b, inside: true });
+                }
+            }
+        });
+    }
+    it('the sea fan itself (not just its fade mask) keeps within SEA_FAN_REACH of the avatar centre, rooted on the rim', () => {
+        for (const o of variants('sea-fan')) {
+            const fan = render('sea-fan', o).querySelector('svg.pc-deco-front g[mask] > g');
+            expect(fan).not.toBeNull();
+            expect(reach(fan!)).toBeLessThanOrEqual(SEA_FAN_REACH + 1.5);
+            expect(bounds(fan!).x0).toBeGreaterThan(-18);
+        }
+    });
+    it('positive control: the OLD sea fan (rooted at -8,102, growing up-left past x = -45) fails the box', () => {
+        const doc = new DOMParser().parseFromString('<svg><g><path d="M-8 102 Q -40 70 -62 20" fill="none" stroke="#fff" stroke-width="2" /></g></svg>', 'image/svg+xml');
+        expect(inBox(bounds(doc.querySelector('g')!))).toBe(false);
+    });
 });
 
 describe('the checker itself (positive controls)', () => {
@@ -245,5 +326,12 @@ describe('the checker itself (positive controls)', () => {
     it('passes a shape on the upper left, and ignores a declared soft glow', () => {
         expect(hitsFor('<circle cx="10" cy="10" r="8" fill="red" />')).toBe(0);
         expect(hitsFor('<circle data-glow="1" cx="50" cy="50" r="70" fill="red" />')).toBe(0);
+    });
+    it('samples an orbit all the way round: a moon that starts clear but passes the dot is caught', () => {
+        // Starts at the top (clear of the dot), orbits at r 36 about the centre: at 135 deg it sits on the dot.
+        const moon = '<g transform="translate(50 50)"><g data-orbit="spin"><g transform="translate(0 -36)"><g data-orbit="counter"><circle r="3" fill="#fff" /></g></g></g></g>';
+        expect(hitsFor(moon)).toBeGreaterThan(0);
+        // The same moon without the orbit marker is (wrongly) only checked where it starts: it passes.
+        expect(hitsFor(moon.replace(/ data-orbit="[a-z]+"/g, ''))).toBe(0);
     });
 });

@@ -105,6 +105,13 @@ export interface PriorityBoosterDeps {
     getPriority(pid: number): number;
     /** os.setPriority — throws when not permitted or the process has exited. */
     setPriority(pid: number, priority: number): void;
+    /**
+     * Optional: one short line when a SCREEN SHARE's priorities are applied
+     * ("apply tab=high gpu=high browser=high other=above_normal") and one
+     * ("restore") when they are handed back. main.ts writes it to the
+     * Performance log, so a report shows what was really in force.
+     */
+    report?(detail: string): void;
 }
 
 /**
@@ -129,7 +136,9 @@ export class CallPriorityBooster {
     private shareEnabled = false;
     private sharing = false;
     /** pid -> the priority it had before we raised it, and the one we set. */
-    private readonly raised = new Map<number, { before: number; set: number }>();
+    private readonly raised = new Map<number, { before: number; set: number; type?: string }>();
+    /** A share's `apply` line has been reported and its `restore` is still owed. */
+    private shareReported = false;
 
     constructor(private readonly deps: PriorityBoosterDeps) {}
 
@@ -192,6 +201,27 @@ export class CallPriorityBooster {
             } catch { /* process exited — nothing to restore */ }
         }
         this.raised.clear();
+        this.reportShare(false);
+    }
+
+    private levelName(p: number | undefined): string {
+        return p === undefined ? 'none' : p === PRIORITY_HIGH ? 'high' : p === PRIORITY_ABOVE_NORMAL ? 'above_normal' : String(p);
+    }
+
+    /** The Performance-log line for a share's priorities: once on apply, once on restore. */
+    private reportShare(applied: boolean): void {
+        if (!this.deps.report) return;
+        if (applied) {
+            if (!this.shareActive) { this.reportShare(false); return; }   // the share ended but a call boost stays
+            if (this.shareReported || this.raised.size === 0) return;
+            this.shareReported = true;
+            const by = (t: string) => this.levelName([...this.raised.values()].find(e => e.type === t)?.set);
+            const other = this.levelName([...this.raised.values()].find(e => e.type !== 'Tab' && e.type !== 'GPU' && e.type !== 'Browser')?.set);
+            try { this.deps.report(`apply tab=${by('Tab')} gpu=${by('GPU')} browser=${by('Browser')} other=${other}`); } catch { /* diagnostics only */ }
+        } else if (this.shareReported) {
+            this.shareReported = false;
+            try { this.deps.report('restore'); } catch { /* diagnostics only */ }
+        }
     }
 
     private sync(): void {
@@ -201,10 +231,13 @@ export class CallPriorityBooster {
 
     /** What this process should be held at right now. */
     private targetFor(type: string | undefined): number {
-        // During a share the GPU process (readback + encoder) AND the browser
-        // process (which owns the desktop-capture thread) go to HIGH; the rest
-        // stay ABOVE_NORMAL. HIGH_PRIORITY_CLASS needs no privilege.
-        return this.shareActive && (type === 'GPU' || type === 'Browser') ? PRIORITY_HIGH : PRIORITY_ABOVE_NORMAL;
+        // During a share the GPU process (readback + encoder), the browser
+        // process (which owns the desktop-capture thread) AND the renderer
+        // (Tab: the WebRTC network / pacing / encoder-submission threads - the
+        // sharer's RTT hit 281-534 ms under a CPU-heavy game, reports 4667c6fa
+        // / 14a5184a) go to HIGH; the rest stay ABOVE_NORMAL.
+        // HIGH_PRIORITY_CLASS needs no privilege.
+        return this.shareActive && (type === 'GPU' || type === 'Browser' || type === 'Tab') ? PRIORITY_HIGH : PRIORITY_ABOVE_NORMAL;
     }
 
     private apply(): void {
@@ -228,7 +261,7 @@ export class CallPriorityBooster {
                 if (current <= target) continue;
                 try {
                     this.deps.setPriority(pid, target);
-                    this.raised.set(pid, { before: current, set: target });
+                    this.raised.set(pid, { before: current, set: target, type });
                 } catch { /* not permitted / exited — skip it */ }
             } else if (current === entry.set) {
                 // Still ours; move it if the wanted level changed (a share
@@ -244,6 +277,7 @@ export class CallPriorityBooster {
                 this.raised.delete(pid);
             }
         }
+        this.reportShare(true);
     }
 }
 

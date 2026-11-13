@@ -1,6 +1,6 @@
 import React, { useMemo, useRef, useState } from 'react';
 import {
-    Mic, Timer, Users, Flame, ShieldCheck, Server, MessageSquare, Egg, CalendarDays, Gamepad2, Moon, Ear, Laptop, Trophy, Lock,
+    Mic, Timer, Users, Flame, ShieldCheck, Server, MessageSquare, Egg, CalendarDays, Gamepad2, Moon, Ear, Laptop, CircleUserRound, Trophy, Lock,
     ChevronLeft, ChevronRight, type LucideIcon,
 } from 'lucide-react';
 import { ACHIEVEMENTS, type AchievementDef, type Progress, type ProgressUnit } from '../../utils/achievements/catalog';
@@ -25,14 +25,14 @@ import '../../styles/profile-card.css';
 
 const ICONS: Record<string, LucideIcon> = {
     mic: Mic, timer: Timer, users: Users, flame: Flame, shield: ShieldCheck, server: Server, message: MessageSquare,
-    egg: Egg, calendar: CalendarDays, gamepad: Gamepad2, moon: Moon, ear: Ear, laptop: Laptop,
+    egg: Egg, calendar: CalendarDays, gamepad: Gamepad2, moon: Moon, ear: Ear, laptop: Laptop, portrait: CircleUserRound,
 };
 const TIER_LABEL = { bronze: 'Bronze', silver: 'Silver', gold: 'Gold' } as const;
 
 function formatProgress(p: Progress, unit: ProgressUnit): string {
     const cur = Math.min(p.current, p.target);
     const n = (v: number) => (unit === 'hours' ? (v < 10 ? v.toFixed(1) : String(Math.floor(v))) : String(Math.floor(v)));
-    const suffix = unit === 'hours' ? ' h' : unit === 'days' ? ' days' : unit === 'people' ? ' people' : '';
+    const suffix = unit === 'hours' ? ' h' : unit === 'minutes' ? ' min' : unit === 'days' ? ' days' : unit === 'people' ? ' people' : '';
     return `${n(cur)} / ${n(p.target)}${suffix}`;
 }
 

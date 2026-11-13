@@ -35,7 +35,7 @@ vi.mock('../utils/attachmentCache', () => ({
 
 vi.mock('../utils/crypto', () => ({
     importKeyFromBase64: async (k: string) => ({ k }),
-    decryptBlob: async () => new Blob(['plain']),
+    decryptBlob: async () => new Blob(['plain'], { type: 'image/jpeg' }),
 }));
 
 vi.mock('../contexts/HydrationContext', () => ({ useHydrationGeneration: () => 0 }));

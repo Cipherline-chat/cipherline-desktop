@@ -6,6 +6,7 @@ import { personalEmojis } from '../../../utils/personalEmoji/service';
 import { processEmojiImage, EmojiProcessError, type ProcessedEmoji } from '../../../utils/personalEmoji/process/client';
 import type { FrameMode } from '../../../utils/personalEmoji/process/geometry';
 import { PERSONAL_EMOJI_LIBRARY_MAX, isPersonalEmojiName, suggestEmojiName } from '../../../utils/personalEmoji/token';
+import { sanitizeEmojiNameInput } from '../../../utils/emojiNames';
 import type { EmojiEntry } from '../../../utils/personalEmoji/library';
 
 /**
@@ -18,6 +19,8 @@ interface Props {
     file: File;
     onClose: () => void;
     onAdded: (entry: EmojiEntry) => void;
+    /** Over another layer (the emoji picker is at z-index 9999): raise the overlay. */
+    overlayStyle?: React.CSSProperties;
 }
 
 type Job =
@@ -27,7 +30,7 @@ type Job =
 
 const kb = (n: number) => `${Math.max(1, Math.round(n / 1024))} KB`;
 
-export const AddEmojiDialog: React.FC<Props> = ({ file, onClose, onAdded }) => {
+export const AddEmojiDialog: React.FC<Props> = ({ file, onClose, onAdded, overlayStyle }) => {
     const [mode, setMode] = useState<FrameMode>('crop');
     const [name, setName] = useState(() => suggestEmojiName(file.name));
     // The outcome of the run for one `mode`; any other mode's run is "processing".
@@ -62,7 +65,7 @@ export const AddEmojiDialog: React.FC<Props> = ({ file, onClose, onAdded }) => {
     const full = library.entries.length >= PERSONAL_EMOJI_LIBRARY_MAX;
     const nameError = useMemo(() => {
         if (!name) return '';
-        if (!isPersonalEmojiName(name)) return '2 to 32 characters: lowercase letters, numbers and underscores.';
+        if (!isPersonalEmojiName(name)) return '2 to 32 characters: letters, numbers and underscores (no spaces or dashes).';
         if (library.entries.some(e => e.name === name)) return 'You already have an emoji with that name.';
         return '';
     }, [name, library.entries]);
@@ -88,7 +91,7 @@ export const AddEmojiDialog: React.FC<Props> = ({ file, onClose, onAdded }) => {
     const ready = job.status === 'ready' ? job : null;
 
     return (
-        <ClModal open onClose={saving ? () => {} : onClose} width={460} label="Add an emoji" cardClassName="dlg-card">
+        <ClModal open onClose={saving ? () => {} : onClose} width={460} label="Add an emoji" cardClassName="dlg-card" overlayStyle={overlayStyle}>
             <DialogHeader icon={<SmilePlus size={18} />} title="Add an emoji" subtitle="Shrunk to 128 px on this computer. Metadata is removed." />
             <DialogBody>
                 <div className="flex flex-col gap-4">
@@ -161,7 +164,7 @@ export const AddEmojiDialog: React.FC<Props> = ({ file, onClose, onAdded }) => {
                                 autoComplete="off"
                                 spellCheck={false}
                                 error={!!nameError}
-                                onChange={e => { setName(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, '_')); setAddError(''); }}
+                                onChange={e => { setName(sanitizeEmojiNameInput(e.target.value)); setAddError(''); }}
                                 onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); void add(); } }}
                                 aria-invalid={!!nameError}
                                 aria-describedby={nameError ? 'my-emoji-name-err' : undefined}

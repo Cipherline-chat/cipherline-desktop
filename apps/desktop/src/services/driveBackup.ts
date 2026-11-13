@@ -30,7 +30,8 @@
 
 import { beginKeysActivity } from '../utils/keysBeats';
 import secureLocalStore from '../utils/secureLocalStore';
-import { backupFailureReason } from '../utils/backupFailureReason';
+import { backupFailureReason, backupFailureDetail } from '../utils/backupFailureReason';
+import { recordRunIssues } from './backupIssues';
 import { reportBeta } from '../utils/betaDiagnostics/reporter';
 import { importLocalHistory, decryptBackup } from '../utils/crypto';
 import {
@@ -818,9 +819,12 @@ export async function runBackup(opts: {
             // part: 'dest' = this destination's own step (stat / commit / verify) —
             // the other destination's outcome is independent of it.
             reportBeta('backup_failed', setupErrors[label]
-                ? { dest: label, stage: 'setup', reason: backupFailureReason(msg) }
-                : { dest: label, stage: 'write', part: 'dest', reason: backupFailureReason(msg) });
+                ? { dest: label, stage: 'setup', ...backupFailureDetail(msg) }
+                : { dest: label, stage: 'write', part: 'dest', ...backupFailureDetail(msg) });
         }
+        // Remember what only the user can fix (reconnect Drive / re-pick the
+        // folder) so Settings and Home can say so; a success clears it.
+        if (recordRunIssues(userId, { errors, succeeded: { local: !!results.local, drive: !!results.drive } })) notifyBackupStateChanged();
 
         // The file being updated in place stopped accepting writes mid-run and
         // the backup landed in the app folder instead (see driveDestination):
@@ -876,20 +880,29 @@ export async function runBackup(opts: {
         // (If every destination failed on its own step instead, each is
         // classified from its own message, as part 'dest'.)
         const perDest = err instanceof AllDestinationsFailedError ? err.destinationErrors : null;
-        const reason = backupFailureReason(errorMessage(err));
         const report = (dest: DestinationLabel) => {
             if (perDest) {
                 const own = perDest[dest];
-                if (own !== undefined) reportBeta('backup_failed', { dest, stage: betaStage, part: 'dest', reason: backupFailureReason(own) });
-                else if (setupErrors[dest] !== undefined) reportBeta('backup_failed', { dest, stage: 'setup', reason: backupFailureReason(setupErrors[dest]) });
+                if (own !== undefined) reportBeta('backup_failed', { dest, stage: betaStage, part: 'dest', ...backupFailureDetail(own) });
+                else if (setupErrors[dest] !== undefined) reportBeta('backup_failed', { dest, stage: 'setup', ...backupFailureDetail(setupErrors[dest]) });
                 return;
             }
+            const detail = backupFailureDetail(errorMessage(err));
             reportBeta('backup_failed', betaStage === 'write'
-                ? { dest, stage: betaStage, part: 'shared', reason }
-                : { dest, stage: betaStage, reason });
+                ? { dest, stage: betaStage, part: 'shared', ...detail }
+                : { dest, stage: betaStage, ...detail });
         };
         if (wantLocal) report('local');
         if (wantDrive) report('drive');
+        // Same bookkeeping as the partial-failure path above, for a run that
+        // failed outright: each wanted destination's own message when it has one.
+        const issueErrors: Partial<Record<DestinationLabel, string>> = {};
+        for (const dest of ['local', 'drive'] as const) {
+            if (!(dest === 'local' ? wantLocal : wantDrive)) continue;
+            const own = perDest ? (perDest[dest] ?? setupErrors[dest]) : (setupErrors[dest] ?? errorMessage(err));
+            if (own !== undefined) issueErrors[dest] = own;
+        }
+        if (recordRunIssues(userId, { errors: issueErrors })) notifyBackupStateChanged();
         throw err;
     } finally {
         endKeysFiling();

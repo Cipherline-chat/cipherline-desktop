@@ -48,6 +48,8 @@ export const AUDIO_LAG_CAP_MS = 300;
  *  cap is looser — NetEq absorbs ordinary jitter; this only stops a backlog. */
 export const AUDIO_LAG_CAP_RECV_MS = 1_000;
 export const REBASE_AFTER_MS = 2_000;
+/** An "excess" beyond this is a timestamp discontinuity, not a backlog: re-base at once, drop nothing. */
+export const IMPLAUSIBLE_LAG_MS = 300_000;
 /** Baseline creep allowed for clock drift: 500 ppm = 30 ms per minute. */
 export const DRIFT_PPM = 500;
 export const AUDIO_CLOCK_HZ = 48_000;
@@ -100,6 +102,18 @@ export class AudioLagTracker {
         this.baselineAt = nowMs;
         this.baseline = Math.min(crept, offset);
         const excess = offset - this.baseline;
+        if (excess > IMPLAUSIBLE_LAG_MS) {
+            // Not a queue: nothing waits five minutes in a frame transform, and
+            // dropping cannot drain it. The stream's RTP timeline jumped (a
+            // peer's new publication on a reused receiver, a source that
+            // restarted its clock). Re-base NOW. Waiting out REBASE_AFTER_MS
+            // first dropped 100 frames = 2 s of the speaker's audio every time
+            // (staging.178-187: five inbound windows, lag "41,566,318 ms").
+            this.baseline = offset;
+            this.dropSince = null;
+            this.lastExcess = 0;
+            return { excessMs: 0, drop: false, rebased: true };
+        }
         this.lastExcess = excess;
         if (excess <= this.capMs) {
             this.dropSince = null;

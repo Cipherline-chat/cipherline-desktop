@@ -3,6 +3,7 @@ import type { ItemOptions } from '../../../utils/profileCosmetics';
 import type { HSL } from '../colour';
 import { rng } from '../geometry';
 import type { FxEnv, FxProgram } from './engine';
+import { FX_AVATAR_SELECTOR, measureAvatar } from './measure';
 
 /** The frame loop for one effect program on one card (policy: engine.ts). */
 
@@ -11,33 +12,13 @@ import type { FxEnv, FxProgram } from './engine';
 const reducedMotion = (): boolean =>
     typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-interface Probe { frames: number; ms: number; avgMs: number; maxMs: number }
+interface Probe { frames: number; ms: number; avgMs: number; maxMs: number; avatar?: { x: number; y: number; r: number } }
 const probe = (): Probe | null => {
     const w = window as unknown as { __pcFxProbe?: boolean; __pcFxStats?: Probe };
     if (!w.__pcFxProbe) return null;
     if (!w.__pcFxStats) w.__pcFxStats = { frames: 0, ms: 0, avgMs: 0, maxMs: 0 };
     return w.__pcFxStats;
 };
-
-function measureAvatar(card: HTMLElement | null, w: number, h: number): { x: number; y: number; r: number; banner: number } {
-    // No profile card around it (a picker thumbnail): centre everything on the host itself, so
-    // effects that orbit or radiate from the avatar stay inside a 76x48 tile.
-    const fallback = h < 200 ? { x: w / 2, y: h / 2, r: Math.min(w, h) * 0.3, banner: h * 0.4 } : { x: w / 2, y: 110, r: 46, banner: 112 };
-    if (!card) return fallback;
-    const cr = card.getBoundingClientRect();
-    const av = card.querySelector('[data-hx-layer="avatar"] .pc-deco-host, [data-hx-layer="avatar"] button, [data-fx-avatar]') as HTMLElement | null;
-    const bn = card.querySelector('[data-hx-layer="banner"], .pcd-banner') as HTMLElement | null;
-    const out = { ...fallback };
-    if (av) {
-        const r = av.getBoundingClientRect();
-        if (r.width > 0) { out.x = r.left - cr.left + r.width / 2; out.y = r.top - cr.top + r.height / 2; out.r = r.width / 2; }
-    }
-    if (bn) {
-        const r = bn.getBoundingClientRect();
-        if (r.height > 0) out.banner = r.bottom - cr.top;
-    }
-    return out;
-}
 
 export const EffectCanvas: React.FC<{
     program: FxProgram;
@@ -126,7 +107,7 @@ export const EffectCanvas: React.FC<{
             if (w < 2 || h < 2) return false;
             dpr = Math.min(2, window.devicePixelRatio || 1);
             const key = `${w}x${h}@${dpr}`;
-            if (key === sized) return true;
+            if (key === sized) { remeasure(); return true; }
             sized = key;
             scale = program.lowRes ?? dpr;
             canvas.width = Math.max(1, Math.ceil(w * scale));
@@ -134,6 +115,8 @@ export const EffectCanvas: React.FC<{
             if (over) { over.width = Math.round(w * dpr); over.height = Math.round(h * dpr); }
             const av = measureAvatar(card, w, h);
             env = { w, h, avatar: { x: av.x, y: av.y, r: av.r }, banner: av.banner, tint, opts, image, imageRound };
+            const pr = probe();
+            if (pr) pr.avatar = env.avatar;
             try { state = program.init(env, rng(seed)); } catch (e) { broken = true; console.warn('[profile effect] stopped:', e); return true; }
             // Pre-roll so a fresh card shows a settled, spread-out field.
             const pre = program.preroll ?? 0;
@@ -146,6 +129,13 @@ export const EffectCanvas: React.FC<{
             return true;
         };
 
+        /** The avatar moved without the card resizing (data arrived, a font loaded): follow it, in place. */
+        function remeasure() {
+            if (!env) return;
+            const av = measureAvatar(card, env.w, env.h);
+            env.avatar.x = av.x; env.avatar.y = av.y; env.avatar.r = av.r; env.banner = av.banner;
+        }
+        let sinceMeasure = 0;
         const running = () => raf !== 0;
         // Pause only when the WINDOW is not in front (data-cl-window, utils/idleMotion.ts) - never
         // for input idleness (owner rule: a card you are reading keeps playing).
@@ -159,6 +149,9 @@ export const EffectCanvas: React.FC<{
             const step = Math.min(0.05, acc);
             acc = 0;
             t += step;
+            // Cheap (layout reads on a clean layout) and catches any shift no observer reports.
+            sinceMeasure += step;
+            if (sinceMeasure > 1) { sinceMeasure = 0; remeasure(); }
             render(step);
         };
         const sync = () => {
@@ -174,6 +167,8 @@ export const EffectCanvas: React.FC<{
         sync();
         const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(() => { if (setup()) sync(); }) : null;
         ro?.observe(host);
+        const avEl = card?.querySelector(FX_AVATAR_SELECTOR) as HTMLElement | null;
+        if (avEl) ro?.observe(avEl);
         const mo = typeof MutationObserver !== 'undefined' ? new MutationObserver(sync) : null;
         mo?.observe(root, { attributes: true, attributeFilter: ['data-cl-window'] });
         syncRef.current = sync;

@@ -21,8 +21,11 @@ import { beginKeysActivity, __resetKeysBeats } from '../../utils/keysBeats';
 import { PLAYS, NUDGE, FINALE_COOLDOWN_MS, WALL_WAIT_MS, finaleEggId, type PlayState } from '../../utils/keysPlay';
 import { __setShinyLaunch, SHINY_EGG } from '../../utils/keysRare';
 import { SPAM_GAP_MS } from '../../utils/keysBurst';
+import { drawFor, __resetWardrobe } from '../../utils/keysWardrobe';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+/** The wardrobe's dice: a bare head unless a case asks for a hat (utils/keysWardrobe.ts). */
+const BARE = () => 0;
 // Each case renders the whole rig dozens of times; on a loaded box the
 // default 5 s is a timing artefact, not a verdict.
 vi.setConfig({ testTimeout: 30_000 });
@@ -47,9 +50,9 @@ const ends: (() => void)[] = [];
 
 const NEUTRAL: HomeKeysMirror = { status: 'online', gaming: false, inCall: false, unread: 0, pro: false };
 
-function render(mirror: Partial<HomeKeysMirror> = {}, extra: { onPoke?: () => void; onReact?: () => void } = {}) {
+function render(mirror: Partial<HomeKeysMirror> = {}, extra: { onPoke?: () => void; onReact?: () => void; random?: () => number } = {}) {
     act(() => {
-        root!.render(React.createElement(HomeKeys, {
+        root!.render(React.createElement(HomeKeys, { random: extra.random ?? BARE,
             userId: 'u', signal: 'idle', speech: null, lively: false,
             onPoke: extra.onPoke ?? (() => {}), onReact: extra.onReact, canPlay: () => 'call' as const, onPlay: () => {},
             mirror: { ...NEUTRAL, ...mirror },
@@ -95,6 +98,7 @@ beforeEach(() => {
     __resetWaveGuard();
     __resetKeysBeats();
     __setShinyLaunch(false);
+    __resetWardrobe();
     store.clear();
     host = document.createElement('div');
     document.body.appendChild(host);
@@ -239,7 +243,8 @@ describe('HomeKeys: the spam finale', () => {
 describe('HomeKeys: garnish states keep the neutral egg', () => {
     it('crown: a click still runs the poke ladder AND spins the crown; spam still builds the show, plus the crown finale', () => {
         const onPoke = vi.fn();
-        render({ pro: true }, { onPoke });
+        render({ pro: true }, { onPoke, random: () => drawFor('crown', { pro: true, last: null }) });
+        expect(hk().dataset.hat).toBe('crown');
         expect(hk().dataset.play).toBe('crown');
         click();
         expect(onPoke).toHaveBeenCalledTimes(1);

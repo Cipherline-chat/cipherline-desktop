@@ -146,6 +146,54 @@ describe('G4 — replay (same ciphertext, new server id)', () => {
         expect(() => decrypt(row, { channel_id: ch, message_id: 'replayed' })).toThrow(/\[E2EE:CHANNEL_REPLAY\]/);
     });
 
+    // Security audit run-2 (channel-replay-ledger-nonce-squat): the ledger was keyed
+    // by (channel, nonce) alone, so a key-holding member who re-posted DIFFERENT
+    // content under a copied nonce got his row recorded first on a device that
+    // loaded his page before the original's, and the genuine row was then dropped
+    // as CHANNEL_REPLAY. The key now commits to the ciphertext as well.
+    describe('nonce squatting', () => {
+        const withNonce = (contentJson: string, keyB: string, nonce: Buffer) => {
+            const c = crypto.createCipheriv('aes-256-gcm', Buffer.from(keyB, 'base64'), nonce);
+            const ct = Buffer.concat([c.update(Buffer.from(contentJson, 'utf8')), c.final(), c.getAuthTag()]);
+            return { epoch: 1, nonce_b64: nonce.toString('base64'), ciphertext_b64: ct.toString('base64'), signature_b64: signWithAlice(ct) };
+        };
+
+        it('a row with a copied nonce but different content does NOT make the genuine row a replay (either order)', () => {
+            const ch = newChannel();
+            const k = keyB64();
+            keys.setChannelKey(ch, 1, k, ROTATES);
+            const nonce = crypto.randomBytes(12);
+            const genuine = withNonce(JSON.stringify({ ...CONTENT, text: 'genuine' }), k, nonce);
+            const squat = withNonce(JSON.stringify({ ...CONTENT, client_msg_id: 'cm-x', text: 'squatter' }), k, nonce);
+            // The squatter's page is decrypted first.
+            expect(JSON.parse(decrypt(squat, { channel_id: ch, message_id: 'row-2' })).text).toBe('squatter');
+            expect(JSON.parse(decrypt(genuine, { channel_id: ch, message_id: 'row-1' })).text).toBe('genuine');
+            // Re-reading either row stays accepted.
+            expect(() => decrypt(squat, { channel_id: ch, message_id: 'row-2' })).not.toThrow();
+            expect(() => decrypt(genuine, { channel_id: ch, message_id: 'row-1' })).not.toThrow();
+        });
+
+        it('negative control: the SAME ciphertext re-posted under a new id is still a replay', () => {
+            const ch = newChannel();
+            const k = keyB64();
+            keys.setChannelKey(ch, 1, k, ROTATES);
+            const row = withNonce(JSON.stringify(CONTENT), k, crypto.randomBytes(12));
+            decrypt(row, { channel_id: ch, message_id: 'orig' });
+            expect(() => decrypt(row, { channel_id: ch, message_id: 'replayed' })).toThrow(/\[E2EE:CHANNEL_REPLAY\]/);
+        });
+
+        it('the replay protection survives a restart for v2 entries', async () => {
+            const ch = newChannel();
+            const k = keyB64();
+            keys.setChannelKey(ch, 1, k, ROTATES);
+            const row = withNonce(JSON.stringify(CONTENT), k, crypto.randomBytes(12));
+            decrypt(row, { channel_id: ch, message_id: 'orig' });
+            engine.flushReplayCache();
+            await loadModules();
+            expect(() => decrypt(row, { channel_id: ch, message_id: 'replayed' })).toThrow(/\[E2EE:CHANNEL_REPLAY\]/);
+        });
+    });
+
     it('is not bypassed by re-encoding the nonce (base64 decoding is lenient)', () => {
         const ch = newChannel();
         keys.setChannelKey(ch, 1, keyB64(), ROTATES);
@@ -373,5 +421,67 @@ describe('G4 — renderer helpers', () => {
             try { decrypt(r, { channel_id: ch, message_id: r.id }); accepted.push(r.id); } catch { /* dropped */ }
         }
         expect(accepted).toEqual(['original']);
+    });
+});
+
+describe('G4 — unbound (legacy) message cutoff', () => {
+    const CUTOFF = Date.UTC(2026, 11, 1);
+    const BEFORE = '2026-11-20T10:00:00.000Z';
+    const AFTER = '2026-12-02T10:00:00.000Z';
+    const legacyRow = (_ch: string, k: string) => ({ epoch: 1, ...encryptLegacyV1(JSON.stringify(CONTENT), k) });
+    const run = (row: ReturnType<typeof legacyRow>, ch: string, created_at: string | null, cutoff: number | null | undefined, id = 'row-1') =>
+        engine.decryptChannelMessage({
+            channel_id: ch, epoch: row.epoch, nonce_b64: row.nonce_b64, ciphertext_b64: row.ciphertext_b64,
+            signature_b64: row.signature_b64, sender_identity_pub_b64: alicePubB64, message_id: id,
+            sender_user_id: ALICE_USER, sender_device_id: ALICE_DEV, created_at,
+            ...(cutoff === undefined ? {} : { unbound_cutoff_ms: cutoff }),
+        });
+
+    it('ships DISABLED: the default cutoff is null, so an unbound row of any age still decrypts', () => {
+        expect(engine.UNBOUND_CHANNEL_CUTOFF_MS).toBeNull();
+        const ch = newChannel(); const k = keyB64();
+        keys.setChannelKey(ch, 1, k, ROTATES);
+        expect(JSON.parse(run(legacyRow(ch, k), ch, AFTER, undefined))).toEqual(CONTENT);
+    });
+
+    it('when active, refuses an unbound row created at/after the cutoff as a serve rejection', () => {
+        const ch = newChannel(); const k = keyB64();
+        keys.setChannelKey(ch, 1, k, ROTATES);
+        let err: unknown;
+        try { run(legacyRow(ch, k), ch, AFTER, CUTOFF); } catch (e) { err = e; }
+        expect(String((err as Error)?.message)).toContain('[E2EE:CHANNEL_UNBOUND]');
+        expect(isChannelServeRejection(err)).toBe(true);
+    });
+
+    it('when active, still decrypts unbound history from before the cutoff (saved/pinned rows)', () => {
+        const ch = newChannel(); const k = keyB64();
+        keys.setChannelKey(ch, 1, k, ROTATES);
+        expect(JSON.parse(run(legacyRow(ch, k), ch, BEFORE, CUTOFF))).toEqual(CONTENT);
+    });
+
+    it('when active, a missing or garbage created_at counts as after the cutoff', () => {
+        const ch = newChannel(); const k = keyB64();
+        keys.setChannelKey(ch, 1, k, ROTATES);
+        expect(() => run(legacyRow(ch, k), ch, null, CUTOFF, 'row-a')).toThrow('[E2EE:CHANNEL_UNBOUND]');
+        expect(() => run(legacyRow(ch, k), ch, 'not a date', CUTOFF, 'row-b')).toThrow('[E2EE:CHANNEL_UNBOUND]');
+    });
+
+    it('when active, a BOUND (v2) row after the cutoff is unaffected', () => {
+        const ch = newChannel();
+        keys.setChannelKey(ch, 1, keyB64(), ROTATES);
+        const row = engine.encryptChannelMessage(JSON.stringify(CONTENT), ch, SENDER);
+        expect(JSON.parse(engine.decryptChannelMessage({
+            channel_id: ch, epoch: row.epoch, nonce_b64: row.nonce_b64, ciphertext_b64: row.ciphertext_b64,
+            signature_b64: row.signature_b64, sender_identity_pub_b64: alicePubB64, message_id: 'row-1',
+            sender_user_id: ALICE_USER, sender_device_id: ALICE_DEV, created_at: AFTER, unbound_cutoff_ms: CUTOFF,
+        }))).toEqual(CONTENT);
+    });
+
+    it('when active, a copied `_cb` with a non-matching nonce does not count as bound', () => {
+        const ch = newChannel(); const k = keyB64();
+        keys.setChannelKey(ch, 1, k, ROTATES);
+        const stale = { v: 2, c: ch, e: 1, n: 'AAAAAAAAAAAAAAAA', m: 'old' };
+        const row = { epoch: 1, ...encryptLegacyV1(JSON.stringify({ ...CONTENT, _cb: stale }), k) };
+        expect(() => run(row, ch, AFTER, CUTOFF)).toThrow('[E2EE:CHANNEL_UNBOUND]');
     });
 });

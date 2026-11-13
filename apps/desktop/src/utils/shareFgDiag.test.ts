@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ShareStatsSampler, SHARE_FPS_INTERVAL_MS, type StatsLike } from './shareHealth';
 import { ShareBackgroundProbe, SHARE_BG_SETTLE_MS, SHARE_BG_MEASURE_MS, type ShareBgReport } from './shareBackgroundProbe';
 import { logCallEvent, getCallEvents, clearCallEvents, validateCallEvent } from './callEventLog';
-import { FullscreenHintGate } from './shareFullscreenHint';
 import type { ForegroundDiag } from './foregroundInfo';
 
 /**
@@ -19,7 +18,6 @@ const statsOf = (frames: number): StatsLike => report(
 );
 
 const GAME: ForegroundDiag = { state: 'QUNS_RUNNING_D3D_FULL_SCREEN', exe: 'game.exe', covers: true, isCipherline: false, onSharedScreen: true };
-const CIPHERLINE: ForegroundDiag = { state: 'QUNS_ACCEPTS_NOTIFICATIONS', exe: 'Cipherline.exe', covers: false, isCipherline: true, onSharedScreen: true };
 
 describe('ShareStatsSampler carries what had the screen', () => {
     beforeEach(() => { vi.useFakeTimers(); });
@@ -28,24 +26,21 @@ describe('ShareStatsSampler carries what had the screen', () => {
     function setup(getForeground?: () => Promise<ForegroundDiag | null>) {
         let clock = 0, frames = 0;
         const reports: Array<{ d: Record<string, string | number | boolean>; fg: ForegroundDiag | null }> = [];
-        const seen: Array<ForegroundDiag | null> = [];
         const sampler = new ShareStatsSampler({
             getStats: async () => statsOf(frames), getCaptureFps: () => 90, focused: () => false, visible: () => true, targetFps: 90,
-            getForeground, onForeground: fg => seen.push(fg),
+            getForeground,
             report: (d, fg) => reports.push({ d, fg }), now: () => clock,
         });
         const tick = async (ms: number, add: number) => { clock += ms; frames += add; await vi.advanceTimersByTimeAsync(ms); };
-        return { sampler, reports, seen, tick };
+        return { sampler, reports, tick };
     }
 
-    it('every sample - the baseline too - is shown to onForeground; each report carries the fg that was in front', async () => {
-        const { sampler, reports, seen, tick } = setup(async () => GAME);
+    it('each report carries the fg that was in front at its sample (the baseline sample makes no report)', async () => {
+        const { sampler, reports, tick } = setup(async () => GAME);
         sampler.start();
         await vi.advanceTimersByTimeAsync(0);
-        expect(seen).toEqual([GAME]);              // baseline: no report, but the hint still sees it
         expect(reports).toHaveLength(0);
         await tick(SHARE_FPS_INTERVAL_MS, 90);
-        expect(seen).toHaveLength(2);
         expect(reports).toHaveLength(1);
         expect(reports[0].fg).toEqual(GAME);
         expect(reports[0].d).toMatchObject({ src_fps: 9, focus: false, target: 90 });
@@ -70,29 +65,6 @@ describe('ShareStatsSampler carries what had the screen', () => {
         await tick(SHARE_FPS_INTERVAL_MS, 90);
         expect(reports).toHaveLength(1);
         expect(reports[0].fg).toBeNull();
-        sampler.dispose();
-    });
-
-    it('feeding the hint gate from the sampler: Cipherline in front never hints, the game in front hints once', async () => {
-        let current: ForegroundDiag = CIPHERLINE;
-        const onHint = vi.fn();
-        const gate = new FullscreenHintGate({ onHint });
-        let clock = 0, frames = 0;
-        const sampler = new ShareStatsSampler({
-            getStats: async () => statsOf(frames), getCaptureFps: () => 90, focused: () => true, visible: () => true, targetFps: 90,
-            getForeground: async () => current, onForeground: fg => gate.observe(fg, 'screen'),
-            report: () => {}, now: () => clock,
-        });
-        const tick = async () => { clock += SHARE_FPS_INTERVAL_MS; frames += 90; await vi.advanceTimersByTimeAsync(SHARE_FPS_INTERVAL_MS); };
-        sampler.start();
-        await vi.advanceTimersByTimeAsync(0);
-        await tick();
-        expect(onHint).not.toHaveBeenCalled();
-        current = GAME;
-        await tick();
-        await tick();
-        expect(onHint).toHaveBeenCalledTimes(1);
-        expect(onHint).toHaveBeenCalledWith('game.exe');
         sampler.dispose();
     });
 });
@@ -175,11 +147,5 @@ describe('the fg_* fields survive the call event log\'s 11-key limit', () => {
     it('unknown fg (empty string) is dropped, not logged as a value', () => {
         logCallEvent('share_fps', { src_fps: 9, fg_state: '', fg_exe: '', fg_cover: '' });
         expect(Object.keys(getCallEvents()[0].detail!)).toEqual(['src_fps']);
-    });
-
-    it('share_hint is a published kind with a result enum', () => {
-        logCallEvent('share_hint', { result: 'shown' });
-        logCallEvent('share_hint', { result: 'accepted' });
-        expect(getCallEvents().map(e => e.detail?.result)).toEqual(['shown', 'accepted']);
     });
 });

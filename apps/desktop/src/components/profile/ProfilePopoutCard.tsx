@@ -13,7 +13,8 @@ import { matchTint, themeCardStyle, themeSurface } from '../../utils/profileThem
 import { featuredAchievements } from '../../utils/profileCardLayout';
 import { interestLabel, sharedInterests } from '../../utils/profileExtras';
 import { formatLocalTime } from '../../utils/profileVisibility';
-import type { Mutuals } from '../../hooks/useProfileRelations';
+import { useSteamCard, visibleSteamActivity, type Mutuals } from '../../hooks/useProfileRelations';
+import { SteamHighlight } from '../integrations/SteamShowcase';
 import type { ProfileActivity } from './integrationTypes';
 import type { ProfileCardData, ProfileFullTab } from './profileCardData';
 import '../../styles/profile-card.css';
@@ -24,7 +25,8 @@ import '../../styles/profile-motion.css';
  * The profile PREVIEW: what opens when you click someone's name or avatar.
  * Quick and fun, never long: who they are (banner, avatar + decoration,
  * effect, name, badges), what they are doing (presence, custom status, the
- * activity row), a three-line bio, the facts, the mutuals and ONE highlight
+ * activity row), a three-line bio, the facts, the mutuals, a one-row Steam
+ * highlight (verified Steam with stats) and ONE highlight
  * from their showcase. Everything else lives on the full profile
  * (ProfileFullView), one click away: the avatar, the name, the mutuals line,
  * the highlight and the "Open profile" button all lead there.
@@ -46,6 +48,12 @@ export interface ProfilePopoutCardProps {
     /** A local (blob:) banner preview instead of the attachment (Settings drafts). */
     bannerSrc?: string | null;
     bannerFriendsOnly?: boolean;
+    /** A local (blob:) avatar preview instead of the attachment (the onboarding draft). */
+    avatarSrc?: string | null;
+    /** The avatar / banner press picks a new image (onboarding). Without `onOpenFull` the avatar press does this. */
+    onAvatarPick?: () => void;
+    onBannerPick?: () => void;
+    bannerPickLabel?: string;
     loading?: boolean;
     error?: string | null;
     onRetry?: () => void;
@@ -65,9 +73,13 @@ export interface ProfilePopoutCardProps {
     mutuals?: Mutuals | null;
     /** Open the full profile (on a tab). Omit for a card that cannot (the Settings preview passes its own). */
     onOpenFull?: (tab?: ProfileFullTab) => void;
+    /** Play the entrance when the card first has data (default). A card that lives in a panel turns it off. */
+    enter?: boolean;
     /** Effects keep playing while the window is in front (default). */
     loop?: boolean;
     label?: string;
+    /** A small card (the DM side panel): no showcase highlight and no Steam row. */
+    brief?: boolean;
     className?: string;
     style?: React.CSSProperties;
     testId?: string;
@@ -90,11 +102,11 @@ function pickHighlight(d: ProfileCardData): 'achievements' | 'games' | 'interest
 const hours = (m: number) => (m >= 60 ? `${Math.round(m / 60)} h` : `${m} min`);
 
 export const ProfilePopoutCard: React.FC<ProfilePopoutCardProps> = ({
-    userId, token, isSelf, data, avatarId, bannerId, bannerSrc, bannerFriendsOnly, loading, error, onRetry,
+    userId, token, isSelf, data, avatarId, bannerId, bannerSrc, bannerFriendsOnly, avatarSrc, onAvatarPick, onBannerPick, bannerPickLabel, loading, error, onRetry,
     presence, activities = [], avatarBadge, avatarLabel, menu, actions, actionsInert, extras, mutuals, onOpenFull,
-    loop = true, label, className, style, testId,
+    enter = true, loop = true, label, brief = false, className, style, testId,
 }) => {
-    const [entering, setEntering] = useState(() => !prefersReducedMotion());
+    const [entering, setEntering] = useState(() => enter && !prefersReducedMotion());
     const hasData = !!data;
     useEffect(() => {
         if (!entering || !hasData) return;
@@ -110,7 +122,9 @@ export const ProfilePopoutCard: React.FC<ProfilePopoutCardProps> = ({
     const ownHighFives = isSelf ? data?.highFiveCount ?? 0 : 0;
     const friendsN = !isSelf ? mutuals?.friends.length ?? 0 : 0;
     const serversN = !isSelf ? mutuals?.servers.length ?? 0 : 0;
-    const highlight = data ? pickHighlight(data) : null;
+    const highlight = data && !brief ? pickHighlight(data) : null;
+    // Steam stats (level, library, playing now): one compact row when the owner has a verified, visible Steam link.
+    const steamActivity = visibleSteamActivity(useSteamCard(data?.steam && !brief ? userId : null, token), isSelf);
     const open = (tab?: ProfileFullTab) => (e: React.MouseEvent) => { e.stopPropagation(); onOpenFull?.(tab); };
 
     let i = 0;
@@ -140,6 +154,9 @@ export const ProfilePopoutCard: React.FC<ProfilePopoutCardProps> = ({
                     animate
                     src={bannerSrc}
                 />
+                {onBannerPick && (
+                    <button type="button" className="ppo-banner-pick" onClick={(e) => { e.stopPropagation(); onBannerPick(); }} aria-label={bannerPickLabel ?? 'Change banner'} data-testid="ppo-banner-pick" />
+                )}
             </div>
             {menu && <div className="ppo-menu">{menu}</div>}
 
@@ -149,13 +166,15 @@ export const ProfilePopoutCard: React.FC<ProfilePopoutCardProps> = ({
                         <button
                             type="button" className="ppo-avatar-btn"
                             aria-label={avatarLabel ?? (onOpenFull ? `Open ${data?.name || 'this'}'s full profile` : 'Avatar')}
-                            tabIndex={onOpenFull ? 0 : -1}
-                            data-open={onOpenFull ? 'true' : undefined}
-                            onClick={onOpenFull ? open('overview') : (e) => e.stopPropagation()}
+                            tabIndex={onOpenFull || onAvatarPick ? 0 : -1}
+                            data-open={onOpenFull || onAvatarPick ? 'true' : undefined}
+                            onClick={onOpenFull ? open('overview') : (e) => { e.stopPropagation(); onAvatarPick?.(); }}
                         >
                             {!data && loading && !avatarId
                                 ? <span className="block bg-white/5 animate-pulse" />
-                                : <EncryptedAvatar attachmentId={avatarId} userId={userId} token={token} className="w-full h-full" fallbackSize={32} disableClickProfile bypassFriendGate animate />}
+                                : avatarSrc
+                                    ? <img src={avatarSrc} alt="" className="object-cover w-full h-full" />
+                                    : <EncryptedAvatar attachmentId={avatarId} userId={userId} token={token} className="w-full h-full" fallbackSize={32} disableClickProfile bypassFriendGate animate />}
                         </button>
                         {avatarBadge}
                     </AvatarDecoration>
@@ -194,7 +213,7 @@ export const ProfilePopoutCard: React.FC<ProfilePopoutCardProps> = ({
                     </div>
 
                     {presence && <div className="ppo-presence" style={next()}>{presence}</div>}
-                    {activities.length > 0 && <div style={next()}><ProfileActivityRow activities={activities} variant="compact" /></div>}
+                    {activities.length > 0 && <div style={next()}><ProfileActivityRow activities={activities} variant="compact" open={onOpenFull ? { onOpen: () => onOpenFull('overview'), label: `Open ${data?.name || 'this'}'s full profile` } : undefined} /></div>}
 
                     {data.bio && data.bio.trim() && (
                         <p className="ppo-bio" style={next()} data-testid="profile-bio">
@@ -231,6 +250,10 @@ export const ProfilePopoutCard: React.FC<ProfilePopoutCardProps> = ({
                                 {[friendsN > 0 && `${friendsN} mutual friend${friendsN === 1 ? '' : 's'}`, serversN > 0 && `${serversN} mutual server${serversN === 1 ? '' : 's'}`].filter(Boolean).join(' · ')}
                             </span>
                         </button>
+                    )}
+
+                    {steamActivity && (
+                        <SteamHighlight activity={steamActivity} token={token} isSelf={isSelf} style={next()} onOpen={onOpenFull ? open('integrations') : undefined} />
                     )}
 
                     {highlight && (

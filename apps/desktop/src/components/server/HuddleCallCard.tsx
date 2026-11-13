@@ -69,6 +69,7 @@ export const HuddleCallCard: React.FC<Props> = ({
     callId, name, participants, isMine, canRename, startedByMe, endsNote, canConnect,
     token, spawnedAt, memberLimit, onJoin, onContextMenu, onMoreClick,
 }) => {
+    const showJoinHint = !isMine && canConnect;
     const visible = participants.slice(0, MAX_AVATARS);
     const overflow = Math.max(0, participants.length - MAX_AVATARS);
 
@@ -131,32 +132,49 @@ export const HuddleCallCard: React.FC<Props> = ({
                 )}
             </div>
 
-            {/* Right slot: duration timer for all calls */}
-            {spawnedAt ? (
-                <span className="text-[11px] font-mono font-semibold shrink-0 tabular-nums text-cl-faint">
-                    {elapsed}
-                </span>
-            ) : visible.length > 0 ? (
-                <div className="flex -space-x-1.5 shrink-0">
-                    {visible.map(p => (
-                        <div key={p.user_id} className="w-5 h-5 rounded-full overflow-hidden border-2 border-cl-deep">
-                            <EncryptedAvatar
-                                attachmentId={p.avatar_url ?? null}
-                                userId={p.user_id}
-                                token={token}
-                                className="w-full h-full"
-                                fallbackSize={9}
-                                bypassFriendGate
-                            />
+            {/* Right slot: duration timer for all calls. On a call you can join,
+                a "Join" hint swaps in over it while the pointer is anywhere on the
+                channel (HuddleButton's group/huddle) — so it is clear the click
+                joins THIS call rather than starting a new one from the row above.
+                Stacked in one grid cell, so nothing reflows. */}
+            <div className={`grid shrink-0 ${showJoinHint ? 'justify-items-end' : ''}`}>
+                <div className={`[grid-area:1/1] flex items-center justify-end ${showJoinHint ? 'transition-opacity duration-150 group-hover/huddle:opacity-0 group-focus-within/huddle:opacity-0' : ''}`}>
+                    {spawnedAt ? (
+                        <span className="text-[11px] font-mono font-semibold shrink-0 tabular-nums text-cl-faint">
+                            {elapsed}
+                        </span>
+                    ) : visible.length > 0 ? (
+                        <div className="flex -space-x-1.5 shrink-0">
+                            {visible.map(p => (
+                                <div key={p.user_id} className="w-5 h-5 rounded-full overflow-hidden border-2 border-cl-deep">
+                                    <EncryptedAvatar
+                                        attachmentId={p.avatar_url ?? null}
+                                        userId={p.user_id}
+                                        token={token}
+                                        className="w-full h-full"
+                                        fallbackSize={9}
+                                        bypassFriendGate
+                                    />
+                                </div>
+                            ))}
+                            {overflow > 0 && (
+                                <div className="w-5 h-5 rounded-full bg-white/[0.12] border-2 border-cl-deep flex items-center justify-center text-[8px] font-bold text-cl-muted">
+                                    +{overflow}
+                                </div>
+                            )}
                         </div>
-                    ))}
-                    {overflow > 0 && (
-                        <div className="w-5 h-5 rounded-full bg-white/[0.12] border-2 border-cl-deep flex items-center justify-center text-[8px] font-bold text-cl-muted">
-                            +{overflow}
-                        </div>
-                    )}
+                    ) : null}
                 </div>
-            ) : null}
+                {showJoinHint && (
+                    <span
+                        aria-hidden
+                        data-testid="huddle-call-join-hint"
+                        className="[grid-area:1/1] self-center px-1.5 py-[2px] rounded-md bg-cl-lume/15 text-cl-lume text-[10px] font-bold uppercase tracking-wider leading-none opacity-0 transition-opacity duration-150 group-hover/huddle:opacity-100 group-focus-within/huddle:opacity-100"
+                    >
+                        Join
+                    </span>
+                )}
+            </div>
 
             {/* More-options dot */}
             {onMoreClick && (

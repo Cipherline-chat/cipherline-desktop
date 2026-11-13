@@ -17,6 +17,11 @@ import {
 import {
     shinyThisLaunch, rareIdleDecision, rareIdleLastAt, markRareIdle, RARE_IDLE_CHECK_MS, RARE_IDLE_MS, type RareIdleBit,
 } from '../../utils/keysRare';
+import {
+    pickHat, proArrived, wardrobeIdleDecision, lastHat, rememberHat, PRO_SETTLE_MS, WARDROBE_CHECK_MS,
+    type Rng, type Wear,
+} from '../../utils/keysWardrobe';
+import { HAT_GEAR } from '../../utils/keysMirror';
 import { recordEggFound } from '../../utils/eggProgress';
 import { useKeysMirror, type HomeKeysMirror } from './useKeysMirror';
 import { GearBack, GearOn, GearFront } from './KeysGear';
@@ -51,6 +56,11 @@ export type { HomeKeysMirror };
  *    the egg away.
  *  - Rare: Shiny Keys (one launch in 500), and now and then a juggle or a
  *    newspaper while you leave him be (utils/keysRare.ts).
+ *  - His wardrobe (utils/keysWardrobe.ts): a hat picked on every Home visit
+ *    (a beanie, a captain's cap, a snorkel mask, shades, a flower, the crown
+ *    for Pro, or quite often nothing), changed now and then while you leave
+ *    him be, only between gestures. Whatever else claims his head (a
+ *    calendar costume, a headset, DND, the lantern, camouflage) wins.
  *  - One click: the rig's poke ladder (a wiggle, happy brows, a quip from
  *    the host).
  *  - Spam him and KEEP IT UP: he puts on a show that builds for five
@@ -119,6 +129,8 @@ export interface HomeKeysProps {
     /** A click reaction or finale played (not the poke ladder, which calls
      *  onPoke): the host's cue for the little sound. */
     onReact?: () => void;
+    /** The wardrobe's dice (tests, the harness). Default Math.random. */
+    random?: Rng;
 }
 
 /** Where the click reactions' gear targets live (KeysGear's markup). */
@@ -152,7 +164,7 @@ const Silhouette: React.FC<{ className: string; reg: (el: Element | null) => voi
     </svg>
 );
 
-export const HomeKeys: React.FC<HomeKeysProps> = ({ userId, signal, speech, lively, onPoke, canPlay, onPlay, mirror, onReact }) => {
+export const HomeKeys: React.FC<HomeKeysProps> = ({ userId, signal, speech, lively, onPoke, canPlay, onPlay, mirror, onReact, random }) => {
     const rootRef = useRef<HTMLDivElement>(null);
     const reactRef = useRef<HTMLDivElement>(null);
     const [face, setFace] = useState<KeysFace | null>(null);
@@ -723,7 +735,39 @@ export const HomeKeys: React.FC<HomeKeysProps> = ({ userId, signal, speech, live
     // The mirror waits while the spam egg or a finale owns his body (its
     // gestures only; the scene itself keeps up underneath).
     const busy = useCallback(() => showRef.current !== null || payoffRun.current !== null || finaleRun.current !== null, []);
-    const view = useKeysMirror(mirror, busy);
+
+    // ── the wardrobe (utils/keysWardrobe.ts) ─────────────────────────────
+    // A pick when Home mounts (no gesture: the first scene simply IS), and
+    // now and then while he is left alone (below). The scene decides whether
+    // his head is free to show it.
+    const pro = !!mirror?.pro;
+    const dice = useRef<Rng>(random ?? Math.random);
+    /** The session's previous look, as it was when Home mounted. */
+    const [mountLast] = useState<Wear>(lastHat);
+    const [hat, setHat] = useState<Wear>(() => pickHat({ pro, last: mountLast }, random ?? Math.random));
+    const hatRef = useRef(hat);
+    useLayoutEffect(() => { dice.current = random ?? Math.random; hatRef.current = hat; });
+    const proRef = useRef(pro);
+    const pickedAt = useRef(0);
+    const mountedAt = useRef(0);
+    /** An idle change happened: a late Pro status no longer re-rolls. */
+    const changed = useRef(false);
+    useEffect(() => { pickedAt.current = mountedAt.current = performance.now(); }, []);
+    useEffect(() => { rememberHat(hat); }, [hat]);
+    useEffect(() => {
+        const was = proRef.current;
+        proRef.current = pro;
+        if (was === pro) return;
+        if (!pro) { if (hatRef.current === 'crown') setHat(null); return; }
+        // Pro status landed just after Home mounted (the launch's billing
+        // load): the bare pick may become the crown, at the Pro odds.
+        if (!changed.current && performance.now() - mountedAt.current <= PRO_SETTLE_MS) {
+            const next = proArrived(hatRef.current, mountLast, dice.current);
+            if (next !== hatRef.current) setHat(next);
+        }
+    }, [pro, mountLast]);
+
+    const view = useKeysMirror(mirror, busy, hat);
     const { scene } = view;
     const gearOn = useCallback((g: Gear) => scene.gear.includes(g), [scene]);
 
@@ -807,6 +851,44 @@ export const HomeKeys: React.FC<HomeKeysProps> = ({ userId, signal, speech, live
         return () => { clearTimeout(go); clearTimeout(t); };
     }, [rareBit, playBeat]);
 
+    // The wardrobe, while he is left alone: every so often (keysWardrobe
+    // wardrobeIdleDecision) a new look, only when he is free: awake, his head
+    // unclaimed, seen, no show / finale / beat / rare bit / gesture in
+    // flight, the pointer not on him, his scene settled. Under reduced motion
+    // the swap is instant (home-keys-mirror.css; no gesture plays).
+    const sceneAt = useRef(0);
+    const sceneSeen = useRef(scene);
+    useLayoutEffect(() => {
+        if (sceneSeen.current !== scene) { sceneSeen.current = scene; sceneAt.current = performance.now(); }
+    }, [scene]);
+    const rareRef = useRef(rareBit);
+    useLayoutEffect(() => { rareRef.current = rareBit; });
+    const gesturing = view.gesturing;
+    useEffect(() => {
+        if (!lively) return;
+        let t: ReturnType<typeof setTimeout>;
+        const loop = () => {
+            t = setTimeout(() => {
+                const now = performance.now();
+                const sc = sceneSeen.current;
+                const free = sc.pose === 'awake' && sc.headFree && !unseen() && !busy() && !gesturing()
+                    && now >= beatUntil.current && !rareRef.current
+                    && !rootRef.current?.classList.contains('is-look');
+                const rng = dice.current;
+                if (wardrobeIdleDecision({ now, pickedAt: pickedAt.current, lastClickAt: lastClickAt.current, sceneAt: sceneAt.current, free }, rng)) {
+                    pickedAt.current = now;
+                    changed.current = true;
+                    const next = pickHat({ pro: proRef.current, last: hatRef.current }, rng);
+                    if (next !== hatRef.current) setHat(next);
+                }
+                loop();
+            }, WARDROBE_CHECK_MS);
+        };
+        loop();
+        return () => clearTimeout(t);
+    }, [lively, busy, gesturing]);
+    const wearing = scene.gear.find(g => HAT_GEAR.includes(g));
+
     const eyes = show && eyesOn ? SHOWS[show].eyes : null;
     const bubble = line ?? (speech ? { text: speech } : null);
     const label = [BASE_LABEL, scene.doing, shiny ? 'in a rare color' : ''].filter(Boolean).join(', ');
@@ -825,6 +907,7 @@ export const HomeKeys: React.FC<HomeKeysProps> = ({ userId, signal, speech, live
             data-play={playState}
             data-bed={bedMoved && scene.pose === 'asleep' ? 'moved' : undefined}
             data-shiny={shiny ? 'on' : undefined}
+            data-hat={wearing}
             onClick={onZoneClick}
         >
             {/* The bubble lives out here, not in the rig: it must not bob or

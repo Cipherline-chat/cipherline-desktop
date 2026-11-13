@@ -12,6 +12,8 @@ import { speakingShadow } from '../../utils/callPersonalizationStyle';
  * speaking flip re-renders this one div — not the server panel / member list
  * around it. `children` is the same element object across those re-renders,
  * so the avatar inside is not re-rendered either. See utils/callSpeakingStore.ts.
+ * Pass a function as `children` when the avatar itself needs the state (an
+ * animated avatar plays while its owner talks); only that avatar re-renders.
  */
 export const SpeakingRing: React.FC<{
     uid: string;
@@ -20,7 +22,7 @@ export const SpeakingRing: React.FC<{
     glow: number;
     glowAlpha: number;
     idleClassName?: string;
-    children: React.ReactNode;
+    children: React.ReactNode | ((speaking: boolean) => React.ReactNode);
 }> = ({ uid, className, glow, glowAlpha, idleClassName = '', children }) => {
     const speaking = useIsCallParticipantSpeaking(uid);
     const { ring_color } = useCallPersonalization(uid);
@@ -29,7 +31,7 @@ export const SpeakingRing: React.FC<{
             className={`${className} ${speaking ? '' : idleClassName}`}
             style={speaking ? { boxShadow: speakingShadow(ring_color, { glow, alpha: glowAlpha }) } : undefined}
         >
-            {children}
+            {typeof children === 'function' ? children(speaking) : children}
         </div>
     );
 };

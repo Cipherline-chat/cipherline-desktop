@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
     resolveSSResolution,
-    computeSSBitrate, ssFpsFactor, SS_MAX_BITRATE_VP9_EQUIV,
+    computeSSBitrate, ssFpsFactor, SS_MAX_BITRATE_VP9_EQUIV, ssTierForPixels, senderCaptureSize,
     applyScreenShareSenderParams,
     retuneScreenShareInPlace,
     chooseScreenShareCodec,
@@ -66,9 +66,10 @@ describe('computeSSBitrate', () => {
     // number dropped (old: 60 fps = 2x base, 90 fps = 3x base) — see the
     // 2026-10-23 freeze reports in screenShare.ts.
     const EXPECTED: Record<ScreenShareOptions['resolution'], Record<number, number>> = {
-        source:  { 90: 20_000_000, 60: 20_000_000, 30: 18_000_000, 15: 9_000_000 },
-        '1440p': { 90: 20_000_000, 60: 18_190_000, 30: 12_000_000, 15: 6_000_000 },
-        '1080p': { 90: 11_600_000, 60:  9_090_000, 30:  6_000_000, 15: 3_000_000 },
+        // 2026-11-02: 1080p and up x0.82 (cap 16.4 Mbps VP9-equivalent) so 1440p90 H.265 is ~18 Mbps (22 until 2026-10-31, then 14).
+        source:  { 90: 16_400_000, 60: 16_400_000, 30: 14_760_000, 15: 7_380_000 },
+        '1440p': { 90: 16_400_000, 60: 14_910_000, 30:  9_840_000, 15: 4_920_000 },
+        '1080p': { 90:  9_510_000, 60:  7_460_000, 30:  4_920_000, 15: 2_460_000 },
         '720p':  { 90:  3_870_000, 60:  3_030_000, 30:  2_000_000, 15: 1_000_000 },
         '480p':  { 90:  1_550_000, 60:  1_210_000, 30:    800_000, 15:   400_000 },
     };
@@ -85,20 +86,21 @@ describe('computeSSBitrate', () => {
         expect(computeSSBitrate('1440p', 90)).toBe(computeSSBitrate('1440p', 90, 'vp9'));
     });
 
-    // 1440p90: the uncapped value (12 M × 1.933 × factor) is over every
-    // codec's absolute cap, so these ARE the caps (20 M × factor).
+    // 1440p90: the uncapped value (9.84 M × 1.933 × factor) is over every
+    // codec's absolute cap, so these ARE the caps (16.4 M × factor).
     it.each([
-        ['vp9',  20_000_000],
-        ['vp8',  25_000_000],
-        ['h264', 30_000_000],
-        ['h265', 22_000_000],
+        ['vp9',  16_400_000],
+        ['vp8',  20_500_000],
+        ['h264', 24_600_000],
+        ['h265', 18_040_000],
     ] as const)('gives %s its codec factor at 1440p90 (%d bps)', (codec, expected) => {
         expect(computeSSBitrate('1440p', 90, codec)).toBe(expected);
     });
 
-    it('the 2026-10-23 share (source 1440p90 H.265) is capped at 22 Mbps (was 59.4)', () => {
-        expect(computeSSBitrate('source', 90, 'h265')).toBe(22_000_000);
-        expect(SS_MAX_BITRATE_VP9_EQUIV).toBe(20_000_000);
+    it('the 2026-10-23 share (source 1440p90 H.265) is capped at ~18 Mbps, still under the 22 that lost a viewer', () => {
+        expect(computeSSBitrate('source', 90, 'h265')).toBe(18_040_000);
+        expect(computeSSBitrate('source', 90, 'h265')).toBeLessThan(22_000_000);
+        expect(SS_MAX_BITRATE_VP9_EQUIV).toBe(16_400_000);
     });
 
     it('frame rate scales sub-linearly above 30 fps and linearly below', () => {
@@ -118,14 +120,98 @@ describe('computeSSBitrate', () => {
     it('no ceiling exceeds its codec\'s absolute cap', () => {
         for (const res of RESOLUTIONS) {
             for (const fps of [15, 30, 60, 90, 120]) {
-                expect(computeSSBitrate(res, fps, 'h264')).toBeLessThanOrEqual(30_000_000);
-                expect(computeSSBitrate(res, fps, 'h265')).toBeLessThanOrEqual(22_000_000);
+                expect(computeSSBitrate(res, fps, 'h264')).toBeLessThanOrEqual(24_600_000);
+                expect(computeSSBitrate(res, fps, 'h265')).toBeLessThanOrEqual(18_040_000);
             }
         }
     });
 
     it('caps the fps multiplier at 90 for rates beyond 90 (e.g. a future preset)', () => {
         expect(computeSSBitrate('1080p', 120)).toBe(computeSSBitrate('1080p', 90));
+    });
+
+    // 'source' is a label, not a size: it is sized by the pixels actually
+    // captured (the 1080p 90 fps H.265 share that froze a viewer three times
+    // was given the 4K / Retina ceiling, ~18 Mbps against the 1080p tier's ~10.5).
+    describe("'source' sized by its captured pixels", () => {
+        const codecs = ['vp9', 'vp8', 'h264', 'h265'] as const;
+
+        it('a 1920x1080 source gets exactly the 1080p tier, at every fps and codec', () => {
+            for (const codec of codecs) {
+                for (const fps of FRAME_RATES) {
+                    expect(computeSSBitrate('source', fps, codec, { width: 1920, height: 1080 }))
+                        .toBe(computeSSBitrate('1080p', fps, codec));
+                }
+            }
+        });
+
+        it('the reported share: 1080p source, 90 fps, H.265 is 10.46 Mbps, not 18.04', () => {
+            expect(computeSSBitrate('source', 90, 'h265')).toBe(18_040_000);
+            expect(computeSSBitrate('source', 90, 'h265', { width: 1920, height: 1080 })).toBe(10_460_000);
+        });
+
+        it('a 2560x1440 source gets exactly the 1440p tier', () => {
+            for (const codec of codecs) {
+                for (const fps of FRAME_RATES) {
+                    expect(computeSSBitrate('source', fps, codec, { width: 2560, height: 1440 }))
+                        .toBe(computeSSBitrate('1440p', fps, codec));
+                }
+            }
+        });
+
+        it('a source larger than the 1440p tier keeps the top ceiling (3024x1964 Mac, 3440x1440, 4K, 8K)', () => {
+            for (const size of [
+                { width: 3024, height: 1964 }, { width: 3440, height: 1440 },
+                { width: 3840, height: 2160 }, { width: 7680, height: 4320 },
+            ]) {
+                for (const codec of codecs) {
+                    for (const fps of FRAME_RATES) {
+                        expect(computeSSBitrate('source', fps, codec, size)).toBe(computeSSBitrate('source', fps, codec));
+                    }
+                }
+            }
+            expect(computeSSBitrate('source', 90, 'h265', { width: 3024, height: 1964 })).toBe(18_040_000);
+        });
+
+        it('unknown or invalid dimensions are exactly today\'s label ceiling', () => {
+            const today = computeSSBitrate('source', 90, 'h265');
+            expect(computeSSBitrate('source', 90, 'h265', undefined)).toBe(today);
+            expect(computeSSBitrate('source', 90, 'h265', {})).toBe(today);
+            expect(computeSSBitrate('source', 90, 'h265', { width: 0, height: 0 })).toBe(today);
+            expect(computeSSBitrate('source', 90, 'h265', { width: 1920 })).toBe(today);
+            expect(computeSSBitrate('source', 90, 'h265', { width: NaN, height: 1080 })).toBe(today);
+        });
+
+        it('a named preset ignores the captured size (the user asked for that tier)', () => {
+            expect(computeSSBitrate('1080p', 90, 'h265', { width: 3840, height: 2160 })).toBe(computeSSBitrate('1080p', 90, 'h265'));
+            expect(computeSSBitrate('1440p', 90, 'h265', { width: 1280, height: 720 })).toBe(computeSSBitrate('1440p', 90, 'h265'));
+        });
+
+        it('sizes in-between and smaller screens by the nearest tier, a tie going up', () => {
+            expect(ssTierForPixels(1920, 1200)).toBe('1080p');
+            expect(ssTierForPixels(1366, 768)).toBe('720p');
+            expect(ssTierForPixels(1280, 720)).toBe('720p');
+            expect(ssTierForPixels(854, 480)).toBe('480p');
+            expect(ssTierForPixels(640, 360)).toBe('480p');
+            expect(ssTierForPixels(2560, 1080)).toBe('1440p'); // exact tie between 1080p and 1440p
+            expect(ssTierForPixels(2560, 1440)).toBe('1440p');
+            expect(ssTierForPixels(2561, 1440)).toBe('source');
+            expect(ssTierForPixels(undefined, 1080)).toBe('source');
+        });
+
+        it('senderCaptureSize prefers an explicit size, then the track settings, else undefined', () => {
+            const sender = { track: { getSettings: () => ({ width: 1920, height: 1080 }) } } as unknown as RTCRtpSender;
+            expect(senderCaptureSize(sender)).toEqual({ width: 1920, height: 1080 });
+            expect(senderCaptureSize(sender, { width: 1280, height: 720 })).toEqual({ width: 1280, height: 720 });
+            expect(senderCaptureSize({ track: { getSettings: () => ({}) } } as unknown as RTCRtpSender)).toBeUndefined();
+            expect(senderCaptureSize(undefined)).toBeUndefined();
+        });
+
+        it('buildScreenSharePublishOptions carries the captured size into the stored encoding', () => {
+            const o = buildScreenSharePublishOptions('source', 90, 'h265', { captured: { width: 1920, height: 1080 } });
+            expect(o.screenShareEncoding.maxBitrate).toBe(computeSSBitrate('1080p', 90, 'h265'));
+            expect(buildScreenSharePublishOptions('source', 90, 'h265').screenShareEncoding.maxBitrate).toBe(18_040_000);
+        });
     });
 });
 
@@ -613,6 +699,65 @@ describe('watchH264HighStart', () => {
         const stats = vi.fn(async () => { throw new Error('closed'); });
         expect(await watchH264HighStart(stats, { sleep })).toBe('gone');
     });
+
+    // Reports 479af6c7 / 438f97a1 (1.0.24-staging.178): 1440p90 H.264 High on an
+    // RTX 2080 Ti. share_fps 3 s in: limit=bandwidth enc_fps=27.1 sent_fps=30
+    // (the 720p copy), share_net avail_kbps=369 - the full layer had no bits yet.
+    // The 6 s check said `failed`, marked High dead for the session, and every
+    // later share was software VP8 clamped to 30 fps.
+    describe('a bandwidth-starved full layer next to a working 720p copy (reports 479af6c7 / 438f97a1)', () => {
+        const starvedPair = { type: 'candidate-pair', nominated: true, state: 'succeeded', availableOutgoingBitrate: 369_000 };
+        const rtp = (framesEncoded: number, extra: Record<string, unknown> = {}) =>
+            ({ type: 'outbound-rtp', kind: 'video', active: true, framesEncoded, qualityLimitationReason: 'bandwidth', ...extra });
+
+        it('does not call the encoder dead at the 6 s timeout while the estimate is still ~369 kbps', async () => {
+            // q (720p copy) encoding, h (full layer) not started - for the first 12 polls; then the estimate has climbed and h wakes up.
+            let n = 0;
+            const stats = vi.fn(async () => {
+                n++;
+                return n <= 12
+                    ? [rtp(30 * n), rtp(0), starvedPair]
+                    : [rtp(30 * n, { qualityLimitationReason: 'none' }), rtp(5, { qualityLimitationReason: 'none' }), { ...starvedPair, availableOutgoingBitrate: 7_119_000 }];
+            });
+            expect(await watchH264HighStart(stats, { sleep, timeoutMs: 6000, intervalMs: 1000 })).toBe('ok');
+            expect(stats).toHaveBeenCalledTimes(13); // t = 0..12 s: well past the old 6 s verdict
+        });
+
+        it('gives up WAITING (not on the encoder) after the starved wait: "limited", never "failed"', async () => {
+            const stats = vi.fn(async () => [rtp(500), rtp(0), starvedPair]);
+            const res = await watchH264HighStart(stats, { sleep, timeoutMs: 6000, intervalMs: 1000, starvedWaitMs: 30_000 });
+            expect(res).toBe('limited');
+            expect(stats).toHaveBeenCalledTimes(31); // t = 0..30 s
+        });
+
+        it('starvation is also recognised from the estimate alone (the layer reports no limitation reason)', async () => {
+            const stats = vi.fn(async () => [rtp(500, { qualityLimitationReason: 'none' }), rtp(0, { qualityLimitationReason: 'none' }), starvedPair]);
+            expect(await watchH264HighStart(stats, { sleep, timeoutMs: 6000, intervalMs: 1000, starvedWaitMs: 8000 })).toBe('limited');
+        });
+
+        it('still a failure once the estimate is healthy: a dead full layer on a good link (NVENC session limit)', async () => {
+            const healthy = { ...starvedPair, availableOutgoingBitrate: 66_468_000 };
+            const stats = vi.fn(async () => [rtp(500, { qualityLimitationReason: 'none' }), rtp(0, { qualityLimitationReason: 'none' }), healthy]);
+            expect(await watchH264HighStart(stats, { sleep, timeoutMs: 6000, intervalMs: 1000 })).toBe('failed');
+            expect(stats).toHaveBeenCalledTimes(7);
+        });
+
+        it('starvation never excuses an encoder that produced NOTHING on any layer', async () => {
+            const stats = vi.fn(async () => [rtp(0), rtp(0), starvedPair]);
+            expect(await watchH264HighStart(stats, { sleep, timeoutMs: 6000, intervalMs: 1000 })).toBe('failed');
+        });
+
+        it('the estimate recovering mid-wait while the layer stays silent turns it back into a failure at once', async () => {
+            let n = 0;
+            const stats = vi.fn(async () => {
+                n++;
+                const pair = n <= 8 ? starvedPair : { ...starvedPair, availableOutgoingBitrate: 30_000_000 };
+                return [rtp(300, { qualityLimitationReason: n <= 8 ? 'bandwidth' : 'none' }), rtp(0, { qualityLimitationReason: n <= 8 ? 'bandwidth' : 'none' }), pair];
+            });
+            expect(await watchH264HighStart(stats, { sleep, timeoutMs: 6000, intervalMs: 1000 })).toBe('failed');
+            expect(stats).toHaveBeenCalledTimes(9);
+        });
+    });
 });
 
 describe('captureFrameRateFor — capture headroom above the send rate', () => {
@@ -660,9 +805,21 @@ describe('the lighter copy (lower layer) — off unless asked for', () => {
         expect(small.maxBitrate).toBeLessThan(2_500_000);
         expect(shareLowEncoding(undefined, undefined, 30, 'vp8').scaleResolutionDownBy).toBe(2);
     });
+    it('shareLowEncoding: an ultra-wide share is sized by its real pixels, not by its short side (Surround 3840x720)', () => {
+        // 3840x720 -> 1920x360 = 0.75 of a 1280x720 frame. By the short side alone it was 0.25: 550 kbps
+        // for an H.265 racing game, which the hardware encoder met by dropping to 9-12 fps (report 6b3ddab6).
+        const low = shareLowEncoding(3840, 720, 90, 'h265');
+        expect(low.scaleResolutionDownBy).toBe(2);
+        const full720 = computeSSBitrate('720p', 30, 'h265');
+        expect(low.maxBitrate).toBeCloseTo(full720 * 0.75, -5);
+        expect(low.maxBitrate).toBeGreaterThan(full720 * 0.7);
+        // 16:9 is unchanged: a half-size 1280x720 capture is a quarter of 720p either way.
+        expect(shareLowEncoding(1280, 720, 30, 'h265').maxBitrate).toBe(Math.max(300_000, Math.round((full720 * 0.25) / 10_000) * 10_000));
+        expect(shareLowEncoding(2560, 1440, 90, 'h264').maxBitrate).toBe(3_000_000);
+    });
     it('H.265 ceiling is ~27 % under H.264', () => {
-        // At 1080p30 (exact, no 10 kbps rounding, under the cap); the absolute caps keep the same ratio.
-        expect(computeSSBitrate('1080p', 30, 'h265') / computeSSBitrate('1080p', 30, 'h264')).toBeCloseTo(1.1 / 1.5, 5);
+        // At 1080p30 (under the cap; 10 kbps rounding allows ~3 decimals); the absolute caps keep the same ratio exactly.
+        expect(computeSSBitrate('1080p', 30, 'h265') / computeSSBitrate('1080p', 30, 'h264')).toBeCloseTo(1.1 / 1.5, 2);
         expect(computeSSBitrate('1440p', 90, 'h265') / computeSSBitrate('1440p', 90, 'h264')).toBeCloseTo(1.1 / 1.5, 5);
         expect(asScreenShareCodec('h265')).toBe('h265');
         expect(asScreenShareCodec('av1')).toBeUndefined();
@@ -677,7 +834,7 @@ describe('buildScreenSharePublishOptions', () => {
             simulcast: false,
             videoCodec: 'h264',
             backupCodec: false,
-            screenShareEncoding: { maxBitrate: 30_000_000, maxFramerate: 90, priority: 'high' },
+            screenShareEncoding: { maxBitrate: 24_600_000, maxFramerate: 90, priority: 'high' },
             degradationPreference: 'maintain-framerate',
         });
     });
@@ -687,7 +844,7 @@ describe('buildScreenSharePublishOptions', () => {
             simulcast: false,
             videoCodec: 'vp9',
             backupCodec: false,
-            screenShareEncoding: { maxBitrate: 20_000_000, maxFramerate: 90, priority: 'high' },
+            screenShareEncoding: { maxBitrate: 16_400_000, maxFramerate: 90, priority: 'high' },
             degradationPreference: 'maintain-framerate',
         });
     });

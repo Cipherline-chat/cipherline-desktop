@@ -5,9 +5,9 @@ import { playGeneratedSound, previewSound, type SoundsPrefs } from './notificati
 export const ENTRANCE_VOLUME = 0.6;
 
 /** Someone else's entrance sound, through the app's sound path (output device + master volume). */
-export function playEntranceSound(id: string, prefs?: SoundsPrefs | null): void {
+export async function playEntranceSound(id: string, prefs?: SoundsPrefs | null): Promise<boolean> {
     const url = entranceSoundUrl(id);
-    if (url) playGeneratedSound(url, ENTRANCE_VOLUME, prefs);
+    return url ? playGeneratedSound(url, ENTRANCE_VOLUME, prefs) : false;
 }
 
 /** The picker's Preview button: always audible (like the notification "Test"), at the master level. */
@@ -28,9 +28,9 @@ export function customEntranceVolume(gain: number): number {
 }
 
 /** Someone else's custom entrance sound (a verified, cached blob: URL), through the same path as a built-in one. */
-export function playCustomEntranceSound(url: string, gain: number, prefs?: SoundsPrefs | null): void {
+export async function playCustomEntranceSound(url: string, gain: number, prefs?: SoundsPrefs | null): Promise<boolean> {
     const v = customEntranceVolume(gain);
-    if (url && v > 0) playGeneratedSound(url, v, prefs);
+    return url && v > 0 ? playGeneratedSound(url, v, prefs) : false;
 }
 
 /** Preview YOUR custom sound in Settings (always audible, at the master level, same cap). */

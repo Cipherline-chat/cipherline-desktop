@@ -73,6 +73,67 @@ interface UserSnapshot {
  *  competing with `keyVerification.ts`, which IS the trust anchor. */
 const snapshots = new Map<string, UserSnapshot>();
 
+/**
+ * Per-conversation roster: which users (and which published identity keys for
+ * each) `GET /conversations/:id/devices` listed for ONE conversation.
+ *
+ * Why it is separate from `snapshots`: the per-user snapshot merges across
+ * conversations, so it can say "this key is published for user V" but never
+ * "V is a participant of THIS conversation" - and the second question is the
+ * one that decides whether a claimed sender id (`su`) may be believed here
+ * (`senderBinding.ts`). `seen` only ever GROWS within a session, on purpose: a
+ * member who sent a message and then left must not turn a legitimate pending
+ * envelope into an unverifiable one, and a retained key for a departed member
+ * can only ever vouch for THAT member's own id. In-memory, like the rest.
+ */
+interface ConversationRoster {
+    /** user_id -> identity pubs listed for that user in this conversation, ever (this session). */
+    seen: Map<string, Set<string>>;
+    fetchedAt: number;
+}
+const rosters = new Map<string, ConversationRoster>();
+
+export type RosterJudgment =
+    /** `su` is listed in this conversation with `sp` among its published keys. */
+    | 'member'
+    /** `su` was never listed in this conversation. */
+    | 'not-member'
+    /** `su` is listed, but `sp` is not one of the keys published under it. */
+    | 'key-mismatch'
+    /** No roster for this conversation has been seen yet. */
+    | 'no-roster';
+
+/** Fold one `GET /conversations/:id/devices` response into the roster. */
+export function recordConversationRoster(conversationId: string, entries: DirectoryEntry[] | undefined | null): void {
+    if (!conversationId || !Array.isArray(entries)) return;
+    const roster = rosters.get(conversationId) ?? { seen: new Map<string, Set<string>>(), fetchedAt: 0 };
+    for (const e of entries) {
+        const userId = e?.user_id;
+        const pub = e?.identity_pub_b64 ?? e?.identity_key_pub_b64;
+        if (!userId || !pub) continue;
+        const pubs = roster.seen.get(userId) ?? new Set<string>();
+        pubs.add(pub);
+        roster.seen.set(userId, pubs);
+    }
+    roster.fetchedAt = Date.now();
+    rosters.set(conversationId, roster);
+}
+
+/** Is `userId` a participant of `conversationId` with `pub` published under it? */
+export function conversationRosterJudgment(conversationId: string, userId: string, pub: string): RosterJudgment {
+    const roster = rosters.get(conversationId);
+    if (!roster) return 'no-roster';
+    const pubs = roster.seen.get(userId);
+    if (!pubs) return 'not-member';
+    return pubs.has(pub) ? 'member' : 'key-mismatch';
+}
+
+/** Milliseconds since this conversation's roster was last refreshed, or null if never. */
+export function conversationRosterAgeMs(conversationId: string): number | null {
+    const roster = rosters.get(conversationId);
+    return roster ? Date.now() - roster.fetchedAt : null;
+}
+
 /** How long a snapshot is considered fresh enough to answer a key-material
  *  attribution query without re-fetching. Short: a legitimately-new device of
  *  a peer must become usable quickly, or adding a device breaks calling. */
@@ -319,6 +380,9 @@ export function installDirectoryCapture(
                     : null;
                 if (uid) recordFullUser(uid, res.data as DirectoryEntry[]);
                 else record(res.data as DirectoryEntry[]);
+                // A conversation-scoped listing is also that conversation's roster.
+                const convId = /\/conversations\/([0-9a-fA-F-]{36})\/devices$/.exec(url!.split('?')[0])?.[1];
+                if (convId) recordConversationRoster(convId, res.data as DirectoryEntry[]);
 
                 // Observed AFTER the cache update, in its own try/catch: an
                 // observer that throws must not take out the cache warm (or
@@ -338,5 +402,6 @@ export function installDirectoryCapture(
 /** Test seam / sign-out hygiene. */
 export function _reset(): void {
     snapshots.clear();
+    rosters.clear();
     inFlight.clear();
 }

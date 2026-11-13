@@ -362,7 +362,7 @@ export function decideCameraCodec(
     pref: CameraCodecPref,
     hw: CameraHwSupport | null,
     gpus?: readonly GpuVendorLike[] | null,
-    opts: { hwFailed?: boolean } = {},
+    opts: { hwFailed?: boolean; linux?: boolean } = {},
 ): CameraCodecDecision {
     const nv = nvidiaOnly(gpus);
     const cbHw = !!hw?.h264 && !nv;
@@ -373,6 +373,11 @@ export function decideCameraCodec(
         if (highHw && !cbHw) return { codec: 'h264', h264Profile: 'high', reason: 'set in Settings · High (HW)', hardware: true };
         return { codec: 'h264', h264Profile: 'cb', reason: 'set in Settings', hardware: cbHw };
     }
+    // Linux: the VA-API encoder is on for SCREEN SHARE (electron/linux-video-encode.ts), where it is watched and
+    // falls back. A camera on it froze (capture and sent 0 fps for the rest of the call) on a Meteor Lake laptop,
+    // Debian 13, 2026-11-04, and no watchdog caught it: the stall detector skips a camera whose capture side has
+    // stopped, which is how the stall looked. Before that default, a Linux camera was always VP8; it is again.
+    if (opts.linux) return { codec: 'vp8', reason: 'auto: VP8 on Linux' };
     if (opts.hwFailed) return { codec: 'vp8', reason: 'auto: HW H.264 did not hold → VP8' };
     if (!hw) return { codec: 'vp8', reason: 'auto: no probe → VP8' };
     if (cbHw) return { codec: 'h264', h264Profile: 'cb', reason: 'auto: HW H.264', hardware: true };

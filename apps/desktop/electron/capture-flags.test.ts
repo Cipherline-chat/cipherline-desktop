@@ -3,8 +3,8 @@ import {
     parseScreenCapturerPref, windowsBuildFromRelease, buildChromiumMediaSwitches, expectedScreenCapturer,
     captureLogSwitches, parseCaptureTimingLog, summarizeGpuDevices, WIN11_24H2_BUILD,
     validateCaptureTimingWindow, CAPTURE_TIMING_DEFAULT_WINDOW, CAPTURE_TIMING_MIN_WINDOW,
-    decideAutoScreenCapturer, WINDOWS_NO_DXGI_FEATURE, dxgiEnabledInMainProcess, pickerEnumeration,
-    captureFpsCeiling, isNativeWaylandClient,
+    decideAutoScreenCapturer, linuxSessionInfo, WINDOWS_NO_DXGI_FEATURE, dxgiEnabledInMainProcess, pickerEnumeration,
+    captureFpsCeiling, isNativeWaylandClient, isKdePlasma,
     parseSourcesHelperFailure, serializeSourcesHelperFailure, SOURCES_HELPER_FAILURE_MAX_BYTES, gpuTopologyFromInfo, parseGpuTopologyHint, serializeGpuTopologyHint, resolveCapturedDisplayHz,
 } from './capture-flags';
 
@@ -289,6 +289,37 @@ describe('decideAutoScreenCapturer', () => {
         expect(d.why).toMatch(why);
     });
 
+    // 2026-11-04: an i5-13600HX + NVIDIA laptop was NOT flagged hybrid by Chromium, took DXGI, and a share
+    // captured 4-5 fps at any resolution (DXGI's fallback there is GDI). A built-in panel + Intel beside
+    // NVIDIA / AMD is the laptop; a desktop with the same vendors has no built-in panel.
+    describe('a laptop Chromium does not flag as hybrid', () => {
+        const PAIR = { hybrid: false, vendors: ['Intel', 'NVIDIA', 'Microsoft (software)'] };
+        it('Intel + NVIDIA with a built-in panel → WGC', () => {
+            const d = decideAutoScreenCapturer({ platform: 'win32', windowsBuild: 26200, gpu: { ...PAIR, internalDisplay: true } });
+            expect(d.backend).toBe('wgc');
+            expect(d.why).toMatch(/laptop with two GPUs/);
+        });
+        it('Intel + AMD with a built-in panel → WGC', () => {
+            expect(decideAutoScreenCapturer({ platform: 'win32', windowsBuild: 26200, gpu: { hybrid: false, vendors: ['Intel', 'AMD'], internalDisplay: true } }).backend).toBe('wgc');
+        });
+        it('negative controls: the same vendors on a desktop (no built-in panel), an older hint (unknown), one GPU, or NVIDIA + AMD keep DXGI', () => {
+            expect(decideAutoScreenCapturer({ platform: 'win32', windowsBuild: 26200, gpu: { ...PAIR, internalDisplay: false } }).backend).toBe('dxgi');
+            expect(decideAutoScreenCapturer({ platform: 'win32', windowsBuild: 26200, gpu: PAIR }).backend).toBe('dxgi');
+            expect(decideAutoScreenCapturer({ platform: 'win32', windowsBuild: 26200, gpu: { hybrid: false, vendors: ['NVIDIA'], internalDisplay: true } }).backend).toBe('dxgi');
+            expect(decideAutoScreenCapturer({ platform: 'win32', windowsBuild: 26200, gpu: { hybrid: false, vendors: ['NVIDIA', 'AMD'], internalDisplay: true } }).backend).toBe('dxgi');
+        });
+        it('the hint carries the built-in-panel signal through build, write and read; an older file still parses', () => {
+            const info = { gpuDevice: [{ vendorId: 0x8086, deviceId: 1, active: false }, { vendorId: 0x10de, deviceId: 2, active: false }] };
+            expect(gpuTopologyFromInfo(info, true)).toEqual({ hybrid: false, vendors: ['Intel', 'NVIDIA'], internalDisplay: true });
+            expect(gpuTopologyFromInfo(info, false)!.internalDisplay).toBe(false);
+            expect(gpuTopologyFromInfo(info)).toEqual({ hybrid: false, vendors: ['Intel', 'NVIDIA'] });
+            const h = { hybrid: false, vendors: ['Intel', 'NVIDIA'], internalDisplay: true };
+            expect(parseGpuTopologyHint(serializeGpuTopologyHint(h))).toEqual(h);
+            expect(parseGpuTopologyHint('{"hybrid":false,"vendors":["Intel"],"internalDisplay":"yes"}')).toEqual({ hybrid: false, vendors: ['Intel'] });
+            expect(parseGpuTopologyHint('{"hybrid":false,"vendors":["Intel"]}')).toEqual({ hybrid: false, vendors: ['Intel'] });
+        });
+    });
+
     it('auto → wgc enables WGC and disables DirectXCapturer; an explicit pref still wins', () => {
         expect(buildChromiumMediaSwitches('win32', 'auto', 'wgc')).toEqual({
             enableFeatures: ['PlatformH264CbpEncoding', 'AllowWgcScreenCapturer'], disableFeatures: ['DirectXCapturer'],
@@ -360,6 +391,19 @@ describe('GPU topology hint (persisted for the next launch)', () => {
 });
 
 describe('resolveCapturedDisplayHz', () => {
+    it('SHARED RECT: a native share picks the Hz of the monitor the portal stream sits on, not the primary\'s', () => {
+        const displays = [
+            { id: 1, displayFrequency: 75, bounds: { x: 0, y: 0, width: 3440, height: 1440 } },
+            { id: 2, displayFrequency: 120, bounds: { x: 3440, y: 0, width: 3440, height: 1440 } },
+            { id: 3, displayFrequency: 60, bounds: { x: 6880, y: 0, width: 1080, height: 1920 } },
+        ];
+        expect(resolveCapturedDisplayHz({ sourceKind: 'screen', displays, primaryId: 1, sharedRect: { x: 3440, y: 0, width: 3440, height: 1440 } })).toEqual({ hz: 120, how: 'shared' });
+        // positive control: without the rect it is the old primary guess
+        expect(resolveCapturedDisplayHz({ sourceKind: 'screen', displays, primaryId: 1 })).toEqual({ hz: 75, how: 'primary' });
+        // a rect that matches no display (or an ambiguous one) falls back, never guesses a wrong monitor
+        expect(resolveCapturedDisplayHz({ sourceKind: 'screen', displays, primaryId: 1, sharedRect: { x: 9, y: 9, width: 10, height: 10 } })).toEqual({ hz: 75, how: 'primary' });
+    });
+
     const displays = [{ id: 111, displayFrequency: 200 }, { id: 222, displayFrequency: 60 }];
     it('matches the captured screen by display_id', () => {
         expect(resolveCapturedDisplayHz({ sourceKind: 'screen', displayId: '222', displays, primaryId: 111 }))
@@ -471,6 +515,29 @@ describe('captureFpsCeiling - the OS capturer\'s own limit', () => {
     it.each(['x11', 'macos', 'wgc', 'dxgi', 'unknown', '', null, undefined])('%j has no fixed ceiling of its own', (b) => {
         expect(captureFpsCeiling(b)).toBeNull();
     });
+
+    it('KDE Plasma has none: its PipeWire capture delivered 65-75 fps at a request of 75 (report 6c2b2274 / 42e9d4d4 / aa900005)', () => {
+        for (const d of ['KDE', 'kde', 'KDE:plasma', 'plasma:KDE', ' KDE ']) expect(captureFpsCeiling('pipewire', d)).toBeNull();
+    });
+
+    it('every other (or unknown) desktop keeps the measured 60', () => {
+        for (const d of ['GNOME', 'ubuntu:GNOME', 'sway', 'Hyprland', 'X-Cinnamon', 'KDEish', '', null, undefined]) {
+            expect(captureFpsCeiling('pipewire', d)).toBe(60);
+        }
+    });
+
+    it('the desktop only matters on PipeWire', () => {
+        expect(captureFpsCeiling('x11', 'GNOME')).toBeNull();
+        expect(captureFpsCeiling('wgc', 'KDE')).toBeNull();
+    });
+
+    it('isKdePlasma reads the colon list, not a substring', () => {
+        expect(isKdePlasma('KDE')).toBe(true);
+        expect(isKdePlasma('ubuntu:KDE')).toBe(true);
+        expect(isKdePlasma('KDEish')).toBe(false);
+        expect(isKdePlasma('')).toBe(false);
+        expect(isKdePlasma(undefined)).toBe(false);
+    });
 });
 
 describe('isNativeWaylandClient - which Linux capturer Chromium will use', () => {
@@ -492,5 +559,33 @@ describe('isNativeWaylandClient - which Linux capturer Chromium will use', () =>
         const be = (wayland: boolean) => expectedScreenCapturer({ platform: 'linux', windowsBuild: null, pref: 'auto', sourceKind: 'screen', waylandSession: wayland }).backend;
         expect(captureFpsCeiling(be(isNativeWaylandClient({ XDG_SESSION_TYPE: 'wayland' }, '')))).toBe(60);
         expect(captureFpsCeiling(be(isNativeWaylandClient({ XDG_SESSION_TYPE: 'x11' }, '')))).toBeNull();
+    });
+});
+
+
+// ── The Linux session a report describes ────────────────────────────────────
+describe('linuxSessionInfo', () => {
+    it('Debian 13 / KDE on Xorg: the picker is Cipherline\'s own list (the 2026-11-04 report)', () => {
+        expect(linuxSessionInfo('linux', { XDG_SESSION_TYPE: 'x11', XDG_CURRENT_DESKTOP: 'KDE' }, '')).toEqual({
+            session_type: 'x11', desktop: 'KDE', ozone: 'default', capture_path: 'x11', restore_mode: 'n/a',
+        });
+    });
+    it('KDE on Wayland: the desktop\'s chooser, restore mode named', () => {
+        expect(linuxSessionInfo('linux', { XDG_SESSION_TYPE: 'wayland', XDG_CURRENT_DESKTOP: 'KDE' }, '')).toEqual({
+            session_type: 'wayland', desktop: 'KDE', ozone: 'default', capture_path: 'portal', restore_mode: 'listed',
+        });
+        expect(linuxSessionInfo('linux', { WAYLAND_DISPLAY: 'wayland-0', XDG_CURRENT_DESKTOP: 'sway' }, '')!.restore_mode).toBe('single');
+    });
+    it('an explicit --ozone-platform=x11 under a Wayland session is an X11 client', () => {
+        const r = linuxSessionInfo('linux', { XDG_SESSION_TYPE: 'wayland', XDG_CURRENT_DESKTOP: 'KDE' }, 'x11')!;
+        expect(r.capture_path).toBe('x11');
+        expect(r.ozone).toBe('x11');
+    });
+    it('only fixed words and a sanitised desktop name come through; nothing off Linux', () => {
+        const r = linuxSessionInfo('linux', { XDG_SESSION_TYPE: '/home/me/secret', XDG_CURRENT_DESKTOP: 'ubuntu:GNOME; rm -rf /' }, '')!;
+        expect(r.session_type).toBe('unknown');
+        expect(r.desktop).toBe('ubuntu:GNOMErmrf');
+        expect(linuxSessionInfo('win32', { XDG_SESSION_TYPE: 'x11' }, '')).toBeNull();
+        expect(linuxSessionInfo('darwin', {}, '')).toBeNull();
     });
 });

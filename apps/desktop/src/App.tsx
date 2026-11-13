@@ -5,13 +5,16 @@ import AuthScreen from './components/AuthScreen';
 import { SeasonalLayer } from './components/SeasonalLayer';
 import { EggLayer } from './components/EggLayer';
 import { EggProgressHost } from './components/EggProgressHost';
+import { FlappyScoresHost } from './components/FlappyScoresHost';
 import { AchievementsHost } from './components/AchievementsHost';
 import { ProfileNotesHost } from './components/ProfileNotesHost';
+import { StoreLoadFailureHost } from './components/StoreLoadFailureHost';
 import { HighFiveOverlay } from './components/HighFiveOverlay';
 import { CallPersonalizationHost } from './components/CallPersonalizationHost';
 import { MomentHost } from './components/moments/MomentHost';
 import { MomentClock } from './components/moments/MomentClock';
 import { MilestoneWatch } from './components/moments/MilestoneWatch';
+import { LevelUpHost } from './components/levelUp/LevelUpHost';
 import { useSeasonalEffects } from './hooks/useSeasonalEffects';
 import { useNightDiveRuntime } from './hooks/useNightDive';
 import { NightDiveSea } from './components/NightDiveSea';
@@ -209,8 +212,12 @@ function AppInner() {
       {/* Easter-egg progress → the Egg hunter profile badge: syncs finds to the
           server and toasts a newly earned tier. Renders nothing. */}
       {isAuthenticated && <EggProgressHost />}
+      {/* Firewall game: best score kept per account + synced to the leaderboard (utils/flappyBest.ts). */}
+      {isAuthenticated && <FlappyScoresHost />}
       {isAuthenticated && <AchievementsHost />}
       {isAuthenticated && <ProfileNotesHost />}
+      {/* Says so when this device's stored data failed to load, and offers a reload. Renders nothing itself. */}
+      {isAuthenticated && <StoreLoadFailureHost />}
       {isAuthenticated && <HighFiveOverlay />}
       {isAuthenticated && <CallPersonalizationHost />}
 
@@ -219,6 +226,8 @@ function AppInner() {
       {isAuthenticated && <MomentHost />}
       {isAuthenticated && <MomentClock />}
       {isAuthenticated && <MilestoneWatch />}
+      {/* The full-screen level-up celebration (above moments and toasts). See components/levelUp/LevelUpHost.tsx. */}
+      {isAuthenticated && <LevelUpHost />}
 
       {/* Entry curtain — solid ABYSS that fades out on first login, giving the
           "app fades in from dark" feel without wrapping Dashboard in a new

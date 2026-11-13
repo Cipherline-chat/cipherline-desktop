@@ -106,7 +106,10 @@ describe('gate worklet — the DSP', () => {
         const { gate, send } = await loadGate();
         send({ type: 'gate', enabled: true });
         run(gate, -30, BLOCKS_PER_SECOND);
-        expect(gate.port.postMessage).not.toHaveBeenCalled();
+        // Only the once-a-second open tally (diagnostic reports), never the meter's 'level'.
+        const types = gate.port.postMessage.mock.calls.map(c => c[0].type);
+        expect(types.length).toBeGreaterThan(0);
+        expect(types.every((t: string) => t === 'gateStats')).toBe(true);
     });
 });
 
@@ -197,8 +200,8 @@ describe('voice chain — the gate with noise suppression OFF', () => {
     it('NS off, gate on: the gate is in the chain, enabled, right after the (bypassed) NS stages', async () => {
         const { vp, ctx } = await build({ noiseSuppression: false, voiceGate: true });
         expect(path(ctx)).toEqual([
-            'source', 'rnnoise', 'speex', 'gate', 'eq', 'eq', 'eq', 'eq', 'eq', 'agc',
-            'compressor', 'gain', 'gain', 'analyser', 'destination',
+            'source', 'rnnoise', 'speex', 'gate', 'eq', 'eq', 'eq', 'eq', 'eq', 'gain', 'agc',
+            'compressor', 'gain', 'analyser', 'destination',
         ]);
         expect(gateNode()!.msgs).toContainEqual({ type: 'gate', enabled: true });
         expect(gateNode()!.msgs).toContainEqual({ type: 'threshold', value: -45 });
@@ -218,8 +221,8 @@ describe('voice chain — the gate with noise suppression OFF', () => {
         await vp.init({ track: track(), audioContext: ctx as unknown as AudioContext });
         expect(nsUnavailable).toHaveBeenCalled();
         expect(path(ctx)).toEqual([
-            'source', 'speex', 'gate', 'eq', 'eq', 'eq', 'eq', 'eq', 'agc',
-            'compressor', 'gain', 'gain', 'analyser', 'destination',
+            'source', 'speex', 'gate', 'eq', 'eq', 'eq', 'eq', 'eq', 'gain', 'agc',
+            'compressor', 'gain', 'analyser', 'destination',
         ]);
         expect(gateNode()!.msgs).toContainEqual({ type: 'gate', enabled: true });
         expect(vp.chainPlan).toMatchObject({ ns: false, gate: true, agc: true });
@@ -229,8 +232,8 @@ describe('voice chain — the gate with noise suppression OFF', () => {
     it('a gate that cannot load drops only itself — NS and AGC still run', async () => {
         const { vp, ctx } = await build({ noiseSuppression: true }, ['gate-worklet']);
         expect(path(ctx)).toEqual([
-            'source', 'rnnoise', 'speex', 'eq', 'eq', 'eq', 'eq', 'eq', 'agc',
-            'compressor', 'gain', 'gain', 'analyser', 'destination',
+            'source', 'rnnoise', 'speex', 'eq', 'eq', 'eq', 'eq', 'eq', 'gain', 'agc',
+            'compressor', 'gain', 'analyser', 'destination',
         ]);
         expect(vp.chainPlan).toMatchObject({ ns: true, gate: false });
         await vp.destroy();
@@ -250,8 +253,11 @@ describe('voice chain — the gate with noise suppression OFF', () => {
         expect(rnnoise.msgs.at(-1)).toEqual({ type: 'toggle', enabled: false });
         // The gate was not touched by the NS toggles.
         expect(gate.msgs.at(-1)).toEqual({ type: 'gate', enabled: true });
-        vp.updateSettings({ ...SETTINGS, voiceGate: true, voiceGateThreshold: -38 } as never);
-        expect(gate.msgs.at(-1)).toEqual({ type: 'threshold', value: -38 });
+        vp.updateSettings({ ...SETTINGS, voiceGate: true, voiceGateThreshold: -38, voiceGateAuto: false } as never);
+        expect(gate.msgs.at(-2)).toEqual({ type: 'threshold', value: -38 });
+        expect(gate.msgs.at(-1)).toEqual({ type: 'auto', value: false }); // Automatic off: the user's threshold is never auto
+        vp.updateSettings({ ...SETTINGS, voiceGate: true, voiceGateThreshold: -38, voiceGateAuto: true } as never);
+        expect(gate.msgs.at(-1)).toEqual({ type: 'auto', value: true }); // Automatic on, whatever the manual value
         expect(path(ctx)).toEqual(before);
         await vp.destroy();
     });
@@ -264,8 +270,8 @@ describe('voice chain — the gate with noise suppression OFF', () => {
         await vp.init({ track: track(), audioContext: ctx as unknown as AudioContext });
         const gate = gateNode()!;
         expect(gate.msgs).toContainEqual({ type: 'report', ms: 50 });
-        (gate.port as { onmessage: (e: { data: unknown }) => void }).onmessage({ data: { type: 'level', rms: lin(-41), open: true } });
-        expect(onGateLevel).toHaveBeenCalledWith(expect.closeTo(-41, 3), true);
+        (gate.port as { onmessage: (e: { data: unknown }) => void }).onmessage({ data: { type: 'level', rms: lin(-41), open: true, thr: -47 } });
+        expect(onGateLevel).toHaveBeenCalledWith(expect.closeTo(-41, 3), true, -47);
         await vp.destroy();
 
         workletNodes.length = 0;
@@ -399,5 +405,72 @@ describe('voice chain — render-thread overload swaps Strong for Light', () => 
         } finally {
             vi.useRealTimers();
         }
+    });
+});
+
+// ── 4. ONE AGC, the same one for Light and Strong ───────────────────────────
+// Owner (2026-10): "on Light the mic clips and everything is very loud; it
+// should match Strong". The gain law lives in exactly one worklet that sits
+// AFTER both noise suppressors and knows nothing about which one ran.
+
+describe('voice chain — one AGC, identical for Light and Strong', () => {
+    const agcNodes = () => workletNodes.filter(n => n.kind === 'agc');
+
+    it('Light and Strong build the same graph with exactly one AGC node and one compressor stage', async () => {
+        const strong = await build({ noiseSuppression: true, noiseSuppressionMode: 'strong' });
+        const strongPath = path(strong.ctx);
+        expect(agcNodes()).toHaveLength(1);
+        await strong.vp.destroy();
+
+        workletNodes.length = 0;
+        const light = await build({ noiseSuppression: true, noiseSuppressionMode: 'light' });
+        expect(path(light.ctx)).toEqual(strongPath);
+        expect(agcNodes()).toHaveLength(1);
+        expect(path(light.ctx).filter(k => k === 'agc')).toHaveLength(1);
+        expect(path(light.ctx).filter(k => k === 'compressor')).toHaveLength(1);
+        await light.vp.destroy();
+    });
+
+    it('the AGC is told the user setting and nothing else - the same message in both modes', async () => {
+        const msgs: Msg[][] = [];
+        for (const mode of ['strong', 'light'] as const) {
+            workletNodes.length = 0;
+            const { vp } = await build({ noiseSuppression: true, noiseSuppressionMode: mode, volumeNormalization: true });
+            msgs.push([...agcNodes()[0].msgs]);
+            await vp.destroy();
+        }
+        expect(msgs[0]).toEqual([{ type: 'enabled', value: true }, { type: 'micGainDb', value: 0 }]);
+        expect(msgs[1]).toEqual(msgs[0]);
+    });
+
+    it('switching Strong <-> Light mid-call does not touch the AGC (its learned gain is the talker\'s, not the suppressor\'s)', async () => {
+        const { vp } = await build({ noiseSuppression: true, noiseSuppressionMode: 'strong' });
+        const agc = agcNodes()[0];
+        const before = agc.msgs.length;
+        vp.updateSettings({ ...SETTINGS, noiseSuppression: true, noiseSuppressionMode: 'light' } as never);
+        vp.updateSettings({ ...SETTINGS, noiseSuppression: true, noiseSuppressionMode: 'strong' } as never);
+        vp.updateSettings({ ...SETTINGS, noiseSuppression: false, noiseSuppressionMode: 'strong' } as never);
+        expect(agc.msgs.length).toBe(before);
+        await vp.destroy();
+    });
+
+    it('"Auto gain control" off silences the one AGC (and only it)', async () => {
+        const { vp } = await build({ noiseSuppression: true, volumeNormalization: true });
+        vp.updateSettings({ ...SETTINGS, noiseSuppression: true, volumeNormalization: false } as never);
+        expect(agcNodes()[0].msgs.at(-1)).toEqual({ type: 'enabled', value: false });
+        await vp.destroy();
+    });
+
+    it('the Web Audio compressor stays transparent (ratio 1) so it cannot be a second, hidden leveller', async () => {
+        const created: FakeNode[] = [];
+        const { CipherlineVoiceProcessor } = await import('./voiceProcessor');
+        const ctx = new FakeCtx();
+        const orig = ctx.createDynamicsCompressor.bind(ctx);
+        ctx.createDynamicsCompressor = () => { const c = orig(); created.push(c); return c; };
+        const vp = new CipherlineVoiceProcessor({ ...SETTINGS, noiseSuppression: true, noiseSuppressionMode: 'light' } as never);
+        await vp.init({ track: track(), audioContext: ctx as unknown as AudioContext });
+        expect(created).toHaveLength(1);
+        expect((created[0].ratio as { value: number }).value).toBe(1);
+        await vp.destroy();
     });
 });

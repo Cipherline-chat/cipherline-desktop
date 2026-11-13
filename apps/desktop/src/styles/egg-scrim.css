@@ -1,0 +1,50 @@
+/* ============================================================================
+   The egg scrim — components/EggScrim.tsx. ONE backdrop for every easter-egg
+   moment that plays over the app: the full-screen moments and ceremonies
+   (MomentHost), the Konami Keys party (KeysParty) and the first-friend
+   celebration (FirstFriendCelebration). Owner, 2026-11-12: "make sure the
+   easter eggs dim stuff around them so they don't look bad" — an egg drawn
+   straight on top of a busy chat reads as art floating over UI; on a dimmed
+   app it reads as a moment.
+
+   A PLAIN scrim: no backdrop-filter, no blur, on purpose. A full-viewport
+   backdrop-filter is re-run by Chromium on EVERY compositor frame while
+   anything above or below it moves (and an egg is nothing but moving parts),
+   and the cost is the full-viewport pass itself, not the radius: measured in
+   this repo at 529.6 ms/frame at 1080p against a 16.9 ms floor (see the note
+   on .sd-veil in styles/settings-descent.css and on .cl-mod in index.css).
+   Re-measured for this layer: see the round-3 note in
+   docs/worklog/entries/2026-11-12-starter-achievements.md. An egg plays over
+   live calls (the 11:11 wish, the New Year's call, the 100th call), so a blur
+   that is "fine when idle" is not fine here.
+
+   Colour: the --cl-scrim-egg tokens (index.css): an even dim, plus a soft
+   deeper pool in the middle (--cl-scrim-egg-core) where moments put their
+   art and words, so a line never competes with the chat text under it while
+   the edges of the app stay legible as context. Opacity only. Timing comes
+   from the owner, through custom properties:
+     --egg-scrim-in      fade-in length            (default .4s)
+     --egg-scrim-out-at  when the fade-out starts  (default never: the owner
+                                                    unmounts it)
+     --egg-scrim-out     fade-out length           (default .6s)
+   No resting `opacity: 0`: with every animation switched off (reduced motion)
+   the scrim simply stands at full strength, which is what a still card wants.
+   It never takes a click: the layer that owns it decides whether a click
+   skips the egg or goes through to the app.
+   ============================================================================ */
+.egg-scrim {
+  position: absolute; inset: 0;
+  background:
+    radial-gradient(ellipse 58% 55% at 50% 47%, var(--cl-scrim-egg-core, rgba(5, 8, 20, .5)), transparent),
+    var(--cl-scrim-egg, rgba(5, 8, 20, .78));
+  pointer-events: none;
+  animation:
+    egg-scrim-in var(--egg-scrim-in, .4s) ease-out both,
+    egg-scrim-out var(--egg-scrim-out, .6s) ease-in-out var(--egg-scrim-out-at, 86400s) forwards;
+}
+@keyframes egg-scrim-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes egg-scrim-out { from { opacity: 1; } to { opacity: 0; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .egg-scrim { animation: none; }
+}

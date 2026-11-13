@@ -1,10 +1,11 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import { useAuth } from '../contexts/AuthContext';
-import { ClButton, ClSearch, ClConfirm, ClSegment } from './cl';
+import { ClButton, ClSearch, ClSegment, useClTooltip } from './cl';
+import { FriendActionDialog, type FriendActionKind } from './FriendActionDialog';
 import { useOpenProfile } from '../contexts/ProfileOpenContext';
 import {
-    UserPlus, MessageSquare, Users, Clock, CheckCircle, XCircle,
+    UserPlus, MessageSquare, Clock, Check, X, Inbox,
     Search, MessagesSquare, UserCheck, UserMinus, RefreshCw, MoreVertical, PhoneCall, Ban, User
 } from 'lucide-react';
 import { StatusIcon } from './StatusPicker';
@@ -18,6 +19,8 @@ import { API_BASE } from '../constants';
 import { apiUrl } from '../utils/apiPath';
 import { EncryptedAvatar } from './EncryptedAvatar';
 import { AvatarDecoration } from './ProfileCosmetics';
+import { decorationLook } from '../utils/decorationLook';
+import { peekProfile } from '../utils/profileCache';
 import { formatRailBadgeCount } from '../utils/unreadBadges';
 import { MascotEmpty } from './MascotEmpty';
 import { usePlayfulLine } from '../hooks/useEasterEggs';
@@ -25,6 +28,10 @@ import { FRIENDS_NO_MATCH_POOL } from '../utils/eggPools';
 import { hashSeed } from '../utils/easterEggs';
 import { StatusLine } from './StatusLine';
 import { EMPTY_FRIENDS, type FriendsPayload, type FriendsLoadStatus } from '../utils/friendsSync';
+import { HoverPlayRow } from './server/HoverPlayRow';
+import { STATUS_CONFIG } from '../utils/userStatusModel';
+import { friendRequestTiming, expiryLabel, daysAgoLabel } from '../utils/friendRequestTiming';
+import '../styles/friends-pane.css';
 
 interface FriendsPaneProps {
     onStartChat: (chat: { id: string, title?: string, type?: string, other_user_id?: string }) => void;
@@ -44,22 +51,131 @@ interface FriendsPaneProps {
 
 type SubTab = 'all' | 'pending' | 'blocked';
 
-/** Mono uppercase section label — same vocabulary as settings/profile. */
-const Eyebrow: React.FC<{ children: React.ReactNode }> = ({ children }) => (
-    <p
-        className="text-[10px] font-semibold uppercase text-cl-faint m-0 mb-3"
-        style={{ fontFamily: 'var(--cl-font-mono)', letterSpacing: '1.2px' }}
-    >
-        {children}
-    </p>
-);
-
 /** Staggered row entrance — rows drift up as a list arrives (motion doctrine:
  *  translateY only, capped stagger so long lists don't feel slow). */
 const rowEntrance = (i: number) => ({
     className: 'fade-rise-enter',
     style: { animationDelay: `${Math.min(i, 10) * 30}ms` } as React.CSSProperties,
 });
+
+/* ── Presentational pieces (module level so rows never remount) ─────────── */
+
+/** A group of people: sentence-case heading + count, then one sheet of rows. */
+const Group: React.FC<{ title: string; count: number; hint?: React.ReactNode; children: React.ReactNode }> = ({ title, count, hint, children }) => {
+    const id = `fp-g-${title.toLowerCase().replace(/\s+/g, '-')}`;
+    return (
+        <section className="fp-group" aria-labelledby={id}>
+            <div className="fp-grouphead">
+                <h2 id={id}>{title}</h2>
+                <span className="fp-n" aria-label={`${count}`}>{count}</span>
+                {hint && <span className="fp-hint">{hint}</span>}
+            </div>
+            <div className="fp-sheet" role="list">{children}</div>
+        </section>
+    );
+};
+
+/** True while the pane is at or below the width where its request buttons drop their
+ *  labels (keep in step with the `@container fp (max-width: 600px)` block in friends-pane.css). */
+const COMPACT_PANE_PX = 600;
+function useCompactPane(ref: React.RefObject<HTMLElement | null>): boolean {
+    const [compact, setCompact] = useState(false);
+    useEffect(() => {
+        const el = ref.current;
+        if (!el || typeof ResizeObserver === 'undefined') return;
+        const ro = new ResizeObserver(([entry]) => setCompact(entry.contentRect.width <= COMPACT_PANE_PX));
+        ro.observe(el);
+        return () => ro.disconnect();
+    }, [ref]);
+    return compact;
+}
+
+/** Round icon action on a row: a real button with an accessible name and the kit tooltip. */
+const RowAction: React.FC<{
+    label: string;
+    onClick: (e: React.MouseEvent<HTMLButtonElement>) => void;
+    className?: string;
+    children: React.ReactNode;
+}> = ({ label, onClick, className, children }) => {
+    const { anchorProps, tooltip, describedBy } = useClTooltip(label);
+    return (
+        <>
+            <button
+                type="button"
+                {...anchorProps}
+                aria-label={label}
+                aria-describedby={describedBy}
+                className={['fp-act', className ?? ''].filter(Boolean).join(' ')}
+                onClick={(e) => { e.stopPropagation(); onClick(e); }}
+            >
+                {children}
+            </button>
+            {tooltip}
+        </>
+    );
+};
+
+/** Empty state for a tab or a search: a lit porthole glyph, a title, one line. */
+const PaneEmpty: React.FC<{
+    icon: React.ReactNode; title: React.ReactNode; sub?: React.ReactNode; extra?: React.ReactNode;
+    accent?: string; children?: React.ReactNode;
+}> = ({ icon, title, sub, extra, accent, children }) => (
+    <div className="fp-empty" style={accent ? ({ '--fp-accent': accent } as React.CSSProperties) : undefined}>
+        <span className="fp-empty-ic" aria-hidden="true">{icon}</span>
+        <h3>{title}</h3>
+        {sub && <p>{sub}</p>}
+        {extra && <p>{extra}</p>}
+        {children && <div className="fp-empty-acts">{children}</div>}
+    </div>
+);
+
+/** What a friend's status line says when there is no custom status or game. */
+function quietStatusLabel(status: string, onMobile: boolean): string | null {
+    if (status === 'offline') return null;
+    if (onMobile) return 'On mobile';
+    return STATUS_CONFIG[status as keyof typeof STATUS_CONFIG]?.label ?? null;
+}
+
+/** Roving focus between rows: Up/Down/Home/End move, Enter/Space opens,
+ *  Shift+F10 / the context-menu key opens the row's menu. Rows are found by
+ *  `data-friend-row` across every group in the pane, so focus flows from the
+ *  Online sheet into the Offline one. */
+function rowKeyDown(
+    e: React.KeyboardEvent<HTMLDivElement>,
+    onActivate: (at: { x: number; y: number }) => void,
+    onMenu?: (at: { clientX: number; clientY: number }) => void,
+) {
+    if (e.target !== e.currentTarget) return;
+    const row = e.currentTarget;
+    const rect = row.getBoundingClientRect();
+    const all = (): HTMLElement[] => Array.from(row.closest('.fp-body')?.querySelectorAll<HTMLElement>('[data-friend-row]') ?? []);
+    const move = (to: (list: HTMLElement[], i: number) => HTMLElement | undefined) => {
+        e.preventDefault();
+        const list = all();
+        to(list, list.indexOf(row))?.focus();
+    };
+    switch (e.key) {
+        case 'ArrowDown': return move((l, i) => l[i + 1]);
+        case 'ArrowUp': return move((l, i) => l[i - 1]);
+        case 'Home': return move((l) => l[0]);
+        case 'End': return move((l) => l[l.length - 1]);
+        case 'Enter':
+        case ' ':
+            e.preventDefault();
+            onActivate({ x: rect.left + 56, y: rect.top + rect.height / 2 });
+            return;
+        case 'ContextMenu':
+            if (!onMenu) return;
+            e.preventDefault();
+            onMenu({ clientX: rect.right - 48, clientY: rect.bottom - 6 });
+            return;
+        case 'F10':
+            if (!onMenu || !e.shiftKey) return;
+            e.preventDefault();
+            onMenu({ clientX: rect.right - 48, clientY: rect.bottom - 6 });
+            return;
+    }
+}
 
 const FriendsPane: React.FC<FriendsPaneProps> = ({
     onStartChat, onStartGroupChat, onAddToGroup,
@@ -77,14 +193,20 @@ const FriendsPane: React.FC<FriendsPaneProps> = ({
     const loaded = friendsProp !== null;
     const friends = friendsProp ?? EMPTY_FRIENDS;
     const [subTab, setSubTab] = useState<SubTab>('all');
+    // Mirrors the `@container fp (max-width: 600px)` rule in friends-pane.css, where
+    // the Accept/Decline labels collapse to icons. CSS does the layout; this only
+    // decides whether the (now label-less) buttons need a tooltip to say what they do.
+    const rootRef = useRef<HTMLDivElement>(null);
+    const compact = useCompactPane(rootRef);
     const [refreshing, setRefreshing] = useState(false);
     const [search, setSearch] = useState('');
     // Egg: a second, playful line under "No friends match" (always shown, rotating per query).
     const noFriendLine = usePlayfulLine('', FRIENDS_NO_MATCH_POOL, hashSeed(search));
     const [showAddFriendModal, setShowAddFriendModal] = useState(false);
     const friendMenu = useContextMenu();
-    const [confirmDialog, setConfirmDialog] = useState<{
-        title: string; message: string; confirmLabel?: string; danger?: boolean; onConfirm: () => void;
+    /** Pending block / remove-friend confirmation (FriendActionDialog). */
+    const [friendAction, setFriendAction] = useState<{
+        kind: FriendActionKind; userId: string; username: string; onConfirm: () => void;
     } | null>(null);
     // Per-row in-flight tracking for incoming friend-request Accept/Reject —
     // keyed by friend_table_id (the request row), not the acting user id,
@@ -119,20 +241,18 @@ const FriendsPane: React.FC<FriendsPaneProps> = ({
             fetchFriends(true);
         // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (err: any) {
-            toast.push({ kind: 'error', title: 'Request Failed', message: err?.response?.data?.message || 'Failed to reject request' });
+            toast.push({ kind: 'error', title: 'Request Failed', message: err?.response?.data?.message || 'Could not decline the request' });
         } finally {
             setRejectingRequestIds(prev => { const next = new Set(prev); next.delete(rowId); return next; });
         }
     };
 
     const handleBlock = (userId: string, username: string) => {
-        setConfirmDialog({
-            title: `Block ${username}?`,
-            message: `${username} won't be able to send you friend requests or messages. They won't be notified that you blocked them.`,
-            confirmLabel: 'Block',
-            danger: true,
+        setFriendAction({
+            kind: 'block',
+            userId,
+            username,
             onConfirm: async () => {
-                setConfirmDialog(null);
                 try {
                     await axios.post(`${API_BASE}/friends/block`, { target_id: userId }, {
                         headers: { Authorization: `Bearer ${token}` }
@@ -195,13 +315,11 @@ const FriendsPane: React.FC<FriendsPaneProps> = ({
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     const handleRemoveFriend = (friend: any) => {
-        setConfirmDialog({
-            title: 'Remove Friend',
-            message: `Remove ${formatUserTag(friend.username, friend.discriminator)} as a friend? You'll no longer be able to send messages, but your chat history will remain visible.`,
-            confirmLabel: 'Remove',
-            danger: true,
+        setFriendAction({
+            kind: 'unfriend',
+            userId: friend.user_id,
+            username: formatUserTag(friend.username, friend.discriminator),
             onConfirm: async () => {
-                setConfirmDialog(null);
                 try {
                     await axios.delete(apiUrl`/friends/${friend.user_id}`, {
                         headers: { Authorization: `Bearer ${token}` }
@@ -220,12 +338,22 @@ const FriendsPane: React.FC<FriendsPaneProps> = ({
         f.username.toLowerCase().includes(search.toLowerCase())
     );
 
+    // Presence picks the group (Online / Offline); names sort within it. The
+    // same `friendStatuses` read the dot uses, so a row never sits in the
+    // Online group with a grey dot.
+    const statusOf = (uid: string) => friendStatuses?.[uid]?.status ?? 'offline';
+    const byName = (a: { username?: string }, b: { username?: string }) =>
+        String(a.username ?? '').localeCompare(String(b.username ?? ''), undefined, { sensitivity: 'base' });
+    const onlineFriends = filteredFriends.filter(f => statusOf(f.user_id) !== 'offline').sort(byName);
+    const offlineFriends = filteredFriends.filter(f => statusOf(f.user_id) === 'offline').sort(byName);
+    const onlineTotal = friends.accepted.filter(f => statusOf(f.user_id) !== 'offline').length;
+
     // Requests that have come IN are what needs attention, so they get the red
     // unread pill (the same look as the rail's badges). Requests you sent are
     // only waiting on someone else: a plain count, shown when nothing is incoming.
     const incomingCount = friends.pending_incoming.length;
     const tabs: { id: SubTab; label: string; icon: React.ReactNode; badge?: number; unread?: number }[] = [
-        { id: 'all', label: 'All Friends', icon: <UserCheck size={16} />, badge: friends.accepted.length },
+        { id: 'all', label: 'All friends', icon: <UserCheck size={16} />, badge: friends.accepted.length },
         {
             id: 'pending', label: 'Pending', icon: <Clock size={16} />,
             unread: incomingCount || undefined,
@@ -234,140 +362,288 @@ const FriendsPane: React.FC<FriendsPaneProps> = ({
         { id: 'blocked', label: 'Blocked', icon: <Ban size={16} />, badge: friends.blocked?.length ? friends.blocked.length : undefined },
     ];
 
-    return (
-        <div className="friends-pane-root flex flex-col h-full bg-cl-abyss overflow-hidden">
+    const openProfileAt = (userId: string, at: { x: number; y: number }) => {
+        if (openProfileCtx) openProfileCtx(userId, at);
+        else onViewProfile?.(userId);
+    };
 
-            {/* Header */}
-            <div className="shrink-0 px-10 pt-8 pb-0 border-b border-cl-border/40">
-                <div className="flex items-center justify-between mb-6">
-                    <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 rounded-xl bg-cl-lume/10 border border-cl-lume/20 flex items-center justify-center text-cl-lume">
-                            <Users size={20} />
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
+    const openFriendMenu = (f: any, at: React.MouseEvent | { clientX: number; clientY: number }) => {
+        const anchor = { x: at.clientX, y: at.clientY };
+        friendMenu.open(at, [
+            { icon: <User />, label: 'Profile', onSelect: () => openProfileAt(f.user_id, anchor) },
+            { icon: <PhoneCall />, label: 'Call', onSelect: () => onStartCall?.(f.user_id) },
+            { icon: <MessagesSquare />, label: 'Add to Group Chat', onSelect: () => onAddToGroup?.(f) },
+            { divider: true },
+            { icon: <UserMinus />, label: 'Remove Friend', danger: true, onSelect: () => handleRemoveFriend(f) },
+            { icon: <Ban />, label: 'Block', danger: true,
+              onSelect: () => handleBlock(f.user_id, formatUserTag(f.username, f.discriminator)) },
+        ], formatUserTag(f.username, f.discriminator));
+    };
+
+    /** The #tag beside a name (shown on hover/focus unless `always`). */
+    const tagOf = (discriminator: number | null | undefined, always = false) =>
+        discriminator !== null && discriminator !== undefined
+            ? <span className={`fp-tag${always ? ' fp-tag--always' : ''}`}>#{padDiscriminator(discriminator)}</span>
+            : null;
+
+    const expiryChip = (requestedAt: string | null | undefined) => {
+        const { expiresInDays } = friendRequestTiming(requestedAt);
+        return expiresInDays === null ? null : (
+            <span className="fp-expiry" title="Pending requests are removed after 30 days">
+                <Clock size={11} aria-hidden="true" />
+                {expiryLabel(expiresInDays)}
+            </span>
+        );
+    };
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
+    const renderFriendRow = (f: any, i: number) => {
+        const fs = friendStatuses?.[f.user_id];
+        const status = fs?.status ?? 'offline';
+        // The phone glyph replaces the dot while this friend is present on
+        // phones only (the server's on_mobile — one bit, same audience as the
+        // dot itself, hidden by "appear offline"). Games are a desktop signal,
+        // so on_mobile wins.
+        const onMobile = status !== 'offline' && !!fs?.on_mobile;
+        const game = onMobile ? null : (fs?.current_game ?? null);
+        const showController = !!game && status !== 'offline';
+        const quiet = quietStatusLabel(status, onMobile);
+        const entrance = rowEntrance(i);
+        return (
+            <HoverPlayRow
+                key={f.friend_table_id}
+                role="listitem"
+                tabIndex={0}
+                data-friend-row={f.user_id}
+                style={entrance.style}
+                className={`fp-row${status === 'offline' ? ' fp-row--offline' : ''} ${entrance.className}`}
+                onClick={(e) => {
+                    if ((e.target as HTMLElement).closest('button, a, input')) return;
+                    openProfileAt(f.user_id, { x: e.clientX, y: e.clientY });
+                }}
+                onContextMenu={(e) => openFriendMenu(f, e)}
+                onKeyDown={(e) => rowKeyDown(e, at => openProfileAt(f.user_id, at), at => openFriendMenu(f, at))}
+            >
+                {(playing) => (
+                    <>
+                        <div className="fp-av">
+                            {/* The look the friend gave it (colour, glow, "Match theme"), as on their card. The
+                                payload carries it; an older API that omits the fields is completed from the session profile cache. */}
+                            <AvatarDecoration {...decorationLook(f, peekProfile(f.user_id))} block compact className="w-full h-full">
+                                <div className="fp-avimg">
+                                    <EncryptedAvatar attachmentId={f.avatar_url} userId={f.user_id} token={token} className="w-full h-full" fallbackSize={16} playing={playing} />
+                                </div>
+                            </AvatarDecoration>
+                            <span className={`fp-presence${showController ? ' fp-presence--game' : ''}`}>
+                                <StatusIcon status={status} currentGame={showController ? game : null} onMobile={onMobile} size={showController ? 12 : 10} />
+                            </span>
                         </div>
-                        <div>
-                            <h1
-                                className="text-xl font-semibold text-cl-text tracking-tight leading-none m-0"
-                                style={{ fontFamily: 'var(--cl-font-display)' }}
+                        <div className="fp-text">
+                            <div className="fp-nameline">
+                                <span className="fp-name">{f.username}</span>
+                                <ProfileBadgeRow badges={f.badges} size="sm" />
+                                {tagOf(f.discriminator)}
+                            </div>
+                            <div className="fp-sub">
+                                <StatusLine
+                                    entry={fs}
+                                    userId={f.user_id}
+                                    className="block truncate"
+                                    renderGame={(g) => <span className="fp-sub--game">Playing {g}</span>}
+                                    fallback={quiet ? <span className="fp-sub--quiet">{quiet}</span> : null}
+                                />
+                            </div>
+                        </div>
+                        <div data-friend-dropdown={f.user_id} className="fp-acts">
+                            <RowAction label="Message" className="fp-act--msg" onClick={() => handleMessageFriend(f)}>
+                                <MessageSquare size={16} />
+                            </RowAction>
+                            {onStartCall && (
+                                <RowAction label="Call" className="fp-act--call" onClick={() => onStartCall(f.user_id)}>
+                                    <PhoneCall size={16} />
+                                </RowAction>
+                            )}
+                            <RowAction
+                                label="More"
+                                onClick={(e) => {
+                                    // A keyboard press reports (0,0): anchor the menu under the button instead.
+                                    const r = e.currentTarget.getBoundingClientRect();
+                                    openFriendMenu(f, e.detail === 0 ? { clientX: r.left, clientY: r.bottom + 4 } : e);
+                                }}
                             >
-                                Friends
-                            </h1>
-                            <p className="text-xs text-cl-faint mt-0.5">
-                                {loaded ? `${friends.accepted.length} friend${friends.accepted.length !== 1 ? 's' : ''}` : '\u00A0'}
+                                <MoreVertical size={16} />
+                            </RowAction>
+                        </div>
+                    </>
+                )}
+            </HoverPlayRow>
+        );
+    };
+
+    const requesterNames = (() => {
+        const names = friends.pending_incoming.map(r => String(r.username ?? 'Someone'));
+        if (names.length === 1) return `${names[0]} wants to be friends`;
+        if (names.length === 2) return `${names[0]} and ${names[1]} want to be friends`;
+        return `${names[0]}, ${names[1]} and ${names.length - 2} more want to be friends`;
+    })();
+
+    return (
+        <div ref={rootRef} className="friends-pane-root fp-root flex flex-col h-full bg-cl-abyss overflow-hidden">
+
+            {/* Header: title + summary and actions, then the tabs and search on one toolbar row */}
+            <div className="fp-head">
+                <div className="fp-col">
+                    <div className="fp-titlerow">
+                        <div className="min-w-0">
+                            <h1 className="fp-title">Friends</h1>
+                            <p className="fp-summary">
+                                {!loaded ? ' '
+                                    : friends.accepted.length === 0 ? 'No friends yet'
+                                    : onlineTotal === 0 ? `${friends.accepted.length} friend${friends.accepted.length !== 1 ? 's' : ''}, nobody online right now`
+                                    : <><b>{onlineTotal}</b> online of {friends.accepted.length} friend{friends.accepted.length !== 1 ? 's' : ''}</>}
                             </p>
                         </div>
+                        <div className="fp-headacts">
+                            <ClButton
+                                variant="ghost"
+                                icon
+                                size="sm"
+                                tooltip="Refresh"
+                                disabled={refreshing}
+                                onClick={() => fetchFriends()}
+                            >
+                                <RefreshCw size={15} className={refreshing ? 'animate-spin' : ''} />
+                            </ClButton>
+                            <ClButton
+                                variant="ghost"
+                                className="fp-hide-narrow"
+                                disabled={friends.accepted.length === 0}
+                                onClick={() => onStartGroupChat?.()}
+                            >
+                                <MessagesSquare size={15} />
+                                New Group
+                            </ClButton>
+                            <ClButton onClick={() => setShowAddFriendModal(true)}>
+                                <UserPlus size={15} />
+                                Add Friend
+                            </ClButton>
+                        </div>
                     </div>
-                    <div className="flex items-center gap-2">
-                        <ClButton
-                            variant="ghost"
-                            icon
-                            size="sm"
-                            tooltip="Refresh"
-                            disabled={refreshing}
-                            onClick={() => fetchFriends()}
-                        >
-                            <RefreshCw size={15} className={refreshing ? 'animate-spin' : ''} />
-                        </ClButton>
-                        <ClButton
-                            variant="ghost"
-                            disabled={friends.accepted.length === 0}
-                            onClick={() => onStartGroupChat?.()}
-                        >
-                            <MessagesSquare size={15} />
-                            New Group
-                        </ClButton>
-                        <ClButton onClick={() => setShowAddFriendModal(true)}>
-                            <UserPlus size={15} />
-                            Add Friend
-                        </ClButton>
-                    </div>
-                </div>
 
-                {/* Sub-tabs — kit segmented control (sliding lume indicator) */}
-                <div className="pb-4">
-                    <ClSegment<SubTab>
-                        value={subTab}
-                        onChange={setSubTab}
-                        options={tabs.map(tab => ({
-                            value: tab.id,
-                            label: (
-                                <span className="inline-flex items-center gap-1.5">
-                                    {tab.icon}
-                                    <span className="leading-none">{tab.label}</span>
-                                    {tab.unread !== undefined && tab.unread > 0 && (
-                                        <span
-                                            role="img"
-                                            aria-label={`${tab.unread} new friend request${tab.unread === 1 ? '' : 's'}`}
-                                            style={{
-                                                minWidth: 17, height: 17, padding: '0 5px', borderRadius: 99,
-                                                background: 'var(--cl-flash)', color: 'var(--cl-on-flash)',
-                                                fontSize: 10, fontWeight: 800, lineHeight: 1,
-                                                fontFamily: 'var(--cl-font-body)', display: 'inline-flex',
-                                                alignItems: 'center', justifyContent: 'center', boxSizing: 'border-box',
-                                            }}
-                                        >
-                                            {formatRailBadgeCount(tab.unread)}
-                                        </span>
-                                    )}
-                                    {tab.badge !== undefined && tab.badge > 0 && (
-                                        <span
-                                            className="text-[10px] font-bold leading-none opacity-80"
-                                            style={{ fontFamily: 'var(--cl-font-mono)' }}
-                                        >
-                                            {tab.badge}
-                                        </span>
-                                    )}
-                                </span>
-                            ),
-                        }))}
-                    />
+                    <div className="fp-toolbar">
+                        {/* Sub-tabs — kit segmented control (sliding lume indicator) */}
+                        <ClSegment<SubTab>
+                            value={subTab}
+                            onChange={setSubTab}
+                            options={tabs.map(tab => ({
+                                value: tab.id,
+                                label: (
+                                    <span className="inline-flex items-center gap-1.5">
+                                        {tab.icon}
+                                        <span className="leading-none">{tab.label}</span>
+                                        {tab.unread !== undefined && tab.unread > 0 && (
+                                            <span
+                                                role="img"
+                                                aria-label={`${tab.unread} new friend request${tab.unread === 1 ? '' : 's'}`}
+                                                style={{
+                                                    minWidth: 17, height: 17, padding: '0 5px', borderRadius: 99,
+                                                    background: 'var(--cl-flash)', color: 'var(--cl-on-flash)',
+                                                    fontSize: 10, fontWeight: 800, lineHeight: 1,
+                                                    fontFamily: 'var(--cl-font-body)', display: 'inline-flex',
+                                                    alignItems: 'center', justifyContent: 'center', boxSizing: 'border-box',
+                                                }}
+                                            >
+                                                {formatRailBadgeCount(tab.unread)}
+                                            </span>
+                                        )}
+                                        {tab.badge !== undefined && tab.badge > 0 && (
+                                            <span
+                                                className="text-[10px] font-bold leading-none opacity-80"
+                                                style={{ fontFamily: 'var(--cl-font-mono)' }}
+                                            >
+                                                {tab.badge}
+                                            </span>
+                                        )}
+                                    </span>
+                                ),
+                            }))}
+                        />
+                        {loaded && subTab === 'all' && friends.accepted.length > 0 && (
+                            <div className="fp-search">
+                                <ClSearch
+                                    icon={<Search size={14} />}
+                                    type="text"
+                                    aria-label="Search friends"
+                                    placeholder="Search friends"
+                                    value={search}
+                                    onChange={e => setSearch(e.target.value)}
+                                />
+                            </div>
+                        )}
+                    </div>
                 </div>
             </div>
 
             {/* Content */}
-            <div className="flex-1 overflow-y-auto custom-scrollbar">
+            <div className="fp-body custom-scrollbar">
 
                 {/* Never loaded (first fetch pending or failing): say so. Rendering the
                     empty state here told people with friends that they had none. */}
                 {!loaded && (
-                    <div className="px-10 py-8" role="status" aria-live="polite">
-                        <MascotEmpty
-                            title={friendsStatus === 'error' ? "Couldn't load your friends" : 'Loading your friends…'}
-                            sub={friendsStatus === 'error'
-                                ? "We can't reach the server right now. Your friends are fine - we'll keep trying."
-                                : 'Hang on a moment.'}
-                        >
-                            {friendsStatus === 'error' && (
+                    <div className="fp-col" role="status" aria-live="polite">
+                        {friendsStatus === 'error' ? (
+                            <MascotEmpty
+                                title="Couldn't load your friends"
+                                sub="We can't reach the server right now. Your friends are fine - we'll keep trying."
+                            >
                                 <ClButton size="sm" onClick={() => { void fetchFriends(); }} disabled={refreshing}>
                                     <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />
                                     Try again
                                 </ClButton>
-                            )}
-                        </MascotEmpty>
+                            </MascotEmpty>
+                        ) : (
+                            <>
+                                <span className="fp-sr">Loading your friends…</span>
+                                <div className="fp-sheet fp-skel" aria-hidden="true">
+                                    {[62, 44, 70, 52].map((w, i) => (
+                                        <div key={i} className="fp-row">
+                                            <span className="fp-skel-av" />
+                                            <span className="fp-text">
+                                                <span className="fp-skel-line" style={{ width: `${w * 2.2}px`, maxWidth: '60%' }} />
+                                                <span className="fp-skel-line" style={{ width: `${w * 3.4}px`, maxWidth: '80%', marginTop: 8, height: 8, opacity: .6 }} />
+                                            </span>
+                                        </div>
+                                    ))}
+                                </div>
+                            </>
+                        )}
                     </div>
                 )}
 
                 {/* A later refresh failed: keep showing the last good list, say it may be old. */}
                 {loaded && friendsStatus === 'error' && (
-                    <div className="px-10 pt-6" role="status" aria-live="polite">
-                        <p className="text-cl-faint text-xs m-0">
-                            Couldn&rsquo;t refresh your friends - showing the last list we have. Retrying&hellip;{' '}
-                            <button type="button" className="underline" onClick={() => { void fetchFriends(); }}>Try now</button>
+                    <div className="fp-col" role="status" aria-live="polite">
+                        <p className="fp-note">
+                            Couldn&rsquo;t refresh your friends - showing the last list we have. Retrying&hellip;
+                            <button type="button" className="fp-linkbtn" onClick={() => { void fetchFriends(); }}>Try now</button>
                         </p>
                     </div>
                 )}
 
                 {/* ── All Friends ── */}
                 {loaded && subTab === 'all' && (
-                    <div className="px-10 py-8">
-                        {friends.accepted.length > 0 && (
-                            <div className="mb-6 max-w-sm">
-                                <ClSearch
-                                    icon={<Search size={14} />}
-                                    type="text"
-                                    placeholder="Search friends"
-                                    value={search}
-                                    onChange={e => setSearch(e.target.value)}
-                                />
+                    <div className="fp-col">
+                        {incomingCount > 0 && !search && (
+                            <div className="fp-callout">
+                                <span className="fp-callout-ic" aria-hidden="true"><UserPlus size={17} /></span>
+                                <div className="fp-callout-text">
+                                    <p className="fp-callout-title">
+                                        {incomingCount === 1 ? '1 friend request' : `${incomingCount} friend requests`}
+                                    </p>
+                                    <p className="fp-callout-sub">{requesterNames}</p>
+                                </div>
+                                <ClButton size="sm" variant="ghost" onClick={() => setSubTab('pending')}>Review</ClButton>
                             </div>
                         )}
 
@@ -382,276 +658,216 @@ const FriendsPane: React.FC<FriendsPaneProps> = ({
                                 </ClButton>
                             </MascotEmpty>
                         ) : filteredFriends.length === 0 ? (
-                            <div className="text-cl-faint text-sm text-center py-12">
-                                <p className="m-0">No friends match &ldquo;{search}&rdquo;</p>
-                                {noFriendLine && <p className="m-0 mt-1.5 text-xs opacity-80">{noFriendLine}</p>}
-                            </div>
+                            <PaneEmpty
+                                icon={<Search size={22} />}
+                                title={<>No friends match &ldquo;{search}&rdquo;</>}
+                                sub="Search looks at usernames."
+                                extra={noFriendLine || undefined}
+                            >
+                                <ClButton size="sm" variant="ghost" onClick={() => setSearch('')}>Clear search</ClButton>
+                            </PaneEmpty>
                         ) : (
-                            <div className="grid grid-cols-1 gap-2 max-w-3xl">
-                                {/* eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt */}
-                                {filteredFriends.map((f: any, i: number) => (
-                                    <div
-                                        key={f.friend_table_id}
-                                        style={rowEntrance(i).style}
-                                        className={`flex items-center gap-4 px-5 py-3.5 bg-cl-surface border border-cl-border/40 rounded-xl hover:bg-cl-raise hover:border-cl-lume/25 transition-all group cursor-pointer ${rowEntrance(i).className}`}
-                                        onClick={(e) => {
-                                            if ((e.target as HTMLElement).closest('button, a, input')) return;
-                                            if (openProfileCtx) openProfileCtx(f.user_id, { x: e.clientX, y: e.clientY });
-                                            else onViewProfile?.(f.user_id);
-                                        }}
-                                    >
-                                        <div className="w-10 h-10 rounded-full shrink-0 relative">
-                                            <AvatarDecoration decoration={f.avatar_decoration} block className="w-full h-full">
-                                                <div className="w-full h-full rounded-full overflow-hidden border border-cl-lume/20">
-                                                    <EncryptedAvatar attachmentId={f.avatar_url} userId={f.user_id} token={token} className="w-full h-full" fallbackSize={16} />
-                                                </div>
-                                            </AvatarDecoration>
-                                            {(() => {
-                                                const fs = friendStatuses?.[f.user_id];
-                                                const status = fs?.status ?? 'offline';
-                                                // The phone glyph replaces the dot while this friend is
-                                                // present on phones only (the server's on_mobile — one bit,
-                                                // same audience as the dot itself, hidden by "appear
-                                                // offline"). Games are a desktop signal, so on_mobile wins.
-                                                const onMobile = status !== 'offline' && !!fs?.on_mobile;
-                                                const game = onMobile ? null : (fs?.current_game ?? null);
-                                                const showController = !!game && status !== 'offline';
-                                                return showController ? (
-                                                    <span className="absolute bottom-0 right-0 z-10 flex items-center justify-center">
-                                                        <StatusIcon status={status} currentGame={game} size={12} />
-                                                    </span>
-                                                ) : (
-                                                    <span className="absolute bottom-0 right-0 border-[2px] border-cl-surface rounded-full z-10 flex items-center justify-center">
-                                                        <StatusIcon status={status} currentGame={null} onMobile={onMobile} size={10} />
-                                                    </span>
-                                                );
-                                            })()}
-                                        </div>
-                                        <div className="flex-1 min-w-0">
-                                            <p className="font-semibold text-[14px] text-cl-text truncate m-0">
-                                                {f.username}
-                                                {f.discriminator !== null && f.discriminator !== undefined && (
-                                                    <span
-                                                        className="ml-1.5 text-[11px] font-medium text-cl-faint"
-                                                        style={{ fontFamily: 'var(--cl-font-mono)' }}
-                                                    >
-                                                        #{padDiscriminator(f.discriminator)}
-                                                    </span>
-                                                )}
-                                                <ProfileBadgeRow badges={f.badges} size="sm" className="ml-1.5 align-middle" />
-                                            </p>
-                                            <StatusLine
-                                                entry={friendStatuses?.[f.user_id]}
-                                                userId={f.user_id}
-                                                className="block text-[11px] text-cl-muted truncate mt-0.5 m-0"
-                                            />
-                                        </div>
-                                        <div data-friend-dropdown={f.user_id} className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                                            <ClButton
-                                                variant="primary"
-                                                size="sm"
-                                                onClick={() => handleMessageFriend(f)}
-                                            >
-                                                <MessageSquare size={14} />
-                                                Message
-                                            </ClButton>
-                                            <ClButton
-                                                variant="ghost"
-                                                size="sm"
-                                                icon
-                                                onClick={(e) => {
-                                                    e.stopPropagation();
-                                                    friendMenu.open(e, [
-                                                        {
-                                                            icon: <User />, label: 'Profile',
-                                                            onSelect: () => {
-                                                                if (openProfileCtx) openProfileCtx(f.user_id, { x: e.clientX, y: e.clientY });
-                                                                else onViewProfile?.(f.user_id);
-                                                            },
-                                                        },
-                                                        { icon: <PhoneCall />, label: 'Call', onSelect: () => onStartCall?.(f.user_id) },
-                                                        { icon: <MessagesSquare />, label: 'Add to Group Chat', onSelect: () => onAddToGroup?.(f) },
-                                                        { divider: true },
-                                                        { icon: <UserMinus />, label: 'Remove Friend', danger: true, onSelect: () => handleRemoveFriend(f) },
-                                                        { icon: <Ban />, label: 'Block', danger: true,
-                                                          onSelect: () => handleBlock(f.user_id, formatUserTag(f.username, f.discriminator)) },
-                                                    ], formatUserTag(f.username, f.discriminator));
-                                                }}
-                                            >
-                                                <MoreVertical size={16} />
-                                            </ClButton>
-                                        </div>
-                                    </div>
-                                ))}
-                            </div>
+                            <>
+                                {onlineFriends.length > 0 && (
+                                    <Group title="Online" count={onlineFriends.length}>
+                                        {onlineFriends.map((f, i) => renderFriendRow(f, i))}
+                                    </Group>
+                                )}
+                                {offlineFriends.length > 0 && (
+                                    <Group title="Offline" count={offlineFriends.length}>
+                                        {offlineFriends.map((f, i) => renderFriendRow(f, onlineFriends.length + i))}
+                                    </Group>
+                                )}
+                            </>
                         )}
                     </div>
                 )}
 
                 {/* ── Blocked ── */}
                 {loaded && subTab === 'blocked' && (
-                    <div className="px-10 py-8 max-w-lg">
-                        <div className="mb-8">
-                            <h2 className="text-lg font-semibold text-cl-text mb-1 m-0" style={{ fontFamily: 'var(--cl-font-display)' }}>Blocked Users</h2>
-                            <p className="text-sm text-cl-faint m-0 mt-1">You will not receive messages or calls from these users.</p>
-                        </div>
-
+                    <div className="fp-col">
                         {friends.blocked && friends.blocked.length > 0 ? (
-                            <div className="flex flex-col gap-2">
+                            <Group title="Blocked" count={friends.blocked.length} hint="They can't message you or send you requests">
                                 {/* eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt */}
-                                {friends.blocked.map((f: any, i: number) => (
-                                    <div key={f.friend_table_id} style={rowEntrance(i).style} className={`flex items-center gap-4 px-5 py-3.5 bg-cl-surface border border-cl-flash/10 rounded-xl ${rowEntrance(i).className}`}>
-                                        <div className="relative w-10 h-10 shrink-0">
-                                            <div className="w-10 h-10 rounded-full overflow-hidden">
-                                                <EncryptedAvatar
-                                                    attachmentId={f.avatar_url}
-                                                    userId={f.user_id}
-                                                    token={token}
-                                                    className="w-full h-full opacity-60"
-                                                    fallbackSize={18}
-                                                    bypassFriendGate
-                                                />
-                                            </div>
-                                            <div className="absolute -bottom-0.5 -right-0.5 w-4.5 h-4.5 rounded-full bg-cl-surface flex items-center justify-center">
-                                                <div className="w-4 h-4 rounded-full bg-cl-flash/90 flex items-center justify-center">
-                                                    <Ban size={10} className="text-cl-text" strokeWidth={2.5} />
-                                                </div>
-                                            </div>
-                                        </div>
-                                        <div className="flex-1 min-w-0">
-                                            <p className="font-semibold text-[14px] text-cl-text truncate">
-                                                {formatUserTag(f.username, f.discriminator)}
-                                            </p>
-                                        </div>
-                                        {/* shrink-0: this button sits as a direct flex child alongside
-                                            the name's flex-1 min-w-0 in a narrow list — without it,
-                                            flexbox can squeeze the button and wrap "Unblock" onto two
-                                            uneven lines, which reads as the text not being centered.
-                                            The label itself gets a small relative nudge down — the
-                                            button box is centered (verified), but bold Nunito's glyph
-                                            metrics read visually high inside a line-height:1 box. */}
-                                        <ClButton variant="ghost" size="sm" className="shrink-0 whitespace-nowrap" onClick={() => handleUnblock(f.user_id)}>
-                                            <span style={{ position: 'relative', top: 2 }}>Unblock</span>
-                                        </ClButton>
-                                    </div>
-                                ))}
-                            </div>
+                                {friends.blocked.map((f: any, i: number) => {
+                                    const blockedAgo = daysAgoLabel(f.blocked_at);
+                                    return (
+                                        <HoverPlayRow key={f.friend_table_id} role="listitem" style={rowEntrance(i).style} className={`fp-row fp-row--static ${rowEntrance(i).className}`}>
+                                            {(playing) => (
+                                                <>
+                                                    <div className="fp-av">
+                                                        <div className="fp-avimg">
+                                                            <EncryptedAvatar
+                                                                attachmentId={f.avatar_url}
+                                                                userId={f.user_id}
+                                                                token={token}
+                                                                className="w-full h-full opacity-60"
+                                                                fallbackSize={18}
+                                                                bypassFriendGate
+                                                                playing={playing}
+                                                            />
+                                                        </div>
+                                                        <span className="fp-presence fp-presence--ban" aria-hidden="true">
+                                                            <span className="fp-banmark"><Ban size={10} strokeWidth={2.5} /></span>
+                                                        </span>
+                                                    </div>
+                                                    <div className="fp-text">
+                                                        <div className="fp-nameline">
+                                                            <span className="fp-name">{f.username}</span>
+                                                            {tagOf(f.discriminator, true)}
+                                                        </div>
+                                                        <div className="fp-sub fp-sub--quiet">{blockedAgo ? `Blocked ${blockedAgo}` : 'Blocked'}</div>
+                                                    </div>
+                                                    {/* shrink-0: never let the name squeeze "Unblock" onto two lines. */}
+                                                    <ClButton variant="ghost" size="sm" className="shrink-0 whitespace-nowrap" onClick={() => handleUnblock(f.user_id)}>
+                                                        Unblock
+                                                    </ClButton>
+                                                </>
+                                            )}
+                                        </HoverPlayRow>
+                                    );
+                                })}
+                            </Group>
                         ) : (
-                            <div className="flex flex-col items-center justify-center py-16 text-center opacity-50">
-                                <Ban size={32} className="text-cl-faint mb-4" />
-                                <h3 className="text-cl-text font-semibold mb-1">No blocked users</h3>
-                                <p className="text-cl-faint text-sm">When you block someone, they will appear here.</p>
-                            </div>
+                            <PaneEmpty
+                                icon={<Ban size={22} />}
+                                accent="var(--cl-muted)"
+                                title="You haven't blocked anyone"
+                                sub="Blocked people can't message you or send you friend requests, and they aren't told."
+                            />
                         )}
                     </div>
                 )}
 
                 {/* ── Pending ── */}
                 {loaded && subTab === 'pending' && (
-                    <div className="px-10 py-8 max-w-lg">
+                    <div className="fp-col">
                         {/* Incoming */}
                         {friends.pending_incoming.length > 0 && (
-                            <div className="mb-8">
-                                <Eyebrow>Incoming Requests — {friends.pending_incoming.length}</Eyebrow>
-                                <div className="flex flex-col gap-2">
-                                    {/* eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt */}
-                                    {friends.pending_incoming.map((f: any, i: number) => (
-                                        <div key={f.friend_table_id} style={rowEntrance(i).style} className={`flex items-center gap-4 px-5 py-3.5 bg-cl-surface border border-cl-lume/20 rounded-xl ${rowEntrance(i).className}`}>
-                                            <div className="w-10 h-10 rounded-full shrink-0 relative overflow-hidden">
-                                                {/* Not a friend yet: the friends-only gate would hide the picture the server
-                                                    now serves for an incoming request (see AttachmentsService.hasRequestOrBlockRelation). */}
-                                                <EncryptedAvatar attachmentId={f.avatar_url} userId={f.requester_id} token={token} className="w-full h-full" fallbackSize={18} bypassFriendGate />
-                                            </div>
-                                            <div className="flex-1 min-w-0">
-                                                <p className="font-semibold text-[14px] text-cl-text truncate">
-                                                    {formatUserTag(f.username, f.discriminator)}
-                                                </p>
-                                                <p className="text-[11px] text-cl-faint">Sent you a friend request</p>
-                                            </div>
-                                            {/* Both siblings are text pills on the same variant/size
-                                                so they read as one deliberate pair — Accept was
-                                                previously a labeled pill next to an icon-only circular
-                                                Reject, which put them at two different heights (a
-                                                40px circle vs a ~32px pill) even though each button on
-                                                its own was a correct ClButton usage. */}
-                                            <div className="flex items-center gap-2">
-                                                <ClButton
-                                                    variant="ok"
-                                                    size="sm"
-                                                    loading={acceptingRequestIds.has(f.friend_table_id)}
-                                                    disabled={rejectingRequestIds.has(f.friend_table_id)}
-                                                    onClick={() => handleAccept(f.friend_table_id)}
-                                                >
-                                                    <CheckCircle size={13} />
-                                                    Accept
-                                                </ClButton>
-                                                <ClButton
-                                                    variant="danger"
-                                                    size="sm"
-                                                    loading={rejectingRequestIds.has(f.friend_table_id)}
-                                                    disabled={acceptingRequestIds.has(f.friend_table_id)}
-                                                    onClick={() => handleReject(f.requester_id, f.friend_table_id)}
-                                                >
-                                                    <XCircle size={13} />
-                                                    Reject
-                                                </ClButton>
-                                            </div>
-                                        </div>
-                                    ))}
-                                </div>
-                            </div>
+                            <Group title="Incoming" count={friends.pending_incoming.length}>
+                                {/* eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt */}
+                                {friends.pending_incoming.map((f: any, i: number) => {
+                                    const { age } = friendRequestTiming(f.requested_at);
+                                    return (
+                                        <HoverPlayRow key={f.friend_table_id} role="listitem" style={rowEntrance(i).style} className={`fp-row fp-row--static fp-row--req ${rowEntrance(i).className}`}>
+                                            {(playing) => (
+                                                <>
+                                                    <div className="fp-av">
+                                                        <div className="fp-avimg">
+                                                            {/* Not a friend yet: the friends-only gate would hide the picture the server
+                                                                now serves for an incoming request (see AttachmentsService.hasRequestOrBlockRelation). */}
+                                                            <EncryptedAvatar attachmentId={f.avatar_url} userId={f.requester_id} token={token} className="w-full h-full" fallbackSize={18} bypassFriendGate playing={playing} />
+                                                        </div>
+                                                    </div>
+                                                    <div className="fp-text">
+                                                        <div className="fp-nameline">
+                                                            <span className="fp-name">{f.username}</span>
+                                                            {tagOf(f.discriminator, true)}
+                                                        </div>
+                                                        <div className="fp-sub fp-subrow">
+                                                            <span className="fp-subtext">{age ? `Sent you a request ${age}` : 'Sent you a friend request'}</span>
+                                                            {expiryChip(f.requested_at)}
+                                                        </div>
+                                                    </div>
+                                                    {/* Both actions are text pills on the same size so they read as one
+                                                        deliberate pair at one height. */}
+                                                    <div className="fp-acts fp-acts--req">
+                                                        <ClButton
+                                                            variant="ok"
+                                                            size="sm"
+                                                            loading={acceptingRequestIds.has(f.friend_table_id)}
+                                                            disabled={rejectingRequestIds.has(f.friend_table_id)}
+                                                            onClick={() => handleAccept(f.friend_table_id)}
+                                                            tooltip={compact ? 'Accept' : undefined}
+                                                        >
+                                                            <Check size={14} strokeWidth={2.6} aria-hidden="true" />
+                                                            <span className="fp-btn-label">Accept</span>
+                                                        </ClButton>
+                                                        <ClButton
+                                                            variant="ghost"
+                                                            size="sm"
+                                                            loading={rejectingRequestIds.has(f.friend_table_id)}
+                                                            disabled={acceptingRequestIds.has(f.friend_table_id)}
+                                                            onClick={() => handleReject(f.requester_id, f.friend_table_id)}
+                                                            tooltip={compact ? 'Decline' : undefined}
+                                                        >
+                                                            <X size={14} strokeWidth={2.6} aria-hidden="true" />
+                                                            <span className="fp-btn-label">Decline</span>
+                                                        </ClButton>
+                                                    </div>
+                                                </>
+                                            )}
+                                        </HoverPlayRow>
+                                    );
+                                })}
+                            </Group>
                         )}
 
                         {/* Outgoing */}
                         {friends.pending_outgoing.length > 0 && (
-                            <div className="mb-8">
-                                <Eyebrow>Sent Requests — {friends.pending_outgoing.length}</Eyebrow>
-                                <div className="flex flex-col gap-2">
-                                    {/* eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt */}
-                                    {friends.pending_outgoing.map((f: any, i: number) => (
-                                        <div key={f.friend_table_id} style={rowEntrance(i).style} className={`flex items-center gap-4 px-5 py-3.5 bg-cl-surface border border-cl-border/40 rounded-xl ${rowEntrance(i).className}`}>
-                                            <div className="w-10 h-10 rounded-full shrink-0 relative overflow-hidden">
-                                                <EncryptedAvatar attachmentId={f.avatar_url} userId={f.recipient_id} token={token} className="w-full h-full" fallbackSize={18} />
-                                            </div>
-                                            <div className="flex-1 min-w-0">
-                                                <p className="font-semibold text-[14px] text-cl-text truncate">
-                                                    {formatUserTag(f.username, f.discriminator)}
-                                                </p>
-                                                <p className="text-[11px] text-cl-faint">Waiting for response…</p>
-                                            </div>
-                                            <div className="flex items-center gap-1.5 px-3 py-1 text-cl-faint text-[11px] font-semibold rounded-full border border-cl-border bg-white/[0.03]">
-                                                <Clock size={11} />
-                                                Pending
-                                            </div>
-                                        </div>
-                                    ))}
-                                </div>
-                            </div>
+                            <Group title="Sent" count={friends.pending_outgoing.length} hint="Requests expire after 30 days">
+                                {/* eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt */}
+                                {friends.pending_outgoing.map((f: any, i: number) => {
+                                    const { age } = friendRequestTiming(f.requested_at);
+                                    return (
+                                        <HoverPlayRow key={f.friend_table_id} role="listitem" style={rowEntrance(i).style} className={`fp-row fp-row--static fp-row--req ${rowEntrance(i).className}`}>
+                                            {(playing) => (
+                                                <>
+                                                    <div className="fp-av">
+                                                        <div className="fp-avimg">
+                                                            <EncryptedAvatar attachmentId={f.avatar_url} userId={f.recipient_id} token={token} className="w-full h-full" fallbackSize={18} playing={playing} />
+                                                        </div>
+                                                    </div>
+                                                    <div className="fp-text">
+                                                        <div className="fp-nameline">
+                                                            <span className="fp-name">{f.username}</span>
+                                                            {tagOf(f.discriminator, true)}
+                                                        </div>
+                                                        <div className="fp-sub fp-sub--quiet fp-subrow">
+                                                            <span className="fp-subtext">{age ? `Request sent ${age}` : 'Waiting for a reply'}</span>
+                                                            {expiryChip(f.requested_at)}
+                                                        </div>
+                                                    </div>
+                                                    <span className="fp-pending" aria-label="Waiting for a reply">
+                                                        <Clock size={13} aria-hidden="true" />
+                                                        Waiting
+                                                    </span>
+                                                </>
+                                            )}
+                                        </HoverPlayRow>
+                                    );
+                                })}
+                            </Group>
                         )}
 
                         {pendingCount === 0 && (
-                            <div className="flex flex-col items-center justify-center py-24 text-center">
-                                <div className="w-14 h-14 rounded-full bg-cl-ok/[0.08] border border-cl-ok/15 flex items-center justify-center mb-4">
-                                    <CheckCircle size={24} className="text-cl-ok/70" />
-                                </div>
-                                <h3 className="text-cl-text font-semibold mb-1">All caught up</h3>
-                                <p className="text-cl-faint text-sm">No pending requests right now.</p>
-                            </div>
+                            <PaneEmpty
+                                icon={<Inbox size={22} />}
+                                accent="var(--cl-ok)"
+                                title="No pending requests"
+                                sub="Requests you send or receive wait here for up to 30 days."
+                            >
+                                <ClButton size="sm" variant="ghost" onClick={() => setShowAddFriendModal(true)}>
+                                    <UserPlus size={14} />
+                                    Add Friend
+                                </ClButton>
+                            </PaneEmpty>
                         )}
                     </div>
                 )}
             </div>
 
-            {/* Confirm dialog via kit */}
-            <ClConfirm
-                open={!!confirmDialog}
-                onClose={() => setConfirmDialog(null)}
-                onConfirm={confirmDialog?.onConfirm ?? (() => {})}
-                title={confirmDialog?.title ?? ''}
-                message={confirmDialog?.message}
-                confirmLabel={confirmDialog?.confirmLabel ?? 'Confirm'}
-                danger={confirmDialog?.danger}
-            />
+            {/* Block / remove-friend confirmation */}
+            {friendAction && (
+                <FriendActionDialog
+                    kind={friendAction.kind}
+                    userId={friendAction.userId}
+                    username={friendAction.username}
+                    token={token}
+                    onConfirm={friendAction.onConfirm}
+                    onClose={() => setFriendAction(null)}
+                />
+            )}
 
             {showAddFriendModal && (
                 <AddFriendModal onClose={() => { setShowAddFriendModal(false); fetchFriends(true); }} />

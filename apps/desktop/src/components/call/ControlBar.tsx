@@ -1,6 +1,6 @@
 import React from 'react';
 import ReactDOM from 'react-dom';
-import { PhoneCall, ScreenShare, Loader2, X, ChevronDown, ChevronLeft, Maximize2, Minimize2, Monitor, Sliders, Check, Volume2, VolumeX, LifeBuoy, Settings2 } from 'lucide-react';
+import { PhoneCall, ScreenShare, Loader2, X, ChevronDown, ChevronLeft, Maximize2, Minimize2, Monitor, Sliders, Check, Volume2, VolumeX, LifeBuoy, Settings2, Eye, EyeOff } from 'lucide-react';
 import { useCallContextSafe } from '../../contexts/CallContext';
 import { useSubscription } from '../../contexts/SubscriptionContext';
 import { useDismissOnOutsideClick } from '../../hooks/useDismissOnOutsideClick';
@@ -11,6 +11,8 @@ import { MAX_VOLUME_PERCENT } from '../../utils/volumeLimits';
 import { VolumeCeilingWatch } from '../moments/VolumeCeilingWatch';
 import type { ContextMenuItem } from '../primitives/ContextMenu';
 import type { ScreenShareOptions } from '../ScreenSharePickerModal';
+import { maxShareFps } from '../../utils/screenShare';
+import { useChromiumFpsCap } from '../../utils/linuxShareCaps';
 import { ClButton } from '../cl';
 import { ShareFpsNote } from '../ShareFpsNote';
 import { MicIcon, CamIcon, HeadphonesIcon } from '../icons/SlashableIcon';
@@ -41,6 +43,8 @@ interface ControlBarProps {
      *  it reflects what's actually running instead of a hardcoded default. */
     currentShareResolution?: ScreenShareOptions['resolution'];
     currentShareFrameRate?: ScreenShareOptions['frameRate'];
+    /** The live share's source id: 90 fps is offered for an entire screen only. */
+    currentShareSourceId?: string | null;
     currentShareAudio?: boolean;
     /** Ultra-wide display being shared (shareLayout.ts layoutChoices): the
      *  whole display, or one screen of it. Empty/absent = nothing to choose. */
@@ -55,6 +59,10 @@ interface ControlBarProps {
     screenShareStarting?: boolean;
     onLeave: () => void;
     showFullscreenButton?: boolean;
+    /** You hid your own share's preview on your own screen. The share itself is unaffected. */
+    localPreviewHidden?: boolean;
+    /** Hide or show that preview. The one way back that exists on every call surface. */
+    onToggleLocalPreview?: () => void;
     compact?: boolean;
     /** P13: per-channel permission flags. Each defaults to true (permissive) when
      *  the parent passes undefined — DM/group calls have no per-channel concept,
@@ -71,8 +79,8 @@ interface ControlBarProps {
     serverMutedVideo?: boolean;
     serverMutedScreenShare?: boolean;
     /** True when a moderator has server-deafened this participant (track_type='deafen').
-     *  Grays out both the mic button (can't speak) and the deafen button (can't
-     *  override the server deafen by toggling self-deafen). */
+     *  Grays out the deafen button (can't override the server deafen by toggling
+     *  self-deafen). The mic button is NOT affected: deafen never blocks speaking. */
     isServerDeafened?: boolean;
     /** Optional — SidebarConference is the only renderer and always has this,
      *  but every right-click menu below no-ops without it (rather than being
@@ -319,6 +327,7 @@ export const ControlBar = ({
     onToggleScreenShareAudio,
     currentShareResolution,
     currentShareFrameRate,
+    currentShareSourceId,
     currentShareAudio,
     shareLayoutChoices,
     currentShareLayout,
@@ -326,6 +335,8 @@ export const ControlBar = ({
     screenShareStarting,
     onLeave,
     showFullscreenButton,
+    localPreviewHidden,
+    onToggleLocalPreview,
     canSpeak = true,
     canVideo = true,
     canScreenShare = true,
@@ -340,15 +351,17 @@ export const ControlBar = ({
     // Server-mute gates: a moderator explicitly restricted this track — disable
     //   the control entirely so it's visually clear and the user doesn't waste
     //   time clicking a button the SFU will silently reject anyway.
+    // Server DEAFEN is deliberately not here: it only stops this member hearing
+    // others' microphones, it never touches their own mic. Only a server MUTE does.
     const micDisabled    = (!canSpeak && !localParticipant?.isMicrophoneEnabled)
-                           || serverMutedAudio || isServerDeafened;
+                           || serverMutedAudio;
     const cameraDisabled = (!canVideo && !localParticipant?.isCameraEnabled)
                            || serverMutedVideo;
     const shareDisabled  = (!canScreenShare && !localParticipant?.isScreenShareEnabled)
                            || serverMutedScreenShare;
     // Deafen button: disabled when the server has deafened this participant —
-    // toggling self-deafen can't override the server restriction (isLocalDeafened
-    // stays true via baseServerDeafened regardless of the self-deafen state).
+    // toggling self-deafen can't override the server restriction (the button
+    // shows deafened for as long as the server deafen holds).
     const deafenDisabled = isServerDeafened;
     // Free-tier gate: video + screen-share are Pro features. Free accounts can
     // still hear/see others (canSubscribe) — they just can't publish their own
@@ -564,6 +577,9 @@ export const ControlBar = ({
     const resolutionOptions = React.useMemo(() => buildResolutionOptions(has1440p), [has1440p]);
     const [qResolution, setQResolution] = React.useState<ScreenShareOptions['resolution']>(currentShareResolution ?? '1080p');
     const [qFps, setQFps] = React.useState<ScreenShareOptions['frameRate']>(currentShareFrameRate ?? 30);
+    // Linux, Chromium/PipeWire path: 60 is the most it delivers (linuxShareDefaults.ts).
+    const chromiumCap = useChromiumFpsCap();
+    const qualityFps = QUALITY_FPS.filter(fps => fps <= maxShareFps(currentShareSourceId) && (chromiumCap === null || fps <= chromiumCap));
 
     // (Re)measure and place the menu whenever it's open, whenever it
     // switches between the main and quality sub-views (their heights
@@ -632,7 +648,10 @@ export const ControlBar = ({
                 top: menuPlacement ? menuPlacement.top : -9999,
                 visibility: menuPlacement ? 'visible' : 'hidden',
                 width: 336,
-                zIndex: 9999,
+                // Above the fullscreen console (10000, index.css). The chevron is in
+                // that block's bottom row, so the panel rises past its top row, and
+                // underneath it the panel's last rows were cut off.
+                zIndex: 10001,
                 animation: menuPlacement ? 'ss-gate-enter 0.22s cubic-bezier(0.34,1.56,0.64,1) forwards' : 'none',
             }}
         >
@@ -703,6 +722,26 @@ export const ControlBar = ({
                             <p className="text-[11px] text-cl-faint m-0 leading-none">
                                 {currentShareAudio ? 'Stop sharing system audio' : 'Share system or window audio'}
                             </p>
+                        </div>
+                    </ClButton>
+                )}
+
+                {onToggleLocalPreview && (
+                    <ClButton
+                        variant="ghost"
+                        fullWidth
+                        row
+                        onClick={() => { setSsMenuOpen(false); onToggleLocalPreview(); }}
+                    >
+                        {localPreviewHidden
+                            ? <Eye className="w-4 h-4 text-cl-faint shrink-0" />
+                            : <EyeOff className="w-4 h-4 text-cl-faint shrink-0" />
+                        }
+                        <div className="min-w-0 flex-1">
+                            <p className="text-[13px] font-semibold m-0 leading-none mb-1">
+                                {localPreviewHidden ? 'Show My Preview' : 'Hide My Preview'}
+                            </p>
+                            <p className="text-[11px] text-cl-faint m-0 leading-none">Only on your screen. Viewers still see it</p>
                         </div>
                     </ClButton>
                 )}
@@ -798,8 +837,8 @@ export const ControlBar = ({
                         overflowing the panel's right edge instead of wrapping). */}
                     <div>
                         <p className="text-[10px] text-cl-faint font-medium uppercase tracking-wide mb-1 m-0">Frame Rate</p>
-                        <div className="grid grid-cols-4 gap-1.5">
-                            {QUALITY_FPS.map(fps => (
+                        <div className={`grid gap-1.5 ${qualityFps.length === 4 ? 'grid-cols-4' : 'grid-cols-3'}`}>
+                            {qualityFps.map(fps => (
                                 <Chip key={fps} active={qFps === fps} onClick={() => setQFps(fps)}>
                                     {fps} fps
                                 </Chip>
@@ -884,8 +923,7 @@ export const ControlBar = ({
                     }}
                     onContextMenu={openMicMenu}
                     title={
-                        isServerDeafened    ? "You've been server deafened — unmute is blocked"
-                        : serverMutedAudio  ? "Your microphone has been muted by a moderator"
+                        serverMutedAudio    ? "Your microphone has been muted by a moderator"
                         : micDisabled       ? "You don't have permission to speak in this channel"
                         : micOn ? 'Mute' : 'Unmute'
                     }

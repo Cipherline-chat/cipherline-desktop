@@ -197,3 +197,12 @@
 
 /* one-line summaries on the closed section rows of the Profile / Personalize panes */
 .pp-main .sx-disc-txt > span, .pz-main .sx-disc-txt > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Settings > Activity & Style: two groups (Activity, Style), each under a heading
+   that sits between the pane title (30px) and the cards' own titles. */
+.as-group + .as-group { margin-top: 28px; }
+.as-group-head { margin: 0 0 12px; padding: 0 2px; }
+.as-group-head h2 { margin: 0; font-family: var(--cl-font-display); font-weight: 600; font-size: 19px; letter-spacing: .2px; color: var(--cl-text); }
+.as-group-head p { margin: 4px 0 0; font-size: 13px; line-height: 1.5; color: var(--cl-muted); max-width: 62ch; }
+/* ConnectionsPane's cards already carry .sd-card's bottom margin; its own flex gap would double it here. */
+.as-group .ig-pane { gap: 0; }

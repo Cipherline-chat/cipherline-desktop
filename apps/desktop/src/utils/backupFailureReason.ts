@@ -89,7 +89,7 @@ export function backupFailureReason(message: string | undefined): BackupFailureR
     if (status !== null && status >= 500) return 'network';
     if (status !== null && status >= 400) return 'drive_http_4xx';
 
-    if (/not connected|auth|token|grant|unauthori[sz]ed/i.test(m)) return 'auth';
+    if (/not (?:connected|linked)|session expired|reconnect|auth|token|grant|unauthori[sz]ed/i.test(m)) return 'auth';
     if (/quota|storage|space|disk full|ENOSPC/i.test(m)) return 'space';
     if (/verif|doesn't match|read back|could not be read|stored \d+ bytes but/i.test(m)) return 'verify';
     if (/Container already finished|out of range|record (?:is truncated|length mismatch)/i.test(m)) return 'container';
@@ -98,4 +98,43 @@ export function backupFailureReason(message: string | undefined): BackupFailureR
     if (/network|fetch|timeout|timed out|ECONN|offline|net::ERR_/i.test(m)) return 'network';
     if (/permission/i.test(m)) return 'auth';
     return 'other';
+}
+
+/**
+ * WHICH kind of auth failure a Drive message was (only meaningful when
+ * `backupFailureReason(m) === 'auth'`). `reason: 'auth'` alone could not say
+ * whether a refresh token had been revoked or expired (the user must
+ * reconnect), the link was already gone, or Google answered 401/403 to an
+ * otherwise valid link, so a week of `{drive, setup, auth}` events from one
+ * device could not be explained from the report. Sent as `cause`; a closed
+ * set, never message text.
+ */
+export const BACKUP_AUTH_CAUSES = [
+    'revoked',         // invalid_grant / unauthorized_client: electron/googleDriveAuth.ts wiped the link
+    'refresh_failed',  // the token endpoint refused a refresh for some other reason (e.g. invalid_client)
+    'not_linked',      // no refresh token and no live access token, or the renderer saw "not connected"
+    'session_expired', // Drive answered 401 while creating the folder
+    'http_401',
+    'http_403',
+] as const;
+export type BackupAuthCause = typeof BACKUP_AUTH_CAUSES[number];
+
+export function backupAuthCause(message: string | undefined): BackupAuthCause | null {
+    const m = message ?? '';
+    if (!m || backupFailureReason(m) !== 'auth') return null;
+    if (/token revoked|re-?link/i.test(m)) return 'revoked';
+    if (/token refresh failed/i.test(m)) return 'refresh_failed';
+    if (/session expired|reconnect/i.test(m)) return 'session_expired';
+    if (/not (?:connected|linked)/i.test(m)) return 'not_linked';
+    const status = httpStatus(m);
+    if (status === 401) return 'http_401';
+    if (status === 403) return 'http_403';
+    return null;
+}
+
+/** `{ reason }` plus `cause` when it is an auth failure with a known cause. */
+export function backupFailureDetail(message: string | undefined): { reason: BackupFailureReason; cause?: BackupAuthCause } {
+    const reason = backupFailureReason(message);
+    const cause = reason === 'auth' ? backupAuthCause(message) : null;
+    return cause ? { reason, cause } : { reason };
 }

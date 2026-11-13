@@ -78,6 +78,8 @@ describe('shape and sanitising', () => {
         expect(validateCallEvent({ t, kind: 'ice_route', detail: { turn: true } })).toContain('ice_route.type');
         expect(validateCallEvent({ t, kind: 'freeze_start', detail: { track: 'remote-screen-1' } })).toContain('track ref remote-screen-1');
         expect(validateCallEvent({ t, kind: 'freeze_start', detail: { track: 'remote-video-3' } })).toEqual([]);
+        expect(validateCallEvent({ t, kind: 'freeze_start', detail: { track: 'remote-share-3' } })).toEqual([]);
+        expect(validateCallEvent({ t, kind: 'freeze_start', detail: { track: 'remote-share-x' } })).toContain('track ref remote-share-x');
         expect(validateCallEvent({ t, kind: 'camera_codec', detail: { source: 'x' } })).toContain('reserved key source');
         expect(validateCallEvent({ t, kind: 'camera_codec', detail: { camelKey: 1 } })).toContain('key camelKey');
         expect(validateCallEvent({ t, kind: 'camera_codec', detail: { s: '' } })).toContain('value of s');
@@ -86,7 +88,7 @@ describe('shape and sanitising', () => {
     it('every kind satisfies the kind pattern; freeze kinds say freeze; H.265 kinds say h265', () => {
         for (const k of CALL_EVENT_KINDS) expect(k).toMatch(/^[a-z][a-z0-9_]{0,39}$/);
         expect(CALL_EVENT_KINDS.filter(k => k.startsWith('freeze'))).toEqual(['freeze_start', 'freeze_end']);
-        expect(CALL_EVENT_KINDS.filter(k => k.startsWith('h265'))).toEqual(['h265_caps', 'h265_switch']);
+        expect(CALL_EVENT_KINDS.filter(k => k.startsWith('h265'))).toEqual(['h265_caps', 'h265_switch', 'h265_retry']);
     });
 
     it('unknown kinds are dropped (the kind list is the contract)', () => {
@@ -131,11 +133,23 @@ describe('placeholders', () => {
         expect(trackPlaceholder('TR_abc', 'remote-video')).toBe('remote-video-1');
         expect(trackPlaceholder('TR_def', 'remote-video')).toBe('remote-video-2');
         expect(trackPlaceholder('TR_abc', 'remote-video')).toBe('remote-video-1');
-        expect(trackPlaceholder('TR_xyz', 'remote-screen')).toBe('remote-video-3'); // one remote namespace (reporter scheme)
+        // Shares have their own namespace: remote-video-N is always a camera, remote-share-N always a share.
+        expect(trackPlaceholder('TR_xyz', 'remote-screen')).toBe('remote-share-1');
+        expect(trackPlaceholder('TR_uvw', 'remote-screen')).toBe('remote-share-2');
+        expect(trackPlaceholder('TR_xyz', 'remote-screen')).toBe('remote-share-1');
+        expect(trackPlaceholder('TR_ghi', 'remote-video')).toBe('remote-video-3');
         expect(trackPlaceholder('anything', 'self-camera')).toBe('self-camera');
         markCallEnd();
         markCallStart();
         expect(trackPlaceholder('TR_def', 'remote-video')).toBe('remote-video-1');
+        expect(trackPlaceholder('TR_xyz', 'remote-screen')).toBe('remote-share-1'); // numbering restarts per call
+    });
+
+    it('a placeholder never contains the key it was made from', () => {
+        markCallStart();
+        const p = trackPlaceholder('TR_SECRETSID', 'remote-screen');
+        expect(p).not.toContain('SECRET');
+        expect(validateCallEvent({ t: EPOCH, kind: 'freeze_start', detail: { track: p } })).toEqual([]);
     });
 
     it('formatCallEvents renders one line per event (UTC clock time)', () => {
@@ -151,17 +165,26 @@ describe('placeholders', () => {
  * label, device, room, user, email, ip, address, text…) fails the build.
  */
 const ALLOWED_KEYS = new Set([
+    // Linux hardware (NVENC) screen share: which path/why, the GPU model + driver version (a hardware fact, not a person), sizes and rates.
+    'backend', 'gpu', 'driver', 'api', 'sustained', 'w', 'h', 'src_w', 'src_h', 'detail', 'phase', 'latched', 'encoder', 'enc_fps', 'eff_fps', 'enc_ms_p95', 'requested', 'started', 'code', 'msg', 'kbps', 'dropped',
+    'speech_db', 'gain_db',
+    // mic_level / rx_level (micLevelLog.ts, useParticipantAudio): dBFS levels, percentages and a
+    // clipped-sample count - never audio. (`slot` above is the remote-av-N placeholder.)
+    'raw_db', 'ns_db', 'out_db', 'peak_db', 'clip', 'lim_pct', 'talk_pct', 'gate_pct', 'mic_gain_db', 'wire_db', 'rx_gain_db', 'heard_db', 'src_pct', 'fresh_pct', 'vf_fps', 'pres_fps', 'gap_p95_ms', 'gap_max_ms', 'late_pct',
+    'after_s',
     'participants', 'count', 'pc', 'type', 'local', 'remote', 'turn', 'protocol',
     'width', 'height', 'fps', 'tier', 'cap_tier', 'why',
-    'codec', 'profile', 'hardware', 'reason', 'verdict', 'from', 'to',
+    'codec', 'profile', 'hardware', 'reason', 'verdict', 'kept', 'from', 'to',
     'layers', 'top', 'top_kbps', 'low', 'mode',
+    // share_clamp (phase pre): the kept capture was re-used for a fresh publication (Wayland portal).
+    'reused',
     'res', 'lighter_copy', 'on', 'viewers',
     // share_codec: which OS capturer is in use and its fixed frame-rate ceiling (0 = none).
     'backend', 'ceiling',
     // h265_caps: whether H.265 may be used, and a reason enum when not.
     'allowed', 'blocked',
     // e2ee_audio_lag: direction enum, worst lag ms, re-base count (frames/dropped listed elsewhere).
-    'dir', 'max_ms', 'rebases',
+    'dir', 'max_ms', 'rebases', 'windows',
     'track', 'prev_seconds', 'ms', 'quality', 'role', 'size',
     'cap', 'decoded', 'avatars',
     'encode', 'decode', 'network', 'sources', 'decoding', 'drop_pct', 'decode_ms',
@@ -197,13 +220,22 @@ const ALLOWED_KEYS = new Set([
     'step', 'ok', 'frozen', 'camera', 'exit_code', 'ctx_lost', 'in_call', 'self_decode',
     // Share in the background (shareBackgroundProbe.ts): a cause enum, a
     // boolean, frame rates and capture-log timings only.
-    'cause', 'doc_hidden', 'target_fps', 'capture_before', 'sent_before', 'capture_after', 'sent_after',
+    'cause', 'real', 'repeats', 'errors', 'fg_full', 'doc_hidden', 'target_fps', 'capture_before', 'sent_before', 'capture_after', 'sent_after',
     'grab_ms', 'interval_ms', 'unchanged_pct',
     // Share frame-rate instrumentation + encoder-size clamp (shareHealth.ts,
     // shareEncoderLimits.ts): rates, an encoder-implementation name, sizes as
     // "WxH", a scale factor, a layout enum, booleans.
     'cap_fps', 'src_fps', 'enc_fps', 'sent_fps', 'limit', 'enc', 'hw', 'focus', 'vis',
     'cap_res', 'scale', 'layout', 'over',
+    // The capture-size handshake of a share start / hot swap (shareFirstFrame.ts),
+    // on share_clamp: the box asked for, the size the track reported at publish,
+    // the first real frame - all "WxH" - an outcome enum (ok / pinned / timeout /
+    // ended / unsupported) and the wait in ms.
+    'ask', 'pub_res', 'first_frame', 'settle', 'settle_ms',
+    // audio_out_stall / audio_in_stall (SidebarConference, BetaCallMonitor): a
+    // cause enum (reuses `cause`), the processing AudioContext's state enum,
+    // and booleans only - never a device, track or participant reference.
+    'ctx', 'resumed', 'sfu_hears', 'other_flowing',
     // HDR screen shares (SidebarConference tryStartHdrShare): the display's HDR
     // state, nits, a knee, an input-format enum, sizes as "WxH", a start
     // duration, and the tone map's GPU cost / frame counters.
@@ -213,7 +245,7 @@ const ALLOWED_KEYS = new Set([
     // a Windows notification-state enum, the foreground PROGRAM's basename (never a
     // window title or path), a boolean. Share power-throttling opt-out
     // (sharePowerEvent.ts -> share_power): a phase enum, counts, Win32 error codes,
-    // a mask, a boolean. share_hint reuses `result`.
+    // a mask, a boolean.
     'fg_state', 'fg_exe', 'fg_cover',
     'phase', 'procs', 'ok_n', 'fail_n', 'main_err', 'gpu_err', 'ren_err', 'mask', 'timer',
     // GPU scheduling class (shareGpuSchedEvent.ts -> share_gpu_sched): class names
@@ -230,6 +262,33 @@ const ALLOWED_KEYS = new Set([
     // Audio render-thread load (CallPane ← nsLoadGuard.ts → audio_render /
     // ns_load_fallback): underrun ms and event counts, an NS engine enum.
     'underrun_ms', 'underrun_events', 'ns',
+    // Share codec drift (shareCodecDrift.ts → share_codec_drift): the codec the
+    // share was published with and the one really sent (codec names only).
+    'published', 'sent',
+    // Capture stall / crop stage (shareHealth.diagnoseNoFrames, shareCrop.ts →
+    // share_capture_stall, share_crop): which check, frame COUNTS, a boolean.
+    'check', 'src_frames', 'crop_in', 'crop_out', 'crop_err', 'wk_err',
+    // Receive side (CallEventMonitor → freeze_start, share_rx_dead): was
+    // Cipherline in the background, did packets arrive (enum), frame counts.
+    'bg', 'rx', 'packets',
+    // Share rates at both ends (shareRxStats.ts / shareNetStats.ts / displayRefresh.ts →
+    // share_rx_fps, share_rx_start, share_net, share_display): `share_ref` is an 8-hex
+    // digest of the track SID (shareRef.ts), never the SID; frame rates, jitter-buffer /
+    // encode / RTT ms, kbit/s, a requested-layer index, a tile size in px, a decoder
+    // implementation name, a refresh rate in Hz and how it was found (enum), a role enum.
+    'share_ref', 'role', 'hz', 'hz_src', 'rx_fps', 'dec_fps', 'drop_fps', 'disp_fps',
+    'decoder', 'jb_ms', 'layer', 'tile', 'kbps', 'cap_kbps', 'avail_kbps', 'rtt_ms', 'enc_ms',
+    // rx_decoder_lost (rxDecoderLost.ts): ms since the displayed <video> element last changed.
+    'el_ms',
+    // Per-second series around a freeze / a share_fps dip (shareSecondRing.ts → share_rx_ring,
+    // share_tx_ring): "88/89/0/0" strings of whole numbers ("-" = not measured), oldest first -
+    // frames received / decoded / presented and packets per second (viewer), frames captured /
+    // encoded / sent and active layers per second (sharer). `act` is the number of active
+    // layers on share_fps.
+    'rx_s', 'dec_s', 'disp_s', 'pkt_s', 'src_s', 'enc_s', 'sent_s', 'act_s', 'act',
+    // share_audio step "picked" (shareAudioEvent.ts, Wayland window share): how many apps were on
+    // offer - a COUNT, never their names - next to `how` (an enum, allowed above) and mode=app.
+    'apps',
 ]);
 const FORBIDDEN = /[iI]dentity|^sid$|Sid|[nN]ame|[lL]abel|[dD]evice|[rR]oom|[uU]ser|[eE]mail|^ip$|^ip[A-Z]|IP|[aA]ddr|[tT]ext|[tT]itle|[mM]essage|[mM]etadata/;
 
@@ -293,7 +352,7 @@ describe('call-site privacy scan', () => {
     it('literal track refs use only the reporter placeholders', () => {
         const refs = sites.flatMap(s => [...s.body.matchAll(/track:\s*'([^']+)'/g)].map(m => m[1]));
         expect(refs.length).toBeGreaterThan(0);
-        for (const r of refs) expect(r).toMatch(/^(self-camera|self-screen|self-screen-audio|self-mic)(-\d+)?$|^remote-video-\d+$/);
+        for (const r of refs) expect(r).toMatch(/^(self-camera|self-screen|self-screen-audio|self-mic)(-\d+)?$|^remote-(video|share)-\d+$/);
     });
 
     it('every detail key is allowlisted and none looks identifying', () => {

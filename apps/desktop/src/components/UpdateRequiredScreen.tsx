@@ -46,6 +46,9 @@ function describe(p: UpdateRequiredScreenProps): { line: string; error?: boolean
             return { line: `The download was interrupted. Trying again${s ? ` in ${s}s` : ''} (attempt ${u.attempt + 1} of ${u.maxAttempts + 1}).`, error: true, primary: { label: 'Retry now' } };
         }
         case 'failed':
+            if (u.cause === 'cancelled') {
+                return { line: 'The update wasn’t installed because the password prompt was cancelled.', error: true, primary: { label: 'Try again' } };
+            }
             return {
                 line: u.stage === 'verify'
                     ? 'The downloaded update couldn’t be verified as Cipherline’s, so it wasn’t installed.'
@@ -56,6 +59,15 @@ function describe(p: UpdateRequiredScreenProps): { line: string; error?: boolean
         case 'ready':
             return { line: `Cipherline ${u.version} is downloaded and ready.`, progress: 100, primary: { label: p.installing ? 'Restarting…' : 'Restart & update', disabled: p.installing } };
         case 'manual':
+            if (u.pkg === 'deb') {
+                return {
+                    line: u.cause === 'install'
+                        ? `Cipherline ${u.version} couldn’t be installed automatically. Download the .deb and install it yourself.`
+                        : `Cipherline ${u.version} couldn’t be downloaded in the app. Download the .deb and install it yourself.`,
+                    error: u.cause === 'install',
+                    primary: { label: 'Download update' },
+                };
+            }
             return { line: `Cipherline ${u.version} is ready to download for this system.`, primary: { label: 'Download update' } };
         case 'idle':
         default:

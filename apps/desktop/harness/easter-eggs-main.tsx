@@ -14,7 +14,6 @@ import { secureLocalStore } from '../src/utils/secureLocalStore';
 import { useLateNightPlaceholder } from '../src/hooks/useEasterEggs';
 import { VersionTapEgg } from '../src/components/settings/VersionTapEgg';
 import { DepthGauge } from '../src/components/settings/DepthGauge';
-import { AppearancePane } from '../src/components/settings/panes/AppearancePane';
 import { StatusPicker } from '../src/components/StatusPicker';
 import { Keys } from '../src/components/mascot/Keys';
 import { CreateGroupModal } from '../src/components/CreateGroupModal';
@@ -28,7 +27,6 @@ import { EncryptedAvatar } from '../src/components/EncryptedAvatar';
  *
  *   ?scene=keys           Keys in his costumes (witch / party / none) at three sizes
  *   ?scene=gauge           settings depth gauge: ?date=2026-10-31T12:00:00 (Halloween) or 2027-04-30T12:00:00 (birthday); type octopus / abyss
- *   ?scene=appearance      Settings → Appearance (the master switch row)
  *   ?scene=status          the status picker (click the avatar, then flip status 6 times)
  *   ?scene=version         Advanced → This build, version row; click #chip 7 times
  *   ?scene=composer        the composer's idle placeholder (&date=…T03:30:00 for the late-night line)
@@ -37,7 +35,8 @@ import { EncryptedAvatar } from '../src/components/EncryptedAvatar';
  *   ?scene=group-of-two   the real CreateGroupModal with one friend preselected; submit it to see the egg
  *                         (&openfail=1 makes POST /conversations/dm fail)
  *
- * &eggs=off  flips the Appearance switch off before render.
+ * &eggs=off  leaves a stale '0' under the RETIRED switch key (cipherline_easter_eggs) before render: there is
+ *             no switch any more (owner 2026-10-20), so everything must still play.
  * window.__calls records every POST; window.__opened / window.__created the callbacks the host got.
  */
 loadWebFonts();
@@ -195,15 +194,6 @@ const GaugeScene = () => (
     </Stage>
 );
 
-/** Settings → Appearance, the real pane (the OS-toggle card needs Electron, so it is absent here). */
-const AppearanceScene = () => (
-    <Stage>
-        <div style={{ maxWidth: 760, margin: '0 auto' }}>
-            <AppearancePane gif={{ settings: { autoPlayGifs: true }, setAutoPlayGifs: () => {} } as any} />
-        </div>
-    </Stage>
-);
-
 /** The rail's status picker (real component), popover open. */
 const StatusScene = () => {
     const [s, setS] = useState<'online' | 'away' | 'dnd' | 'offline'>('online');
@@ -218,7 +208,6 @@ const StatusScene = () => {
 
 const SCENES: Record<string, React.FC> = {
     'gauge': GaugeScene,
-    'appearance': AppearanceScene,
     'status': StatusScene,
     'version': VersionScene,
     'composer': ComposerScene,

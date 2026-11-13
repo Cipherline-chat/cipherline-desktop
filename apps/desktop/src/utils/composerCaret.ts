@@ -19,3 +19,26 @@ export function placeCaretAtEnd(ta: HTMLTextAreaElement | null | undefined, opts
     ta.setSelectionRange(end, end);
     ta.scrollTop = ta.scrollHeight;
 }
+
+/**
+ * Replace [start, end) of the composer with `text` AS A TYPING EDIT, so one
+ * Ctrl+Z puts back what was there (`:red_heart:` after a conversion). The
+ * browser only keeps undo history for edits it made itself, so this selects the
+ * range and lets `execCommand('insertText')` do the replacement; the textarea
+ * then fires its normal `input` event, which the controlled React field turns
+ * into state (React does not rewrite the DOM value when it already matches,
+ * which is what keeps the undo stack alive). The caret ends directly after
+ * `text`. Returns false when the browser would not (no execCommand, e.g. jsdom,
+ * or it refused) - the caller then falls back to setting state, which works but
+ * is not undoable.
+ */
+export function replaceRangeUndoable(ta: HTMLTextAreaElement, start: number, end: number, text: string): boolean {
+    if (typeof document === 'undefined' || typeof document.execCommand !== 'function') return false;
+    const expected = ta.value.slice(0, start) + text + ta.value.slice(end);
+    try {
+        if (document.activeElement !== ta) ta.focus();
+        ta.setSelectionRange(start, end);
+        document.execCommand('insertText', false, text);
+    } catch { return false; }
+    return ta.value === expected;
+}

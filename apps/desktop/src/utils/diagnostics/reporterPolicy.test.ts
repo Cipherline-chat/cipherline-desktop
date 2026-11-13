@@ -142,6 +142,13 @@ describe('IPC narrowing', () => {
         expect(JSON.stringify(r.system)).not.toContain('Users');
         expect(parseSystemInfoReply(null, '1.0.0', 'unknown').system.app_version).toBe('1.0.0');
     });
+    it('system info: the Linux session passes through as fixed words only', () => {
+        const ls = { session_type: 'x11', desktop: 'KDE', ozone: 'default', capture_path: 'x11', restore_mode: 'n/a' };
+        expect(parseSystemInfoReply({ system: { platform: 'linux', linux_session: ls } }, '1.0.0', 'abc1234').system.linux_session).toEqual(ls);
+        const hostile = parseSystemInfoReply({ system: { linux_session: { session_type: '/home/me', desktop: 'KDE; rm -rf ~', ozone: 'evil', capture_path: 'x', restore_mode: 7 } } }, '1.0.0', 'abc1234').system.linux_session;
+        expect(hostile).toEqual({ session_type: 'unknown', desktop: 'KDErmrf', ozone: 'default', capture_path: 'x11', restore_mode: 'n/a' });
+        expect(parseSystemInfoReply({ system: { platform: 'win32' } }, '1.0.0', 'abc1234').system.linux_session).toBeUndefined();
+    });
     it('pending crashes: malformed entries dropped, newest is last', () => {
         const list = parsePendingCrashesReply([
             { signature: 'a', count: 1, seen: false, crash: { kind: 'renderer_gone', occurred_at: '2026-10-07T18:00:00.000Z', reason: 'oom' } },

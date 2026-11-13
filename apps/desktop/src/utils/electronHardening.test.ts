@@ -64,8 +64,9 @@ describe('Electron fuses (package.json build.electronFuses)', () => {
     it('the asar-dependent fuses have an asar to depend on', () => {
         expect(build.asar).not.toBe(false);
         expect(build.afterPack).toBeUndefined(); // a custom hook could re-flip or skip the fuses
-        // Native addons live OUTSIDE the asar integrity boundary on purpose (dlopen needs a real file).
-        expect(build.asarUnpack).toEqual(['build/Release/audio_capture.node']);
+        // Native addons live OUTSIDE the asar integrity boundary on purpose (dlopen needs a real file),
+        // and so does the Linux Wayland annotation helper (an executable main spawns; exec needs a real file).
+        expect(build.asarUnpack).toEqual(['build/Release/audio_capture.node', 'build/Release/cl-wayland-overlay']);
     });
 
     it('nothing relies on ELECTRON_RUN_AS_NODE or a self-spawn as plain Node', () => {
@@ -100,9 +101,19 @@ describe('Electron fuses (package.json build.electronFuses)', () => {
 
 // ── macOS entitlements ──────────────────────────────────────────────────────
 
+/** Comments removed, until none are left: one pass can leave a comment joined up from the pieces around another. */
+function entitlementsWithoutComments(): string {
+    let xml = read('build-assets', 'entitlements.mac.plist');
+    for (let prev = ''; prev !== xml;) {
+        prev = xml;
+        xml = xml.replace(/<!--[\s\S]*?-->/g, '');
+    }
+    return xml;
+}
+
 /** The plist's <key> names with XML comments removed (the file explains what is absent, by name). */
 function entitlementKeys(): string[] {
-    const xml = read('build-assets', 'entitlements.mac.plist').replace(/<!--[\s\S]*?-->/g, '');
+    const xml = entitlementsWithoutComments();
     return [...xml.matchAll(/<key>([^<]+)<\/key>/g)].map((m) => m[1]);
 }
 
@@ -124,7 +135,7 @@ describe('macOS entitlements (build-assets/entitlements.mac.plist)', () => {
     });
 
     it('every entitlement in the file is switched on, none is <false/>', () => {
-        const xml = read('build-assets', 'entitlements.mac.plist').replace(/<!--[\s\S]*?-->/g, '');
+        const xml = entitlementsWithoutComments();
         expect((xml.match(/<true\/>/g) ?? []).length).toBe(5);
         expect(xml).not.toMatch(/<false\/>/);
     });
@@ -137,7 +148,11 @@ describe('macOS entitlements (build-assets/entitlements.mac.plist)', () => {
 
     it('the only native module shipped is our own addon (so Team-ID library validation has one thing to cover)', () => {
         expect(build.files).toContain('build/Release/audio_capture.node');
-        expect(build.asarUnpack).toEqual(['build/Release/audio_capture.node']);
+        expect(build.asarUnpack).toEqual(['build/Release/audio_capture.node', 'build/Release/cl-wayland-overlay']);
+        // The second entry is NOT a native module on the Mac: the helper target is `type: none`
+        // everywhere but Linux, so no Mac build has the file and library validation has nothing new.
+        const gyp = readFileSync(join(__dirname, '../../binding.gyp'), 'utf8');
+        expect(gyp).toMatch(/"target_name": "cl_wayland_overlay",\s*"type": "none",\s*"conditions": \[\s*\[\s*"OS=='linux'"/);
         // No production dependency is a native-addon package.
         const nativeish = Object.keys(pkg.dependencies).filter((d) => /^(node-gyp|bindings|prebuild|nan|node-addon-api|better-sqlite3|bcrypt|sharp|keytar|ffi-napi|koffi)/.test(d));
         expect(nativeish).toEqual([]);

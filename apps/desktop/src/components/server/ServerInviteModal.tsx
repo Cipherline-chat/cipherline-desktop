@@ -16,14 +16,32 @@
  * revoke). This modal reuses the newest still-usable invite when there is one
  * and only creates a link when there isn't, so opening it repeatedly doesn't
  * litter the server with invites.
+ *
+ * Link settings apply on their own: change expiry or max uses and, after a short
+ * debounce, a new link is made for those settings (Copy and the friend Invite
+ * buttons stay disabled until it is ready, so nothing ever sends a link that
+ * doesn't match what is on screen). The link this dialog itself made for the
+ * previous settings is revoked, unless it was already copied or sent to someone,
+ * so tweaking a setting doesn't leave a trail of unused invites. A link the
+ * dialog merely REUSED on open is never revoked: it isn't ours.
+ *
+ * Below the link: recent friends (just added / most recently messaged, worked out
+ * on this device) and a friend search, each with an Invite button that DMs the
+ * current link through the normal E2EE send path. See InviteFriendsList.
  */
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useId, useMemo, useRef } from 'react';
 import axios from 'axios';
-import { X, Copy, Check, Link, UserPlus, Sparkles, Settings2, RotateCw } from 'lucide-react';
+import { Copy, Check, Link, UserPlus, Sparkles, Settings2 } from 'lucide-react';
 import { apiUrl } from '../../utils/apiPath';
 import type { ServerInfo } from '../../hooks/useServers';
-import { ClModal, ClButton, ClField, ClInput, ClSelect } from '../cl';
+import { ClModal, ClButton, ClInput, ClSelect } from '../cl';
+import { DialogHeader, DialogBody, DialogFooter, DialogError, useInitialFocus } from '../dialog/DialogFrame';
+import { DialogField, DialogStack, DialogLinkButton } from '../dialog/DialogExtras';
+import { InviteFriendsList } from './InviteFriendsList';
+import { buildInviteFriends, type InviteFriendSource } from '../../utils/inviteFriends';
+import { peekRoster, refreshRoster, type Roster } from '../../utils/serverRosterCache';
+import '../../styles/dialog-server.css';
 import { useModalExit } from '../../hooks/useModalExit';
 import { writeToClipboard } from '../../utils/clipboard';
 import { nudges } from '../../utils/firstWeekNudgeStore';
@@ -48,6 +66,16 @@ interface Props {
     server: ServerInfo;
     token: string | null;
     onClose: () => void;
+    /** Accepted friends (the `GET /friends` rows). With `onSendInvite`, turns on the friend list. */
+    friends?: readonly InviteFriendSource[];
+    /** DM conversations — only used to find each friend's DM for recency. */
+    conversations?: readonly { conversation_id?: string | null; id?: string | null; type?: string | null; other_user_id?: string | null; is_self?: boolean | null }[];
+    /** Device-local `conversation id -> last message ms` map. Read once, when the dialog opens. */
+    lastActivityAt?: Record<string, number>;
+    blockedIds?: ReadonlySet<string>;
+    myUserId?: string | null;
+    /** DM `code` to a friend over the normal E2EE send path. Resolves true when it went out. */
+    onSendInvite?: (userId: string, code: string) => Promise<boolean>;
 }
 
 /** `null` = never expires; `'custom'` = the custom-value row is active. */
@@ -59,6 +87,13 @@ type UsesChoice = number | null | 'custom';
 const DEFAULT_EXPIRY_HOURS = 168;
 /** Unlimited. */
 const DEFAULT_MAX_USES: UsesChoice = null;
+
+/** Quiet time after the last settings change before a new link is made, so
+ *  clicking through chips or typing a custom number makes ONE invite. */
+export const REGEN_DEBOUNCE_MS = 700;
+
+const rosterIds = (r: Roster | null): ReadonlySet<string> | null =>
+    r ? new Set(r.members.map(m => m.user_id)) : null;
 
 const EXPIRY_OPTIONS: { label: string; value: ExpiryChoice }[] = [
     { label: '30 min', value: 0.5 },
@@ -125,7 +160,9 @@ const sessionInvites = new Map<string, Invite>();
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
-export const ServerInviteModal: React.FC<Props> = ({ server, token, onClose }) => {
+export const ServerInviteModal: React.FC<Props> = ({
+    server, token, onClose, friends, conversations, lastActivityAt, blockedIds, myUserId, onSendInvite,
+}) => {
     const { closing, handleClose } = useModalExit(onClose, 260);
     const toast = useToast();
 
@@ -136,6 +173,8 @@ export const ServerInviteModal: React.FC<Props> = ({ server, token, onClose }) =
     const [error, setError]       = useState<string | null>(null);
     const [showOptions, setShowOptions] = useState(false);
     const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const copyRef = useRef<HTMLSpanElement>(null);
+    const ids = { expiry: useId(), uses: useId(), expiryValue: useId(), usesValue: useId() };
 
     const [expiryChoice, setExpiryChoice] = useState<ExpiryChoice>(DEFAULT_EXPIRY_HOURS);
     const [customExpiryValue, setCustomExpiryValue] = useState(1);
@@ -150,11 +189,31 @@ export const ServerInviteModal: React.FC<Props> = ({ server, token, onClose }) =
             : clampExpirySeconds(Math.round(expiryChoice * 3600));
     const resolvedMaxUses = usesChoice === 'custom' ? clampUses(customUses) : usesChoice;
 
-    const create = useCallback(async (): Promise<Invite | null> => {
+    /** What the settings controls say right now, as one comparable key. Always
+     *  the latest render's value (read from timers via the ref). */
+    const settingsKey = `${resolvedExpirySeconds ?? 'never'}|${resolvedMaxUses ?? 'unlimited'}`;
+    const settingsRef = useRef({ key: settingsKey, expirySeconds: resolvedExpirySeconds, maxUses: resolvedMaxUses });
+    useEffect(() => { settingsRef.current = { key: settingsKey, expirySeconds: resolvedExpirySeconds, maxUses: resolvedMaxUses }; });
+
+    /** The settings key the link on screen was made for. A link that doesn't
+     *  match the current key is stale: Copy / Invite wait for the new one. */
+    const [appliedKey, setAppliedKey] = useState<string | null>(null);
+    const appliedKeyRef = useRef<string | null>(null);
+    /** The invite THIS dialog made (so it may revoke it on a settings change);
+     *  null for one it merely reused, which isn't ours to delete. */
+    const ownInviteRef = useRef<Invite | null>(null);
+    /** True once the current link has been copied or DM'd: it is out in the
+     *  world, so a settings change must leave it alone rather than revoke it. */
+    const sharedRef = useRef(false);
+    const mountedRef = useRef(true);
+    const regenChain = useRef<Promise<void>>(Promise.resolve());
+    const [regenFailed, setRegenFailed] = useState(false);
+
+    const create = useCallback(async (expirySeconds: number | null, maxUses: number | null): Promise<Invite | null> => {
         if (!token) return null;
         const body: Record<string, number> = {};
-        if (resolvedMaxUses !== null) body.max_uses = resolvedMaxUses;
-        if (resolvedExpirySeconds !== null) body.expires_in_seconds = resolvedExpirySeconds;
+        if (maxUses !== null) body.max_uses = maxUses;
+        if (expirySeconds !== null) body.expires_in_seconds = expirySeconds;
         const res = await axios.post(
             apiUrl`/servers/${server.server_id}/invites`,
             body,
@@ -163,7 +222,17 @@ export const ServerInviteModal: React.FC<Props> = ({ server, token, onClose }) =
         const made = res.data as Invite;
         sessionInvites.set(server.server_id, made);
         return made;
-    }, [token, server.server_id, resolvedMaxUses, resolvedExpirySeconds]);
+    }, [token, server.server_id]);
+
+    /** Best-effort revoke of a link this dialog superseded. DELETE is allowed for
+     *  the invite's creator with CREATE_INVITE alone. A failure only leaves one
+     *  unused invite (which expires on its own), so it is never surfaced. */
+    const revoke = useCallback(async (code: string) => {
+        if (!token) return;
+        try {
+            await axios.delete(apiUrl`/servers/${server.server_id}/invites/${code}`, { headers: { Authorization: `Bearer ${token}` } });
+        } catch { /* see above */ }
+    }, [token, server.server_id]);
 
     // On open: reuse the newest still-usable invite, or make one. Listing needs
     // MANAGE_SERVER while creating only needs CREATE_INVITE, so a 403 here is a
@@ -171,6 +240,8 @@ export const ServerInviteModal: React.FC<Props> = ({ server, token, onClose }) =
     useEffect(() => {
         if (!token) return;
         let cancelled = false;
+        const baseline = settingsRef.current;
+        const settle = () => { appliedKeyRef.current = baseline.key; setAppliedKey(baseline.key); };
         (async () => {
             let existing: Invite | null = null;
             try {
@@ -186,16 +257,18 @@ export const ServerInviteModal: React.FC<Props> = ({ server, token, onClose }) =
             }
 
             if (cancelled) return;
-            if (existing) { setInvite(existing); setLoading(false); return; }
+            // A reused link is treated as matching the default settings: only an
+            // actual change away from them makes a new one.
+            if (existing) { settle(); setInvite(existing); setLoading(false); return; }
 
             try {
-                const made = await create();
-                if (!cancelled && made) setInvite(made);
+                const made = await create(baseline.expirySeconds, baseline.maxUses);
+                if (!cancelled && made) { ownInviteRef.current = made; setInvite(made); }
             // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
             } catch (e: any) {
                 if (!cancelled) setError(e?.response?.data?.message ?? 'Could not create an invite link.');
             } finally {
-                if (!cancelled) setLoading(false);
+                if (!cancelled) { settle(); setLoading(false); }
             }
         })();
         return () => { cancelled = true; };
@@ -204,24 +277,61 @@ export const ServerInviteModal: React.FC<Props> = ({ server, token, onClose }) =
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [token, server.server_id]);
 
-    /** Explicit "make a new one with these settings" from the options panel. */
-    const createWithCurrentSettings = async () => {
-        if (working) return;
-        setWorking(true);
-        setError(null);
+    useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; }; }, []);
+
+    /** Make a link for the CURRENT settings and retire the one it replaces.
+     *  Runs one at a time (see enqueueRegen) and always reads the latest
+     *  settings, so a burst of changes ends in exactly one new invite. */
+    const runRegen = useCallback(async () => {
+        const target = settingsRef.current;
+        if (target.key === appliedKeyRef.current) return;
+        if (mountedRef.current) { setWorking(true); setError(null); setRegenFailed(false); }
         try {
-            const made = await create();
-            if (made) { setInvite(made); setCopied(false); }
+            const made = await create(target.expirySeconds, target.maxUses);
+            if (!made) throw new Error('no invite');
+            const previous = ownInviteRef.current;
+            const previousShared = sharedRef.current;
+            ownInviteRef.current = made;
+            sharedRef.current = false;
+            appliedKeyRef.current = target.key;
+            if (mountedRef.current) { setInvite(made); setCopied(false); setAppliedKey(target.key); }
+            // Revoke the superseded link only if it was ours and nobody has it.
+            if (previous && !previousShared && previous.code !== made.code) void revoke(previous.code);
         // eslint-disable-next-line @typescript-eslint/no-explicit-any -- caught value is dynamic (axios / DOMException / Error); fields are read defensively
         } catch (e: any) {
-            setError(e?.response?.data?.message ?? 'Could not create an invite link.');
-        } finally { setWorking(false); }
-    };
+            if (mountedRef.current) {
+                setRegenFailed(true);
+                setError(e?.response?.data?.message ?? 'Could not update the invite link.');
+            }
+        } finally {
+            if (mountedRef.current) setWorking(false);
+        }
+    }, [create, revoke]);
+    const enqueueRegen = useCallback(() => {
+        regenChain.current = regenChain.current.then(runRegen, runRegen);
+    }, [runRegen]);
+
+    // Settings changed: after a quiet moment, make the matching link. A change
+    // back to what the link on screen already matches needs nothing.
+    useEffect(() => {
+        if (loading || !token) return;
+        if (settingsKey === appliedKeyRef.current) return;
+        setRegenFailed(false);
+        setError(null);
+        const t = setTimeout(enqueueRegen, REGEN_DEBOUNCE_MS);
+        return () => clearTimeout(t);
+    }, [settingsKey, loading, token, enqueueRegen]);
 
     const inviteUrl = invite ? `https://cipherline.chat/invite/${invite.code}` : '';
+    /** The link on screen was made for different settings than the controls show. */
+    const stale = !loading && appliedKey !== settingsKey;
+    /** Nothing may copy or send the link until it matches the settings. */
+    const updating = loading || working || (stale && !regenFailed);
+    const linkReady = !!inviteUrl && !updating && !stale;
 
     const copyLink = () => {
-        if (!inviteUrl) return;
+        if (!inviteUrl || !linkReady) return;
+        sharedRef.current = true;
         writeToClipboard(inviteUrl).then(() => {
             setCopied(true);
             nudges.notify({ kind: 'invite_sent' });
@@ -233,7 +343,36 @@ export const ServerInviteModal: React.FC<Props> = ({ server, token, onClose }) =
     };
     useEffect(() => () => clearTimeout(copiedTimer.current ?? undefined), []);
 
-    const busy = loading || working;
+    // ── Friends ──────────────────────────────────────────────────────────────
+    const friendsOn = !!onSendInvite;
+    // Who is already in the server, when this device knows. Starts from the
+    // cached roster (prefetched at boot) and revalidates once; never blocks.
+    const [memberIds, setMemberIds] = useState<ReadonlySet<string> | null>(() => (friendsOn ? rosterIds(peekRoster(server.server_id)) : null));
+    useEffect(() => {
+        if (!friendsOn || !token) return;
+        let cancelled = false;
+        refreshRoster(server.server_id, token).then(r => { if (!cancelled && r) setMemberIds(rosterIds(r)); }).catch(() => { /* membership marks are a nicety */ });
+        return () => { cancelled = true; };
+    }, [friendsOn, token, server.server_id]);
+    // Ordering is fixed at open: sending an invite moves that DM to "latest
+    // activity", and rows jumping under the cursor mid-send would be worse than
+    // a list that is a few minutes stale.
+    const [activityAtOpen] = useState(lastActivityAt);
+    const inviteFriends = useMemo(() => buildInviteFriends({
+        friends: friends ?? [], conversations: conversations ?? [], lastActivityAt: activityAtOpen, blockedIds, myUserId,
+    }), [friends, conversations, activityAtOpen, blockedIds, myUserId]);
+    const sendToFriend = useCallback(async (userId: string, code: string): Promise<boolean> => {
+        // Out in the world from the moment it's sent: a settings change during
+        // the send must not revoke it. (Set before the await, not after.)
+        if (ownInviteRef.current?.code === code) sharedRef.current = true;
+        const ok = await onSendInvite!(userId, code);
+        if (ok) nudges.notify({ kind: 'invite_sent' });
+        return ok;
+    }, [onSendInvite]);
+
+    const busy = updating;
+    // Enter / initial focus lands on Copy link once there is a link to copy.
+    useInitialFocus(copyRef, !!inviteUrl && !busy);
 
     return (
         <ClModal
@@ -241,101 +380,70 @@ export const ServerInviteModal: React.FC<Props> = ({ server, token, onClose }) =
             onClose={handleClose}
             width={460}
             overlayStyle={{ zIndex: 1100 }}
-            // Expanding "link settings" adds two chip rows plus both custom
-            // fields — measured 739px at 1280x720, which `.mod`'s centred flex
-            // pushes off BOTH edges with the top unreachable. The scroll cap
-            // replaces the old inline `overflow:'hidden'` (an inline value would
-            // have beaten the class): a scroll container still clips to the
-            // border radius, and the one child meant to escape — the
-            // custom-expiry-unit ClSelect — is portaled to document.body, so
-            // the card's overflow cannot clip it.
-            cardClassName="mcard--scroll"
-            cardStyle={{ padding: 0 }}
+            label="Invite people"
+            // The body scrolls (never the card), so the header and the Copy
+            // button stay on screen at the app's minimum 1000x720 window even
+            // with the link settings open and both custom fields showing.
+            // The one child meant to escape the card — the custom-expiry-unit
+            // ClSelect — is portaled to document.body.
+            cardClassName="dlg-card dlg-card--srv"
         >
-            <div className="flex items-center justify-between px-5 pt-5 pb-3">
-                <div className="flex items-center gap-2.5 min-w-0">
-                    <span className="w-8 h-8 rounded-lg bg-cl-lume/15 flex items-center justify-center shrink-0">
-                        <UserPlus size={15} className="text-cl-lume" />
-                    </span>
-                    <div className="min-w-0">
-                        <h2 className="font-display font-semibold text-[16px] text-cl-text leading-tight mt-0 mb-0">Invite People</h2>
-                        <p className="text-[11px] text-cl-faint leading-tight mt-0.5 truncate">to {server.name}</p>
-                    </div>
-                </div>
-                <ClButton icon size="sm" onClick={handleClose} variant="ghost" tooltip="Close">
-                    <X size={15} />
-                </ClButton>
-            </div>
-
-            <div className="px-5 pb-5 space-y-3">
-
-                {/* The link. Its own row so a long code is never clipped. */}
-                <div className="bg-cl-sink border border-cl-border/50 rounded-xl px-3.5 py-3">
-                    <span className="flex items-center gap-1.5 text-[10px] font-mono font-semibold uppercase tracking-widest text-cl-faint mb-1.5">
-                        <Link size={11} className="shrink-0" />
-                        Invite link
-                    </span>
-                    <p className="text-[13px] text-cl-text font-mono break-all select-all leading-snug m-0">
-                        {busy
-                            ? <span className="text-cl-faint italic">Creating a link…</span>
-                            : inviteUrl || <span className="text-cl-faint italic">No link available</span>}
-                    </p>
-                </div>
-
-                <ClButton
-                    fullWidth
-                    onClick={copyLink}
-                    disabled={!inviteUrl || busy}
-                    variant={copied ? 'ok' : 'primary'}
-                >
-                    {copied ? <><Check size={14} /> Copied!</> : <><Copy size={14} /> Copy link</>}
-                </ClButton>
-
-                {invite && !busy && (
-                    <p className="text-[11.5px] text-cl-faint text-center m-0">{describeInvite(invite)}</p>
-                )}
-
-                {error && <p className="text-[12px] text-cl-flash text-center m-0">{error}</p>}
-
-                {/* Settings are secondary — the default is right for almost
-                    everyone, so they stay folded away until asked for. */}
-                <button
-                    type="button"
-                    onClick={() => setShowOptions(v => !v)}
-                    className="flex items-center gap-1.5 mx-auto text-[11.5px] text-cl-faint hover:text-cl-text"
-                >
-                    <Settings2 size={12} />
-                    {showOptions ? 'Hide link settings' : 'Edit link settings'}
-                </button>
-
-                {showOptions && (
-                    <div className="space-y-3 pt-1">
-                        <div>
-                            <p className="text-[10px] font-mono font-semibold uppercase tracking-widest text-cl-faint mb-1.5">Expire after</p>
-                            <div className="flex flex-wrap gap-1.5">
-                                {EXPIRY_OPTIONS.map(opt => (
-                                    <ClButton
-                                        key={String(opt.value)}
-                                        chip
-                                        variant="ghost"
-                                        active={expiryChoice === opt.value}
-                                        onClick={() => setExpiryChoice(opt.value)}
-                                    >
-                                        {opt.value === 'custom' && <Sparkles size={10} />}
-                                        {opt.label}
-                                    </ClButton>
-                                ))}
+            <DialogHeader
+                icon={<UserPlus size={18} strokeWidth={2.2} />}
+                title="Invite People"
+                subtitle={`to ${server.name}`}
+            />
+            <DialogBody>
+                <DialogStack>
+                    {/* The link. Its own box so a long code is never clipped. */}
+                    <div>
+                        <div className="dlg-linkbox">
+                            <div className="dlg-linkbox-label"><Link size={12} className="shrink-0" aria-hidden="true" /> Invite link</div>
+                            <div className={`dlg-linkbox-url${busy || !linkReady ? ' dlg-linkbox-url--idle' : ''}`} aria-live="polite">
+                                {busy ? (loading ? 'Creating a link…' : 'Updating link…') : stale ? 'Link out of date' : inviteUrl || 'No link available'}
                             </div>
-                            {expiryChoice === 'custom' && (
-                                <div className="mt-2">
-                                    <ClField note={`Between 1 minute and 30 days.`}>
-                                        <div className="flex gap-2 items-center">
+                        </div>
+                        {invite && linkReady && (
+                            <div className="dlg-help" style={{ marginTop: 8 }}>{describeInvite(invite)}</div>
+                        )}
+                    </div>
+
+                    {/* Settings are secondary — the default is right for almost
+                        everyone, so they stay folded away until asked for. */}
+                    <div>
+                        <DialogLinkButton onClick={() => setShowOptions(v => !v)}>
+                            <Settings2 size={13} aria-hidden="true" />
+                            {showOptions ? 'Hide link settings' : 'Edit link settings'}
+                        </DialogLinkButton>
+                    </div>
+
+                    {showOptions && (
+                        <DialogStack>
+                            <div role="group" aria-labelledby={ids.expiry} className="dlg-stack dlg-stack--tight">
+                                <div className="dlg-section" id={ids.expiry}>Expire after</div>
+                                <div className="dlg-chips">
+                                    {EXPIRY_OPTIONS.map(opt => (
+                                        <ClButton
+                                            key={String(opt.value)}
+                                            chip
+                                            variant="ghost"
+                                            active={expiryChoice === opt.value}
+                                            onClick={() => setExpiryChoice(opt.value)}
+                                        >
+                                            {opt.value === 'custom' && <Sparkles size={10} />}
+                                            {opt.label}
+                                        </ClButton>
+                                    ))}
+                                </div>
+                                {expiryChoice === 'custom' && (
+                                    <DialogField label="Custom expiry" htmlFor={ids.expiryValue} help="Between 1 minute and 30 days.">
+                                        <div className="dlg-pair">
                                             <ClInput
+                                                id={ids.expiryValue}
                                                 type="number"
                                                 min={1}
                                                 value={String(customExpiryValue)}
                                                 onChange={e => setCustomExpiryValue(Number(e.target.value))}
-                                                className="flex-1"
                                             />
                                             <ClSelect
                                                 value={customExpiryUnit}
@@ -343,52 +451,77 @@ export const ServerInviteModal: React.FC<Props> = ({ server, token, onClose }) =
                                                 options={EXPIRY_UNIT_OPTIONS}
                                             />
                                         </div>
-                                    </ClField>
-                                </div>
-                            )}
-                        </div>
-
-                        <div>
-                            <p className="text-[10px] font-mono font-semibold uppercase tracking-widest text-cl-faint mb-1.5">Max uses</p>
-                            <div className="flex flex-wrap gap-1.5">
-                                {USE_OPTIONS.map(opt => (
-                                    <ClButton
-                                        key={String(opt.value)}
-                                        chip
-                                        variant="ghost"
-                                        active={usesChoice === opt.value}
-                                        onClick={() => setUsesChoice(opt.value)}
-                                    >
-                                        {opt.value === 'custom' && <Sparkles size={10} />}
-                                        {opt.label}
-                                    </ClButton>
-                                ))}
+                                    </DialogField>
+                                )}
                             </div>
-                            {usesChoice === 'custom' && (
-                                <div className="mt-2">
-                                    <ClField note={`Between ${USES_MIN} and ${USES_MAX} uses.`}>
+
+                            <div role="group" aria-labelledby={ids.uses} className="dlg-stack dlg-stack--tight">
+                                <div className="dlg-section" id={ids.uses}>Max uses</div>
+                                <div className="dlg-chips">
+                                    {USE_OPTIONS.map(opt => (
+                                        <ClButton
+                                            key={String(opt.value)}
+                                            chip
+                                            variant="ghost"
+                                            active={usesChoice === opt.value}
+                                            onClick={() => setUsesChoice(opt.value)}
+                                        >
+                                            {opt.value === 'custom' && <Sparkles size={10} />}
+                                            {opt.label}
+                                        </ClButton>
+                                    ))}
+                                </div>
+                                {usesChoice === 'custom' && (
+                                    <DialogField label="Custom uses" htmlFor={ids.usesValue} help={`Between ${USES_MIN} and ${USES_MAX} uses.`}>
                                         <ClInput
+                                            id={ids.usesValue}
                                             type="number"
                                             min={USES_MIN}
                                             max={USES_MAX}
                                             value={String(customUses)}
                                             onChange={e => setCustomUses(Number(e.target.value))}
                                         />
-                                    </ClField>
-                                </div>
-                            )}
-                        </div>
+                                    </DialogField>
+                                )}
+                            </div>
 
-                        <ClButton fullWidth variant="ghost" onClick={createWithCurrentSettings} loading={working} disabled={working}>
-                            <RotateCw size={13} /> Create new link with these settings
-                        </ClButton>
-                    </div>
-                )}
+                            <div className="dlg-help">Changes update the link automatically.</div>
+                        </DialogStack>
+                    )}
 
-                <p className="text-[11px] text-cl-faint text-center m-0 pt-0.5">
-                    Past and active invites live in Server Settings → Invites.
-                </p>
-            </div>
+                    {friendsOn && (
+                        <InviteFriendsList
+                            friends={inviteFriends}
+                            memberIds={memberIds}
+                            token={token}
+                            code={linkReady ? invite!.code : null}
+                            onSend={sendToFriend}
+                            loading={friends === undefined}
+                        />
+                    )}
+
+                    <div className="dlg-help">Past and active invites live in Server Settings → Invites.</div>
+                </DialogStack>
+            </DialogBody>
+            {error && (
+                <DialogError>
+                    {error}
+                    {regenFailed && <> <DialogLinkButton onClick={enqueueRegen}>Try again</DialogLinkButton></>}
+                </DialogError>
+            )}
+            <DialogFooter hint={copied ? 'Copied to your clipboard' : busy ? (loading ? 'Creating a link…' : 'Updating link…') : undefined}>
+                <ClButton type="button" variant="ghost" size="sm" onClick={handleClose}>Close</ClButton>
+                <span className="dlg-focus-slot" ref={copyRef}>
+                    <ClButton
+                        size="sm"
+                        onClick={copyLink}
+                        disabled={!linkReady}
+                        variant={copied ? 'ok' : 'primary'}
+                    >
+                        {copied ? <><Check size={14} /> Copied!</> : <><Copy size={14} /> Copy link</>}
+                    </ClButton>
+                </span>
+            </DialogFooter>
         </ClModal>
     );
 };

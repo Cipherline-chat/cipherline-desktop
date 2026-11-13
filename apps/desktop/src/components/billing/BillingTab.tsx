@@ -19,10 +19,14 @@ import { type PaymentMethodView, type InvoiceView } from '@cipherline/shared';
 import { API_BASE } from '../../constants';
 import { writeToClipboard } from '../../utils/clipboard';
 import { motion } from 'framer-motion';
-import { formatBillingDateOr, cancellationKeepProSentence, formatPlanPrice } from '@cipherline/shared';
+import { formatBillingDateOr, cancellationKeepProSentence, formatPlanPrice, founderPanel, founderCancelPrompt } from '@cipherline/shared';
 import { nudges } from '../../utils/firstWeekNudgeStore';
 import { useOwnedServersOverFreeStorage } from '../../hooks/useServerStorageStatus';
 import { CancelServerStorageNotice } from './CancelServerStorageNotice';
+import { FounderCancelPrompt } from './FounderCancelPrompt';
+import { FounderStatusPanel } from './FounderStatusPanel';
+import { IntervalSwitch } from './IntervalSwitch';
+import { canSwitchInterval, currentInterval, planNameWithInterval, yearlyUpsellLabel } from './planInterval';
 
 /**
  * Standalone-field date. Returns the em-dash placeholder ONLY where that reads
@@ -311,9 +315,25 @@ export const BillingTab: React.FC = () => {
     const maxRef = referral?.max_referrals ?? 5;
     const daysEarned = refCount * (referral?.days_per_referral ?? 7);
 
+    // Founding-member price lock: a member sees their number, what would end the
+    // lock and their Founder badge; everyone else the offer with the live count
+    // while spots remain, or the price once they're gone. Comps have no price
+    // to lock, so neither.
+    // The interval the plan bills on (monthly on an older API). plan_amount is the
+    // price of THIS interval, so every founder / price line below follows it.
+    const interval = currentInterval(status);
+    const founder = isComp ? null : founderPanel(status.founder, { amount: status.plan_amount, currency: status.plan_currency, interval }, {
+        cancelScheduled: status.subscription_status === 'canceled_pending' && !isExpired,
+    });
+    // A founder whose price lock is still in force gets a special, honest cancel
+    // prompt (cancelling forfeits the lock); everyone else - non-founders, a
+    // founder who already lost it, comps - keeps the ordinary confirmation.
+    const founderCancel = isComp ? null : founderCancelPrompt(status.founder, { amount: status.plan_amount, currency: status.plan_currency, interval });
+
+    const showSwitch = canSwitchInterval(status) && !isPastDue;
     const planName =
         isComp ? 'Cipherline Pro — complimentary'
-        : status.subscription_status === 'active' ? 'Cipherline Pro'
+        : status.subscription_status === 'active' ? planNameWithInterval('Cipherline Pro', interval, true)
         : trialLive ? 'Free trial'
         : status.subscription_status === 'canceled_pending' && !isExpired ? 'Pro — cancelled'
         : isPastDue ? 'Cipherline Pro'
@@ -377,7 +397,7 @@ export const BillingTab: React.FC = () => {
                             {isPastDue && <span className="sd-chip sd-chip--flash">Payment failed</span>}
                         </div>
                         <div className="text-[12.5px]" style={{ color: 'var(--cl-muted)' }}>
-                            {status.subscription_status === 'active' && !isComp && <>Renews on {formatDate(status.current_period_end)}</>}
+                            {status.subscription_status === 'active' && !isComp && <>Renews on {formatDate(status.current_period_end)}{interval === 'year' && <> · {formatPlanPrice(status.plan_amount, status.plan_currency, { period: 'yr' })}</>}</>}
                             {isComp && (
                                 status.comp_expires_at
                                     ? <>Complimentary access until {formatDate(status.comp_expires_at)}. Nothing to pay, and no card on file.</>
@@ -393,6 +413,9 @@ export const BillingTab: React.FC = () => {
                         </div>
                     </div>
                 </div>
+
+                {/* Founding-member price lock (members: their number; others: the offer). */}
+                {founder && <FounderStatusPanel panel={founder} />}
 
                 {/* Perks */}
                 <div className="mt-3 mb-1">
@@ -451,6 +474,11 @@ export const BillingTab: React.FC = () => {
                     )}
                 </div>
 
+                {/* Monthly <-> yearly: only for an active paid plan with no scheduled cancel. */}
+                {showSwitch && (
+                    <IntervalSwitch current={interval} plan={status} founder={status.founder} />
+                )}
+
                 {/* Confirmation, inline rather than a modal — it's a reversible
                     action with a clear end date, so the copy does the work.
 
@@ -460,44 +488,74 @@ export const BillingTab: React.FC = () => {
                     inline --cl-abyss, the PAGE token — darker than the card it
                     sits in, so it read as a black hole punched through the
                     surface with the text flush against its edges. */}
-                {confirmCancel && (
-                    <div
-                        className="rounded-xl p-4"
-                        style={{
-                            marginTop: 12,
-                            background: 'var(--cl-surface)',
-                            border: '1px solid var(--cl-border)',
-                        }}
-                    >
-                        <b style={{ fontSize: 14 }}>Cancel your subscription?</b>
-                        <p className="text-[13px] leading-relaxed" style={{ color: 'var(--cl-muted)', margin: '6px 0 12px' }}>
-                            {cancellationKeepProSentence(status.current_period_end)}
-                        </p>
+                {(() => {
+                    // What every cancel confirmation tells you, founder or not.
+                    const shared = (
+                        <>
+                            <p className="text-[13px] leading-relaxed" style={{ color: 'var(--cl-muted)', margin: '6px 0 12px' }}>
+                                {cancellationKeepProSentence(status.current_period_end)}
+                            </p>
 
-                        <p className="text-[12.5px] leading-relaxed" style={{ color: 'var(--cl-faint)', margin: '0 0 12px' }}>
-                            Servers you own stay yours on the free tier, with 25 MB of saved storage each.
-                        </p>
+                            <p className="text-[12.5px] leading-relaxed" style={{ color: 'var(--cl-faint)', margin: '0 0 12px' }}>
+                                Servers you own stay yours on the free tier, with 25 MB of saved storage each.
+                            </p>
 
-                        <CancelServerStorageNotice overCount={serversOverFree} />
-
-                        <div className="flex flex-wrap items-center gap-2">
-                            <ClButton
-                                type="button"
-                                variant="danger"
-                                onClick={() => handleSetCancellation(true)}
-                                loading={cancelBusy}
+                            <CancelServerStorageNotice overCount={serversOverFree} />
+                        </>
+                    );
+                    // A founder with the lock in force gets the big slide-to-cancel
+                    // modal instead of the inline panel (mounted while it applies,
+                    // so ClModal can play its exit).
+                    if (founderCancel) {
+                        return (
+                            <FounderCancelPrompt
+                                open={confirmCancel}
+                                copy={founderCancel}
+                                busy={cancelBusy}
+                                onKeep={() => setConfirmCancel(false)}
+                                onCancel={() => handleSetCancellation(true)}
                             >
-                                Yes, cancel at period end
-                            </ClButton>
-                            <ClButton type="button" variant="ghost" onClick={() => setConfirmCancel(false)} disabled={cancelBusy}>
-                                Keep my subscription
-                            </ClButton>
+                                {shared}
+                            </FounderCancelPrompt>
+                        );
+                    }
+                    if (!confirmCancel) return null;
+                    return (
+                        <div
+                            className="rounded-xl p-4"
+                            style={{
+                                marginTop: 12,
+                                background: 'var(--cl-surface)',
+                                border: '1px solid var(--cl-border)',
+                            }}
+                        >
+                            <b style={{ fontSize: 14 }}>Cancel your subscription?</b>
+                            {shared}
+
+                            <div className="flex flex-wrap items-center gap-2">
+                                <ClButton
+                                    type="button"
+                                    variant="danger"
+                                    onClick={() => handleSetCancellation(true)}
+                                    loading={cancelBusy}
+                                >
+                                    Yes, cancel at period end
+                                </ClButton>
+                                <ClButton type="button" variant="ghost" onClick={() => setConfirmCancel(false)} disabled={cancelBusy}>
+                                    Keep my subscription
+                                </ClButton>
+                            </div>
                         </div>
-                    </div>
-                )}
+                    );
+                })()}
                 {canUpgrade && (
                     <p className="sd-sub" style={{ margin: '12px 0 0' }}>
-                        Renews monthly until cancelled. Cancelling takes two clicks, not a phone call.
+                        {(() => {
+                            const yearly = yearlyUpsellLabel(status);
+                            return yearly
+                                ? <>Pick monthly or yearly ({yearly}) at checkout. Renews until cancelled. Cancelling takes two clicks, not a phone call.</>
+                                : <>Renews monthly until cancelled. Cancelling takes two clicks, not a phone call.</>;
+                        })()}
                     </p>
                 )}
             </div>

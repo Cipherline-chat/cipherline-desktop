@@ -46,6 +46,9 @@ export const MAX_QUEUE = 200;
 const HOUR_MS = 60 * 60_000;
 const MAX_SUMMARIES_KEPT = 5;
 
+/** A call summary as the accumulator produces it (the reporter adds the envelope fields). */
+export type CallSummaryInput = Omit<BetaCallSummaryBody, 'schema' | 'session_id' | 'app_version' | 'platform' | 'call_summary_id'>;
+
 export type BetaRoute = 'events' | 'profile' | 'call-summary';
 /** ok: delivered (or deliberately dropped by the server); retry: keep it for the next tick. */
 export type BetaSendResult = { ok: true } | { ok: false; retry: boolean };
@@ -114,7 +117,8 @@ export class BetaReporter {
     private platform: BetaPlatform;
     private transport: BetaTransport | null = null;
     private serverEnabled = false;
-    private localEnabled = true;
+    // Fail closed: off until the host pushes the user's opt-in (settings.ts is opt-in).
+    private localEnabled = false;
     private signedIn = false;
     private queue: Pending[] = [];
     private windows = new Map<string, DedupeWindow>();
@@ -328,6 +332,33 @@ export class BetaReporter {
             }
             void this.flush();
             return true;
+        } catch {
+            return false;
+        }
+    }
+
+    /**
+     * The user rated a call with "Share beta diagnostics" OFF. Sends ONE body to
+     * the call-summary route: that call's summary plus the rating. This is the
+     * only thing a toggle-off user ever sends here, and only on an explicit
+     * rating. It honours the SERVER switch and sign-in (not the local toggle),
+     * the hourly cap, and is never queued, retried or kept: one attempt, then
+     * it is gone. Resolves true when the server accepted it.
+     */
+    async sendRatedSummary(summary: CallSummaryInput, rating: 1 | 2 | 3 | 4 | 5, tags: readonly RatingTag[] = []): Promise<boolean> {
+        try {
+            if (!this.serverEnabled || !this.signedIn || !this.transport) return false;
+            if (!(rating >= 1 && rating <= 5)) return false;
+            const at = this.clock();
+            if (!this.underCap(at)) return false;
+            this.sentTimes.push(at);
+            const body: BetaCallSummaryBody = {
+                schema: BETA_SCHEMA, call_summary_id: newUuid(), session_id: this.sessionId,
+                app_version: this.appVersion, platform: this.platform, ...summary,
+                rating, ...(tags.length ? { rating_tags: [...new Set(tags)] } : {}),
+            };
+            const r = await this.transport('call-summary', body);
+            return r.ok;
         } catch {
             return false;
         }

@@ -69,8 +69,10 @@ export function previewGate(bytes: number, forced: boolean): PreviewGate {
  * file size against `maxRatio`). ZIP64 (sizes too big
  * for 32 bits) is refused outright: no previewable document needs it.
  *
- * Declared sizes can lie; the Worker's timeout and the parser's own
- * size-mismatch check are what bound a lying file.
+ * Declared sizes can lie, so this is only the cheap first gate: the Worker
+ * then runs `zipActualInflateProblem`, which inflates every entry under a byte
+ * budget (jszip/exceljs inflate an entry in full and compare against the
+ * declared size only afterwards).
  */
 export function zipInflateProblem(buf: ArrayBuffer, limits: InflateLimits): string | null {
     const { maxInflated, maxRatio } = limits;
@@ -102,6 +104,92 @@ export function zipInflateProblem(buf: ArrayBuffer, limits: InflateLimits): stri
     }
     if (maxRatio !== undefined && total > RATIO_FLOOR_BYTES && total / n > maxRatio) return 'inflates past the preview limit';
     return null;
+}
+
+/**
+ * Why a zip-based document must not be handed to the parser, or null — judged
+ * on what the entries REALLY inflate to. Walks the central directory and
+ * inflates each deflate stream through a counting, abortable
+ * DecompressionStream('deflate-raw'), discarding the output:
+ *
+ *   - an entry whose actual size differs from its declared size is refused
+ *     (that is what a lying central directory looks like), the moment it
+ *     exceeds the declared size — so no entry is ever inflated past its
+ *     declared size, and the declared sizes were already capped by
+ *     `zipInflateProblem`;
+ *   - the running actual total is held to `maxInflated` as well;
+ *   - a stored entry (method 0) has no expansion; its size is the compressed
+ *     size, which must equal the declared one;
+ *   - any other compression method is refused (the parsers would fail on it).
+ *
+ * Memory is a few stream chunks, whatever the file claims. Call it only after
+ * `zipInflateProblem` returned null (it relies on that for structure).
+ */
+export async function zipActualInflateProblem(buf: ArrayBuffer, limits: InflateLimits): Promise<string | null> {
+    const n = buf.byteLength;
+    const v = new DataView(buf);
+    let eocd = -1;
+    for (let i = n - 22; i >= Math.max(0, n - 22 - 0xffff); i--) {
+        if (v.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+    }
+    if (eocd < 0) return 'not a zip';
+    const entries = v.getUint16(eocd + 10, true);
+    let p = v.getUint32(eocd + 16, true);
+    let actualTotal = 0;
+    for (let k = 0; k < entries; k++) {
+        if (p + 46 > n || v.getUint32(p, true) !== 0x02014b50) return 'bad central directory';
+        const method = v.getUint16(p + 10, true);
+        const compressed = v.getUint32(p + 20, true);
+        const declared = v.getUint32(p + 24, true);
+        const lfh = v.getUint32(p + 42, true);
+        p += 46 + v.getUint16(p + 28, true) + v.getUint16(p + 30, true) + v.getUint16(p + 32, true);
+
+        if (compressed === 0 && declared === 0) continue; // a directory or an empty file
+        if (lfh + 30 > n || v.getUint32(lfh, true) !== 0x04034b50) return 'bad local header';
+        const start = lfh + 30 + v.getUint16(lfh + 26, true) + v.getUint16(lfh + 28, true);
+        if (start + compressed > n) return 'entry data out of range';
+
+        let actual: number;
+        if (method === 0) {
+            actual = compressed;
+        } else if (method === 8) {
+            const r = await countInflated(new Uint8Array(buf, start, compressed), declared);
+            if (r === 'error') return 'corrupt entry';
+            actual = r;
+        } else {
+            return 'unsupported compression method';
+        }
+        if (actual !== declared) return 'entry size does not match the central directory';
+        actualTotal += actual;
+        if (actualTotal > limits.maxInflated) return 'inflates past the preview limit';
+    }
+    return null;
+}
+
+/**
+ * Inflate a raw-deflate stream, discarding the output, and stop as soon as it
+ * has produced more than `cap` bytes. Resolves the byte count (cap + something
+ * when aborted — callers compare against the declared size) or 'error'.
+ */
+async function countInflated(data: Uint8Array, cap: number): Promise<number | 'error'> {
+    let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+    try {
+        const stream = new Blob([data as BlobPart]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+        reader = stream.getReader();
+        let total = 0;
+        for (;;) {
+            const { done, value } = await reader.read();
+            if (done) return total;
+            total += value.byteLength;
+            if (total > cap) {
+                await reader.cancel().catch(() => { /* the abort is the point */ });
+                return total;
+            }
+        }
+    } catch {
+        try { await reader?.cancel(); } catch { /* ignore */ }
+        return 'error';
+    }
 }
 
 export interface SheetPreview {

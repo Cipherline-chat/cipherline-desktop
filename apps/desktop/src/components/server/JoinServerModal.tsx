@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
-import { X, Link, Users, ServerCrash, CheckCircle2, RotateCw } from 'lucide-react';
-import { ClModal, ClButton, ClInput, ClField } from '../cl';
+import React, { useId, useRef, useState } from 'react';
+import { Link, MailOpen, Users, ServerCrash } from 'lucide-react';
+import { ClModal, ClButton, ClInput } from '../cl';
 import { useModalExit } from '../../hooks/useModalExit';
 import axios from 'axios';
 import { apiUrl } from '../../utils/apiPath';
@@ -8,6 +8,10 @@ import { ServerIcon } from './ServerIcon';
 import { motion, useReducedMotion } from 'framer-motion';
 import { useInvitePreview } from '../../hooks/useInvitePreview';
 import type { ServerInfo } from '../../hooks/useServers';
+import { DialogHeader, DialogBody, DialogFooter, DialogError, useInitialFocus } from '../dialog/DialogFrame';
+import { DialogForm, DialogField, DialogStack, DialogNote } from '../dialog/DialogExtras';
+import { BusyLabel } from '../dialog/BusyLabel';
+import '../../styles/dialog-server.css';
 
 // ── InvitePreviewModal — rich modal for deep-link cipherline://invite/<CODE> ──
 
@@ -17,11 +21,12 @@ import type { ServerInfo } from '../../hooks/useServers';
  * the Join button. Renders its children untouched when `on` is false, so the
  * everyday "someone sent me a link" prompt is exactly what it always was.
  */
-const Arrive: React.FC<{ on: boolean; delay: number; children: React.ReactNode }> = ({ on, delay, children }) => {
+const Arrive: React.FC<{ on: boolean; delay: number; children: React.ReactNode; style?: React.CSSProperties }> = ({ on, delay, children, style }) => {
     const reduce = useReducedMotion();
     if (!on) return <>{children}</>;
     return (
         <motion.div
+            style={style}
             initial={reduce ? { opacity: 0 } : { opacity: 0, y: 16, scale: 0.94 }}
             animate={reduce ? { opacity: 1 } : { opacity: 1, y: 0, scale: 1 }}
             transition={{ type: 'spring', stiffness: 300, damping: 26, delay: reduce ? 0 : delay }}
@@ -42,6 +47,12 @@ interface InvitePreviewModalProps {
     onClose: () => void;
 }
 
+/**
+ * The invite prompt, in the house dialog pattern (components/dialog/DialogFrame).
+ * States: checking the invite, ready to join, already a member, expired, and
+ * could-not-load (with a retry). The primary takes focus when it can act, so
+ * Enter joins; Escape / Cancel never do.
+ */
 export const InvitePreviewModal: React.FC<InvitePreviewModalProps> = ({
     code, token, servers, arrival = false, onJoin, onClose,
 }) => {
@@ -49,6 +60,7 @@ export const InvitePreviewModal: React.FC<InvitePreviewModalProps> = ({
     const { preview, state, reload } = useInvitePreview(code, token, servers);
     const [joining, setJoining]     = useState(false);
     const [joinError, setJoinError] = useState<string | null>(null);
+    const primaryRef = useRef<HTMLSpanElement>(null);
 
     const handleJoin = async () => {
         if (!token || !preview || joining) return;
@@ -85,98 +97,128 @@ export const InvitePreviewModal: React.FC<InvitePreviewModalProps> = ({
         }
     };
 
+    const dead = state === 'invalid' || state === 'error' || (state !== 'loading' && !preview);
+    const ready = !!preview && !dead && state !== 'loading';
+    const joined = ready && state === 'joined';
+    // Initial focus goes to the primary once it can act (a join is not destructive, so Enter confirms).
+    useInitialFocus(primaryRef, (ready && (joined || !!token)) || state === 'error' || state === 'invalid');
+
+    const title = arrival ? "Welcome — you've been invited" : "You've been invited";
+    const subtitle = state === 'loading' ? 'Checking the invite…'
+        : state === 'invalid' ? 'This invite is no longer valid.'
+        : dead ? "We couldn't load this invite."
+        : joined ? 'It’s already in your server list.'
+        : 'Review the server, then join.';
+
+    let footer: React.ReactNode;
+    if (state === 'invalid') {
+        footer = (
+            <span className="dlg-focus-slot" ref={primaryRef}>
+                <ClButton type="button" size="sm" onClick={handleClose}>Close</ClButton>
+            </span>
+        );
+    } else if (dead) {
+        // useInvitePreview already retried with backoff before landing in 'error' —
+        // this is very likely still transient, so offer a manual retry rather than
+        // a dead end. Not offered for 'invalid': that's a real 404/400.
+        footer = (
+            <>
+                <ClButton type="button" variant="ghost" size="sm" onClick={handleClose}>Close</ClButton>
+                <span className="dlg-focus-slot" ref={primaryRef}>
+                    <ClButton type="button" size="sm" onClick={reload}>Try again</ClButton>
+                </span>
+            </>
+        );
+    } else if (joined && preview) {
+        footer = (
+            <>
+                <ClButton type="button" variant="ghost" size="sm" onClick={handleClose}>Cancel</ClButton>
+                <span className="dlg-focus-slot" ref={primaryRef}>
+                    <ClButton type="button" size="sm" onClick={() => { onJoin(preview.server_id, preview.server_name); handleClose(); }}>Go to server</ClButton>
+                </span>
+            </>
+        );
+    } else {
+        footer = (
+            <Arrive on={arrival && ready} delay={0.35} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <ClButton type="button" variant="ghost" size="sm" onClick={handleClose} disabled={joining}>{arrival ? 'Not now' : 'Cancel'}</ClButton>
+                <span className="dlg-focus-slot" ref={primaryRef}>
+                    <ClButton type="submit" size="sm" disabled={!ready || !token} className={joining ? 'dlg-busy' : undefined}>
+                        <BusyLabel busy={joining}>Join server</BusyLabel>
+                    </ClButton>
+                </span>
+            </Arrive>
+        );
+    }
+
     return (
         <ClModal
             open={!closing}
             onClose={handleClose}
-            width={380}
+            width={420}
             overlayStyle={{ zIndex: 1200 }}
-            cardStyle={{ overflow: 'hidden' }}
+            label="Server invite"
+            cardClassName="dlg-card dlg-card--srv"
         >
-            <div className="flex items-center justify-between px-5 pt-5 pb-4">
-                <h2 className="font-display font-semibold text-[17px] text-cl-text mt-0 mb-0">{arrival ? "Welcome \u2014 you've been invited" : "You've been invited"}</h2>
-                <ClButton icon onClick={handleClose} variant="ghost" tooltip="Close">
-                    <X size={15} />
-                </ClButton>
-            </div>
-            <div className="px-5 pb-5">
-                {state === 'loading' ? (
-                    <div className="flex items-center gap-3 py-4">
-                        <div className="w-14 h-14 rounded-2xl bg-white/[0.06] animate-pulse shrink-0" />
-                        <div className="flex-1 space-y-2">
-                            <div className="h-4 w-40 bg-white/[0.06] rounded animate-pulse" />
-                            <div className="h-3 w-24 bg-white/[0.04] rounded animate-pulse" />
+            <DialogHeader icon={<MailOpen size={18} strokeWidth={2.2} />} title={title} subtitle={subtitle} />
+            <DialogForm onSubmit={() => { if (ready && !joined) void handleJoin(); }}>
+                <DialogBody>
+                    {state === 'loading' ? (
+                        <div className="dlg-srv" aria-busy="true" aria-label="Checking the invite">
+                            <div className="dlg-skel" style={{ width: 64, height: 64, borderRadius: 16, flex: 'none' }} />
+                            <div className="dlg-srv-text" style={{ display: 'flex', flexDirection: 'column', gap: 8, paddingTop: 8 }}>
+                                <div className="dlg-skel" style={{ height: 16, width: '70%' }} />
+                                <div className="dlg-skel" style={{ height: 12, width: '45%' }} />
+                            </div>
                         </div>
-                    </div>
-                ) : (state === 'invalid' || state === 'error' || !preview) ? (
-                    <div className="flex items-center gap-3 py-4 opacity-60">
-                        <span className="w-14 h-14 rounded-2xl bg-white/[0.05] flex items-center justify-center shrink-0">
-                            <ServerCrash size={24} className="text-cl-faint" />
-                        </span>
-                        <div className="flex-1 min-w-0">
-                            <p className="font-semibold text-[14px] text-cl-muted">{state === 'invalid' ? 'Invite expired' : 'Invite unavailable'}</p>
-                            <p className="text-[12px] text-cl-faint mt-0.5">{state === 'invalid' ? 'This invite is no longer valid.' : 'Could not load invite info.'}</p>
-                            {/* useInvitePreview already retried with backoff before
-                                landing in 'error' — this is very likely still
-                                transient, so offer a manual retry rather than a
-                                dead end. Not shown for 'invalid': that's a real
-                                404/400, retrying won't help. */}
-                            {state === 'error' && (
-                                <button
-                                    type="button"
-                                    onClick={reload}
-                                    className="flex items-center gap-1 text-[12px] text-cl-lume hover:underline mt-1.5"
-                                >
-                                    <RotateCw size={12} /> Retry
-                                </button>
-                            )}
-                        </div>
-                    </div>
-                ) : (
-                    <>
-                        <Arrive on={arrival} delay={0.12}>
-                        <div className="flex items-start gap-4 py-2 mb-5">
-                            <ServerIcon
-                                serverId={preview.server_id}
-                                name={preview.server_name}
-                                attachmentId={preview.server_icon}
-                                keyB64={preview.server_icon_key_b64}
-                                nonceB64={preview.server_icon_nonce_b64}
-                                token={token}
-                                className="w-16 h-16 rounded-2xl text-[22px] shrink-0"
-                            />
-                            <div className="flex-1 min-w-0 pt-1">
-                                <p className="font-bold text-[17px] text-cl-text leading-tight truncate">{preview.server_name}</p>
-                                {preview.server_description && (
-                                    <p className="text-[12px] text-cl-faint leading-snug mt-1 line-clamp-2">{preview.server_description}</p>
-                                )}
-                                <div className="flex items-center gap-1.5 mt-1.5">
-                                    <Users size={12} className="text-cl-faint shrink-0" />
-                                    <span className="text-[12px] text-cl-faint">{preview.member_count.toLocaleString()} member{preview.member_count !== 1 ? 's' : ''}</span>
+                    ) : dead || !preview ? (
+                        <div className="dlg-srv">
+                            <span className="dlg-srv-badge" aria-hidden="true">
+                                <ServerCrash size={26} />
+                            </span>
+                            <div className="dlg-srv-text">
+                                <div className="dlg-srv-name">{state === 'invalid' ? 'Invite expired' : 'Invite unavailable'}</div>
+                                <div className="dlg-srv-desc">
+                                    {state === 'invalid'
+                                        ? 'Ask the person who sent it for a new link.'
+                                        : 'Could not load invite info. Check your connection and try again.'}
                                 </div>
                             </div>
                         </div>
-                        </Arrive>
-                        {joinError && <p className="text-[12px] text-cl-flash mb-3">{joinError}</p>}
-                        {state === 'joined' ? (
-                            <div className="space-y-2">
-                                <div className="flex items-center gap-2 text-[13px] text-cl-ok font-medium mb-2">
-                                    <CheckCircle2 size={14} /> You're already a member of this server.
+                    ) : (
+                        <DialogStack>
+                            <Arrive on={arrival} delay={0.12}>
+                                <div className="dlg-srv">
+                                    <ServerIcon
+                                        serverId={preview.server_id}
+                                        name={preview.server_name}
+                                        attachmentId={preview.server_icon}
+                                        keyB64={preview.server_icon_key_b64}
+                                        nonceB64={preview.server_icon_nonce_b64}
+                                        token={token}
+                                        className="w-16 h-16 rounded-2xl text-[22px] shrink-0"
+                                    />
+                                    <div className="dlg-srv-text">
+                                        <div className="dlg-srv-name" title={preview.server_name}>{preview.server_name}</div>
+                                        {preview.server_description && (
+                                            <div className="dlg-srv-desc">{preview.server_description}</div>
+                                        )}
+                                        <div className="dlg-srv-meta">
+                                            <Users size={13} />
+                                            <span>{preview.member_count.toLocaleString()} member{preview.member_count !== 1 ? 's' : ''}</span>
+                                        </div>
+                                    </div>
                                 </div>
-                                <ClButton fullWidth onClick={() => { onJoin(preview.server_id, preview.server_name); handleClose(); }}>Go to Server →</ClButton>
-                                <ClButton variant="ghost" fullWidth onClick={handleClose}>Cancel</ClButton>
-                            </div>
-                        ) : (
-                            <Arrive on={arrival} delay={0.35}>
-                            <div className="space-y-2">
-                                <ClButton fullWidth disabled={joining || !token} loading={joining} onClick={handleJoin}>{`Join ${preview.server_name}`}</ClButton>
-                                <ClButton variant="ghost" fullWidth onClick={handleClose}>{arrival ? 'Not now' : 'Cancel'}</ClButton>
-                            </div>
                             </Arrive>
-                        )}
-                    </>
-                )}
-            </div>
+                            {joined && (
+                                <DialogNote tone="ok" role="status">You&rsquo;re already a member of this server.</DialogNote>
+                            )}
+                        </DialogStack>
+                    )}
+                </DialogBody>
+                {joinError && <DialogError>{joinError}</DialogError>}
+                <DialogFooter hint={joining ? 'Joining…' : undefined}>{footer}</DialogFooter>
+            </DialogForm>
         </ClModal>
     );
 };
@@ -190,6 +232,7 @@ interface Props {
 
 export const JoinServerModal: React.FC<Props> = ({ onClose, onJoinServer }) => {
     const { closing, handleClose } = useModalExit(onClose, 260);
+    const codeId = useId();
     const [code, setCode] = useState('');
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -203,8 +246,8 @@ export const JoinServerModal: React.FC<Props> = ({ onClose, onJoinServer }) => {
         return trimmed;
     };
 
-    const handleSubmit = async (e: React.FormEvent) => {
-        e.preventDefault();
+    const handleSubmit = async () => {
+        if (loading) return;
         const parsedCode = parseCode(code);
         if (!parsedCode) { setError('Please enter a valid invite code or link'); return; }
         setLoading(true);
@@ -228,41 +271,35 @@ export const JoinServerModal: React.FC<Props> = ({ onClose, onJoinServer }) => {
     };
 
     return (
-        <ClModal open={!closing} onClose={handleClose} width={440} cardStyle={{ padding: '28px' }}>
-            <div className="flex items-center justify-between mb-6">
-                <div className="flex items-center gap-3">
-                    <div className="w-9 h-9 rounded-xl bg-cl-lume/15 flex items-center justify-center text-cl-lume border border-cl-lume/20">
-                        <Link size={18} />
-                    </div>
-                    <div>
-                        <h2 className="font-display font-semibold text-[17px] text-cl-text mt-0 mb-0">Join a Server</h2>
-                        <p className="text-[12px] text-cl-faint">Paste an invite link or code</p>
-                    </div>
-                </div>
-                <ClButton icon onClick={handleClose} variant="ghost" tooltip="Close">
-                    <X size={16} />
-                </ClButton>
-            </div>
-
-            <form onSubmit={handleSubmit} className="space-y-4">
-                <ClField label="Invite Code or Link">
-                    <ClInput
-                        autoFocus
-                        value={code}
-                        onChange={e => setCode(e.target.value)}
-                        placeholder="https://cipherline.chat/invite/AbCd1234"
-                    />
-                </ClField>
-
-                {error && (
-                    <p className="text-sm text-cl-flash bg-cl-flash/10 rounded-xl px-3 py-2">{error}</p>
-                )}
-
-                <div className="flex gap-3 pt-2">
-                    <ClButton type="button" variant="ghost" fullWidth style={{ flex: 1 }} onClick={handleClose}>Cancel</ClButton>
-                    <ClButton type="submit" fullWidth disabled={loading || !code.trim()} loading={loading} style={{ flex: 1 }}>Join Server</ClButton>
-                </div>
-            </form>
+        <ClModal open={!closing} onClose={handleClose} width={440} label="Join a Server" cardClassName="dlg-card dlg-card--srv">
+            <DialogHeader
+                icon={<Link size={18} strokeWidth={2.2} />}
+                title="Join a Server"
+                subtitle="Paste an invite link or code"
+            />
+            <DialogForm onSubmit={handleSubmit}>
+                <DialogBody>
+                    <DialogField label="Invite link or code" htmlFor={codeId}>
+                        <ClInput
+                            id={codeId}
+                            autoFocus
+                            autoComplete="off"
+                            spellCheck={false}
+                            value={code}
+                            onChange={e => setCode(e.target.value)}
+                            placeholder="https://cipherline.chat/invite/AbCd1234"
+                            aria-invalid={error ? true : undefined}
+                        />
+                    </DialogField>
+                </DialogBody>
+                {error && <DialogError>{error}</DialogError>}
+                <DialogFooter hint={loading ? 'Joining…' : 'A full link or just the code'}>
+                    <ClButton type="button" variant="ghost" size="sm" onClick={handleClose}>Cancel</ClButton>
+                    <ClButton type="submit" size="sm" disabled={!code.trim()} className={loading ? 'dlg-busy' : undefined}>
+                        <BusyLabel busy={loading}>Join server</BusyLabel>
+                    </ClButton>
+                </DialogFooter>
+            </DialogForm>
         </ClModal>
     );
 };

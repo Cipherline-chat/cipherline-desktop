@@ -69,16 +69,30 @@ export interface StartupFlags {
     captureLog: boolean;
     /** "Prioritize calls and screen share while gaming" — ./gaming-video-mode.ts, ./share-boost.ts. ON by default. */
     gamingVideo: boolean;
+    /**
+     * Linux only: hardware (VA-API) video encoding for screen share and camera
+     * (./linux-video-encode.ts). ON by default; Chromium falls back to its software
+     * encoders where there is no usable hardware one. Settings -> Advanced, next launch.
+     */
+    linuxHwEncode: boolean;
+    /**
+     * Linux only: hardware (VA-API) video DECODING of remote screen shares and cameras
+     * (./linux-video-decode.ts). ON by default; Chromium falls back to its software decoders where
+     * there is no usable hardware one. Settings -> Advanced, next launch.
+     */
+    linuxHwDecode: boolean;
 }
 
 export const DEFAULT_STARTUP_FLAGS: Readonly<StartupFlags> = Object.freeze({
     screenCapturer: 'auto',
     captureLog: false,
     gamingVideo: true,
+    linuxHwEncode: true,
+    linuxHwDecode: true,
 });
 
 const CAPTURERS: ReadonlySet<string> = new Set<ScreenCapturerPref>(['auto', 'dxgi', 'wgc']);
-const KNOWN_KEYS: ReadonlySet<string> = new Set<keyof StartupFlags>(['screenCapturer', 'captureLog', 'gamingVideo']);
+const KNOWN_KEYS: ReadonlySet<string> = new Set<keyof StartupFlags>(['screenCapturer', 'captureLog', 'gamingVideo', 'linuxHwEncode', 'linuxHwDecode']);
 
 const own = (o: object, k: string): boolean => Object.prototype.hasOwnProperty.call(o, k);
 
@@ -105,6 +119,9 @@ export function parseStartupFlags(text: string | null | undefined): StartupFlags
     // Default ON. Exactly `true`/`false` are kept (the migration: an old ON stays
     // ON, an old OFF stays OFF); anything else - missing, garbled - is the default.
     if (own(raw, 'gamingVideo') && typeof raw.gamingVideo === 'boolean') out.gamingVideo = raw.gamingVideo;
+    // Default ON; only an exact boolean is kept.
+    if (own(raw, 'linuxHwEncode') && typeof raw.linuxHwEncode === 'boolean') out.linuxHwEncode = raw.linuxHwEncode;
+    if (own(raw, 'linuxHwDecode') && typeof raw.linuxHwDecode === 'boolean') out.linuxHwDecode = raw.linuxHwDecode;
     return out;
 }
 
@@ -133,6 +150,14 @@ export function validateStartupFlagsPatch(input: unknown): Partial<StartupFlags>
         if (typeof input.gamingVideo !== 'boolean') throw new Error('startup flags: bad gamingVideo');
         out.gamingVideo = input.gamingVideo;
     }
+    if (own(input, 'linuxHwEncode')) {
+        if (typeof input.linuxHwEncode !== 'boolean') throw new Error('startup flags: bad linuxHwEncode');
+        out.linuxHwEncode = input.linuxHwEncode;
+    }
+    if (own(input, 'linuxHwDecode')) {
+        if (typeof input.linuxHwDecode !== 'boolean') throw new Error('startup flags: bad linuxHwDecode');
+        out.linuxHwDecode = input.linuxHwDecode;
+    }
     return out;
 }
 
@@ -142,6 +167,8 @@ export function serializeStartupFlags(f: StartupFlags): string {
         screenCapturer: f.screenCapturer,
         captureLog: f.captureLog === true,
         gamingVideo: f.gamingVideo !== false,
+        linuxHwEncode: f.linuxHwEncode !== false,
+        linuxHwDecode: f.linuxHwDecode !== false,
     }, null, 2) + '\n';
 }
 
@@ -172,13 +199,13 @@ export type StartupFlagSource = 'env' | 'file' | 'default';
 export interface ResolvedStartupFlags extends StartupFlags {
     /** Where each value came from — the Settings UI says so when an env var
      *  is overriding the saved choice. */
-    source: { screenCapturer: StartupFlagSource; captureLog: StartupFlagSource; gamingVideo: StartupFlagSource };
+    source: { screenCapturer: StartupFlagSource; captureLog: StartupFlagSource; gamingVideo: StartupFlagSource; linuxHwEncode: StartupFlagSource; linuxHwDecode: StartupFlagSource };
 }
 
 /** env > file > default. See the header for which env vars count when. */
 export function resolveStartupFlags(opts: {
     file: StartupFlags;
-    env: { CIPHERLINE_SCREEN_CAPTURER?: string; CIPHERLINE_CAPTURE_LOG?: string };
+    env: { CIPHERLINE_SCREEN_CAPTURER?: string; CIPHERLINE_CAPTURE_LOG?: string; CIPHERLINE_LINUX_HW_ENCODE?: string; CIPHERLINE_LINUX_HW_DECODE?: string };
     packaged: boolean;
 }): ResolvedStartupFlags {
     const { file, env, packaged } = opts;
@@ -213,9 +240,24 @@ export function resolveStartupFlags(opts: {
     const gamingVideo = file.gamingVideo !== false;
     const gvSrc: StartupFlagSource = gamingVideo !== DEFAULT_STARTUP_FLAGS.gamingVideo ? 'file' : 'default';
 
+    // The saved Settings choice. CIPHERLINE_LINUX_HW_ENCODE (any build) is NOT merged into it: the
+    // launch decision (linux-video-encode.ts decideLinuxHwEncode) takes the env mode and this setting
+    // separately, because "on" from the environment also bypasses the failure ledger. `source` only
+    // says the environment is set, so the Settings row can say why its choice is not in effect.
+    const linuxHwEncode = file.linuxHwEncode !== false;
+    const hwEnv = (env.CIPHERLINE_LINUX_HW_ENCODE ?? '').trim().toLowerCase();
+    const hwEnvSet = ['1', 'on', 'true', 'yes', '0', 'off', 'false', 'no'].includes(hwEnv);
+    const hwSrc: StartupFlagSource = hwEnvSet ? 'env' : linuxHwEncode !== DEFAULT_STARTUP_FLAGS.linuxHwEncode ? 'file' : 'default';
+
+    // Same shape for decode: env (CIPHERLINE_LINUX_HW_DECODE) is read by decideLinuxHwDecode itself.
+    const linuxHwDecode = file.linuxHwDecode !== false;
+    const hdEnv = (env.CIPHERLINE_LINUX_HW_DECODE ?? '').trim().toLowerCase();
+    const hdEnvSet = ['1', 'on', 'true', 'yes', 'gl', '0', 'off', 'false', 'no'].includes(hdEnv);
+    const hdSrc: StartupFlagSource = hdEnvSet ? 'env' : linuxHwDecode !== DEFAULT_STARTUP_FLAGS.linuxHwDecode ? 'file' : 'default';
+
     return {
-        screenCapturer, captureLog, gamingVideo,
-        source: { screenCapturer: capSrc, captureLog: logSrc, gamingVideo: gvSrc },
+        screenCapturer, captureLog, gamingVideo, linuxHwEncode, linuxHwDecode,
+        source: { screenCapturer: capSrc, captureLog: logSrc, gamingVideo: gvSrc, linuxHwEncode: hwSrc, linuxHwDecode: hdSrc },
     };
 }
 

@@ -10,6 +10,7 @@ import '../../../styles/moment-reef.css';
  *            brand colours; bubbles rise between them;
  * 2.4–3.1    "Ten servers." then "You’ve built a reef.";
  * 3.1–7.3    read, then the settled frame; 7.3–8.0 the reef sinks back down.
+ * The app behind is dimmed for the whole moment (the host's shared egg scrim) so the text reads.
  * Deterministic shapes (three coral silhouettes, cycled).
  */
 const SHAPES = [

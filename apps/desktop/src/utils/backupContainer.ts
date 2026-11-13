@@ -190,6 +190,18 @@ export interface ContainerIndex {
 
 /** Hash marker for records whose content never changes for a given id. */
 export const IMMUTABLE_HASH = 'immutable';
+const SHA256_HEX_RE = /^[0-9a-f]{64}$/;
+
+/** A record decrypted but is not the one the (authenticated) index declares —
+ *  e.g. a frame spliced in from an older revision of the file. */
+export class BackupRecordIntegrityError extends Error {
+    readonly recordId: string;
+    constructor(recordId: string) {
+        super(`Backup record "${recordId}" does not match its index (the file was modified)`);
+        this.name = 'BackupRecordIntegrityError';
+        this.recordId = recordId;
+    }
+}
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -547,7 +559,19 @@ export async function openContainer(source: ByteSource, password: string): Promi
     const readBytes = async (id: string): Promise<Uint8Array> => {
         const ref = byId.get(id);
         if (!ref) throw new Error(`Backup has no record "${id}"`);
-        return decryptFrame(key, recordAad(version, id, ref.gen), await source.read(ref.offset, ref.len));
+        const plaintext = await decryptFrame(key, recordAad(version, id, ref.gen), await source.read(ref.offset, ref.len));
+        // Audit 21/H-7 + 21/M-10: the record AAD alone does not pin WHICH
+        // revision of a record this is. Every Drive upload is a fresh file at
+        // generation 1 under the same key, so an older revision's frame for the
+        // same id (same length) decrypts cleanly in its place — a keyless
+        // splice by anyone holding Drive's revision history. The index is
+        // sealed, so the hash it declares is authentic: checking it binds each
+        // record to this exact index. Blob ids carry IMMUTABLE_HASH (their
+        // content never changes per id, so an older copy is the same bytes).
+        if (SHA256_HEX_RE.test(ref.hash) && await sha256Hex(plaintext) !== ref.hash) {
+            throw new BackupRecordIntegrityError(id);
+        }
+        return plaintext;
     };
 
     return {

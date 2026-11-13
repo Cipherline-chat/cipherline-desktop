@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { createEntranceGate, type EntranceGate } from '../../utils/entranceSoundGate';
 import { getEntrancePrefs } from '../../utils/entrancePrefs';
-import { freshCallPersonalization } from '../../utils/callPersonalizationStore';
+import { readCallPersonalizationStrict } from '../../utils/callPersonalizationStore';
 import { playCustomEntranceSound, playEntranceSound } from '../../utils/entrancePlayback';
 import { handleEntranceJoin } from '../../utils/entranceJoin';
 import { receivedSounds } from '../../utils/customEntranceSound/receivedCache';
@@ -41,7 +41,7 @@ export function useEntranceSounds(
             if (!prefs.enabled || prefs.muted.includes(id)) continue;
             void handleEntranceJoin(id, {
                 getPrefs: getEntrancePrefs,
-                personalization: freshCallPersonalization,
+                personalization: uid => readCallPersonalizationStrict(uid),
                 waitForCustom: (contentId, ms) => receivedSounds.waitFor(contentId, ms),
                 gate,
                 now: () => Date.now(),

@@ -13,7 +13,8 @@ import type { FriendStatusEntry, UserStatus } from '../hooks/useUserStatus';
 import type { HomeKeysMirror } from './mascot/HomeKeys';
 import { ServerIcon } from './server/ServerIcon';
 import secureLocalStore from '../utils/secureLocalStore';
-import { pinKey, type PinnedHomeItem } from '../utils/homePins';
+import { type PinnedHomeItem } from '../utils/homePins';
+import { HomePinsGrid, type PinDnd } from './HomePinsGrid';
 import { pickRecent } from '../utils/homeRecents';
 import {
     isLocalCallRow, resolvePinnedChannelAction,
@@ -123,6 +124,11 @@ interface HomePanelProps {
     onOpenChannel?: (channel: ChannelInfo) => void;
     onPin: (item: PinnedHomeItem) => void;
     onUnpin: (item: PinnedHomeItem) => void;
+    /** Move a pin to final position `toIndex` of the grid's VISIBLE order
+     *  (drag or Alt+Arrow). Dashboard applies utils/homePins' moveVisiblePin
+     *  through the same pins setter, so the order persists/backs up as array
+     *  order. Absent = the grid can't be reordered. */
+    onReorderPins?: (key: string, toIndex: number, visibleKeys: string[]) => void;
     onOpenStorage: () => void;
 }
 
@@ -169,6 +175,13 @@ type ResolvedPin =
     | { kind: 'channel'; item: PinnedHomeItem; channel: ChannelInfo; server: ServerInfo }
     | { kind: 'server'; item: PinnedHomeItem; server: ServerInfo };
 
+/** A pin's display name — the card title, and what reorder announcements say. */
+function resolvedPinName(entry: ResolvedPin): string {
+    return entry.kind === 'conversation' ? (entry.conv.title || 'Chat')
+        : entry.kind === 'server' ? entry.server.name
+        : entry.channel.name;
+}
+
 /** One "Pick back up" card: a conversation or a server, both carrying the two
  *  values the section ranks on so the sort never has to branch on kind. */
 type RecentItem = {
@@ -183,6 +196,43 @@ type RecentItem = {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     | { kind: 'conversation'; conv: any }
     | { kind: 'server'; server: ServerInfo }
+);
+
+/**
+ * The deck's empty state: a lit porthole riding a line of still water, with a
+ * glyph for what is (not) happening — a check for "nothing to catch up on", a
+ * moon for "everyone's asleep", a person for "nobody here yet". Drawn in the
+ * tile's own accent (--hd-accent). The check strokes in once as the tile
+ * lands; the porthole's slow bob is decoration and so rides the Home ambience
+ * switch and the idle/occluded/reduced-motion gates (home-deck.css).
+ */
+const HomeEmpty: React.FC<{ glyph: 'check' | 'moon' | 'person'; title: string; sub: string }> = ({ glyph, title, sub }) => (
+    <div className="hd-clear">
+        <svg className="hd-clear-art" width="88" height="73" viewBox="0 0 72 60" fill="none" aria-hidden="true">
+            <g className="hd-clear-buoy">
+                <circle cx="36" cy="25" r="18" className="hd-clear-port" />
+                <circle cx="36" cy="25" r="13.5" className="hd-clear-ring" />
+                {glyph === 'check' && <path d="M29.5 25.5l4.5 4.5 8.5-9" className="hd-clear-check" />}
+                {glyph === 'moon' && (
+                    <>
+                        <path d="M39.2 18.6a7.4 7.4 0 1 0 0 12.8 6 6 0 1 1 0-12.8z" className="hd-clear-fill" />
+                        <circle cx="30.5" cy="19.5" r="1" className="hd-clear-fill" />
+                    </>
+                )}
+                {glyph === 'person' && (
+                    <>
+                        <circle cx="34" cy="22" r="3.6" className="hd-clear-line" />
+                        <path d="M27.5 32.5c.8-3.3 3.4-5 6.5-5s5.7 1.7 6.5 5" className="hd-clear-line" />
+                        <path d="M43 20v5.5M40.25 22.75h5.5" className="hd-clear-line" />
+                    </>
+                )}
+            </g>
+            <path d="M8 51c3.5 0 3.5-2.2 7-2.2s3.5 2.2 7 2.2 3.5-2.2 7-2.2 3.5 2.2 7 2.2 3.5-2.2 7-2.2 3.5 2.2 7 2.2 3.5-2.2 7-2.2 3.5 2.2 7 2.2" className="hd-clear-water" />
+            <path d="M22 57c3.5 0 3.5-1.6 7-1.6s3.5 1.6 7 1.6 3.5-1.6 7-1.6 3.5 1.6 7 1.6" className="hd-clear-water hd-clear-water--far" />
+        </svg>
+        <strong>{title}</strong>
+        <span>{sub}</span>
+    </div>
 );
 
 const PinCard: React.FC<{
@@ -201,10 +251,10 @@ const PinCard: React.FC<{
     inCall?: boolean;
     onOpen: () => void;
     onUnpin: () => void;
-}> = ({ entry, avatarId, token, unread, mention, inCall, onOpen, onUnpin }) => {
-    const name = entry.kind === 'conversation' ? (entry.conv.title || 'Chat')
-        : entry.kind === 'server' ? entry.server.name
-        : entry.channel.name;
+    /** Reorder wiring from HomePinsGrid (absent for a plain card). */
+    dnd?: PinDnd;
+}> = ({ entry, avatarId, token, unread, mention, inCall, onOpen, onUnpin, dnd }) => {
+    const name = resolvedPinName(entry);
     const sub = entry.kind === 'conversation'
         ? (entry.conv.type === 'group' ? 'Group' : 'Direct message')
         : entry.kind === 'server' ? 'Server'
@@ -212,9 +262,21 @@ const PinCard: React.FC<{
         : entry.server.name;
 
     return (
-        <div className="hd-card" onClick={onOpen} role="button" tabIndex={0}
-             style={{ ['--hd-hue' as string]: String(idToHue(entry.kind === 'conversation' ? entry.conv.conversation_id : entry.server.server_id)) }}
-             onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(); } }}>
+        <div className="hd-card" onClick={onOpen} role="button"
+             // The ghost under the pointer is a picture, not a second control.
+             tabIndex={dnd?.state === 'overlay' ? -1 : 0}
+             aria-hidden={dnd?.state === 'overlay' ? true : undefined}
+             ref={dnd?.setNodeRef}
+             data-pin-key={dnd?.state === 'overlay' ? undefined : dnd?.pinKey}
+             data-dnd={dnd?.state}
+             aria-describedby={dnd?.describedBy}
+             aria-keyshortcuts={dnd?.onReorderKeyDown ? 'Alt+ArrowLeft Alt+ArrowRight Alt+ArrowUp Alt+ArrowDown' : undefined}
+             {...dnd?.listeners}
+             style={{ ...dnd?.style, ['--hd-hue' as string]: String(idToHue(entry.kind === 'conversation' ? entry.conv.conversation_id : entry.server.server_id)) }}
+             onKeyDown={e => {
+                 if (dnd?.onReorderKeyDown?.(e)) return;
+                 if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(); }
+             }}>
             {entry.kind === 'conversation' ? (
                 <span className="hd-av">
                     <EncryptedAvatar
@@ -503,7 +565,7 @@ export const HomePanel: React.FC<HomePanelProps> = ({
     serverBadges, serverLastActivityAt, pinnedItems, friendStatuses, localCallSession, inAnyCall,
     myStatus = 'online', gaming = false, isPro = false, canPlayGame, onPlayGame,
     onSelectConversation, onJoinVoiceChannel, onJoinHuddleCall, onSelectServer, onOpenChannel,
-    onPin, onUnpin, onOpenStorage,
+    onPin, onUnpin, onReorderPins, onOpenStorage,
 }) => {
     // Ambient motion (rising motes + decorative micro-loops) — device pref.
     const [ambientOn] = useAmbientMotion();
@@ -937,7 +999,7 @@ export const HomePanel: React.FC<HomePanelProps> = ({
                             <h2 className="hd-attntitle">{backupNudge.title}</h2>
                             <p className="hd-attnbody">{backupNudge.body}</p>
                             <div className="hd-acts">
-                                <button className="hd-btn" onClick={onOpenStorage}>Back up now</button>
+                                <button className="hd-btn" onClick={onOpenStorage}>{backupNudge.cta ?? 'Back up now'}</button>
                                 <button className="hd-btn hd-btn--link" onClick={muteBackupNudge}>
                                     Don&apos;t show again
                                 </button>
@@ -953,8 +1015,9 @@ export const HomePanel: React.FC<HomePanelProps> = ({
                         either: HuddleCallCard drops the button entirely under
                         `isMine`, and FloatingHuddleCard (the card you get after
                         navigating away from your call's server) reuses that
-                        exact treatment. Home follows the same rule, with the
-                        one thing a launcher surface should add: a way BACK.
+                        exact treatment. Home follows the same rule, with no
+                        button at all: a "Return" here read as "rejoin" to
+                        someone already in the call (owner 2026-10-31).
                         Leaving stays where it lives everywhere else — the
                         ControlBar in the right-hand call panel, which is
                         mounted on Home too whenever a call is live. */}
@@ -1005,25 +1068,7 @@ export const HomePanel: React.FC<HomePanelProps> = ({
                                         />
                                     </p>
                                 </div>
-                                {!mine ? (
-                                    <button className="hd-btn" onClick={call.onJoin}>Join</button>
-                                ) : onSelectServer ? (
-                                    // Navigation, not a re-join: drops you back on the
-                                    // call's own server view, which is also where the
-                                    // focused-video pane lives (see CallFocusSuppressor
-                                    // in Dashboard — leaving Home restores the focus
-                                    // that was suspended on the way in).
-                                    // Rendered only when there IS somewhere to go —
-                                    // a button that does nothing is the bug we're
-                                    // fixing, so we don't introduce a second one.
-                                    <button
-                                        className="hd-btn"
-                                        onClick={() => onSelectServer(call.server.server_id)}
-                                        aria-label={`Return to ${call.channel.name} in ${call.server.name}`}
-                                    >
-                                        Return
-                                    </button>
-                                ) : null}
+                                {!mine && <button className="hd-btn" onClick={call.onJoin}>Join</button>}
                             </div>
                         </section>
                         );
@@ -1040,8 +1085,11 @@ export const HomePanel: React.FC<HomePanelProps> = ({
                             </span>
                             <h2>Pinned</h2>
                         </div>
-                        <div className="hd-cards">
-                            {resolvedPins.map(p => {
+                        <HomePinsGrid
+                            pins={resolvedPins}
+                            nameOf={resolvedPinName}
+                            onMove={onReorderPins}
+                            renderPin={(p, dnd) => {
                                 // A pinned CHANNEL card used to call onJoinVoiceChannel
                                 // for every channel kind, no matter what. AddPinCard
                                 // only ever lets a user pin a 'text' channel, so that
@@ -1058,7 +1106,7 @@ export const HomePanel: React.FC<HomePanelProps> = ({
                                     : null;
                                 return (
                                 <PinCard
-                                    key={pinKey(p.item)}
+                                    dnd={dnd}
                                     entry={p}
                                     avatarId={p.kind === 'conversation' ? convAvatarId(p.conv) : null}
                                     token={token}
@@ -1088,7 +1136,8 @@ export const HomePanel: React.FC<HomePanelProps> = ({
                                     onUnpin={() => onUnpin(p.item)}
                                 />
                                 );
-                            })}
+                            }}
+                        >
                             <AddPinCard
                                 conversations={conversations}
                                 serverChannels={serverChannels}
@@ -1097,7 +1146,7 @@ export const HomePanel: React.FC<HomePanelProps> = ({
                                 token={token}
                                 onPin={onPin}
                             />
-                        </div>
+                        </HomePinsGrid>
                     </section>
 
                     {/* While you were away. */}
@@ -1116,10 +1165,11 @@ export const HomePanel: React.FC<HomePanelProps> = ({
                         </div>
 
                         {missedConvs.length === 0 ? (
-                            <div className="hd-clear">
-                                <strong>Nothing missed</strong>
-                                <span>You&apos;re square with everyone.</span>
-                            </div>
+                            <HomeEmpty
+                                glyph="check"
+                                title="You're all caught up"
+                                sub="No unread messages in your DMs or groups."
+                            />
                         ) : (
                             <div className="hd-rows">
                                 {missedConvs.map(conv => {
@@ -1189,14 +1239,19 @@ export const HomePanel: React.FC<HomePanelProps> = ({
                         </div>
 
                         {friendActivity.online.length === 0 ? (
-                            <div className="hd-clear">
-                                <strong>Nobody around</strong>
-                                <span>
-                                    {friendActivity.total === 0
-                                        ? 'Add a friend to see them here.'
-                                        : 'They’ll show up when they come online.'}
-                                </span>
-                            </div>
+                            friendActivity.total === 0 ? (
+                                <HomeEmpty
+                                    glyph="person"
+                                    title="No friends here yet"
+                                    sub="Add a friend to see when they're around."
+                                />
+                            ) : (
+                                <HomeEmpty
+                                    glyph="moon"
+                                    title="Nobody's around"
+                                    sub="Friends show up here when they come online."
+                                />
+                            )
                         ) : (
                             <>
                                 <div className="hd-rows">

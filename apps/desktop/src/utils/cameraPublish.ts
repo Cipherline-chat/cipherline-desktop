@@ -27,6 +27,7 @@ import {
 import { isHardwareCodec } from './streamStatsHud';
 import { logCallEvent } from './callEventLog';
 import { markHevcFailed } from './hevcNegotiation';
+import { DRIFT_REPUBLISH_COOLDOWN_MS, cameraCodecDriftNotice, type CodecDrift } from './shareCodecDrift';
 
 /** How long both publications coexist in a make-before-break republish. */
 export const REPUBLISH_HOLD_MS = 1500;
@@ -163,6 +164,8 @@ export interface CodecInputs {
     pref: CameraCodecPref;
     probe: (w: number, h: number, fps: number) => Promise<CameraHwSupport | null>;
     gpus: () => Promise<readonly GpuVendorLike[] | null>;
+    /** Running on Linux: Auto keeps the camera on VP8 (decideCameraCodec). */
+    linux?: boolean;
 }
 
 export async function chooseCameraCodec(inputs: CodecInputs, width: number, height: number): Promise<CameraCodecDecision> {
@@ -170,7 +173,7 @@ export async function chooseCameraCodec(inputs: CodecInputs, width: number, heig
         inputs.probe(width, height, 30).catch(() => null),
         inputs.gpus().catch(() => null),
     ]);
-    return decideCameraCodec(inputs.pref, hw, gpus, { hwFailed: hwCameraFailed });
+    return decideCameraCodec(inputs.pref, hw, gpus, { hwFailed: hwCameraFailed, linux: inputs.linux === true });
 }
 
 // ── Start ──────────────────────────────────────────────────────────────────
@@ -307,7 +310,7 @@ export async function fallBackFromHardwareCamera(
     lp: CameraParticipantLike,
     track: CameraTrackLike,
     opts: StartCameraOptions,
-    why: 'no-frames' | 'software' | 'stalled',
+    why: 'no-frames' | 'software' | 'stalled' | 'drift',
 ): Promise<boolean> {
     const log = opts.log ?? (m => console.info(m));
     const wasHevc = asCameraCodec(track.publishOptions?.videoCodec) === 'h265';
@@ -315,6 +318,7 @@ export async function fallBackFromHardwareCamera(
     const name = wasHevc ? 'H.265' : 'H.264';
     const reason = why === 'no-frames' ? `HW ${name} produced no frames`
         : why === 'stalled' ? `HW ${name} encoder stopped mid-call`
+        : why === 'drift' ? `${name} sender silently switched codec`
         : `${name} fell back to software`;
     // Preferred: make-before-break onto the fallback codec (no blink, no
     // re-capture).
@@ -359,6 +363,52 @@ export async function recoverStalledCamera(
     logCallEvent('camera_encoder_stall', { codec, hardware });
     if (!hardware) return 'not-hardware';
     return (await fallBackFromHardwareCamera(lp, track, opts, 'stalled')) ? 'recovered' : 'failed';
+}
+
+// ── Silent codec drift (shareCodecDrift.ts) ────────────────────────────────
+
+/** Rate limit state for drift republishes of the camera (one per participant per cooldown). */
+export interface CameraDriftGate { at: number | null }
+
+/**
+ * The camera's sender is sending another codec than it was published with
+ * (libwebrtc's silent encoder fallback; the SFU forwards none of it, so
+ * viewers see a blank tile while our "frames encoded" stays healthy). Mark the
+ * published hardware codec failed for the session and republish the camera
+ * FRESH - a new publication with a new sender, never a source hot swap or an
+ * in-place retune, which would keep the broken sender - unless one already
+ * happened inside the cooldown. Numbers/enums only in the telemetry.
+ * Returns what was done; 'gone' = the camera is off / muted / already being
+ * republished, so nothing was judged.
+ */
+export async function handleCameraDrift(
+    lp: CameraParticipantLike,
+    track: CameraTrackLike,
+    d: CodecDrift,
+    gate: CameraDriftGate,
+    opts: StartCameraOptions,
+    now: number,
+    notify?: (text: string) => void,
+): Promise<'republish' | 'none' | 'gone'> {
+    const pub = lp.getTrackPublication(Track.Source.Camera);
+    if (!pub || pub.track !== track || pub.isMuted || isCameraRepublishing(lp)) return 'gone';
+    const published = asCameraCodec(track.publishOptions?.videoCodec);
+    // A software (VP8) camera has no better encoder to move to.
+    if (published === 'vp8') return 'none';
+    const retry = gate.at === null || now - gate.at >= DRIFT_REPUBLISH_COOLDOWN_MS;
+    logCallEvent('camera_codec_drift', {
+        published, sent: d.sent, layers: d.layers, enc: d.encoder ?? '',
+        action: retry ? 'republish' : 'none',
+    });
+    if (!retry) {
+        // Not retried in a loop - but the codec is still not chosen again this session.
+        if (published === 'h265') markHevcFailed(); else markHwCameraFailed();
+        return 'none';
+    }
+    gate.at = now;
+    notify?.(cameraCodecDriftNotice());
+    await fallBackFromHardwareCamera(lp, track, opts, 'drift');
+    return 'republish';
 }
 
 // ── Mid-call changes ───────────────────────────────────────────────────────
@@ -468,6 +518,8 @@ export async function republishCamera(
 }
 
 const republishing = new WeakSet<object>();
+/** A deliberate make-before-break republish is in flight (the drift watch stands down meanwhile). */
+export function isCameraRepublishing(lp: object): boolean { return republishing.has(lp); }
 
 async function republishCameraLocked(
     lp: CameraParticipantLike,

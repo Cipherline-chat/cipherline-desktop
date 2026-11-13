@@ -65,13 +65,16 @@ describe('shareStartKbps', () => {
         expect(shareStartKbps(2_500_000, null)).toBe(1_250);          // 720p30 VP8
         expect(shareStartKbps(54_000_000, null)).toBe(SHARE_START_CAP_KBPS); // source 60 H.264
     });
+    it('the cap is true half for the biggest Windows/Mac ceilings (4K / 1440p60, 18-25 Mbps)', () => {
+        for (const max of [18_000_000, 22_400_000, 24_600_000]) expect(shareStartKbps(max, null)! * 1000).toBeGreaterThanOrEqual(max * 0.48);
+    });
     it('never lowers an estimate that is already at or above the target', () => {
-        expect(shareStartKbps(36_000_000, 8_000_000)).toBeNull();
-        expect(shareStartKbps(36_000_000, 12_000_000)).toBeNull();
-        expect(shareStartKbps(36_000_000, 7_999_000)).toBe(8_000);
+        expect(shareStartKbps(36_000_000, SHARE_START_CAP_KBPS * 1000)).toBeNull();
+        expect(shareStartKbps(36_000_000, 20_000_000)).toBeNull();
+        expect(shareStartKbps(36_000_000, SHARE_START_CAP_KBPS * 1000 - 1000)).toBe(SHARE_START_CAP_KBPS);
     });
     it('control: the low estimate a mic-only connection reports is raised', () => {
-        expect(shareStartKbps(36_000_000, 352_000)).toBe(8_000);
+        expect(shareStartKbps(36_000_000, 352_000)).toBe(SHARE_START_CAP_KBPS);
     });
     it('rejects nonsense ceilings', () => {
         for (const bad of [0, -1, NaN, Infinity]) expect(shareStartKbps(bad, null)).toBeNull();
@@ -106,6 +109,14 @@ describe('withVideoStartBitrate', () => {
         const twice = withVideoStartBitrate(once, '8', 4000);
         expect(twice.result).toBe('present');
         expect(twice.sdp).toBe(once);
+    });
+    it('H.265 (capable Windows/Mac GPUs): the send codec\'s fmtp gets the attribute, rtx does not', () => {
+        const sdp = ['v=0', 'm=video 9 UDP/TLS/RTP/SAVPF 117 118', 'a=rtpmap:117 H265/90000', 'a=rtpmap:118 rtx/90000',
+            'a=fmtp:117 level-id=120;profile-id=1;tier-flag=0;tx-mode=SRST', 'a=fmtp:118 apt=117', 'a=mid:4', ''].join('\r\n');
+        const r = withVideoStartBitrate(sdp, '4', 9000);
+        expect(r.result).toBe('applied');
+        expect(r.sdp).toContain('a=fmtp:117 level-id=120;profile-id=1;tier-flag=0;tx-mode=SRST;x-google-start-bitrate=9000');
+        expect(r.sdp).toContain('a=fmtp:118 apt=117\r\n');
     });
     it('leaves a VP9 send section to LiveKit\'s own rule', () => {
         const vp9First = ANSWER.replace(SHARE_SECTION[0], 'm=video 9 UDP/TLS/RTP/SAVPF 98 109 115 96 45 35 99 46 116 114 97 36');
@@ -176,10 +187,10 @@ describe('installShareStartBitrate', () => {
         f.emit(f.shareSender, 'screen_share');
         await f.transport.setRemoteDescription(answer(), 7);
         await f.transport.setRemoteDescription(answer(), 8);
-        expect(f.applied[0]).toContain('a=fmtp:96 x-google-start-bitrate=8000');
+        expect(f.applied[0]).toContain(`a=fmtp:96 x-google-start-bitrate=${SHARE_START_CAP_KBPS}`);
         expect(f.applied[1]).toBe(ANSWER);           // later renegotiations untouched
         expect(f.offerIds).toEqual([7, 8]);          // offerId passed through
-        expect(log).toHaveBeenCalledWith(expect.stringContaining('start bitrate 8000 kbps (estimate was 352 kbps)'));
+        expect(log).toHaveBeenCalledWith(expect.stringContaining(`start bitrate ${SHARE_START_CAP_KBPS} kbps (estimate was 352 kbps)`));
     });
     it('control: a camera sender arms nothing', async () => {
         const f = fakes();
@@ -203,7 +214,7 @@ describe('installShareStartBitrate', () => {
         const t0 = Date.now();
         await f.transport.setRemoteDescription(answer(), 1);
         expect(Date.now() - t0).toBeLessThan(1000);
-        expect(f.applied[0]).toContain('x-google-start-bitrate=8000');
+        expect(f.applied[0]).toContain(`x-google-start-bitrate=${SHARE_START_CAP_KBPS}`);
     });
     it('does nothing while no share ceiling is known', async () => {
         const f = fakes();

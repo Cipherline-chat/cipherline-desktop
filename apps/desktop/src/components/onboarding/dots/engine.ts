@@ -31,6 +31,8 @@
    ============================================================ */
 import { BREATHING_GAP_MS, frameBudget } from './frameBudget';
 import { effectiveFollow } from './pointerReaction';
+import { PROBE_CHECKPOINTS, foldReadings, hasInk } from './renderVerify';
+import type { ProbeVerdict } from './renderVerify';
 
 /** A point cloud: `pos`/`col` are 3 floats per point; `size` (optional) is 1 float per point. */
 export interface Shape {
@@ -61,6 +63,14 @@ export interface DotFieldOptions {
   reducedMotion?: boolean;
   /** opaque-mode background gradient overrides */
   bg?: Partial<DotBackground>;
+  /** Called once when the WebGL context is lost after creation (the field is dead from then on;
+   *  resilientField.ts swaps in the Canvas 2D fallback). */
+  onContextLost?: () => void;
+  /** Read the framebuffer back at these frame counts (renderVerify.ts PROBE_CHECKPOINTS) and report once:
+   *  'drew' (something lit) / 'blank' (every checkpoint empty) / 'unknown' (readback unavailable). */
+  verify?: { checkpoints?: readonly number[]; onResult: (v: ProbeVerdict) => void };
+  /** A frame (or the readback) threw: the field has stopped itself; fall back. */
+  onFrameError?: (e: unknown) => void;
 }
 
 export interface MorphOptions {
@@ -73,6 +83,14 @@ export type ParamName =
   | 'offX' | 'offY' | 'scale' | 'yaw' | 'pitch' | 'spin' | 'follow' | 'repel'
   | 'bright' | 'fog' | 'drift' | 'cam' | 'spinRate' | 'px';
 
+/** Every ParamName, for code that has to carry the whole camera across (resilientField.ts). */
+export const PARAM_NAMES: readonly ParamName[] = [
+  'offX', 'offY', 'scale', 'yaw', 'pitch', 'spin', 'follow', 'repel', 'bright', 'fog', 'drift', 'cam', 'spinRate', 'px',
+];
+
+/** Which renderer is drawing: the WebGL engine, or the Canvas 2D fallback (canvasEngine.ts). */
+export type DotRenderer = 'webgl' | 'canvas2d';
+
 export interface Projected {
   x: number;
   y: number;
@@ -84,6 +102,8 @@ export type FrameListener = (t: number) => void;
 
 export interface DotField {
   readonly N: number;
+  /** Which renderer draws this field. */
+  readonly renderer: DotRenderer;
   /** Blend the cloud into `shape` from wherever it currently is. Resolves when the morph time has elapsed. */
   morph(shape: Shape, o?: MorphOptions): Promise<void>;
   /** Jump to `shape` with no animation. */
@@ -156,7 +176,13 @@ void main(){
   float r2 = dot(q, q);
   if (r2 > 1.0) discard;
   float a = exp(-r2*3.2)*0.55 + exp(-r2*16.0)*0.9;
-  gl_FragColor = vec4(vC*a, 0.0);
+  /* A VALID premultiplied colour (rgb <= alpha). This used to write alpha 0 with rgb > 0 ("adds light"),
+     which premultipliedAlpha:true leaves undefined: a compositor may add it (Windows) or drop it, and then
+     WebGL "works" while every dot is invisible - so the 2D fallback never engaged. Alpha = the brightest
+     channel is a plain "over" that looks the same on this dark backdrop (it differs from adding by
+     alpha*backdrop). Same fix as workers/loadingScreen.worker.ts (aaa46b34). */
+  vec3 rgb = min(vC*a, vec3(1.0));
+  gl_FragColor = vec4(rgb, max(rgb.r, max(rgb.g, rgb.b)));
 }`;
 
 const VS_BG = `attribute vec2 aP; void main(){ gl_Position = vec4(aP, 0.0, 1.0); }`;
@@ -433,7 +459,33 @@ export function createDotField(canvas: HTMLCanvasElement, opts: DotFieldOptions 
   function budgetNow(isBusy: boolean) {
     return frameBudget({ busy: isBusy, sinceActiveMs: now() - lastActive, settleMs: SETTLE, hidden: document.hidden, paused, reducedMotion: RM });
   }
+  /* ---- proof of drawing (see renderVerify.ts) ---- */
+  const probeAt = [...(opts.verify?.checkpoints ?? PROBE_CHECKPOINTS)];
+  const probeReadings: boolean[] = [];
+  let framesDrawn = 0, probeDone = !opts.verify;
+  function probe(): void {
+    framesDrawn++;
+    if (probeDone || framesDrawn < probeAt[0]) return;
+    probeAt.shift();
+    let verdict: ProbeVerdict | null;
+    try {
+      const w = canvas.width, h = canvas.height;
+      const px = new Uint8Array(w * h * 4);
+      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      if (gl.getError() !== gl.NO_ERROR) { probeDone = true; opts.verify?.onResult('unknown'); return; }
+      probeReadings.push(hasInk(px));
+      verdict = foldReadings(probeReadings, probeAt.length);
+    } catch { probeDone = true; opts.verify?.onResult('unknown'); return; }
+    if (verdict) { probeDone = true; opts.verify?.onResult(verdict); }
+  }
   function frame(ts: number): void {
+    try { frameBody(ts); } catch (e) {
+      lost = true;   /* stop scheduling: the replacement field takes over */
+      if (raf) { cancelAnimationFrame(raf); raf = 0; }
+      opts.onFrameError?.(e);
+    }
+  }
+  function frameBody(ts: number): void {
     raf = 0;
     if (destroyed || lost || document.hidden || paused) return;
     const dtReal = lastTs ? Math.min(0.05, (ts - lastTs) / 1000) : 0.016;
@@ -483,6 +535,7 @@ export function createDotField(canvas: HTMLCanvasElement, opts: DotFieldOptions 
     gl.uniform1f(U.uBright, P.bright.v); gl.uniform1f(U.uFog, P.fog.v); gl.uniform1f(U.uPulse, pulse);
     gl.uniform1f(U.uCam, P.cam.v);
     gl.drawArrays(gl.POINTS, 0, N);
+    probe();
     camState.yaw = yaw; camState.pitch = pitch;
     for (const fn of Array.from(listeners)) fn(t);
     const stillBusy = busy();
@@ -497,8 +550,11 @@ export function createDotField(canvas: HTMLCanvasElement, opts: DotFieldOptions 
   const onVisibility = (): void => kick();
   document.addEventListener('visibilitychange', onVisibility);
   const onContextLost = (e: Event): void => {
-    e.preventDefault(); lost = true;
+    e.preventDefault();
+    if (lost) return;
+    lost = true;
     if (raf) { cancelAnimationFrame(raf); raf = 0; }
+    opts.onContextLost?.();
   };
   canvas.addEventListener('webglcontextlost', onContextLost);
 
@@ -534,7 +590,7 @@ export function createDotField(canvas: HTMLCanvasElement, opts: DotFieldOptions 
   }
 
   return {
-    N, morph, snap, param, project, destroy, kick,
+    N, renderer: 'webgl', morph, snap, param, project, destroy, kick,
     get: (n) => P[n].v,
     bg(o) { Object.assign(BG, o); kick(); },
     pulse(s = 1) { pulse = Math.max(pulse, s); kick(); },

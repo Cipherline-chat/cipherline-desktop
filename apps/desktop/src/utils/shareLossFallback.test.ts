@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
     ShareLossFallback, readInboundVideo, lossPctBetween,
-    LOSS_TRIP_PCT, LOSS_SEVERE_PCT, TRIP_TICKS, CLEAN_LOSS_PCT, CLEAN_TICKS,
+    LOSS_TRIP_PCT, LOSS_SEVERE_PCT, TRIP_TICKS, STUCK_TRIP_TICKS, STUCK_WINDOW_TICKS, CLEAN_LOSS_PCT, CLEAN_TICKS,
     HOLD_MS_INITIAL, HOLD_MS_MAX, PROBE_WINDOW_MS, NO_LOW_TICKS, NO_LOW_RETRY_MS, NO_LOW_RETRY_MS_MAX,
     shareRxFallbackDetail, type ShareRxTick, type InboundVideoCounters,
 } from './shareLossFallback';
@@ -62,6 +62,66 @@ describe('ShareLossFallback — trip (top → lower layer)', () => {
     it('null loss (no packets this tick) counts as no loss', () => {
         const d = driver();
         for (let i = 0; i < 5; i++) expect(d.step({ lossPct: null }).cap).toBe(false);
+    });
+});
+
+describe('ShareLossFallback — alternating freezes (windowed trip)', () => {
+    // The 2026-11 report: freezes alternated frozen / ok / frozen / ok with PLIs
+    // rising and window loss ~1 % (< LOSS_TRIP_PCT), so the consecutive count
+    // reset on every thaw and the drop came only on the third freeze.
+    const frozen = { frozen: true, keyframeAsked: true, lossPct: 1 } as const;
+
+    it(`${STUCK_TRIP_TICKS} stuck ticks within the last ${STUCK_WINDOW_TICKS} trip, even with ok ticks between: [frozen+pli, ok, frozen+pli, ok]`, () => {
+        const d = driver();
+        expect(d.step(frozen).cap).toBe(false);
+        expect(d.step({ lossPct: 1 }).cap).toBe(false);
+        expect(d.step(frozen)).toEqual({ cap: true, changed: true, reason: 'freeze', holdMs: HOLD_MS_INITIAL });
+    });
+    it('the same pattern with a wider gap still trips while both are inside the window: [frozen, ok, ok, frozen]', () => {
+        const d = driver();
+        d.step(frozen); d.step(); d.step();
+        expect(d.step(frozen)).toMatchObject({ cap: true, reason: 'freeze' });
+    });
+    it('does not trip on one isolated frozen tick: [frozen, ok, ok, ok, frozen]', () => {
+        const d = driver();
+        const seq = [frozen, {}, {}, {}, frozen];
+        for (const o of seq) expect(d.step(o).cap).toBe(false);
+        // ...and the second one has aged out by the time a third would pair with it.
+        expect(d.step().cap).toBe(false);
+    });
+    it('does not trip on clean ticks, or on a still screen that keeps stopping (frozen, no loss, no PLI)', () => {
+        const d = driver();
+        for (let i = 0; i < 30; i++) expect(d.step().cap).toBe(false);
+        const e = driver();
+        for (let i = 0; i < 30; i++) expect(e.step({ frozen: i % 2 === 0 }).cap).toBe(false);
+    });
+    it('lossy-but-not-stuck ticks keep the consecutive rule: [6 %, ok, 6 %] does not trip', () => {
+        const d = driver();
+        d.step({ lossPct: 6 }); d.step({ lossPct: 0 });
+        expect(d.step({ lossPct: 6 }).cap).toBe(false);
+    });
+    it('a long alternating freeze pattern trips on the second freeze, not the third', () => {
+        const d = driver();
+        let trippedAt = -1;
+        for (let i = 0; i < 12; i++) {
+            if (d.step(i % 2 === 0 ? frozen : { lossPct: 1 }).cap) { trippedAt = i; break; }
+        }
+        expect(trippedAt).toBe(2);
+    });
+    it('the window starts over after a cap and after recovery (a stale freeze does not pair with a new one)', () => {
+        const d = driver();
+        d.step(frozen); d.step(frozen);                    // trips
+        d.wait(HOLD_MS_INITIAL);                           // clean run -> back up
+        expect(d.fb.capped).toBe(false);
+        expect(d.step(frozen).cap).toBe(false);            // one freeze after recovery: not enough alone
+        expect(d.step().cap).toBe(false);
+        expect(d.step(frozen)).toMatchObject({ cap: true });   // a second inside the new window trips
+    });
+    it('a share that stops wanting the top layer clears the window', () => {
+        const d = driver();
+        d.step(frozen);
+        d.step({ wantsTop: false });
+        expect(d.step(frozen).cap).toBe(false);
     });
 });
 

@@ -40,7 +40,7 @@ try {
         return { w: r.width, h: r.height, x: r.x, parentX: parent.x, radius: parseFloat(cs.borderTopLeftRadius), bg: cs.backgroundColor, scrollW: el.scrollWidth, clientW: el.clientWidth };
     });
     check('trial banner is slim (40-48px on one line)', card.h >= 40 && card.h <= 48, `h=${card.h}`);
-    check('inset card (12px inside the stack), rounded >= 12px', card.x - card.parentX >= 11 && card.radius >= 12, `x-offset=${card.x - card.parentX} r=${card.radius}`);
+    check('the card has the stack\'s edges (the panes below), rounded >= 12px', Math.abs(card.x - card.parentX) < 1 && card.radius >= 12, `x-offset=${card.x - card.parentX} r=${card.radius}`);
     check('no horizontal overflow inside the card', card.scrollW <= card.clientW + 1, `${card.scrollW}/${card.clientW}`);
     const rgb = card.bg.match(/[\d.]+/g).map(Number);
     check('surface is a dark navy token, not an olive/khaki fill', rgb[2] >= rgb[0] && rgb[0] < 40 && rgb[1] < 50, card.bg);

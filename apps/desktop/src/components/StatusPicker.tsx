@@ -9,6 +9,7 @@ import { StatusDot, StatusIcon } from './StatusIcon';
 export { StatusDot, StatusIcon } from './StatusIcon';
 import { EncryptedAvatar } from './EncryptedAvatar';
 import { AvatarDecoration } from './ProfileCosmetics';
+import { NO_DECORATION_LOOK, type DecorationLook } from '../utils/decorationLook';
 import { type UserStatus, STATUS_CONFIG } from '../hooks/useUserStatus';
 import { useDismissOnOutsideClick } from '../hooks/useDismissOnOutsideClick';
 import { useEscape } from '../hooks/useEscape';
@@ -33,8 +34,9 @@ interface StatusPickerProps {
     onDismissGame?: () => void;
     /** Current user's avatar attachment id (for the trigger avatar). */
     avatarAttachmentId?: string | null;
-    /** Current user's avatar decoration id (drawn around the trigger avatar). */
-    avatarDecoration?: string | null;
+    /** Current user's decoration as THEY set it up - id, "Match theme" tint and per-item options
+     *  (utils/decorationLook.decorationLook(user)); the same look the profile card draws. */
+    decorationLook?: DecorationLook;
     /** Current user's user_id — drives the deterministic-color fallback avatar. */
     userId?: string | null;
     /** Auth token for avatar decryption. */
@@ -47,7 +49,7 @@ interface StatusPickerProps {
 
 const STATUS_OPTIONS: UserStatus[] = ['online', 'away', 'dnd', 'offline'];
 
-// Shorter than STATUS_CONFIG's labels ("Away" → "Idle", "Do Not Disturb" →
+// Shorter than STATUS_CONFIG's labels ("Do Not Disturb" →
 // "DND") — those read better elsewhere (tooltips, profile cards) but are too
 // long for this compact grid.
 const STATUS_SHORT_LABEL: Record<UserStatus, string> = {
@@ -67,7 +69,7 @@ export const StatusPicker: React.FC<StatusPickerProps> = ({
     currentGame,
     onDismissGame,
     avatarAttachmentId = null,
-    avatarDecoration = null,
+    decorationLook = NO_DECORATION_LOOK,
     userId = null,
     token = null,
     onEditProfile,
@@ -141,7 +143,7 @@ export const StatusPicker: React.FC<StatusPickerProps> = ({
             <div className="relative" ref={statusTipRef as React.Ref<HTMLDivElement>} {...statusTipHandlers} data-ob-anchor="rail-me">
                 {/* Plain button so the avatar fills — ClButton's icon cap is a fixed
                     46px circle that would float the image inside the 40px frame. */}
-                <AvatarDecoration decoration={avatarDecoration} block className="w-10 h-10">
+                <AvatarDecoration {...decorationLook} block compact className="w-10 h-10">
                 <button
                     type="button"
                     onClick={() => setOpen(v => !v)}

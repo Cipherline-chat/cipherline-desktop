@@ -39,10 +39,17 @@ export interface VaultGateDeps {
     factoryReset: () => void;
     /** Validates against an existing entry when there is one; persists on success. */
     recoverWithKey: (keyB64: string) => boolean;
+    /**
+     * Linux: the system wallet was refused this launch (keyring-prompt.ts). A
+     * reset would have to write the new key in plaintext (or lose it at quit),
+     * so it is refused until the wallet is unlocked. Recovery with the user's own
+     * key is still allowed (held in memory only, see SecureStore.recoverWithKey).
+     */
+    walletDenied?: () => boolean;
     now?: () => number;
 }
 
-export type VaultGateRefusal = 'healthy' | 'declined' | 'busy' | 'invalid';
+export type VaultGateRefusal = 'healthy' | 'declined' | 'busy' | 'invalid' | 'wallet';
 
 export interface VaultGate {
     factoryReset(): Promise<{ ok: true } | { ok: false; reason: VaultGateRefusal }>;
@@ -79,10 +86,12 @@ export function createVaultGate(deps: VaultGateDeps): VaultGate {
     return {
         async factoryReset() {
             if (!needsRecovery()) return { ok: false, reason: 'healthy' };
+            if (deps.walletDenied?.()) return { ok: false, reason: 'wallet' };
             const c = await ask('factory-reset');
             if (!c.ok) return c;
             // Re-check: the state may have changed while the dialog was open.
             if (!needsRecovery()) return { ok: false, reason: 'healthy' };
+            if (deps.walletDenied?.()) return { ok: false, reason: 'wallet' };
             deps.factoryReset();
             return { ok: true };
         },

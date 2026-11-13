@@ -1,4 +1,4 @@
-import React, { useId } from 'react';
+import React, { useId, useRef } from 'react';
 import { Gavel, Ban, UserMinus, Link as LinkIcon, ShieldOff } from 'lucide-react';
 import { ClModal, ClButton } from '../cl';
 import { DialogHeader, DialogBody, DialogFooter } from '../dialog/DialogFrame';
@@ -65,9 +65,17 @@ export const MemberActionDialog: React.FC<Props> = ({
 }) => {
     const { closing, handleClose } = useModalExit(onClose, 200);
     const titleId = useId();
+    const firedRef = useRef(false);
     const c = COPY[kind];
 
-    const confirm = () => { onConfirm(); handleClose(); };
+    // The buttons stay on screen for the exit animation; a second click must
+    // not kick/ban twice.
+    const confirm = () => {
+        if (firedRef.current) return;
+        firedRef.current = true;
+        onConfirm();
+        handleClose();
+    };
 
     return (
         <ClModal

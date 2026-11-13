@@ -1,10 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import {
-    NEUTRAL_INPUTS, GEAR, PILE_AT, poseFor, sceneFor, sameScene, pileTier, gestureFor, Cooldown,
+    NEUTRAL_INPUTS, GEAR, HAT_GEAR, PILE_AT, poseFor, sceneFor, sameScene, pileTier, gestureFor, Cooldown,
     homePress, newlyOnline, waveForArrivals, isCoffeeHour,
     DIZZY_PRESSES, DIZZY_WINDOW_MS, DIZZY_COOLDOWN_MS, PLANE_COOLDOWN_MS, WAVE_MAX_BATCH, WAVE_SETTLE_MS,
     type MirrorInputs, type Scene, type Gesture, type Pose,
 } from './keysMirror';
+import { HATS } from './keysWardrobe';
 
 const S = (over: Partial<MirrorInputs> = {}, prevPile: 0 | 1 | 2 | 3 = 0) => sceneFor({ ...NEUTRAL_INPUTS, ...over }, prevPile);
 const has = (s: Scene, ...g: string[]) => g.every(x => (s.gear as readonly string[]).includes(x));
@@ -58,10 +59,11 @@ describe('sources → scene', () => {
         expect(s.gear).toEqual(['noSignal']);
         expect(s.camo).toBe(false);
     });
-    it('…but keeps what is local and still true: pile, lantern, crown', () => {
-        const s = S({ connected: false, unread: 60, night: true, pro: true });
+    it('…but keeps what is local and still true: pile, lantern, his hat', () => {
+        const s = S({ connected: false, unread: 60, night: true, hat: 'crown' });
         expect(s.pile).toBe(2);
-        expect(has(s, 'noSignal', 'lantern', 'crown')).toBe(true);
+        expect(has(s, 'noSignal', 'lantern')).toBe(true);
+        expect(has(S({ connected: false, hat: 'beanie' }), 'noSignal', 'beanie')).toBe(true);
     });
     it('transfer → box; backup → papers + safe; morning → mug', () => {
         expect(has(S({ transfer: true }), 'box')).toBe(true);
@@ -73,11 +75,35 @@ describe('sources → scene', () => {
         expect(S({ night: true }).lanternDim).toBe(false);
         expect(S({ night: true, status: 'away' }).lanternDim).toBe(true);
     });
-    it('Pro → crown, but never over a calendar hat or a headset/headphones', () => {
-        expect(has(S({ pro: true }), 'crown')).toBe(true);
-        expect(lacks(S({ pro: true, costume: true }), 'crown')).toBe(true);
-        expect(lacks(S({ pro: true, inCall: true }), 'crown')).toBe(true);
-        expect(lacks(S({ pro: true, status: 'dnd' }), 'crown')).toBe(true);
+    it('the wardrobe: no hat → bare; a hat shows on a free head', () => {
+        expect(S().gear).toEqual([]);
+        expect(S().headFree).toBe(true);
+        for (const h of HATS) {
+            expect(S({ hat: h }).gear, h).toEqual([h]);
+            expect(S({ hat: h }).doing).toBe('');
+        }
+    });
+    it.each(HATS)('%s: never over a calendar hat, headset, headphones, eye mask, the lantern or camouflage (they win)', (h) => {
+        const claims: Partial<MirrorInputs>[] = [
+            { costume: true }, { inCall: true }, { status: 'dnd' }, { status: 'dnd', gaming: true },
+            { night: true }, { night: true, status: 'away' }, { status: 'offline' },
+        ];
+        for (const c of claims) {
+            const s = S({ hat: h, ...c });
+            expect(lacks(s, ...HATS), JSON.stringify(c)).toBe(true);
+            expect(s.headFree).toBe(false);
+            // the rest of the scene is exactly what it is without a hat
+            expect(sameScene(s, S(c))).toBe(true);
+        }
+    });
+    it('a hat stays on while he naps, games, carries something or is buried in mail', () => {
+        for (const c of [{ status: 'away' as const }, { gaming: true }, { transfer: true }, { unread: 200 }, { coffee: true }]) {
+            expect(has(S({ hat: 'captain', ...c }), 'captain'), JSON.stringify(c)).toBe(true);
+        }
+    });
+    it('HAT_GEAR is the wardrobe, in GEAR order', () => {
+        expect([...HAT_GEAR]).toEqual([...HATS]);
+        expect(HATS.every(h => (GEAR as readonly string[]).includes(h))).toBe(true);
     });
     it('gear is always in GEAR order (stable, comparable)', () => {
         const s = S({ gaming: true, inCall: true, sharing: true, video: true, status: 'dnd', night: true, backup: true });
@@ -215,8 +241,21 @@ describe('transitions: one gesture per change, every direction', () => {
         expect(g({}, { night: true })).toBe('yawn');
         expect(g({ night: true }, {})).toBe('stretch');
         expect(g({}, { transfer: true })).toBe('pickup');
-        expect(g({}, { pro: true })).toBe('proud');
+        expect(g({}, { hat: 'crown' })).toBe('proud');
+        expect(g({ hat: 'beanie' }, { hat: 'crown' })).toBe('proud');
         expect(g({ transfer: true }, {})).toBeNull();
+    });
+    it('the wardrobe: a hat on, swapped or off → dress; one the head cannot show → nothing to play', () => {
+        expect(g({}, { hat: 'beanie' })).toBe('dress');
+        expect(g({ hat: 'shades' }, { hat: 'captain' })).toBe('dress');
+        expect(g({ hat: 'snorkel' }, {})).toBe('dress');
+        expect(g({ hat: 'crown' }, {})).toBe('dress');
+        // the pick changing under a headset shows nothing, so plays nothing
+        expect(g({ inCall: true, hat: 'beanie' }, { inCall: true, hat: 'flower' })).toBeNull();
+        // a pose change outranks the hat coming back
+        expect(g({ inCall: true, hat: 'beanie' }, { hat: 'beanie' })).toBe('stretch');
+        // hands outrank it
+        expect(g({}, { transfer: true, hat: 'beanie' })).toBe('pickup');
     });
     it('every pose pair has a gesture (no silent snaps between poses)', () => {
         const poses: Partial<MirrorInputs>[] = [{}, { status: 'away' }, { status: 'dnd' }, { gaming: true }, { inCall: true }, { connected: false }];
@@ -282,6 +321,7 @@ describe('privacy shape', () => {
     it('the inputs are counts and flags: no string field could carry content', () => {
         for (const [k, v] of Object.entries(NEUTRAL_INPUTS)) {
             if (k === 'status') continue; // an enum of four presence values
+            if (k === 'hat') { expect([null, ...HATS]).toContain(v); continue; } // the local wardrobe's enum (keysWardrobe)
             expect(['boolean', 'number']).toContain(typeof v);
         }
     });

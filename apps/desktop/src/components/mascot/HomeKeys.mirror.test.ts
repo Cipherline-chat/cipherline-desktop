@@ -24,6 +24,8 @@ import {
 } from '../../utils/keysBeats';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+/** The wardrobe's dice: a bare head unless a case asks for a hat (utils/keysWardrobe.ts). */
+const BARE = () => 0;
 
 /**
  * Keys mirroring you, end to end in the DOM: the scene lands on the root's
@@ -44,7 +46,7 @@ const NEUTRAL: HomeKeysMirror = { status: 'online', gaming: false, inCall: false
 
 function render(mirror: Partial<HomeKeysMirror> = {}) {
     act(() => {
-        root!.render(React.createElement(HomeKeys, {
+        root!.render(React.createElement(HomeKeys, { random: BARE,
             userId: 'u', signal: 'idle', speech: null, lively: false,
             onPoke: () => {}, canPlay: () => 'ok' as const, onPlay: () => {},
             mirror: { ...NEUTRAL, ...mirror },

@@ -1,4 +1,7 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import type { VoiceProcessorCallbacks } from './voiceProcessor';
 import {
     getOrCreate,
     updateCallbacks,
@@ -28,6 +31,7 @@ const settings: VoiceSettings = {
     normalizeIncomingVolume: true,
     voiceGate: true,
     voiceGateThreshold: -45,
+    voiceGateAuto: true,
     pushToTalk: false,
     pushToTalkKey: null,
     micDeviceId: '',
@@ -96,6 +100,43 @@ describe('voiceProcessorManager — settings updates', () => {
 describe('voiceProcessorManager — callbacks indirection', () => {
     it('accepts a callbacks update without needing a processor to exist yet', () => {
         expect(() => updateCallbacks({ onNsAutoBypass: () => {} })).not.toThrow();
+    });
+});
+
+describe('voiceProcessorManager — every callback CallPane registers reaches the processor', () => {
+    // 2026-11-10: CallPane registered onAgcStats but the manager's stableCallbacks had no
+    // delegator for it, so the processor's `_callbacks.onAgcStats` was undefined in every
+    // call: no AGC gain or mic speech level was ever recorded and diagnostic reports from
+    // calls carried no loudness ("quiet mic" could not be told from "fine").
+    const callbacksOf = (p: unknown) => (p as { _callbacks: VoiceProcessorCallbacks })._callbacks;
+
+    it('delegates onAgcStats and onMicLevelStats to the latest registered callbacks', () => {
+        const onAgcStats = vi.fn();
+        const onMicLevelStats = vi.fn();
+        updateCallbacks({ onAgcStats, onMicLevelStats });
+        const cb = callbacksOf(getOrCreate('call-a', settings));
+        cb.onAgcStats?.({ gainDb: 6, voiceActive: true, speechDb: -40 });
+        expect(onAgcStats).toHaveBeenCalledWith({ gainDb: 6, voiceActive: true, speechDb: -40 });
+        const sec = { gainDb: 1, voiceActive: true, speechDb: -30, blocks: 1, voiced: 1, inMs: 0, outMs: 0, peak: 0, held: 0, clip: 0, micGainDb: 0, gateOpenFrac: 1, rawMs: null, nsMs: null };
+        cb.onMicLevelStats?.(sec);
+        expect(onMicLevelStats).toHaveBeenCalledWith(sec);
+        // ...and it follows a re-registration (CallPane does it every render).
+        const later = vi.fn();
+        updateCallbacks({ onAgcStats: later });
+        cb.onAgcStats?.({ gainDb: 0, voiceActive: false });
+        expect(later).toHaveBeenCalledTimes(1);
+        expect(onAgcStats).toHaveBeenCalledTimes(1);
+    });
+
+    it('has a delegator for every on* key CallPane passes to updateCallbacks', () => {
+        const src = readFileSync(join(__dirname, '..', 'components', 'CallPane.tsx'), 'utf8');
+        const start = src.indexOf('voiceProcessorManager.updateCallbacks({');
+        expect(start).toBeGreaterThan(0);
+        const end = src.indexOf('}, [voice, toast]);', start);
+        const keys = [...src.slice(start, end).matchAll(/^ {12}(on[A-Z]\w*):/gm)].map(m => m[1]);
+        expect(keys).toContain('onAgcStats');
+        const have = Object.keys(callbacksOf(getOrCreate('call-a', settings)));
+        expect(keys.filter(k => !have.includes(k))).toEqual([]);
     });
 });
 

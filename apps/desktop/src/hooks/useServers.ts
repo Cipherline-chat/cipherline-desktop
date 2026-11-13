@@ -1,3 +1,4 @@
+import { shareInflight } from '../utils/inflightShare';
 import { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
 import { API_BASE } from '../constants';
@@ -9,7 +10,9 @@ import { applyCallMediaSeed, callMediaEntriesFromCalls } from '../utils/callMedi
 import { fetchWithRetry } from '../utils/fetchWithRetry';
 import { huddleJoinHeaders } from '../utils/callJoinFlow';
 import { removeParticipantFromCall, addSpawnedCall } from '../utils/joinView';
+import { keepGuestCallInSnapshot, mergeGuestCallRoster, dropGuestCall, type GuestCallRef } from '../utils/guestCallRoster';
 import { leaveRequestBody } from '../utils/endCallOnLeave';
+import type { DiscordTemplatePreview, DiscordTemplateImportRequest } from '../utils/discordTemplate';
 
 /**
  * Local cache for the server list and each server's channels/categories.
@@ -254,9 +257,11 @@ export function useServers(token: string | null, userId?: string | null, deviceI
         try {
             // Load channels, categories, and own permissions in parallel.
             const [chRes, catRes] = await Promise.all([
-                axios.get(apiUrl`/servers/${serverId}/channels`, {
+                // Shared with the key sweep's list fetch (Dashboard.requestMissingChannelKeys)
+                // when both fire for the same server at once - one request, not two.
+                shareInflight(`ch:${token}:${serverId}`, () => axios.get(apiUrl`/servers/${serverId}/channels`, {
                     headers: { Authorization: `Bearer ${token}` },
-                }),
+                })),
                 axios.get(apiUrl`/servers/${serverId}/categories`, {
                     headers: { Authorization: `Bearer ${token}` },
                 }).catch(() => ({ data: [] })), // tolerate older API instances
@@ -323,8 +328,38 @@ export function useServers(token: string | null, userId?: string | null, deviceI
      * call the moment its last participant leaves) and an empty call is not
      * presence — it must not badge the rail or fill the Home deck.
      */
-    const applyHuddleCallsSnapshot = useCallback((next: Record<string, HuddleCallInfo[]>) => {
-        setHuddleCalls(next);
+    const applyHuddleCallsSnapshot = useCallback((next: Record<string, HuddleCallInfo[]>, guest: GuestCallRef | null = null) => {
+        // The one row the snapshot can never hold: the call a moved-in guest is
+        // in, in a channel they cannot see (utils/guestCallRoster).
+        setHuddleCalls(prev => keepGuestCallInSnapshot(next, prev, guest));
+    }, []);
+
+    /**
+     * Roster of the call a moved-in guest is in. The server answers a guest with
+     * that one call and refuses them once they are out of it. Unlike
+     * loadHuddleCalls this never clears on failure: the guest is still in the
+     * call, and a stale roster beats an empty one. `isCurrent` drops an answer
+     * that lands after they left, which would otherwise bring the roster back.
+     */
+    const loadGuestCallRoster = useCallback(async (guest: GuestCallRef, isCurrent: () => boolean = () => true) => {
+        if (!token) return;
+        try {
+            const res = await fetchWithRetry(() => axios.get(apiUrl`/huddles/${guest.huddleId}/calls`, {
+                headers: { Authorization: `Bearer ${token}` },
+                timeout: 15000,
+            }));
+            if (!isCurrent()) return;
+            const rows: HuddleCallInfo[] = Array.isArray(res.data) ? res.data : [];
+            setHuddleCalls(prev => mergeGuestCallRoster(prev, guest, rows));
+            applyCallMediaSeed(callMediaEntriesFromCalls(rows.filter(r => r.call_id === guest.callId)));
+        } catch (e) {
+            console.warn('[GuestCall] could not load the call roster:', (e as Error)?.message ?? e);
+        }
+    }, [token]);
+
+    /** The guest is out of the call: the server stops sending its events now. */
+    const dropGuestCallRoster = useCallback((guest: GuestCallRef) => {
+        setHuddleCalls(prev => dropGuestCall(prev, guest));
     }, []);
 
     /**
@@ -537,6 +572,34 @@ export function useServers(token: string | null, userId?: string | null, deviceI
         }
     }, [token, loadServers]);
 
+    /**
+     * Import a Discord server template, step 1: the API fetches and maps the
+     * template (the client never contacts discord.com) and returns a preview.
+     * Errors propagate — the import UI maps their `code` to copy.
+     */
+    const previewDiscordTemplate = useCallback(async (link: string): Promise<DiscordTemplatePreview> => {
+        if (!token) throw new Error('Not signed in');
+        const res = await axios.post(
+            `${API_BASE}/server-templates/discord/preview`,
+            { link },
+            { headers: { Authorization: `Bearer ${token}` } },
+        );
+        return res.data as DiscordTemplatePreview;
+    }, [token]);
+
+    /** Step 2: build the server from the template (one server-side transaction). */
+    const importDiscordTemplate = useCallback(async (req: DiscordTemplateImportRequest): Promise<ServerInfo | null> => {
+        if (!token) return null;
+        const res = await axios.post(
+            `${API_BASE}/server-templates/discord/import`,
+            req,
+            { headers: { Authorization: `Bearer ${token}` } },
+        );
+        const server = res.data as ServerInfo;
+        await loadServers();
+        return server;
+    }, [token, loadServers]);
+
     const joinServer = useCallback(async (code: string): Promise<{ server_id: string } | null> => {
         if (!token) return null;
         try {
@@ -573,6 +636,8 @@ export function useServers(token: string | null, userId?: string | null, deviceI
         loadMyPermissions,
         reloadCategories,
         loadHuddleCalls,
+        loadGuestCallRoster,
+        dropGuestCallRoster,
         applyHuddleCallsSnapshot,
         applyHuddleSpawn,
         applyHuddleDestroy,
@@ -585,6 +650,8 @@ export function useServers(token: string | null, userId?: string | null, deviceI
         moveMemberToNewCall,
         renameHuddleCall,
         createServer,
+        previewDiscordTemplate,
+        importDiscordTemplate,
         joinServer,
     };
 }

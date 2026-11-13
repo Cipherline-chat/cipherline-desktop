@@ -14,7 +14,8 @@ import { fileURLToPath } from 'node:url';
 // secureLocalStore is a synchronous facade over AES-GCM IndexedDB hydrated at
 // app boot; swap in a plain map so these cases exercise the settings logic.
 vi.mock('./secureLocalStore', () => {
-    const mem = new Map<string, string>();
+    // Already past the one-time voice-defaults migration: these cover the loader itself.
+    const mem = new Map<string, string>([['cipherline_voice_defaults_migrated_v1', '1']]);
     return {
         default: {
             getItem: (k: string) => mem.get(k) ?? null,

@@ -7,6 +7,7 @@ import {
     type CaptureVerdict,
 } from '../../utils/streamStatsHud';
 import { getCameraPublishState, subscribeCameraPublishState } from '../../utils/cameraPublish';
+import { applyNativeToSenderHud, getNativeShareLive } from '../../utils/nativeShareLive';
 import { getCallEvents, formatCallEvents, type CallEvent } from '../../utils/callEventLog';
 import { estimateAvSync, type AvSyncEstimate, type AvSyncSnapshot, type AvSyncVerdict } from '../../utils/avSync';
 import { recordAvSyncEstimate } from '../../utils/avSyncMonitor';
@@ -102,7 +103,7 @@ const ShareRows: React.FC<{ session: ScreenShareSession }> = ({ session }) => {
                 {m?.displayHz
                     // ≈ = not the captured display itself but a stand-in
                     // (the only / the primary display) — see resolveCapturedDisplayHz.
-                    ? ` · ${m.displayHzSource && m.displayHzSource !== 'matched' ? '≈' : ''}${Math.round(m.displayHz)} Hz`
+                    ? ` · ${m.displayHzSource && m.displayHzSource !== 'matched' && m.displayHzSource !== 'shared' ? '≈' : ''}${Math.round(m.displayHz)} Hz`
                     : ' · ? Hz'}
                 {' · '}{m ? BACKEND_LABEL[m.capturer.backend] ?? m.capturer.backend : '?'}
                 {m?.capturer.why ? <span className="text-white/45">{` (${m.capturer.why})`}</span> : null}
@@ -265,7 +266,8 @@ export const StreamStatsHud: React.FC<{
                 if (isLocal) {
                     const r = summarizeSender(report as unknown as Iterable<StatsEntry>, prevS, now);
                     prevS = r.snapshot;
-                    setSender(r.stats);
+                    // A native (hardware) share's sender carries a stand-in track: show the helper's own numbers for the share tile.
+                    setSender(isShareTile ? applyNativeToSenderHud(r.stats, getNativeShareLive()) : r.stats);
                     setCaps(readSenderCaps(track as LocalVideoTrack));
                     const fr = track.mediaStreamTrack?.getSettings?.().frameRate;
                     setCaptureReqFps(typeof fr === 'number' && fr > 0 ? fr : undefined);

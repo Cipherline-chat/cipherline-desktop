@@ -68,7 +68,6 @@ const Orb: React.FC<{ side: 'l' | 'r'; initial: string | null }> = ({ side, init
 
 export const SafetyVerifiedMoment: React.FC<CeremonyViewProps> = ({ headline, line, peer }) => (
     <div className="mo-sv mo-view" aria-hidden="true">
-        <div className="mo-dim" />
         <div className="mo-anchor">
             <span className="mo-sv-pulse mo-sv-pulse-1" />
             <span className="mo-sv-pulse mo-sv-pulse-2" />

@@ -73,7 +73,7 @@ describe('personSecondary', () => {
         expect(byId(people(), 'd').secondary).toBe('Playing Valorant');
         expect(byId(people(), 'e').secondary).toBe('Do Not Disturb on mobile');
         expect(personSecondary({ status: 'online' })).toBe('Online');
-        expect(personSecondary({ status: 'away' })).toBe('Away');
+        expect(personSecondary({ status: 'away' })).toBe('Idle');
     });
 });
 

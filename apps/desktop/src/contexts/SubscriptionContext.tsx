@@ -24,7 +24,7 @@ import { UpgradePromptModal, type UpgradeReason } from '../components/billing/Up
 import { secureLocalStore } from '../utils/secureLocalStore';
 import { observeProStatus, recordProPurchase } from '../utils/proCelebration';
 import { cancellationOutcome } from '../components/billing/cancellationOutcome';
-import type { PaymentMethodView, InvoiceView } from '@cipherline/shared';
+import { apiErrorMessage, yearlyOffered, type PaymentMethodView, type InvoiceView, type FounderStatus, type PlanIntervalStatus, type BillingInterval, type IntervalChangePreview, type IntervalChangeResult } from '@cipherline/shared';
 
 /** How long the in-app checkout stays mounted under the Pro celebration's veil
  *  (the veil fades in over 420 ms; see styles/pro-celebration.css). */
@@ -33,7 +33,9 @@ const CHECKOUT_HANDOFF_MS = 480;
 export type SubscriptionStatus ='trial' | 'active' | 'canceled_pending' | 'past_due' | 'expired';
 export type EffectiveStatus = 'active' | 'expired';
 
-interface BillingStatus {
+interface BillingStatus extends PlanIntervalStatus {
+    /** Present only on an API that requires renewal consent (feature detection; see RenewalConsentSupport). */
+    renewal_consent?: { required: true; version: string; text_hash: string | null } | null;
     subscription_status: SubscriptionStatus;
     effective_status: EffectiveStatus;
     trial_ends_at: string | null;
@@ -75,6 +77,11 @@ interface BillingStatus {
     automatic_tax?: boolean;
     /** Non-secret pk_* for initialising Stripe.js. */
     publishable_key?: string | null;
+    /** Founding-member price lock: the public counter plus THIS account's number.
+     *  Null/absent when the feature is off or the server is older. Render it via
+     *  `founderPanel` from @cipherline/shared; `plan_amount` already reflects the
+     *  price this account will be billed (the founder price while it applies). */
+    founder?: FounderStatus | null;
 }
 
 interface SubscriptionContextValue {
@@ -89,6 +96,22 @@ interface SubscriptionContextValue {
     canPublishVideo: boolean;
     /** Max single-attachment upload size in bytes for the current tier. */
     maxUploadBytes: number;
+    /** The interval the current plan bills on. 'month' for an older API / no subscription. */
+    planInterval: BillingInterval;
+    /** Server says yearly can be chosen (older API: always false, so every yearly surface hides). */
+    isYearlyOffered: boolean;
+    planPrices: PlanIntervalStatus['plan_prices'];
+    /** A scheduled switch (yearly -> monthly at the end of the paid year), or null. */
+    pendingInterval: BillingInterval | null;
+    pendingIntervalAt: string | null;
+    /** Read-only: what switching to `interval` would charge / when. Nothing changes. */
+    previewIntervalChange: (interval: BillingInterval) => Promise<{ ok: boolean; preview?: IntervalChangePreview; message?: string }>;
+    /**
+     * Switch interval. monthly -> yearly charges now (prorated); yearly -> monthly
+     * is scheduled for the end of the paid year; asking for the interval you are
+     * ALREADY on while a switch is pending undoes it. Refreshes status on success.
+     */
+    changeInterval: (interval: BillingInterval) => Promise<{ ok: boolean; result?: IntervalChangeResult; message?: string }>;
     refresh: () => Promise<void>;
     extendTrial: () => Promise<{ ok: boolean; message?: string }>;
     /**
@@ -283,6 +306,33 @@ export const SubscriptionProvider: React.FC<{ children: ReactNode }> = ({ childr
         }
     }, [token, refresh]);
 
+    const previewIntervalChange = useCallback(async (interval: BillingInterval) => {
+        if (!token) return { ok: false, message: 'You need to be signed in.' };
+        try {
+            const res = await axios.post<IntervalChangePreview>(`${API_BASE}/billing/interval-preview`, { interval }, {
+                headers: { Authorization: `Bearer ${token}` },
+            });
+            return { ok: true, preview: res.data };
+        } catch (err: unknown) {
+            return { ok: false, message: apiErrorMessage(err, 'Could not work out that change. Please try again.') };
+        }
+    }, [token]);
+
+    const changeInterval = useCallback(async (interval: BillingInterval) => {
+        if (!token) return { ok: false, message: 'You need to be signed in.' };
+        try {
+            const res = await axios.post<IntervalChangeResult>(`${API_BASE}/billing/interval`, { interval }, {
+                headers: { Authorization: `Bearer ${token}` },
+            });
+            // Best effort: the server already applied it, so a failed re-read must not read as a failed switch.
+            await refresh().catch(() => { /* statusError is recorded */ });
+            return { ok: true, result: res.data };
+        } catch (err: unknown) {
+            console.warn('[SubscriptionContext] interval change failed', err);
+            return { ok: false, message: apiErrorMessage(err, 'Could not change your billing interval. Please try again.') };
+        }
+    }, [token, refresh]);
+
     const fetchPaymentMethod = useCallback(async () => {
         if (!token) return { ok: false, message: 'You need to be signed in.' };
         try {
@@ -341,10 +391,17 @@ export const SubscriptionProvider: React.FC<{ children: ReactNode }> = ({ childr
     const isFreeTier = !isPaid;
     const canPublishVideo = isPaid;
     const maxUploadBytes = isPaid ? MAX_ATTACHMENT_BYTES : FREE_TIER_MAX_UPLOAD_BYTES;
+    // Interval (yearly plans). Every field is optional on the wire: an older API
+    // sends none, which reads as monthly-only with yearly hidden.
+    const planInterval: BillingInterval = status?.plan_interval === 'year' ? 'year' : 'month';
+    const isYearlyOffered = yearlyOffered(status);
+    const planPrices = status?.plan_prices;
+    const pendingInterval = status?.pending_interval ?? null;
+    const pendingIntervalAt = status?.pending_interval_at ?? null;
 
     const value = useMemo(
-        () => ({ status, statusError, isPaid, isFreeTier, canPublishVideo, maxUploadBytes, refresh, extendTrial, promptUpgrade, openInAppCheckout, setCancellation, fetchPaymentMethod, fetchInvoices, proCelebration, dismissProCelebration }),
-        [status, statusError, isPaid, isFreeTier, canPublishVideo, maxUploadBytes, refresh, extendTrial, promptUpgrade, openInAppCheckout, setCancellation, fetchPaymentMethod, fetchInvoices, proCelebration, dismissProCelebration],
+        () => ({ status, statusError, isPaid, isFreeTier, canPublishVideo, maxUploadBytes, planInterval, isYearlyOffered, planPrices, pendingInterval, pendingIntervalAt, previewIntervalChange, changeInterval, refresh, extendTrial, promptUpgrade, openInAppCheckout, setCancellation, fetchPaymentMethod, fetchInvoices, proCelebration, dismissProCelebration }),
+        [status, statusError, isPaid, isFreeTier, canPublishVideo, maxUploadBytes, planInterval, isYearlyOffered, planPrices, pendingInterval, pendingIntervalAt, previewIntervalChange, changeInterval, refresh, extendTrial, promptUpgrade, openInAppCheckout, setCancellation, fetchPaymentMethod, fetchInvoices, proCelebration, dismissProCelebration],
     );
 
     return (

@@ -140,12 +140,12 @@ describe('acceptGuestCallKey (guest side)', () => {
 });
 
 describe('call header for a call in a channel we cannot see', () => {
-    it('names the server and the call, says "Private channel", never needs the channel row', () => {
+    it('names the server and the call like any other header, never needs the channel row', () => {
         const info = guestCallServerInfo(
             { callId: CALL, huddleId: CH, serverId: 'srv', callName: 'Staff call' },
             [{ server_id: 'srv', name: 'My Server' }],
         );
-        expect(info).toMatchObject({ serverId: 'srv', serverName: 'My Server', channelName: 'Staff call · Private channel', guest: true });
+        expect(info).toMatchObject({ serverId: 'srv', serverName: 'My Server', channelName: 'Staff call', guest: true });
     });
 
     it('falls back sensibly with no call name / unknown server, and is null without a server id', () => {

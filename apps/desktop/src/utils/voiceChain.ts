@@ -97,3 +97,27 @@ export function planVoiceChain(
  * threshold, so the peak, not an average, is what decides it.
  */
 export const GATE_METER_REPORT_MS = 50;
+
+/**
+ * The settings CipherlineVoiceProcessor.updateSettings() reads, as one change key. SidebarConference pushes
+ * settings into the live processor when this string changes, so a field missing here is a setting that only
+ * takes effect when the processor is rebuilt (leave and rejoin the call). Owner 2026-11-13: "switching between
+ * light and strong noise suppression mid-call, the others only hear it after we rejoin" - noiseSuppressionMode
+ * and voiceGateAuto were not in the effect's dependency list. A test reads updateSettings' source and fails if
+ * a field it compares is not listed here.
+ */
+export const LIVE_PROCESSOR_SETTING_KEYS = [
+    'noiseSuppression',
+    'noiseSuppressionMode',
+    'volumeNormalization',
+    'voiceGate',
+    'voiceGateThreshold',
+    'voiceGateAuto',
+    'micVolume',
+    'eqEnabled',
+    'eqBands',
+] as const;
+
+export function liveProcessorSettingsKey(s: Pick<VoiceSettings, typeof LIVE_PROCESSOR_SETTING_KEYS[number]>): string {
+    return JSON.stringify(LIVE_PROCESSOR_SETTING_KEYS.map(k => s[k]));
+}

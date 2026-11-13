@@ -11,8 +11,8 @@ import { computeSafetyNumber, formatSafetyNumber, SAFETY_NUMBER_VERSION, SAFETY_
 import { computeContactCode, formatCode, checkCode, CODE_LENGTH } from '../utils/verificationCode';
 import { deriveContactTrust, pinsToTrustDevices, trustExplanation } from '../utils/contactTrust';
 import { isLegacyVerified } from '../utils/verificationStrength';
+import { loadOwnContactCode } from '../utils/ownContactCode';
 import {
-    observeOwnDevices,
     loadOwnLedger,
     assessOwnDeviceSet,
     codeMayBeShown,
@@ -468,29 +468,19 @@ export const SafetyVerificationModal: React.FC<Props> = ({
                 // degrades to "unavailable" rather than blocking verification
                 // of the contact, which is the direction that matters here.
                 try {
-                    const mine = await axios.get(
-                        apiUrl`/keys/identity_keys?user_id=${myUserId}`,
-                        { headers: { Authorization: `Bearer ${token}` } },
-                    );
-                    const myBundles: { device_id: string; identity_key_pub_b64: string }[] = mine.data ?? [];
-                    // The ghost-device check runs on THIS array, the same one
-                    // hashed into myCode below, so what was checked is exactly
-                    // what the code commits to.
-                    const rows: ListedDevice[] = myBundles.map(b => ({
-                        device_id: b.device_id, pub: b.identity_key_pub_b64,
-                    }));
-                    const self = { deviceId: myDeviceId ?? '', pub: localPub };
-                    observeOwnDevices(myUserId, self, rows, true);
-                    const ledger = loadOwnLedger(myUserId);
-                    setOwnRows(rows);
+                    // The ghost-device check runs on the same listing that is
+                    // hashed into the code, so what was checked is exactly what
+                    // the code commits to (utils/ownContactCode.ts).
+                    const own = await loadOwnContactCode({ myUserId, myDeviceId, localPub, token });
+                    setOwnRows(own.rows);
                     setOwnSelfPub(localPub);
-                    if (ledger === undefined) setOwnNotReady(true);
-                    else setOwnVerdict(assessOwnDeviceSet(ledger, rows, self));
-                    if (myBundles.length) {
-                        setMyCode(await computeContactCode(myUserId, myBundles.map(b => b.identity_key_pub_b64)));
-                        setMyDeviceCount(myBundles.length);
+                    if (own.verdict) setOwnVerdict(own.verdict);
+                    else setOwnNotReady(true);
+                    if (own.code) {
+                        setMyCode(own.code);
+                        setMyDeviceCount(own.rows.length);
                     }
-                    setMyOtherDeviceCount(myBundles.filter(d => d.identity_key_pub_b64 !== localPub).length);
+                    setMyOtherDeviceCount(own.rows.filter(r => r.pub !== localPub).length);
                 } catch { /* display-only extra — degrade to none */ }
 
                 // Names for the covered-device list. Own account only, and

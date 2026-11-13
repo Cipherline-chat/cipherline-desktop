@@ -2,7 +2,7 @@ import { useEffect, useCallback, useSyncExternalStore } from 'react';
 import axios from 'axios';
 import { apiUrl } from '../utils/apiPath';
 import { prefetchServerEmojis } from '../utils/serverEmojiLoader';
-import { emojiListCache } from '../utils/emojiListCache';
+import { emojiListCache, upsertEmoji } from '../utils/emojiListCache';
 
 /** Mirrors the API's ServerEmojiDto (apps/api/src/servers/server-emojis.service.ts). */
 export interface ServerEmoji {
@@ -58,10 +58,18 @@ export function useServerEmojis(serverId: string | null, token: string | null) {
         if (!token) { emojiListCache.clear(); return; }
         if (!serverId) return;
         try {
-            const res = await axios.get<ServerEmoji[]>(apiUrl`/servers/${serverId}/emojis`, {
-                headers: { Authorization: `Bearer ${token}` },
-            });
-            const list = res.data ?? [];
+            // A list fetched before one of OUR mutations finished is older than
+            // that mutation's result; applying it would flip a rename or a
+            // delete back until the next refetch. Detect it and ask again.
+            let list: ServerEmoji[] = [];
+            for (let attempt = 0; attempt < 3; attempt++) {
+                const epoch = emojiListCache.epoch(serverId);
+                const res = await axios.get<ServerEmoji[]>(apiUrl`/servers/${serverId}/emojis`, {
+                    headers: { Authorization: `Bearer ${token}` },
+                });
+                list = res.data ?? [];
+                if (emojiListCache.epoch(serverId) === epoch) break;
+            }
             emojiListCache.set(serverId, list);
             prefetchServerEmojis(serverId, list, token);
         } catch (err: unknown) {
@@ -86,7 +94,7 @@ export function useServerEmojis(serverId: string | null, token: string | null) {
         const res = await axios.post<ServerEmoji>(apiUrl`/servers/${serverId}/emojis`, body, {
             headers: { Authorization: `Bearer ${token}` },
         });
-        emojiListCache.set(serverId, [...(emojiListCache.get(serverId) ?? []), res.data]);
+        emojiListCache.setLocal(serverId, upsertEmoji(emojiListCache.get(serverId) ?? [], res.data));
         return res.data;
     }, [serverId, token]);
 
@@ -97,7 +105,7 @@ export function useServerEmojis(serverId: string | null, token: string | null) {
             { name },
             { headers: { Authorization: `Bearer ${token}` } },
         );
-        emojiListCache.set(serverId, (emojiListCache.get(serverId) ?? []).map(e => (e.emoji_id === emojiId ? res.data : e)));
+        emojiListCache.setLocal(serverId, upsertEmoji(emojiListCache.get(serverId) ?? [], res.data));
         return res.data;
     }, [serverId, token]);
 
@@ -106,7 +114,7 @@ export function useServerEmojis(serverId: string | null, token: string | null) {
         await axios.delete(apiUrl`/servers/${serverId}/emojis/${emojiId}`, {
             headers: { Authorization: `Bearer ${token}` },
         });
-        emojiListCache.set(serverId, (emojiListCache.get(serverId) ?? []).filter(e => e.emoji_id !== emojiId));
+        emojiListCache.setLocal(serverId, (emojiListCache.get(serverId) ?? []).filter(e => e.emoji_id !== emojiId));
     }, [serverId, token]);
 
     return { emojis, loading, refresh, create, rename, remove };

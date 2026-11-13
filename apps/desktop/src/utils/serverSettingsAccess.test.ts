@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { Permissions, DEFAULT_EVERYONE_PERMISSIONS } from '@cipherline/shared';
 import {
     canOpenServerSettings,
+    canCreateInvite,
     serverSettingsTabVisibility,
     type ServerSettingsTab,
 } from './serverSettingsAccess';
@@ -141,5 +142,21 @@ describe('serverSettingsTabVisibility', () => {
         for (const bit of [Permissions.MANAGE_EMOJIS, Permissions.MANAGE_ROLES, Permissions.BAN_MEMBERS, Permissions.CREATE_INVITE]) {
             expect(serverSettingsTabVisibility(bit, NOT_OWNER).storage).toBe(false);
         }
+    });
+});
+
+describe('canCreateInvite', () => {
+    it('is true for a default member (CREATE_INVITE is in @everyone)', () => {
+        expect(canCreateInvite(DEFAULT_EVERYONE_PERMISSIONS, false)).toBe(true);
+    });
+    it('is true for CREATE_INVITE alone, ADMINISTRATOR alone, and the owner', () => {
+        expect(canCreateInvite(Permissions.CREATE_INVITE, false)).toBe(true);
+        expect(canCreateInvite(Permissions.ADMINISTRATOR, false)).toBe(true);
+        expect(canCreateInvite(0n, true)).toBe(true);
+    });
+    it('is false with no permissions loaded yet, or with the bit stripped', () => {
+        expect(canCreateInvite(0n, false)).toBe(false);
+        expect(canCreateInvite(DEFAULT_EVERYONE_PERMISSIONS & ~Permissions.CREATE_INVITE, false)).toBe(false);
+        expect(canCreateInvite(Permissions.MANAGE_SERVER, false)).toBe(false);
     });
 });

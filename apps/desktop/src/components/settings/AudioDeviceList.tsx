@@ -37,13 +37,28 @@ const InputEditor: React.FC<{ s: InputProfileSettings; set: (p: Partial<InputPro
             />
         </VvRow>
         <VvRow label="Voice gate">
-            <ClSlider
-                min={-60} max={-20} step={1} value={s.voiceGateThreshold} onChange={v => set({ voiceGateThreshold: v })}
-                resetValue={DEFAULT_VOICE_SETTINGS.voiceGateThreshold} formatLabel={v => `${v} dB`} style={{ flex: 1, minWidth: 0, opacity: s.voiceGate ? 1 : 0.35 }}
-            />
-            <span className="vv-val vv-val--wide">{s.voiceGateThreshold} dB</span>
+            <span className="vv-val vv-val--wide">{s.voiceGateAuto ? 'Auto' : `${s.voiceGateThreshold} dB`}</span>
+            {/* Automatic by default; a Manual button drops the slider down (owner, 2026-11-11). */}
+            <ClButton
+                chip
+                variant="ghost"
+                size="sm"
+                active={!s.voiceGateAuto}
+                onClick={() => set({ voiceGateAuto: !s.voiceGateAuto })}
+                tooltip={s.voiceGateAuto ? 'Set the threshold yourself' : 'Back to automatic (follows your room noise)'}
+            >
+                Manual
+            </ClButton>
             <ClToggle checked={s.voiceGate} onChange={v => set({ voiceGate: v })} aria-label="Voice gate" />
         </VvRow>
+        {!s.voiceGateAuto && (
+            <div className="vv-gate-drop">
+                <ClSlider
+                    min={-60} max={-20} step={1} value={s.voiceGateThreshold} onChange={v => set({ voiceGateThreshold: v })}
+                    resetValue={DEFAULT_VOICE_SETTINGS.voiceGateThreshold} formatLabel={v => `${v} dB`} style={{ flex: 1, minWidth: 0, opacity: s.voiceGate ? 1 : 0.35 }}
+                />
+            </div>
+        )}
         <VvRow label="Echo cancellation" kind="switch" note="Only recommended when using speakers.">
             <ClToggle checked={s.echoCancellation} onChange={v => set({ echoCancellation: v })} aria-label="Echo cancellation" />
         </VvRow>

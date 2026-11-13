@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { RotateCcw, Trash2, PenLine, Keyboard } from 'lucide-react';
+import { RotateCcw, Trash2, Keyboard, Copy, Check } from 'lucide-react';
 import {
     ACTIONS, ACTION_CATEGORIES,
     eventToCombo, formatCombo,
@@ -7,8 +7,11 @@ import {
 } from '../hooks/useKeybinds';
 import { ClButton } from './cl';
 import { useEscape } from '../hooks/useEscape';
-import { SettingsDisclosure } from './settings/SettingsDisclosure';
 import { OPEN_SHORTCUTS_EVENT } from '../utils/shortcutsSheet';
+import {
+    globalShortcutNotice, globalShortcutCoverage, portalBindingNotice, hyprlandBindLines,
+} from '../utils/globalShortcutNotice';
+import { writeToClipboard } from '../utils/clipboard';
 
 /**
  * Twilight · Keybinds — Descent redesign (phase 2).
@@ -38,7 +41,47 @@ const KeyCaps: React.FC<{ combo: string | null; capturing: boolean; onClick: () 
 );
 
 export const KeybindSettings: React.FC<KeybindSettingsProps> = ({ keybinds }) => {
-    const { binds, setBind, resetAll, resetOne, defaults } = keybinds;
+    const { binds, setBind, resetAll, resetOne, defaults, globalShortcutStatus } = keybinds;
+    const globalNotice = globalShortcutNotice(globalShortcutStatus);
+    const labelOf = useCallback((id: string) => ACTIONS.find(a => a.id === id)?.label ?? id, []);
+    const bindingNotice = portalBindingNotice(globalShortcutStatus, labelOf);
+    const coverage = globalShortcutCoverage(globalShortcutStatus);
+    // Hyprland binds nothing on its own: the lines the user adds to hyprland.conf, from each shortcut's current key.
+    const hyprlandLines = bindingNotice?.hyprland
+        ? hyprlandBindLines(
+            ACTIONS
+                .filter(a => a.global && binds[a.id] && (bindingNotice.hyprlandIds.includes(a.id) || a.armedOnly))
+                .map(a => ({ id: a.id, combo: binds[a.id] as string })),
+            globalShortcutStatus?.appId ?? 'chat.cipherline.Cipherline',
+        )
+        : [];
+    const [linesCopied, setLinesCopied] = useState(false);
+    // A key the desktop remembers can only be changed in the desktop's own settings (KDE ignores a later one).
+    const desktopKeys = globalShortcutStatus?.portal?.desktopKeys ?? {};
+    const elsewhere = new Set(globalShortcutStatus?.portal?.elsewhere ?? []);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- window.electronAPI members are optional/version-dependent
+    const canConfigureDesktop = !!(window as any).electronAPI?.configureDesktopShortcuts && !!bindingNotice && !bindingNotice.hyprland;
+    const [configureFailed, setConfigureFailed] = useState(false);
+    const openDesktopShortcuts = async () => {
+        let ok = false;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- see above
+        try { ok = !!(await (window as any).electronAPI?.configureDesktopShortcuts?.()); } catch { ok = false; }
+        setConfigureFailed(!ok);
+    };
+    const copyLines = async () => {
+        try {
+            await writeToClipboard(hyprlandLines.join('\n'));
+            setLinesCopied(true);
+            setTimeout(() => setLinesCopied(false), 1800);
+        } catch { /* the lines are on screen to select by hand */ }
+    };
+    // The category hint must not promise "works in the background" when the desktop says otherwise.
+    const hintFor = (cat: { id: string; hint: string }): string => {
+        if (cat.id === 'navigation') return cat.hint;
+        if (coverage === 'none') return 'Only work while Cipherline is focused on this desktop (see the note above)';
+        if (coverage === 'some') return `${cat.hint}, except the ones listed in the note above`;
+        return cat.hint;
+    };
 
     // Which action is currently being re-bound (capturing next keystroke)
     const [capturing, setCapturing] = useState<BindableAction | null>(null);
@@ -105,8 +148,55 @@ export const KeybindSettings: React.FC<KeybindSettingsProps> = ({ keybinds }) =>
 
     return (
         <>
-            {ACTION_CATEGORIES.map(cat => {
-                const items = ACTIONS.filter(a => a.category === cat.id);
+            {globalNotice && (
+                <div className="sd-card" role="status" data-testid="global-shortcuts-notice">
+                    <div className="sd-row" style={{ padding: 0, border: 'none' }}>
+                        <div className="sd-rl">
+                            <b>System-wide shortcuts are off</b>
+                            <span>{globalNotice}</span>
+                        </div>
+                    </div>
+                </div>
+            )}
+            {bindingNotice && (
+                <div className="sd-card" role="status" data-testid="global-shortcuts-binding-notice">
+                    <div className="sd-row" style={{ padding: 0, border: 'none' }}>
+                        <div className="sd-rl">
+                            <b>{bindingNotice.title}</b>
+                            <span>{bindingNotice.text}</span>
+                        </div>
+                    </div>
+                    {canConfigureDesktop && (
+                        <div style={{ marginTop: 10, display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }} data-testid="desktop-shortcut-settings">
+                            <ClButton size="sm" variant="ghost" onClick={openDesktopShortcuts}>
+                                <Keyboard size={13} /> Open desktop shortcut settings
+                            </ClButton>
+                            {configureFailed && (
+                                <span className="sd-sub">Your desktop did not open them. Look for Cipherline in its System Settings, under Keyboard › Shortcuts.</span>
+                            )}
+                        </div>
+                    )}
+                    {hyprlandLines.length > 0 && (
+                        <div style={{ marginTop: 10 }} data-testid="hyprland-bind-lines">
+                            <p className="sd-sub">
+                                Add these to your hyprland.conf, then run <code>hyprctl reload</code>. Each line uses the key shown
+                                for that shortcut below; change a key here and the lines update.
+                            </p>
+                            <pre style={{ margin: '6px 0', padding: '8px 10px', overflowX: 'auto', fontSize: 12, userSelect: 'text' }}>{hyprlandLines.join('\n')}</pre>
+                            <ClButton size="sm" variant="ghost" onClick={copyLines}>
+                                {linesCopied ? <Check size={13} /> : <Copy size={13} />} {linesCopied ? 'Copied' : 'Copy lines'}
+                            </ClButton>
+                        </div>
+                    )}
+                </div>
+            )}
+            {ACTION_CATEGORIES.filter(cat => cat.id !== 'annotation').map(cat => {
+                // Owner, 2026-11-08: the drawing-request keys sit with the other
+                // call controls (both work in the background) instead of in a
+                // folded-away section of their own. Their descriptions say they
+                // only fire while someone is asking to draw.
+                const items = ACTIONS.filter(a => a.category === cat.id
+                    || (cat.id === 'controls' && a.category === 'annotation'));
                 if (items.length === 0) return null;
                 const rows = items.map(action => {
                     // '' is an explicit "cleared" (persisted so it
@@ -120,6 +210,11 @@ export const KeybindSettings: React.FC<KeybindSettingsProps> = ({ keybinds }) =>
                             <div className="sd-rl">
                                 <b>{action.label}</b>
                                 <span>{action.description}</span>
+                                {elsewhere.has(action.id) && desktopKeys[action.id] && (
+                                    <span data-testid="desktop-key-hint" style={{ color: 'var(--cl-glow)' }}>
+                                        System-wide your desktop uses {desktopKeys[action.id]} for this
+                                    </span>
+                                )}
                             </div>
                             <div className="sd-rc">
                                 {!isDefault && !isCapturing && (
@@ -153,28 +248,10 @@ export const KeybindSettings: React.FC<KeybindSettingsProps> = ({ keybinds }) =>
                         </div>
                     );
                 });
-                // Drawing-request keys only matter while someone is asking to
-                // draw on your share, so that group folds away; the everyday
-                // call controls and navigation keys stay in view.
-                if (cat.id === 'annotation') {
-                    return (
-                        <SettingsDisclosure
-                            key={cat.id}
-                            id="keybinds.annotation"
-                            variant="card"
-                            title={cat.label}
-                            summary={cat.hint}
-                            icon={<PenLine size={15} />}
-                            labels={['Drawing request keybinds']}
-                        >
-                            {rows}
-                        </SettingsDisclosure>
-                    );
-                }
                 return (
                     <div key={cat.id} className="sd-card">
                         <h3>{cat.label}</h3>
-                        <p className="sd-sub">{cat.hint}</p>
+                        <p className="sd-sub">{hintFor(cat)}</p>
                         {rows}
                     </div>
                 );
@@ -185,8 +262,10 @@ export const KeybindSettings: React.FC<KeybindSettingsProps> = ({ keybinds }) =>
                     <div className="sd-rl">
                         <b>Defaults not feeling right?</b>
                         <span>
-                            Call controls work system-wide, even while another app is focused. Navigation
-                            shortcuts only fire when Cipherline is in the foreground. Esc cancels a capture. Press ? anywhere you are not typing to see them all.
+                            {coverage === 'none' || coverage === 'some'
+                                ? 'See the note above for which call controls work system-wide on this desktop. '
+                                : 'Call controls work system-wide, even while another app is focused. '}
+                            Navigation shortcuts only fire when Cipherline is in the foreground. Esc cancels a capture. Press ? anywhere you are not typing to see them all.
                         </span>
                     </div>
                     <div className="sd-rc">

@@ -9,6 +9,11 @@
  * servers), and a share must not drop its priority boost for the gap. This one
  * lives as long as the Room does.
  *
+ * It also tells main whether OUR CAMERA is published and un-muted
+ * (`setCameraActive`), so the webcam's capture process is protected from a
+ * game with no share running. Off when the camera is muted / unpublished or
+ * the call ends.
+ *
  * Main owns every decision (setting on/off, Windows-only priority, the power
  * request, the OS power-throttling opt-out). All this sends is one boolean,
  * and only on change; unmount sends false, and main also resets on a renderer
@@ -23,8 +28,8 @@
  */
 import React, { useEffect } from 'react';
 import { useRoomContext } from '@livekit/components-react';
-import { RoomEvent } from 'livekit-client';
-import { localShareLive } from '../../utils/shareLive';
+import { RoomEvent, ConnectionState } from 'livekit-client';
+import { localShareLive, localCameraLive } from '../../utils/shareLive';
 import { logCallEvent } from '../../utils/callEventLog';
 import { parseSharePowerReport } from '../../utils/sharePowerEvent';
 import { parseShareGpuSchedReport, shareGpuSchedEventDetail } from '../../utils/shareGpuSchedEvent';
@@ -35,14 +40,25 @@ export const ShareBoostGuard: React.FC = () => {
         const api = window.electronAPI;
         if (!room || !api?.setShareActive) return;
         let last: boolean | null = null;
+        let lastCam: boolean | null = null;
         const push = () => {
             const on = localShareLive(room);
-            if (on === last) return;
-            last = on;
-            api.setShareActive?.(on)?.catch?.(() => { /* main predates the channel, or is quitting */ });
+            if (on !== last) {
+                last = on;
+                api.setShareActive?.(on)?.catch?.(() => { /* main predates the channel, or is quitting */ });
+            }
+            // OUR camera published and un-muted: main protects the webcam's
+            // capture process from a game, share or no share.
+            const cam = room.state !== ConnectionState.Disconnected && localCameraLive(room);
+            if (cam !== lastCam) {
+                lastCam = cam;
+                api.setCameraActive?.(cam)?.catch?.(() => { /* main predates the channel, or is quitting */ });
+            }
         };
         room.on(RoomEvent.LocalTrackPublished, push);
         room.on(RoomEvent.LocalTrackUnpublished, push);
+        room.on(RoomEvent.TrackMuted, push);
+        room.on(RoomEvent.TrackUnmuted, push);
         room.on(RoomEvent.Disconnected, push);
         const offPower = api.onSharePower?.((raw) => {
             const r = parseSharePowerReport(raw);
@@ -64,8 +80,11 @@ export const ShareBoostGuard: React.FC = () => {
             try { offGpuSched?.(); } catch { /* bridge gone */ }
             room.off(RoomEvent.LocalTrackPublished, push);
             room.off(RoomEvent.LocalTrackUnpublished, push);
+            room.off(RoomEvent.TrackMuted, push);
+            room.off(RoomEvent.TrackUnmuted, push);
             room.off(RoomEvent.Disconnected, push);
             if (last) api.setShareActive?.(false)?.catch?.(() => {});
+            if (lastCam) api.setCameraActive?.(false)?.catch?.(() => {});
         };
     }, [room]);
     return null;

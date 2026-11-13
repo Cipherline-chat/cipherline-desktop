@@ -87,6 +87,26 @@ describe('Home-screen pins survive a real backup + restore round trip', () => {
         expect(mem.get(`cipherline_home_pins_${USER}`)).toBe(pins);
     });
 
+    it('a REORDERED pin list keeps its order (order = array order, no extra key)', async () => {
+        // The Home grid's drag / Alt+Arrow reorder writes moveVisiblePin's
+        // output through the same key — so this is the cross-device restore.
+        const { moveVisiblePin, pinKey } = await import('../utils/homePins');
+        const original = [
+            { type: 'conversation' as const, id: 'conv-1' },
+            { type: 'channel' as const, channelId: 'ch-1', serverId: 'srv-1' },
+            { type: 'server' as const, serverId: 'srv-2' },
+        ];
+        const reordered = moveVisiblePin(original, original.map(pinKey), 's:srv-2', 0)!;
+        expect(reordered.map(pinKey)).toEqual(['s:srv-2', 'c:conv-1', 'ch:ch-1']);
+        mem.set(`cipherline_home_pins_${USER}`, JSON.stringify(reordered));
+
+        await roundTrip();
+
+        const back = JSON.parse(mem.get(`cipherline_home_pins_${USER}`)!) as typeof original;
+        expect(back.map(pinKey)).toEqual(['s:srv-2', 'c:conv-1', 'ch:ch-1']);
+        expect(back.map(pinKey)).not.toEqual(original.map(pinKey));
+    });
+
     it('an empty pin list round-trips too (not just non-empty state)', async () => {
         mem.set(`cipherline_home_pins_${USER}`, '[]');
         await roundTrip();

@@ -766,6 +766,19 @@
   background:none;border:0;padding:0;margin-left:auto;cursor:pointer;
   color:var(--cl-lume);font-size:11px;font-weight:700;text-decoration:underline;
 }
+/* "Share mine back". Once sent it drops to a plain line rather than a tinted
+   result row: those rows report a check on the keys, and having shared your own
+   code says nothing about theirs, so it must not read like one. */
+.cl-sn-share{display:flex;flex-direction:column;gap:6px}
+/* The kit's dots are drawn for a lume button and vanish on a ghost one, and they
+   are shorter than the label, so the card would jump as the send starts. */
+.cl-sn-share .ldots i{background:var(--cl-muted)}
+.cl-sn-share .clb .cap{min-height:32px}
+.cl-sn-shared{display:flex;align-items:flex-start;gap:6px;font-size:11.5px;line-height:1.45;color:var(--cl-muted);outline:none;border-radius:6px}
+.cl-sn-shared:focus-visible{outline:2px solid var(--cl-lume);outline-offset:2px}
+.cl-sn-shared svg{margin-top:2px}
+.cl-sn-shared span{min-width:0;overflow-wrap:anywhere}
+.cl-sn-share-error{font-size:11px;line-height:1.4;color:var(--cl-flash)}
 
 /* ── The match flourish ───────────────────────────────────────────────────
    Staged like the modal's `cl-verify-seal`, and on the same curves — the

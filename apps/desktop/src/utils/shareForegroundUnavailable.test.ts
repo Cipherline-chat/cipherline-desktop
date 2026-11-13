@@ -5,14 +5,12 @@ import {
     cleanForegroundDiag, unavailableForegroundDiag, isForegroundUnavailable, foregroundLogFields,
     FOREGROUND_UNAVAILABLE_STATE, fetchForegroundDiag, type ForegroundDiag,
 } from './foregroundInfo';
-import { decideFullscreenHint, FullscreenHintGate } from './shareFullscreenHint';
 import { logCallEvent, getCallEvents, clearCallEvents, validateCallEvent } from './callEventLog';
 
 /**
  * Linux / macOS have no foreground information (electron/share-platform.ts).
  * main answers { unavailable: true }; the renderer reports fg_state
- * "unavailable" and nothing else, and never offers the Windows-only
- * fullscreen hint.
+ * "unavailable" and nothing else.
  */
 const GAME: ForegroundDiag = { state: 'QUNS_RUNNING_D3D_FULL_SCREEN', exe: 'game.exe', covers: true, isCipherline: false, onSharedScreen: true };
 
@@ -73,37 +71,6 @@ describe('foregroundLogFields', () => {
     });
 });
 
-describe('the fullscreen hint off Windows', () => {
-    it('never shows when the foreground is unavailable, however the share looks', () => {
-        const d = decideFullscreenHint({ kind: 'screen', fg: unavailableForegroundDiag(), alreadyShown: false });
-        expect(d).toEqual({ show: false, reason: 'unavailable' });
-    });
-
-    it('the gate never fires for an unavailable foreground, sample after sample', () => {
-        let shown = 0;
-        const gate = new FullscreenHintGate({ onHint: () => { shown++; } });
-        for (let i = 0; i < 5; i++) gate.observe(unavailableForegroundDiag(), 'screen');
-        expect(shown).toBe(0);
-        expect(gate.shown).toBe(false);
-    });
-
-    it('with the once-per-account store, an unavailable foreground never marks the hint as seen (nothing was shown)', () => {
-        let marked = 0;
-        const seen = { ready: () => true, seen: () => false, markSeen: () => { marked++; } };
-        const gate = new FullscreenHintGate({ onHint: () => {}, seen });
-        for (let i = 0; i < 3; i++) gate.observe(unavailableForegroundDiag(), 'screen');
-        expect(marked).toBe(0);
-        // ...and a later Windows-style sample on the same account still shows it once.
-        expect(gate.observe(GAME, 'screen').show).toBe(true);
-        expect(marked).toBe(1);
-    });
-
-    it('the Windows hint still fires (nothing regressed)', () => {
-        const d = decideFullscreenHint({ kind: 'screen', fg: GAME, alreadyShown: false });
-        expect(d).toEqual({ show: true, reason: 'show', exe: 'game.exe' });
-    });
-});
-
 describe('source pins for the Linux/macOS parity wiring', () => {
     const rd = (...p: string[]) => fs.readFileSync(path.resolve(__dirname, '..', ...p), 'utf8');
     const SC = rd('components', 'SidebarConference.tsx');
@@ -119,18 +86,22 @@ describe('source pins for the Linux/macOS parity wiring', () => {
 
     it('main reports the capturer ceiling to the picker and in the share diagnostics', () => {
         expect(MAIN).toMatch(/captureFpsCeiling: ceiling,/);
-        expect(MAIN).toMatch(/captureFpsCeiling: captureFpsCeiling\(capturer\.backend\),/);
+        expect(MAIN).toMatch(/captureFpsCeiling: captureFpsCeiling\(capturer\.backend, process\.env\.XDG_CURRENT_DESKTOP\),/);
     });
 
     it('the share asks the capturer for headroom over the ceiling, and records both in share_codec', () => {
-        expect(SC).toContain('const captureCeiling = mainDiag?.captureFpsCeiling ?? null;');
+        expect(SC).toContain('const captureCeiling = mergeFpsCeiling(');
+        expect(SC).toContain('mainDiag?.captureFpsCeiling ?? null,');
         expect(SC).toContain('captureFrameRateFor(options.frameRate, captureCeiling)');
         expect(SC).toContain("backend: mainDiag?.capturer.backend ?? 'unknown', ceiling: captureCeiling ?? 0,");
     });
 
     it('the picker says so when the capturer, not the monitor, is the limit', () => {
+        // The decision and the copy live in ShareFpsNote.tsx (shared note family); the picker only passes the ceiling in.
+        const NOTE = rd('components', 'ShareFpsNote.tsx');
         expect(PICKER).toContain('captureFpsCeiling');
-        expect(PICKER).toMatch(/const captureCapped = captureCeiling > 0 && frameRate > captureCeiling/);
-        expect(PICKER).toContain('Screen sharing is limited to {captureCeiling} fps here.');
+        expect(PICKER).toContain('captureCeiling={captureCeiling}');
+        expect(NOTE).toMatch(/const captureCapped = captureCeiling > 0 && frameRate > captureCeiling/);
+        expect(NOTE).toContain('Screen sharing is limited to {captureCeiling} fps here.');
     });
 });

@@ -9,13 +9,20 @@
  *   - The fallback shape is different: a colored abbreviation card, not a
  *     single-person silhouette.
  *
+ * Animated icons / banners (GIF, animated WebP - free for everyone): the same
+ * rule as animated avatars. A list shows the FIRST FRAME and plays on hover;
+ * a surface that IS the open server (its banner, its settings preview) passes
+ * `animate`. Nothing plays while Cipherline is not the focused window
+ * (utils/animatedImage `useStillGate`). Static images ignore all of it.
+ *
  * Sizes: pass `className` for the wrapper (controls dimensions). The
  * abbreviation auto-scales relative to the wrapper's font size — set
  * `text-[Npx]` in className to match the size you want.
  */
 
-import React from 'react';
-import { useEncryptedAvatar } from '../../hooks/useEncryptedAvatar';
+import React, { useState } from 'react';
+import { useEncryptedAvatar, avatarUrlMime } from '../../hooks/useEncryptedAvatar';
+import { mayBeAnimated, useStillGate } from '../../utils/animatedImage';
 import { userColor } from '../../utils/avatarColor';
 import { safeImageSrc } from '../../utils/safeMediaUrl';
 
@@ -30,6 +37,13 @@ interface Props {
     token: string | null;
     /** Wrapper classes (size, rounding). */
     className?: string;
+    /** An animated image plays here (while the app is in front). Default false:
+     *  lists show the first frame and play on hover. The server rail passes this
+     *  only for the server you are in (owner 2026-10-31). */
+    animate?: boolean;
+    /** A PARENT says "play now" (e.g. the pointer is over the rail tile around
+     *  this icon). Transient, unlike `animate`. */
+    playing?: boolean;
 }
 
 function abbreviate(name: string): string {
@@ -39,13 +53,22 @@ function abbreviate(name: string): string {
     return (words[0][0] + words[1][0]).toUpperCase();
 }
 
-export const ServerIcon: React.FC<Props> = ({ serverId, name, attachmentId, keyB64, nonceB64, token, className }) => {
+export const ServerIcon: React.FC<Props> = ({ serverId, name, attachmentId, keyB64, nonceB64, token, className, animate = false, playing = false }) => {
     const inlineKey = (attachmentId && keyB64 && nonceB64) ? { keyB64, nonceB64 } : null;
     // Only a validated image URL (blob:, data:image/*, trusted https) ever reaches <img src>.
-    const url = safeImageSrc(useEncryptedAvatar(attachmentId, token, inlineKey));
+    const fullUrl = safeImageSrc(useEncryptedAvatar(attachmentId, token, inlineKey)) ?? null;
+    const mime = avatarUrlMime(fullUrl);
+    const [hovered, setHovered] = useState(false);
+    const url = useStillGate(fullUrl, mime, animate || hovered || playing);
+    // Kept on while `animate` is true: clicking a rail tile turns `animate` on under
+    // the pointer, and dropping these then missed the leave, so the icon kept playing
+    // after you moved to another server.
+    const hover = mayBeAnimated(mime)
+        ? { onMouseEnter: () => setHovered(true), onMouseLeave: () => setHovered(false) }
+        : undefined;
 
     if (url) {
-        return <img src={url} alt={name} className={`object-cover ${className ?? ''}`} />;
+        return <img src={url} alt={name} className={`object-cover ${className ?? ''}`} {...hover} />;
     }
 
     const bg = userColor(serverId);
@@ -54,6 +77,7 @@ export const ServerIcon: React.FC<Props> = ({ serverId, name, attachmentId, keyB
             className={`flex items-center justify-center font-bold ${className ?? ''}`}
             style={{ backgroundColor: bg, color: '#000000' }}
             title={name}
+            {...hover}
         >
             {abbreviate(name)}
         </div>

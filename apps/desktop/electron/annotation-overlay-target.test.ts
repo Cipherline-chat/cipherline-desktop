@@ -210,6 +210,18 @@ describe('linuxOverlayVerdict', () => {
         expect(v({ WAYLAND_DISPLAY: 'wayland-0', XDG_CURRENT_DESKTOP: 'KDE' })).toBe('wayland');
         expect(v({ XDG_SESSION_TYPE: 'x11', XDG_CURRENT_DESKTOP: 'GNOME' }, 'wayland')).toBe('wayland');
     });
+    it('Wayland session WITH the native overlay helper: allowed (the helper decides per compositor at run time)', () => {
+        const w = (env: Record<string, string>, ozonePlatform = '') => linuxOverlayVerdict({ env, ozonePlatform, waylandHelper: true });
+        expect(w({ XDG_SESSION_TYPE: 'wayland', XDG_CURRENT_DESKTOP: 'KDE' })).toBeNull();
+        expect(w({ WAYLAND_DISPLAY: 'wayland-1', XDG_CURRENT_DESKTOP: 'sway' })).toBeNull();       // not in the X11 compositing list: irrelevant here
+        expect(w({ XDG_SESSION_TYPE: 'x11', XDG_CURRENT_DESKTOP: 'GNOME' }, 'wayland')).toBeNull();
+        // ...but the helper changes nothing for X11 and nothing for the explicit overrides
+        expect(w({ XDG_SESSION_TYPE: 'x11', XDG_CURRENT_DESKTOP: 'i3' })).toBe('no_compositor');
+        expect(w({ XDG_SESSION_TYPE: 'wayland', CIPHERLINE_ANNOT_OVERLAY: '0' })).toBe('platform');
+        // positive control: without it the same sessions are still refused
+        expect(linuxOverlayVerdict({ env: { XDG_SESSION_TYPE: 'wayland', XDG_CURRENT_DESKTOP: 'KDE' }, ozonePlatform: '' })).toBe('wayland');
+        expect(linuxOverlayVerdict({ env: { XDG_SESSION_TYPE: 'wayland' }, ozonePlatform: '', waylandHelper: false })).toBe('wayland');
+    });
     it('explicit --ozone-platform=x11 under a Wayland session (XWayland) counts as X11', () => {
         expect(v({ XDG_SESSION_TYPE: 'wayland', WAYLAND_DISPLAY: 'wayland-0', XDG_CURRENT_DESKTOP: 'GNOME' }, 'x11')).toBeNull();
     });

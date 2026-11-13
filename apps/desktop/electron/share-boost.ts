@@ -135,6 +135,12 @@ export function validateShareActive(input: unknown): boolean {
     return input;
 }
 
+/** The renderer's "our camera is (not) published" push (`camera:set-active`). Same trust boundary rule. */
+export function validateCameraActive(input: unknown): boolean {
+    if (typeof input !== 'boolean') throw new Error('camera:set-active: expected a boolean');
+    return input;
+}
+
 /** The slice of Electron's powerSaveBlocker this needs. */
 export interface PowerBlockerApi {
     start(type: 'prevent-app-suspension'): number;
@@ -172,6 +178,42 @@ export const POWER_ERR_UNAVAILABLE = -2;   // the addon lacks the export, or it 
 /** Electron process types whose throttling is lifted: main, GPU (encode), renderers (RTP pacing). */
 export const POWER_THROTTLE_TYPES: readonly string[] = Object.freeze(['Browser', 'GPU', 'Tab']);
 
+/** One entry of app.getAppMetrics(), reduced to what the boosts decide on. */
+export interface BoostProc { pid: number; type?: string; name?: string; serviceName?: string }
+
+/**
+ * Chromium's VIDEO CAPTURE service: the Utility process that owns the webcam
+ * (Media Foundation on Windows; with D3D11 capture it also copies/converts the
+ * camera's textures on the GPU). Electron names it "Video Capture" (`name`) /
+ * `video_capture.mojom.VideoCaptureService` (`serviceName`). No other Utility
+ * process matches (Network Service, Audio Service, ...): those stay with the OS.
+ *
+ * Why it is on the boost list: reports c344523e / 884b6045 / 14a5184a
+ * ("while playing game my camera freezes") show the camera's CAPTURE at 0-10
+ * fps while the screen share in the SAME call, under the same game, ran at
+ * 85-90 fps. Every boost here covered the capture thread (Browser), the encode
+ * (GPU) and the renderers (Tab) - the share's whole path - and none covered
+ * the process the camera comes through.
+ */
+export function isVideoCaptureProcess(p: Pick<BoostProc, 'type' | 'name' | 'serviceName'>): boolean {
+    if (p.type !== 'Utility') return false;
+    return /video[\s._-]*capture/i.test(`${p.name ?? ''} ${p.serviceName ?? ''}`);
+}
+
+/**
+ * How much of the boost is in force. 'full' = a screen share is live: main,
+ * GPU, renderers AND the Video Capture utility. 'capture' = only the local
+ * CAMERA is live (no share): just the Video Capture utility - the webcam's
+ * process, which the game starves ("camera freezes while playing a game",
+ * which the owner confirmed happens with no share running). 'off' = nothing.
+ */
+export type BoostMode = 'off' | 'capture' | 'full';
+
+/** getAppMetrics() entry -> BoostProc (main.ts wires this in; the electron type is not imported here). */
+export function boostProcFromMetric(m: { pid: number; type?: string; name?: string; serviceName?: string }): BoostProc {
+    return { pid: m.pid, type: m.type, name: m.name, serviceName: m.serviceName };
+}
+
 /** The timer resolution held while sharing, in ms. */
 export const SHARE_TIMER_RESOLUTION_MS = 1;
 
@@ -201,8 +243,8 @@ export interface PowerThrottleDeps {
     platform: string;
     /** The loaded addon, or null before it loads / when it failed to. Read on every use. */
     native(): PowerNativeApi | null;
-    /** app.getAppMetrics() pid + type. */
-    listProcesses(): Array<{ pid: number; type?: string }>;
+    /** app.getAppMetrics() pid + type (+ name / serviceName, to find the Video Capture utility). */
+    listProcesses(): BoostProc[];
     /** process.pid - the main process, always included. */
     selfPid: number;
     report?(r: SharePowerReport): void;
@@ -239,15 +281,15 @@ export function cleanPowerResult(raw: unknown): PowerThrottleResult {
  * Windows only; anywhere else every method does nothing and never reports.
  */
 export class PowerThrottleOptOut {
-    private on = false;
+    private mode: BoostMode = 'off';
     private readonly optedOut = new Map<number, string>();   // pid -> type
     private readonly tried = new Set<number>();               // pids already attempted (ok or not)
     private timerHeld = false;
 
     constructor(private readonly deps: PowerThrottleDeps) {}
 
-    /** True while the opt-out is in force. */
-    get active(): boolean { return this.on; }
+    /** True while the opt-out is in force (either scope). */
+    get active(): boolean { return this.mode !== 'off'; }
 
     /** pids currently opted out by us (tests / diagnostics). */
     optedOutPids(): number[] { return [...this.optedOut.keys()]; }
@@ -255,30 +297,44 @@ export class PowerThrottleOptOut {
     /** True while a timeBeginPeriod is held. */
     get timerResolutionHeld(): boolean { return this.timerHeld; }
 
-    setActive(on: boolean): void {
+    /** Share-scope on/off (the original API): on = 'full'. */
+    setActive(on: boolean): void { this.setMode(on ? 'full' : 'off'); }
+
+    /**
+     * Move to a scope. Idempotent per mode. Going down ('full' -> 'capture')
+     * hands back only what the new scope no longer wants (and ends the 1 ms
+     * timer, which is the share's capture pacing); going up opts out the
+     * extra processes; 'off' restores everything.
+     */
+    setMode(mode: BoostMode): void {
         if (!shareBoostSupport(this.deps.platform).powerThrottleOptOut) return;
-        if (on === this.on) return;
-        this.on = on;
-        if (on) this.apply('apply');
-        else this.restore();
+        if (mode === this.mode) return;
+        const prev = this.mode;
+        this.mode = mode;
+        if (mode === 'off') this.restore();
+        else if (prev === 'off') this.apply('apply');
+        else this.rescope();
     }
 
     tick(): void {
-        if (!this.on) return;
+        if (this.mode === 'off') return;
         this.apply('reapply');
     }
 
     private wanted(): Array<{ pid: number; type: string }> {
-        let procs: Array<{ pid: number; type?: string }> = [];
+        let procs: BoostProc[] = [];
         try { procs = this.deps.listProcesses(); } catch { procs = []; }
         const out = new Map<number, string>();
+        const full = this.mode === 'full';
         for (const p of procs) {
             if (!isInt(p.pid) || p.pid <= 0) continue;
+            if (isVideoCaptureProcess(p)) { out.set(p.pid, 'VideoCapture'); continue; }
+            if (!full) continue;   // camera-only: the webcam's process and nothing else
             if (p.pid === this.deps.selfPid) { out.set(p.pid, 'Browser'); continue; }
             if (p.type && POWER_THROTTLE_TYPES.includes(p.type)) out.set(p.pid, p.type);
         }
-        // The main process is always handled, even if the metrics list lost it.
-        if (!out.has(this.deps.selfPid)) out.set(this.deps.selfPid, 'Browser');
+        // Share scope: the main process is always handled, even if the metrics list lost it.
+        if (full && !out.has(this.deps.selfPid)) out.set(this.deps.selfPid, 'Browser');
         return [...out].map(([pid, type]) => ({ pid, type }));
     }
 
@@ -304,7 +360,8 @@ export class PowerThrottleOptOut {
         for (const pid of [...this.optedOut.keys()]) if (!live.has(pid)) this.optedOut.delete(pid);
         for (const pid of [...this.tried]) if (!live.has(pid)) this.tried.delete(pid);
 
-        if (!this.timerHeld) this.timerHeld = this.timer(true);
+        // The 1 ms timer is the SHARE's capture pacing: not held for a camera alone.
+        if (this.mode === 'full' && !this.timerHeld) this.timerHeld = this.timer(true);
 
         const fresh = wanted.filter(w => !this.tried.has(w.pid));
         let ok = 0, failed = 0, mask = 0;
@@ -320,6 +377,23 @@ export class PowerThrottleOptOut {
         // A re-apply that found nothing new has nothing to say.
         if (phase === 'reapply' && fresh.length === 0) return;
         this.deps.report?.({ phase, procs: fresh.length, ok, failed, mainErr, gpuErr, rendererErr, mask, timer: this.timerHeld });
+    }
+
+    /**
+     * 'full' -> 'capture': give back every process the narrower scope does not
+     * want (the share's), keep the webcam's; end the share's timer. 'capture'
+     * -> 'full': opt out the extra processes.
+     */
+    private rescope(): void {
+        const keep = new Set(this.wanted().map(w => w.pid));
+        for (const pid of [...this.optedOut.keys()]) {
+            if (keep.has(pid)) continue;
+            this.call(pid, true);   // an exited process just fails - nothing to undo
+            this.optedOut.delete(pid);
+            this.tried.delete(pid);
+        }
+        if (this.mode !== 'full' && this.timerHeld) { this.timer(false); this.timerHeld = false; }
+        this.apply('reapply');
     }
 
     private restore(): void {
@@ -442,14 +516,14 @@ export interface GpuSchedDeps {
     platform: string;
     /** The loaded addon, or null before it loads / when it failed to. Read on every use. */
     native(): GpuSchedNativeApi | null;
-    /** app.getAppMetrics() pid + type. */
-    listProcesses(): Array<{ pid: number; type?: string }>;
+    /** app.getAppMetrics() pid + type (+ name / serviceName, to find the Video Capture utility). */
+    listProcesses(): BoostProc[];
     /** process.pid - the main process, where capture runs. */
     selfPid: number;
     report?(r: GpuSchedReport): void;
 }
 
-type GpuSlot = 'main' | 'gpu';
+type GpuSlot = 'main' | 'gpu' | 'capture';
 const ABSENT: GpuSchedProcReport = Object.freeze({ level: 'absent', rt: 'na', status: 'na' });
 
 /**
@@ -469,41 +543,52 @@ const ABSENT: GpuSchedProcReport = Object.freeze({ level: 'absent', rt: 'na', st
  * Windows only; anywhere else every method does nothing and never reports.
  */
 export class GpuSchedulingBoost {
-    private on = false;
+    private mode: BoostMode = 'off';
     private readonly held = new Map<number, { slot: GpuSlot; level: number }>();
     private readonly tried = new Map<number, GpuSlot>();         // pid -> slot, attempted (ok or not)
     private readonly slots = new Map<GpuSlot, GpuSchedProcReport>();
 
     constructor(private readonly deps: GpuSchedDeps) {}
 
-    get active(): boolean { return this.on; }
+    get active(): boolean { return this.mode !== 'off'; }
 
     /** pids currently raised by us (tests / diagnostics). */
     heldPids(): number[] { return [...this.held.keys()]; }
 
-    setActive(on: boolean): void {
+    /** Share-scope on/off (the original API): on = 'full'. */
+    setActive(on: boolean): void { this.setMode(on ? 'full' : 'off'); }
+
+    /** Move to a scope; see PowerThrottleOptOut.setMode (same rules). */
+    setMode(mode: BoostMode): void {
         if (!shareBoostSupport(this.deps.platform).gpuPriority) return;
-        if (on === this.on) return;
-        this.on = on;
-        if (on) this.apply('apply');
-        else this.restore();
+        if (mode === this.mode) return;
+        const prev = this.mode;
+        this.mode = mode;
+        if (mode === 'off') this.restore();
+        else if (prev === 'off') this.apply('apply');
+        else this.rescope();
     }
 
     tick(): void {
-        if (!this.on) return;
+        if (this.mode === 'off') return;
         this.apply('reapply');
     }
 
     private wanted(): Array<{ pid: number; slot: GpuSlot }> {
-        let procs: Array<{ pid: number; type?: string }> = [];
+        let procs: BoostProc[] = [];
         try { procs = this.deps.listProcesses(); } catch { procs = []; }
         const out = new Map<number, GpuSlot>();
-        out.set(this.deps.selfPid, 'main');
+        const full = this.mode === 'full';
+        if (full) out.set(this.deps.selfPid, 'main');
         let haveGpu = false;
+        let haveCapture = false;
         for (const p of procs) {
             if (!isInt(p.pid) || p.pid <= 0 || p.pid === this.deps.selfPid) continue;
             // One GPU process is expected; if there are ever two, the first stands for the report.
-            if (p.type === 'GPU' && !haveGpu) { out.set(p.pid, 'gpu'); haveGpu = true; }
+            if (full && p.type === 'GPU' && !haveGpu) { out.set(p.pid, 'gpu'); haveGpu = true; }
+            // The webcam's Utility process: its D3D11 device does the camera's texture work
+            // (not in the report's main/gpu fields - it counts in `procs`).
+            else if (!haveCapture && isVideoCaptureProcess(p)) { out.set(p.pid, 'capture'); haveCapture = true; }
         }
         return [...out].map(([pid, slot]) => ({ pid, slot }));
     }
@@ -557,6 +642,23 @@ export class GpuSchedulingBoost {
         });
     }
 
+    /** 'full' -> 'capture': NORMAL back on what the narrower scope drops, keep the webcam's. */
+    private rescope(): void {
+        const keep = new Set(this.wanted().map(w => w.pid));
+        for (const [pid, h] of [...this.held]) {
+            if (keep.has(pid)) continue;
+            this.set(pid, GPU_SCHED_NORMAL);   // an exited process just fails - nothing to undo
+            this.held.delete(pid);
+            this.slots.delete(h.slot);
+        }
+        for (const [pid, slot] of [...this.tried]) {
+            if (keep.has(pid)) continue;
+            this.tried.delete(pid);
+            this.slots.delete(slot);
+        }
+        this.apply('reapply');
+    }
+
     private restore(): void {
         const had = this.held.size;
         const slots = new Map<GpuSlot, GpuSchedProcReport>();
@@ -588,6 +690,7 @@ export class GpuSchedulingBoost {
 export class ShareBoostController {
     private enabled = false;
     private sharing = false;
+    private cameraLive = false;
     private blockerId: number | null = null;
 
     constructor(
@@ -608,9 +711,21 @@ export class ShareBoostController {
         this.gpuSched?.tick();
     }
 
-    /** True while the boost should be held. */
+    /** True while the SHARE boost should be held (power request, priority HIGH, full scope). */
     get active(): boolean {
         return this.enabled && this.sharing;
+    }
+
+    /**
+     * The scope of the throttle opt-out / GPU class right now: a share is
+     * 'full'; a live local camera alone is 'capture' (the webcam's process
+     * only); both = 'full' (it already includes the webcam's process, so
+     * nothing is applied twice and a share ending leaves the camera's).
+     */
+    get mode(): BoostMode {
+        if (!this.enabled) return 'off';
+        if (this.sharing) return 'full';
+        return this.cameraLive ? 'capture' : 'off';
     }
 
     /** True while a power request is held (tests / diagnostics). */
@@ -628,11 +743,17 @@ export class ShareBoostController {
         this.sync();
     }
 
+    /** OUR camera is published (true) / off or the call ended (false). */
+    setCameraLive(on: boolean): void {
+        this.cameraLive = on;
+        this.sync();
+    }
+
     private sync(): void {
         this.booster.setShareEnabled(this.enabled);
         this.booster.setSharing(this.sharing);
-        this.throttle?.setActive(this.active);
-        this.gpuSched?.setActive(this.active);
+        this.throttle?.setMode(this.mode);
+        this.gpuSched?.setMode(this.mode);
         if (this.active) {
             if (this.blockerId === null || !this.safeIsStarted(this.blockerId)) {
                 try { this.blockerId = this.power.start('prevent-app-suspension'); } catch { this.blockerId = null; }

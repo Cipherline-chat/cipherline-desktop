@@ -689,6 +689,7 @@ export const ServerChannelList: React.FC<Props> = ({
                         nonceB64={server.banner_nonce_b64}
                         token={token}
                         className="w-full h-full object-cover"
+                        animate
                     />
                 ) : (
                     <div

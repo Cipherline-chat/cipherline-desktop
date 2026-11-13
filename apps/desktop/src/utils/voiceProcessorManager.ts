@@ -66,7 +66,13 @@ const stableCallbacks: VoiceProcessorCallbacks = {
     onInputLevel: (dbfs) => latestCallbacks.onInputLevel?.(dbfs),
     onNsAutoBypass: (active) => latestCallbacks.onNsAutoBypass?.(active),
     onNsStats: (stats) => latestCallbacks.onNsStats?.(stats),
+    // Was missing until 2026-11-10: CallPane registered onAgcStats, but with no delegator
+    // here the processor's `_callbacks.onAgcStats` was undefined, so no call ever recorded
+    // the AGC's gain or the mic's speech level (diagnostic reports showed no loudness).
+    onAgcStats: (stats) => latestCallbacks.onAgcStats?.(stats),
+    onMicLevelStats: (stats) => latestCallbacks.onMicLevelStats?.(stats),
     onNsUnavailable: () => latestCallbacks.onNsUnavailable?.(),
+    onNoiseFloor: (db) => latestCallbacks.onNoiseFloor?.(db),
     onNsLoadFallback: (info) => latestCallbacks.onNsLoadFallback?.(info),
     onAudioRender: (w) => latestCallbacks.onAudioRender?.(w),
 };

@@ -621,3 +621,64 @@ describe('useAnnotationTransport — an encrypting room must still deliver', () 
         });
     });
 });
+
+describe('useAnnotationTransport - a fast stroke is batched on the way out, never thinned', () => {
+    let container: HTMLDivElement;
+    let root: Root;
+    beforeEach(() => {
+        vi.useFakeTimers();
+        annotationStore.reset();
+        container = document.createElement('div');
+        document.body.appendChild(container);
+        root = createRoot(container);
+    });
+    afterEach(() => {
+        act(() => { root.unmount(); });
+        container.remove();
+        vi.useRealTimers();
+    });
+
+    it('240 Hz of pointer moves for 2 s -> about 30 packets/s, every point delivered, begin + end not delayed', async () => {
+        const room = makeFakeRoom();
+        room.name = 'room-1';
+        room.localParticipant.identity = 'alice';
+        await act(async () => { root.render(React.createElement(Host, { room })); });
+        const key = trackKey('alice', 'screen_share');
+        let id = '';
+        await act(async () => { id = annotationStore.beginStroke(key, 'alice', { x: 0.01, y: 0.5 })!; });
+        expect(published(room, 'room-1').map((m: AnnotMsg) => m.t)).toEqual(['stroke.begin']);          // immediate
+        const N = 480;
+        for (let i = 1; i <= N; i++) {
+            await act(async () => { annotationStore.appendPoints(key, id, [{ x: 0.01 + (0.98 * i) / N, y: 0.5 }]); });
+            await act(async () => { await vi.advanceTimersByTimeAsync(1000 / 240); });
+        }
+        await act(async () => { await vi.advanceTimersByTimeAsync(100); });
+        const msgs = published(room, 'room-1') as AnnotMsg[];
+        const appends = msgs.filter(m => m.t === 'stroke.append');
+        expect(appends.length).toBeGreaterThan(40);
+        expect(appends.length).toBeLessThan(90);                                                      // ~30/s over 2 s, not 480
+        expect(appends.reduce((n, m) => n + (m.t === 'stroke.append' ? m.pts.length : 0), 0)).toBe(N); // not one point lost
+        // stroke.end follows the LAST point and is sent at once
+        await act(async () => { annotationStore.endStroke(key, id); });
+        const after = published(room, 'room-1') as AnnotMsg[];
+        expect(after[after.length - 1].t).toBe('stroke.end');
+    });
+
+    it('leaving the call flushes the held points (nothing is stranded in the batch)', async () => {
+        const room = makeFakeRoom();
+        room.name = 'room-1';
+        room.localParticipant.identity = 'alice';
+        await act(async () => { root.render(React.createElement(Host, { room })); });
+        const key = trackKey('alice', 'screen_share');
+        let id = '';
+        await act(async () => { id = annotationStore.beginStroke(key, 'alice', { x: 0.1, y: 0.1 })!; });
+        await act(async () => { annotationStore.appendPoints(key, id, [{ x: 0.2, y: 0.2 }]); });   // leading edge: sent
+        await act(async () => { annotationStore.appendPoints(key, id, [{ x: 0.3, y: 0.3 }]); });   // held
+        const before = published(room, 'room-1').filter((m: AnnotMsg) => m.t === 'stroke.append').length;
+        await act(async () => { root.unmount(); });
+        const afterN = published(room, 'room-1').filter((m: AnnotMsg) => m.t === 'stroke.append').length;
+        expect(afterN).toBeGreaterThan(before);
+        // remount so the shared afterEach unmount stays valid
+        root = createRoot(container);
+    });
+});

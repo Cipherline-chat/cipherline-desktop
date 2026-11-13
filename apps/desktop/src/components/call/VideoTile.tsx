@@ -7,7 +7,7 @@ import { shouldShowMuteBadge, type CallConnectionState } from '../../utils/muteB
 import { useParticipantTrackState } from './useParticipantTrackState';
 import { MicOff, Headphones, Monitor, MonitorOff, VideoOff } from 'lucide-react';
 import { EncryptedAvatar } from '../EncryptedAvatar';
-import { PopoverMenu } from './PopoverMenu';
+import { PopoverMenu, SelfStreamMenu } from './PopoverMenu';
 import { useParticipantAudio } from '../../hooks/useParticipantAudio';
 import { useDismissOnOutsideClick } from '../../hooks/useDismissOnOutsideClick';
 import { useParticipantSharedState } from '../../utils/perParticipantState';
@@ -21,7 +21,7 @@ import { useAnnotationAutoArm } from '../../hooks/useAnnotationAutoArm';
 import { ViewerCountBadge } from './ViewerCountBadge';
 import { StopWatchingButton } from './StopWatchingButton';
 import { canStopWatching } from '../../utils/stopWatchingScreenshare';
-import { useOverlayCaptured, strokeAuthorFilter, type AttributeSource } from '../../utils/annotationOverlayCapture';
+import { useOverlayCaptured, useOverlayDesktopState, overlayStateNote, strokeAuthorFilter, type AttributeSource } from '../../utils/annotationOverlayCapture';
 import { useAnnotationStore, trackKey as annotationTrackKey, isGranted as annotationIsGranted } from '../../utils/annotationStore';
 import { contentRect, type FitMode, type ContentRect } from '../../utils/annotationGeometry';
 import { videoRectInsets, videoRectPending, tileChromeSlots, CHROME_GUTTER_PX } from './videoRectChrome';
@@ -41,6 +41,9 @@ import { clampPerUserVolume } from '../../utils/volumeLimits';
 import { useCallPersonalization } from '../../utils/callPersonalizationStore';
 import { speakingShadow } from '../../utils/callPersonalizationStyle';
 import { shouldPlayShareAudio } from '../../utils/screenShareAudioWatch';
+import { useShareHoldFrame } from '../../hooks/useShareHold';
+import { ShareHoldPicture, ShareHoldNote } from './ShareHoldPlaceholder';
+import { ShareFallbackNoteFor } from './ShareFallbackNote';
 // vtMeta is derived inline from useParticipantMetadata (the reactive source)
 // so we don't need the string-input parser here.
 
@@ -383,12 +386,6 @@ export interface VideoTileProps {
      */
     focusToggleDisabled?: boolean;
     /**
-     * Px of this tile's bottom edge that something floats over (the
-     * fullscreen participant strip). Bottom-anchored corner chrome is lifted
-     * above it so the picture can extend underneath without hiding the readout.
-     */
-    overlayBottomPx?: number;
-    /**
      * Hard override of the simulcast layer this tile asks for. Normally
      * omitted: the tile picks its own layer from its rendered size × DPR,
      * its role (focused / grid / sidebar) and `videoCount`
@@ -408,6 +405,16 @@ export interface VideoTileProps {
      * cameras and on your own share (see `canStopWatching`).
      */
     onStopWatching?: () => void;
+    /**
+     * Fullscreen's "this one video fills the whole screen". FullscreenOverlay passes
+     * these, and the docked focused view passes `onToggleFill` to get there from
+     * outside fullscreen. `onToggleFill` adds the menu row, and on your OWN tile it is
+     * what gives the tile a right-click menu at all: nowhere else has one, because
+     * there is nothing to do to yourself. `isFilled` takes the rounded frame off
+     * (the picture meets the screen's edges) and lets the corner chrome idle out.
+     */
+    isFilled?: boolean;
+    onToggleFill?: () => void;
 }
 
 /** Resting the pointer this long on a focusable tile pre-warms its top layer. */
@@ -438,12 +445,13 @@ export const VideoTile = ({
     isGridView,
     annotationSurface,
     focusToggleDisabled,
-    overlayBottomPx = 0,
     quality,
     videoCount,
     canServerMute,
     onServerMuteTrack,
     onStopWatching,
+    isFilled,
+    onToggleFill,
 }: VideoTileProps) => {
     const isLocal = p.identity === localParticipant?.identity;
     const isScreenShare = source === Track.Source.ScreenShare;
@@ -537,6 +545,8 @@ export const VideoTile = ({
     // utils/annotationOverlayCapture.ts.
     const overlayCaptured = useOverlayCaptured(p as unknown as AttributeSource, isScreenShare);
     const annotOnlyBy = strokeAuthorFilter({ isScreenShare, captured: overlayCaptured, me: annotMe || p.identity });
+    // The sharer's desktop cannot show what we draw (waiting on their screen choice, or no overlay there): say so.
+    const overlayDesktopState = useOverlayDesktopState(p as unknown as AttributeSource, isScreenShare && !isLocal);
     const annotGranted = useAnnotationStore(st => !isLocal && !!annotMe && annotationIsGranted(st, annotKey, annotMe));
     const annotCanDraw = annotSurface && annotEnabled && annotGranted;
     // The owner just approved OUR request for this track: if this tile is a
@@ -559,6 +569,10 @@ export const VideoTile = ({
 
     const videoRef = React.useRef<HTMLVideoElement>(null);
     const wrapperRef = React.useRef<HTMLDivElement>(null);
+    // While a share holds across a republish (utils/shareHold.ts) the held frame IS
+    // the picture: the size everything that measures the picture must use, because
+    // the <video> underneath is empty or showing the SFU's blank frames.
+    const heldSizeRef = React.useRef<{ width: number; height: number } | null>(null);
     const popoverRef = React.useRef<HTMLDivElement>(null);
     // Wheel-zoom / drag-pan, focused view only. The layer this transforms
     // wraps BOTH the <video> and the annotation canvas (see the render), so
@@ -571,13 +585,15 @@ export const VideoTile = ({
     // The visible picture rect once a zoom has settled (null at fit); corner
     // chrome and the hairline ring ride it instead of the fitted rect.
     const [zoomView, setZoomView] = React.useState<ContentRect | null>(null);
+    const pictureRadiusPx = isFilled ? 0 : FIT_BORDER_RADIUS_PX;
     useVideoZoomPan({
         rootRef: wrapperRef,
         layerRef: zoomLayerRef,
         clipRef: zoomClipRef,
-        clipRadiusPx: FIT_BORDER_RADIUS_PX,
+        clipRadiusPx: pictureRadiusPx,
         onViewChange: setZoomView,
         videoRef,
+        intrinsicOverrideRef: heldSizeRef,
         fit: annotFit,
         enabled: usesZoomPan,
         // Annotation gets the plain left-drag only where a left-drag would
@@ -890,7 +906,7 @@ export const VideoTile = ({
 
     const handleContextMenu = (e: React.MouseEvent | React.PointerEvent) => {
         e.preventDefault();
-        if (isLocal) return;
+        if (isLocal && !onToggleFill) return;
         e.stopPropagation();
         window.dispatchEvent(new Event('close-all-popovers'));
         const popoverWidth = 200; // matches PopoverMenu.tsx's .ctxm width
@@ -899,6 +915,18 @@ export const VideoTile = ({
         setPopoverPos({ top, left });
         setShowPopover(true);
     };
+
+    // The clamp above guesses a height, and a full menu is taller than the guess:
+    // on a strip thumbnail, right at the bottom of the screen, its last rows ran
+    // off the edge. Once it has a real height, lift it by what is left over.
+    React.useLayoutEffect(() => {
+        const el = popoverRef.current;
+        if (!showPopover || !el) return;
+        setPopoverPos(prev => {
+            const over = prev.top + el.offsetHeight - (window.innerHeight - 16);
+            return over > 0 ? { ...prev, top: Math.max(16, prev.top - over) } : prev;
+        });
+    }, [showPopover]);
 
     const handleClick = (e: React.MouseEvent) => {
         // Don't focus on right-click
@@ -933,6 +961,8 @@ export const VideoTile = ({
     // In focused view, the speaking indicator is on the avatar only, not the border
     const showBorderSpeaking = isSpeaking && !isLocalMuted && !isLocalDeafened && !isFocusedView;
     const showAvatarSpeaking = isSpeaking && !isLocalMuted && !isLocalDeafened && isFocusedView;
+    // An animated avatar plays while its owner talks, in any view (the ring above is view-specific).
+    const avatarSpeaking = isSpeaking && !isLocalMuted && !isLocalDeafened;
 
     // Where the picture actually renders inside the wrapper's box.
     //
@@ -952,6 +982,19 @@ export const VideoTile = ({
     // expression there trips `react-hooks/exhaustive-deps`' "complex
     // expression in the dependency array".
     const liveTrack = p.getTrackPublication(source)?.track;
+    // A share republishing after an announcement (utils/shareHold.ts): this tile
+    // takes the last frame and keeps it up, in the place and at the size the
+    // picture had, until the new track paints.
+    const hold = useShareHoldFrame({ identity: isScreenShare ? p.identity : undefined, videoRef, wrapperRef, liveTrack });
+    const heldFrame = hold.placeholder ? hold.frame : null;
+    // A hold starting or ending changes what the picture is without the <video>
+    // telling anyone, so tell them: the zoom clip, the annotation layout and the
+    // focused banner's fit all listen for this, and nothing else needs wiring.
+    React.useLayoutEffect(() => {
+        if (heldSizeRef.current === heldFrame) return;
+        heldSizeRef.current = heldFrame;
+        videoRef.current?.dispatchEvent(new Event('resize'));
+    }, [heldFrame]);
     const [fitRect, setFitRect] = React.useState<ContentRect | null>(null);
     // The box the LAST fitRect was computed against — needed alongside
     // fitRect to derive clip-path insets (top/right/bottom/left from the
@@ -965,7 +1008,10 @@ export const VideoTile = ({
 
         const recompute = () => {
             const box = { width: wrapper.clientWidth, height: wrapper.clientHeight };
-            setFitRect(contentRect(box, { width: video.videoWidth, height: video.videoHeight }, 'contain'));
+            // The held frame stands in for an element with nothing decoded, so the
+            // corner chrome and the rounded clip stay exactly where they were.
+            const intrinsic = heldSizeRef.current ?? { width: video.videoWidth, height: video.videoHeight };
+            setFitRect(contentRect(box, intrinsic, 'contain'));
             setFitBox(box);
         };
 
@@ -996,7 +1042,7 @@ export const VideoTile = ({
     // here too: a screen share republished at a new quality swaps the track
     // under a tile that does NOT remount, and the new stream can be a
     // different shape — re-arming beats hoping the old listeners see it.
-    }, [usesContainFit, p, source, liveTrack]);
+    }, [usesContainFit, p, source, liveTrack, heldFrame]);
     // Only suppress the wrapper's own ring once we have a REAL rect to frame
     // instead — a null rect (video not loaded yet, or a 0×0 box mid-layout)
     // must fall back to the full-box ring rather than show no border at all.
@@ -1046,7 +1092,7 @@ export const VideoTile = ({
     // unexplained magic number so a future change to that config value has
     // somewhere obvious to also update.
     const fitClipPath = usesContainFit && fitRect && fitBox
-        ? `inset(${fitRect.y}px ${Math.max(0, fitBox.width - fitRect.x - fitRect.width)}px ${Math.max(0, fitBox.height - fitRect.y - fitRect.height)}px ${fitRect.x}px round ${FIT_BORDER_RADIUS_PX}px)`
+        ? `inset(${fitRect.y}px ${Math.max(0, fitBox.width - fitRect.x - fitRect.width)}px ${Math.max(0, fitBox.height - fitRect.y - fitRect.height)}px ${fitRect.x}px round ${pictureRadiusPx}px)`
         : undefined;
 
     // ── Corner chrome rides the PICTURE, not the tile ───────────────────────
@@ -1071,14 +1117,11 @@ export const VideoTile = ({
     // the fitRect effect above: muting a camera leaves the <video> element and
     // its intrinsic size intact, so the effect would not re-run, and the stale
     // rect would keep the badges parked over a picture that is no longer drawn.
-    const hasActiveSource = isScreenShare ? hasActiveScreenShare : hasActiveCamera;
+    const hasActiveSource = (isScreenShare ? hasActiveScreenShare : hasActiveCamera) || !!heldFrame;
     // `zoomView` is the visible picture while zoomed (it can be larger than
     // fitRect once the bars are zoomed away); otherwise the fitted rect.
     const pictureRect = zoomView ?? fitRect;
-    const baseChrome = videoRectInsets(fitBox, hasActiveSource ? pictureRect : null, CHROME_GUTTER_PX);
-    const chrome = overlayBottomPx > 0
-        ? { ...baseChrome, bottom: Math.max(baseChrome.bottom, overlayBottomPx + CHROME_GUTTER_PX) }
-        : baseChrome;
+    const chrome = videoRectInsets(fitBox, hasActiveSource ? pictureRect : null, CHROME_GUTTER_PX);
     // A tall picture inside a wide tile can be narrower than the name pill, so
     // the pill is capped to whatever it is riding. That cap is no longer
     // computed here: `TileNamePill` derives it from these same insets via
@@ -1100,6 +1143,8 @@ export const VideoTile = ({
     // slot picks which two of the four to read, never how they were computed,
     // so every corner still rides the picture rather than the tile's box.
     const slots = tileChromeSlots(callCtx?.isFullscreen);
+    // Filling the screen, the readouts come and go with the console (index.css).
+    const fillChromeClass = isFilled ? 'cl-fs-fill-chrome' : '';
 
     return (
         <>
@@ -1165,7 +1210,9 @@ export const VideoTile = ({
                       picture rather than the full box, so this one would otherwise double up
                       — or worse, visibly disagree with it whenever contain leaves a gap. */ ''}
                 ${hasPreciseFitBorder ? '' : 'ring-inset ring-1 ring-white/5'}`}
-            style={style}
+            // A sidebar share tile takes its height from the video. While it holds, the
+            // frame has to give it that height.
+            style={heldFrame && !usesContainFit ? { ...style, aspectRatio: `${heldFrame.width} / ${heldFrame.height}` } : style}
             onClick={handleClick}
             onPointerEnter={handlePointerEnter}
             onPointerLeave={endHover}
@@ -1178,7 +1225,7 @@ export const VideoTile = ({
                 around it. z-[5], same layer as the speaking/focus overlays below, for
                 the same reason: it must sit above the opaque <video> to be visible at
                 all, and below interactive overlays. */}
-            {hasPreciseFitBorder && pictureRect && (
+            {hasPreciseFitBorder && pictureRect && !isFilled && (
                 <div
                     className="absolute rounded-xl pointer-events-none z-[5]"
                     style={{
@@ -1263,6 +1310,7 @@ export const VideoTile = ({
                                 fallbackSize={isFocusedView ? 48 : 24}
                                 disableClickProfile
                                 bypassFriendGate
+                                speaking={avatarSpeaking}
                             />
                         </div>
                     </div>
@@ -1295,6 +1343,7 @@ export const VideoTile = ({
                 ref={videoRef}
                 autoPlay
                 muted={isLocal}
+                data-local-preview={isLocal ? 'true' : undefined}
                 playsInline
                 className={
                     isScreenShare
@@ -1327,6 +1376,7 @@ export const VideoTile = ({
                 // element rides inside the zoom/pan transform. See fitClipPath.
                 style={!usesZoomPan && fitClipPath ? { clipPath: fitClipPath } : undefined}
             />
+            {heldFrame && <ShareHoldPicture frame={heldFrame} clipPath={fitClipPath} />}
             <AnnotationOverlay
                 videoRef={videoRef}
                 trackKey={annotKey}
@@ -1404,6 +1454,20 @@ export const VideoTile = ({
                 );
             })()}
 
+            {hold.placeholder && (
+                <ShareHoldNote belowAvatar={!heldFrame} avatarPx={isFocusedView ? 128 : 56} />
+            )}
+
+            {/* "Your connection can't keep up with this stream": the loss fallback
+                (utils/shareLossFallback.ts, run by CallEventMonitor) put this share
+                on its lighter copy. Watched remote shares in the focused view and
+                the fullscreen stage / grid only — the views that ask for the full
+                layer at all. Mounted whenever eligible so its live region exists
+                before the text arrives. */}
+            {isScreenShare && !isLocal && (isFocusedView || isGridView) && layerPubRaw?.trackSid && !chromeHidden && !hold.placeholder && (
+                <ShareFallbackNoteFor sid={layerPubRaw.trackSid} insets={chrome} />
+            )}
+
             {/* Resolution · fps — `slots.stats`.
                 TOP-left when not fullscreen ("have the resolution in the top
                 left"), BOTTOM-left in fullscreen, where top-left is the
@@ -1414,16 +1478,16 @@ export const VideoTile = ({
                 over from the resolution · fps readout below while on — it shows
                 both of those and the rest of the pipeline. Focused and grid
                 tiles only: a sidebar thumbnail has no room for six rows. */}
-            {hudEnabled && hudTrack && (isFocusedView || isGridView) && !chromeHidden && (
-                <TileStatsReadout insets={chrome} corner={slots.stats}>
+            {hudEnabled && hudTrack && (isFocusedView || isGridView) && !chromeHidden && !hold.placeholder && (
+                <TileStatsReadout insets={chrome} corner={slots.stats} className={fillChromeClass}>
                     <StreamStatsHud
                         track={hudTrack} isLocal={isLocal} publication={hudPub}
                         audioTrack={hudAudioTrack} identity={p.identity}
                     />
                 </TileStatsReadout>
             )}
-            {!hudEnabled && isFocusedView && videoRes && !chromeHidden && (
-                <TileStatsReadout insets={chrome} corner={slots.stats}>
+            {!hudEnabled && isFocusedView && videoRes && !chromeHidden && !hold.placeholder && (
+                <TileStatsReadout insets={chrome} corner={slots.stats} className={fillChromeClass}>
                     <span className="text-white text-[10px] font-mono font-medium">{videoRes}</span>
                     {videoFps > 0 && (
                         <>
@@ -1461,13 +1525,23 @@ export const VideoTile = ({
             {!isLocal && (
                 <span className="sr-only" role="status" aria-live="polite">{annotAutoArmNote}</span>
             )}
-            {annotSurface && !chromeHidden && (
+            {annotSurface && !chromeHidden && !hold.placeholder && (
                 <TileToolCluster insets={chrome} corner={slots.tools}>
                     {annotSurface && isLocal && (
                         <AnnotationRequestsMenu trackKey={annotKey} />
                     )}
                     {annotSurface && !isLocal && annotGranted && (
                         <AnnotationToolbar />
+                    )}
+                    {annotSurface && !isLocal && annotGranted && overlayDesktopState && (
+                        <span
+                            className="pointer-events-auto inline-flex items-center rounded-md bg-black/55 px-2 py-1 text-[11px] text-white/85"
+                            role="status"
+                            data-testid="annot-desktop-state"
+                            title={overlayStateNote(overlayDesktopState, displayName).long}
+                        >
+                            {overlayStateNote(overlayDesktopState, displayName).short}
+                        </span>
                     )}
                     {/* Hover/focus only — owner request. Just the ASK button:
                         the toolbar above is an armed tool and the requests menu
@@ -1493,7 +1567,7 @@ export const VideoTile = ({
                 edges, which is the half of the original request that the
                 letterboxing work settled for good. */}
             {!chromeHidden && (
-            <TileNamePill insets={chrome} corner={slots.name} large={!!isFocusedView}>
+            <TileNamePill insets={chrome} corner={slots.name} large={!!isFocusedView} className={fillChromeClass}>
                 <div className={`relative ${isFocusedView ? 'w-7 h-7' : 'w-5 h-5'} rounded-full overflow-hidden shrink-0`} style={showAvatarSpeaking ? { boxShadow: speakingShadow(ringColor, { glow: 12, alpha: 0.5 }) } : undefined}>
                     <EncryptedAvatar
                         attachmentId={actualAvatarAttachmentId}
@@ -1503,6 +1577,7 @@ export const VideoTile = ({
                         fallbackSize={isFocusedView ? 14 : 10}
                         disableClickProfile
                         bypassFriendGate
+                        speaking={avatarSpeaking}
                     />
                     {/* Status badges */}
                     {isDeafened ? (
@@ -1530,12 +1605,18 @@ export const VideoTile = ({
                 {/* Watcher count. `showZero` only on your own share: on your
                     tile the number is feedback about something you started, so
                     "0" is information; on someone else's it would just be a
-                    live tally of how few people are looking at them. */}
+                    live tally of how few people are looking at them. Hovering
+                    it lists who is watching. A left click bubbles to this
+                    tile's own onClick (focus toggle); a right click is handed
+                    the tile's menu handler because the eye is hit-testable and
+                    so no longer lets it through to the surface underneath. */}
                 {isScreenShare && (
                     <ViewerCountBadge
                         publisher={p.identity}
                         size={isFocusedView ? 12 : 10}
                         showZero={isLocal}
+                        token={token}
+                        onContextMenu={handleContextMenu}
                     />
                 )}
                 {canStopWatching({ source, isLocal, onStopWatching }) && (
@@ -1562,7 +1643,23 @@ export const VideoTile = ({
             )}
         </div>
 
-        {showPopover && ReactDOM.createPortal(
+        {showPopover && isLocal && ReactDOM.createPortal(
+            <SelfStreamMenu
+                displayName={displayName}
+                streamRes={videoRes ?? undefined}
+                // A share tile offers Hide; your camera tile offers the way back,
+                // since a hidden share has no tile of its own to right-click.
+                ownShare={isScreenShare ? 'hide' : isHiddenScreenShare && hasActiveScreenShare ? 'show' : null}
+                onHideOwnShareChange={onHideScreenShareChange}
+                isFilled={isFilled}
+                onToggleFill={onToggleFill}
+                popoverRef={popoverRef}
+                style={popoverPos}
+                onClose={() => setShowPopover(false)}
+            />,
+            document.body
+        )}
+        {showPopover && !isLocal && ReactDOM.createPortal(
             <PopoverMenu
                 displayName={displayName}
                 volume={volume}
@@ -1599,6 +1696,8 @@ export const VideoTile = ({
                 onServerMuteVideo={onServerMuteTrack && !isLocal ? (m) => { onServerMuteTrack(p.identity, 'video', m); setShowPopover(false); } : undefined}
                 onServerMuteScreenShare={onServerMuteTrack && !isLocal ? (m) => { onServerMuteTrack(p.identity, 'screenshare', m); setShowPopover(false); } : undefined}
                 onServerDeafen={onServerMuteTrack && !isLocal ? (d) => { onServerMuteTrack(p.identity, 'deafen', d); setShowPopover(false); } : undefined}
+                isFilled={isFilled}
+                onToggleFill={onToggleFill ? () => { onToggleFill(); setShowPopover(false); } : undefined}
             />,
             document.body
         )}

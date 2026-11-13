@@ -30,8 +30,8 @@
  * fill:
  *
  *   VideoTile           camera / screen share, and the camera-OFF fallback
- *                       (`LocalScreenShareTile` in SidebarConference is a thin
- *                       wrapper around it and inherits everything here).
+ *                       (`LocalScreenShareTile` is a thin wrapper around it and
+ *                       inherits everything here).
  *   ParticipantCard     avatar-only — someone with no published video at all.
  *   ScreenShareGate     a published-but-unsubscribed share's click-to-watch.
  *

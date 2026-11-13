@@ -37,7 +37,6 @@ export function useProfileConnections({ userId, profile, steamPersona }: Profile
         // literal for safety-number pins (this tick means "Steam proved the account", a different thing).
         if (steamId) out.push({ platform: 'steam', name: steamPersona || steam?.persona_name || 'Steam account', verified: Boolean(steamId), url: steamProfileUrl(steamId) });
         for (const l of sanitizeLinks(links)) {
-            if (steamId && l.platform === 'steam') continue;
             out.push({ platform: l.platform, name: displayHandle(l) || platformLabel(l.platform), url: profileLinkUrl(l) });
         }
         return out;

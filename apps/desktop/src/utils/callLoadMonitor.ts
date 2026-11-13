@@ -129,3 +129,91 @@ export function layerLimitStats(report: { forEach(cb: (s: Record<string, unknown
     });
     return out;
 }
+
+/** media-source `frames` summed over the sender's video sources; undefined when the report has none. */
+export function capturedFrames(report: { forEach(cb: (s: Record<string, unknown>) => void): void }): number | undefined {
+    let total: number | undefined;
+    report.forEach(s => {
+        if (s.type === 'media-source' && s.kind === 'video' && typeof s.frames === 'number' && Number.isFinite(s.frames)) total = (total ?? 0) + s.frames;
+    });
+    return total;
+}
+
+// ── A camera whose CAPTURE has stopped delivering ───────────────────────────
+//
+// CallLoadDetector above deliberately ignores capture rate ("a slow camera" is
+// not the encoder's fault), so a camera that nominally runs at 30 fps but
+// really hands the encoder 0-14 frames a second is invisible to every
+// detector we have: the encoder is healthy (encoded_fps follows the capture,
+// `limit=none`), nothing is lost, nothing "stalls" (EncoderStallDetector only
+// fires when capture flows and encoding does not), and the start-time
+// settleCaptureMode() reads the NOMINAL frameRate, which stays 30.
+//
+// Owner report 884b6045 (1.0.24-staging.178): "my camera freezes for me and
+// for everyone when playing a game" - HEVC hardware camera next to a 2560x1440
+// H.265 share and BeamNG on one RTX 2080 Ti; the camera's media-source rate
+// over a minute of 5 s samples was 14, 0, 10, 10, 4, 0, 2, 0, 0, 1, 0, 0, 10
+// (target 30), encoded_fps 9, sent 6, no bandwidth or CPU limitation.
+// The local self-view froze too, which is why it is the capture and not the
+// network or the viewers' decoders.
+
+/** Delivered below this share of the camera's nominal frame rate ... */
+export const CAPTURE_STARVE_FRACTION = 0.5;
+/** ... and below this absolute rate, is a starved tick. */
+export const CAPTURE_STARVE_MAX_FPS = 20;
+
+export interface CaptureSample {
+    /** Monotonic ms. */
+    at: number;
+    /** media-source `frames`, cumulative; null/undefined = the report did not carry it. */
+    framesCaptured: number | null | undefined;
+    /** The capture's negotiated frame rate (track.getSettings().frameRate); 30 when unknown. */
+    nominalFps: number;
+}
+
+export interface CaptureVerdict {
+    starved: boolean;
+    /** Delivered rate over the last tick, when measurable. */
+    fps?: number;
+}
+
+/**
+ * Sustained capture starvation: at least STRAINED_TICKS of the last
+ * WINDOW_TICKS one-second ticks delivered under min(50 % of nominal, 20 fps),
+ * the newest one included, after WARMUP_MS (a camera opening delivers nothing
+ * for a moment). A reset counter, a gap in sampling > GAP_RESET_MS (hidden
+ * window, sleep) or a sample without a frame counter restarts the baseline
+ * rather than bridging it.
+ */
+export class CameraCaptureStarveDetector {
+    private since: number | null = null;
+    private prev: { at: number; frames: number } | null = null;
+    private ticks: boolean[] = [];
+
+    reset(): void { this.since = null; this.prev = null; this.ticks = []; }
+
+    observe(s: CaptureSample): CaptureVerdict {
+        const frames = typeof s.framesCaptured === 'number' && Number.isFinite(s.framesCaptured) ? s.framesCaptured : null;
+        if (frames === null) { this.reset(); return { starved: false }; }
+        if (this.prev && s.at - this.prev.at > GAP_RESET_MS) { this.since = null; this.prev = null; this.ticks = []; }
+        if (this.since === null) this.since = s.at;
+        const prev = this.prev;
+        this.prev = { at: s.at, frames };
+        if (!prev || frames < prev.frames) {
+            // First sample, or the counter restarted (a new track): a new baseline.
+            this.ticks = [];
+            if (prev) this.since = s.at;
+            return { starved: false };
+        }
+        const dt = (s.at - prev.at) / 1000;
+        if (!(dt > 0.2)) return { starved: false };
+        const fps = (frames - prev.frames) / dt;
+        const nominal = Number.isFinite(s.nominalFps) && s.nominalFps > 0 ? s.nominalFps : 30;
+        const low = fps < Math.min(CAPTURE_STARVE_FRACTION * nominal, CAPTURE_STARVE_MAX_FPS);
+        this.ticks.push(low);
+        if (this.ticks.length > WINDOW_TICKS) this.ticks.shift();
+        const live = s.at - this.since >= WARMUP_MS;
+        const count = this.ticks.filter(Boolean).length;
+        return { starved: live && low && count >= STRAINED_TICKS, fps: Math.round(fps * 10) / 10 };
+    }
+}

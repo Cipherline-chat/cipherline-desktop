@@ -256,6 +256,36 @@ export function firstTodayPool(d: Date): readonly string[] {
     return h >= 5 && h < 12 ? FIRST_TODAY_MORNING_LINES : FIRST_TODAY_LINES;
 }
 
+// ── Rare touches (owner 2026-10-31) ─────────────────────────────────────────
+// A daily greeting stops being a touch and turns into a notification, so the
+// first send of the day only gets one once in a while, and the rest are rarer.
+
+/** The chance the day's first send gets its ripple and line: about one day in eight. */
+export const FIRST_TODAY_CHANCE = 1 / 8;
+/** The chance any one send gets a passing placeholder line. */
+export const RARE_SEND_LINE_CHANCE = 1 / 400;
+/** The chance any one send gets the amber rings, off the hour. */
+export const RARE_SEND_CHIME_CHANCE = 1 / 900;
+
+export const RARE_SEND_LINES: readonly string[] = [
+    'Off it goes.',
+    'And just like that.',
+    'Another one.',
+    'Sent. Carry on.',
+    'One more for the pile.',
+    'Gone. Edit still works.',
+];
+
+/** A roll against `chance`. `rand` is injected so tests are not random. */
+export function rollRare(chance: number, rand: () => number = Math.random): boolean {
+    return rand() < chance;
+}
+
+/** A line from `pool`, by `rand`. */
+export function pickLine(pool: readonly string[], rand: () => number = Math.random): string {
+    return pool[Math.min(pool.length - 1, Math.floor(rand() * pool.length))];
+}
+
 /** Every line this module can show, for the doctrine checks in the test. */
 export const COMPOSER_FUN_POOLS: Record<string, readonly string[]> = {
     SEND_SPAM_WOBBLE: SEND_SPAM_LINES.wobble,
@@ -266,4 +296,5 @@ export const COMPOSER_FUN_POOLS: Record<string, readonly string[]> = {
     ON_THE_HOUR_LINES,
     FIRST_TODAY_MORNING_LINES,
     FIRST_TODAY_LINES,
+    RARE_SEND_LINES,
 };

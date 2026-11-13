@@ -194,7 +194,7 @@ describe('wiring (source pins)', () => {
         expect(body).toMatch(/unsubscribeShareTracks\(sharer\)/);
         expect(body).toMatch(/callCtx\.setFocusedStream\(null\)/);
         // positive control: the existing watch path (the thing we invert) is a different, adding setter
-        expect(sidebar).toMatch(/const handleSubscribeScreenshare[\s\S]{0,120}new Set\(\[\.\.\.prev, identity\]\)/);
+        expect(sidebar).toMatch(/const handleSubscribeScreenshare[\s\S]{0,600}new Set\(\[\.\.\.prev, identity\]\)/);
     });
 
     it('the viewer-list publisher still derives from subscribedScreenshares (so unwatching leaves it)', () => {

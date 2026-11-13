@@ -3,8 +3,7 @@ import axios from 'axios';
 import { MessageSquare, Pencil, MoreVertical, PhoneCall, Server, UserPlus, UserMinus, Ban, AtSign, Check, X, Flag, Share2 } from 'lucide-react';
 import { apiUrl } from '../utils/apiPath';
 import { ImageLightbox } from './ImageLightbox';
-import { MobileStatusGlyph } from './MobileStatusGlyph';
-import { STATUS_CONFIG } from '../hooks/useUserStatus';
+
 import type { FriendStatusEntry, UserStatus } from '../hooks/useUserStatus';
 import { useEncryptedAvatar } from '../hooks/useEncryptedAvatar';
 import { useModalExit } from '../hooks/useModalExit';
@@ -12,8 +11,6 @@ import { useContextMenu } from '../hooks/useContextMenu';
 import { useEscape } from '../hooks/useEscape';
 import { formatLastSeen } from '../utils/formatLastSeen';
 import { isFriendsOnly } from '../utils/profileVisibility';
-import { sanitizeLinks } from '../utils/profileLinks';
-import { readTheme } from '../utils/profileTheme';
 import { getVerificationState } from '../utils/keyVerification';
 import { fetchProfile as fetchProfileCached, peekProfile, __profilePrefetchTuning, type PublicProfile } from '../utils/profileCache';
 import { lookupUserAvatarId, lookupUserBannerId } from '../utils/peerIdentityCache';
@@ -21,19 +18,19 @@ import { roleColorHexFromInt } from '../utils/roleColor';
 import { ClButton, ClInput } from './cl';
 import { ProfileCardSection } from './ProfileCardParts';
 import { ProfilePopoutCard, OpenProfileButton } from './profile/ProfilePopoutCard';
+import { buildProfileCardData } from './profile/buildProfileCardData';
+import { ProfilePresence, ProfileAvatarBadge } from './profile/ProfilePresence';
 import { ProfileFullView } from './profile/ProfileFullView';
 import { ProfileShareDialog } from './profile/ProfileShareDialog';
 import type { ProfileCardData, ProfileFullTab } from './profile/profileCardData';
 import { useProfileActivity } from '../hooks/useProfileActivity';
 import { useProfileConnections } from '../hooks/useProfileConnections';
 import { placePopover, type Placement } from '../utils/popoverPlacement';
-import { StatusLine } from './StatusLine';
 import { useMostPlayed } from '../hooks/useMostPlayed';
 import { ProfileNoteField } from './profile/ProfileNoteField';
 import { HighFiveButton } from './profile/HighFiveButton';
-import { cleanInterests, showcaseBlocksOf } from '../utils/profileExtras';
+import { cleanInterests } from '../utils/profileExtras';
 import { anniversaryYearsFor } from '../utils/profileMoments';
-import { readItemOptions } from '../utils/profileCosmetics';
 import { useMutuals, useSteamCard } from '../hooks/useProfileRelations';
 import { useOpenProfile } from '../contexts/ProfileOpenContext';
 
@@ -67,6 +64,10 @@ export interface ProfileModalProps {
     /** Viewport coordinates the popover should open near (typically the click
      *  point). If omitted, the popover opens at top-center. */
     anchor?: { x: number; y: number } | null;
+    /** Open straight onto the full profile instead of the preview popover. */
+    startFull?: boolean;
+    /** With `startFull`: the tab to open on (e.g. the level badge on the DM panel opens Achievements). */
+    startTab?: ProfileFullTab;
     /**
      * When the profile is opened from a server context, these carry the
      * available roles and the member's assigned role IDs so we can render
@@ -126,6 +127,8 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
     onBlock,
     onReport,
     anchor = null,
+    startFull = false,
+    startTab = 'overview',
     serverRoles,
     memberRoleIds,
     inviteToServerItems,
@@ -138,7 +141,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
     renderServerIcon,
 }) => {
     // Preview (the anchored popover) or the full profile (a large modal).
-    const [view, setView] = useState<{ mode: 'preview' | 'full'; tab: ProfileFullTab }>({ mode: 'preview', tab: 'overview' });
+    const [view, setView] = useState<{ mode: 'preview' | 'full'; tab: ProfileFullTab }>({ mode: startFull ? 'full' : 'preview', tab: startFull ? startTab : 'overview' });
     // Opening another person from inside (a mutual friend) starts on their Overview, in the same mode.
     const [seenUser, setSeenUser] = useState(userId);
     if (seenUser !== userId) { setSeenUser(userId); setView((v) => ({ mode: v.mode, tab: 'overview' })); }
@@ -371,7 +374,6 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
               on_mobile: profile?.on_mobile ?? false,
           });
 
-    const statusCfg = STATUS_CONFIG[liveEntry.status] ?? STATUS_CONFIG.offline;
     const onMobile = !isOwnProfile && liveEntry.status !== 'offline' && !!liveEntry.on_mobile;
 
     const displayName = profile?.username || '';
@@ -395,40 +397,10 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
 
     // Everything the card draws, from the profile response (the server already
     // withheld whatever this viewer may not see).
-    const cardData: ProfileCardData | null = profile ? {
-        name: displayName,
-        discriminator: profile.discriminator,
-        theme: readTheme(profile.profile_theme),
-        decoration: profile.avatar_decoration ?? null,
-        effect: profile.profile_effect ?? null,
-        decorationOptions: readItemOptions(profile.cosmetic_options?.d, 'decoration', profile.avatar_decoration),
-        effectOptions: readItemOptions(profile.cosmetic_options?.e, 'effect', profile.profile_effect),
-        // Card hover animation: removed on owner request 2026-10-23; the server field users.hover_animation is now unused by the desktop.
-        isPro: profile.is_pro,
-        proSince: profile.pro_since,
-        badges: profile.badges,
-        level: profile.level,
-        bio: profile.bio,
-        bioFriendsOnly: isFriendsOnly(profile.friends_only_fields, 'bio'),
-        timeZone: profile.time_zone ?? null,
-        localTimeFriendsOnly: isFriendsOnly(profile.friends_only_fields, 'local_time'),
-        friendsSince: profile.friends_since ?? null,
-        anniversaryYears: anniversary,
-        highFiveCount: profile.high_five_count ?? 0,
-        blocks: showcaseBlocksOf(profile.showcase).blocks,
-        topAchievements: showcaseBlocksOf(profile.showcase).top_achievements,
-        games: profile.widgets?.games ?? [],
-        gamesFriendsOnly: isFriendsOnly(profile.friends_only_fields, 'widgets'),
-        links: sanitizeLinks(profile.links),
-        linksFriendsOnly: isFriendsOnly(profile.friends_only_fields, 'links'),
-        interests: cleanInterests(profile.interests),
-        myInterests: isOwnProfile ? null : (myInterests ?? []),
-        interestsFriendsOnly: isFriendsOnly(profile.friends_only_fields, 'widgets'),
-        achievementCount: profile.achievement_count ?? null,
-        mostPlayed: mostPlayed.games,
-        verified: verifiedByMe,
-        steam: profile.steam?.steam_id ? { steamId: profile.steam.steam_id, personaName: steamCard?.persona_name ?? null, avatar: steamCard?.avatar ?? null } : null,
-    } : null;
+    const cardData: ProfileCardData | null = profile ? buildProfileCardData(profile, {
+        isOwn: isOwnProfile, anniversary, myInterests, mostPlayed: mostPlayed.games, verified: verifiedByMe,
+        steamPersona: steamCard?.persona_name ?? null, steamAvatar: steamCard?.avatar ?? null,
+    }) : null;
 
     const handleAddToGroup = () => {
         if (!profile) return;
@@ -478,23 +450,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
     const [shareOpen, setShareOpen] = useState(false);
 
     // Presence + custom status (the game is the activity row below it).
-    const presenceNode = profile ? (
-        <>
-            <span className="pcd-status-line">
-                {lastSeen ? <span>{lastSeen}</span> : (
-                    <>
-                        <span className="pcd-status-dot" style={{ backgroundColor: statusCfg.color }} aria-hidden="true" />
-                        <b style={{ color: statusCfg.color }}>{statusCfg.label}</b>
-                        {onMobile && <span>· on mobile</span>}
-                    </>
-                )}
-            </span>
-            {/* Custom status (offline = none; expired = none). */}
-            {liveEntry.status !== 'offline' && (
-                <StatusLine entry={{ ...liveEntry, current_game: null }} userId={userId} animate className="pcd-custom" />
-            )}
-        </>
-    ) : null;
+    const presenceNode = profile ? <ProfilePresence entry={liveEntry} userId={userId} onMobile={onMobile} lastSeen={lastSeen} /> : null;
 
     const nicknameSection = profile && serverId ? (
         <ProfileCardSection title="Server nickname" testId="profile-nickname">
@@ -596,7 +552,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
         ) : (
             <>
                 {messageOrAdd(true) ?? <span />}
-                <HighFiveButton userId={userId} token={token} count={profile.high_five_count ?? 0} />
+                <HighFiveButton userId={userId} token={token} count={profile.high_five_count ?? 0} alreadyToday={profile.high_fived_today} againAt={profile.high_five_again_at} />
                 <OpenProfileButton onClick={() => openFull('overview')} />
             </>
         )
@@ -617,7 +573,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
         ) : (
             <>
                 {messageOrAdd(false)}
-                <HighFiveButton userId={userId} token={token} count={profile.high_five_count ?? 0} />
+                <HighFiveButton userId={userId} token={token} count={profile.high_five_count ?? 0} alreadyToday={profile.high_fived_today} againAt={profile.high_five_again_at} />
             </>
         )
     ) : null;
@@ -628,13 +584,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
         </button>
     ) : undefined;
 
-    const avatarBadge = !loading && (onMobile ? (
-        <span className="pcd-mobile" title={`${statusCfg.label} · on mobile`}>
-            <MobileStatusGlyph status={liveEntry.status} size={16} />
-        </span>
-    ) : (
-        <span className="pcd-dot" style={{ backgroundColor: statusCfg.color }} title={statusCfg.label} />
-    ));
+    const avatarBadge = !loading && <ProfileAvatarBadge entry={liveEntry} onMobile={onMobile} />;
 
     return (
         <>

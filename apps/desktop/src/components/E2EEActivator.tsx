@@ -1,7 +1,8 @@
 import { useEffect, useRef } from 'react';
 import { useRoomContext } from '@livekit/components-react';
-import type { ExternalE2EEKeyProvider } from 'livekit-client';
+import { RoomEvent, type ExternalE2EEKeyProvider } from 'livekit-client';
 import { activateRoomE2EE, installE2EEKey, type E2EEActivationFailure } from '../utils/e2eeActivation';
+import { KEYRING_ATTR, KEYRING_ATTR_VALUE, RotatingKeyProvider, allRemotesRingCapable } from '../utils/e2eeKeyRing';
 
 /**
  * Installs the room key on the provider and turns the Room's configured E2EE
@@ -42,10 +43,12 @@ import { activateRoomE2EE, installE2EEKey, type E2EEActivationFailure } from '..
  * failing it would be a behaviour change this activation has no mandate for.
  * The rollout doc tracks closing that gap.
  */
-export const E2EEActivator = ({ keyProvider, keyB64, onFailure, onActive }: {
+export const E2EEActivator = ({ keyProvider, keyB64, keyEpoch, onFailure, onActive }: {
     keyProvider: ExternalE2EEKeyProvider;
     /** The room key, base64; '' for a keyless (unencrypted) mount. Mirrors the gate that built the `encryption:` block. */
     keyB64: string;
+    /** The call-key store's epoch for `keyB64` (DM/group calls); undefined = no known epoch → legacy index-0 install. */
+    keyEpoch?: number;
     onFailure: (failure: E2EEActivationFailure) => void;
     /** Test/observability hook; CallPane leaves it unset and relies on the console line. */
     onActive?: () => void;
@@ -66,7 +69,7 @@ export const E2EEActivator = ({ keyProvider, keyB64, onFailure, onActive }: {
     const firstKeyRef = useRef<Promise<void> | null>(null);
     useEffect(() => {
         if (!keyB64) return;
-        const install = installE2EEKey(keyProvider, keyB64);
+        const install = installE2EEKey(keyProvider, keyB64, keyEpoch);
         if (firstKeyRef.current === null) {
             // Its outcome is reported through activation (`no_key`); this
             // handler only stops it surfacing as an unhandled rejection.
@@ -75,7 +78,39 @@ export const E2EEActivator = ({ keyProvider, keyB64, onFailure, onActive }: {
         } else {
             install.catch((err) => console.error('[CallPane] E2EE key rotation failed to install — the previous key stays in force:', err));
         }
-    }, [keyB64, keyProvider]);
+    }, [keyB64, keyEpoch, keyProvider]);
+
+    // ── 1b. Key-ring capability (utils/e2eeKeyRing.ts) ───────────────────
+    // Advertise "I hold keys by ring slot" once a key WITH an epoch is
+    // installed, and send at a ring slot only while EVERY remote participant
+    // advertises it too — any peer without the attribute (stable desktop,
+    // mobile, an older staging build) keeps us on index 0, as before.
+    useEffect(() => {
+        if (!(keyProvider instanceof RotatingKeyProvider)) return;
+        const ring = keyProvider;
+        const publish = () => {
+            if (!ring.ringCapable || room.state !== 'connected') return;
+            room.localParticipant.setAttributes({ [KEYRING_ATTR]: KEYRING_ATTR_VALUE }).catch(() => { /* cosmetic: peers just stay on index 0 */ });
+        };
+        const roster = () => ring.setPeersCapable(allRemotesRingCapable(room.remoteParticipants?.values() ?? []));
+        ring.onRingCapableChange(publish);
+        roster();
+        publish();
+        room.on(RoomEvent.ParticipantConnected, roster);
+        room.on(RoomEvent.ParticipantDisconnected, roster);
+        room.on(RoomEvent.ParticipantAttributesChanged, roster);
+        room.on(RoomEvent.Connected, publish);
+        room.on(RoomEvent.Reconnected, publish);
+        return () => {
+            ring.onRingCapableChange(null);
+            room.off(RoomEvent.ParticipantConnected, roster);
+            room.off(RoomEvent.ParticipantDisconnected, roster);
+            room.off(RoomEvent.ParticipantAttributesChanged, roster);
+            room.off(RoomEvent.Connected, publish);
+            room.off(RoomEvent.Reconnected, publish);
+            ring.dispose();
+        };
+    }, [room, keyProvider]);
 
     // ── 2. Activation — once per Room ─────────────────────────────────────
     useEffect(() => {

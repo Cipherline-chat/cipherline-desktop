@@ -38,7 +38,7 @@ describe('90 fps notice is a calm informational note, shown only at 90', () => {
     it('picker and call bar both use the shared component; the old amber copy is gone', () => {
         const picker = src('ScreenSharePickerModal.tsx');
         const bar = src('call/ControlBar.tsx');
-        expect(picker).toContain('<ShareFpsNote frameRate={frameRate}');
+        expect(picker).toContain('<ShareFpsDisclaimer');
         expect(bar).toContain('<ShareFpsNote frameRate={qFps}');
         for (const s of [picker, bar]) {
             expect(s).not.toContain('Up to 90 fps.');

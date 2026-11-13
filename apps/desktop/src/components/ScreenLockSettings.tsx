@@ -228,7 +228,7 @@ const ScreenLockSettings: React.FC<{ screenLock: ScreenLockHook; keybinds: Keybi
                             <span className="sd-tile"><TimerReset size={16} /></span>
                             <div className="sd-rl">
                                 <b>Lock after inactivity</b>
-                                <span>Locks automatically after this long without a click or keystroke in Cipherline — even if you're busy in another app.</span>
+                                <span>Locks automatically after this long without a click or keystroke in Cipherline — even if you're busy in another app. It waits while you're watching a video.</span>
                             </div>
                             <div className="sd-rc">
                                 <ClSelect

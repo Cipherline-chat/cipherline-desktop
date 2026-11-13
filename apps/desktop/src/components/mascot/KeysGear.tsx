@@ -112,12 +112,84 @@ export const GearOn: React.FC<{ on: On; lanternDim: boolean }> = ({ on, lanternD
             </SVG>
             <i className="hkg-mic" />
         </span>
-        {/* Pro: a tiny crown, tilted, when his head is otherwise bare. */}
+        {/* His wardrobe (utils/keysWardrobe.ts): at most one of these, and
+            only when nothing else claims his head. The crown is Pro's. The
+            dome is the arc centred (55, 48), r 34: its top is y 14, his
+            brows sit at y 35-42. */}
         <span className={cls('hkg-crown', on('crown'))}>
             <SVG>
                 <g transform="rotate(-16 42 14)">
                     <path d="M32 18 L33 7 L38 12.5 L42 5 L46 12.5 L51 7 L52 18 Z" fill="var(--cl-glow)" stroke="#C9952A" strokeWidth="1" strokeLinejoin="round" />
                     <circle cx="42" cy="14.5" r="1.6" fill="var(--cl-flash)" />
+                </g>
+            </SVG>
+        </span>
+        {/* A coral knit beanie: ribbed cuff, a pom-pom, worn a touch askew. */}
+        <span className={cls('hkg-beanie', on('beanie'))}>
+            <SVG>
+                <g transform="rotate(-6 55 22)">
+                    <path d="M25.5 27 C25.5 4 84.5 4 84.5 27 Z" fill="var(--cl-flash)" />
+                    <path d="M39 9.5 C37 14 36.5 20 37 25 M55 6.5 L55 24 M71 9.5 C73 14 73.5 20 73 25" stroke="#E0544A" strokeWidth="1.4" strokeLinecap="round" fill="none" />
+                    <path d="M23.5 30.5 Q55 16 86.5 30.5" stroke="#C94A41" strokeWidth="7.5" strokeLinecap="round" fill="none" />
+                    <path d="M30 26.5 L30.6 31.4 M37 23.6 L37.4 28.6 M44 21.8 L44.2 26.8 M51 21 L51 26 M58 21 L58 26 M65 21.6 L64.8 26.6 M72 23.2 L71.6 28.2 M79 25.8 L78.4 30.8" stroke="#A83C35" strokeWidth="1.3" strokeLinecap="round" />
+                    <circle cx="55" cy="4.5" r="5.6" fill="#FFE3DF" />
+                    <circle cx="53.3" cy="3" r="1.8" fill="#FFFFFF" opacity=".75" />
+                </g>
+            </SVG>
+        </span>
+        {/* A tiny captain's cap, perched and tipped: white top, navy band,
+            gold cord and badge, a dark peak. */}
+        <span className={cls('hkg-captain', on('captain'))}>
+            <SVG>
+                <g transform="rotate(9 58 15)">
+                    <path d="M40 10.5 Q37 1.5 58 1 Q79 1.5 76 10.5 Z" fill="#F4F7FF" stroke="#C9D3EE" strokeWidth="1" strokeLinejoin="round" />
+                    <rect x="41.5" y="9.5" width="33" height="7.5" rx="2" fill="#24346A" />
+                    <path d="M42.5 10.6 L73.5 10.6" stroke="var(--cl-glow)" strokeWidth="1" strokeLinecap="round" />
+                    <path d="M40 16.4 Q58 25 76 16.4 Q58 20.5 40 16.4 Z" fill="#0E1430" />
+                    <path d="M50 18.6 Q58 21 66 18.6" stroke="#5E6B8F" strokeWidth=".9" strokeLinecap="round" fill="none" opacity=".8" />
+                    <circle cx="58" cy="13.4" r="2.9" fill="var(--cl-glow)" stroke="#C9952A" strokeWidth=".7" />
+                    <path d="M58 11.6 L58 15.2 M56.5 14.3 Q58 15.9 59.5 14.3" stroke="#8C6418" strokeWidth=".8" strokeLinecap="round" fill="none" />
+                </g>
+            </SVG>
+        </span>
+        {/* A dive mask over his eyes (they show through the glass), its strap
+            round the back, and a snorkel up his right side. */}
+        <span className={cls('hkg-snorkel', on('snorkel'))}>
+            <SVG>
+                <path d="M88.5 46 Q93 46 93 40 L93 7" stroke="var(--cl-flash)" strokeWidth="4" strokeLinecap="round" fill="none" />
+                <path d="M93 9 L93 4" stroke="var(--cl-glow)" strokeWidth="4.6" strokeLinecap="round" />
+                <path d="M84 44 Q88 47 91 45" stroke="#C94A41" strokeWidth="3" strokeLinecap="round" fill="none" />
+                <path d="M21.5 38 L27 37 M83 37 L88.5 38" stroke="#1E2A55" strokeWidth="3.4" strokeLinecap="round" />
+                <path d="M27 31 Q27 27.5 31 27.5 L79 27.5 Q83 27.5 83 31 L83 41 Q83 46.5 77 46.5 L62 46.5 Q58.5 46.5 57 43.5 L55 41.5 L53 43.5 Q51.5 46.5 48 46.5 L33 46.5 Q27 46.5 27 41 Z" fill="#BFF6EE" fillOpacity=".28" stroke="var(--cl-glow)" strokeWidth="2.8" strokeLinejoin="round" />
+                <path d="M33 32 L38.5 30.5 M72 31.5 L76 30.5" stroke="#FFFFFF" strokeWidth="1.6" strokeLinecap="round" opacity=".85" />
+            </SVG>
+        </span>
+        {/* Sunglasses pushed up on his dome: the lenses catch a little coral
+            and gold, and his eyes stay free. */}
+        <span className={cls('hkg-shades', on('shades'))}>
+            <SVG>
+                <g transform="rotate(-4 55 22)">
+                    <path d="M26.5 25.5 L33 22.6 M83.5 25.5 L77 22.6" stroke="#1E2A55" strokeWidth="2.2" strokeLinecap="round" />
+                    <path d="M33 19 Q33 16.5 35.5 16.5 L50.5 16.5 Q53 16.5 52.5 19 L51.5 24 Q50.5 28.5 46 28.5 L39.5 28.5 Q34 28.5 33.4 24 Z" fill="#141B36" stroke="#2A3558" strokeWidth="1" />
+                    <path d="M57.5 19 Q57 16.5 59.5 16.5 L74.5 16.5 Q77 16.5 77 19 L76.6 24 Q76 28.5 70.5 28.5 L64 28.5 Q59.5 28.5 58.5 24 Z" fill="#141B36" stroke="#2A3558" strokeWidth="1" />
+                    <path d="M52.5 18.6 Q55 16.6 57.5 18.6" stroke="#2A3558" strokeWidth="1.8" fill="none" strokeLinecap="round" />
+                    <path d="M35.5 25 L50 25 M60 25 L74.5 25" stroke="var(--cl-flash)" strokeWidth="2" strokeLinecap="round" opacity=".55" />
+                    <path d="M36 21.6 L49.6 21.6 M60.4 21.6 L74.2 21.6" stroke="var(--cl-glow)" strokeWidth="1.2" strokeLinecap="round" opacity=".45" />
+                    <path d="M37 19.4 L40 18.6 M61.5 19.4 L64.5 18.6" stroke="#FFFFFF" strokeWidth="1.3" strokeLinecap="round" opacity=".8" />
+                </g>
+            </SVG>
+        </span>
+        {/* A little sea flower tucked by his left ear. */}
+        <span className={cls('hkg-flower', on('flower'))}>
+            <SVG>
+                <path d="M34 25 Q38 30 37 33.5" stroke="#139E8C" strokeWidth="2" strokeLinecap="round" fill="none" />
+                <path d="M36.5 29 Q42 27.5 42 32 Q37.5 33.5 36.5 29 Z" fill="#139E8C" />
+                <g transform="translate(29 21)">
+                    {[0, 72, 144, 216, 288].map(a => (
+                        <ellipse key={a} cx="0" cy="-5.2" rx="4" ry="5.4" transform={`rotate(${a + 10})`} fill="#FF8FA3" stroke="#E2566E" strokeWidth=".8" />
+                    ))}
+                    <circle r="3.1" fill="var(--cl-glow)" />
+                    <circle cx="-.8" cy="-.8" r=".9" fill="#FFF4D6" />
                 </g>
             </SVG>
         </span>

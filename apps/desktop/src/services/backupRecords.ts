@@ -10,15 +10,24 @@
  *   meta                        everything not keyed by conversation/channel/blob
  *                               (incl. vault.entranceSound: your custom call entrance
  *                               sound, <= 64 KB inline - deliberately NOT a record kind
- *                               of its own, because applyBackupContainer below throws on
- *                               an unknown record id, so a new kind would make every
- *                               older build refuse to restore a newer backup)
+ *                               of its own: builds before 2026-10 THROW on an unknown
+ *                               record id, so a new kind makes every one of them refuse
+ *                               to restore a newer backup. applyBackupContainer now skips
+ *                               unknown kinds, but prefer a new `meta` field over a new
+ *                               record kind whenever the data is small)
  *   dm:<convId>:<YYYY-MM>       one DM/group conversation, one calendar month
  *   ch:<channelId>:<YYYY-MM>    one server channel, one calendar month
  *   gif:<gifId>                 raw bytes of `userData/cipherline-gifs/<gifId>.enc`
  *   emoji:<emojiId>             raw bytes of `userData/cipherline-gifs/emoji-<emojiId>.enc` (My Emojis)
  *   att:<id>                    raw E2EE ciphertext of a cached/downloadable attachment
- *   sound:<name>                a custom notification sound file
+ *   sound:<name>                a custom notification sound file (only the ones this
+ *                               account's notification prefs reference — the
+ *                               directory is shared by every account on the machine)
+ *
+ * Compatibility: `meta` fields an older build doesn't know are ignored by its
+ * importer; record kinds it doesn't know were fatal before 2026-10 (see `meta`
+ * above) and are skipped since. `emoji:` (1.0.23) is the one kind that already
+ * makes an older build refuse a backup that contains My Emojis.
  *
  * Messages are bucketed by month so that an in-place update of the local
  * file only rewrites the month that actually gained/edited/lost a message —
@@ -39,6 +48,7 @@
 import { buildLocalVault, importLocalHistory, type BackupVault } from '../utils/crypto';
 import { isKlipyRefEntry } from '../utils/gifLibrarySync';
 import { emojiBackupIds } from '../utils/personalEmoji/backup';
+import { ownedCustomSounds } from './backupRegistry';
 import { personalEmojis } from '../utils/personalEmoji/service';
 import { getEncryptedAttachment, putEncryptedAttachment } from '../utils/attachmentCache';
 import { sha256Hex, IMMUTABLE_HASH, type ContainerWriter, type OpenedContainer } from '../utils/backupContainer';
@@ -256,7 +266,12 @@ export async function buildBackupPlan(
     const emojiIds = emojiBackupIds(vault.emojiIndex, vault.emojiKeys);
     let sounds: { name: string; file: string }[] = [];
     if (api?.listCustomSounds) {
-        try { sounds = (await api.listCustomSounds()).sort((a, b) => a.name.localeCompare(b.name)); } catch { sounds = []; }
+        // `userData/custom-sounds` is shared by every account on the machine;
+        // keep only the files THIS account's notification prefs reference.
+        const prefsRaw = vault.kv?.['cipherline_notif_global_prefs_{uid}'] ?? null;
+        try {
+            sounds = ownedCustomSounds(await api.listCustomSounds(), prefsRaw).sort((a, b) => a.name.localeCompare(b.name));
+        } catch { sounds = []; }
     }
     const refs = opts.includeAttachments ? collectAttachmentRefs(history, channelHistory) : { ids: [], sizeHints: {} };
 
@@ -371,6 +386,7 @@ export async function applyBackupContainer(
     const dmBuckets: Record<string, Record<string, unknown[]>> = {};
     const chBuckets: Record<string, Record<string, unknown[]>> = {};
     const blobRecords: { id: string; kind: 'gif' | 'emoji' | 'att' | 'sound'; key: string }[] = [];
+    let skippedUnknown = 0;
     for (const r of records) {
         if (r.id === 'meta') continue;
         const sep = r.id.indexOf(':');
@@ -389,7 +405,17 @@ export async function applyBackupContainer(
             case 'emoji': blobRecords.push({ id: r.id, kind: 'emoji', key: rest }); break;
             case 'att': blobRecords.push({ id: r.id, kind: 'att', key: rest }); break;
             case 'sound': blobRecords.push({ id: r.id, kind: 'sound', key: rest }); break;
-            default: throw new Error(`Unknown backup record "${r.id}"`);
+            // A record kind this build does not know was written by a NEWER
+            // build. Skip it and restore everything else: refusing the whole
+            // backup over it (as this did until 2026-10) meant every new record
+            // kind made every older build unable to restore a newer backup -
+            // `emoji:` did exactly that to builds before 1.0.23. Skipping is
+            // safe: every record is authenticated under the same backup key as
+            // the index, so nobody without the password can add one.
+            default:
+                skippedUnknown++;
+                tick();
+                break;
         }
     }
     const merge = (buckets: Record<string, Record<string, unknown[]>>): Record<string, unknown[]> => {
@@ -402,6 +428,7 @@ export async function applyBackupContainer(
     };
     const history = merge(dmBuckets);
     const channelHistory = merge(chBuckets);
+    if (skippedUnknown > 0) console.warn(`[restore] skipped ${skippedUnknown} record(s) written by a newer version of Cipherline`);
 
     const api = window.electronAPI;
     // Custom sounds go first: importLocalHistory re-points the notification

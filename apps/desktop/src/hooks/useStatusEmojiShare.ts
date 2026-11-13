@@ -13,10 +13,7 @@
  * old clients apply and drop `profile_update` without a chat row.
  */
 import { useEffect, useMemo } from 'react';
-import axios from 'axios';
-import { API_BASE } from '../constants';
-import { apiUrl } from '../utils/apiPath';
-import { encryptAndAddress } from '../utils/encryptAndAddress';
+import { sendFriendControl } from '../utils/friendControlSend';
 import secureLocalStore from '../utils/secureLocalStore';
 import { personalEmojis } from '../utils/personalEmoji/service';
 import {
@@ -49,7 +46,6 @@ export function useStatusEmojiShare({ token, deviceId, userId, emoji, friendIds,
         if (!token || !deviceId || !userId || !personalIdOfStatusEmoji(emoji) || targets.length === 0) return;
         let cancelled = false;
         let timer: ReturnType<typeof setTimeout> | null = null;
-        const headers = { Authorization: `Bearer ${token}`, 'x-device-id': deviceId };
         const deps: ShareDeps = {
             store: personalEmojis().store,
             load: () => parseStatusEmojiLedger(secureLocalStore.getItem(statusEmojiLedgerKey(userId))),
@@ -58,37 +54,7 @@ export function useStatusEmojiShare({ token, deviceId, userId, emoji, friendIds,
             sleep: ms => new Promise(r => setTimeout(r, ms)),
             newId: () => (typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : `se-${Date.now()}`),
             cancelled: () => cancelled,
-            async send(target, content) {
-                try {
-                    // claim_otp=1: one one-time prekey per recipient device, like every other send.
-                    const res = await axios.get(
-                        apiUrl`/conversations/${target.conversationId}/devices?claim_otp=1`,
-                        { headers },
-                    );
-                    if (!Array.isArray(res.data)) return 'failed';
-                    const theirs = (res.data as { device_id: string; spk_pub_b64: string; user_id: string }[])
-                        .filter(d => d.user_id === target.userId);
-                    if (theirs.length === 0) return 'skipped';
-                    const { ciphertext_b64, recipient_device_ids } = await encryptAndAddress(
-                        JSON.stringify(content), userId, theirs, deviceId,
-                    );
-                    if (recipient_device_ids.length === 0) return 'skipped';
-                    await axios.post(
-                        `${API_BASE}/messages/send`,
-                        {
-                            conversation_id: target.conversationId,
-                            recipient_device_ids,
-                            envelope_type: 'signal_chat',
-                            ciphertext_b64,
-                            sent_at_client: new Date().toISOString(),
-                        },
-                        { headers },
-                    );
-                    return 'sent';
-                } catch (e) {
-                    return axios.isAxiosError(e) && e.response?.status === 429 ? 'throttled' : 'failed';
-                }
-            },
+            send: (target, content) => sendFriendControl(target, content, { token, deviceId, userId }),
         };
         const run = async (attempt: number) => {
             const outcome = await shareStatusEmoji(emoji, userId, targets, deps).catch(() => ({ retry: false }));

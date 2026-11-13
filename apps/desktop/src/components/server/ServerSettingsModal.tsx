@@ -28,12 +28,14 @@
 import React, { useState, useEffect, useCallback, useRef, useLayoutEffect } from 'react';
 import axios from 'axios';
 import { ClButton } from '../ClButton';
-import { ClModal, ClSelect, ClInput, ClTextarea, ClImageCropper } from '../cl';
+import { ClSelect, ClInput, ClTextarea, ClImageCropper } from '../cl';
+import { PasswordConfirmDialog } from '../dialog/PasswordConfirmDialog';
+import { DialogText } from '../dialog/DialogFrame';
 import { motion, AnimatePresence } from 'framer-motion';
 import '../../styles/server-dock.css';
 import {
     X, Server, Shield, Users, Link, Ban, ClipboardList,
-    Trash2, Check, AlertCircle, Copy,
+    Trash2, Check, Copy,
     Camera, Image as ImageIcon, Crown,
     ChevronDown, ChevronUp, Clock,
     Smile, Upload, Pencil, HardDrive, Sparkles,
@@ -67,6 +69,7 @@ import { useEscape } from '../../hooks/useEscape';
 import { writeToClipboard } from '../../utils/clipboard';
 import { MemberActionDialog, type MemberActionKind } from './MemberActionDialog';
 import { requestMoment } from '../../utils/moments';
+import { EMOJI_NAME_RE, sanitizeEmojiNameInput, toShortcode } from '../../utils/emojiNames';
 
 // ── Helper Types ─────────────────────────────────────────────────────────────
 
@@ -294,11 +297,16 @@ function OverviewTab({ server, token, onServerUpdated, canManageServer, isOwner,
             const preview = URL.createObjectURL(blob);
             if (kind === 'icon')   setIconPreview(preview);   else setBannerPreview(preview);
 
-            // Encrypted upload — same primitive as user avatars/banners
+            // Encrypted upload — same primitive as user avatars/banners. An animated
+            // pick comes back from the cropper as an animated WebP, so the MIME (which
+            // the receiving side uses to decide whether the image can move) is the
+            // blob's own, never a hard-coded JPEG.
+            const mime = blob.type === 'image/webp' ? 'image/webp' : 'image/jpeg';
+            const ext = mime === 'image/webp' ? 'webp' : 'jpg';
             const { attachmentId, keyB64, nonceB64 } = await uploadEncryptedFile(
                 blob,
-                kind === 'icon' ? 'server-icon.jpg' : 'server-banner.jpg',
-                'image/jpeg',
+                kind === 'icon' ? `server-icon.${ext}` : `server-banner.${ext}`,
+                mime,
             );
             if (kind === 'icon')   { setIconAttachment(attachmentId);   setIconKeyB64(keyB64);   setIconNonceB64(nonceB64); }
             else                   { setBannerAttachment(attachmentId); setBannerKeyB64(keyB64); setBannerNonceB64(nonceB64); }
@@ -404,6 +412,7 @@ function OverviewTab({ server, token, onServerUpdated, canManageServer, isOwner,
                                     nonceB64={bannerNonceB64}
                                     token={token}
                                     className="w-full h-full"
+                                    animate
                                 />
                             ) : (
                                 <div className="w-full h-full flex items-center justify-center text-cl-faint group-hover:text-cl-muted transition-colors">
@@ -465,6 +474,7 @@ function OverviewTab({ server, token, onServerUpdated, canManageServer, isOwner,
                                     nonceB64={iconNonceB64}
                                     token={token}
                                     className="w-full h-full text-2xl"
+                                    animate
                                 />
                             )}
                             <div className="absolute inset-0 flex items-center justify-center bg-black/0 group-hover:bg-black/40 transition-colors">
@@ -624,42 +634,28 @@ function OverviewTab({ server, token, onServerUpdated, canManageServer, isOwner,
             )}
 
             {/* ── Delete confirmation dialog ───────────────────────────── */}
-            <ClModal open={showDeleteDialog} onClose={closeDeleteDialog} width={448} overlayStyle={{ zIndex: 1100 }} cardStyle={{ padding: 0, overflow: 'hidden' }}>
-                <div className="px-6 pt-6 pb-4 border-b border-cl-border/40">
-                    <p className="text-[18px] font-bold text-cl-text mt-0 mb-0">Delete <span className="text-cl-flash">{server.name}</span>?</p>
-                    <p className="text-[13px] text-cl-faint mt-1.5 leading-relaxed">
-                        This will permanently delete all channels, messages, roles, and members.
-                        This action <span className="font-semibold text-cl-muted">cannot be undone</span>.
-                    </p>
-                </div>
-                <div className="px-6 py-5 space-y-4">
-                    <div>
-                        <label className="block text-[12px] font-semibold text-cl-faint uppercase tracking-wider mb-2">
-                            Enter your password to confirm
-                        </label>
-                        <ClInput
-                            type="password"
-                            value={deletePassword}
-                            onChange={e => { setDeletePassword(e.target.value); setDeleteError(null); }}
-                            onKeyDown={(e: React.KeyboardEvent) => { if (e.key === 'Enter' && deletePassword.trim()) handleDeleteServer(); }}
-                            placeholder="Your account password"
-                            autoFocus
-                        />
-                    </div>
-                    {deleteError && (
-                        <div className="flex items-center gap-2 px-3 py-2.5 rounded-lg bg-cl-flash/10 border border-cl-flash/25">
-                            <AlertCircle size={14} className="text-cl-flash shrink-0" />
-                            <p className="text-[13px] text-cl-flash">{deleteError}</p>
-                        </div>
-                    )}
-                </div>
-                <div className="px-6 pb-6 flex gap-3 justify-end">
-                    <ClButton variant="ghost" onClick={closeDeleteDialog} disabled={deleting}>Cancel</ClButton>
-                    <ClButton variant="danger" onClick={handleDeleteServer} disabled={!deletePassword.trim() || deleting} loading={deleting}>
-                        {deleting ? 'Deleting…' : 'Delete Server'}
-                    </ClButton>
-                </div>
-            </ClModal>
+            <PasswordConfirmDialog
+                open={showDeleteDialog}
+                onClose={closeDeleteDialog}
+                onSubmit={handleDeleteServer}
+                overlayStyle={{ zIndex: 1100 }}
+                label={`Delete ${server.name}`}
+                icon={<Trash2 size={18} strokeWidth={2.2} />}
+                title={<>Delete &ldquo;{server.name}&rdquo;?</>}
+                subtitle="This can't be undone."
+                password={deletePassword}
+                onPasswordChange={(v) => { setDeletePassword(v); setDeleteError(null); }}
+                error={deleteError}
+                busy={deleting}
+                submitLabel="Delete server"
+                busyLabel="Deleting…"
+                hint="Deleted for everyone"
+            >
+                <DialogText>
+                    This permanently deletes all channels, messages, roles, and members.
+                    It <strong>cannot be undone</strong>.
+                </DialogText>
+            </PasswordConfirmDialog>
 
             {/* Crop step — one mount, dimensions/shape switch on the picked target.
                 ClModal's overlay sits at z-index 1000 (cl-kit-ext.css) while this
@@ -677,6 +673,7 @@ function OverviewTab({ server, token, onServerUpdated, canManageServer, isOwner,
                 outputWidth={cropTarget?.kind === 'banner' ? BANNER_OUTPUT.width : AVATAR_OUTPUT.width}
                 outputHeight={cropTarget?.kind === 'banner' ? BANNER_OUTPUT.height : AVATAR_OUTPUT.height}
                 shape="rect"
+                allowAnimated
                 title={cropTarget?.kind === 'banner' ? 'Position the server banner' : 'Position the server icon'}
                 onCancel={() => setCropTarget(null)}
                 onConfirm={handleCropped}
@@ -710,6 +707,9 @@ function MembersTab({ server, token, userId, onServerUpdated, proMemberIds, proO
     const [muteMins, setMuteMins] = useState('10');
     /** Member targeted for ownership transfer — opens the confirmation dialog. */
     const [transferDialog, setTransferDialog] = useState<Member | null>(null);
+    // The dialog's copy keeps naming the member through its exit animation.
+    const [transferShown, setTransferShown] = useState<Member | null>(null);
+    if (transferDialog && transferDialog !== transferShown) setTransferShown(transferDialog);
     const [transferring, setTransferring] = useState(false);
     const [transferPassword, setTransferPassword] = useState('');
     const [transferError, setTransferError] = useState<string | null>(null);
@@ -911,72 +911,49 @@ function MembersTab({ server, token, userId, onServerUpdated, proMemberIds, proO
             </div>
             </div>
 
+            {/* Kick / ban confirmation. Rendered at the tab's top level: it used to sit
+                INSIDE the transfer dialog's ClModal below, which renders nothing while
+                closed, so the Kick / Ban buttons opened no dialog at all. */}
+            {memberAction && (
+                <MemberActionDialog
+                    kind={memberAction.kind}
+                    serverName={server.name}
+                    memberId={memberAction.member.user_id}
+                    memberName={memberAction.member.nickname || memberAction.member.username || 'this member'}
+                    avatarUrl={memberAction.member.avatar_url ?? null}
+                    token={token}
+                    onConfirm={() => { const { kind, member } = memberAction; void (kind === 'kick' ? kick(member.user_id) : ban(member.user_id)); }}
+                    onClose={() => setMemberAction(null)}
+                />
+            )}
+
             {/* ── Transfer Ownership dialog ─────────────────────────────── */}
-            <ClModal open={!!transferDialog} onClose={closeTransferDialog} width={448} overlayStyle={{ zIndex: 1100 }} cardStyle={{ padding: 0, overflow: 'hidden' }}>
-                {memberAction && (
-                    <MemberActionDialog
-                        kind={memberAction.kind}
-                        serverName={server.name}
-                        memberId={memberAction.member.user_id}
-                        memberName={memberAction.member.nickname || memberAction.member.username || 'this member'}
-                        avatarUrl={memberAction.member.avatar_url ?? null}
-                        token={token}
-                        onConfirm={() => { const { kind, member } = memberAction; void (kind === 'kick' ? kick(member.user_id) : ban(member.user_id)); }}
-                        onClose={() => setMemberAction(null)}
-                    />
-                )}
-                {transferDialog && (
-                    <>
-                        <div className="px-6 pt-6 pb-4 border-b border-cl-border/40">
-                            <div className="flex items-center gap-2.5 mb-3">
-                                <div className="w-8 h-8 rounded-full bg-amber-400/15 flex items-center justify-center">
-                                    <Crown size={16} className="text-amber-400" />
-                                </div>
-                                <p className="text-[18px] font-bold text-cl-text mt-0 mb-0">Transfer Ownership</p>
-                            </div>
-                            <p className="text-[13px] text-cl-faint leading-relaxed">
-                                You are about to transfer ownership of <span className="text-cl-muted font-medium">{server.name}</span> to{' '}
-                                <span className="text-amber-400 font-semibold">{transferDialog.username ?? 'this member'}</span>.
-                            </p>
-                            <p className="text-[13px] text-cl-faint leading-relaxed mt-2">
-                                You will become a regular member. Only {transferDialog.username ?? 'they'} can transfer it back. {transferStorageNote()}
-                            </p>
-                        </div>
-                        <div className="px-6 py-5 space-y-4">
-                            <div>
-                                <label className="block text-[12px] font-semibold text-cl-faint uppercase tracking-wider mb-2">
-                                    Enter your password to confirm
-                                </label>
-                                <ClInput
-                                    type="password"
-                                    value={transferPassword}
-                                    onChange={e => { setTransferPassword(e.target.value); setTransferError(null); }}
-                                    onKeyDown={(e: React.KeyboardEvent) => { if (e.key === 'Enter' && transferPassword.trim() && !transferring) doTransfer(transferDialog.user_id); }}
-                                    placeholder="Your account password"
-                                    autoFocus
-                                />
-                            </div>
-                            {transferError && (
-                                <div className="flex items-center gap-2 px-3 py-2.5 rounded-lg bg-cl-flash/10 border border-cl-flash/25">
-                                    <AlertCircle size={14} className="text-cl-flash shrink-0" />
-                                    <p className="text-[13px] text-cl-flash">{transferError}</p>
-                                </div>
-                            )}
-                        </div>
-                        <div className="px-6 pb-6 flex gap-3 justify-end">
-                            <ClButton variant="ghost" onClick={closeTransferDialog} disabled={transferring}>Cancel</ClButton>
-                            <ClButton
-                                onClick={() => doTransfer(transferDialog.user_id)}
-                                disabled={transferring || !transferPassword.trim()}
-                                loading={transferring}
-                                style={{ background: transferring ? undefined : 'rgb(217 119 6)', color: '#fff' }}
-                            >
-                                {transferring ? 'Transferring…' : 'Transfer Ownership'}
-                            </ClButton>
-                        </div>
-                    </>
-                )}
-            </ClModal>
+            <PasswordConfirmDialog
+                open={!!transferDialog}
+                onClose={closeTransferDialog}
+                onSubmit={() => { if (transferDialog && !transferring) void doTransfer(transferDialog.user_id); }}
+                overlayStyle={{ zIndex: 1100 }}
+                label="Transfer ownership"
+                tone="warn"
+                icon={<Crown size={18} strokeWidth={2.2} />}
+                title={<>Transfer ownership to {transferShown?.username ?? 'this member'}?</>}
+                subtitle={<>You become a regular member of {server.name}.</>}
+                password={transferPassword}
+                onPasswordChange={(v) => { setTransferPassword(v); setTransferError(null); }}
+                error={transferError}
+                busy={transferring}
+                submitLabel="Transfer ownership"
+                busyLabel="Transferring…"
+                submitVariant="primary"
+                hint="Only they can transfer it back"
+            >
+                <DialogText>
+                    You are about to transfer ownership of <strong>{server.name}</strong> to{' '}
+                    <strong>{transferShown?.username ?? 'this member'}</strong>.
+                    Only {transferShown?.username ?? 'they'} can transfer it back.
+                </DialogText>
+                <DialogText>{transferStorageNote()}</DialogText>
+            </PasswordConfirmDialog>
         </div>
     );
 }
@@ -1311,8 +1288,8 @@ function InvitesTab({
 
 // ── Emojis Tab ───────────────────────────────────────────────────────────────
 
-/** `[a-z0-9_]`, 2-32 chars — mirrors CreateEmojiDto's server-side regex. */
-const EMOJI_NAME_RE = /^[a-z0-9_]{2,32}$/;
+// EMOJI_NAME_RE (`[a-z0-9_]`, 2-32) mirrors CreateEmojiDto's server-side regex and
+// is the same client rule My Emojis uses - see utils/emojiNames.
 
 /** Best-effort default name from a picked file — strips the extension,
  *  lowercases, and replaces anything outside [a-z0-9_] with '_'. The user
@@ -1397,7 +1374,7 @@ function EmojisTab({ server, token, canManageEmojis }: {
         if (!pending) return;
         const name = pending.name.trim().toLowerCase();
         if (!EMOJI_NAME_RE.test(name)) {
-            toast.push({ kind: 'error', message: 'Names may only use lowercase letters, numbers, and underscores (2-32 characters).' });
+            toast.push({ kind: 'error', message: 'Names may only use letters, numbers and underscores - no spaces or dashes (2-32 characters).' });
             return;
         }
         if (emojis.some(e => e.name === name)) {
@@ -1431,7 +1408,7 @@ function EmojisTab({ server, token, canManageEmojis }: {
         }
     };
 
-    const startRename = (e: ServerEmoji) => { setRenamingId(e.emoji_id); setRenameValue(e.name); };
+    const startRename = (e: ServerEmoji) => { setRenamingId(e.emoji_id); setRenameValue(toShortcode(e.name)); };
     // TASK 2: this inline rename editor had no Escape-to-cancel before — a
     // layer of its own so it backs out without closing Settings underneath.
     useEscape(() => setRenamingId(null), !!renamingId);
@@ -1439,7 +1416,7 @@ function EmojisTab({ server, token, canManageEmojis }: {
     const confirmRename = async (emojiId: string) => {
         const name = renameValue.trim().toLowerCase();
         if (!EMOJI_NAME_RE.test(name)) {
-            toast.push({ kind: 'error', message: 'Names may only use lowercase letters, numbers, and underscores (2-32 characters).' });
+            toast.push({ kind: 'error', message: 'Names may only use letters, numbers and underscores - no spaces or dashes (2-32 characters).' });
             return;
         }
         try {
@@ -1521,7 +1498,7 @@ function EmojisTab({ server, token, canManageEmojis }: {
                             <div className="flex-1 min-w-0">
                                 <ClInput
                                     value={pending.name}
-                                    onChange={e => setPending(p => p && { ...p, name: e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, '') })}
+                                    onChange={e => setPending(p => p && { ...p, name: sanitizeEmojiNameInput(e.target.value) })}
                                     placeholder="emoji_name"
                                     maxLength={32}
                                 />
@@ -1556,7 +1533,7 @@ function EmojisTab({ server, token, canManageEmojis }: {
                                 <div className="flex-1 min-w-0 flex items-center gap-1.5">
                                     <ClInput
                                         value={renameValue}
-                                        onChange={e => setRenameValue(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, ''))}
+                                        onChange={e => setRenameValue(sanitizeEmojiNameInput(e.target.value))}
                                         maxLength={32}
                                         autoFocus
                                     />
@@ -1925,6 +1902,7 @@ export const ServerSettingsModal: React.FC<Props> = ({
                                 nonceB64={server.banner_nonce_b64}
                                 token={token}
                                 className="absolute inset-0 w-full h-full object-cover"
+                                animate
                             />
                             <div className="absolute inset-0 bg-gradient-to-r from-cl-deep via-cl-deep/85 to-cl-deep/40 pointer-events-none" />
                             <div className="absolute inset-x-0 bottom-0 h-10 bg-gradient-to-t from-cl-deep to-transparent pointer-events-none" />

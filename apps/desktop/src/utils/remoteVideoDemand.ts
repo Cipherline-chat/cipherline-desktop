@@ -50,6 +50,23 @@ export function noteRemoteVideoSubscribed(pub: PausableVideoPublication): void {
     }, PAUSE_AFTER_MS);
 }
 
+/**
+ * Stop forwarding a watched video for a moment, without touching the tiles' hold
+ * on it (shareRxStallRecovery.ts: lets a backed-up decoder drain). The returned
+ * function resumes it, with a keyframe from the sender, unless every tile let go
+ * meanwhile: their pause timer found it already paused and did nothing, so
+ * resuming would stream a video nobody shows.
+ */
+export function pauseRemoteVideoBriefly(pub: PausableVideoPublication): () => void {
+    if (!pub.isSubscribed || !pub.isEnabled) return () => {};
+    pub.setEnabled(false);
+    return () => {
+        const d = demand.get(pub);
+        if (d && d.refs === 0 && !d.timer) return;
+        if (pub.isSubscribed && !pub.isEnabled) pub.setEnabled(true);
+    };
+}
+
 /** Hold the publication's video on while the caller is showing it on screen.
  *  Returns the release function. */
 export function retainRemoteVideo(pub: PausableVideoPublication): () => void {

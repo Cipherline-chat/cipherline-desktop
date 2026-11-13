@@ -22,12 +22,12 @@ declare global {
         | { phase: 'available'; version: string }
         | { phase: 'downloading'; version: string; percent: number }
         | { phase: 'retrying'; version: string; attempt: number; maxAttempts: number; retryAt: number }
-        | { phase: 'failed'; version: string; stage: 'download' | 'verify' | 'install' }
+        | { phase: 'failed'; version: string; stage: 'download' | 'verify' | 'install'; cause?: 'cancelled' }
         | { phase: 'ready'; version: string }
-        | { phase: 'manual'; version: string; downloadUrl: string };
+        | { phase: 'manual'; version: string; downloadUrl: string; pkg?: 'deb'; cause?: 'install' };
 
     interface ElectronAPI {
-        onReady: (callback: () => void) => void;
+        onReady: (callback: () => void) => (() => void);
         getLocalIdentity: () => Promise<string | null>;
         /** Host platform, resolved synchronously in preload via process.platform. */
         platform: 'windows' | 'mac' | 'linux';
@@ -38,15 +38,19 @@ declare global {
         getDesktopSources: (types?: Array<'window' | 'screen'>, opts?: { thumbnails?: boolean }) => Promise<Array<{ id: string, name: string, thumbnailDataUrl: string }>>;
         /** One-time capture grant for the source the user just picked (electron/capture-consent.ts). */
         captureMintGrant: (sourceId: string, audio: boolean) => Promise<{ token: string }>;
-        resolveDesktopSource: (sourceId: string | null, withAudio?: boolean, grantToken?: string) => Promise<void>;
+        /** The live share restarts on the capture it already has: a grant continued from the share's own consent (live source only). */
+        captureContinueGrant?: (sourceId: string, audio: boolean) => Promise<{ token: string; audio: boolean }>;
+        resolveDesktopSource: (sourceId: string | null, withAudio?: boolean, grantToken?: string) => Promise<string | undefined>;
         onShowScreensharePicker: (callback: () => void) => () => void;
         /** Desktop annotation overlay for the local screen / window share
          *  (docs/video-annotation-design.md, Phase 5). Resolves to the show
          *  result, with a refusal reason when nothing can be overlaid; a main
          *  process older than that resolves a bare boolean. */
-        annotationOverlayShow?: (sourceId: string) => Promise<boolean | import('./utils/annotationOverlayTypes').OverlayShowResult>;
+        annotationOverlayShow?: (sourceId: string, frame?: { width: number; height: number }, chosenDisplayId?: number, hint?: import('./utils/annotationOverlayTypes').OverlayShowHint) => Promise<boolean | import('./utils/annotationOverlayTypes').OverlayShowResult>;
         annotationOverlayHide?: () => Promise<void>;
         annotationOverlayPush?: (delta: import('./utils/annotationOverlayTypes').OverlayDelta) => void;
+        /** Main took the overlay down by itself (X11: the compositing manager went away mid-share); unsubscribe fn returned. */
+        onAnnotationOverlayEnded?: (callback: () => void) => () => void;
         /** macOS Screen Recording (TCC) status — exactly Electron's
          *  getMediaAccessStatus strings, or 'not-applicable' off macOS.
          *  Optional: an older preload won't have it. */
@@ -78,15 +82,22 @@ declare global {
         diagRecordRendererCrash?: (payload: { name?: string; message?: string; stack?: string }) => Promise<void>;
         diagSaveReport?: (category: string, json: string) => Promise<{ status: 'saved' | 'cancelled' }>;
         onOsLockScreen: (callback: () => void) => () => void;
+        /** Continuity: the OS power/lock signals one-for-one — 'lock-screen' |
+         *  'unlock-screen' | 'suspend' | 'resume' (see utils/attentionState.ts). */
+        onOsPowerSignal?: (callback: (signal: string) => void) => () => void;
         onOsResume: (callback: () => void) => () => void;
         /** Per-display refresh rate. Screen capture cannot exceed it — a
          *  `displayFrequency` of 0 means the platform didn't report one. */
         getDisplayRefreshRates?: () => Promise<Array<{ id: string; displayFrequency: number; isPrimary: boolean; captureFpsCeiling?: number | null }>>;
+        /** True when a capture goes through the desktop's xdg-desktop-portal chooser (a native
+         *  Wayland client), so asking for one can open a dialog. `restoreListed`: that portal re-opens a source
+         *  the share listed with no dialog, so the capture may be re-opened by a quality change. Optional: an older main lacks it. */
+        getShareCapturePath?: () => Promise<{ viaPortal: boolean; restoreListed?: boolean }>;
         /** Stream-stats overlay diagnostics for a screen-share source. Typed
          *  `unknown` on purpose: src/utils/screenShareDiagnostics.ts narrows
          *  it field by field (parseMainDiagnostics), so an older/newer main
          *  process can never feed the overlay a shape it trusts blindly. */
-        getScreenShareDiagnostics?: (sourceId: string) => Promise<unknown>;
+        getScreenShareDiagnostics?: (sourceId: string, sharedRect?: { x: number; y: number; width: number; height: number } | null) => Promise<unknown>;
         /** HDR screen shares (Windows, electron/hdr-share.ts). Results are
          *  `unknown` on purpose: src/utils/hdrSharePipeline.ts narrows them. */
         hdrShare?: {
@@ -109,7 +120,18 @@ declare global {
          *  an older main process does not have them. */
         getStartupFlags?: () => Promise<unknown>;
         /** Rejects on an unknown key or a value outside the enum. */
-        setStartupFlags?: (patch: { screenCapturer?: 'auto' | 'dxgi' | 'wgc'; captureLog?: boolean; gamingVideo?: boolean }) => Promise<unknown>;
+        setStartupFlags?: (patch: { screenCapturer?: 'auto' | 'dxgi' | 'wgc'; captureLog?: boolean; gamingVideo?: boolean; linuxHwEncode?: boolean; linuxHwDecode?: boolean }) => Promise<unknown>;
+        /** Linux + NVIDIA: VA-API driver status / one-click install (electron/nvidia-vaapi-install.ts). No arguments
+         *  by design (main picks the package). `unknown`: narrowed by src/utils/nvidiaVaapi.ts. Optional: older mains. */
+        getNvidiaVaapiStatus?: () => Promise<unknown>;
+        installNvidiaVaapiDriver?: () => Promise<unknown>;
+        /** Linux + Intel/AMD: VA-API encoder-driver status / one-click install (electron/video-encode-driver.ts). No arguments
+         *  by design. `unknown`: narrowed by src/utils/videoEncodeDriver.ts. Optional: older mains. */
+        getVideoEncodeDriverStatus?: () => Promise<unknown>;
+        installVideoEncodeDriver?: () => Promise<unknown>;
+        /** Linux hardware video encode saw a failure (src/utils/linuxHwEncode.ts): one word from a fixed
+         *  list; main keeps at most one record per launch. Resolves true when main accepted the word. */
+        reportLinuxHwEncodeFailure?: (kind: 'gpu_crash' | 'hw_lost' | 'stall' | 'drift' | 'high_start') => Promise<boolean>;
         /** Quit normally and start again (Electron relauncher). */
         relaunchApp?: () => Promise<void>;
         /** main → renderer: the GPU process died and is being restarted
@@ -128,6 +150,10 @@ declare global {
          *  while "Prioritize calls and screen share while gaming" is on
          *  (electron/share-boost.ts). Optional: older main processes. */
         setShareActive?: (active: boolean) => Promise<void>;
+        /** OUR camera is published (true) / off or the call ended (false) —
+         *  main keeps the webcam's capture process out of OS throttling while
+         *  "Prioritize calls and screen share while gaming" is on. Optional: older mains. */
+        setCameraActive?: (active: boolean) => Promise<void>;
         /** What has the screen right now (Windows; null elsewhere or without the
          *  addon). `unknown` on purpose: src/utils/foregroundInfo.ts narrows it.
          *  `sourceId` = the share's capture source id (lets main say whether the
@@ -137,9 +163,6 @@ declare global {
          *  global shortcut was pressed (read by main at that moment), null = fall
          *  back. Takes no arguments. Optional: older mains. */
         getQuickShareForegroundSource?: () => Promise<string | null>;
-        /** Which of these `window:` source ids is the running program `exe`
-         *  (null = none). Optional: older mains. */
-        findWindowSourceByExe?: (exe: string, windowSourceIds: string[]) => Promise<string | null>;
         /** Main applied / re-applied / restored the share's OS power-throttling
          *  opt-out. `unknown` on purpose (src/utils/sharePowerEvent.ts narrows it). */
         onSharePower?: (cb: (report: unknown) => void) => () => void;
@@ -198,6 +221,11 @@ declare global {
         isAudioCaptureSupported: () => Promise<boolean>;
         startWindowAudioCapture: (pid: number, mode?: 'include' | 'exclude', grantToken?: string) => Promise<boolean>;
         stopWindowAudioCapture: () => Promise<void>;
+        /** Linux Wayland window shares: the apps playing audio right now, as handles main issued
+         *  (electron/app-audio.ts). [] anywhere else. */
+        listAudioApps?: () => Promise<{ handle: string; name: string; binary: string }[]>;
+        /** Start capturing ONE app's audio, by a handle from listAudioApps and the share grant. */
+        startAppAudioCapture?: (handle: string, grantToken?: string) => Promise<boolean>;
         onWindowAudioChunk: (
             callback: (chunk: { sampleRate: number; channels: number; data: ArrayBuffer }) => void
         ) => void;
@@ -367,9 +395,12 @@ declare global {
             message_id?: string | null;
             sender_user_id?: string | null;
             sender_device_id?: string | null;
+            /** Server row created_at — the unbound-message cutoff reads it. */
+            created_at?: string | null;
         }) => Promise<string>;
         setChannelKey: (channelId: string, epoch: number, keyB64: string, rotatesAt: string, replaceIfFingerprintB64?: string) => Promise<'stored' | 'duplicate' | 'conflict'>;
         getLatestChannelEpoch: (channelId: string) => Promise<number | null>;
+        getLatestChannelEpochRotatesAt: (channelId: string) => Promise<string | null>;
         listChannelEpochs: (channelId: string) => Promise<number[]>;
         setProtectedEpochs: (channelId: string, epochs: number[]) => Promise<void>;
         getChannelKey: (channelId: string, epoch: number) => Promise<string | null>;
@@ -403,9 +434,17 @@ declare global {
             showNotice: boolean;
         }>;
         ackKeyProtectionNotice?: () => Promise<boolean>;
+        getKeyringStatus?: () => Promise<{
+            state: 'not-applicable' | 'unlocked' | 'denied' | 'no-service';
+            walletName: string | null;
+            firstRun: boolean;
+            degraded: boolean;
+        }>;
+        retryKeyringUnlock?: () => Promise<boolean>;
         fetchBinary: (url: string) => Promise<{ b64: string; mimeType: string }>;
         openExternal: (url: string) => Promise<void>;
-        syncGlobalShortcuts: (map: Record<string, string>) => Promise<{ failed: string[] }>;
+        configureDesktopShortcuts?: () => Promise<boolean>;
+        syncGlobalShortcuts: (map: Record<string, string>, portalMap?: Record<string, string>) => Promise<{ failed: string[]; status?: { mode: 'native' | 'portal' | 'unavailable'; reason: string; desktop: string; portal?: { bound: string[]; notBound: string[] }; appId?: string } }>;
         onGlobalShortcut: (callback: (actionId: string) => void) => () => void;
         getUserDataPath: () => Promise<string>;
         setContentProtection: (enabled: boolean) => void;
@@ -419,6 +458,8 @@ declare global {
         onGameDetected: (cb: (data: { name: string; processName: string }) => void) => (() => void);
         onGameStopped: (cb: () => void) => (() => void);
         getCurrentGame: () => Promise<{ name: string; processName: string } | null>;
+        /** The detected game's executable icon (small PNG data URL), launcher and Steam id, read by main. */
+        getCurrentGameArt?: () => Promise<{ name: string; icon: string | null; store: string | null; appId: number | null } | null>;
         /** Settings → Game activity off stops main's background process scan. */
         setGameDetectionEnabled?: (enabled: boolean) => void;
         getRunningProcesses: () => Promise<string[]>;
@@ -539,6 +580,8 @@ declare global {
 
     interface Window {
         electronAPI?: ElectronAPI;
+        /** Linux hardware screen share bridge (electron/preload.ts); absent elsewhere. Off unless switched on (utils/nativeSharePrefs.ts). */
+        nativeShare?: import('./utils/nativeShareApi').NativeShareApi;
     }
 
     /**

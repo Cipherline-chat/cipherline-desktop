@@ -73,6 +73,14 @@ interface CallContextValue {
     toggleFocusedStream: (stream: FocusedStream) => void;
     isFullscreen: boolean;
     setIsFullscreen: (v: boolean) => void;
+    /**
+     * Go straight to one video filling the screen, from the docked focused view. Only
+     * FullscreenOverlay can show a fill, so this enters fullscreen and leaves the
+     * request for it to pick up (`takeFillRequest`).
+     */
+    fillRequest: FocusedStream | null;
+    requestFill: (stream: FocusedStream) => void;
+    takeFillRequest: () => void;
     /** Called exactly once, from the call UI's own unmount cleanup
      *  (SidebarConference), whenever a call ends — docked or fullscreen.
      *  Unconditionally docks (a stale `true` must never be observed by the
@@ -203,6 +211,8 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
      * to call `setIsFullscreen(false)` unconditionally when it fires, so a
      * stray Escape right after a call ended can't cut an in-flight fade short.
      */
+    const [fillRequest, setFillRequest] = useState<FocusedStream | null>(null);
+    const takeFillRequest = useCallback(() => setFillRequest(null), []);
     const setIsFullscreen = useCallback((v: boolean) => {
         if (v) {
             clearFullscreenExitTimer();
@@ -300,12 +310,20 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // parent re-renders — without this every consumer's useEffect([callCtx]) fires
     // on every render, including CallPane's screenshare-cue effect with its short
     // initial timer that would never get to fire.
+    const requestFill = useCallback((stream: FocusedStream) => {
+        setFillRequest(stream);
+        setIsFullscreen(true);
+    }, [setIsFullscreen]);
+
     const value = useMemo(() => ({
         focusedStream,
         setFocusedStream,
         toggleFocusedStream,
         isFullscreen,
         setIsFullscreen,
+        fillRequest,
+        requestFill,
+        takeFillRequest,
         endCallFullscreen,
         soloKickDialog,
         setSoloKickDialog,
@@ -324,7 +342,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setHiddenScreenShareIds,
         watchedScreenShareIds,
         setWatchedScreenShareIds,
-    }), [focusedStream, isFullscreen, endCallFullscreen, setIsFullscreen, soloKickDialog, toggleFocusedStream, markAdjusting, isAdjusting, isRecentManualFocus, localMutedIds, hiddenVideoIds, hiddenScreenShareIds, watchedScreenShareIds, toggleLocalMute, toggleHideVideo, toggleHideScreenShare, registerLocalToggles]);
+    }), [focusedStream, isFullscreen, fillRequest, requestFill, takeFillRequest, endCallFullscreen, setIsFullscreen, soloKickDialog, toggleFocusedStream, markAdjusting, isAdjusting, isRecentManualFocus, localMutedIds, hiddenVideoIds, hiddenScreenShareIds, watchedScreenShareIds, toggleLocalMute, toggleHideVideo, toggleHideScreenShare, registerLocalToggles]);
 
     // High-frequency telemetry — separate memo so 30 Hz speaking-flag updates
     // only re-render CallTelemetryContext subscribers (ServerContextPanel, ParticipantCard).

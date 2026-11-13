@@ -3,6 +3,10 @@ import { EncryptedAvatar } from '../EncryptedAvatar';
 import { ParticipantRowShell, ParticipantTileShell, LocalPingReadout } from './ParticipantCard';
 import { tileMetrics } from './participantTileMetrics';
 import type { JoinPeer } from '../../utils/joinView';
+import { motion } from 'framer-motion';
+import { PresenceIsolation } from './presenceMotion';
+import { ROW_JOIN_FROM, ROW_SHOWN, TILE_JOIN_FROM, CALL_JOIN_S, CALL_EASE_ENTER } from './presenceVariants';
+import { usePrefersReducedMotion } from '../../hooks/usePrefersReducedMotion';
 
 /**
  * The call, as it will look once connected — rendered before the LiveKit room
@@ -23,8 +27,11 @@ import type { JoinPeer } from '../../utils/joinView';
  *   - for a call nobody else is in yet, the ringing tile it shows.
  * CallPane hands over to the real SidebarConference once the room is connected
  * and the mic is up, with entrance animations skipped, so nothing re-animates
- * or moves. No animation of its own: no mount/exit animation on anything in
- * the call panel (reparenting restarts them).
+ * or moves. The ONE animation here is your own arrival — your row / tile plays
+ * the call-wide join animation (components/call/presenceMotion) as you click
+ * in, so your own join looks like anyone else's. It is framer-motion (JS),
+ * never a CSS keyframe class: those restart when the call panel's nodes are
+ * reparented. Reduced motion: none.
  */
 export interface JoiningCallViewProps {
     /** 'rows' = voice-channel list (SidebarConference noRinging); 'tiles' = DM / group grid. */
@@ -46,8 +53,10 @@ export const JoiningCallView = ({ layout, token, self, peers, ringing }: Joining
     const micOff = self.muted || self.deafened;
     const silenced = micOff;
     const rows = layout === 'rows';
+    const reduced = usePrefersReducedMotion();
 
     return (
+        <PresenceIsolation>
         <div className="call-no-select w-full flex flex-col relative" data-call-joining-view={layout}>
             <div
                 className={`overflow-x-hidden flex flex-col ${rows ? 'pt-0 pb-0 px-0 gap-0' : 'pt-3 pb-1 px-0 gap-3'}`}
@@ -60,7 +69,12 @@ export const JoiningCallView = ({ layout, token, self, peers, ringing }: Joining
                 {rows ? (
                     <div className="rounded-b-xl overflow-hidden bg-white/[0.04] border-x border-b border-white/[0.07]">
                         <div className="flex flex-col w-full">
-                            <div className="w-full">
+                            <motion.div
+                                className="w-full"
+                                data-presence-join="self"
+                                initial={reduced ? false : ROW_JOIN_FROM}
+                                animate={ROW_SHOWN}
+                            >
                                 <ParticipantRowShell
                                     userId={self.userId}
                                     displayName={self.name}
@@ -75,7 +89,7 @@ export const JoiningCallView = ({ layout, token, self, peers, ringing }: Joining
                                         {self.deafened && <Headphones className="w-3.5 h-3.5 text-white/30" />}
                                     </>}
                                 />
-                            </div>
+                            </motion.div>
                             {peers.map(p => (
                                 <div key={p.userId} className="w-full">
                                     <ParticipantRowShell
@@ -93,7 +107,12 @@ export const JoiningCallView = ({ layout, token, self, peers, ringing }: Joining
                     </div>
                 ) : (
                     <div className="flex-1 flex flex-row flex-wrap justify-center items-center content-center gap-x-8 gap-y-6">
-                        <div>
+                        <motion.div
+                            data-presence-join="self"
+                            initial={reduced ? false : TILE_JOIN_FROM}
+                            animate={{ opacity: 1, scale: 1, y: 0 }}
+                            transition={{ duration: CALL_JOIN_S, ease: CALL_EASE_ENTER }}
+                        >
                             <ParticipantTileShell
                                 userId={self.userId}
                                 displayName={self.name}
@@ -105,7 +124,7 @@ export const JoiningCallView = ({ layout, token, self, peers, ringing }: Joining
                                 dimmed={silenced}
                                 badges={micOff ? <MuteBadge /> : null}
                             />
-                        </div>
+                        </motion.div>
                         {peers.map(p => (
                             <div key={p.userId}>
                                 <ParticipantTileShell
@@ -129,6 +148,7 @@ export const JoiningCallView = ({ layout, token, self, peers, ringing }: Joining
                 )}
             </div>
         </div>
+        </PresenceIsolation>
     );
 };
 

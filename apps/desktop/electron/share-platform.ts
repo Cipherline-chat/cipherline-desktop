@@ -47,12 +47,6 @@
  *                        no native addon for Linux), so it is deliberately not
  *                        done; macOS NSWorkspace.frontmostApplication would not
  *                        say whether the window covers the display anyway.
- *   fullscreenHint       Only where `foreground` is 'native'. It exists for the
- *                        Windows fullscreen / independent-flip path that bypasses
- *                        DWM and starves a whole-screen capture. Neither macOS
- *                        (ScreenCaptureKit captures the display compositor) nor
- *                        X11/Wayland compositors have that failure, so there is
- *                        nothing to hint at.
  *
  * Deliberately free of any `electron` import (share-platform.test.ts).
  */
@@ -67,7 +61,6 @@ export interface ShareBoostSupport {
     occlusionFeatureOff: boolean;
     gpuPriority: boolean;
     foreground: ForegroundSupport;
-    fullscreenHint: boolean;
 }
 
 export function shareBoostSupport(platform: string): ShareBoostSupport {
@@ -80,6 +73,42 @@ export function shareBoostSupport(platform: string): ShareBoostSupport {
         occlusionFeatureOff: win,
         gpuPriority: win,
         foreground: win ? 'native' : 'unavailable',
-        fullscreenHint: win,
     };
+}
+
+/**
+ * What to ask Electron's display-media callback for as `audio`, when the
+ * renderer wants system audio and the native capture (WASAPI / ScreenCaptureKit)
+ * is not carrying it. One table cell per OS, so main and its tests cannot disagree.
+ *
+ *   win32   'loopbackWithMute' for a screen (system audio, Cipherline muted
+ *           locally so the call is not echoed back into the share); a single
+ *           window has no per-window loopback here, so none.
+ *   darwin  none: Electron documents loopback as Windows-only.
+ *   linux   none. MEASURED on Electron 43.2.0 / Linux x64 (X11 under Xvfb,
+ *           PulseAudio running), a 25 s race against getDisplayMedia with the
+ *           handler answering:
+ *             audio: 'loopback'          -> resolves in ~0.2 s with a "System audio" track
+ *             audio: 'loopbackWithMute'  -> did not settle in 25 s, twice, on a fresh process (the
+ *                                           share button would sit on "Starting screen
+ *                                           share..." for good); after a plain-loopback capture
+ *                                           in the same process it failed at once with
+ *                                           "Could not start audio source"
+ *           Plain 'loopback' would work, but Linux has no per-app exclusion, so it
+ *           carries the call's own voices straight back to the people speaking (a
+ *           guaranteed echo), and the one mute that avoids it is the one that
+ *           hangs. So Chromium never carries Linux system audio: it comes from the native
+ *           PipeWire addon (src-native/audio_capture_linux.cc) when that is supported, and
+ *           otherwise the picker says so and the share starts without audio.
+ */
+export function chromiumLoopbackAudioMode(input: {
+    platform: string;
+    withAudio: boolean;
+    isWindow: boolean;
+    /** The native capture addon carries the audio instead (Windows). */
+    nativeAudioAvailable: boolean;
+}): 'loopbackWithMute' | undefined {
+    if (!input.withAudio || input.nativeAudioAvailable) return undefined;
+    if (input.platform === 'darwin' || input.platform === 'linux') return undefined;
+    return input.isWindow ? undefined : 'loopbackWithMute';
 }

@@ -89,6 +89,14 @@ export function parseEmojiPayload(json: string): SnapshotPayload {
     };
 }
 
+/** Does a library entry on this device have no readable image? */
+async function anyLibraryBytesMissing(env: EmojiSyncEnv): Promise<boolean> {
+    for (const e of env.loadLocalState().entries) {
+        try { if (!env.hasBytes(e.id) || !(await env.readBytes(e.id))) return true; } catch { return true; }
+    }
+    return false;
+}
+
 /** Are these bytes really `entry`? (size cap, image magic, content hash.) */
 async function bytesMatch(entry: EmojiEntry, bytes: Uint8Array): Promise<boolean> {
     if (bytes.length === 0 || bytes.length > PERSONAL_EMOJI_MAX_BYTES) return false;
@@ -100,7 +108,9 @@ export async function pullEmojis(env: EmojiSyncEnv, view: SlotView<EmojiLibState
     const none = (v: SlotView<EmojiLibState> | null): EmojiPullResult => ({ applied: false, view: v, incomplete: [] });
     const meta = await env.getSlotMeta();
     if (!meta) return none(null);
-    if (view && view.updatedAt === meta.updated_at) return none(view);
+    // Same revision as last time: nothing new, UNLESS one of our own emojis can
+    // no longer be read here. Then the snapshot is where its bytes come back from.
+    if (view && view.updatedAt === meta.updated_at && !(await anyLibraryBytesMissing(env))) return none(view);
 
     const bytes = await env.downloadSlot();
     if (!bytes || bytes.length === 0) return none(null);
@@ -125,8 +135,10 @@ export async function pullEmojis(env: EmojiSyncEnv, view: SlotView<EmojiLibState
     const incomplete: string[] = [];
     const usable: EmojiEntry[] = [];
     for (const entry of payload.state.entries) {
-        if (env.hasBytes(entry.id)) { usable.push(entry); continue; }
         const b64 = payload.files[entry.id];
+        // Listed here: keep it, unless it cannot be read back and the snapshot
+        // carries the bytes - then write them again (store.put repairs it).
+        if (env.hasBytes(entry.id) && (!b64 || await env.readBytes(entry.id))) { usable.push(entry); continue; }
         if (!b64) { incomplete.push(entry.id); continue; }
         try {
             const img = b64ToBytes(b64);

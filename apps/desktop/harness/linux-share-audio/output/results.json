@@ -1,0 +1,689 @@
+{
+  "scenarios": [
+    {
+      "label": "S1 exclude A (A is the playing process itself)",
+      "mode": "exclude",
+      "chunks": 354,
+      "seconds": 3.54,
+      "elapsedMs": 3907,
+      "events": [],
+      "L": {
+        "at440": -180,
+        "at1000": -12.7,
+        "at2000": -180,
+        "peaks": [
+          {
+            "hz": 1000,
+            "dbfs": -12.7
+          }
+        ],
+        "samples": 169920
+      },
+      "R": {
+        "at440": -180,
+        "at1000": -12.7,
+        "at2000": -180,
+        "peaks": [
+          {
+            "hz": 1000,
+            "dbfs": -12.7
+          }
+        ],
+        "samples": 169920
+      },
+      "mid": null
+    },
+    {
+      "label": "S2 exclude A (player is a CHILD of A)",
+      "mode": "exclude",
+      "chunks": 354,
+      "seconds": 3.54,
+      "elapsedMs": 3910,
+      "events": [],
+      "L": {
+        "at440": -180,
+        "at1000": -12.7,
+        "at2000": -180,
+        "peaks": [
+          {
+            "hz": 1000,
+            "dbfs": -12.7
+          }
+        ],
+        "samples": 169920
+      },
+      "R": {
+        "at440": -180,
+        "at1000": -12.7,
+        "at2000": -180,
+        "peaks": [
+          {
+            "hz": 1000,
+            "dbfs": -12.7
+          }
+        ],
+        "samples": 169920
+      },
+      "mid": null
+    },
+    {
+      "label": "S2b exclude A (player is a GRANDCHILD of A)",
+      "mode": "exclude",
+      "chunks": 354,
+      "seconds": 3.54,
+      "elapsedMs": 3908,
+      "events": [],
+      "L": {
+        "at440": -180,
+        "at1000": -12.7,
+        "at2000": -180,
+        "peaks": [
+          {
+            "hz": 1000,
+            "dbfs": -12.7
+          }
+        ],
+        "samples": 169920
+      },
+      "R": {
+        "at440": -180,
+        "at1000": -12.7,
+        "at2000": -180,
+        "peaks": [
+          {
+            "hz": 1000,
+            "dbfs": -12.7
+          }
+        ],
+        "samples": 169920
+      },
+      "mid": null
+    },
+    {
+      "label": "S3 NEGATIVE CONTROL: wrong exclude pid (an unrelated process)",
+      "mode": "exclude",
+      "chunks": 354,
+      "seconds": 3.54,
+      "elapsedMs": 3912,
+      "events": [],
+      "L": {
+        "at440": -12.4,
+        "at1000": -12.7,
+        "at2000": -180,
+        "peaks": [
+          {
+            "hz": 440,
+            "dbfs": -12.4
+          },
+          {
+            "hz": 1000,
+            "dbfs": -12.7
+          }
+        ],
+        "samples": 169920
+      },
+      "R": {
+        "at440": -12.4,
+        "at1000": -12.7,
+        "at2000": -180,
+        "peaks": [
+          {
+            "hz": 440,
+            "dbfs": -12.4
+          },
+          {
+            "hz": 1000,
+            "dbfs": -12.7
+          }
+        ],
+        "samples": 169920
+      },
+      "mid": null
+    },
+    {
+      "label": "S4 include A (tree)",
+      "mode": "include",
+      "chunks": 332,
+      "seconds": 3.32,
+      "elapsedMs": 3912,
+      "events": [],
+      "L": {
+        "at440": -12.4,
+        "at1000": -119.4,
+        "at2000": -180,
+        "peaks": [
+          {
+            "hz": 440,
+            "dbfs": -12.4
+          }
+        ],
+        "samples": 159360
+      },
+      "R": {
+        "at440": -12.4,
+        "at1000": -119.4,
+        "at2000": -180,
+        "peaks": [
+          {
+            "hz": 440,
+            "dbfs": -12.4
+          }
+        ],
+        "samples": 159360
+      },
+      "mid": null
+    },
+    {
+      "label": "S5 exclude A, players are PulseAudio clients (paplay via pipewire-pulse)",
+      "mode": "exclude",
+      "chunks": 354,
+      "seconds": 3.54,
+      "elapsedMs": 3908,
+      "events": [],
+      "L": {
+        "at440": -180,
+        "at1000": -12.7,
+        "at2000": -180,
+        "peaks": [
+          {
+            "hz": 1000,
+            "dbfs": -12.7
+          }
+        ],
+        "samples": 169920
+      },
+      "R": {
+        "at440": -180,
+        "at1000": -12.7,
+        "at2000": -180,
+        "peaks": [
+          {
+            "hz": 1000,
+            "dbfs": -12.7
+          }
+        ],
+        "samples": 169920
+      },
+      "mid": null
+    },
+    {
+      "label": "S6 mono source B (1 channel) -> both sides",
+      "mode": "exclude",
+      "chunks": 354,
+      "seconds": 3.54,
+      "elapsedMs": 3907,
+      "events": [],
+      "L": {
+        "at440": -180,
+        "at1000": -12.7,
+        "at2000": -180,
+        "peaks": [
+          {
+            "hz": 1000,
+            "dbfs": -12.7
+          }
+        ],
+        "samples": 169920
+      },
+      "R": {
+        "at440": -180,
+        "at1000": -12.7,
+        "at2000": -180,
+        "peaks": [
+          {
+            "hz": 1000,
+            "dbfs": -12.7
+          }
+        ],
+        "samples": 169920
+      },
+      "mid": null
+    },
+    {
+      "label": "S7 routing check",
+      "mode": "exclude",
+      "chunks": 354,
+      "seconds": 3.54,
+      "elapsedMs": 3942,
+      "events": [],
+      "L": {
+        "at440": -180,
+        "at1000": -12.7,
+        "at2000": -180,
+        "peaks": [
+          {
+            "hz": 1000,
+            "dbfs": -12.7
+          }
+        ],
+        "samples": 169920
+      },
+      "R": {
+        "at440": -180,
+        "at1000": -12.7,
+        "at2000": -180,
+        "peaks": [
+          {
+            "hz": 1000,
+            "dbfs": -12.7
+          }
+        ],
+        "samples": 169920
+      },
+      "mid": {
+        "aChildren": [
+          158
+        ],
+        "links": [
+          {
+            "fromPids": [
+              156,
+              156
+            ],
+            "fromClass": "Stream/Output/Audio",
+            "to": "cipherline-share-audio",
+            "outPort": 52,
+            "inPort": 57,
+            "state": "active"
+          },
+          {
+            "fromPids": [
+              156,
+              156
+            ],
+            "fromClass": "Stream/Output/Audio",
+            "to": "cipherline-share-audio",
+            "outPort": 61,
+            "inPort": 38,
+            "state": "active"
+          },
+          {
+            "fromPids": [
+              156,
+              156
+            ],
+            "fromClass": "Stream/Output/Audio",
+            "to": "cipherline-test-sink",
+            "outPort": 52,
+            "inPort": 42,
+            "state": "active"
+          },
+          {
+            "fromPids": [
+              156,
+              156
+            ],
+            "fromClass": "Stream/Output/Audio",
+            "to": "cipherline-test-sink",
+            "outPort": 61,
+            "inPort": 41,
+            "state": "active"
+          },
+          {
+            "fromPids": [
+              158,
+              158
+            ],
+            "fromClass": "Stream/Output/Audio",
+            "to": "cipherline-test-sink",
+            "outPort": 46,
+            "inPort": 42,
+            "state": "active"
+          },
+          {
+            "fromPids": [
+              158,
+              158
+            ],
+            "fromClass": "Stream/Output/Audio",
+            "to": "cipherline-test-sink",
+            "outPort": 44,
+            "inPort": 41,
+            "state": "active"
+          }
+        ],
+        "defaultSink": "Found \"default\" metadata 35\nupdate: id:0 key:'default.audio.sink' value:'{\"name\":\"cipherline-test-sink\"}' type:'Spa:String:JSON'\n"
+      }
+    },
+    {
+      "label": "S8a start/stop #1",
+      "mode": "exclude",
+      "chunks": 256,
+      "seconds": 2.56,
+      "elapsedMs": 2910,
+      "events": [],
+      "L": {
+        "at440": -180,
+        "at1000": -12.7,
+        "at2000": -180,
+        "peaks": [
+          {
+            "hz": 1000,
+            "dbfs": -12.7
+          }
+        ],
+        "samples": 122880
+      },
+      "R": {
+        "at440": -180,
+        "at1000": -12.7,
+        "at2000": -180,
+        "peaks": [
+          {
+            "hz": 1000,
+            "dbfs": -12.7
+          }
+        ],
+        "samples": 122880
+      },
+      "mid": null
+    },
+    {
+      "label": "S8b start/stop #2 (restart after stop)",
+      "mode": "exclude",
+      "chunks": 256,
+      "seconds": 2.56,
+      "elapsedMs": 2910,
+      "events": [],
+      "L": {
+        "at440": -180,
+        "at1000": -12.7,
+        "at2000": -180,
+        "peaks": [
+          {
+            "hz": 1000,
+            "dbfs": -12.7
+          }
+        ],
+        "samples": 122880
+      },
+      "R": {
+        "at440": -180,
+        "at1000": -12.7,
+        "at2000": -180,
+        "peaks": [
+          {
+            "hz": 1000,
+            "dbfs": -12.7
+          }
+        ],
+        "samples": 122880
+      },
+      "mid": null
+    },
+    {
+      "label": "S9b exclude by executable name (not a descendant)",
+      "mode": "exclude",
+      "chunks": 345,
+      "seconds": 3.45,
+      "elapsedMs": 3911,
+      "events": [],
+      "L": {
+        "at440": -12.4,
+        "at1000": -119.4,
+        "at2000": -180,
+        "peaks": [
+          {
+            "hz": 440,
+            "dbfs": -12.4
+          }
+        ],
+        "samples": 165600
+      },
+      "R": {
+        "at440": -12.4,
+        "at1000": -119.4,
+        "at2000": -180,
+        "peaks": [
+          {
+            "hz": 440,
+            "dbfs": -12.4
+          }
+        ],
+        "samples": 165600
+      },
+      "mid": null
+    }
+  ],
+  "assertions": [
+    {
+      "name": "isSupported() is true with a PipeWire daemon, a session manager and a sink",
+      "ok": true,
+      "detail": "got true"
+    },
+    {
+      "name": "S1  exclude A: B (1000 Hz) is captured",
+      "ok": true,
+      "detail": "L=-12.7 R=-12.7 dBFS"
+    },
+    {
+      "name": "S1  exclude A: A (440 Hz) is absent",
+      "ok": true,
+      "detail": "L=-180 R=-180 dBFS"
+    },
+    {
+      "name": "S2  child of excluded pid is excluded too (440 Hz absent)",
+      "ok": true,
+      "detail": "L=-180 R=-180 dBFS"
+    },
+    {
+      "name": "S2  other process still captured (1000 Hz present)",
+      "ok": true,
+      "detail": "L=-12.7 R=-12.7 dBFS"
+    },
+    {
+      "name": "S2b grandchild of excluded pid is excluded (440 Hz absent)",
+      "ok": true,
+      "detail": "L=-180 R=-180 dBFS"
+    },
+    {
+      "name": "S2b other process still captured (1000 Hz present)",
+      "ok": true,
+      "detail": "L=-12.7 dBFS"
+    },
+    {
+      "name": "S3  wrong pid: 440 Hz present",
+      "ok": true,
+      "detail": "L=-12.4 R=-12.4 dBFS"
+    },
+    {
+      "name": "S3  wrong pid: 1000 Hz present",
+      "ok": true,
+      "detail": "L=-12.7 R=-12.7 dBFS"
+    },
+    {
+      "name": "S4  include A: 440 Hz present",
+      "ok": true,
+      "detail": "L=-12.4 R=-12.4 dBFS"
+    },
+    {
+      "name": "S4  include A: 1000 Hz absent",
+      "ok": true,
+      "detail": "L=-119.4 R=-119.4 dBFS"
+    },
+    {
+      "name": "S5  pulse client B captured (1000 Hz present)",
+      "ok": true,
+      "detail": "L=-12.7 R=-12.7 dBFS"
+    },
+    {
+      "name": "S5  pulse client child of A excluded (440 Hz absent)",
+      "ok": true,
+      "detail": "L=-180 R=-180 dBFS"
+    },
+    {
+      "name": "S6  mono 1000 Hz appears on LEFT",
+      "ok": true,
+      "detail": "L=-12.7 dBFS"
+    },
+    {
+      "name": "S6  mono 1000 Hz appears on RIGHT",
+      "ok": true,
+      "detail": "R=-12.7 dBFS"
+    },
+    {
+      "name": "S6  mono source is not louder on one side",
+      "ok": true,
+      "detail": "L=-12.7 R=-12.7"
+    },
+    {
+      "name": "S7  every player is still linked to the real sink (routing untouched)",
+      "ok": true,
+      "detail": "links to the sink during capture: 4 (B alone, before: 2)"
+    },
+    {
+      "name": "S7  we listen via extra links into our own capture node only",
+      "ok": true,
+      "detail": "links into the capture node: 2 (B's FL+FR)"
+    },
+    {
+      "name": "S7  the excluded tree (A and its child) has NO link into our node",
+      "ok": true,
+      "detail": "excluded pids [152,158], pids linked into us [156]"
+    },
+    {
+      "name": "S7  default sink unchanged",
+      "ok": true,
+      "detail": "update: id:0 key:'default.audio.sink' value:'{\"name\":\"cipherline-test-sink\"}' type:'Spa:String:JSON'"
+    },
+    {
+      "name": "S7  after stopCapture() our node and its links are gone",
+      "ok": true,
+      "detail": "links remaining into capture node: 0"
+    },
+    {
+      "name": "S8  stopCapture() with nothing running, twice, is safe",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "S8  a second capture after stop works",
+      "ok": true,
+      "detail": "chunks=256 1000Hz=-12.7"
+    },
+    {
+      "name": "S8  starting twice replaces the first capture (old callback goes quiet)",
+      "ok": true,
+      "detail": "first=0 second=183"
+    },
+    {
+      "name": "S9  include mode reports { processExited } when the target quits",
+      "ok": true
+    },
+    {
+      "name": "S9b same-executable stream (pw-cat, 1000 Hz) is excluded even though it is not in the tree",
+      "ok": true,
+      "detail": "L=-119.4 R=-119.4 dBFS"
+    },
+    {
+      "name": "S9b a different executable (paplay, 440 Hz) is still captured",
+      "ok": true,
+      "detail": "L=-12.4 R=-12.4 dBFS"
+    },
+    {
+      "name": "S10 25 rapid start/stop cycles do not crash or hang",
+      "ok": true,
+      "detail": "chunks seen across cycles: 328"
+    },
+    {
+      "name": "S10 no descriptor leak after the churn",
+      "ok": true,
+      "detail": "open fds: 19"
+    },
+    {
+      "name": "S11 daemon death is reported as { failed, reason: \"unavailable\" }",
+      "ok": true,
+      "detail": "[{\"failed\":true,\"reason\":\"unavailable\",\"message\":\"the PipeWire connection was lost\"}]"
+    },
+    {
+      "name": "S11 stopCapture() after the daemon died is safe",
+      "ok": true
+    },
+    {
+      "name": "S11 isSupported() turns false once the daemon is gone",
+      "ok": true
+    }
+  ],
+  "routing": {
+    "sink": "cipherline-test-sink",
+    "linksToSinkBeforeCapture": 2,
+    "linksDuringCapture": [
+      {
+        "fromPids": [
+          156,
+          156
+        ],
+        "fromClass": "Stream/Output/Audio",
+        "to": "cipherline-share-audio",
+        "outPort": 52,
+        "inPort": 57,
+        "state": "active"
+      },
+      {
+        "fromPids": [
+          156,
+          156
+        ],
+        "fromClass": "Stream/Output/Audio",
+        "to": "cipherline-share-audio",
+        "outPort": 61,
+        "inPort": 38,
+        "state": "active"
+      },
+      {
+        "fromPids": [
+          156,
+          156
+        ],
+        "fromClass": "Stream/Output/Audio",
+        "to": "cipherline-test-sink",
+        "outPort": 52,
+        "inPort": 42,
+        "state": "active"
+      },
+      {
+        "fromPids": [
+          156,
+          156
+        ],
+        "fromClass": "Stream/Output/Audio",
+        "to": "cipherline-test-sink",
+        "outPort": 61,
+        "inPort": 41,
+        "state": "active"
+      },
+      {
+        "fromPids": [
+          158,
+          158
+        ],
+        "fromClass": "Stream/Output/Audio",
+        "to": "cipherline-test-sink",
+        "outPort": 46,
+        "inPort": 42,
+        "state": "active"
+      },
+      {
+        "fromPids": [
+          158,
+          158
+        ],
+        "fromClass": "Stream/Output/Audio",
+        "to": "cipherline-test-sink",
+        "outPort": 44,
+        "inPort": 41,
+        "state": "active"
+      }
+    ],
+    "defaultSinkBefore": "Found \"default\" metadata 35\nupdate: id:0 key:'default.audio.sink' value:'{\"name\":\"cipherline-test-sink\"}' type:'Spa:String:JSON'",
+    "defaultSinkDuring": "Found \"default\" metadata 35\nupdate: id:0 key:'default.audio.sink' value:'{\"name\":\"cipherline-test-sink\"}' type:'Spa:String:JSON'"
+  },
+  "lifecycle": {
+    "stopTwice": true,
+    "restartChunks": 256,
+    "replaced": {
+      "first": 0,
+      "second": 183
+    }
+  }
+}

@@ -30,13 +30,19 @@
 .pc-twinkle { animation: pc-twinkle 3.6s ease-in-out infinite alternate; }
 .pc-sway { transform-box: fill-box; transform-origin: 50% 100%; animation: pc-sway calc(6.8s * var(--pc-speed, 1)) ease-in-out infinite alternate; }
 .pc-sway--long { animation-name: pc-sway-long; animation-duration: calc(7.6s * var(--pc-speed, 1)); }
-.pc-sway--fan { transform-origin: 0% 100%; animation-name: pc-sway-fan; animation-duration: 9s; }
-.pc-stream { transform-box: view-box; transform-origin: -2px -4px; animation: pc-stream calc(5.6s * var(--pc-speed, 1)) ease-in-out infinite alternate; }
+.pc-sway--fan { transform-box: view-box; animation-name: pc-sway-fan; animation-duration: 9s; }
 .pc-bob { animation: pc-bob 4.6s ease-in-out infinite alternate; }
-.pc-jelly { animation: pc-jelly 2.6s cubic-bezier(.45, 0, .3, 1) infinite; }
 .pc-glide { animation: pc-glide 8s ease-in-out infinite alternate; }
-.pc-cloak { transform-box: fill-box; transform-origin: 50% 0%; animation: pc-cloak 3.8s ease-in-out infinite alternate; }
-.pc-photophore { animation: pc-breathe 2.1s ease-in-out infinite alternate; }
+/* Orbits (cosmetics/halos.tsx): a body rides a rotation about its frame's
+   origin; its counter-rotation is the SAME keyframes reversed with the same
+   duration, so it stays upright at every instant. */
+.pc-orbit { transform-origin: 0 0; animation: pc-spin calc(30s * var(--pc-speed, 1)) linear infinite; }
+.pc-orbit--counter { animation-direction: reverse; }
+.pc-flap { transform-origin: 0 0; animation: pc-flap .34s ease-in-out infinite alternate; }
+.pc-facet { opacity: 0; animation: pc-facet 7.2s linear infinite; }
+.pc-trace { stroke-dasharray: 100 100; animation: pc-trace 9.3s ease-in-out infinite; }
+.pc-corona { animation: pc-corona 6s ease-in-out infinite alternate; }
+.pc-neon-flicker { animation: pc-neon-flicker 4.1s steps(1, end) infinite; }
 
 @keyframes pc-spin { to { transform: rotate(360deg); } }
 @keyframes pc-breathe { from { opacity: .55; } to { opacity: 1; } }
@@ -49,16 +55,19 @@
 @keyframes pc-twinkle { from { opacity: .25; transform: scale(.7); } to { opacity: 1; transform: scale(1.05); } }
 @keyframes pc-sway { from { transform: rotate(-2.6deg); } to { transform: rotate(2.6deg); } }
 @keyframes pc-sway-long { from { transform: rotate(-3.4deg) skewX(1.5deg); } to { transform: rotate(2.4deg) skewX(-1.5deg); } }
-@keyframes pc-sway-fan { from { transform: rotate(-1.2deg); } to { transform: rotate(1.2deg); } }
-@keyframes pc-stream { from { transform: rotate(-3deg); } to { transform: rotate(3.5deg); } }
+@keyframes pc-sway-fan { from { transform: rotate(-2deg); } to { transform: rotate(2deg); } }
 @keyframes pc-bob { from { transform: translateY(1.5px); } to { transform: translateY(-2.5px); } }
-@keyframes pc-jelly {
-  0%, 100% { transform: scale(1, 1); }
-  35% { transform: scale(1.07, .9); }
-  60% { transform: scale(.97, 1.04); }
-}
 @keyframes pc-glide { from { transform: translateY(1px) rotate(-2.2deg) scaleX(.97); } to { transform: translateY(-2px) rotate(2deg) scaleX(1); } }
-@keyframes pc-cloak { from { transform: scale(1, 1); } to { transform: scale(1.05, .93); } }
+@keyframes pc-flap { from { transform: scale(1, 1); } to { transform: scale(.92, .3); } }
+/* One facet catches the light for a moment, then the next (delays walk round the ring). */
+@keyframes pc-facet { 0% { opacity: 0; } 3% { opacity: 1; } 10% { opacity: 0; } 100% { opacity: 0; } }
+/* Draw in, hold, draw out: offset 100 and -100 both show nothing (dasharray 100 100), so it loops seamlessly. */
+@keyframes pc-trace { 0% { stroke-dashoffset: 100; } 35%, 65% { stroke-dashoffset: 0; } 100% { stroke-dashoffset: -100; } }
+@keyframes pc-corona { from { opacity: .62; } to { opacity: 1; } }
+@keyframes pc-neon-flicker {
+  0% { opacity: 1; } 71% { opacity: .35; } 72% { opacity: 1; } 74% { opacity: .2; } 75.5% { opacity: .95; }
+  88% { opacity: .55; } 89% { opacity: 1; }
+}
 
 /* ── effects: one canvas over the card ───────────────────────────────────────
    Sits over the banner and the text but under the avatar (z 2): light is
@@ -74,11 +83,11 @@
 
 @media (prefers-reduced-motion: reduce) {
   .pc-spin, .pc-breathe, .pc-glint, .pc-dashflow, .pc-flicker, .pc-twinkle, .pc-sway,
-  .pc-stream, .pc-bob, .pc-jelly, .pc-glide, .pc-cloak, .pc-photophore { animation: none !important; }
+  .pc-bob, .pc-glide, .pc-orbit, .pc-flap, .pc-facet, .pc-trace, .pc-corona, .pc-neon-flicker { animation: none !important; }
 }
 /* Window not in front (blurred / hidden / minimised): pause every loop. Input idleness does not. */
 :root[data-cl-window="inactive"] :is(.pc-spin, .pc-breathe, .pc-glint, .pc-dashflow, .pc-flicker, .pc-twinkle, .pc-sway,
-  .pc-stream, .pc-bob, .pc-jelly, .pc-glide, .pc-cloak, .pc-photophore) { animation-play-state: paused; }
+  .pc-bob, .pc-glide, .pc-orbit, .pc-flap, .pc-facet, .pc-trace, .pc-corona, .pc-neon-flicker) { animation-play-state: paused; }
 
 /* ── small card parts ─────────────────────────────────────────────────────── */
 .pc-chip {

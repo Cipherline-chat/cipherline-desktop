@@ -30,7 +30,7 @@ export interface SweepResult {
  * deleting one that a thread happens to hold could un-apply the change it made
  * (an old build stored delete markers as rows). Keep them untouched.
  */
-const CONTROL_TYPES: ReadonlySet<string> = new Set([
+export const CONTROL_TYPES: ReadonlySet<string> = new Set([
     'edit', 'delete', 'reaction', 'pin',
     'profile_update', 'group_update',
     'channel_key', 'channel_message',

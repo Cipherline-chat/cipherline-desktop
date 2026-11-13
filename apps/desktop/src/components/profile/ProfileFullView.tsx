@@ -11,6 +11,7 @@ import {
 import { Banner } from '../Banner';
 import { MutualsPanel } from './ProfileTabs';
 import { AchievementsSheet, AchievementsSummary } from './AchievementsPanel';
+import { LevelProgress } from './LevelProgress';
 import { MostPlayedPanel } from './MostPlayedPanel';
 import { ProfileActivityRow } from './ProfileActivityRow';
 import { ProfileIntegrationsSection } from './ProfileIntegrationsSection';
@@ -22,11 +23,14 @@ import { steamProfileUrl } from '../../utils/profileLinks';
 import { openExternalLink } from '../../utils/openExternalLink';
 import { matchTint, themeCardStyle, themeSurface } from '../../utils/profileTheme';
 import { cardSections } from '../../utils/profileCardLayout';
+import { resolveLevelPoints } from '../../utils/levelProgress';
+import { EGG_HUNTER_BADGE_ID, eggBadgeCount } from '../../utils/profileBadges';
 import { formatFriendsSince, type ShowcaseBlock } from '../../utils/profileExtras';
 import { formatLocalTime } from '../../utils/profileVisibility';
 import type { PublicProfile } from '../../utils/profileCache';
 import type { ProfileLink } from '../../utils/profileLinks';
-import type { Mutuals } from '../../hooks/useProfileRelations';
+import { useSteamCard, visibleSteamActivity, type Mutuals } from '../../hooks/useProfileRelations';
+import { SteamHighlight } from '../integrations/SteamShowcase';
 import type { ProfileActivity, ProfileConnection } from './integrationTypes';
 import type { ProfileCardData, ProfileFullTab } from './profileCardData';
 import '../../styles/profile-card.css';
@@ -86,6 +90,8 @@ export interface ProfileFullViewProps {
     onOpenServer?: (serverId: string) => void;
     renderServerIcon?: (serverId: string, name: string) => React.ReactNode;
     onOpenLink?: (l: ProfileLink) => void;
+    /** Test seam for the verified Steam block; defaults to the validated external-link path. */
+    onOpenSteam?: (steamId: string) => void;
 }
 
 const TAB_LABEL: Record<ProfileFullTab, string> = {
@@ -113,7 +119,7 @@ function trapTab(e: React.KeyboardEvent<HTMLElement>) {
 export const ProfileFullView: React.FC<ProfileFullViewProps> = ({
     userId, token, isSelf, data, profile, avatarId, bannerId, bannerFriendsOnly, loading, error, onRetry,
     presence, activities = [], connections = [], avatarBadge, onAvatarClick, actions, menu, extras, note, mutuals,
-    initialTab = 'overview', onClose, closing, onOpenUser, onOpenServer, renderServerIcon, onOpenLink,
+    initialTab = 'overview', onClose, closing, onOpenUser, onOpenServer, renderServerIcon, onOpenLink, onOpenSteam,
 }) => {
     const ids = useId();
     const dialogRef = useRef<HTMLDivElement>(null);
@@ -129,9 +135,11 @@ export const ProfileFullView: React.FC<ProfileFullViewProps> = ({
     const friendsN = mutuals?.friends.length ?? 0;
     const serversN = mutuals?.servers.length ?? 0;
     const achN = data?.achievementCount ?? 0;
+    // A level can come from easter eggs alone: the tab (where pressing the level lands) shows for any level.
+    const hasLevel = typeof data?.level === 'number' && data.level > 0;
     const tabs: ProfileFullTab[] = [
         'overview',
-        ...((isSelf || achN > 0) ? ['achievements' as const] : []),
+        ...((isSelf || achN > 0 || hasLevel) ? ['achievements' as const] : []),
         ...(!isSelf ? ['friends' as const, 'servers' as const] : []),
         ...((isSelf || connections.length > 0 || hasExtras(profile)) ? ['integrations' as const] : []),
     ];
@@ -170,15 +178,33 @@ export const ProfileFullView: React.FC<ProfileFullViewProps> = ({
     }) : [];
     const wantAch = tab === 'achievements' || (tab === 'overview' && sections.includes('achievements') && picks.length === 0);
     const ach = useUserAchievements(wantAch ? userId : null, isSelf);
+    // Pressing the level: the Achievements tab, with focus on the level section at its top.
+    const [levelFocus, setLevelFocus] = useState(0);
+    const openLevel = () => { setTab('achievements'); setLevelFocus((n) => n + 1); };
+    const eggBadge = data?.badges?.find((b) => b.badge_id === EGG_HUNTER_BADGE_ID);
+    const eggCount = eggBadge ? eggBadgeCount(eggBadge) ?? null : null;
+    const shownLevel = typeof data?.level === 'number' ? data.level : null;
+    const levelPoints = shownLevel === null ? null : resolveLevelPoints({
+        level: shownLevel, serverPoints: data?.levelPoints, unlockedIds: ach.data ? ach.data.unlocked.map((u) => u.id) : null, eggCount,
+    });
 
+    // The overview's Steam block carries the stats row too (the full panel is on Integrations).
+    const steamActivity = visibleSteamActivity(useSteamCard(data?.steam ? userId : null, token), isSelf);
     const openSteam = (steamId: string) => {
-        if (onOpenLink) onOpenLink({ platform: 'steam', handle: steamId });
+        if (onOpenSteam) onOpenSteam(steamId);
         else openExternalLink(steamProfileUrl(steamId));
     };
     const sectionNode = (b: ShowcaseBlock): React.ReactNode => {
         if (!data) return null;
         switch (b) {
-            case 'steam': return data.steam ? <ProfileCardSteam key={b} steam={data.steam} friendsOnly={data.linksFriendsOnly} onOpen={openSteam} /> : null;
+            case 'steam': return data.steam ? (
+                <ProfileCardSteam key={b} steam={data.steam} friendsOnly={data.linksFriendsOnly} onOpen={openSteam}>
+                    {steamActivity && (
+                        <SteamHighlight className="pcd-steam-hl" activity={steamActivity} token={token} isSelf={isSelf}
+                            onOpen={tabs.includes('integrations') ? (e) => { e.stopPropagation(); setTab('integrations'); } : undefined} />
+                    )}
+                </ProfileCardSteam>
+            ) : null;
             case 'games': return <ProfileCardWidgets key={b} widgets={{ games: [...data.games] }} friendsOnly={data.gamesFriendsOnly} />;
             case 'links': return <ProfileCardLinks key={b} links={data.links} friendsOnly={data.linksFriendsOnly} onOpen={onOpenLink} steam={data.steam ?? null} onOpenSteam={openSteam} />;
             case 'interests': return <ProfileCardInterests key={b} interests={data.interests} mine={isSelf ? null : data.myInterests ?? null} friendsOnly={data.interestsFriendsOnly} />;
@@ -226,7 +252,7 @@ export const ProfileFullView: React.FC<ProfileFullViewProps> = ({
                             <X size={18} aria-hidden="true" />
                         </button>
                         <div className="pfp-idrow">
-                            <div className="pfp-avatar">
+                            <div className="pfp-avatar" data-fx-avatar>
                                 <AvatarDecoration decoration={data?.decoration} block tint={tint} options={data?.decorationOptions}>
                                     <button
                                         type="button" className="pfp-avatar-btn" data-zoom={onAvatarClick ? 'true' : undefined}
@@ -248,7 +274,7 @@ export const ProfileFullView: React.FC<ProfileFullViewProps> = ({
                                 {data && (
                                     <ProfileBadgeStrip
                                         className="pfp-badges" badges={data.badges} isPro={data.isPro} proSince={data.proSince} level={data.level}
-                                        onLevel={() => setTab('achievements')}
+                                        onLevel={openLevel}
                                         steam={data.steam ? { label: data.steam.personaName ?? 'Steam account', onOpen: () => setTab(tabs.includes('integrations') ? 'integrations' : 'overview') } : null}
                                     />
                                 )}
@@ -326,7 +352,14 @@ export const ProfileFullView: React.FC<ProfileFullViewProps> = ({
                                     </div>
                                 )}
                                 {tab === 'achievements' && (
-                                    <AchievementsSheet data={ach.data} loading={ach.loading} error={ach.error} isSelf={isSelf} onRetry={ach.reload} />
+                                    <div className="pfp-ach">
+                                        <LevelProgress
+                                            level={shownLevel} points={levelPoints} eggCount={eggCount} isSelf={isSelf} name={data.name}
+                                            achievementCount={ach.data ? ach.data.unlocked.length : data.achievementCount}
+                                            focusSignal={levelFocus}
+                                        />
+                                        <AchievementsSheet data={ach.data} loading={ach.loading} error={ach.error} isSelf={isSelf} onRetry={ach.reload} />
+                                    </div>
                                 )}
                                 {(tab === 'friends' || tab === 'servers') && (
                                     mutuals && (tab === 'friends' ? friendsN : serversN) > 0 ? (

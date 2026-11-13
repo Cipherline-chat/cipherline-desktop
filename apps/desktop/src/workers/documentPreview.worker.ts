@@ -4,7 +4,7 @@
  * worker: the host terminates it when the answer arrives or the time is up, so
  * whatever the parser allocated is released with it.
  */
-import { sheetsPreview, zipInflateProblem, WORD_PREVIEW_CHARS, type InflateLimits, type WorkbookLike } from '../utils/documentPreview';
+import { sheetsPreview, zipInflateProblem, zipActualInflateProblem, WORD_PREVIEW_CHARS, type InflateLimits, type WorkbookLike } from '../utils/documentPreview';
 // Static, not `import()`: a code-splitting worker can't be emitted in Vite's
 // default IIFE worker format, so a dynamic import here fails `vite build`.
 // The worker itself is only loaded on demand (documentPreviewHost), so the
@@ -23,7 +23,9 @@ const post = (msg: DocumentPreviewResponse) => (self as unknown as Worker).postM
 self.onmessage = async (e: MessageEvent<DocumentPreviewRequest>) => {
     const { kind, buf, limits } = e.data;
     try {
-        const problem = zipInflateProblem(buf, limits);
+        // Declared sizes first (cheap), then what the entries really inflate to:
+        // the declared ones are attacker-controlled.
+        const problem = zipInflateProblem(buf, limits) ?? await zipActualInflateProblem(buf, limits);
         if (problem) { post({ ok: false, reason: 'limits', message: problem }); return; }
         if (kind === 'excel') {
             const mod = exceljsModule;

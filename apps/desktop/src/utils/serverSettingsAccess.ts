@@ -73,3 +73,19 @@ export function serverSettingsTabVisibility(
 export function canOpenServerSettings(perms: bigint, isOwner: boolean): boolean {
     return Object.values(serverSettingsTabVisibility(perms, isOwner)).some(Boolean);
 }
+
+/**
+ * Whether "Invite people" should be offered for a server (rail context menu,
+ * channel-header button). Mirrors the API's own gate for `POST
+ * /servers/:id/invites` — `requireServerPermission(CREATE_INVITE)`, which the
+ * resolver satisfies for the owner and ADMINISTRATOR as well.
+ *
+ * Deliberately separate from canOpenServerSettings: CREATE_INVITE is in the
+ * default @everyone set, so almost every member can invite, while almost none
+ * can open Settings. UX only — the server enforces it on every create.
+ */
+export function canCreateInvite(perms: bigint, isOwner: boolean): boolean {
+    return isOwner
+        || hasPermission(perms, Permissions.ADMINISTRATOR)
+        || hasPermission(perms, Permissions.CREATE_INVITE);
+}

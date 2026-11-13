@@ -43,8 +43,20 @@
  * write (/opt, a read-only mount, a file owned by root), or a copy run without
  * `$APPIMAGE` pointing at it, can never self-update, and there is no installer
  * that could elevate. After the retry budget is spent, Linux falls back to a
- * same-origin download link; no other platform ever does. (.deb installs go
- * through electron-updater's DebUpdater and the same retry path.)
+ * same-origin download link; no other platform ever does.
+ *
+ * A .deb install updates through electron-updater's DebUpdater, which installs
+ * with `pkexec dpkg -i`. That has two failure modes an AppImage never meets and
+ * that no retry fixes: there is no polkit agent to ask for the password (a
+ * minimal window manager), or the user dismisses the password dialog.
+ *   - The user DISMISSED the dialog (pkexec exits 126): that is a choice, not a
+ *     fault. `failed` / `install` with cause `cancelled`, Retry asks again, and
+ *     the wording says so ("the password prompt was cancelled").
+ *   - Any other install failure, or a download that keeps failing: the .deb
+ *     gets the same kind of same-origin link the AppImage gets (`manual`, tagged
+ *     `pkg: 'deb'`, and `cause: 'install'` when it was the install step), pointing
+ *     at the .deb for that version, so the user is never stuck with a Retry
+ *     that can only fail the same way.
  *
  * An error with NO update in flight (`idle`: a periodic check that failed on a
  * network blip) stays `idle` — surfacing anything would invent an "update
@@ -64,10 +76,12 @@ export type UpdateState =
      *  (epoch ms). `attempt` = failures so far for this version (1-based). */
     | { phase: 'retrying'; version: string; attempt: number; maxAttempts: number; retryAt: number }
     /** Retries exhausted, a signature rejection, or a failed install. In-app, with Retry. */
-    | { phase: 'failed'; version: string; stage: UpdateFailureStage }
+    /** `cause: 'cancelled'`: the .deb install's password prompt was dismissed (a choice, not a fault). */
+    | { phase: 'failed'; version: string; stage: UpdateFailureStage; cause?: 'cancelled' }
     | { phase: 'ready'; version: string }
-    /** Linux only — see the module doc. */
-    | { phase: 'manual'; version: string; downloadUrl: string };
+    /** Linux only — see the module doc. `pkg: 'deb'`: the link is the .deb (a .deb install);
+     *  `cause: 'install'`: it is offered because installing the downloaded update failed. */
+    | { phase: 'manual'; version: string; downloadUrl: string; pkg?: 'deb'; cause?: 'install' };
 
 /** Minimal shape of electron-updater's UpdateInfo this module actually reads —
  *  kept narrow (rather than importing the real type) so this file has zero
@@ -166,6 +180,8 @@ export interface UpdateErrorContext {
     now: number;
     /** Only consulted on Linux, once retries are exhausted. */
     buildDownloadUrl: (version: string) => string | null;
+    /** Linux only: which package this install is, so a .deb's link is tagged as one. */
+    linuxPackage?: LinuxPackageKind;
 }
 
 export interface UpdateErrorDecision {
@@ -211,14 +227,60 @@ export function onUpdateError(current: UpdateState, ctx: UpdateErrorContext): Up
     }
     if (ctx.platform === 'linux') {
         const downloadUrl = ctx.buildDownloadUrl(version);
-        if (downloadUrl) return { state: { phase: 'manual', version, downloadUrl }, retryInMs: null };
+        if (downloadUrl) {
+            return {
+                state: { phase: 'manual', version, downloadUrl, ...(ctx.linuxPackage === 'deb' ? { pkg: 'deb' as const } : {}) },
+                retryInMs: null,
+            };
+        }
     }
     return { state: { phase: 'failed', version, stage: 'download' }, retryInMs: null };
 }
 
-/** The installer could not be launched after "Restart & install". */
-export function onInstallError(current: UpdateState): UpdateState {
+/**
+ * What kind of Linux install this is. electron-updater picks its updater the same way:
+ * `package-type` in the app's resources (written by electron-builder, `deb` for our .deb)
+ * decides DebUpdater; a run from an AppImage is `$APPIMAGE`; anything else (an unpacked
+ * tree, another package format) has no artifact of ours to point at.
+ */
+export type LinuxPackageKind = 'appimage' | 'deb' | 'other';
+
+export function linuxPackageKind(appImageEnv: string | undefined, packageTypeFile: string | null | undefined): LinuxPackageKind {
+    if (appImageEnv) return 'appimage';
+    return typeof packageTypeFile === 'string' && packageTypeFile.trim() === 'deb' ? 'deb' : 'other';
+}
+
+/** A dismissed password dialog, or something else. */
+export type InstallErrorKind = 'cancelled' | 'failed';
+
+/**
+ * Classify an error raised by the install step. electron-updater runs the installer through
+ * `spawnSync` and, on a non-zero exit, throws `Command <cmd> exited with code <n>`. polkit's
+ * `pkexec` (what DebUpdater uses when it finds it) documents exit 126 as "the user dismissed
+ * the authentication dialog" and 127 as "authorization could not be obtained" (no agent, wrong
+ * password too many times, not permitted) — so only 126 is a choice; everything else is a failure.
+ */
+export function classifyInstallError(err: UpdaterErrorLike | null | undefined): InstallErrorKind {
+    const msg = typeof err?.message === 'string' ? err.message : '';
+    return /^Command (?:\S*\/)?pkexec exited with code 126$/.test(msg.trim()) ? 'cancelled' : 'failed';
+}
+
+export interface InstallErrorContext {
+    kind?: InstallErrorKind;
+    /** Linux .deb: the validated link to this version's .deb, or null. */
+    manualDownloadUrl?: string | null;
+}
+
+/**
+ * The installer could not be launched after "Restart & install".
+ *   - a dismissed password prompt (.deb): `failed`/`install`, cause `cancelled`: Retry asks again;
+ *   - a .deb install that failed otherwise: `manual`, the .deb link (a Retry would only fail again);
+ *   - everything else, and every other platform: `failed`/`install` with Retry, as before.
+ */
+export function onInstallError(current: UpdateState, ctx?: InstallErrorContext): UpdateState {
     const version = 'version' in current ? current.version : '';
+    if (ctx?.kind === 'cancelled') return { phase: 'failed', version, stage: 'install', cause: 'cancelled' };
+    if (ctx?.manualDownloadUrl) return { phase: 'manual', version, downloadUrl: ctx.manualDownloadUrl, pkg: 'deb', cause: 'install' };
     return { phase: 'failed', version, stage: 'install' };
 }
 
@@ -275,6 +337,41 @@ export function pickDownloadUrl(
     if (candidates.length === 0) return null;
     const pick = candidates[0];
     return `${UPDATE_BASE_URL}/${pick.url}`;
+}
+
+/** `1.2.3` or `1.2.3-staging.4`: what a release version looks like; nothing else goes into a URL we build. */
+const SAFE_RELEASE_VERSION = /^\d{1,4}\.\d{1,4}\.\d{1,4}(?:-[0-9A-Za-z.]{1,32})?$/;
+/** One path segment of a file we publish. */
+const SAFE_DEB_NAME = /^[A-Za-z0-9._+~-]{1,120}\.deb$/i;
+
+/**
+ * The link to a .deb install's own package, for the manual fallback. Same rules as the
+ * AppImage link: resolved against UPDATE_BASE_URL only (the origin the updater itself trusts),
+ * a bare relative file name from the signed manifest, or — when the manifest lists no .deb — the
+ * name electron-builder gives it (`cipherline_<version>_amd64.deb`, package.json deb.artifactName;
+ * x64 only, which is the only .deb we build). Every candidate must be https on the update origin,
+ * a single safe path segment ending in `.deb` — a manifest entry with a path, an absolute URL, `..`
+ * or odd characters is dropped, never opened. Null when nothing passes.
+ */
+export function debDownloadUrl(files: UpdateFileInfo[] | null | undefined, version: string, arch: string): string | null {
+    const ok = (name: string): string | null => {
+        if (!SAFE_DEB_NAME.test(name)) return null;
+        const url = `${UPDATE_BASE_URL}/${name}`;
+        try {
+            const u = new URL(url);
+            if (u.protocol !== 'https:' || u.origin !== UPDATE_BASE_URL || u.username || u.password || u.search || u.hash) return null;
+            if (u.pathname !== `/${name}`) return null;
+        } catch { return null; }
+        return url;
+    };
+    for (const f of files ?? []) {
+        if (typeof f?.url === 'string' && f.url.toLowerCase().endsWith('.deb')) {
+            const hit = ok(f.url);
+            if (hit) return hit;
+        }
+    }
+    if (arch !== 'x64' || !SAFE_RELEASE_VERSION.test(version)) return null;
+    return ok(`cipherline_${version}_amd64.deb`);
 }
 
 // ── electron-updater's download cache ───────────────────────────────────────

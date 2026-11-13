@@ -42,6 +42,7 @@ import {
     acquireCallOfferSlot, releaseCallOfferSlot, CALL_OFFER_ENTER_CLASS,
 } from '../../utils/performanceOffer';
 import { useCallOfferAnchor } from '../../hooks/useCallOfferAnchor';
+import { useCallPromptCue } from '../../hooks/useCallPromptCue';
 import { openFreezeOfferReport } from '../../utils/diagnostics/reportRequest';
 import { logCallEvent } from '../../utils/callEventLog';
 
@@ -231,6 +232,7 @@ export const GamingVideoGuard: React.FC = () => {
     }, [toast]);
 
     const anchor = useCallOfferAnchor(offerOpen);
+    useCallPromptCue(offerOpen && !mode.enabled && !anchor.held);
     if (!offerOpen || mode.enabled || typeof document === 'undefined') return null;
     const copy = offerCopy(gameKnown);
     return ReactDOM.createPortal(

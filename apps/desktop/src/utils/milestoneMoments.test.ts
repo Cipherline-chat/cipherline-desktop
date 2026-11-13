@@ -4,8 +4,6 @@ import { clockMoments } from './moments';
 import { isPiDay, PI_WINDOW } from './moments';
 import { isLeapDay } from './moments';
 import { nyeCallDue, msUntilNewYear, MOMENT_YIELDS, yieldMoments, momentCount, ledgerId } from './moments';
-import { isNewcomer, NEWCOMER_MS } from './moments';
-import { messageDeliveredMoment } from './moments';
 import { parseCallCount, callConnectedMoment } from './moments';
 import { CALL_MILESTONE } from './moments';
 import { serverCreatedMoment } from './moments';
@@ -13,8 +11,7 @@ import { EGG_LEDGER_KEY, parseLedger } from './easterEggs';
 import type { EggStore } from './easterEggs';
 
 /**
- * The seven milestone / calendar moments: first-message, first-call,
- * first-server, call-100, pi-day, leap-day, nye-call. Their triggers are pure
+ * The five milestone / calendar moments: first-server, call-100, pi-day, leap-day, nye-call. Their triggers are pure
  * functions of structural facts (a count, the clock, an account's age, what the
  * account already found) — nothing here sees a message, a participant or a name.
  */
@@ -25,9 +22,8 @@ const memStore = (init: Record<string, string> = {}): EggStore & { map: Map<stri
 const DAY = 86_400_000;
 const T0 = new Date('2026-10-20T12:00:00').getTime();
 const at = (iso: string) => new Date(iso);
-const hoursAgo = (h: number) => new Date(T0 - h * 3_600_000).toISOString();
-/** Whichever of the seven exist yet. */
-const NEW = (['first-message', 'first-call', 'first-server', 'call-100', 'pi-day', 'leap-day', 'nye-call'] as string[]).filter(id => id in MOMENTS) as MomentId[];
+/** Whichever of the five exist yet. */
+const NEW = (['first-server', 'call-100', 'pi-day', 'leap-day', 'nye-call'] as string[]).filter(id => id in MOMENTS) as MomentId[];
 const AMBIENT = ['pi-day', 'leap-day'] as const;
 
 describe('the registry entries', () => {
@@ -142,32 +138,7 @@ describe("New Year's midnight in a call (nye-call)", () => {
     });
 });
 
-describe('a new account (isNewcomer)', () => {
-    it('is under a day old (a little clock skew tolerated), never an older one', () => {
-        expect(NEWCOMER_MS).toBe(DAY);
-        expect(isNewcomer(hoursAgo(0.1), T0)).toBe(true);
-        expect(isNewcomer(hoursAgo(23.9), T0)).toBe(true);
-        expect(isNewcomer(hoursAgo(24), T0)).toBe(false);
-        expect(isNewcomer(hoursAgo(24 * 400), T0)).toBe(false);
-        expect(isNewcomer(new Date(T0 + 60_000).toISOString(), T0)).toBe(true);        // clock skew
-        expect(isNewcomer(new Date(T0 + 3_600_000).toISOString(), T0)).toBe(false);    // not from the future
-        expect(isNewcomer(null, T0)).toBe(false);
-        expect(isNewcomer(undefined, T0)).toBe(false);
-        expect(isNewcomer('not a date', T0)).toBe(false);
-    });
-});
-
-describe('first message (messageDeliveredMoment)', () => {
-    it('a delivered send on a new account — not your own notes, not once the account has found it', () => {
-        expect(messageDeliveredMoment(hoursAgo(1), [], false, T0)).toBe('first-message');
-        expect(messageDeliveredMoment(hoursAgo(1), [], true, T0)).toBeNull();                  // note to self is its own moment
-        expect(messageDeliveredMoment(hoursAgo(1), ['first-message'], false, T0)).toBeNull();  // found on another machine
-        expect(messageDeliveredMoment(hoursAgo(24 * 90), [], false, T0)).toBeNull();           // a long-time user
-        expect(messageDeliveredMoment(null, [], false, T0)).toBeNull();
-    });
-});
-
-describe('first call (callConnectedMoment)', () => {
+describe('connected-call count', () => {
     it('parseCallCount: junk is zero', () => {
         expect(parseCallCount('7')).toBe(7);
         expect(parseCallCount(null)).toBe(0);
@@ -177,22 +148,16 @@ describe('first call (callConnectedMoment)', () => {
         expect(parseCallCount('2.5')).toBe(0);
         expect(parseCallCount('1e12')).toBe(0);
     });
-    it('the first to connect on a new account only', () => {
-        expect(callConnectedMoment(0, hoursAgo(2), [], T0)).toBe('first-call');
-        expect(callConnectedMoment(1, hoursAgo(2), [], T0)).toBeNull();
-        expect(callConnectedMoment(0, hoursAgo(24 * 30), [], T0)).toBeNull();                  // a long-time user's first COUNTED call
-        expect(callConnectedMoment(0, hoursAgo(2), ['first-call'], T0)).toBeNull();
-    });
 });
 
 describe('the 100th call (callConnectedMoment)', () => {
     it('exactly the 100th to connect (99 before it), once per account, whatever the account age', () => {
         expect(CALL_MILESTONE).toBe(100);
-        expect(callConnectedMoment(98, hoursAgo(24 * 30), [], T0)).toBeNull();
-        expect(callConnectedMoment(99, hoursAgo(24 * 30), [], T0)).toBe('call-100');
-        expect(callConnectedMoment(100, hoursAgo(24 * 30), [], T0)).toBeNull();
-        expect(callConnectedMoment(99, hoursAgo(24 * 30), ['call-100'], T0)).toBeNull();       // restored onto a second machine
-        expect(callConnectedMoment(99, null, [], T0)).toBe('call-100');
+        expect(callConnectedMoment(98, [])).toBeNull();
+        expect(callConnectedMoment(99, [])).toBe('call-100');
+        expect(callConnectedMoment(100, [])).toBeNull();
+        expect(callConnectedMoment(99, ['call-100'])).toBeNull();       // restored onto a second machine
+        expect(callConnectedMoment(99, [])).toBe('call-100');
     });
 });
 
@@ -206,9 +171,16 @@ describe('first server (serverCreatedMoment)', () => {
 });
 
 describe('the once-ever ones really are once ever per device (the ledger)', () => {
-    it.each(NEW.filter(id => ['first-message', 'first-call', 'first-server', 'call-100'].includes(id)))('%s', (id) => {
+    it.each(NEW.filter(id => ['first-server', 'call-100'].includes(id)))('%s', (id) => {
         const s = memStore();
         expect(claimMoment(s, id, T0)).toBe(true);
         expect(claimMoment(s, id, T0 + 800 * DAY)).toBe(false);
+    });
+});
+
+describe('the retired new-user moments', () => {
+    it('first-message, first-call and empty-party no longer exist, and a first call is not a moment', () => {
+        for (const id of ['first-message', 'first-call', 'empty-party']) expect(id in MOMENTS).toBe(false);
+        expect(callConnectedMoment(0, [])).toBeNull();
     });
 });

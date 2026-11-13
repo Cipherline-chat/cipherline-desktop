@@ -159,7 +159,12 @@ function realIO(): StoreIO {
             try {
                 const buf = await api().readGifFile(name);
                 return buf instanceof Uint8Array ? buf : new Uint8Array(buf);
-            } catch { return null; }
+            } catch (e) {
+                // Only "no such file" means missing; anything else rejects, so the
+                // store keeps the emoji instead of deleting it (store.ts read()).
+                if (/ENOENT/.test(String((e as { message?: unknown })?.message ?? e))) return null;
+                throw e;
+            }
         },
         async writeFile(name, bytes) { await api().writeGifFile(name, bytes); },
         async deleteFile(name) { await api().deleteFile(`${await dir()}/${name}.enc`); },

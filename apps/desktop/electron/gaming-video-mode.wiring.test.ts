@@ -53,10 +53,10 @@ describe('gaming-video mode wiring in main.ts', () => {
     });
 
     it('the boost is restored on renderer navigation, renderer crash and quit', () => {
-        expect(MAIN).toMatch(/webContents\.on\('did-navigate', \(\) => syncCallPriority\(\{ inCall: false, sharing: false \}\)\)/);
+        expect(MAIN).toMatch(/webContents\.on\('did-navigate', \(\) => syncCallPriority\(\{ inCall: false, sharing: false, cameraLive: false \}\)\)/);
         const gone = MAIN.indexOf("mainWindow.webContents.on('render-process-gone', (event, details) => {");
         expect(gone).toBeGreaterThan(-1);
-        expect(MAIN.slice(gone, gone + 400)).toContain('syncCallPriority({ inCall: false, sharing: false })');
+        expect(MAIN.slice(gone, gone + 400)).toContain('syncCallPriority({ inCall: false, sharing: false, cameraLive: false })');
         const quit = MAIN.indexOf("app.on('before-quit', () => {\n  // Gaming-video priority boost");
         expect(quit).toBeGreaterThan(-1);
     });
@@ -67,6 +67,6 @@ describe('gaming-video mode wiring in main.ts', () => {
 
     it('preload exposes the call signal on the same channel, passing the value through for main to validate', () => {
         expect(PRELOAD).toContain("ipcRenderer.invoke('call:set-media-active', active)");
-        expect(PRELOAD).toMatch(/setStartupFlags: \(patch: \{[^}]*gamingVideo\?: boolean \}\)/);
+        expect(PRELOAD).toMatch(/setStartupFlags: \(patch: \{[^}]*gamingVideo\?: boolean[^}]*\}\)/);
     });
 });

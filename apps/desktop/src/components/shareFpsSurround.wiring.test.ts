@@ -23,22 +23,23 @@ const count = (hay: string, needle: string | RegExp) =>
 describe('encoder-size clamp reaches the capturer', () => {
     it('setScreenShareEnabled is handed the codec-clamped box, not the raw 8K "source" box', () => {
         expect(SC).toContain('const box = captureBoxFor(options.resolution, codec);');
-        const call = SC.indexOf('await localParticipant.setScreenShareEnabled(true, {');
+        const call = SC.indexOf('await publishScreenShareSettled(localParticipant, {');
         expect(call).toBeGreaterThan(-1);
         const body = SC.slice(call, call + 400);
-        expect(body).toContain('width: box.width,');
-        expect(body).toContain('height: box.height,');
+        expect(body).toContain('width: captureBox.width,'); // = the codec-clamped box off the portal (const captureBox = portalCap ? portalCap.box : box)
+        expect(body).toContain('height: captureBox.height,');
         expect(body).not.toContain('dims.width');
         expect(body).toContain('frameRate: captureFps,'); // 1.25x the target, unchanged
     });
 
     it('the mid-share paths are clamped too: hot swap by the live codec, in-place retune inside screenShare.ts', () => {
         expect(SC).toContain("const dims = captureBoxFor(options.resolution, asScreenShareCodec(lkTrack.codec) ?? 'vp8');");
-        expect(src('../utils/screenShare.ts')).toContain("const dims = captureBoxFor(resolution, asScreenShareCodec(track.codec) ?? 'vp8');");
+        expect(src('../utils/screenShare.ts')).toContain("const dims = captureBoxFor(resolution, codecNow);");
     });
 
     it('sender params are re-asserted with the fallback step and, for a cropped share, its size and box', () => {
-        expect(SC).toContain('applyScreenShareSenderParams(sender, options.frameRate, maxBitrate, shareSenderParamOpts(codec, options))');
+        expect(SC).toMatch(/const paramOpts = \{\s*\.\.\.shareSenderParamOpts\(codec, options\),\s*\.\.\.\(realSize \? \{ sourceSize: realSize \} : \{\}\),/);
+        expect(SC).toContain('await applyScreenShareSenderParams(sender, options.frameRate, sizedBitrate, paramOpts);');
         expect(SC).toMatch(/sourceSize: out, box: captureBoxFor\(options\.resolution, codec\)/);
     });
 
@@ -59,7 +60,7 @@ describe('single-screen (cropped) publish', () => {
     it('is only taken for a slice layout on a runtime that has the breakout box; otherwise the whole display is shared', () => {
         expect(SC).toContain("const sliceLayout = wantsSlice && supportsCropPipeline() ? wantsSlice : null;");
         // (between them: the HDR screen branch, which publishes its own generated track - hdrSharePipeline.ts)
-        expect(SC).toMatch(/if \(sliceLayout\) \{\s*await publishCroppedShare\(sliceLayout\);\s*\} else if \(hdrPipe\) \{[\s\S]{0,1500}?\} else \{\s*await localParticipant\.setScreenShareEnabled\(true,/);
+        expect(SC).toMatch(/if \(sliceLayout\) \{\s*await publishCroppedShare\(sliceLayout, reusedCapture\);[^\n]*\s*\} else if \(hdrPipe\) \{[\s\S]{0,1500}?\} else \{\s*settledStart = await publishScreenShareSettled\(localParticipant,/);
     });
 
     it('asks the capturer for the display at native size (box far above any display) at the paced capture rate', () => {
@@ -69,8 +70,10 @@ describe('single-screen (cropped) publish', () => {
     it('the pipeline is stopped on every path that ends or restarts the share', () => {
         // toggle off, quick-share off, the "share is not enabled" effect, republish teardown, a failed start
         expect(count(SC, 'stopCropPipeline();')).toBeGreaterThanOrEqual(5);
-        const failed = SC.indexOf('const reportShareStartError = (err: unknown): ShareStartOutcome => {');
-        expect(SC.slice(failed, failed + 300)).toContain('stopCropPipeline();');
+        const failed = SC.indexOf('const reportShareStartError = (err: unknown, opts: { stillSharing?: boolean } = {}): ShareStartOutcome => {');
+        expect(failed).toBeGreaterThan(0);
+        // Except a share still running after a new source would not open: that pipeline is its own.
+        expect(SC.slice(failed, failed + 500)).toContain('if (!opts.stillSharing) stopCropPipeline();');
         // The not-enabled effect must not tear down a pipeline that a restart has just built.
         expect(SC).toMatch(/if \(!shareStartRef\.current\?\.starting\) \{\s*stopCropPipeline\(\);/);
     });
@@ -91,7 +94,7 @@ describe('single-screen (cropped) publish', () => {
         expect(count(SC, 'layout:     current.layout,')).toBeGreaterThanOrEqual(1);
         expect(src('../utils/shareLiveRetune.ts')).toContain('applier.commit({ ...current, resolution, frameRate }, \'retune\');');
         expect(SC).toContain('layout:     sliceLayout ?? undefined,');
-        expect(SC).toContain('republishShareRef.current?.({ ...cur });');
+        expect(SC).toContain('republishShareRef.current?.({ ...cur }, { fresh: true });');
     });
 
     it('switching screens is live (setLayout), and to the whole display the encoder is scaled FIRST', () => {
@@ -124,7 +127,7 @@ describe('black-screen safety net', () => {
         expect(body).toContain("logCallEvent('share_fallback'");
         expect(body).toContain('toast.push({ kind: copy.kind, message: copy.message');
         expect(body).toContain('shareResStepRef.current = action.step;');
-        expect(body).toContain('republishShareRef.current?.({ ...cur });');
+        expect(body).toContain('republishShareRef.current?.({ ...cur }, { fresh: true });');
         // the give-up branch toasts BEFORE returning
         expect(body.indexOf('toast.push(')).toBeLessThan(body.indexOf("if (action.kind !== 'resolution') return;"));
     });
@@ -139,7 +142,7 @@ describe('instrumentation', () => {
     it('share_fps is sampled while sharing and re-sampled around focus changes', () => {
         expect(SC).toContain('new ShareStatsSampler({');
         expect(SC).toContain('subscribeWindowBackground(() => sampler.noteFocusChange())');
-        expect(SC).toMatch(/logCallEvent\('share_fps', \{\s*src_fps, enc_fps, sent_fps, limit, enc, hw,\s*target: share\.frameRate, focus: d\.focus === true,\s*fg_state: fgLog\.fg_state, fg_exe: fgLog\.fg_exe, fg_cover: fgLog\.fg_cover,/);
+        expect(SC).toMatch(/logCallEvent\('share_fps', \{\s*src_fps, enc_fps, sent_fps, limit, enc, act,\s*target: share\.frameRate, focus: d\.focus === true,\s*fg_state: fgLog\.fg_state, fg_exe: fgLog\.fg_exe, fg_cover: fgLog\.fg_cover,/);
     });
 
     it('the capture rate it reports is the capturer\'s (the display track\'s, not the generated one\'s)', () => {

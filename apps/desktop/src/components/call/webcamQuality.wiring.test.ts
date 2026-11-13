@@ -113,7 +113,8 @@ describe('bandwidth round: 1:1 layering, H.265 negotiation, lighter share copy, 
     const auth = read('contexts/AuthContext.tsx');
     it('one loop drives layering and the H.265 negotiation, with make-before-break republishes', () => {
         expect(sidebar).toMatch(/new CameraLayeringPolicy\(mode, now\)/);
-        expect(sidebar).toMatch(/hevc\.observe\(roomHevcState\(remotes\), allowed, now\)/);
+        expect(sidebar).toMatch(/hevc\.observe\(roomState, allowed, now\)/);
+        expect(sidebar).toMatch(/const roomState = roomHevcState\(remotes\);/);
         expect(sidebar).toMatch(/republishCamera\(asCameraParticipant\(lp\)/);
         expect(sidebar).toMatch(/swapShareCodec\(lp as unknown as ShareParticipantLike/);
         // Never H.265 decode advertised after a GPU process restart (gpuRecovery.ts).
@@ -121,7 +122,20 @@ describe('bandwidth round: 1:1 layering, H.265 negotiation, lighter share copy, 
         expect(sidebar).toMatch(/single: initialLayering\(remoteParticipants\.length\) === 'single'/);
     });
     it('the share uses H.265 only through the negotiation, and the lighter copy only when asked + hardware', () => {
-        expect(sidebar).toMatch(/const hevcShare = hevcModeRef\.current === 'h265' && hevcEncodeRef\.current && !hasHevcFailed\(\) && !hasHevcGpuLost\(\);/);
+        expect(sidebar).toMatch(/const hevcShare = hevcShareOkRef\.current && hevcEncodeRef\.current && !hasHevcFailed\(\) && !hasHevcGpuLost\(\);/);
+        // The share asks the room NOW (shareWantsHevc), not the camera's 30 s hysteresis:
+        // a share that starts while everyone qualifies is H.265 from its first frame
+        // (reports 923a0b23 / dd3e84e3: H.264 first, republished 30 s after the room qualified).
+        expect(sidebar).toMatch(/const wantShareHevc = shareWantsHevc\(hevcModeRef\.current, roomState, allowed\);\s*hevcShareOkRef\.current = wantShareHevc;/);
+        // A LIVE share asks liveShareWantsHevc: an empty room or an unresolved join must not move it (reports 566966f4 / c704ba3e).
+        expect(sidebar).toMatch(/const liveShareHevc = liveShareWantsHevc\(shareCodec === 'h265', roomState, allowed\);/);
+        expect(sidebar).toMatch(/const shareFix = !!share && !!sharePub\?\.track && !!shareCodec && \(shareCodec === 'h265'\) !== liveShareHevc;/);
+        expect(sidebar).toMatch(/const codec: ScreenShareCodec = liveShareHevc \? 'h265' : shareBaseCodecRef\.current;/);
+        // The grace is per session: a rejoin keeps the identity and loses the attribute.
+        expect(sidebar).toMatch(/sessionKey: p\.sid \|\| p\.identity/);
+        // Switch reasons come from hevcSwitchReason; no hard-coded "someone cannot decode" left to mislabel.
+        expect(sidebar.match(/hevcSwitchReason\(/g)?.length).toBe(3);
+        expect(sidebar).not.toMatch(/'someone cannot decode H\.265'/);
         expect(sidebar).toMatch(/const lowerLayer = getShareLowLayerEnabled\(\) && shareHw;/);
         expect(sidebar).toMatch(/installShareLowLayerControl\(track, \{/);
     });

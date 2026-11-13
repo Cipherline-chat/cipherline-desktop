@@ -16,6 +16,7 @@ import React, { useEffect, useState } from 'react';
 import { EmojiPlaceholder, MissingEmojiPlaceholder } from './server/EmojiImage';
 import { usePersonalEmojiUrl, useIsInMyEmojis } from '../hooks/usePersonalEmojis';
 import { usePrefersReducedMotion } from '../hooks/usePrefersReducedMotion';
+import { useAppInFront } from '../utils/animatedImage';
 import { useContextMenu } from '../hooks/useContextMenu';
 import { useToast } from '../contexts/ToastContext';
 import { personalEmojis } from '../utils/personalEmoji/service';
@@ -37,6 +38,9 @@ interface Props {
 export const PersonalEmojiImage: React.FC<Props> = ({ id, name, className, style, saveable = true, noServerContext = true }) => {
     const { status, url } = usePersonalEmojiUrl(id);
     const reduced = usePrefersReducedMotion();
+    // Nothing animated plays while Cipherline is not the focused window.
+    const inFront = useAppInFront();
+    const frozen = reduced || !inFront;
     const inLibrary = useIsInMyEmojis(id);
     const ctx = useContextMenu();
     const { push } = useToast();
@@ -45,26 +49,32 @@ export const PersonalEmojiImage: React.FC<Props> = ({ id, name, className, style
 
     // Reduced motion: swap an animation for its first frame. The decoded frame
     // is tagged with its id so a stale one is never shown for another emoji.
-    const [stillFor, setStillFor] = useState<{ id: string; url: string } | null>(null);
+    const [stillFor, setStillFor] = useState<{ id: string; url: string | null } | null>(null);
     useEffect(() => {
-        if (!reduced || !animated || status !== 'ready') return;
+        if (!frozen || !animated || status !== 'ready') return;
         let live = true;
         void store.read(id).then(bytes => {
-            if (!bytes || !live) return;
-            void stillFrameUrl(id, bytes, store.meta(id)?.m ?? 'image/webp').then(u => { if (u && live) setStillFor({ id, url: u }); });
+            if (!live) return;
+            if (!bytes) { setStillFor({ id, url: null }); return; }
+            void stillFrameUrl(id, bytes, store.meta(id)?.m ?? 'image/webp').then(u => { if (live) setStillFor({ id, url: u }); });
         });
         return () => { live = false; };
-    }, [reduced, animated, status, id, store]);
-    const still = stillFor?.id === id ? stillFor.url : null;
+    }, [frozen, animated, status, id, store]);
+    const stillState = stillFor?.id === id ? stillFor : null;
+    // Reduced motion + an animation: the decoded first frame. While that is
+    // being decoded show the loading look (an <img> with no src is a blank
+    // box); if the frame cannot be decoded, the animation itself is better
+    // than a picture that never appears.
+    const awaitingStill = reduced && animated && status === 'ready' && !stillState;
 
-    if (status === 'loading') return <EmojiPlaceholder className={className} style={style} />;
+    if (status === 'loading' || awaitingStill) return <EmojiPlaceholder className={className} style={style} />;
     if (status === 'missing') {
         return <MissingEmojiPlaceholder label={name} noServerContext={noServerContext} className={className} style={style} />;
     }
     return (
         <>
             <img
-                src={reduced && animated ? (still ?? undefined) : url}
+                src={frozen && animated ? (stillState?.url ?? url) : url}
                 alt={`:${name}:`}
                 title={`:${name}:`}
                 className={`object-contain ${className ?? ''}`}

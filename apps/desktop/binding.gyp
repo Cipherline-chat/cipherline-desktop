@@ -65,9 +65,52 @@
           }
         ],
         [
-          "OS!='win' and OS!='mac'",
+          "OS=='linux'",
+          {
+            # Linux: PipeWire per-application audio capture. audio_capture.cc is all
+            # #ifdef _WIN32 here, so it is swapped for the PipeWire addon, which
+            # registers the same four exports (+ isSupported) AND the same
+            # RegisterWindowGeometry / RegisterSharePower / RegisterHdrCapture
+            # (window_geometry.cc, share_power.cc, hdr_capture.cc stay in the build).
+            # libpipewire is dlopen()ed at run time, never linked: only the vendored
+            # MIT headers are used (third_party/pipewire/LICENSE), so the build needs no
+            # system dev packages and the addon loads on desktops without PipeWire.
+            "sources!": [ "src-native/audio_capture.cc" ],
+            "sources": [ "src-native/audio_capture_linux.cc" ],
+            "include_dirs": [ "src-native/third_party/pipewire" ],
+            "libraries": [ "-ldl" ],
+            "cflags_cc": [ "-std=c++17", "-fexceptions", "-Wall" ]
+          }
+        ],
+        [
+          "OS!='win' and OS!='mac' and OS!='linux'",
           {
             "cflags_cc": [ "-std=c++17" ]
+          }
+        ]
+      ]
+    },
+    {
+      # Linux/Wayland annotation overlay helper (src-native/wayland_overlay/cl_wayland_overlay.c).
+      # A separate EXECUTABLE rather than a part of the addon: a crash in it cannot take the main
+      # process down, and it shares no code with the audio paths. Plain C; libwayland-client,
+      # libX11, libXext and libXrandr are dlopen()ed at run time (never linked, no -dev packages
+      # needed), so it builds anywhere and degrades to "unsupported" where they are missing.
+      # Empty (type none) on Windows and macOS, so those builds are unchanged.
+      # electron-builder packages and unpacks build/Release/cl-wayland-overlay (package.json).
+      "target_name": "cl_wayland_overlay",
+      "type": "none",
+      "conditions": [
+        [
+          "OS=='linux'",
+          {
+            "type": "executable",
+            "product_name": "cl-wayland-overlay",
+            "sources": [ "src-native/wayland_overlay/cl_wayland_overlay.c" ],
+            "include_dirs": [ "src-native/wayland_overlay" ],
+            "libraries": [ "-ldl", "-lm" ],
+            "cflags_c": [ "-std=gnu11", "-Wall", "-O2", "-fstack-protector-strong", "-fPIE" ],
+            "ldflags": [ "-pie", "-Wl,-z,relro,-z,now" ]
           }
         ]
       ]

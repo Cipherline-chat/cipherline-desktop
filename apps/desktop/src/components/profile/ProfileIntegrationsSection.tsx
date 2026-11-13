@@ -1,7 +1,7 @@
 import React from 'react';
 import { BadgeCheck, Link2, Plus } from 'lucide-react';
 import { ProfileLinkIcon } from '../ProfileLinkIcon';
-import { isLinkPlatform, platformLabel } from '../../utils/profileLinks';
+import { isIconPlatform, platformLabel } from '../../utils/profileLinks';
 import { openExternalLink } from '../../utils/openExternalLink';
 import { requestOpenSettings } from '../../utils/openSettingsRequest';
 import type { ProfileConnection } from './integrationTypes';
@@ -12,10 +12,10 @@ import type { ProfileConnection } from './integrationTypes';
  * See INTEGRATION_SLOTS.md.
  */
 
-/** Where "Connect accounts" goes on your own profile. The integrations work points this at its pane. */
-export const CONNECT_ACCOUNTS_PANE = 'connections' as const;
+/** Where "Connect accounts" goes on your own profile: Settings > Profile > Showcase > Steam (paneAliases.ts). */
+export const CONNECT_ACCOUNTS_PANE = 'steam' as const;
 
-const label = (p: string) => (isLinkPlatform(p) ? platformLabel(p) : p.charAt(0).toUpperCase() + p.slice(1));
+const label = (p: string) => (isIconPlatform(p) ? platformLabel(p) : p.charAt(0).toUpperCase() + p.slice(1));
 
 export const ProfileIntegrationsSection: React.FC<{
     connections: readonly ProfileConnection[];
@@ -31,7 +31,7 @@ export const ProfileIntegrationsSection: React.FC<{
                     const head = (
                         <>
                             <span className="pfi-ico" data-platform={c.platform}>
-                                {isLinkPlatform(c.platform) ? <ProfileLinkIcon platform={c.platform} size={18} /> : <Link2 size={18} aria-hidden="true" />}
+                                {isIconPlatform(c.platform) ? <ProfileLinkIcon platform={c.platform} size={18} /> : <Link2 size={18} aria-hidden="true" />}
                             </span>
                             <span className="pfi-txt">
                                 <b>{c.name}</b>

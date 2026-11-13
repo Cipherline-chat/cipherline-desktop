@@ -25,7 +25,8 @@ import './ending.css';
  *      while the real elements fade + sharpen in place. No pop, no bounce.
  *
  * Click / Space / → / Enter moves to the next beat; Skip / Esc goes straight
- * to the end. Reduced motion (or no WebGL): one still, self-paced page.
+ * to the end. Reduced motion (or no dot field at all; without WebGL the
+ * Canvas 2D fallback still plays it): one still, self-paced page.
  */
 
 type Paths = readonly string[];
@@ -134,7 +135,8 @@ export const OnboardingEnding: React.FC<EndingProps> = ({ deps, flow, reducedMot
     // ── animated or still ───────────────────────────────────────────────────
     // The shell creates the dot field in its own effect, which runs AFTER
     // this child's first effects, so `dots` can be null on the first render
-    // even with WebGL. Give it a moment; still null = no WebGL = still page.
+    // even with WebGL. Give it a moment; still null = no field at all (not
+    // even the 2D fallback) = still page.
     const [noGl, setNoGl] = useState(false);
     useEffect(() => {
         if (dots || reducedMotion) return undefined;

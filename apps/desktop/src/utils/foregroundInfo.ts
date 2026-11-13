@@ -4,11 +4,12 @@
  *
  * It lets every `share_fps` / `share_background` call event say whether a
  * fullscreen game was in front when the frame rate fell (fg_state / fg_exe /
- * fg_cover), and drives the "share the game window instead" hint
- * (shareFullscreenHint.ts). Owner report 2026-10-14: game focused -> the
- * share drops to ~9 fps; Cipherline focused with the game still visible ->
- * 45-80 fps. A fullscreen / independent-flip game bypasses DWM composition, so
- * a whole-SCREEN capture only gets occasional frames; the report now says so.
+ * fg_cover). Owner report 2026-10-14: game focused -> the share drops to
+ * ~9 fps; Cipherline focused with the game still visible -> 45-80 fps. A
+ * fullscreen / independent-flip game bypasses DWM composition, so a
+ * whole-SCREEN capture can only get occasional frames; the report says so.
+ * (The "share the game window instead" hint this once drove was removed
+ * 2026-10-31: the whole screen goes to 90 fps, a window is capped at 60.)
  *
  * Windows only has an answer. Linux and macOS get main's explicit
  * `{ unavailable: true }`, which becomes `state: "unavailable"` here (see

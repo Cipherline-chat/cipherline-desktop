@@ -4,9 +4,12 @@
    the layer is pointer-events:none and contain:strict, and it exists for ~6s.
    Under reduced motion there is no animation at all: the component renders a
    still Keys in a party hat for a moment instead (.egg-party--still).
+   It sits on the shared egg scrim (styles/egg-scrim.css) at the moments' layer:
+   above every app layer and modal, below the toast stack (60000) and the
+   system surfaces.
    ============================================================================ */
 .egg-party {
-  position: fixed; inset: 0; z-index: 9990;
+  position: fixed; inset: 0; z-index: 50000;
   pointer-events: none; overflow: hidden; contain: strict;
 }
 .egg-party-swimmer {
@@ -44,9 +47,9 @@
   100% { transform: translateY(105vh) rotate(var(--spin, 360deg)); opacity: 0; }
 }
 
-/* Reduced motion: a still hello in the corner, no travel, no confetti. */
+/* Reduced motion: a still hello in the middle of the dimmed app, no travel, no confetti. */
 .egg-party--still .egg-party-still {
-  position: absolute; right: 32px; bottom: 32px;
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
 }
 @media (prefers-reduced-motion: reduce) {
   .egg-party-swimmer, .egg-party-bob, .egg-party-bubble, .egg-party-piece { animation: none; }

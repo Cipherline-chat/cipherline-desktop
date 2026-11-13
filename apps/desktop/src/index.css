@@ -44,6 +44,11 @@
   --cl-muted: #A7B3D4;
   --cl-faint: #5E6B8F;
 
+  /* The backdrop every easter-egg moment sits on (styles/egg-scrim.css): an even
+     dim, deepened toward the middle where a moment composes its art and words. */
+  --cl-scrim-egg:      rgba(5, 8, 20, .78);
+  --cl-scrim-egg-core: rgba(5, 8, 20, .5);
+
   /* Semantic aliases */
   --surface-page:    var(--cl-abyss);
   --surface-panel:   var(--cl-deep);
@@ -250,6 +255,27 @@ img {
   to   { opacity: 1; transform: translateY(0); }
 }
 .focus-banner-enter { animation: focus-banner-fade-in 0.28s cubic-bezier(0.22, 1, 0.36, 1) forwards; }
+
+/* ── A screen share coming back after a settings change (utils/shareHold.ts) ──
+ * The note waits a beat so a quick republish never flashes text at anyone. One
+ * slow dot rather than a spinner: it is coming back, there is nothing to count. */
+@keyframes cl-share-hold-note-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes cl-share-hold-dot { 0%, 100% { opacity: 0.45; } 50% { opacity: 1; } }
+.cl-share-hold-note { animation: cl-share-hold-note-in 0.18s ease-out 0.25s both; }
+.cl-share-hold-dot { animation: cl-share-hold-dot 1.6s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .cl-share-hold-note { animation: none; }
+  .cl-share-hold-dot { animation: none; opacity: 0.8; }
+}
+/* The loss-fallback note on a watched share (call/ShareFallbackNote.tsx): fades in;
+   "Back to full quality" fades out over its 3 s (RESTORED_NOTE_MS), then unmounts.
+   Reduced motion: no fades, it is simply there and then gone. */
+@keyframes cl-share-fallback-restored { 0%, 70% { opacity: 1; } 100% { opacity: 0; } }
+.cl-share-fallback-note { animation: cl-share-hold-note-in 0.18s ease-out both; }
+.cl-share-fallback-restored { animation: cl-share-fallback-restored 3s ease-in both; }
+@media (prefers-reduced-motion: reduce) {
+  .cl-share-fallback-note, .cl-share-fallback-restored { animation: none; }
+}
 
 /* ── Pinned messages panel (DM + server context panel) ────────────────────
  * PinnedMessagesPanel.tsx portals into #pinned-panel-root inside both the
@@ -582,6 +608,17 @@ img {
   pointer-events: none;
 }
 
+/* One video filling the screen: its name and stats go with the console, and so
+ * does the pointer, so an idle screen is the picture and nothing else. "Ask to
+ * draw" goes too: it reveals on hover, and here a resting pointer is always over
+ * the tile. The rest of the tool cluster stays: an armed pen or a waiting request
+ * is state, not chrome. */
+.cl-fs-fill-chrome { transition: opacity 200ms ease; }
+:root[data-cl-fs-idle="on"] .cl-fs-fill-chrome,
+:root[data-cl-fs-idle="on"] .cl-fs-fill .cl-tile-hover:hover .cl-annot-reveal:not(:focus-within) { opacity: 0; }
+:root[data-cl-fs-idle="on"] .cl-fs-fill,
+:root[data-cl-fs-idle="on"] .cl-fs-fill * { cursor: none !important; }
+
 /* ── The participant strip's resize handle ──────────────────────────────────
  * The handle IS the strip's top border: a 7px grab band sitting on the same
  * hairline the strip used to draw with `border-t`, so there is no second line
@@ -642,17 +679,17 @@ img {
  *
  * Reachability does not depend on any of this: wheel and keyboard are handled
  * explicitly in FullscreenOverlay (onStripWheel / onStripKey) and the row is a
- * focusable `role="group"`. The colour is the overlay's own cinema black
- * (`bg-[#05070F]`), so the fade resolves into the strip rather than onto it. */
+ * focusable `role="group"`. The colour is the strip band's own background
+ * (`bg-cl-abyss`, #0B0F1E), so the fade resolves into the strip rather than onto it. */
 .cl-fs-strip-row {
   scrollbar-width: none;            /* Firefox */
   -ms-overflow-style: none;
   scroll-behavior: smooth;
-  /* No background at all any more: the strip floats over the video, and the
-   * old scroll-shadow vignette used an opaque #05070F "local" cover, which
-   * over a live picture would paint solid black blocks at the row's ends. The
-   * "+N" chip in FullscreenOverlay is the overflow cue now. */
-  background: none;
+  background:
+    linear-gradient(to right, #0B0F1E 40%, rgba(11, 15, 30, 0)) left center / 32px 100% no-repeat local,
+    linear-gradient(to left,  #0B0F1E 40%, rgba(11, 15, 30, 0)) right center / 32px 100% no-repeat local,
+    linear-gradient(to right, rgba(11, 15, 30, 0.92), rgba(11, 15, 30, 0)) left center / 32px 100% no-repeat scroll,
+    linear-gradient(to left,  rgba(11, 15, 30, 0.92), rgba(11, 15, 30, 0)) right center / 32px 100% no-repeat scroll;
 }
 .cl-fs-strip-row::-webkit-scrollbar { display: none; }   /* Chromium / WebKit */
 /* The row is a tab stop (it has to be, to be keyboard-scrollable), so it needs

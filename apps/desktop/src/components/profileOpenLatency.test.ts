@@ -117,7 +117,7 @@ vi.mock('../utils/attachmentCache', () => ({
     getAvatarBlob: async (id: string) => {
         const hit = blobStore.get(id);
         await sleep(LATENCY.idbBaseMs + (hit ? Math.round(hit.bytes / LATENCY.idbBytesPerMs) : 0));
-        return hit ? Object.assign(new Blob(['p']), { __bytes: hit.bytes }) : null;
+        return hit ? Object.assign(new Blob(['p'], { type: 'image/jpeg' }), { __bytes: hit.bytes }) : null;
     },
     putAvatarBlob: async (id: string, b: Blob & { __bytes?: number }, opts?: { kind?: string }) => {
         blobStore.set(id, { bytes: b.__bytes ?? 1, kind: opts?.kind });
@@ -130,7 +130,7 @@ vi.mock('../utils/crypto', () => ({
     decryptBlob: async (b: Blob & { __bytes?: number }) => {
         const bytes = b.__bytes ?? 1;
         await sleep(LATENCY.decryptBaseMs + Math.round(bytes / LATENCY.decryptBytesPerMs));
-        return Object.assign(new Blob(['p']), { __bytes: bytes });
+        return Object.assign(new Blob(['p'], { type: 'image/jpeg' }), { __bytes: bytes });
     },
 }));
 

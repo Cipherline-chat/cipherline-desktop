@@ -33,9 +33,9 @@ describe('share start wiring (SidebarConference)', () => {
     });
     it('the button ends its loading state the moment LiveKit has published, before audio/sender tuning', () => {
         const s = body('startScreenShareFrom');
-        const pub = s.indexOf('await localParticipant.setScreenShareEnabled(true, {');
+        const pub = s.indexOf('await publishScreenShareSettled(localParticipant, {');
         const done = s.indexOf('onPublished();');
-        const audio = s.indexOf('startNativeWindowAudio(nativeMode, options.sourceId)', done);
+        const audio = s.indexOf('startNativeWindowAudio(nativeMode, options.sourceId, options.appAudio?.handle)', done);
         expect(pub).toBeGreaterThan(0);
         expect(done).toBeGreaterThan(pub);
         expect(audio).toBeGreaterThan(done);
@@ -49,7 +49,7 @@ describe('share start wiring (SidebarConference)', () => {
         const s = body('startScreenShareFrom');
         const set = s.indexOf('shareMaxBitrateRef.current = maxBitrate;');
         expect(set).toBeGreaterThan(0);
-        expect(set).toBeLessThan(s.indexOf('await localParticipant.setScreenShareEnabled(true, {'));
+        expect(set).toBeLessThan(s.indexOf('await publishScreenShareSettled(localParticipant, {'));
         expect(sc).toMatch(/installShareStartBitrate\(\s*localParticipant as unknown as StartBitrateParticipant,\s*\(\) => shareMaxBitrateRef\.current,/);
     });
     it('ControlBar gets the starting flag', () => {

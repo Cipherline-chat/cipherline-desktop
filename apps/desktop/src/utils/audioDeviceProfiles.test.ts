@@ -205,7 +205,7 @@ describe('storage', () => {
         }, output: 'x' });
         const p = parseDeviceProfiles(raw, DEFAULT_VOICE_SETTINGS)!;
         expect(Object.keys(p.input)).toEqual(['mic a']);
-        expect(p.input['mic a'].settings).toMatchObject({ micVolume: 200, noiseSuppressionMode: 'strong', eqBands: [0, 0, 0, 0, 0] });
+        expect(p.input['mic a'].settings).toMatchObject({ micVolume: 200, noiseSuppressionMode: DEFAULT_VOICE_SETTINGS.noiseSuppressionMode, eqBands: [0, 0, 0, 0, 0] });
         expect(p.output).toEqual({});
     });
 });

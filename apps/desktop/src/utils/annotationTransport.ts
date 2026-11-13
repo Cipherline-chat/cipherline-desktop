@@ -31,6 +31,28 @@ export function isAllowed(track: string, sender: string): boolean {
 // -- Outbound: diff local store changes into wire messages -----------------
 
 /**
+ * Merge neighbouring `stroke.append` messages of the SAME stroke into one (up to `max` points each),
+ * leaving every other message, and the order of everything, untouched. This is what lets the sender
+ * hold pointer-move points for ~30 ms and still send one packet per stroke per tick instead of one
+ * per pointermove (144-240/s on a fast display), without ever reordering an append past its
+ * `stroke.end`.
+ */
+export function coalesceAppends(msgs: readonly AnnotMsg[], max: number = MAX_APPEND_POINTS): AnnotMsg[] {
+    const out: AnnotMsg[] = [];
+    for (const m of msgs) {
+        const last = out[out.length - 1];
+        if (m.t === 'stroke.append' && last && last.t === 'stroke.append'
+            && last.id === m.id && last.track === m.track && last.room === m.room
+            && last.pts.length + m.pts.length <= max) {
+            out[out.length - 1] = { ...last, pts: [...last.pts, ...m.pts] };
+        } else {
+            out.push(m);
+        }
+    }
+    return out;
+}
+
+/**
  * Per-stroke progress the sender has already put on the wire: how many of the
  * stroke's points have been sent, and whether its `stroke.end` has.
  *

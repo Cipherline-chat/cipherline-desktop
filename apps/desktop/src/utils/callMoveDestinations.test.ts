@@ -33,6 +33,13 @@ function input(over: Partial<MoveDestinationInput> = {}): MoveDestinationInput {
 }
 
 describe('listMoveDestinations', () => {
+    it("never offers a call in a channel this panel does not list (a guest's own call)", () => {
+        const base = input();
+        const guestRow = { call_id: 'c-guest', huddle_id: 'not-listed', name: 'Hidden', participants: [X] };
+        const d = listMoveDestinations(input({ calls: [...base.calls, guestRow], canConnect: () => true }));
+        expect(d.some(x => x.kind === 'call' && x.callId === 'c-guest')).toBe(false);
+    });
+
     it('lists every call and empty Calls channel the VIEWER can join, private ones included', () => {
         const d = listMoveDestinations(input());
         expect(d.map(x => (x.kind === 'call' ? x.callId : `new:${x.huddleId}`))).toEqual([

@@ -141,6 +141,40 @@ describe('fs-confinement — legitimate flows still work (positive controls)', (
     });
 });
 
+describe('fs-confinement — backup-folder shapes that are NOT why path_not_allowed fires (beta 2026-10..11, Windows)', () => {
+    const W = 'C:\\Users\\u\\AppData\\Roaming\\Cipherline';
+    const win = (pickedDirs: string[], resolveReal: (p: string) => string = (p) => p) =>
+        state({ userData: W, platform: 'win32', pathApi: path.win32 as typeof path, pickedDirs, resolveReal });
+
+    it('OneDrive-redirected and non-ASCII folders, UNC shares and a trailing separator are all admitted', () => {
+        for (const dir of [
+            'C:\\Users\\Zoë\\OneDrive - Contoso\\Documents\\Backups',
+            '\\\\nas\\share\\Cipherline Backups',
+            'E:\\Резервные копии\\',
+        ]) {
+            const s = win([dir]);
+            ok(s, 'backup-dir', dir);
+            ok(s, 'backup-read', path.win32.join(dir, 'cipherline-backup.enc'));
+            ok(s, 'unlink', path.win32.join(dir, 'old-chunk.enc'));
+        }
+    });
+
+    it('a picked junction/mapped drive resolves the same on both sides', () => {
+        const real = (p: string) => p.replace(/^x:/i, '\\\\nas\\share');
+        const s = win(['X:\\Backups'], real);
+        ok(s, 'backup-dir', 'X:\\Backups');
+        ok(s, 'backup-read', 'X:\\Backups\\cipherline-backup.enc');
+    });
+
+    it('THE real trigger: a folder nobody picked on this install is refused (a path restored inside a backup)', () => {
+        const s = win([]);
+        refused(s, 'backup-dir', 'D:\\Backups');
+        refused(s, 'backup-dir', 'C:\\Users\\u\\OneDrive\\Documents\\Backups');
+        // ...and a sibling that merely shares the picked folder's name prefix is not covered either
+        refused(win(['D:\\Backups']), 'backup-dir', 'D:\\Backups-old');
+    });
+});
+
 describe('fs-confinement — helpers', () => {
     it('isBackupFileName', () => {
         expect(isBackupFileName('a.enc')).toBe(true);

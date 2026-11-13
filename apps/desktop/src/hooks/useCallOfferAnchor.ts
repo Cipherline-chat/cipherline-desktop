@@ -10,13 +10,16 @@
  *     view ↔ Friends/Home remount it) without anything we observe firing.
  * Only active while `enabled` (a card is up), so it costs nothing otherwise.
  *
- * Returns the `{ className, style }` for the card's wrapper. When the pane is
- * not found the wrapper falls back to a fixed offset (CALL_OFFER_FALLBACK_CLASS).
+ * Returns the `{ className, style, held }` for the card's wrapper. When the pane
+ * is not found the wrapper falls back to a fixed offset (CALL_OFFER_FALLBACK_CLASS).
+ * While an actionable call prompt is open (utils/callNoticeLayer.ts) the card is
+ * HELD: off screen, not dismissed, back when the prompt is answered. `held` is
+ * returned so the card can keep its sound cue for when it is actually seen.
  */
 import { useEffect, useState } from 'react';
-import {
-    CALL_OFFER_WRAPPER_CLASS, CALL_OFFER_FALLBACK_CLASS, callOfferPosition, type CallOfferPosition,
-} from '../utils/performanceOffer';
+import { callOfferPosition, type CallOfferPosition } from '../utils/performanceOffer';
+import { callOfferWrapper, type CallOfferWrapper } from '../utils/callNoticeLayer';
+import { useCallNoticesHeld } from './useCallNoticeLayer';
 
 /** The main content pane: the chat / channel view, else the full-width
  *  Friends / Home card. Never the sidebar or the rail. */
@@ -31,8 +34,9 @@ function findAnchor(): HTMLElement | null {
     return null;
 }
 
-export function useCallOfferAnchor(enabled: boolean): { className: string; style?: React.CSSProperties } {
+export function useCallOfferAnchor(enabled: boolean): CallOfferWrapper {
     const [pos, setPos] = useState<CallOfferPosition | null>(null);
+    const held = useCallNoticesHeld();
 
     useEffect(() => {
         if (!enabled) return;
@@ -63,7 +67,5 @@ export function useCallOfferAnchor(enabled: boolean): { className: string; style
         };
     }, [enabled]);
 
-    return pos
-        ? { className: CALL_OFFER_WRAPPER_CLASS, style: { top: pos.top, left: pos.left } }
-        : { className: `${CALL_OFFER_WRAPPER_CLASS} ${CALL_OFFER_FALLBACK_CLASS}` };
+    return callOfferWrapper(pos, held);
 }

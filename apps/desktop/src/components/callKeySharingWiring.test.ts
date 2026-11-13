@@ -93,7 +93,7 @@ describe('the sharing hook', () => {
         expect(hook).not.toContain('resolveCallKeyGate');
     });
     it('never logs user ids, device ids or who asked whom', () => {
-        const logs = hook.match(/console\.\w+\(([^;]|\n)*?\);/g) ?? [];
+        const logs = hook.match(/console\.\w+\([^;]*?\);/g) ?? [];
         expect(logs.length).toBeGreaterThan(0);
         for (const l of logs) {
             expect(l).not.toMatch(/userId|deviceId|senderUserId|senderDeviceId|auth\./);

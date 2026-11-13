@@ -28,7 +28,9 @@ import { Track, RemoteVideoTrack, type Room } from 'livekit-client';
 import { Gauge, X } from 'lucide-react';
 import { ClButton } from '../cl';
 import { useToast } from '../../contexts/ToastContext';
-import { CallLoadDetector, layerLimitStats, SAMPLE_INTERVAL_MS, type SourceSample } from '../../utils/callLoadMonitor';
+import {
+    CallLoadDetector, CameraCaptureStarveDetector, layerLimitStats, capturedFrames, SAMPLE_INTERVAL_MS, type SourceSample,
+} from '../../utils/callLoadMonitor';
 import { ReceiveLoadDetector, inboundVideoStats, parseProcessCpu, type InboundVideoStats } from '../../utils/receiveLoadMonitor';
 import {
     canOfferPerf, answerPerfOffer, readPerfOfferState, writePerfOfferState, choosePerfOffer, perfOfferCopy, perfOfferEffects,
@@ -36,6 +38,7 @@ import {
     type PerfOfferAnswer, type PerfOfferKind,
 } from '../../utils/performanceOffer';
 import { useCallOfferAnchor } from '../../hooks/useCallOfferAnchor';
+import { useCallPromptCue } from '../../hooks/useCallPromptCue';
 import { setCameraQualityTier, setIncomingVideoMode, getIncomingVideoMode } from '../../utils/cameraQualityPrefs';
 import { logCallEvent } from '../../utils/callEventLog';
 
@@ -91,6 +94,55 @@ export const CallPerformanceGuard: React.FC = () => {
     const [offer, setOffer] = useState<{ room: Room; kind: PerfOfferKind } | null>(null);
     const offerOpen = !!room && offer?.room === room;
     const shownForRoomRef = useRef<Room | null>(null);
+    // The camera CAPTURE's verdict (utils/callLoadMonitor.CameraCaptureStarveDetector),
+    // sampled by its own loop so the telemetry survives a snoozed / refused offer.
+    const captureRef = useRef<{ starved: boolean; fps?: number }>({ starved: false });
+
+    // A camera that nominally runs at 30 fps but hands the encoder 0-14: the
+    // encoder is healthy so the CPU detector never fires (report 884b6045,
+    // "my camera freezes for me and for everyone when playing a game").
+    // One `camera_starved` event per call with numbers only; the verdict also
+    // feeds the same "Lower your camera to 720p" offer below.
+    useEffect(() => {
+        if (!room) return;
+        const det = new CameraCaptureStarveDetector();
+        let inFlight = false;
+        let stopped = false;
+        let logged = false;
+        const tick = async () => {
+            if (inFlight || stopped) return;
+            const t = senderOf(room, Track.Source.Camera);
+            if (!t?.sender) { det.reset(); captureRef.current = { starved: false }; return; }
+            inFlight = true;
+            try {
+                const report = await t.sender.getStats() as unknown as StatsReportLike;
+                if (stopped) return;
+                const settings = t.mediaStreamTrack?.getSettings?.();
+                const v = det.observe({ at: performance.now(), framesCaptured: capturedFrames(report), nominalFps: settings?.frameRate ?? 30 });
+                captureRef.current = v;
+                if (v.starved && !logged) {
+                    logged = true;
+                    let hw: boolean | '' = '';
+                    let limit = '';
+                    report.forEach(s => {
+                        if (s.type !== 'outbound-rtp' || s.kind !== 'video') return;
+                        if (typeof s.powerEfficientEncoder === 'boolean') hw = s.powerEfficientEncoder;
+                        if (typeof s.qualityLimitationReason === 'string') limit = s.qualityLimitationReason;
+                    });
+                    const shareLive = !!senderOf(room, Track.Source.ScreenShare)?.sender;
+                    logCallEvent('camera_starved', {
+                        fps: v.fps ?? NaN, target_fps: Math.round(settings?.frameRate ?? 30),
+                        width: settings?.width ?? NaN, height: settings?.height ?? NaN,
+                        share: shareLive ? 'live' : 'none', hw, limit,
+                    });
+                }
+            } catch { /* a failed tick is a skipped sample */ } finally {
+                inFlight = false;
+            }
+        };
+        const iv = setInterval(() => { void tick(); }, SAMPLE_INTERVAL_MS);
+        return () => { stopped = true; clearInterval(iv); det.reset(); captureRef.current = { starved: false }; };
+    }, [room]);
 
     useEffect(() => {
         if (!room) return;
@@ -117,8 +169,9 @@ export const CallPerformanceGuard: React.FC = () => {
                 const at = performance.now();
                 const sv = send.observe({ at, camera, share });
                 const rv = recv.observe({ at, tracks: incoming, rendererCpuPct: cpu });
+                const cap = captureRef.current;
                 const kind = choosePerfOffer({
-                    encodeStrained: sv.struggling,
+                    encodeStrained: sv.struggling || cap.starved,
                     decodeStrained: rv.decodeBound,
                     cameraHeight: cameraHeight(room),
                     incomingMode: getIncomingVideoMode(),
@@ -126,8 +179,8 @@ export const CallPerformanceGuard: React.FC = () => {
                 });
                 if (!kind || !gate()) return;
                 logCallEvent('load_trigger', {
-                    encode: sv.struggling, decode: rv.decodeBound, network: rv.networkBound,
-                    sources: sv.sources.join('+') || 'none', decoding: rv.tick?.decodingTracks ?? 0,
+                    encode: sv.struggling || cap.starved, decode: rv.decodeBound, network: rv.networkBound,
+                    sources: sv.sources.join('+') || (cap.starved ? 'camera_capture' : 'none'), decoding: rv.tick?.decodingTracks ?? 0,
                     drop_pct: Math.round((rv.tick?.dropRatio ?? 0) * 100), decode_ms: Math.round(rv.tick?.decodeMs ?? 0),
                 });
                 if (!acquireCallOfferSlot(SLOT_ID)) return; // another offer is up; try again next tick
@@ -167,6 +220,7 @@ export const CallPerformanceGuard: React.FC = () => {
     }, [toast, kind]);
 
     const anchor = useCallOfferAnchor(offerOpen);
+    useCallPromptCue(offerOpen && !anchor.held);
     if (!offerOpen || !kind || typeof document === 'undefined') return null;
     const copy = perfOfferCopy(kind);
     return ReactDOM.createPortal(

@@ -15,7 +15,9 @@
 export const MAX_LEVEL = 10;
 export const BASE_SHOWCASE_SLOTS = 3;
 export const SLOT_LEVELS = [3, 6, 10] as const;
-export const pointsForLevel = (n: number): number => n * n;
+/** Points to reach level 1 (owner 2026-11-13: one easter egg is not a level). */
+export const LEVEL_1_POINTS = 3;
+export const pointsForLevel = (n: number): number => (n === 1 ? LEVEL_1_POINTS : n * n);
 export const showcaseSlots = (level: number): number => BASE_SHOWCASE_SLOTS + SLOT_LEVELS.filter((l) => level >= l).length;
 
 export const SHOWCASE_BLOCKS = ['links', 'games', 'steam', 'achievements', 'most_played', 'interests'] as const;
@@ -147,12 +149,38 @@ export function shouldCelebrateHighFive(dndActive: boolean, status: string | nul
 
 export type HighFiveResult = 'sent' | 'already' | 'gone' | 'error';
 
-/** Map the POST /v1/users/:id/high-five outcome to the button state. */
-export function highFiveResultOf(httpStatus: number | undefined, message?: unknown): HighFiveResult {
+/**
+ * Map the POST /v1/users/:id/high-five outcome to the button state.
+ *
+ * `body` is the response body: today `{ message, code: 'HIGH_FIVED_TODAY',
+ * retry_after }`; the first shipped server sent the bare JSON STRING
+ * "High-fived today." (Nest serialises a string HttpException that way), so a
+ * string body and a `{ message }` object are both recognised. The throttler's
+ * own 429 carries neither, and stays an error.
+ */
+export function highFiveResultOf(httpStatus: number | undefined, body?: unknown): HighFiveResult {
     if (httpStatus === undefined) return 'error';
     if (httpStatus >= 200 && httpStatus < 300) return 'sent';
-    // 429 is also the throttler's answer; only the server's own wording means "already today".
-    if (httpStatus === 429) return typeof message === 'string' && /high-fived today/i.test(message) ? 'already' : 'error';
+    if (httpStatus === 429) return isHighFivedTodayBody(body) ? 'already' : 'error';
     if (httpStatus === 404) return 'gone';
     return 'error';
+}
+
+function isHighFivedTodayBody(body: unknown): boolean {
+    if (typeof body === 'string') return /high-fived today/i.test(body);
+    if (body && typeof body === 'object') {
+        const o = body as { code?: unknown; message?: unknown };
+        return o.code === 'HIGH_FIVED_TODAY' || (typeof o.message === 'string' && /high-fived today/i.test(o.message));
+    }
+    return false;
+}
+
+/** The tooltip for a pressed high-five: when it opens again, in plain words. */
+export function highFiveAgainLabel(againAtMs: number | null | undefined, now: number = Date.now()): string {
+    const base = 'You high-fived them today';
+    if (!againAtMs || !Number.isFinite(againAtMs) || againAtMs <= now) return `${base} - try again tomorrow`;
+    const mins = Math.ceil((againAtMs - now) / 60_000);
+    if (mins < 60) return `${base} - try again in ${mins} minute${mins === 1 ? '' : 's'}`;
+    const hours = Math.ceil(mins / 60);
+    return `${base} - try again in about ${hours} hour${hours === 1 ? '' : 's'}`;
 }

@@ -1,10 +1,13 @@
 import secureLocalStore from '../utils/secureLocalStore';
+import { hasConversationDeviceRoster } from '../utils/conversationDeviceRoster';
 import { attachmentToDeleteWithMessage } from '../utils/attachmentOnDelete';
 import { openExternalLink } from '../utils/openExternalLink';
 import { placeCaretAtEnd } from '../utils/composerCaret';
 import { composerDrafts } from '../utils/composerDraftStore';
 import { draftKey } from '../utils/composerDrafts';
 import { freeTierTooLargeDetail } from '../utils/uploadLimitCopy';
+import { uploadQuotaRefusal } from '../utils/uploadQuotaRefusal';
+import { backlogPartialNotice } from '../utils/backlogFull';
 import React, { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo } from 'react';
 import { playIco } from '../utils/clPhysics';
 import {
@@ -19,11 +22,11 @@ import { safeDisplayFilename } from '../utils/fileSafety';
 import { useShallowStable } from '../hooks/useShallowStable';
 import { useLiveCallbacks } from '../hooks/useLiveCallbacks';
 import { useLateNightPlaceholder } from '../hooks/useEasterEggs';
+import { useFlashedPlaceholder } from '../hooks/useFlashedPlaceholder';
 import { recordEggFound } from '../utils/eggProgress';
 import { mergeIfChanged, setIfChanged } from '../utils/renderMemo';
 import { formatHourMinute, formatNumericDate, formatWeekdayShortMonthDay, formatWeekdayLongMonthDay, formatLongMonthDayYear } from '../utils/messageTimeFormat';
 import { ClButton } from './ClButton';
-import { ClCheckbox } from './cl';
 import { createPortal } from 'react-dom';
 import { useMessagePagination, MESSAGE_PAGE_SIZE } from '../hooks/useMessagePagination';
 import { HistoryGapRow } from './HistoryGapRow';
@@ -32,7 +35,9 @@ import { keyMissingRuns, keyMissingRunLabel } from '../utils/channelKeyWait';
 import { useChannelKeyWait } from '../hooks/useChannelKeyWait';
 import type { HistoryGap } from '../utils/channelHistoryCoverage';
 import { placeholderLabel, placeholderReason } from '../utils/channelDecryptFailure';
-import { isMemberEventContent, isEphemeralMemberEventId, memberEventText, memberEventUserIds } from '../utils/systemMessages';
+import { isMemberEventContent, memberEventText, memberEventUserIds } from '../utils/systemMessages';
+import { systemRowDeleteMode, systemRowDeleteLabel, parseHiddenSystemRows, addHiddenSystemRow, hiddenSystemRowsKey } from '../utils/systemRowDelete';
+import { mousedownIsActivationClick, installWindowActivationTracking } from '../utils/windowActivationClick';
 import { isStaleEpochError } from '../utils/pendingSend';
 import { reportBeta } from '../utils/betaDiagnostics/reporter';
 import { sendFailureDetail } from '../utils/betaDiagnostics/sanitize';
@@ -59,7 +64,6 @@ import { trackActivity } from '../utils/freezeLog';
 import type { ClientContent, KlipyGifRef } from '@cipherline/shared';
 import { Permissions, parseKlipyGifRef, isKlipyMediaUrl } from '@cipherline/shared';
 import { requestMoment, mentionMoment, selfReact } from '../utils/moments';
-import { noteMessageDelivered } from '../utils/milestones';
 import { noteAchievementMessage } from '../utils/achievements/tracker';
 import { mentionTokenMatcher, type MentionTokenMatch, extractMentionsFromText, parseMentionToken, mentionsToDisplayText, messageTextMentionsUser, messageTextMentionsRole } from '../utils/mentionTokens';
 import { displayTextOf, displayPreviewOf, messageTextMatches } from '../utils/messagePreviewText';
@@ -71,7 +75,11 @@ import { lastReadableMessageId, readReceiptToSend } from '../utils/readReceipt';
 import { isSelfDm, chatAffordances } from '../utils/selfConversation';
 import { useWindowFocus } from '../hooks/useWindowFocus';
 import { EMOJI_RE, isEmojiOnly, countEmojis } from '../utils/emojiText';
-import { buildWireText, buildEmojiWireText, tokenMapsFromWireText } from '../utils/composerWireText';
+import { tokenMapsFromWireText } from '../utils/composerWireText';
+import { composerToWire } from '../utils/composerEmojiShortcodes';
+import { toShortcode } from '../utils/emojiNames';
+import { getNativeShortcodeIndex, lookupNativeShortcode } from '../utils/nativeEmojiShortcodes';
+import { useComposerShortcodes } from '../hooks/useComposerShortcodes';
 import { rankMentionCandidates, describeMentionUserRow } from '../utils/mentionSuggestions';
 import {
     buildChannelCandidates, rankChannelCandidates, detectChannelTrigger, collectChannelRefs,
@@ -87,6 +95,7 @@ import { TrustBadge } from './TrustBadge';
 import type { SenderVerdict } from '../utils/senderTrust';
 import { UnverifiedDeviceBanner } from './UnverifiedDeviceBanner';
 import { encryptAndAddress } from '../utils/encryptAndAddress';
+import { frankForSend, frankingHeaders, hashFileForCommitment, type ReportedMessageRef } from '../utils/franking';
 import { classifySubmit, decideViewportAction, correctedScrollTop } from '../utils/feedScrollDecision';
 import { isUnconfirmedSend, sendFailureReason, type SendPatch } from '../utils/pendingSend';
 import { assignRowKeys, createEntranceTracker, createRevealGate, messageRowKey, type EntranceTracker, type RevealGate } from '../utils/messageEntrance';
@@ -100,7 +109,7 @@ import { GroupSettingsModal } from './GroupSettingsModal';
 import FileViewer from './FileViewer';
 // The light wrapper — the picker itself (emoji-mart + dataset) loads on demand.
 import EmojiPickerPopover from './emojiPickerLazy';
-import { searchEmoji } from './emojiSearch';
+import { searchEmojiWithCustom } from './composer/emojiSuggestions';
 import type { EmojiSelection } from './EmojiPicker';
 import { useServerEmojis, type ServerEmoji } from '../hooks/useServerEmojis';
 import { isMyReaction } from './reactionOwnership';
@@ -122,6 +131,8 @@ import { ChannelTopicDialog } from './server/ChannelTopicDialog';
 import { ChannelIconRenderer } from './server/ChannelIconPicker';
 import { ServerInviteEmbed } from './server/ServerInviteEmbed';
 import { SafetyNumberEmbed } from './SafetyNumberEmbed';
+import { settledSafetyCardIds } from '../utils/safetyNumberEmbed';
+import { shareOwnContactCode, type ShareOwnCodeOutcome } from '../utils/ownContactCode';
 import type { EmojiSuggestion } from './EmojiPicker';
 import { SuggestionMenu, type SuggestionMenuItem } from './composer/SuggestionMenu';
 import { nextSuggestionIndex, resolveCustomEmojiHint } from './composer/suggestionNav';
@@ -154,6 +165,8 @@ import {
 } from "lucide-react";
 import type { FriendStatusEntry } from '../hooks/useUserStatus';
 import { EncryptedAvatar } from './EncryptedAvatar';
+import { AuthorHoverAvatar } from './AuthorHoverAvatar';
+import { enterAuthorName, leaveAuthorName } from '../utils/authorNameHover';
 import { preloadAvatars } from '../hooks/useEncryptedAvatar';
 import { peekRoster, refreshRoster, type Roster } from '../utils/serverRosterCache';
 import { useMentionRoster } from '../hooks/useMentionRoster';
@@ -171,10 +184,8 @@ import {
 import { MsgBarBtn } from './primitives/MsgBarBtn';
 import { ChromeText } from './primitives/ChromeText';
 import { MsgActionBar } from './primitives/MsgActionBar';
-// Aliased: this module already declares its own local `ConfirmDialog` for the
-// block/remove-friend flows. The shared primitive is what the message-delete
-// confirmation uses, and renaming the local one is somebody else's refactor.
-import { ConfirmDialog as SharedConfirmDialog } from './primitives/ConfirmDialog';
+import { ConfirmDialog } from './primitives/ConfirmDialog';
+import { FriendActionDialog, type FriendActionKind } from './FriendActionDialog';
 import {
     shouldConfirmMessageDelete,
     buildDeleteConfirmCopy,
@@ -185,6 +196,7 @@ import { findLastEditableOwnMessage, shouldOpenEditorOnArrowUp } from '../utils/
 import {
     needsEveryoneConfirm, massMentionOf, isBigRoom, createSendSpamTracker, createImpactSlot, ownRowKey, claimBigPasteChip, charCounter,
     SEND_SPAM_LINES, ARROW_UP_NOTHING_LINES, BIG_PASTE_LINES, ON_THE_HOUR_LINES, firstTodayPool,
+    FIRST_TODAY_CHANCE, RARE_SEND_LINE_CHANCE, RARE_SEND_CHIME_CHANCE, RARE_SEND_LINES, rollRare, pickLine,
     type SpamStage,
 } from '../utils/composerFun';
 import { claimFirstSendOfDay, claimOnTheHour } from '../utils/composerFunLedger';
@@ -382,15 +394,6 @@ function emojiSelectionToToken(emoji: EmojiSelection): string | null {
     return null;
 }
 
-/**
- * The `:query` autocomplete's result list, with this server's custom emojis
- * merged in. Custom matches sort ahead of native ones on an equal-quality
- * match (exact/prefix) — see docs/custom-emoji-design.md: ":part" should
- * offer ":partyblob:" before ":party_popper:" since it's the server's own
- * emoji, not an arbitrary tie-break. Native-only `searchEmoji` is untouched
- * (EmojiPicker.tsx has no knowledge of per-server data); the merge lives
- * here because ChatPane is the one place that already resolved it.
- */
 /** Reaction-pill glyph size. Deliberately larger than the pill's 13px text:
  *  the emoji is the content and the count is an annotation, so tying them to
  *  one font-size (which `1em` did) is what made reactions read as small. */
@@ -931,36 +934,6 @@ export function ReactionPill({
             )}
         </span>
     );
-}
-
-function searchEmojiWithCustom(query: string, customEmojis: ServerEmoji[], personal: { id: string; name: string }[] = [], limit = 8): EmojiSuggestion[] {
-    const q = query.toLowerCase();
-    // The user's own My Emojis first: they are theirs, and usable in every chat.
-    const personalMatches: EmojiSuggestion[] = personal
-        .filter(e => e.name.includes(q))
-        .sort((a, b) => (a.name.startsWith(q) ? 0 : 1) - (b.name.startsWith(q) ? 0 : 1) || a.name.localeCompare(b.name))
-        .slice(0, limit)
-        .map(e => ({ id: e.id, native: '', name: e.name, personal: true }));
-    const customMatches: EmojiSuggestion[] = customEmojis
-        .filter(e => e.name.includes(q))
-        .sort((a, b) => {
-            // Prefix matches first, then alphabetical — same tiering shape
-            // searchEmoji itself uses for the native dataset.
-            const aPrefix = a.name.startsWith(q) ? 0 : 1;
-            const bPrefix = b.name.startsWith(q) ? 0 : 1;
-            return aPrefix - bPrefix || a.name.localeCompare(b.name);
-        })
-        .slice(0, Math.max(0, limit - personalMatches.length))
-        .map(e => ({
-            id: e.emoji_id,
-            native: '',
-            name: e.name,
-            custom: { attachmentId: e.attachment_id, keyB64: e.key_b64, nonceB64: e.nonce_b64 },
-        }));
-    const mine = [...personalMatches, ...customMatches];
-    if (mine.length >= limit) return mine;
-    const native = searchEmoji(query, limit - mine.length);
-    return [...mine, ...native];
 }
 
 /**
@@ -1713,52 +1686,8 @@ interface ChatPaneProps {
      *  message's own (client-decrypted) text pre-filled as evidence —
      *  the "Report Message" context-menu action. Omitted → that action
      *  is hidden (e.g. no report affordance wired up for this surface yet). */
-    onReport?: (userId: string, username: string, snippet?: string) => void;
+    onReport?: (userId: string, username: string, snippet?: string, message?: ReportedMessageRef) => void;
 }
-
-const ConfirmDialog: React.FC<{
-    title: string;
-    message: string;
-    confirmLabel?: string;
-    danger?: boolean;
-    showDeleteDataCheckbox?: boolean;
-    onConfirm: (deleteData?: boolean) => void;
-    onCancel: () => void;
-}> = ({ title, message, confirmLabel = 'Confirm', danger = false, showDeleteDataCheckbox = false, onConfirm, onCancel }) => {
-    const [deleteData, setDeleteData] = useState(false);
-    return (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(4px)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <div className="bg-cl-deep border border-white/10 rounded-2xl shadow-2xl fade-pop-enter overflow-hidden" style={{ width: '400px', padding: '32px' }}>
-                <h2 className="text-xl font-bold text-white mb-2" style={{ marginTop: 0 }}>{title}</h2>
-                <p className="text-cl-muted" style={{ fontSize: '0.9rem', lineHeight: 1.5, marginBottom: '24px' }}>{message}</p>
-                {showDeleteDataCheckbox && (
-                    <div className="mb-6">
-                        <ClCheckbox
-                            checked={deleteData}
-                            onChange={(v) => setDeleteData(v)}
-                            label="Delete all local chat history forever"
-                        />
-                    </div>
-                )}
-                {/* flex:1 goes on wrapper divs, not ClButton's `style` — see the
-                    fullWidth comment on the sidebarBlockConfirm buttons in
-                    Dashboard.tsx for why. */}
-                <div style={{ display: 'flex', gap: '12px' }}>
-                    <div style={{ flex: 1 }}>
-                        <ClButton variant="ghost" fullWidth onClick={onCancel}>Cancel</ClButton>
-                    </div>
-                    <div style={{ flex: 1 }}>
-                        <ClButton variant={danger || deleteData ? 'danger' : 'primary'} fullWidth onClick={() => onConfirm(showDeleteDataCheckbox ? deleteData : undefined)}>
-                            {deleteData ? 'Delete & Close' : confirmLabel}
-                        </ClButton>
-                    </div>
-                </div>
-            </div>
-        </div>
-    );
-};
-
-
 
 /**
  * Attachments above this size decrypt automatically on first view only, then
@@ -1977,19 +1906,10 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
     // (empty-send crash, write-then-erase, and anything added later). They all
     // go through here so a second egg can't stomp the first one's line
     // mid-display, and so the restore timer is never double-scheduled.
-    const phTimer = useRef(0);
-    const flashPlaceholder = useCallback((line: string, ms = 2400) => {
-        const el = inputRef.current;
-        if (!el) return;
-        window.clearTimeout(phTimer.current);
-        el.setAttribute('placeholder', line);
-        phTimer.current = window.setTimeout(() => {
-            // Drop the override and let React's own placeholder prop win again
-            // on the next render.
-            inputRef.current?.removeAttribute('placeholder');
-        }, ms);
-    }, []);
-    useEffect(() => () => window.clearTimeout(phTimer.current), []);
+    // State-driven (see useFlashedPlaceholder): the override expires back to the
+    // normal placeholder prop. It must NOT delete the DOM attribute -- React
+    // never rewrites an unchanged prop, so the placeholder would stay gone.
+    const [flashedPlaceholder, flashPlaceholder] = useFlashedPlaceholder();
 
     /** A click on the greyed-out send button (nothing to send). Counted by the
      *  spam tracker; only the 5th-in-2s click and the escalation steps after it
@@ -2040,9 +1960,11 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         try { replayClass(row.closest('[data-chat-feed]'), 'cl-feed-nudge'); } catch { /* cosmetic */ }
     };
 
-    /** Clock-gated touches on a NEW send (never an edit): the hour chime and the
-     *  first-send-of-the-day ripple. Reads the clock and the device-local ledger;
-     *  nothing about the message. Never throws into the send path. */
+    const rareSendFired = useRef(false);
+    /** Touches on a NEW send (never an edit): the hour chime, an occasional
+     *  first-send-of-the-day ripple, and the very rare ones. Reads the clock, the
+     *  device-local ledger and dice; nothing about the message. Never throws into
+     *  the send path. */
     const runSendTouches = () => {
         try {
             const now = new Date();
@@ -2053,11 +1975,22 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                 funLater(() => setSendChime(0), 1300);
                 line = ON_THE_HOUR_LINES[now.getHours() % ON_THE_HOUR_LINES.length];
             }
-            if (claimFirstSendOfDay(now)) {
+            // Claimed every day either way, so a miss can't re-roll on the next send.
+            if (claimFirstSendOfDay(now) && rollRare(FIRST_TODAY_CHANCE)) {
                 setComposerRipple(c => c + 1);
                 funLater(() => setComposerRipple(0), 1300);
-                const pool = firstTodayPool(now);
-                line = line ?? pool[now.getDate() % pool.length];
+                line = line ?? pickLine(firstTodayPool(now));
+            }
+            // At most one rare touch a session, and never on top of the two above.
+            if (!line && !rareSendFired.current) {
+                if (rollRare(RARE_SEND_LINE_CHANCE)) {
+                    rareSendFired.current = true;
+                    line = pickLine(RARE_SEND_LINES);
+                } else if (rollRare(RARE_SEND_CHIME_CHANCE)) {
+                    rareSendFired.current = true;
+                    setSendChime(c => c + 1);
+                    funLater(() => setSendChime(0), 1300);
+                }
             }
             // After the composer has cleared, so the line is what shows.
             if (line) { const l = line; funLater(() => flashPlaceholder(l), 60); }
@@ -2295,6 +2228,13 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
      *  alarming red error card. Hydrated from localStorage on every chat open so
      *  the placeholder appears immediately without an extra 404 round-trip. */
     const [removedAttachmentMsgIds, setRemovedAttachmentMsgIds] = useState<Set<string>>(new Set());
+    // Join/leave lines this user removed from their own view (client-only lines;
+    // utils/systemRowDelete.ts). Per account, encrypted at rest.
+    const [hiddenSystemRowIds, setHiddenSystemRowIds] = useState<string[]>([]);
+    useEffect(() => {
+        const uid = user?.user_id;
+        setHiddenSystemRowIds(uid ? parseHiddenSystemRows(secureLocalStore.getItem(hiddenSystemRowsKey(uid))) : []);
+    }, [user?.user_id]);
     /** AbortControllers for in-flight manual decrypts so the Cancel button can stop them. */
     const decryptAbortRef = useRef<Map<string, AbortController>>(new Map());
     const pagination = useMessagePagination(messages, activeChat?.id);
@@ -2392,7 +2332,9 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
     // Tracks where each row's mousedown landed, so onRowClick can tell a tap
     // apart from a drag. Single ref shared across rows is fine — only one row
     // can be receiving a drag at a time.
-    const rowMouseDownRef = useRef<{ x: number; y: number } | null>(null);
+    const rowMouseDownRef = useRef<{ x: number; y: number; activation?: boolean } | null>(null);
+    // Window-focus tracking for "this click only focused the app" (idempotent, installs once).
+    useEffect(() => { installWindowActivationTracking(); }, []);
     /** True for the instant a pointer press is being dispatched on a message row —
      *  see the row's onFocus for why a mouse-driven focus must not pin the bar. */
     const rowPointerPressRef = useRef(false);
@@ -2669,8 +2611,9 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
     const blockedByEmbed = isServerChannel && !canEmbed && hasUrlInInput;
     // ────────────────────────────────────────────────────────────────────────
     const [sentFriendRequests, setSentFriendRequests] = useState<Set<string>>(new Set());
-    const [confirmDialog, setConfirmDialog] = useState<{
-        title: string; message: string; confirmLabel?: string; danger?: boolean; showDeleteDataCheckbox?: boolean; onConfirm: (deleteData?: boolean) => void;
+    /** Pending block / remove-friend confirmation from the DM header menu (FriendActionDialog). */
+    const [friendAction, setFriendAction] = useState<{
+        kind: FriendActionKind; userId: string; username: string; onConfirm: () => void;
     } | null>(null);
     /** Pending message deletion awaiting the shared ConfirmDialog. */
     const [pendingDelete, setPendingDelete] = useState<{ msgId: string; copy: DeleteConfirmCopy } | null>(null);
@@ -2796,6 +2739,33 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
     // A hand-typed ":name:" that was never selected stays plain text, same
     // "gracefully degrades, no data loss" rule buildWireText documents.
     const emojiTokenMapRef = useRef<Record<string, string>>({});
+    // Display text -> wire text, the ONE place the composer's `@name` / `:name:`
+    // become tokens (the big-room check and the real send must agree). Mentions,
+    // then emoji the person PICKED (emojiTokenMapRef), then emoji they merely
+    // TYPED - resolved from My Emojis and this channel's server so `:name:` +
+    // Enter sends the emoji exactly as picking it would. Order and ambiguity
+    // rules: utils/composerEmojiShortcodes.ts.
+    const toWireText = (display: string): string => {
+        const have = new Set(personalEmojis().store.ids());
+        return composerToWire(
+            display,
+            { mentions: mentionTokenMapRef.current, picked: emojiTokenMapRef.current },
+            {
+                personal: myEmojiEntries.filter(e => have.has(e.id)),
+                server: serverEmojis,
+                // Safety net for a complete standard `:name:` that was pasted or
+                // never converted live (utils/composerShortcodeTyping).
+                nativeLookup: t => lookupNativeShortcode(getNativeShortcodeIndex(), t),
+            },
+        );
+    };
+    // Typing the closing colon of a complete known name converts it in the box.
+    const convertTypedShortcode = useComposerShortcodes({ serverEmojis, myEmojiEntries, emojiTokenMapRef, setInputText });
+    // A pick is remembered per conversation: a `:name:` picked in one server
+    // must never leak into another chat's send (stale-token bug), and the
+    // composer's draft survives a switch as plain `:name:` text, which the
+    // typed-shortcode pass above resolves fresh.
+    useEffect(() => { emojiTokenMapRef.current = {}; }, [draftConvKey]);
     // ── #channel links (utils/channelRefs.ts) ──────────────────────────────
     // The `#` picker: same popover + keys as `@`, server channels only. The
     // textarea keeps the readable `#name`; channelRefMapRef (name -> id) is
@@ -3106,7 +3076,8 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
 
     // Build deviceId → username map for the active conversation
     useEffect(() => {
-        if (!token || !deviceId || !activeChat?.id) return;
+        // A server channel's id is not a conversation id: the roster route 403s for it.
+        if (!token || !deviceId || !activeChat?.id || !hasConversationDeviceRoster({ id: activeChat.id, type: activeChat.type })) return;
         const cid = activeChat.id;
         const isFirstFetch = !fetchedChatIds.current.has(cid);
         // Gate message rendering on first visit to this DM/group so the user
@@ -3176,7 +3147,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         }).catch(() => {
             if (isFirstFetch) setChatLoading(false);
         });
-    }, [token, deviceId, activeChat?.id]);
+    }, [token, deviceId, activeChat?.id, activeChat?.type]);
 
     // ── Lazy username/avatar resolver ────────────────────────────────────────
     // Catches the case where a message arrives from a user we haven't already
@@ -3247,6 +3218,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
     useEffect(() => {
         if (!avatarUpdatedEvent || !activeChat?.id || !token || !deviceId) return;
         const { user_id, avatar_url: newAttachmentId } = avatarUpdatedEvent;
+        const hasRoster = hasConversationDeviceRoster({ id: activeChat.id, type: activeChat.type });
 
         // Patch the per-user map immediately (cheap, synchronous). The session
         // cache is patched too, or the next remount would seed the stale id
@@ -3261,6 +3233,9 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         // Refetch the device → avatar map so message bubbles keyed by
         // sender_device_id pick up the new avatar too. The endpoint returns
         // a small JSON list (one row per device); cost is negligible.
+        // Channels have no conversation roster (it would 403); the per-user
+        // patch above already covers them.
+        if (!hasRoster) return;
         axios.get(apiUrl`/conversations/${activeChat.id}/devices`, {
             headers: { Authorization: `Bearer ${token}`, 'x-device-id': deviceId },
         }).then(res => {
@@ -3276,7 +3251,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
             setDeviceToAvatar(prev => mergeIfChanged(prev, avatarMap));
             setUserIdToAvatar(prev => mergeIfChanged(prev, userAvatarMap));
         }).catch(() => { /* not fatal — userIdToAvatar patch above still applied */ });
-    }, [avatarUpdatedEvent, activeChat?.id, token, deviceId]);
+    }, [avatarUpdatedEvent, activeChat?.id, activeChat?.type, token, deviceId]);
 
     // Pagination resets automatically inside useMessagePagination when activeChat.id changes.
 
@@ -3922,11 +3897,15 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         // ── :emoji: autocomplete detection ────────────────────────────────────
         const cursor = (e.target as HTMLTextAreaElement).selectionStart ?? val.length;
         const before = val.slice(0, cursor);
+        // The closing colon of a complete `:name:` turns it into the emoji right here.
+        convertTypedShortcode(val, cursor, e.target instanceof HTMLTextAreaElement ? e.target : null);
         // Match a lone colon followed by 2+ word chars with no space since it
-        const triggerMatch = before.match(/:([a-z0-9_+-]{2,})$/);
+        const triggerMatch = before.match(/:([a-z0-9_+-]{2,})$/i);
         if (triggerMatch) {
             const query = triggerMatch[1];
-            const results = searchEmojiWithCustom(query, serverEmojis, myEmojiEntries);
+            const results = searchEmojiWithCustom(query, serverEmojis, myEmojiEntries, {
+                availablePersonalIds: new Set(personalEmojis().store.ids()),
+            });
             if (results.length > 0) {
                 setEmojiSuggestions(results);
                 setEmojiQueryRange({ start: cursor - triggerMatch[0].length, end: cursor });
@@ -4400,6 +4379,10 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
             }
         }
         const safeUUID = crypto.randomUUID();
+        // Message franking: the plaintext file's SHA-256 rides in the (encrypted) content
+        // so a reported copy of the file can be checked against what was sent. Skipped
+        // for very large files (the message is then reportable as unverified only).
+        const fileSha256 = await hashFileForCommitment(file);
         const content: ClientContent = {
             client_msg_id: safeUUID,
             type: 'attachment',
@@ -4410,10 +4393,13 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
             file_key_b64: keyB64,
             file_nonce_b64: ivB64,
             enc_alg: 'aes256gcm',
-            chunk_size: 0
+            chunk_size: 0,
+            ...(fileSha256 ? { content_sha256_b64: fileSha256 } : {}),
         };
+        // Message franking (utils/franking.ts): seal kf inside the payload, send c beside it.
+        const franked = await frankForSend(JSON.stringify(content), { contextKind: 'dm', contextId: activeChat.id, senderUserId: user?.user_id, senderDeviceId: deviceId });
         // RC-2: address exactly the devices that got wrapped.
-        const { ciphertext_b64, recipient_device_ids } = await encryptAndAddress(JSON.stringify(content), user!.user_id, devices, deviceId ?? undefined);
+        const { ciphertext_b64, recipient_device_ids } = await encryptAndAddress(franked.contentJson, user!.user_id, devices, deviceId ?? undefined);
 
         const sendRes = await axios.post(`${API_BASE}/messages/send`, {
             conversation_id: activeChat.id,
@@ -4421,9 +4407,11 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
             envelope_type: 'signal_chat',
             ciphertext_b64,
             sent_at_client: new Date().toISOString()
-        }, { headers: { Authorization: `Bearer ${token}`, 'x-device-id': deviceId } });
+        }, { headers: { Authorization: `Bearer ${token}`, 'x-device-id': deviceId, ...frankingHeaders(franked) } });
         // The server's timestamp: this row's position and time, as everyone else sees it.
         const serverTs = typeof sendRes.data?.received_at_server === 'string' ? sendRes.data.received_at_server as string : undefined;
+        const partialNotice = backlogPartialNotice(sendRes.data);
+        if (partialNotice) toast.push({ kind: 'info', ...partialNotice });
 
         // The sender shows their own file straight from the picked File (no
         // re-download, no decrypt) — registered in the shared cache so a later
@@ -4573,6 +4561,8 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
 
         // ── Steps 4–7: Build and post the channel message ────────────────────
         const safeUUID = crypto.randomUUID();
+        // Message franking: the plaintext file's SHA-256 (see the DM upload above).
+        const fileSha256 = await hashFileForCommitment(file);
         const contentJson = JSON.stringify({
             client_msg_id: safeUUID,
             type: 'attachment',
@@ -4584,10 +4574,12 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
             file_nonce_b64: ivB64,
             enc_alg: 'aes256gcm',
             chunk_size: 0,
+            ...(fileSha256 ? { content_sha256_b64: fileSha256 } : {}),
         });
+        const franked = await frankForSend(contentJson, { contextKind: 'channel', contextId: channelId, senderUserId: user?.user_id, senderDeviceId: deviceId });
 
         const { epoch, nonce_b64, ciphertext_b64: channelCt, signature_b64 } =
-            await window.electronAPI!.encryptChannelMessage(contentJson, channelId, { user_id: user?.user_id, device_id: deviceId });
+            await window.electronAPI!.encryptChannelMessage(franked.contentJson, channelId, { user_id: user?.user_id, device_id: deviceId });
 
         const resp = await axios.post(apiUrl`/channels/${channelId}/messages`, {
             sender_device_id: deviceId,
@@ -4595,7 +4587,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
             nonce_b64,
             ciphertext_b64: channelCt,
             signature_b64,
-        }, { headers: { Authorization: `Bearer ${token}`, 'x-device-id': deviceId } });
+        }, { headers: { Authorization: `Bearer ${token}`, 'x-device-id': deviceId, ...frankingHeaders(franked) } });
 
         const content = JSON.parse(contentJson);
         // Key objectUrls by the SAME id that will become msg.id in the channel
@@ -4661,9 +4653,9 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         // (delete-others requires MANAGE_MESSAGES, edit must be self).
         if (activeChannel) {
             const channelId = activeChannel.channel_id;
-            const contentJson = await serializeForSend(content, personalEmojis().store);
+            const franked = await frankForSend(await serializeForSend(content, personalEmojis().store), { contextKind: 'channel', contextId: channelId, senderUserId: user?.user_id, senderDeviceId: deviceId });
             const { epoch, nonce_b64, ciphertext_b64, signature_b64 } =
-                await window.electronAPI!.encryptChannelMessage(contentJson, channelId, { user_id: user?.user_id, device_id: deviceId });
+                await window.electronAPI!.encryptChannelMessage(franked.contentJson, channelId, { user_id: user?.user_id, device_id: deviceId });
 
             // Build action metadata so the server can perm-gate without
             // reading the ciphertext. Only sent for action types — normal
@@ -4683,7 +4675,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
 
             const postChannel = () => axios.post(apiUrl`/channels/${channelId}/messages`,
                 body, {
-                    headers: { Authorization: `Bearer ${token}`, 'x-device-id': deviceId },
+                    headers: { Authorization: `Bearer ${token}`, 'x-device-id': deviceId, ...frankingHeaders(franked) },
                     ...(opts?.bounded ? { timeout: SEND_POST_TIMEOUT_MS } : {}),
                     ...(opts?.signal ? { signal: opts.signal } : {}),
                 });
@@ -4706,7 +4698,8 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         // while typing when there is one — single use either way.
         const devices = await takeRecipients(activeChat.id);
         // RC-2: address exactly the devices that got wrapped.
-        const { ciphertext_b64, recipient_device_ids } = await encryptAndAddress(await serializeForSend(content, personalEmojis().store), user!.user_id, devices, deviceId ?? undefined);
+        const franked = await frankForSend(await serializeForSend(content, personalEmojis().store), { contextKind: 'dm', contextId: activeChat.id, senderUserId: user?.user_id, senderDeviceId: deviceId });
+        const { ciphertext_b64, recipient_device_ids } = await encryptAndAddress(franked.contentJson, user!.user_id, devices, deviceId ?? undefined);
         const postDm = () => axios.post(`${API_BASE}/messages/send`, {
             conversation_id: activeChat.id,
             recipient_device_ids,
@@ -4714,7 +4707,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
             ciphertext_b64,
             sent_at_client: new Date().toISOString()
         }, {
-            headers: { Authorization: `Bearer ${token}`, 'x-device-id': deviceId },
+            headers: { Authorization: `Bearer ${token}`, 'x-device-id': deviceId, ...frankingHeaders(franked) },
             ...(opts?.bounded ? { timeout: SEND_POST_TIMEOUT_MS } : {}),
             ...(opts?.signal ? { signal: opts.signal } : {}),
         });
@@ -4805,6 +4798,23 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         });
     }, [activeChat, user, deviceId, token, onMessageSent]);
 
+    /**
+     * "Share mine back" on a received safety-code card: only ever a click. Same
+     * code, same gate and same send as the modal's Send button. If the gate
+     * withholds the code, the modal is where the user can see why and fix it.
+     */
+    const handleShareSafetyCodeBack = useCallback(async (): Promise<ShareOwnCodeOutcome> => {
+        const outcome = await shareOwnContactCode({
+            myUserId,
+            myDeviceId: deviceId,
+            token,
+            getLocalIdentity: async () => window.electronAPI?.getLocalIdentity() ?? null,
+            send: handleSendSafetyNumber,
+        });
+        if (outcome === 'needs_review') setSafetyModalOpen(true);
+        return outcome;
+    }, [myUserId, deviceId, token, handleSendSafetyNumber, setSafetyModalOpen]);
+
     // Structural fact for the self-fan moment (utils/moments.ts): is a row yours.
     const isOwnRow = (m: { sender_user_id?: string | null; sender_device_id?: string | null }) =>
         m.sender_user_id ? m.sender_user_id === user?.user_id : myDeviceIds.has(m.sender_device_id ?? '');
@@ -4815,6 +4825,17 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
     const performDelete = async (msgId: string) => {
         // Removed confirm() as native dialogs in Electron break window focus hooks
         const target = messages.find(m => m.id === msgId);
+        // A client-only join/leave line: nothing exists server-side, so hide it
+        // from this user's view (persisted per account) instead of sending a delete.
+        if (systemRowDeleteMode(target, { canManageMessages, isServerChannel }) === 'local') {
+            const uid = user?.user_id;
+            if (uid) {
+                const next = addHiddenSystemRow(hiddenSystemRowIds, msgId);
+                setHiddenSystemRowIds(next);
+                secureLocalStore.setItem(`cipherline_hidden_system_rows_${uid}`, JSON.stringify(next));
+            }
+            return;
+        }
         await dispatchAction({ type: 'delete', target_id: msgId });
         // An explicit delete is the ONE place the server copy of a file goes.
         // Retention sweeps are per-device and local-only (Dashboard), so the
@@ -4842,7 +4863,10 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         }
         setPendingDelete({
             msgId: msg.id,
-            copy: buildDeleteConfirmCopy({ isOwnMessage }),
+            copy: buildDeleteConfirmCopy({
+                isOwnMessage,
+                localOnly: systemRowDeleteMode(messages.find(m => m.id === msg.id), { canManageMessages, isServerChannel }) === 'local',
+            }),
         });
     };
 
@@ -5218,8 +5242,15 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
             const mentionsEveryone = (c.mentions ?? []).some(m => m.type === 'everyone' || m.type === 'here');
             const containsUrl = /https?:\/\/[^\s<>"{}|\\^`[\]]+/.test(c.text ?? '');
             void deliveryQueue.enqueue(deliveryKey('channel', job.conversationId), {
-                prepare: async () => { const contentJson = await contentJsonP; return trackActivity('send:encrypt', () => window.electronAPI!.encryptChannelMessage(contentJson, job.conversationId, { user_id: user?.user_id, device_id: deviceId })); },
-                post: async ({ epoch, nonce_b64, ciphertext_b64, signature_b64 }) => {
+                prepare: async () => {
+                    const franked = await frankForSend(await contentJsonP, { contextKind: 'channel', contextId: job.conversationId, senderUserId: user?.user_id, senderDeviceId: deviceId });
+                    const enc = await trackActivity('send:encrypt', () => window.electronAPI!.encryptChannelMessage(franked.contentJson, job.conversationId, { user_id: user?.user_id, device_id: deviceId }));
+                    // The commitment travels beside the ciphertext, in the POST header.
+                    return { ...enc, franked };
+                },
+                post: async ({ epoch, nonce_b64, ciphertext_b64, signature_b64, franked }) => {
+                    // The commitment rides in a header; `headers` is this job's own object.
+                    Object.assign(headers, frankingHeaders(franked));
                     // An earlier attempt already landed (late) or the user discarded it.
                     if (wasDelivered(clientMsgId) || wasCancelled(clientMsgId)) return;
                     // A 429 waits out the server's window and tries again (the
@@ -5235,7 +5266,6 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                         ...(containsUrl ? { contains_url: true } : {}),
                     }, { headers, timeout: SEND_POST_TIMEOUT_MS })));
                     markDelivered(clientMsgId);
-                    noteMessageDelivered(user?.created_at, isSelfChat); // moments: a new account's first delivered message (account age + the fact only)
                     if (!isSelfChat) noteAchievementMessage(job.serverId ?? null); // achievements: local counters only
                     onPatchSentMessage?.('channel', job.conversationId, clientMsgId, {
                         send_state: null,
@@ -5253,10 +5283,13 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                 prepare: async () => {
                     const devices = await takeRecipients(job.conversationId);
                     // RC-2: address exactly the devices that got wrapped.
-                    const contentJson = await contentJsonP;
-                    return trackActivity('send:encrypt', () => encryptAndAddress(contentJson, user!.user_id, devices, deviceId ?? undefined));
+                    const franked = await frankForSend(await contentJsonP, { contextKind: 'dm', contextId: job.conversationId, senderUserId: user?.user_id, senderDeviceId: deviceId });
+                    const enc = await trackActivity('send:encrypt', () => encryptAndAddress(franked.contentJson, user!.user_id, devices, deviceId ?? undefined));
+                    // The commitment travels beside the ciphertext, in the POST header.
+                    return { ...enc, franked };
                 },
-                post: async ({ ciphertext_b64, recipient_device_ids }) => {
+                post: async ({ ciphertext_b64, recipient_device_ids, franked }) => {
+                    Object.assign(headers, frankingHeaders(franked));
                     if (wasDelivered(clientMsgId) || wasCancelled(clientMsgId)) return;
                     const resp = await trackActivity('send:post', () => withRateLimitRetry(() => axios.post(`${API_BASE}/messages/send`, {
                         conversation_id: job.conversationId,
@@ -5269,8 +5302,9 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                     // every recipient gets for this message. An older API does not
                     // return it; the row then simply stays where it is.
                     const serverTs = typeof resp.data?.received_at_server === 'string' ? resp.data.received_at_server : undefined;
+                    const partial = backlogPartialNotice(resp.data);
+                    if (partial) toast.push({ kind: 'info', ...partial });
                     markDelivered(clientMsgId);
-                    noteMessageDelivered(user?.created_at, isSelfChat); // moments: a new account's first delivered message (account age + the fact only)
                     if (!isSelfChat) noteAchievementMessage(null); // achievements: local counters only
                     onPatchSentMessage?.('dm', job.conversationId, clientMsgId, serverTs
                         ? { send_state: null, server_ts: serverTs, timestamp: clampFutureTimestamp(serverTs) }
@@ -5357,7 +5391,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         let bigRoomMass: 'everyone' | 'here' | null = null;
         if (activeChannel && !editingId && inputText.trim()) {
             try {
-                const wire = buildEmojiWireText(buildWireText(inputText, mentionTokenMapRef.current), emojiTokenMapRef.current);
+                const wire = toWireText(inputText);
                 const parsed = extractInviteCode(wire.trim()) ? [] : extractMentionsFromText(wire);
                 const memberCount = mentionMembers.length || null;
                 if (needsEveryoneConfirm({
@@ -5413,6 +5447,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         const releaseComposerEarly = () => {
             earlyReleased = true;
             sendTimestamps.current.push(Date.now()); // the rate limiter counts it NOW, not after the round trip
+            emojiTokenMapRef.current = {}; // picks belong to the message just sent
             setInputText('');
             setLoudInput(false);
             emptySendRef.current = 0;
@@ -5461,7 +5496,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                 // Transform display text (@label) → wire tokens (<@type:id:label>) before sending.
                 // For channel mode we have a full label→token map; for DM/group mode the map is
                 // populated with @everyone/@here only (no member list needed there).
-                const wireText = buildEmojiWireText(buildWireText(inputText, mentionTokenMapRef.current), emojiTokenMapRef.current);
+                const wireText = toWireText(inputText);
                 // #channel links: server channels only, and only the picked /
                 // seeded names still present in the final text.
                 const channelRefs = activeChannel ? collectChannelRefs(wireText, channelRefMapRef.current) : [];
@@ -5542,9 +5577,9 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                         releaseComposerEarly();
                         enqueueDelivery({ kind: 'channel', conversationId: activeChannel.channel_id, serverId: activeChannel.server_id, content: msgContent });
                     } else {
-                    const contentJson = await serializeForSend(msgContent, personalEmojis().store);
+                    const franked = await frankForSend(await serializeForSend(msgContent, personalEmojis().store), { contextKind: 'channel', contextId: activeChannel.channel_id, senderUserId: user?.user_id, senderDeviceId: deviceId });
                     const { epoch, nonce_b64, ciphertext_b64: channelCt, signature_b64 } =
-                        await trackActivity('send:encrypt', () => window.electronAPI!.encryptChannelMessage(contentJson, activeChannel.channel_id, { user_id: user?.user_id, device_id: deviceId }));
+                        await trackActivity('send:encrypt', () => window.electronAPI!.encryptChannelMessage(franked.contentJson, activeChannel.channel_id, { user_id: user?.user_id, device_id: deviceId }));
                     const resp = await trackActivity('send:post', () => axios.post(apiUrl`/channels/${activeChannel.channel_id}/messages`, {
                         sender_device_id: deviceId,
                         epoch,
@@ -5554,7 +5589,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                         ...(replyingId ? { reply_to_id: replyingId } : {}),
                         ...(mentionsEveryone ? { mentions_everyone: true } : {}),
                         ...(containsUrl ? { contains_url: true } : {}),
-                    }, { headers: { Authorization: `Bearer ${token}`, 'x-device-id': deviceId } }));
+                    }, { headers: { Authorization: `Bearer ${token}`, 'x-device-id': deviceId, ...frankingHeaders(franked) } }));
                     // Optimistic append for the sender's own view.
                     // id = server DB row id so the WS dedup check can match it.
                     // content.client_msg_id = safeUUID as secondary dedup key.
@@ -5597,14 +5632,15 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                         // Its own recipients — never the files' (see takeRecipients above).
                         const devices = await takeRecipients(activeChat.id);
                         // RC-2: address exactly the devices that got wrapped.
-                        const { ciphertext_b64, recipient_device_ids } = await trackActivity('send:encrypt', async () => encryptAndAddress(await serializeForSend(content, personalEmojis().store), user!.user_id, devices, deviceId ?? undefined));
+                        const franked = await frankForSend(await serializeForSend(content, personalEmojis().store), { contextKind: 'dm', contextId: activeChat.id, senderUserId: user?.user_id, senderDeviceId: deviceId });
+                        const { ciphertext_b64, recipient_device_ids } = await trackActivity('send:encrypt', async () => encryptAndAddress(franked.contentJson, user!.user_id, devices, deviceId ?? undefined));
                         const sendRes = await trackActivity('send:post', () => axios.post(`${API_BASE}/messages/send`, {
                             conversation_id: activeChat.id,
                             recipient_device_ids,
                             envelope_type: 'signal_chat',
                             ciphertext_b64,
                             sent_at_client: new Date().toISOString()
-                        }, { headers: { Authorization: `Bearer ${token}`, 'x-device-id': deviceId } }));
+                        }, { headers: { Authorization: `Bearer ${token}`, 'x-device-id': deviceId, ...frankingHeaders(franked) } }));
                         const serverTs = typeof sendRes.data?.received_at_server === 'string' ? sendRes.data.received_at_server as string : undefined;
                         onMessageSent(serverTs ? { ...sentMsg, server_ts: serverTs, timestamp: clampFutureTimestamp(serverTs) } : sentMsg);
                     }
@@ -5616,6 +5652,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                     // other send leaves it empty.
                     const resumeDraft = editingId ? preEditDraftRef.current : '';
                     if (editingId) preEditDraftRef.current = '';
+                    emojiTokenMapRef.current = {}; // picks belong to the message just sent
                     setInputText(resumeDraft);
                     setLoudInput(false);
                     emptySendRef.current = 0;
@@ -5674,6 +5711,11 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                     message: 'Your device is still waiting for this channel\'s encryption key — it arrives automatically once another member is online.',
                 });
                 if (activeChannel) onChannelKeyMissing?.(activeChannel.server_id, activeChannel.channel_id);
+            } else if (uploadQuotaRefusal(err)) {
+                // The account's rolling upload limit (not a failure of the send path):
+                // say so in plain words; text and smaller files still go through.
+                const q = uploadQuotaRefusal(err)!;
+                toast.push({ kind: 'error', title: q.title, message: q.message });
             } else if (status === 403) {
                 toast.push({
                     kind: 'error',
@@ -5881,7 +5923,8 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         // Known-removed ids are hydrated from localStorage on chat open, so
         // these never even flash before disappearing; a newly-detected 404
         // marks the id and the next render filters it out.
-        !(m.content?.type === 'attachment' && removedAttachmentMsgIds.has(m.id)),
+        !(m.content?.type === 'attachment' && removedAttachmentMsgIds.has(m.id))
+        && !(m.content?.type === 'system' && hiddenSystemRowIds.includes(m.id)),
     );
     /** Consecutive "waiting on this channel's key" rows render as ONE compact
      *  row (count on the run's first row, 0 = hidden), never across a
@@ -5970,6 +6013,8 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
 
     const handleAddReaction = (msgId: string, emoji: string) => {
         const msg = messages.find(m => m.id === msgId);
+        // Member-event lines take no reactions, by any entry point (the server refuses too).
+        if (msg?.content?.type === 'system') return;
         const ids = Array.isArray(msg?.reactions?.[emoji]) ? msg!.reactions![emoji] as string[] : [];
         // Shared with the pill's own `hasMine` — see isMyReaction for why
         // these must not be two separate expressions.
@@ -6294,7 +6339,10 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                 : `[Attachment: ${msg.content?.filename ?? 'file'}, sent ${new Date(sentMsSafe).toLocaleString()}]`;
             groups.push([{
                 icon: <Flag />, label: 'Report Message', danger: true,
-                onSelect: () => onReport(msg.sender_user_id, resolvedName, snippet),
+                // The message row itself rides along (not just the excerpt) so the report
+                // can carry its franking proof: the API then verifies the message instead of
+                // trusting this client's text (utils/franking.ts).
+                onSelect: () => onReport(msg.sender_user_id, resolvedName, snippet, { content: msg.content, franking: msg.franking, sender_user_id: msg.sender_user_id, attachmentUrl: objectUrls[msg.id] ?? null }),
             }]);
         }
 
@@ -6315,6 +6363,33 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
             items.push(...group);
         });
 
+        msgContextMenu.open(e, items);
+    };
+
+    /**
+     * Right-click on a member joined / left / kicked / banned line. React (a
+     * stored line, with ADD_REACTIONS) and Delete: a stored server line is
+     * deleted for everyone and needs MANAGE_MESSAGES (the server enforces it);
+     * a line drawn from the live push only (no stored row, the API's write flag
+     * off) can only be removed from this user's view. No menu when there is
+     * nothing to offer.
+     */
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
+    const openMemberEventMenu = (e: React.MouseEvent, msg: any) => {
+        const mode = systemRowDeleteMode(msg, { canManageMessages, isServerChannel });
+        const items: ContextMenuItem[] = [];
+        if (mode) {
+            items.push({
+                icon: <Trash2 />,
+                label: systemRowDeleteLabel(mode),
+                danger: true,
+                onSelect: () => requestDelete(msg, { entryPoint: 'contextmenu', shiftKey: false }, false),
+            });
+        }
+        if (items.length === 0) return;
+        e.preventDefault();
+        (e.currentTarget as HTMLElement).focus?.();
+        msgCtxOpenIdRef.current = msg.id ?? null;
         msgContextMenu.open(e, items);
     };
 
@@ -6368,7 +6443,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         requestDelete, startEdit, beginReply, handleAddReaction, handleContextMenu, jumpToMessage, handleMentionClick,
         openUndeliveredMenu, retrySend, discardUnsent, onNavigateToChannel, retryReaction,
         onKeyChangeResolved, onPinMessage, onUnpinMessage, onServerSaveMessage, onServerUnsaveMessage,
-        onOpenProfile, onInviteJoin, onInviteCodeClick,
+        onOpenProfile, onInviteJoin, onInviteCodeClick, handleShareSafetyCodeBack,
         saveMessage: retention.saveMessage, unsaveMessage: retention.unsaveMessage,
         saveAttachment: retention.saveAttachment, unsaveAttachment: retention.unsaveAttachment,
     });
@@ -6425,6 +6500,12 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         }
         return { byId, byClientId };
     }, [messages]);
+    // From `messages`, not `displayMessages`: a chat search must not make a
+    // settled safety-code card offer "Share mine back" again.
+    const settledSafetyCards = useMemo(() => settledSafetyCardIds(
+        messages as { id: string; sender_user_id?: string | null; sender_device_id?: string | null; content?: { type?: string } | null }[],
+        m => (m.sender_user_id ? m.sender_user_id === user?.user_id : myDeviceIds.has(m.sender_device_id ?? '')),
+    ), [messages, user?.user_id, myDeviceIds]);
 
     return (
         <div
@@ -6758,12 +6839,9 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                         icon: <UserMinus />, label: 'Remove Friend',
                                         onSelect: () => {
                                             if (!otherId) return;
-                                            setConfirmDialog({
-                                                title: 'Remove Friend',
-                                                message: `Remove ${activeChat.title} as a friend? You'll no longer be able to send messages, but your chat history will remain visible.`,
-                                                confirmLabel: 'Remove', danger: true,
+                                            setFriendAction({
+                                                kind: 'unfriend', userId: otherId, username: activeChat.title || '',
                                                 onConfirm: async () => {
-                                                    setConfirmDialog(null);
                                                     try {
                                                         await axios.delete(apiUrl`/friends/${otherId}`, { headers: { Authorization: `Bearer ${token}` } });
                                                         setIsFriend(false);
@@ -6824,12 +6902,9 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                         icon: <Ban />, label: 'Block', danger: true,
                                         onSelect: () => {
                                             if (!otherId) return;
-                                            setConfirmDialog({
-                                                title: 'Block User',
-                                                message: `Are you sure you want to block ${activeChat.title}? You will no longer receive messages from them.`,
-                                                confirmLabel: 'Block', danger: true,
+                                            setFriendAction({
+                                                kind: 'block', userId: otherId, username: activeChat.title || '',
                                                 onConfirm: async () => {
-                                                    setConfirmDialog(null);
                                                     try {
                                                         await axios.post(`${API_BASE}/friends/block`, { target_id: otherId }, { headers: { Authorization: `Bearer ${token}` } });
                                                         setIsFriend(false);
@@ -7125,6 +7200,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                             showEmojiPicker === msg.id ? (reactionPickerAnchor ?? 'open') : null,
                             objectUrls[msg.id], decryptErrors[msg.id], decryptingIds[msg.id], manualDecryptIds.has(msg.id),
                             replyTarget, rowCall, rowCall?.active ? callTick : 0, keyRun,
+                            settledSafetyCards.has(msg.id),
                         ];
                         return (
                         <MemoRow key={rowKey} deps={rowDeps} render={() => {
@@ -7135,7 +7211,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                             requestDelete, startEdit, beginReply, handleAddReaction, handleContextMenu, jumpToMessage, handleMentionClick,
                             openUndeliveredMenu, retrySend, discardUnsent, retryReaction,
                             onPinMessage, onUnpinMessage, onKeyChangeResolved, onServerSaveMessage, onServerUnsaveMessage,
-                            onInviteJoin,
+                            onInviteJoin, handleShareSafetyCodeBack: shareSafetyCodeBack,
                         } = rowLive;
                         const retention = {
                             saveMessage: rowLive.saveMessage, unsaveMessage: rowLive.unsaveMessage,
@@ -7187,10 +7263,8 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                             </div>
                         ) : null;
 
-                        // The confirmed + pending reaction chips under a row, as ONE
-                        // definition: ordinary messages and member-event system rows
-                        // ("X joined the server.") render the identical row, so waving
-                        // at a new member goes through the same pending/retry path.
+                        // The confirmed + pending reaction chips under a row. Member-event
+                        // system rows ("X joined the server.") never get these.
                         const reactionChips = () => (
                             rxView.reactions && Object.keys(rxView.reactions).length > 0 && (
                                         <div className="flex flex-wrap gap-1.5 mt-1.5">
@@ -7284,11 +7358,8 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                 const text = memberEventText(ev, id => userIdToUsername[id]);
                                 const isJoin = ev.event === 'member_join';
                                 const SysIcon = isJoin ? UserPlus : UserMinus;
-                                // A line drawn from the legacy `channel:system_event` has no
-                                // server row (the row-write flag is off): nothing to react to
-                                // or delete.
-                                const isEphemeral = isEphemeralMemberEventId(msg.id);
-                                const canReactHere = isServerChannel && canReactServer && !isEphemeral;
+                                // No reactions on these lines (owner, 2026-11-11; the server
+                                // refuses them too). Existing reaction data is never rendered.
                                 return (
                                     <React.Fragment key={rowKey}>
                                         {DateDivider}
@@ -7296,56 +7367,23 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                             id={`msg-${msg.id}`}
                                             data-system-row="member-event"
                                             className="group my-2 px-4"
+                                            tabIndex={-1}
+                                            // Owner, 2026-11-08: delete is on right-click only
+                                            // (no hover trash button). A stored line is deleted
+                                            // for everyone (MANAGE_MESSAGES, server-enforced).
+                                            onContextMenu={(e) => openMemberEventMenu(e, msg)}
                                         >
                                             <div className="flex items-center gap-3 select-none">
                                                 <div className="flex-1 h-px bg-white/[0.05]" />
-                                                <div className={`flex items-center gap-1.5 px-3 py-1 rounded-full border text-[11px] font-medium ${
+                                                <div data-member-event-pill className={`flex items-center gap-1.5 px-3 py-1 rounded-full border text-[11px] font-medium ${
                                                     isJoin ? 'bg-blue-500/[0.07] border-blue-500/20 text-blue-400/80'
                                                            : 'bg-white/[0.03] border-white/[0.06] text-cl-faint'
                                                 }`}>
                                                     <SysIcon className="w-3 h-3 flex-shrink-0" />
                                                     <span>{text}</span>
                                                 </div>
-                                                {canReactHere && (
-                                                    <button
-                                                        type="button"
-                                                        aria-label="React"
-                                                        title="React"
-                                                        className="w-5 h-5 flex items-center justify-center rounded text-cl-faint opacity-0 group-hover:opacity-100 focus-visible:opacity-100 hover:text-cl-lume transition-opacity"
-                                                        onClick={(e) => { setShowEmojiPicker(msg.id); setReactionPickerAnchor(e.currentTarget); }}
-                                                    >
-                                                        <SmilePlus className="w-3.5 h-3.5" />
-                                                    </button>
-                                                )}
-                                                {canManageMessages && !isEphemeral && (
-                                                    <button
-                                                        type="button"
-                                                        aria-label="Delete (moderator)"
-                                                        title="Delete (moderator)"
-                                                        className="w-5 h-5 flex items-center justify-center rounded text-cl-faint opacity-0 group-hover:opacity-100 focus-visible:opacity-100 hover:text-red-400 transition-opacity"
-                                                        onClick={(e) => requestDelete(msg, { entryPoint: e.detail === 0 ? 'msgbar-keyboard' : 'msgbar-mouse', shiftKey: e.shiftKey }, false)}
-                                                    >
-                                                        <Trash2 className="w-3.5 h-3.5" />
-                                                    </button>
-                                                )}
                                                 <div className="flex-1 h-px bg-white/[0.05]" />
                                             </div>
-                                            {!isEphemeral && <div className="flex justify-center">{reactionChips()}</div>}
-                                            {showEmojiPicker === msg.id && reactionPickerAnchor && (
-                                                <EmojiPickerPopover
-                                                    anchorEl={reactionPickerAnchor}
-                                                    customEmojis={serverEmojis}
-                                                    serverContext={!!emojiServerId}
-                                                    token={token}
-                                                    onEmojiSelect={(emoji) => {
-                                                        const key = emojiSelectionToToken(emoji);
-                                                        if (key) handleAddReaction(msg.id, key);
-                                                        setShowEmojiPicker(null);
-                                                        setReactionPickerAnchor(null);
-                                                    }}
-                                                    onClose={() => { pickerJustClosedRef.current = true; setShowEmojiPicker(null); setReactionPickerAnchor(null); }}
-                                                />
-                                            )}
                                         </div>
                                     </React.Fragment>
                                 );
@@ -7404,7 +7442,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                             return (
                                 <React.Fragment key={rowKey}>
                                     {DateDivider}
-                                    <div className="flex items-center gap-3 my-2 px-4 select-none">
+                                    <div className="group flex items-center gap-3 my-2 px-4 select-none">
                                         <div className="flex-1 h-px bg-white/[0.05]" />
                                         <div className={`flex items-center gap-1.5 px-3 py-1 rounded-full border text-[11px] font-medium ${
                                             isJoin  ? 'bg-blue-500/[0.07] border-blue-500/20 text-blue-400/80' :
@@ -7414,6 +7452,15 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                             {SysIcon && <SysIcon className="w-3 h-3 flex-shrink-0" />}
                                             <span>{sysText}</span>
                                         </div>
+                                        <button
+                                            type="button"
+                                            aria-label="Remove from my view"
+                                            title="Remove from my view"
+                                            className="w-5 h-5 flex items-center justify-center rounded text-cl-faint opacity-0 group-hover:opacity-100 focus-visible:opacity-100 hover:text-red-400 transition-opacity"
+                                            onClick={(e) => requestDelete(msg, { entryPoint: e.detail === 0 ? 'msgbar-keyboard' : 'msgbar-mouse', shiftKey: e.shiftKey }, true)}
+                                        >
+                                            <Trash2 className="w-3.5 h-3.5" />
+                                        </button>
                                         <div className="flex-1 h-px bg-white/[0.05]" />
                                     </div>
                                 </React.Fragment>
@@ -7622,7 +7669,10 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                 rowMouseDownRef.current = null;
                                 return;
                             }
+                            const activationClick = !!start.activation;
                             rowMouseDownRef.current = null;
+                            // Guard (c): this click only focused the app (owner, 2026-11-11) - the next one saves.
+                            if (activationClick) return;
                             const target = e.target as HTMLElement;
                             if (target.closest('button, a, input, textarea, video, audio, img, canvas')) return;
                             if (isTextLike) {
@@ -7646,7 +7696,8 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                             rowPointerPressRef.current = true;
                             setTimeout(() => { rowPointerPressRef.current = false; }, 0);
                             if (e.button !== 0) return;
-                            rowMouseDownRef.current = { x: e.clientX, y: e.clientY };
+                            // A click that only brings the window to the front never saves (utils/windowActivationClick.ts).
+                            rowMouseDownRef.current = { x: e.clientX, y: e.clientY, activation: mousedownIsActivationClick() };
                         };
 
                         // Highlight row if this message mentions the current user.
@@ -7669,7 +7720,9 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                             ? (user?.user_id ?? null)
                             : (msg.sender_user_id ?? null);
                         const avatarEl = showHeader ? (
-                            <EncryptedAvatar
+                            <AuthorHoverAvatar
+                                // Plays while the pointer is on this message's author NAME too.
+                                hoverKey={msg.id}
                                 attachmentId={resolvedAvatar}
                                 userId={authorUserId}
                                 token={token}
@@ -7820,6 +7873,9 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                             <span
                                                 className={`text-[14px] font-semibold leading-tight ${nameClickable ? 'cursor-pointer hover:brightness-125 transition-[filter]' : ''}`}
                                                 style={{ color: (msg.sender_user_id && memberRoleColors?.[msg.sender_user_id]) || 'white' }}
+                                                // Hovering the name plays this message's animated avatar.
+                                                onMouseEnter={() => enterAuthorName(msg.id)}
+                                                onMouseLeave={() => leaveAuthorName(msg.id)}
                                                 // Press = the open, one event early: start the
                                                 // profile + images now; the click joins them.
                                                 onPointerDown={nameClickable ? (e) => {
@@ -8144,6 +8200,10 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                                     ? (senderWarnings[msg.sender_user_id] ?? 'key_changed')
                                                     : null
                                             }
+                                            // 1:1 only, the same limit as the modal's Send: a safety
+                                            // code commits to one account, so it needs one other party.
+                                            onShareBack={activeChat.type === 'dm' ? shareSafetyCodeBack : undefined}
+                                            alreadySharedBack={settledSafetyCards.has(msg.id)}
                                         />
                                         );
                                     })() : (
@@ -8669,7 +8729,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                 <textarea
                                     data-chat-input
                                     placeholder={
-                                        keyMissing
+                                        flashedPlaceholder ?? (keyMissing
                                             ? (channelKeyCoolingOff
                                                 ? "Couldn't install channel key — retrying automatically…"
                                                 : 'Waiting for channel keys — they arrive automatically…')
@@ -8677,7 +8737,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                                 ? "You don't have permission to send messages in this channel"
                                                 : stagedFiles.length > 0
                                                     ? 'Add a caption…'
-                                                    : isSelfChat ? 'Message yourself…' : (lateNightPlaceholder ?? 'Message…')
+                                                    : isSelfChat ? 'Message yourself…' : (lateNightPlaceholder ?? 'Message…'))
                                     }
                                     value={inputText}
                                     onChange={handleInputTyping}
@@ -8773,7 +8833,8 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                             ) : (
                                                 <span className="text-[16px] leading-none">{s.native}</span>
                                             ),
-                                            label: `:${s.name.toLowerCase()}:`,
+                                            // Always the underscore shortcode: `:red_heart:`, never ":red heart:".
+                                            label: `:${s.shortcode ?? toShortcode(s.name)}:`,
                                             hint: s.personal ? 'My Emojis' : s.custom ? resolveCustomEmojiHint(emojiServerId, servers) : undefined,
                                             onSelect: () => insertEmojiSuggestion(s),
                                         }))}
@@ -9009,10 +9070,13 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                                 // Same clean-display-form rule as insertEmojiSuggestion: a
                                                 // custom pick inserts ":name:" and registers the wire-token
                                                 // substitution, rather than putting a raw UUID in the box.
-                                                const displayText = emoji.native ?? (emoji.id && emoji.name ? `:${emoji.name}:` : null);
+                                                // The name is its underscore shortcode (a name stored before the
+                                                // underscore rule never reaches the box with a space or dash).
+                                                const pickedName = emoji.name ? toShortcode(emoji.name) : '';
+                                                const displayText = emoji.native ?? (emoji.id && pickedName ? `:${pickedName}:` : null);
                                                 if (!displayText) { setShowInputEmojiPicker(false); return; }
-                                                if (!emoji.native && emoji.id && emoji.name) {
-                                                    emojiTokenMapRef.current[displayText] = `<:${emoji.name}:${emoji.id}>`;
+                                                if (!emoji.native && emoji.id && pickedName) {
+                                                    emojiTokenMapRef.current[displayText] = `<:${pickedName}:${emoji.id}>`;
                                                 }
                                                 const ta = inputRef.current;
                                                 if (ta) {
@@ -9119,15 +9183,15 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                 />
             )}
 
-            {/* Custom in-app confirm dialog */}
-            {confirmDialog && (
-                <ConfirmDialog
-                    title={confirmDialog.title}
-                    message={confirmDialog.message}
-                    confirmLabel={confirmDialog.confirmLabel}
-                    danger={confirmDialog.danger}
-                    onConfirm={confirmDialog.onConfirm}
-                    onCancel={() => setConfirmDialog(null)}
+            {/* Block / remove-friend confirmation (DM header menu). */}
+            {friendAction && (
+                <FriendActionDialog
+                    kind={friendAction.kind}
+                    userId={friendAction.userId}
+                    username={friendAction.username}
+                    token={token}
+                    onConfirm={friendAction.onConfirm}
+                    onClose={() => setFriendAction(null)}
                 />
             )}
 
@@ -9149,11 +9213,10 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                 />
             )}
 
-            {/* Message-delete confirmation. Uses the shared primitive (not the
-                local ConfirmDialog above) for the house exit animation. No
-                message → the compact, centred yes/no layout. */}
+            {/* Message-delete confirmation. No message → the compact, centred
+                yes/no layout. */}
             {pendingDelete && (
-                <SharedConfirmDialog
+                <ConfirmDialog
                     title={pendingDelete.copy.title}
                     confirmLabel={pendingDelete.copy.confirmLabel}
                     hint={<><span className="dlg-kbd" aria-hidden="true"><ArrowBigUp size={12} strokeWidth={2.4} /></span>{pendingDelete.copy.hint}</>}

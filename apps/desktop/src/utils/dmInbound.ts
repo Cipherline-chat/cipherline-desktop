@@ -37,6 +37,7 @@ import { classifyDecryptFailure, extractE2eeCode, isLegacyEnvelope } from './e2e
 import * as messageStore from './messageStore';
 import { secureLocalStore } from './secureLocalStore';
 import { serverOrderIndex } from './messageOrder';
+import { frankingFieldsAfterEdit, withoutFranking } from './franking';
 
 export type ThreadMap = messageStore.ThreadMap;
 /** One stored DM row (the shape the thread arrays hold). */
@@ -90,7 +91,7 @@ export function decryptFailureOutcome(error: unknown, priorStrikes: number): Dec
 
 /** Placeholder reasons that mean "decrypted fine, but unusable" rather than
  *  "could not be decrypted" — the row says "couldn't be shown" for these. */
-const NOT_SHOWABLE_REASONS = new Set(['malformed', 'unprocessable']);
+const NOT_SHOWABLE_REASONS = new Set(['malformed', 'unprocessable', 'sender_unbound']);
 
 /** The words a placeholder row (and its notification) shows for `reason`. */
 export function placeholderText(reason: unknown): string {
@@ -231,10 +232,13 @@ export function applyIncomingDmMessages(threads: ThreadMap, incoming: ThreadMap)
             if (type === 'edit') {
                 const i = currentThread.findIndex(t => t.id === m.content.target_id);
                 if (i !== -1 && isSameAuthor(currentThread[i], m)) {
+                    // The edited text is vouched for by the EDIT's own commitment,
+                    // never the original's (utils/franking.ts frankingFieldsAfterEdit).
                     currentThread[i] = {
-                        ...currentThread[i],
+                        ...withoutFranking(currentThread[i]),
                         content: { ...currentThread[i].content, text: m.content.text },
                         edited: true,
+                        ...frankingFieldsAfterEdit(m),
                     };
                 }
             } else if (type === 'delete') {

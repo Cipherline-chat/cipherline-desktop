@@ -1,97 +1,210 @@
 /**
  * audioSilenceWatchdog — catches the one failure mode LiveKit's own
  * connection-state machinery structurally can't see: a "connected but
- * silent" pipeline. ICE/DTLS can be perfectly healthy (Reconnecting never
- * fires, ConnectionState stays Connected) while the actual capture/encode
- * path is dead — a stuck AudioWorklet, a browser mic-capture race, a
- * permission edge case — and the user has no way to know they're talking
- * into dead air.
+ * silent" outbound mic. ICE/DTLS can be perfectly healthy (Reconnecting never
+ * fires, ConnectionState stays Connected) while the capture/encode path is
+ * dead — a suspended AudioContext, a processed track that stopped delivering,
+ * a disabled track behind an "unmuted" button — and the user has no way to
+ * know they're talking into dead air.
  *
- * The signal: CipherlineVoiceProcessor's own level meter (fed through
- * audioHealth.recordInputLevel — see CallPane.tsx) reports what OUR
- * pipeline believes it's producing (post-gate, post-AGC, right before the
- * track handed to LiveKit). `localParticipant.audioLevel` reports what
- * LiveKit/WebRTC computed from the RTP audio-level header extension on
- * what's ACTUALLY being sent. If our own pipeline shows genuine activity
- * (above the gate's own -45 dBFS default floor, i.e. loud enough that the
- * gate itself would have opened) for a sustained stretch while LiveKit's
- * outbound level stays at effectively zero, that's a real disconnect
- * between "we think we're transmitting" and "the wire has nothing" — not
- * just a quiet moment.
+ * ── What it judges against (rewritten 2026-11-04)
+ *
+ * It used to compare our pipeline meter against `localParticipant.audioLevel`
+ * and called the difference an outage. That second signal is NOT a wire
+ * measurement: livekit-client 2.18.8 only ever writes it from the SFU's
+ * speaker updates (Room.handleActiveSpeakersUpdate / handleSpeakersChanged),
+ * which are thresholded and pushed server-side. On 2026-11-02 a Mac user
+ * tripped `call_one_way_audio {out}` while their own sender was putting 57-66
+ * kbps of live Opus on the wire (webrtc samples of that same report) — a false
+ * positive built into the signal, not a flaky moment. So the verdict now comes
+ * from the SENDER's own getStats() (utils/outboundAudioStats.ts):
+ *
+ *   no_rtp        the mic is enabled and the connection is up, yet the
+ *                 sender's bytesSent has not moved for TRIP_AFTER_MS (a
+ *                 never-started sender gets START_GRACE_MS). Needs no meter
+ *                 at all: an enabled Opus sender emits packets even in
+ *                 silence (the idle floor in real reports is a steady 13
+ *                 kbps), and a suspended AudioContext's destination track
+ *                 sends NOTHING (measured, outboundAudioStats.ts).
+ *   silent_source RTP flows, our pipeline meter says the user is talking
+ *                 (>= PIPELINE_ACTIVE_FLOOR_DBFS), but the samples the
+ *                 encoder was fed average below SOURCE_SILENT_RMS: the
+ *                 published track is delivering silence (e.g. a disabled
+ *                 track behind an unmuted button).
+ *
+ * Everything else is "no verdict", never an outage: muted, reconnecting,
+ * counters unreadable or restarted, a stale meter, and a sampling gap larger
+ * than MAX_SAMPLE_GAP_MS (sleep/wake, a frozen renderer: wall-clock time that
+ * passed while nobody was looking is not evidence).
  *
  * Deliberately does NOT attempt a "remote participant has been silent for
- * Ns" watchdog: silence from a remote participant is the OVERWHELMING
- * majority of any real call (most of a conversation is one person talking
- * while everyone else is quiet) and isn't a reliable signal of anything
- * broken — shipping that check would mostly produce false-positive noise
- * flagging perfectly normal quiet participants as "maybe broken," which
- * would hurt trust in the app's diagnostics rather than help it.
+ * Ns" watchdog: silence from a remote participant is the overwhelming
+ * majority of any real call. The inbound half (their packets stop) is
+ * callSummary.InboundAudioStallDetector.
  */
 
+import { sourceRmsBetween, type WireReading } from './outboundAudioStats';
+
 export const PIPELINE_ACTIVE_FLOOR_DBFS = -45; // matches the gate's own default threshold
-export const OUTBOUND_SILENT_CEILING = 0.01; // linear 0..1, LiveKit's audioLevel scale
-export const TRIP_AFTER_MS = 4000; // sustained mismatch this long before flagging
-export const RECOVER_AFTER_MS = 1000; // outbound level has to actually recover, not just blip
+/** Mean level of the samples fed to the encoder (linear, 1 = full scale) below which the source is "silent": -70 dBFS. */
+export const SOURCE_SILENT_RMS = 10 ** (-70 / 20);
+export const TRIP_AFTER_MS = 4000; // sustained evidence this long before flagging
+/** A sender that has never sent a byte may just be waiting for ICE: give it longer. */
+export const START_GRACE_MS = 12_000;
+export const RECOVER_AFTER_MS = 1000; // healthy evidence has to hold, not blip
+/** A tripped state with no new evidence of the fault for this long is stale (the user went quiet): clear it. */
+export const QUIET_CLEAR_MS = 15_000;
+/** Samples further apart than this are not continuous observation (sleep/wake, frozen renderer). */
+export const MAX_SAMPLE_GAP_MS = 3000;
+/** A pipeline meter reading older than this is a dead meter, not a quiet user. */
+export const PIPELINE_STALE_MS = 1500;
+
+export type StallCause = 'no_rtp' | 'silent_source';
 
 export interface SilenceWatchdogSample {
-    /** Our own pipeline's level in dBFS (from voiceProcessor's level meter). */
+    /** Loudest reading of our own pipeline meter since the previous sample, dBFS. */
     pipelineDbfs: number;
-    /** LiveKit's reported outbound audio level, linear 0..1. */
-    outboundLevel: number;
+    /** Milliseconds since the pipeline meter last reported at all (Infinity = never this call). */
+    pipelineAgeMs: number;
     micEnabled: boolean;
+    /** Room connected and not reconnecting: without it nothing is judged. */
+    transportUp: boolean;
+    /** The mic sender's counters, or null when they could not be read this tick. */
+    wire: WireReading | null;
+}
+
+export interface SilenceWatchdogState {
+    tripped: boolean;
+    cause: StallCause | null;
 }
 
 export class SilenceWatchdog {
-    private mismatchSinceMs: number | null = null;
-    private recoveredSinceMs: number | null = null;
+    private lastAt: number | null = null;
+    private prevWire: WireReading | null = null;
+    private noRtpMs = 0;
+    private silentMs = 0;
+    private lastFaultAt = 0;
+    private recoveredSince: number | null = null;
     private tripped = false;
+    private cause: StallCause | null = null;
 
     /**
      * @param sample Current readings.
      * @param nowMs  Caller-supplied clock (Date.now() in production, a fake
      *               clock in tests) — keeps this fully deterministic.
-     * @returns Whether the watchdog is CURRENTLY tripped after this sample.
      */
-    update(sample: SilenceWatchdogSample, nowMs: number): boolean {
-        if (!sample.micEnabled) {
-            // Muted is not a bug — reset entirely so unmuting starts clean.
-            this.mismatchSinceMs = null;
-            this.recoveredSinceMs = null;
-            this.tripped = false;
-            return this.tripped;
+    update(sample: SilenceWatchdogSample, nowMs: number): SilenceWatchdogState {
+        if (!sample.micEnabled || !sample.transportUp) {
+            // Muted or reconnecting is not a bug — start clean when it ends.
+            this.reset();
+            return this.state();
         }
 
-        const pipelineActive = sample.pipelineDbfs >= PIPELINE_ACTIVE_FLOOR_DBFS;
-        const outboundSilent = sample.outboundLevel <= OUTBOUND_SILENT_CEILING;
-        const mismatch = pipelineActive && outboundSilent;
+        const gap = this.lastAt === null ? 0 : nowMs - this.lastAt;
+        this.lastAt = nowMs;
+        let dt = gap;
+        if (gap > MAX_SAMPLE_GAP_MS) {
+            // We were not looking for a while. What happened in it is unknown.
+            this.noRtpMs = 0;
+            this.silentMs = 0;
+            this.prevWire = null;
+            this.recoveredSince = null;
+            dt = 0;
+        }
 
-        if (mismatch) {
-            this.recoveredSinceMs = null;
-            if (this.mismatchSinceMs === null) this.mismatchSinceMs = nowMs;
-            if (!this.tripped && nowMs - this.mismatchSinceMs >= TRIP_AFTER_MS) {
-                this.tripped = true;
+        const prev = this.prevWire;
+        const wire = sample.wire;
+        this.prevWire = wire;
+
+        let fault: StallCause | null = null;
+        let rtpFlowing = false;
+        let healthyActive = false;
+        let neededMs = TRIP_AFTER_MS;
+
+        if (wire && prev) {
+            const dBytes = wire.bytesSent - prev.bytesSent;
+            if (dBytes < 0) {
+                // Counters restarted (the sender was replaced): no verdict this tick.
+                this.noRtpMs = 0;
+            } else if (dBytes === 0) {
+                this.noRtpMs += dt;
+                fault = 'no_rtp';
+                if (wire.bytesSent === 0) neededMs = START_GRACE_MS;
+            } else {
+                this.noRtpMs = 0;
+                rtpFlowing = true;
+                const active = sample.pipelineAgeMs <= PIPELINE_STALE_MS && sample.pipelineDbfs >= PIPELINE_ACTIVE_FLOOR_DBFS;
+                const rms = sourceRmsBetween(prev, wire);
+                if (active && rms !== null) {
+                    if (rms < SOURCE_SILENT_RMS) {
+                        this.silentMs += dt;
+                        fault = 'silent_source';
+                    } else {
+                        this.silentMs = 0;
+                        healthyActive = true;
+                    }
+                }
+                // else: bytes flow but there is nothing to compare — idle, the
+                // silent-source evidence so far is held, not cleared or added to.
             }
         } else {
-            this.mismatchSinceMs = null;
-            if (this.tripped) {
-                // Require the recovery to hold for a beat rather than clearing
-                // on a single good sample — a genuinely dead pipeline that
-                // happens to report one clean reading (encoder hiccup) would
-                // otherwise flap the banner on and off.
-                if (this.recoveredSinceMs === null) this.recoveredSinceMs = nowMs;
-                if (nowMs - this.recoveredSinceMs >= RECOVER_AFTER_MS) {
-                    this.tripped = false;
-                    this.recoveredSinceMs = null;
-                }
-            }
+            // Unreadable: a dead-run needs CONTINUOUS evidence.
+            this.noRtpMs = 0;
         }
 
-        return this.tripped;
+        if (!this.tripped) {
+            if (this.noRtpMs >= neededMs) this.trip('no_rtp', nowMs);
+            else if (this.silentMs >= TRIP_AFTER_MS) this.trip('silent_source', nowMs);
+            return this.state();
+        }
+
+        if (fault) {
+            this.lastFaultAt = nowMs;
+            this.recoveredSince = null;
+            return this.state();
+        }
+        // Recovery needs POSITIVE evidence: RTP moving again (for a no_rtp
+        // fault) or the encoder hearing a talking user (for a silent source).
+        // A quiet second proves nothing, so it holds the state rather than
+        // flapping the banner off and on around every pause.
+        const positive = this.cause === 'no_rtp' ? rtpFlowing : healthyActive;
+        if (positive) {
+            if (this.recoveredSince === null) this.recoveredSince = nowMs;
+            if (nowMs - this.recoveredSince >= RECOVER_AFTER_MS) this.clear();
+        } else {
+            this.recoveredSince = null;
+            if (nowMs - this.lastFaultAt >= QUIET_CLEAR_MS) this.clear();
+        }
+        return this.state();
+    }
+
+    state(): SilenceWatchdogState {
+        return { tripped: this.tripped, cause: this.cause };
     }
 
     reset(): void {
-        this.mismatchSinceMs = null;
-        this.recoveredSinceMs = null;
+        this.lastAt = null;
+        this.prevWire = null;
+        this.noRtpMs = 0;
+        this.silentMs = 0;
+        this.lastFaultAt = 0;
+        this.recoveredSince = null;
         this.tripped = false;
+        this.cause = null;
+    }
+
+    private trip(cause: StallCause, nowMs: number): void {
+        this.tripped = true;
+        this.cause = cause;
+        this.lastFaultAt = nowMs;
+        this.recoveredSince = null;
+    }
+
+    private clear(): void {
+        this.tripped = false;
+        this.cause = null;
+        this.noRtpMs = 0;
+        this.silentMs = 0;
+        this.recoveredSince = null;
     }
 }

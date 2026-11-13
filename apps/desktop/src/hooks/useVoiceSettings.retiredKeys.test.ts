@@ -6,7 +6,8 @@
 import { describe, it, expect, vi } from 'vitest';
 
 vi.mock('../utils/secureLocalStore', () => {
-    const mem = new Map<string, string>();
+    // Already past the one-time voice-defaults migration: these cover the loader itself.
+    const mem = new Map<string, string>([['cipherline_voice_defaults_migrated_v1', '1']]);
     return {
         default: {
             getItem: (k: string) => mem.get(k) ?? null,

@@ -1,34 +1,25 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { Camera, Image as ImageIcon, MessageSquare } from 'lucide-react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { MessageSquare } from 'lucide-react';
 import { ClButton } from '../ClButton';
-import { EncryptedAvatar } from '../EncryptedAvatar';
-import {
-    PROFILE_CARD_FRAME_CLASS, PROFILE_CARD_IDENTITY_CLASS, PROFILE_CARD_INFO_CLASS,
-    ProfileCardAbout, ProfileCardAvatar, ProfileCardBanner, ProfileCardFooter, ProfileCardHairline,
-    ProfileCardNameRow, ProfileCardStatusDot, ProfileCardStatusLabel, ProfileCardStatusLine,
-} from '../ProfileCardParts';
+import { ProfilePopoutCard } from '../profile/ProfilePopoutCard';
+import type { ProfileCardData } from '../profile/profileCardData';
 import { STATUS_CONFIG } from '../../utils/userStatusModel';
 
 /**
- * "How friends see you": the real profile popover (ProfileModal), built from
- * the SAME parts (ProfileCardParts), in CSS 3D. What a friend sees on a new
- * account: no ⋮ menu (that is on other people's cards only), no admin badges
- * (nobody new has any), the Pro pill ONLY when the trial actually started (the
- * API now gives an active trial `is_pro`, exactly like a paying user; when the
- * per-network quota withheld the trial the account is free and shows none, see
- * `isPro` and endingTrial.hasLiveTrial), the green Online status and a
- * full-width Message button (inert).
+ * "How friends see you": the NEW profile preview (the popover that opens when
+ * someone clicks your name: components/profile/ProfilePopoutCard), fed by the
+ * onboarding draft. What a friend sees on a new account: no ⋮ menu, no
+ * admin badges, the Pro pill ONLY when the trial actually started (see
+ * `isPro` and endingTrial.hasLiveTrial), the green Online status and an
+ * inert Message button. No theme / decoration / effect / showcase yet: those
+ * are set later in Settings.
  *
- * Motion (steps/profile.css):
- *   - the entrance (~1.05 s): the card rises out of depth with a settling
- *     swing, its layers assembling in order, one sheen pass. The class is then
- *     removed so the tilt starts from the true resting state;
- *   - the tilt: toward the pointer (up to 9° / 7°) under 1100 px perspective,
- *     every layer at its own depth, a specular sheen following the light.
- *     rAF runs ONLY while the pointer moves or the card eases back.
- *   - reduced motion: a flat card, no entrance, no tilt.
+ * Motion (steps/profile.css): the card rises into place once (~1.05 s) and
+ * then tilts a few degrees toward the pointer under 1100 px perspective, a
+ * specular sheen following the light. rAF runs ONLY while the pointer moves or
+ * the card eases back. Reduced motion: a flat card, no entrance, no tilt.
  *
- * Clicking the banner or the avatar opens the same pickers as the form.
+ * Pressing the banner or the avatar opens the same pickers as the form.
  */
 
 export interface ProfileCardPreviewProps {
@@ -143,86 +134,59 @@ export const ProfileCardPreview: React.FC<ProfileCardPreviewProps> = ({
     useEffect(() => { ignoreRef.current = entering || paused; }, [entering, paused]);
     useCardTilt(zoneRef, cardRef, sheenRef, !reducedMotion, ignoreRef);
 
-    // The inert Message button: no focus, no pointer, hidden from AT (the
-    // "How friends see you" caption describes the preview instead).
-    const actRef = useRef<HTMLDivElement>(null);
-    useEffect(() => { actRef.current?.setAttribute('inert', ''); }, []);
-
     const hasAvatar = !!(avatarSrc || avatarId);
     const hasBanner = !!(bannerSrc || bannerId);
     const online = STATUS_CONFIG.online;
-    const trimmedBio = bio.trim();
+
+    const data = useMemo((): ProfileCardData => ({
+        name: name ?? 'Your name',
+        discriminator: name ? discriminator : null,
+        theme: null, decoration: null, effect: null,
+        isPro,
+        bio: bio.trim() || null,
+        blocks: [], topAchievements: [], games: [], links: [], interests: [],
+        achievementCount: null, mostPlayed: [],
+    }), [name, discriminator, bio, isPro]);
 
     return (
         <div className="pv-zone" ref={zoneRef}>
             <div className="obpc-persp">
                 <div
                     ref={cardRef}
-                    className={`obpc ${PROFILE_CARD_FRAME_CLASS}${entering ? ' obpc-enter' : ''}${reducedMotion ? ' obpc-flat' : ''}`}
+                    className={`obpc${entering ? ' obpc-enter' : ''}${reducedMotion ? ' obpc-flat' : ''}`}
                     data-ob-card
+                    data-name-empty={name ? undefined : 'true'}
                 >
-                    <button
-                        type="button"
-                        className="obpc-banner obpc-l"
-                        onClick={onPickBanner}
-                        aria-label={hasBanner ? 'Change banner' : 'Add a banner'}
-                    >
-                        <ProfileCardBanner attachmentId={bannerSrc ? null : bannerId} userId={userId} token={token} src={bannerSrc} />
-                        <span className="obpc-hint"><ImageIcon size={14} aria-hidden /> {hasBanner ? 'Change banner' : 'Add a banner'}</span>
-                    </button>
-
-                    <ProfileCardAvatar
-                        className="obpc-l obpc-l-av"
-                        ariaLabel={hasAvatar ? 'Change profile photo' : 'Add a profile photo'}
-                        onClick={onPickAvatar}
-                        interactionClassName="cursor-pointer hover:scale-[1.04] obpc-av"
-                        badge={<ProfileCardStatusDot color={online.color} title={online.label} />}
-                    >
-                        {avatarSrc ? (
-                            <img src={avatarSrc} alt="" className="object-cover rounded-full w-full h-full" />
-                        ) : (
-                            <EncryptedAvatar
-                                attachmentId={avatarId}
-                                userId={userId}
-                                token={token}
-                                className="w-full h-full"
-                                fallbackSize={40}
-                                disableClickProfile
-                                bypassFriendGate
-                            />
+                    <ProfilePopoutCard
+                        userId={userId}
+                        token={token}
+                        isSelf={false}
+                        testId="ob-profile-card"
+                        data={data}
+                        avatarId={avatarId}
+                        bannerId={bannerId}
+                        bannerSrc={bannerSrc}
+                        avatarSrc={avatarSrc}
+                        avatarLabel={hasAvatar ? 'Change profile photo' : 'Add a profile photo'}
+                        bannerPickLabel={hasBanner ? 'Change banner' : 'Add a banner'}
+                        onAvatarPick={onPickAvatar}
+                        onBannerPick={onPickBanner}
+                        avatarBadge={<span className="pcd-dot" style={{ backgroundColor: online.color }} title={online.label} />}
+                        presence={(
+                            <span className="pcd-status-line">
+                                <span className="pcd-status-dot" style={{ backgroundColor: online.color }} aria-hidden="true" />
+                                <b style={{ color: online.color }}>{online.label}</b>
+                            </span>
                         )}
-                        <span className="obpc-avhint" aria-hidden><Camera size={20} /></span>
-                    </ProfileCardAvatar>
-
-                    <div className={`${PROFILE_CARD_INFO_CLASS} obpc-3d`}>
-                        <div className={`${PROFILE_CARD_IDENTITY_CLASS} obpc-3d`}>
-                            <ProfileCardNameRow
-                                className="obpc-l obpc-l-id"
-                                name={name ?? <span className="obpc-ph">Your name</span>}
-                                discriminator={name ? discriminator : null}
-                                isPro={isPro}
-                            />
-                            <ProfileCardStatusLine className="obpc-l obpc-l-st">
-                                <ProfileCardStatusLabel color={online.color} label={online.label} />
-                            </ProfileCardStatusLine>
-                        </div>
-                        {trimmedBio && (
-                            <div className="obpc-l obpc-l-ab">
-                                <ProfileCardHairline />
-                                <ProfileCardAbout bio={trimmedBio} />
-                            </div>
-                        )}
-                    </div>
-
-                    <div ref={actRef} className="obpc-l obpc-l-act" aria-hidden>
-                        <ProfileCardFooter>
+                        // A picture of what friends get: not focusable, hidden from assistive tech (the caption describes it).
+                        actionsInert
+                        actions={(
                             <ClButton variant="primary" fullWidth>
                                 <MessageSquare size={14} />
                                 Message
                             </ClButton>
-                        </ProfileCardFooter>
-                    </div>
-
+                        )}
+                    />
                     {!reducedMotion && <span ref={sheenRef} className="obpc-sheen" aria-hidden />}
                 </div>
             </div>

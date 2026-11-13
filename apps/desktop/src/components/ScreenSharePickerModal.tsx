@@ -1,9 +1,23 @@
 import React, { useState, useEffect, useLayoutEffect, useCallback, useRef } from 'react';
-import { RefreshCw, Check, ChevronDown, Monitor, ArrowRight, ArrowLeft, Loader2, AlertTriangle, Settings, ShieldAlert, Info } from 'lucide-react';
-import { ClButton, ClCheckbox, ClModal } from './cl';
-import { ShareFpsNote } from './ShareFpsNote';
+import { chooseDropUp } from '../utils/dropdownPlacement';
+import { useEscape } from '../hooks/useEscape';
+import { bestAppForWindow, type AudioApp } from '../utils/appAudioMatch';
+import { shareAudioEventDetail } from '../utils/shareAudioEvent';
+import { PRESETS, detectPreset, type PresetKey } from '../utils/sharePresets';
+import { clampShareFps, maxShareFps, probeHardwareEncoders, decideScreenShareCodec, type ScreenShareCodec } from '../utils/screenShare';
+import { nativeShareLikely, useChromiumFpsCap } from '../utils/linuxShareCaps';
+import { capFrameRate, expectSoftwareEncode, planSoftwareStart } from '../utils/linuxShareDefaults';
+import { getScreenShareCodecPref } from '../utils/streamDiagnosticsPrefs';
+import { shortOption } from '../utils/shareEncoderOverload';
+import { shareAudioUnavailableReason, windowAudioBlockedReason, windowAudioPicksApp } from '../utils/sharePlatformSupport';
+import { RefreshCw, Check, ChevronDown, Monitor, ArrowRight, ArrowLeft, Loader2, AlertTriangle, Settings, ShieldAlert } from 'lucide-react';
+import { ClButton, ClCheckbox, ClModal, ClSegment } from './cl';
+import { ShareFpsDisclaimer } from './ShareFpsNote';
+import { ClNote } from './cl/ClNote';
 import { getCachedSources, storeNames, refreshDesktopSources, cancelDesktopSourceRefresh, hasPreview, pickerRequestedAt } from '../utils/desktopSourceCache';
 import { logCallEvent } from '../utils/callEventLog';
+import { captureViaPortal } from '../utils/sharePlatformSupport';
+import { newPortalSourceId } from '../utils/portalSource';
 import {
     aspectOf, defaultLayoutFor, layoutChoices, layoutsEqual, sliceLabel, WHOLE_LAYOUT, type ShareLayout,
 } from '../utils/shareLayout';
@@ -20,6 +34,12 @@ export interface ScreenShareOptions {
     frameRate: 15 | 30 | 60 | 90;
     audio: boolean;
     /**
+     * Linux Wayland window shares only: the app whose audio is shared (the portal gives a window no
+     * process, so the picker names the app instead). `handle` is an opaque value main issued for the
+     * app (electron/app-audio.ts) and the only thing the capture is started from; `name` is for display.
+     */
+    appAudio?: { handle: string; name: string } | null;
+    /**
      * Ultra-wide displays only (shareLayout.ts): the whole display scaled to fit
      * the encoder, or one screen of it cropped at native resolution. Absent =
      * the whole display.
@@ -33,29 +53,37 @@ export interface ScreenShareOptions {
 interface ScreenSharePickerModalProps {
     onSelect: (options: ScreenShareOptions | null) => void;
     /**
-     * Open on this tab instead of "Entire screen" (the "share the game window
-     * instead" hint opens on 'window'). Read once, at mount.
+     * Opened mid-share (Change source): whether the running share has system audio. The box starts
+     * ticked then, so picking another source keeps the audio instead of silently dropping it - every
+     * source swap restarts the audio capture, and an unticked box meant "turn audio off" (a Linux
+     * tester lost a six-minute audio share at the first swap, 2026-11-04). A fresh share starts off.
      */
-    initialTab?: 'screen' | 'window';
+    initialAudio?: boolean;
     /**
-     * A running program's name ("game.exe"): once the window list is in, the
-     * window that belongs to it is pre-selected (main matches by process
-     * name; nothing is picked if none matches or the user already chose).
-     * Read once, at mount.
+     * Opened mid-share on Linux: the app the running share takes its audio from, so Change source keeps the
+     * choice (the same reason as initialAudio). The choice is kept even if the new window's title names
+     * another app - it was made on purpose; the dropdown is one click from changing it.
      */
-    preselectExe?: string;
+    initialAppAudio?: { handle: string; name: string } | null;
+    /**
+     * Opened mid-share through the Wayland portal: the running share's placeholder id. The portal picker
+     * offers "Apply to current share" (new quality / audio, same capture, no chooser) next to "Choose what
+     * to share…" (a new capture, one chooser).
+     */
+    liveSourceId?: string | null;
+    /**
+     * Opened mid-share (Change source): the running share's quality, so picking another source keeps what the
+     * user chose instead of snapping back to 1080p / 30 (owner, 2026-11-11, every platform). A fresh share
+     * starts at the defaults. A frame rate the new source cannot do is still clamped (clampShareFps below).
+     */
+    initialResolution?: ScreenShareOptions['resolution'];
+    initialFrameRate?: ScreenShareOptions['frameRate'];
 }
 
 type SourceType = 'screen' | 'window';
 type Source = { id: string; name: string; thumbnailDataUrl: string };
 
-type Preset = 'low' | 'default' | 'high' | null;
-
-const PRESETS: Record<'low' | 'default' | 'high', { resolution: ScreenShareOptions['resolution']; frameRate: ScreenShareOptions['frameRate']; label: string; desc: string }> = {
-    low:     { resolution: '720p',  frameRate: 30, label: 'Low',     desc: '720p · 30fps'  },
-    default: { resolution: '1080p', frameRate: 30, label: 'Default', desc: '1080p · 30fps' },
-    high:    { resolution: '1080p', frameRate: 60, label: 'High',    desc: '1080p · 60fps' },
-};
+type Preset = PresetKey | null;
 
 const RESOLUTION_LABELS: Record<ScreenShareOptions['resolution'], string> = {
     source: 'Source (Native)',
@@ -65,26 +93,42 @@ const RESOLUTION_LABELS: Record<ScreenShareOptions['resolution'], string> = {
     '480p':  '854×480',
 };
 
-function detectPreset(
-    resolution: ScreenShareOptions['resolution'],
-    frameRate: ScreenShareOptions['frameRate'],
-): Preset {
-    for (const [key, p] of Object.entries(PRESETS)) {
-        if (p.resolution === resolution && p.frameRate === frameRate) return key as Preset;
+function dropdownOpensUp(el: HTMLElement, optionCount: number): boolean {
+    const r = el.getBoundingClientRect();
+    let top = 0;
+    let bottom = window.innerHeight;
+    for (let p = el.parentElement; p; p = p.parentElement) {
+        const o = getComputedStyle(p);
+        if (/(auto|scroll|hidden|clip)/.test(o.overflowY + o.overflow)) {
+            const pr = p.getBoundingClientRect();
+            top = Math.max(top, pr.top);
+            bottom = Math.min(bottom, pr.bottom);
+            break;
+        }
     }
-    return null;
+    return chooseDropUp(r.top - top, bottom - r.bottom, optionCount);
 }
 
 /** Custom dropdown — no native <select>, no double arrows */
 const CustomDropdown = <T extends string | number>({
-    value, onChange, options, className = '',
+    value, onChange, options, className = '', onOpen, groupLabel,
 }: {
     value: T;
     onChange: (v: T) => void;
     options: { value: T; label: string }[];
     className?: string;
+    /** Called each time the list opens (the app list refreshes then). */
+    onOpen?: () => void;
+    /** Accessible name of the control. */
+    groupLabel?: string;
 }) => {
     const [open, setOpen] = useState(false);
+    // Opened from the keyboard: move focus into the list so Arrow keys / Enter work without a mouse.
+    const openedByKey = useRef(false);
+    // Which way the list opens: toward the side with room inside whatever clips
+    // it (the dialog body scrolls). It always opened upward, and with the
+    // settings row near the top of the body the first options were cut off.
+    const [dropUp, setDropUp] = useState(true);
     const containerRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
@@ -98,14 +142,56 @@ const CustomDropdown = <T extends string | number>({
         return () => document.removeEventListener('mousedown', handler);
     }, [open]);
 
+    // Escape closes the list (and only the list: the dialog keeps its place in the Escape stack).
+    useEscape(() => {
+        setOpen(false);
+        containerRef.current?.querySelector('button')?.focus();
+    }, open);
+
+    const buttons = () => Array.from(containerRef.current?.querySelectorAll('button') ?? []) as HTMLButtonElement[];
+    useEffect(() => {
+        if (!open || !openedByKey.current) return;
+        openedByKey.current = false;
+        const list = buttons().slice(1);   // [0] is the trigger
+        const idx = Math.max(0, options.findIndex(o => o.value === value));
+        list[idx]?.focus();
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- runs once per open
+    }, [open]);
+
+    const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+        const all = buttons();
+        const at = all.indexOf(document.activeElement as HTMLButtonElement);
+        if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+            e.preventDefault();
+            if (!open) {
+                if (containerRef.current) setDropUp(dropdownOpensUp(containerRef.current, options.length));
+                openedByKey.current = true;
+                setOpen(true);
+                onOpen?.();
+                return;
+            }
+            const next = e.key === 'ArrowDown' ? Math.min(all.length - 1, at + 1) : Math.max(1, at - 1);
+            all[next < 1 ? 1 : next]?.focus();
+        } else if (open && (e.key === 'Home' || e.key === 'End')) {
+            e.preventDefault();
+            all[e.key === 'Home' ? 1 : all.length - 1]?.focus();
+        } else if (open && e.key === 'Tab') {
+            setOpen(false);
+        }
+    };
+
     const selectedLabel = options.find(o => o.value === value)?.label ?? String(value);
 
     return (
-        <div ref={containerRef} className={`relative ${className}`}>
+        <div ref={containerRef} className={`relative ${className}`} role="group" aria-label={groupLabel} onKeyDown={onKeyDown}>
             <ClButton
                 type="button"
                 variant="ghost"
-                onClick={() => setOpen(v => !v)}
+                onClick={() => {
+                    if (!open && containerRef.current) setDropUp(dropdownOpensUp(containerRef.current, options.length));
+                    if (!open) onOpen?.();
+                    setOpen(v => !v);
+                }}
                 fullWidth
                 row
             >
@@ -113,7 +199,7 @@ const CustomDropdown = <T extends string | number>({
                 <ChevronDown className={`ml-auto w-3 h-3 text-cl-faint shrink-0 transition-transform duration-200 ${open ? 'rotate-180' : ''}`} />
             </ClButton>
             {open && (
-                <div className="absolute bottom-full left-0 mb-1.5 min-w-full bg-cl-deep border border-white/[0.12] rounded-xl shadow-[0_-8px_32px_rgba(0,0,0,0.7)] py-1.5 z-[200]">
+                <div data-dropdown-list="" className={`absolute ${dropUp ? 'bottom-full mb-1.5 shadow-[0_-8px_32px_rgba(0,0,0,0.7)]' : 'top-full mt-1.5 shadow-[0_8px_32px_rgba(0,0,0,0.7)]'} left-0 min-w-full bg-cl-deep border border-white/[0.12] rounded-xl py-1.5 z-[200]`}>
                     {options.map(opt => {
                         const isActive = opt.value === value;
                         return (
@@ -354,41 +440,39 @@ const LayoutChooser = ({
     onChange: (l: ShareLayout) => void;
     aspect: number | null;
 }) => (
-    <div className="mb-3 rounded-lg px-3 py-2.5 border border-white/[0.08] bg-white/[0.02]" data-testid="share-layout-choice">
-        <div className="flex items-center gap-3 flex-wrap">
-            <span className="text-[11px] text-cl-faint font-medium whitespace-nowrap">Ultra-wide display</span>
-            <div className="flex items-center gap-1.5 flex-wrap" role="group" aria-label="What to share from this display">
-                {choices.map(c => (
-                    <ClButton
-                        key={c.label}
-                        variant="ghost"
-                        size="sm"
-                        active={layoutsEqual(c.layout, value)}
-                        onClick={() => onChange(c.layout)}
-                    >
-                        {c.label}
-                    </ClButton>
-                ))}
-            </div>
+    <div className="mb-3 rounded-xl px-4 py-3 border border-white/[0.08] bg-white/[0.02]" data-testid="share-layout-choice">
+        <div className="text-[12px] font-semibold text-cl-text mb-2.5">Ultra-wide display</div>
+        <div role="group" aria-label="What to share from this display">
+            <ClSegment
+                options={choices.map((c, i) => ({ value: String(i), label: c.label }))}
+                value={String(Math.max(0, choices.findIndex(c => layoutsEqual(c.layout, value))))}
+                onChange={v => { const c = choices[Number(v)]; if (c) onChange(c.layout); }}
+            />
         </div>
-        <p className="text-[10px] text-cl-faint m-0 mt-1.5 leading-snug">
+        <div className="text-[12px] text-cl-muted mt-2.5 leading-[1.45]">
             {value.kind === 'slice'
                 ? `Shares the ${sliceLabel(value.count, value.index).toLowerCase()} at full size. You can switch screens while sharing.`
-                : `Shares everything${aspect ? ` (${aspect.toFixed(1)}:1)` : ''}, scaled down to fit the video encoder - text will be small.`}
-        </p>
+                : `Shares everything${aspect ? ` (${aspect.toFixed(1)}:1)` : ''}, scaled down to fit the video encoder, so text will be small.`}
+        </div>
     </div>
 );
 
 const QualityControls = ({
-    resolution, setResolution, frameRate, setFrameRate, has1440p, audio, setAudio, activePreset, applyPreset,
+    resolution, setResolution, frameRate, setFrameRate, has1440p, audio, setAudio, activePreset, applyPreset, maxFps = 90, audioBlockedWhy = null, audioSlot,
 }: {
     resolution: ScreenShareOptions['resolution'];
     setResolution: (v: ScreenShareOptions['resolution']) => void;
     frameRate: ScreenShareOptions['frameRate'];
     setFrameRate: (v: ScreenShareOptions['frameRate']) => void;
+    /** 90 is for an entire screen only (screenShare.maxShareFps). */
+    maxFps?: 60 | 90;
     has1440p: boolean;
     audio: boolean;
     setAudio: (v: boolean) => void;
+    /** Why audio cannot be shared from THIS source (a Wayland window), or null. */
+    audioBlockedWhy?: string | null;
+    /** Replaces the "Share system audio" box: the "Share audio from: [app]" chooser of a Wayland window. */
+    audioSlot?: React.ReactNode;
     activePreset: Preset;
     applyPreset: (key: 'low' | 'default' | 'high') => void;
 }) => (
@@ -440,7 +524,7 @@ const QualityControls = ({
                 onChange={v => setFrameRate(Number(v) as ScreenShareOptions['frameRate'])}
                 className="w-36"
                 options={[
-                    { value: 90 as const, label: 'Up to 90 fps' },
+                    ...(maxFps >= 90 ? [{ value: 90 as const, label: 'Up to 90 fps' }] : []),
                     { value: 60 as const, label: '60 fps' },
                     { value: 30 as const, label: '30 fps' },
                     { value: 15 as const, label: '15 fps' },
@@ -450,17 +534,131 @@ const QualityControls = ({
 
         <div className="w-px h-5 bg-white/[0.08]" />
 
-        {/* Audio checkbox */}
-        <ClCheckbox
-            checked={audio}
-            onChange={v => setAudio(v)}
-            label="Share system audio"
-        />
+        {/* Audio checkbox - off, and says why, where there is no system-audio share (Linux without PipeWire). */}
+        {audioSlot ?? <ShareAudioToggle audio={audio} setAudio={setAudio} blockedWhy={audioBlockedWhy} />}
     </div>
 );
 
+const ShareAudioToggle = ({ audio, setAudio, blockedWhy = null }: { audio: boolean; setAudio: (v: boolean) => void; blockedWhy?: string | null }) => {
+    // Linux shares audio through the native PipeWire addon, so whether the box can be ticked is
+    // what main says about it (audio:is-capture-supported). Until it answers it stays off, never on.
+    const platform = window.electronAPI?.platform;
+    const [native, setNative] = useState(false);
+    useEffect(() => {
+        if (platform !== 'linux') return;
+        let live = true;
+        window.electronAPI?.isAudioCaptureSupported?.().then(v => { if (live) setNative(!!v); }, () => { /* stays off */ });
+        return () => { live = false; };
+    }, [platform]);
+    const why = shareAudioUnavailableReason(platform, native) ?? blockedWhy;
+    return (
+        <span className="flex items-center gap-2" data-testid="share-audio-toggle">
+            <ClCheckbox
+                checked={audio && !why}
+                onChange={v => setAudio(v)}
+                label="Share system audio"
+                disabled={!!why}
+            />
+            {why && <span className="text-[11px] text-cl-faint leading-snug">{why}</span>}
+        </span>
+    );
+};
+
+/**
+ * The apps playing audio right now (main's audio:list-apps), refreshed while the picker is on a Wayland
+ * window. null = not answered yet. Main turns each into an opaque handle; the names are for display only
+ * and are never logged from here.
+ */
+function useAudioApps(enabled: boolean): { apps: AudioApp[] | null; refresh: () => void } {
+    const [apps, setApps] = useState<AudioApp[] | null>(null);
+    const alive = useRef(true);
+    useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
+    const refresh = useCallback(() => {
+        // Only asked while the chooser applies, which needs listAudioApps (see appPickerApplies).
+        window.electronAPI?.listAudioApps?.().then(
+            r => { if (alive.current) setApps(Array.isArray(r) ? r : []); },
+            () => { if (alive.current) setApps(prev => prev ?? []); },
+        );
+    }, []);
+    useEffect(() => {
+        if (!enabled) return;
+        refresh();
+        const t = setInterval(refresh, 5000);
+        return () => clearInterval(t);
+    }, [enabled, refresh]);
+    return { apps, refresh };
+}
+
+type AppPick = { handle: string; name: string; how: 'auto' | 'manual' };
+
+/** "Share audio from: [app]" - replaces the system-audio box for a window picked through the Wayland portal. */
+const AppAudioSelect = ({ apps, pick, onPick, onOpen }: {
+    apps: AudioApp[] | null;
+    pick: AppPick | null;
+    onPick: (a: { handle: string; name: string } | null) => void;
+    onOpen: () => void;
+}) => {
+    const list = apps ?? [];
+    // Two apps with the same display name are told apart by their program name.
+    const dup = (n: string) => list.filter(a => a.name === n).length > 1;
+    const options: { value: string; label: string }[] = [
+        { value: '', label: 'None' },
+        ...list.map(a => ({ value: a.handle, label: dup(a.name) && a.binary ? `${a.name} (${a.binary})` : a.name })),
+    ];
+    // The chosen app may have gone quiet since it was picked (its stream ends between songs): keep showing it.
+    if (pick && !list.some(a => a.handle === pick.handle)) {
+        options.push({ value: pick.handle, label: `${pick.name} (not playing right now)` });
+    }
+    let hint: string | null = null;
+    if (apps === null) hint = 'Looking for apps that play audio…';
+    else if (pick?.how === 'auto') hint = 'Matched to this window. Change it if it’s wrong.';
+    else if (!pick && list.length === 0) hint = 'No app is playing audio right now. Start it, then open this list.';
+    else if (!pick) hint = 'Pick the app whose audio to share.';
+    return (
+        <span className="flex items-center gap-2" data-testid="share-audio-app">
+            <span className="text-[11px] text-cl-faint font-medium whitespace-nowrap">Share audio from</span>
+            <CustomDropdown
+                value={pick?.handle ?? ''}
+                onChange={v => {
+                    const a = list.find(x => x.handle === v) ?? (pick && pick.handle === v ? pick : null);
+                    onPick(v === '' || !a ? null : { handle: a.handle, name: a.name });
+                }}
+                className="w-48"
+                options={options}
+                onOpen={onOpen}
+                groupLabel="Share audio from"
+            />
+            {hint && <span className="text-[11px] text-cl-faint leading-snug" data-testid="share-audio-app-hint">{hint}</span>}
+        </span>
+    );
+};
+
+/**
+ * Through the portal the picker cannot tell a window from a screen (the desktop's dialog has not been answered
+ * yet), so the audio is chosen by what it IS: nothing, everything except Cipherline, or one app's.
+ */
+const PortalAudioChoice = ({ mode, setMode, canPickApp, appSelect }: {
+    mode: PortalAudioMode;
+    setMode: (m: PortalAudioMode) => void;
+    canPickApp: boolean;
+    appSelect: React.ReactNode;
+}) => {
+    const options: { value: PortalAudioMode; label: string }[] = [
+        { value: 'none', label: 'None' },
+        { value: 'system', label: 'Everything except Cipherline' },
+        ...(canPickApp ? [{ value: 'app' as const, label: 'One app' }] : []),
+    ];
+    return (
+        <span className="flex items-center gap-2 flex-wrap" data-testid="share-audio-portal">
+            <span className="text-[11px] text-cl-faint font-medium whitespace-nowrap">Share audio</span>
+            <CustomDropdown value={mode} onChange={setMode} className="w-56" options={options} groupLabel="Share audio" />
+            {mode === 'app' && appSelect}
+        </span>
+    );
+};
+
 const QualitySummary = ({
-    resolution, frameRate, activePreset, audio, maxRefreshHz, captureCeiling = 0,
+    resolution, frameRate, activePreset, audio, maxRefreshHz, captureCeiling = 0, softwareNote = null,
 }: {
     resolution: ScreenShareOptions['resolution'];
     frameRate: ScreenShareOptions['frameRate'];
@@ -470,64 +668,28 @@ const QualitySummary = ({
     maxRefreshHz: number;
     /** The OS capturer's own fixed frame-rate limit (Wayland/PipeWire: 60), or 0. */
     captureCeiling?: number;
+    /** Up-front warning when the picked quality is more than software encoding can carry (see SoftwareStartNote). */
+    softwareNote?: React.ReactNode;
 }) => {
-    // Screen capture samples the compositor, so it can't produce more distinct
-    // frames per second than the display actually generates. Requesting 90 on a
-    // 60 Hz panel gets you 60 — this is a hardware ceiling, not a tuning
-    // problem, so say so plainly instead of letting people chase it.
-    const refreshCapped = maxRefreshHz > 0 && frameRate > maxRefreshHz;
-    // The capturer's own limit, when it is the tighter of the two: a 144 Hz
-    // monitor on Wayland still gets at most 60 fps out of PipeWire.
-    const captureCapped = captureCeiling > 0 && frameRate > captureCeiling
-        && !(refreshCapped && maxRefreshHz <= captureCeiling);
+    // The frame-rate disclaimer (hard cap vs. "up to" 90) is decided in
+    // ShareFpsNote.tsx so its tests can mount it. The summary line is a <div>,
+    // not a <p>: the kit modal's `.mcard p` rule (22px bottom margin, 14px
+    // font) outranks Tailwind's utilities on a <p> in here.
     return (
-        <>
-            <p className="text-[10px] text-cl-faint mt-2 m-0">
+        <div>
+            <div className="text-[10px] leading-snug text-cl-faint mt-2">
                 {RESOLUTION_LABELS[resolution]} · {frameRate} fps
                 {activePreset ? ` · ${PRESETS[activePreset].label} preset` : ' · Custom'}
                 {audio ? ' · Audio on' : ''}
-            </p>
-
-            {captureCapped ? (
-                <div
-                    className="mt-2.5 flex items-start gap-2 rounded-lg px-3 py-2 border"
-                    style={{
-                        background:  'rgba(234,179,8,0.08)',
-                        borderColor: 'rgba(234,179,8,0.35)',
-                    }}
-                >
-                    <svg className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-[1px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.2}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3m0 3h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
-                    </svg>
-                    <p className="text-[11px] text-amber-300/95 m-0 leading-snug">
-                        <span className="font-semibold">Screen sharing is limited to {captureCeiling} fps here.</span>{' '}
-                        On Wayland the system&apos;s screen-capture service (PipeWire) delivers at
-                        most {captureCeiling} frames per second, whatever the monitor runs at, so
-                        this will send up to {captureCeiling} fps.
-                    </p>
-                </div>
-            ) : refreshCapped ? (
-                <div
-                    className="mt-2.5 flex items-start gap-2 rounded-lg px-3 py-2 border"
-                    style={{
-                        background:  'rgba(234,179,8,0.08)',
-                        borderColor: 'rgba(234,179,8,0.35)',
-                    }}
-                >
-                    <svg className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-[1px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.2}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3m0 3h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
-                    </svg>
-                    <p className="text-[11px] text-amber-300/95 m-0 leading-snug">
-                        <span className="font-semibold">Your display runs at {maxRefreshHz} Hz.</span>{' '}
-                        Screen capture can&apos;t exceed the refresh rate of the screen it&apos;s
-                        reading, so this will send about {maxRefreshHz} fps. A faster
-                        monitor is the only way past this.
-                    </p>
-                </div>
-            ) : (
-                <ShareFpsNote frameRate={frameRate} className="mt-2.5" />
-            )}
-        </>
+            </div>
+            <ShareFpsDisclaimer
+                frameRate={frameRate}
+                maxRefreshHz={maxRefreshHz}
+                captureCeiling={captureCeiling}
+                className="mt-2"
+            />
+            {softwareNote}
+        </div>
     );
 };
 
@@ -547,9 +709,19 @@ const QualitySummary = ({
 // for both 'window' and 'screen' together lets its own UI offer both, the
 // same as Discord's Linux client, so there's nothing left for an in-app
 // step to usefully ask before or after it.
-type LinuxStep = 'waiting' | 'error' | 'grid' | 'settings';
+//
+// UPDATE (2026-11-04, measured on Electron 43.8.1): that dialog opens ONCE PER ScreenCast.Start, and a
+// listing and the capture that follows each make one - so listing here and then capturing was TWO
+// dialogs ("I select the window and it asks again"), and a held selection is not carried from a
+// listing to a later capture. Through the portal this picker therefore lists nothing: it takes the
+// quality and the audio, and "Choose what to share…" starts the capture, whose own dialog is the
+// one and only (step 'portal'; electron/portal-source.ts). Every other Linux session (X11) still
+// enumerates, as before.
+type LinuxStep = 'waiting' | 'error' | 'grid' | 'settings' | 'portal';
 
-export const ScreenSharePickerModal: React.FC<ScreenSharePickerModalProps> = ({ onSelect, initialTab, preselectExe }) => {
+type PortalAudioMode = 'none' | 'system' | 'app';
+
+export const ScreenSharePickerModal: React.FC<ScreenSharePickerModalProps> = ({ onSelect, initialAudio = false, initialAppAudio = null, liveSourceId = null, initialResolution, initialFrameRate }) => {
     const platform = window.electronAPI?.platform ?? 'windows';
     const isLinux = platform === 'linux';
     const bypassNote = showMacPickerBypassNote(platform, window.electronAPI?.macOSMajor);
@@ -569,15 +741,24 @@ export const ScreenSharePickerModal: React.FC<ScreenSharePickerModalProps> = ({ 
         if (wi) seed.window = wi;
         return seed;
     });
-    const [loading, setLoading] = useState(() => !getCachedSources(initialTab ?? 'screen'));
+    const [loading, setLoading] = useState(() => !getCachedSources('screen'));
     // Entire-screen first (classic/non-Linux tabs only): it is the first tab
     // shown, a handful of sources rather than dozens of windows, so it also
     // paints fastest.
-    const [selectedTab, setSelectedTab] = useState<SourceType>(initialTab ?? 'screen');
+    const [selectedTab, setSelectedTab] = useState<SourceType>('screen');
     const [selectedSourceId, setSelectedSourceId] = useState<string | null>(null);
-    const [resolution, setResolution] = useState<ScreenShareOptions['resolution']>('1080p');
-    const [frameRate, setFrameRate] = useState<ScreenShareOptions['frameRate']>(30);
-    const [audio, setAudio] = useState(false);
+    const [resolution, setResolution] = useState<ScreenShareOptions['resolution']>(initialResolution ?? '1080p');
+    const [frameRate, setFrameRate] = useState<ScreenShareOptions['frameRate']>(initialFrameRate ?? 30);
+    // Quality counts as CHOSEN once the user touches a control / preset, or when it is carried over from a running share.
+    const qualityTouchedRef = useRef(initialResolution !== undefined || initialFrameRate !== undefined);
+    const pickResolution = (v: ScreenShareOptions['resolution']) => { qualityTouchedRef.current = true; setResolution(v); };
+    const pickFrameRate = (v: ScreenShareOptions['frameRate']) => { qualityTouchedRef.current = true; setFrameRate(v); };
+    const [audio, setAudio] = useState(initialAudio);
+    // Linux Wayland window: the app the USER chose for the share's audio (carried over from the running share
+    // on Change source counts as chosen). Until the chooser has been touched, the app is the one the window's
+    // title names, worked out below - never stored here.
+    const [userApp, setUserApp] = useState<{ handle: string; name: string } | null>(initialAppAudio);
+    const [appTouched, setAppTouched] = useState(() => !!initialAppAudio);
     // The user's pick for ONE source (ultra-wide displays only); anything else
     // - another source, no pick - falls back to defaultLayoutFor(aspect).
     const [layoutPick, setLayoutPick] = useState<{ sourceId: string; layout: ShareLayout } | null>(null);
@@ -603,8 +784,20 @@ export const ScreenSharePickerModal: React.FC<ScreenSharePickerModalProps> = ({ 
         return () => { cancelled = true; };
     }, []);
 
+    // Linux only: is there a desktop chooser (Wayland portal) to wait for, or is this X11,
+    // where the list is just enumerated? null = not known yet (treated as the portal).
+    const [viaPortal, setViaPortal] = useState<boolean | null>(null);
+    useEffect(() => {
+        if (!isLinux) return;
+        let alive = true;
+        void captureViaPortal().then(v => { if (alive) setViaPortal(v); });
+        return () => { alive = false; };
+    }, [isLinux]);
     const [linuxStep, setLinuxStep] = useState<LinuxStep>('waiting');
     const [linuxSources, setLinuxSources] = useState<Source[]>([]);
+    // Through the portal: what the share's audio is (nothing can be listed, so the kind of source is not known here).
+    const portalMode = isLinux && viaPortal === true;
+    const [portalAudio, setPortalAudio] = useState<PortalAudioMode>(() => (initialAppAudio ? 'app' : initialAudio ? 'system' : 'none'));
 
     // Detect if primary screen is 1440p+
     const has1440p = typeof window !== 'undefined' && window.screen.height >= 1440;
@@ -732,25 +925,6 @@ export const ScreenSharePickerModal: React.FC<ScreenSharePickerModalProps> = ({ 
         void fetchSourcesFor(selectedTab);
     }, [isLinux, selectedTab, fetchSourcesFor]);
 
-    // "Share the game window instead": pre-select the window of `preselectExe`
-    // once the window list is in. Re-tried on each list update (the cached list
-    // can be stale; the fresh one replaces it) until a match is found; never
-    // overrides a tile the user has already picked.
-    const preselectDone = useRef(false);
-    const windowList = sourcesByType.window;
-    useEffect(() => {
-        if (isLinux || !preselectExe || preselectDone.current || !windowList || windowList.length === 0) return;
-        const find = window.electronAPI?.findWindowSourceByExe;
-        if (!find) return;
-        let stale = false;
-        void find(preselectExe, windowList.map(s => s.id)).then(id => {
-            if (stale || !id || !openRef.current || preselectDone.current) return;
-            preselectDone.current = true;
-            setSelectedSourceId(cur => cur ?? id);
-        }).catch(() => { /* the picker just opens on the Window tab */ });
-        return () => { stale = true; };
-    }, [isLinux, preselectExe, windowList]);
-
     const [openPaintMs, setOpenPaintMs] = useState<number | null>(null);
     useLayoutEffect(() => {
         const click = timing.current.click;
@@ -793,6 +967,10 @@ export const ScreenSharePickerModal: React.FC<ScreenSharePickerModalProps> = ({ 
         try {
             const sources = await window.electronAPI.getDesktopSources(['screen', 'window']);
             setLinuxSources(sources);
+            // `loading` starts true (there is no cached list on Linux) and only the classic tabs ever cleared it, so
+            // the grid below - the NORMAL result on X11, where the list is every screen and window - showed skeleton
+            // tiles for ever: no previews, nothing to pick (Debian 13 / KDE on Xorg, 2026-11-04).
+            setLoading(false);
             if (sources.length === 0) { setLinuxStep('error'); return; }
             if (sources.length === 1) {
                 setSelectedSourceId(sources[0].id);
@@ -805,6 +983,7 @@ export const ScreenSharePickerModal: React.FC<ScreenSharePickerModalProps> = ({ 
             setLinuxStep('grid');
         } catch (err) {
             console.error('Failed to fetch desktop sources:', err);
+            setLoading(false);
             setLinuxStep('error');
         }
     }, []);
@@ -812,12 +991,18 @@ export const ScreenSharePickerModal: React.FC<ScreenSharePickerModalProps> = ({ 
     // Open the OS picker once, the moment the modal mounts on Linux. Same
     // fetch-on-mount shape (and same accepted synchronous-setState-before-
     // the-await lint tradeoff) as the classic tab effect above.
+    // Not on the portal: there the listing would be a dialog of its own, in front of a capture that
+    // opens another (the 'portal' step lists nothing). Waits for the capture path to be known.
     useEffect(() => {
-        if (!isLinux) return;
-        // eslint-disable-next-line react-hooks/set-state-in-effect -- loading state must flip before the await starts
-        void fetchLinuxSources();
+        if (!isLinux || viaPortal === null) return;
+        if (viaPortal) {
+            // eslint-disable-next-line react-hooks/set-state-in-effect -- the capture path is only known after an async probe
+            setLinuxStep('portal');
+            return;
+        }
+        void fetchLinuxSources(); // (sets the loading state before its await, as the classic tab effect above)
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [isLinux]);
+    }, [isLinux, viaPortal]);
 
     const filteredSources = isLinux ? linuxSources : (sourcesByType[selectedTab] ?? []);
 
@@ -842,6 +1027,73 @@ export const ScreenSharePickerModal: React.FC<ScreenSharePickerModalProps> = ({ 
 
     const chosenSource = filteredSources.find(s => s.id === selectedSourceId) ?? null;
     const chosenIsWindow = !!selectedSourceId?.startsWith('window:');
+    const canListApps = typeof window.electronAPI?.listAudioApps === 'function';
+    const appPickerApplies = canListApps && windowAudioPicksApp(platform, viaPortal, chosenIsWindow);
+    const audioBlockedWhy = windowAudioBlockedReason(platform, viaPortal, chosenIsWindow, canListApps);
+    const { apps: audioApps, refresh: refreshAudioApps } = useAudioApps(appPickerApplies || (portalMode && canListApps && portalAudio === 'app'));
+    // Default to the app that clearly belongs to this window (its title / app id names it) - and to None
+    // when nothing does or two do equally: never a silent guess. A choice the user made is left alone.
+    const windowTitle = chosenSource?.name;
+    const autoApp = (appPickerApplies && audioApps !== null && !appTouched) ? bestAppForWindow(windowTitle, audioApps) : null;
+    const appPick: AppPick | null = appTouched
+        ? (userApp ? { ...userApp, how: 'manual' } : null)
+        : (autoApp ? { handle: autoApp.handle, name: autoApp.name, how: 'auto' } : null);
+    const appAudioSlot = appPickerApplies
+        ? <AppAudioSelect
+            apps={audioApps}
+            pick={appPick}
+            onPick={a => { setAppTouched(true); setUserApp(a); }}
+            onOpen={refreshAudioApps}
+        />
+        : undefined;
+    // What the share will carry: the chosen app on a Wayland window, else the box (minus what cannot be offered).
+    const effectiveAudio = appPickerApplies ? !!appPick : audio && !audioBlockedWhy;
+    // Linux, Chromium/PipeWire path: 90 is not delivered there (linuxShareDefaults.ts), so it is not offered.
+    const chromiumCap = useChromiumFpsCap();
+    const maxFps: 60 | 90 = chromiumCap !== null && chromiumCap < 90 ? 60 : maxShareFps(selectedSourceId);
+    const clampFps = (f: ScreenShareOptions['frameRate'], id: string | null | undefined) => capFrameRate(clampShareFps(f, id), chromiumCap);
+    // Picking a window while "90" was selected: it isn't offered there, so show what it will really use.
+    useEffect(() => { setFrameRate(f => clampFps(f, selectedSourceId)); }, [selectedSourceId, chromiumCap]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    // Software encoding (Linux, no hardware encoder for the codec): a quality that is more than the CPU can carry is
+    // fitted when it is only the untouched default, and WARNED about up front when the user chose it.
+    const [softwareCodec, setSoftwareCodec] = useState<ScreenShareCodec | null>(null);
+    useEffect(() => {
+        if (platform !== 'linux') return;
+        let alive = true;
+        void (async () => {
+            const [native, hw] = await Promise.all([nativeShareLikely(), probeHardwareEncoders(1920, 1080, 60)]);
+            const codec = decideScreenShareCodec(getScreenShareCodecPref(), hw).codec;
+            if (alive && expectSoftwareEncode({ platform, nativeLikely: native, hw, codec })) setSoftwareCodec(codec);
+        })().catch(() => { /* no estimate: no warning */ });
+        return () => { alive = false; };
+    }, [platform]);
+    const softwarePlan = softwareCodec && typeof window !== 'undefined'
+        ? planSoftwareStart({
+            setting: { resolution, frameRate },
+            codec: softwareCodec,
+            source: {
+                width: Math.round(window.screen.width * (window.devicePixelRatio || 1)),
+                height: Math.round(window.screen.height * (window.devicePixelRatio || 1)),
+            },
+            maxFps,
+        })
+        : null;
+    useEffect(() => {
+        if (!softwarePlan?.overBudget || !softwarePlan.suggested || qualityTouchedRef.current) return;
+        setResolution(softwarePlan.setting.resolution);
+        setFrameRate(softwarePlan.setting.frameRate as ScreenShareOptions['frameRate']);
+    }, [softwarePlan?.overBudget, softwarePlan?.setting.resolution, softwarePlan?.setting.frameRate]); // eslint-disable-line react-hooks/exhaustive-deps
+    const softwareNote = softwarePlan?.overBudget && softwarePlan.suggested && qualityTouchedRef.current ? (
+        <ClNote tone="warn" className="mt-2" data-testid="share-software-note">
+            <strong className="font-semibold text-cl-text">{shortOption({ resolution, frameRate })} is more than this PC can encode smoothly.</strong>{' '}
+            Without a hardware video encoder it runs on the CPU, and this setting will likely drop frames or get lowered after about 30 seconds.{' '}
+            <button type="button" className="underline font-medium" data-testid="share-software-use"
+                onClick={() => { setResolution(softwarePlan.suggested!.resolution); setFrameRate(softwarePlan.suggested!.frameRate as ScreenShareOptions['frameRate']); }}>
+                Use {shortOption(softwarePlan.suggested)}
+            </button>
+        </ClNote>
+    ) : null;
     const activePreset = detectPreset(resolution, frameRate);
 
     // Ultra-wide handling: only whole screens, only once the preview has loaded.
@@ -862,8 +1114,8 @@ export const ScreenSharePickerModal: React.FC<ScreenSharePickerModalProps> = ({ 
         : null;
 
     const applyPreset = (key: 'low' | 'default' | 'high') => {
-        setResolution(PRESETS[key].resolution);
-        setFrameRate(PRESETS[key].frameRate);
+        pickResolution(PRESETS[key].resolution);
+        pickFrameRate(PRESETS[key].frameRate);
     };
 
     const handleShare = (sourceId?: string) => {
@@ -872,7 +1124,49 @@ export const ScreenSharePickerModal: React.FC<ScreenSharePickerModalProps> = ({ 
         // The layout only travels for the source it was chosen on (a double-click
         // on another tile passes its id without selecting it first).
         const useLayout = id === selectedSourceId && layout.kind === 'slice';
-        dismiss({ sourceId: id, resolution, frameRate, audio, ...(useLayout ? { layout } : {}) });
+        const isWindow = id.startsWith('window:');
+        if (canListApps && windowAudioPicksApp(platform, viaPortal, isWindow)) {
+            // A Wayland window: the audio is the app chosen in the list (or none). Counts only in the log.
+            logCallEvent('share_audio', shareAudioEventDetail({
+                platform, step: 'picked', mode: 'app', apps: audioApps?.length ?? 0, how: appPick ? appPick.how : 'none',
+            }));
+            dismiss({
+                sourceId: id, resolution, frameRate: clampFps(frameRate, id), audio: !!appPick,
+                ...(appPick ? { appAudio: { handle: appPick.handle, name: appPick.name } } : {}),
+                ...(useLayout ? { layout } : {}),
+            });
+            return;
+        }
+        // A source whose audio cannot be picked out is shared without it, as the box said.
+        const withAudio = audio && !windowAudioBlockedReason(platform, viaPortal, isWindow, canListApps);
+        dismiss({ sourceId: id, resolution, frameRate: clampFps(frameRate, id), audio: withAudio, ...(useLayout ? { layout } : {}) });
+    };
+
+    // ── Through the portal (nothing is listed) ───────────────────────────────────────────────────
+    // The app picked for the audio, if the audio is "one app" and one is picked; the share's audio flag.
+    const portalApp = portalMode && portalAudio === 'app' && userApp ? userApp : null;
+    const portalAudioOn = portalMode && (portalAudio === 'system' || !!portalApp);
+    /** The selection as the share takes it, for `sourceId`. */
+    const portalOptions = (sourceId: string): ScreenShareOptions => ({
+        sourceId, resolution, frameRate: clampFps(frameRate, sourceId), audio: portalAudioOn,
+        ...(portalApp ? { appAudio: { handle: portalApp.handle, name: portalApp.name } } : {}),
+    });
+    const logPortalAudioPick = () => {
+        if (portalAudio !== 'app') return;
+        logCallEvent('share_audio', shareAudioEventDetail({
+            platform, step: 'picked', mode: 'app', apps: audioApps?.length ?? 0, how: portalApp ? 'manual' : 'none',
+        }));
+    };
+    /** "Choose what to share…": a NEW placeholder, so the share code takes it for another capture (one dialog). */
+    const handleChoosePortal = () => {
+        logPortalAudioPick();
+        dismiss(portalOptions(newPortalSourceId()));
+    };
+    /** Mid-share: new quality / audio on the capture that is already running - the same placeholder, no dialog. */
+    const handleApplyToLive = () => {
+        if (!liveSourceId) return;
+        logPortalAudioPick();
+        dismiss(portalOptions(liveSourceId));
     };
 
     const handleCancel = () => { dismiss(null); };
@@ -940,18 +1234,11 @@ export const ScreenSharePickerModal: React.FC<ScreenSharePickerModalProps> = ({ 
                         showMacPickerBypassNote). Not while the Screen Recording
                         notice owns the body — that one comes first. */}
                     {bypassNote && verdict !== 'macos-permission-required' && verdict !== 'macos-relaunch-required' && (
-                        <div
-                            className="mx-6 mt-3 flex items-start gap-2 rounded-lg px-3 py-2 border shrink-0"
-                            style={{ background: 'rgba(14,165,233,0.06)', borderColor: 'rgba(14,165,233,0.25)' }}
-                            role="note"
-                        >
-                            <Info className="w-3.5 h-3.5 text-cl-lume shrink-0 mt-[1px]" aria-hidden="true" />
-                            <p className="text-[11px] text-cl-muted m-0 leading-snug">
-                                macOS may ask whether Cipherline can <span className="text-cl-text">bypass the system private window picker</span>.
-                                Choose <span className="font-semibold text-cl-text">Allow</span>: Cipherline uses its own picker so it can share
-                                a window's sound and show annotations over what you share. macOS asks again about once a month.
-                            </p>
-                        </div>
+                        <ClNote className="mx-6 mt-3 shrink-0" data-testid="share-mac-bypass-note">
+                            macOS may ask whether Cipherline can <span className="text-cl-text">bypass the system private window picker</span>.
+                            Choose <span className="font-semibold text-cl-text">Allow</span>: Cipherline uses its own picker so it can share
+                            a window&apos;s sound and show annotations over what you share. macOS asks again about once a month.
+                        </ClNote>
                     )}
 
                     {/* Source grid */}
@@ -973,9 +1260,9 @@ export const ScreenSharePickerModal: React.FC<ScreenSharePickerModalProps> = ({ 
                         {layoutRow}
                         <div className="flex items-center gap-4 flex-wrap">
                             <QualityControls
-                                resolution={resolution} setResolution={setResolution}
-                                frameRate={frameRate} setFrameRate={setFrameRate}
-                                has1440p={has1440p} audio={audio} setAudio={setAudio}
+                                resolution={resolution} setResolution={pickResolution}
+                                frameRate={frameRate} setFrameRate={pickFrameRate} maxFps={maxFps}
+                                has1440p={has1440p} audio={audio} setAudio={setAudio} audioBlockedWhy={audioBlockedWhy} audioSlot={appAudioSlot}
                                 activePreset={activePreset} applyPreset={applyPreset}
                             />
                             <div className="flex-1" />
@@ -993,16 +1280,68 @@ export const ScreenSharePickerModal: React.FC<ScreenSharePickerModalProps> = ({ 
                                 </ClButton>
                             </div>
                         </div>
-                        <QualitySummary resolution={resolution} frameRate={frameRate} activePreset={activePreset} audio={audio} maxRefreshHz={maxRefreshHz} captureCeiling={captureCeiling} />
+                        <QualitySummary resolution={resolution} frameRate={frameRate} activePreset={activePreset} audio={effectiveAudio} maxRefreshHz={maxRefreshHz} captureCeiling={captureCeiling} softwareNote={softwareNote} />
                     </div>
                 </>
             ) : (
                 <>
+                    {linuxStep === 'portal' && (
+                        <>
+                            <div className="flex-1 overflow-y-auto custom-scrollbar px-6 py-5 flex flex-col gap-5" data-testid="share-portal-step">
+                                <div className="flex items-start gap-3 rounded-xl bg-cl-surface border border-white/[0.06] p-3">
+                                    <div className="w-10 h-10 rounded-lg bg-cl-lume/15 flex items-center justify-center shrink-0">
+                                        <Monitor className="w-5 h-5 text-cl-lume" />
+                                    </div>
+                                    <div className="min-w-0">
+                                        {/* <div>s, not <p>s: the kit modal's `.mcard p` rule beats these utilities (see ClNote). */}
+                                        <div className="text-sm font-semibold text-cl-text">Your desktop picks what to share</div>
+                                        <div className="text-xs text-cl-faint leading-snug mt-0.5">
+                                            On Wayland the choice of window or screen is made in your desktop&apos;s own dialog, once.
+                                            Set the quality and audio here, then choose.
+                                        </div>
+                                    </div>
+                                </div>
+                                <QualityControls
+                                    resolution={resolution} setResolution={pickResolution}
+                                    frameRate={frameRate} setFrameRate={pickFrameRate} maxFps={maxFps}
+                                    has1440p={has1440p} audio={portalAudioOn} setAudio={() => {}} audioBlockedWhy={null}
+                                    activePreset={activePreset} applyPreset={applyPreset}
+                                    audioSlot={
+                                        <PortalAudioChoice
+                                            mode={portalAudio} setMode={setPortalAudio} canPickApp={canListApps}
+                                            appSelect={
+                                                <AppAudioSelect
+                                                    apps={audioApps}
+                                                    pick={portalApp ? { ...portalApp, how: 'manual' } : null}
+                                                    onPick={a => { setAppTouched(true); setUserApp(a); }}
+                                                    onOpen={refreshAudioApps}
+                                                />
+                                            }
+                                        />
+                                    }
+                                />
+                                <QualitySummary resolution={resolution} frameRate={frameRate} activePreset={activePreset} audio={portalAudioOn} maxRefreshHz={maxRefreshHz} captureCeiling={captureCeiling} softwareNote={softwareNote} />
+                            </div>
+                            <div className="shrink-0 border-t border-white/[0.06] bg-cl-abyss rounded-b-2xl px-6 py-3.5 flex items-center justify-end gap-2">
+                                <ClButton variant="ghost" size="sm" onClick={handleCancel}>Cancel</ClButton>
+                                {liveSourceId && (
+                                    <ClButton variant="ghost" size="sm" onClick={handleApplyToLive}>
+                                        Apply to current share
+                                    </ClButton>
+                                )}
+                                <ClButton variant="primary" size="sm" onClick={handleChoosePortal} pressAnim="send">
+                                    Choose what to share…
+                                    <ArrowRight className="w-3 h-3" />
+                                </ClButton>
+                            </div>
+                        </>
+                    )}
+
                     {linuxStep === 'waiting' && (
                         <div className="flex-1 flex flex-col items-center justify-center gap-4 px-6">
                             <Loader2 className="w-8 h-8 text-cl-lume animate-spin" />
                             <p className="text-cl-faint text-sm m-0 text-center max-w-[320px] leading-snug">
-                                Waiting for you to choose a window or screen in the system dialog…
+                                Looking for windows and screens…
                             </p>
                             <ClButton variant="ghost" size="sm" onClick={handleCancel}>Cancel</ClButton>
                         </div>
@@ -1012,9 +1351,18 @@ export const ScreenSharePickerModal: React.FC<ScreenSharePickerModalProps> = ({ 
                         <div className="flex-1 flex flex-col items-center justify-center gap-3 px-6">
                             <AlertTriangle className="w-8 h-8 text-amber-400" />
                             <p className="text-cl-faint text-sm m-0 text-center max-w-[340px] leading-snug">
-                                The system's picker closed without a selection —
-                                that's your desktop's own dialog, not Cipherline's, and on
-                                some Wayland setups it can close itself before you can act.
+                                {viaPortal === false ? (
+                                    <>Cipherline couldn&apos;t find a screen or window to share on this display.</>
+                                ) : (
+                                    <>
+                                        The system's picker closed without a selection —
+                                        that's your desktop's own dialog, not Cipherline's, and on
+                                        some Wayland setups it can close itself before you can act.
+                                        If no dialog appeared at all, Wayland screen sharing needs
+                                        xdg-desktop-portal (with your desktop&apos;s portal backend)
+                                        and PipeWire to be installed and running.
+                                    </>
+                                )}
                             </p>
                             <div className="flex items-center gap-2">
                                 <ClButton variant="ghost" size="sm" onClick={handleCancel}>Cancel</ClButton>
@@ -1067,23 +1415,24 @@ export const ScreenSharePickerModal: React.FC<ScreenSharePickerModalProps> = ({ 
                                             : <Monitor className="w-6 h-6 text-cl-faint" />}
                                     </div>
                                     <div className="min-w-0">
-                                        <p className="text-[10px] uppercase tracking-wide text-cl-faint font-semibold m-0 mb-0.5">
+                                        {/* <div>s, not <p>s: the kit modal's `.mcard p` rule beats these utilities (see ClNote). */}
+                                        <div className="text-[10px] uppercase tracking-wide text-cl-faint font-semibold mb-0.5">
                                             {chosenIsWindow ? 'Application Window' : 'Entire Screen'}
-                                        </p>
-                                        <p className="text-sm font-semibold text-cl-text m-0 truncate">
+                                        </div>
+                                        <div className="text-sm font-semibold text-cl-text truncate">
                                             {chosenSource?.name ?? 'Selected source'}
-                                        </p>
+                                        </div>
                                     </div>
                                 </div>
 
                                 {layoutRow}
                                 <QualityControls
-                                    resolution={resolution} setResolution={setResolution}
-                                    frameRate={frameRate} setFrameRate={setFrameRate}
-                                    has1440p={has1440p} audio={audio} setAudio={setAudio}
+                                    resolution={resolution} setResolution={pickResolution}
+                                    frameRate={frameRate} setFrameRate={pickFrameRate} maxFps={maxFps}
+                                    has1440p={has1440p} audio={audio} setAudio={setAudio} audioBlockedWhy={audioBlockedWhy} audioSlot={appAudioSlot}
                                     activePreset={activePreset} applyPreset={applyPreset}
                                 />
-                                <QualitySummary resolution={resolution} frameRate={frameRate} activePreset={activePreset} audio={audio} maxRefreshHz={maxRefreshHz} captureCeiling={captureCeiling} />
+                                <QualitySummary resolution={resolution} frameRate={frameRate} activePreset={activePreset} audio={effectiveAudio} maxRefreshHz={maxRefreshHz} captureCeiling={captureCeiling} softwareNote={softwareNote} />
                             </div>
                             <div className="shrink-0 border-t border-white/[0.06] bg-cl-abyss rounded-b-2xl px-6 py-3.5 flex items-center justify-between gap-2">
                                 <ClButton

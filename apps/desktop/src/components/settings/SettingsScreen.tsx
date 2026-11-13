@@ -7,12 +7,12 @@ import { DepthGauge, ZONES, zoneOf, zoneLabel } from './DepthGauge';
 import { useEggCalendar } from '../../hooks/useEasterEggs';
 import { revealSetting } from './revealSetting';
 import { ProfilePane } from './panes/ProfilePane';
-import { ConnectionsPane } from '../integrations/ConnectionsPane';
+import { resolveSettingsTarget, type SettingsTarget } from './paneAliases';
 import { useUnsavedChangesGuard } from '../../hooks/useUnsavedChangesGuard';
 import { useEscape } from '../../hooks/useEscape';
 import { setOccluded } from '../../utils/idleMotion';
 import { AppearancePane } from './panes/AppearancePane';
-import { PersonalizePane } from './panes/PersonalizePane';
+import { ActivityStylePane } from './panes/ActivityStylePane';
 import { DevicesPane } from './panes/DevicesPane';
 import { DangerPane } from './panes/DangerPane';
 import AdvancedSettings from '../AdvancedSettings';
@@ -51,17 +51,16 @@ import type { GifSettingsHook } from '../../hooks/useGifSettings';
  * exits fast and plain, reduced-motion strips everything (CSS layer).
  */
 export type PaneId =
-    | 'profile' | 'connections' | 'appearance' | 'personalize'
+    | 'profile' | 'activityStyle' | 'appearance'
     | 'devices' | 'voice' | 'notifications' | 'keybinds' | 'activity'
     | 'privacy' | 'storage' | 'billing'
     | 'advanced' | 'danger';
 
 const PANE_META: Record<PaneId, { title: string; desc: string }> = {
     profile:       { title: 'Profile',          desc: 'How you show up to the people who can actually see you.' },
-    connections:   { title: 'Connections',      desc: 'Steam, what you\u2019re listening to, and the playlists on your profile.' },
+    activityStyle: { title: 'Activity & Style', desc: 'What you share with friends, and the touches that are yours alone.' },
     appearance:    { title: 'Appearance',       desc: 'The window, the tray, and how the app behaves around your OS.' },
-    personalize:   { title: 'Personalize',    desc: 'Make it yours. Your own emojis now, more to come.' },
-    devices:       { title: 'Devices',          desc: 'Every device carries its own keys. This is the list, and the axe.' },
+    devices:       { title: 'Security & devices', desc: 'Your sign-in protections, and every device that carries your keys. This is the list, and the axe.' },
     voice:         { title: 'Voice & Video',    desc: 'Tuned on-device. Encrypted per frame on the way out.' },
     notifications: { title: 'Notifications',    desc: 'What’s allowed to glow, and when.' },
     keybinds:      { title: 'Keybinds',         desc: 'Muscle memory, formalized.' },
@@ -113,7 +112,8 @@ function useDepthCounter(target: number) {
 
 export interface SettingsScreenProps {
     onClose: () => void;
-    initialTab?: PaneId;
+    /** A pane, or an old pane id ('connections', 'personalize', 'steam'): see paneAliases.ts. */
+    initialTab?: SettingsTarget;
     onLogout: () => void;
     onViewProfile?: () => void;
     retention: RetentionHook;
@@ -149,7 +149,9 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
     conversations, onPurgeConversation, onPurgeTypeNow, countExpiringForType, serverStorage,
     keybinds, voice, gameSettings, currentGame, currentGameProcess, onIgnoreCurrentGame, privacy, screenLock, gif, onLogout,
 }) => {
-    const [pane, setPane] = useState<PaneId>(initialTab ?? 'profile');
+    // Resolved once: initialTab only picks where the Descent opens.
+    const [initial] = useState(() => resolveSettingsTarget(initialTab));
+    const [pane, setPane] = useState<PaneId>(initial.pane);
     const [arrived, setArrived] = useState(false);
     const [closing, setClosing] = useState(false);
     const [leaving, setLeaving] = useState(false);
@@ -232,7 +234,9 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
     // A search hit names a SETTING, not just a pane: once the pane has
     // mounted (and its cards have mostly arrived), scroll to that setting,
     // open whatever disclosure it is folded into, and flash it once.
-    const revealAfterSwitch = useRef<string | null>(null);
+    // Seeded with the opening target's setting, so a deep link ("Connect
+    // accounts" -> Profile > Steam) is revealed the same way once the first pane is up.
+    const revealAfterSwitch = useRef<string | null>(initial.setting ?? null);
     useEffect(() => {
         const label = revealAfterSwitch.current;
         if (!label) return;
@@ -311,9 +315,8 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
 
                             <section key={`pane-${pane}`} className={`sd-pane${entryFx.pane}`}>
                                 {pane === 'profile' && <ProfilePane onDirtyChange={unsaved.setDirty} />}
-                                {pane === 'connections' && <ConnectionsPane />}
+                                {pane === 'activityStyle' && <ActivityStylePane />}
                                 {pane === 'appearance' && <AppearancePane gif={gif} />}
-                                {pane === 'personalize' && <PersonalizePane />}
                                 {pane === 'devices' && <DevicesPane />}
                                 {pane === 'voice' && <VoiceVideoSettings voice={voice} />}
                                 {pane === 'notifications' && <NotificationsTab />}

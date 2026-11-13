@@ -391,6 +391,7 @@ describe('playback-path coverage scan', () => {
         'components/call/VideoTile.tsx': 'video tracks only; the audio is useParticipantAudio',
         'components/ChatPane.tsx': 'muted poster-frame <video>, no controls',
         'components/SharedContentModal.tsx#muted': 'offscreen/muted poster capture',
+        'components/diagnostics/LinuxShareIntroCard.tsx': 'silent how-to clip: the bundled webm has no audio track and the <video> is always muted',
         'utils/gpuRecoveryRoom.ts': 're-attaches remote VIDEO tracks',
         'utils/audioHealth.ts': 'probe, never connected to destination',
         'utils/customEntranceSound/browser.ts': 'encode fallback: the clip is routed into a MediaStreamDestination for MediaRecorder, never to ctx.destination (playback is notificationSounds)',

@@ -14,6 +14,8 @@ import './utils/clPhysics';
 // for the measurements that motivate it. Installed before render so the very
 // first paint already carries the right state.
 import { installIdleMotionGate } from './utils/idleMotion';
+// Keeps every Opus m-section of a call's BUNDLE on one fmtp set (see file).
+import { installOpusBundleConsistency } from './utils/sdpOpusBundleConsistency';
 // Brand fonts, requested without blocking paint or this script (webFonts.ts).
 import { loadWebFonts } from './utils/webFonts';
 import { scheduleBootPrefetch } from './utils/bootPrefetch';
@@ -42,6 +44,7 @@ import { secureLocalStore } from './utils/secureLocalStore';
 import { applyNightDiveNow } from './hooks/useNightDive';
 import StorageLockedScreen from './components/StorageLockedScreen';
 import StorageCorruptedScreen from './components/StorageCorruptedScreen';
+import StorageReadFailedScreen from './components/StorageReadFailedScreen';
 import RootErrorBoundary from './components/RootErrorBoundary';
 import StagingLockScreen from './components/StagingLockScreen';
 import { readStagingLockStatus, shouldShowStagingLockScreen } from './utils/stagingLock';
@@ -67,6 +70,7 @@ async function renderApp() {
   // Before the first paint, so no frame is ever rendered with decorative
   // loops running in an already-background window.
   installIdleMotionGate();
+  installOpusBundleConsistency();
 
   // Night dive: the store is hydrated by now, so a client launched after
   // midnight paints its very first frame already deep instead of fading in.
@@ -102,12 +106,26 @@ async function renderApp() {
   await renderUnlockedApp(root);
 }
 
-async function renderUnlockedApp(root: Root) {
+async function renderUnlockedApp(root: Root, continuedPastReadFailure = false) {
   // If the device's encrypted storage couldn't be unlocked, do NOT mount the
   // normal app (which would read an empty store and silently look "logged out").
   // Show the recovery screen instead — it performs zero writes to the store.
   if (secureLocalStore.isLocked()) {
     root.render(<StrictMode><RootErrorBoundary><StorageLockedScreen /></RootErrorBoundary></StrictMode>);
+    return;
+  }
+
+  // The key is fine but the store could not be read this launch, session
+  // pointers included. Without this the app would show the sign-in screen, as if
+  // the device were signed out, and a sign-in would register a new device.
+  if (secureLocalStore.isStoreUnread() && !continuedPastReadFailure) {
+    root.render(
+      <StrictMode>
+        <RootErrorBoundary>
+          <StorageReadFailedScreen onContinue={() => { void renderUnlockedApp(root, true); }} />
+        </RootErrorBoundary>
+      </StrictMode>,
+    );
     return;
   }
 

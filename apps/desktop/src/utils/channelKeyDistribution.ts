@@ -206,15 +206,17 @@ export function buildChannelKeyContent(params: {
  * are server-supplied routing metadata; the content's own channel_id/epoch are
  * inside the E2EE payload, set by the distributor (buildChannelKeyContent).
  * Requiring them to agree stops a key wrapped for one channel or epoch from
- * being installed as another's. Every producer has always set both fields;
- * an absent field is tolerated, a present-but-different one is not.
+ * being installed as another's (audit 21/H-5: relabel to undo a rotation or
+ * to cross two channels). Both fields are REQUIRED: every producer (desktop
+ * buildChannelKeyContent, mobile channel-sender-key.ts on main and shellA)
+ * has always set them, so an envelope without them is not one we made.
  */
 export function channelKeyContentMatchesEnvelope(
     content: { channel_id?: unknown; epoch?: unknown },
     env: { channel_id: string; epoch: number },
 ): boolean {
-    if (content.channel_id !== undefined && content.channel_id !== env.channel_id) return false;
-    if (content.epoch !== undefined && Number(content.epoch) !== env.epoch) return false;
+    if (typeof content.channel_id !== 'string' || content.channel_id !== env.channel_id) return false;
+    if (content.epoch === undefined || content.epoch === null || Number(content.epoch) !== env.epoch) return false;
     return true;
 }
 
@@ -332,6 +334,33 @@ export function resolveEpochDivergence(
 // horizon. Past this point, no holder keeps the key anymore either, so
 // requesting it is a guaranteed-forever no-op that just spams the protocol.
 const EPOCH_PRUNE_HORIZON_MS = 30 * 24 * 60 * 60 * 1000;
+
+/**
+ * The newest epochs a holder keeps whatever their age (electron/channel-keys.ts
+ * RETAIN_NEWEST_COUNT; a test pins the two together). The 30-day rule above is
+ * therefore NOT "nobody keeps it after 30 days": a holder also keeps the newest
+ * 50 epochs of a channel and every pinned epoch, however old.
+ */
+export const HOLDER_RETAIN_NEWEST_COUNT = 50;
+
+/**
+ * Is this epoch past EVERYTHING a holder keeps - older than the prune horizon,
+ * outside the newest HOLDER_RETAIN_NEWEST_COUNT epochs, and not pinned? Then no
+ * device can serve it and asking is a guaranteed no-op that wakes every holder.
+ * Unknown age (no registry entry) is never "past": ask as before.
+ */
+export function epochPastHolderBound(o: {
+    epoch: number;
+    latestEpoch: number;
+    createdAtMs: number | undefined;
+    pinned?: boolean;
+    nowMs: number;
+}): boolean {
+    if (o.pinned) return false;
+    if (o.createdAtMs === undefined || !Number.isFinite(o.createdAtMs)) return false;
+    if (o.nowMs - o.createdAtMs < EPOCH_PRUNE_HORIZON_MS) return false;
+    return o.epoch <= o.latestEpoch - HOLDER_RETAIN_NEWEST_COUNT;
+}
 
 export interface EpochGapResult {
     /** Server-known epochs (within the prune horizon) this device doesn't hold. */
@@ -687,7 +716,7 @@ export function rotationAlreadyDone(serverLatest: number, epochAtSignal: number 
  *  the kick/ban/leave callers). Anything else is a newer or malformed server
  *  build: normalize rather than write an unrecognized string into the
  *  `rotation_reason` column. */
-export const ROTATION_REASONS = ['permission_change', 'member_removed'] as const;
+export const ROTATION_REASONS = ['permission_change', 'member_removed', 'periodic'] as const;
 
 export function normalizeRotationReason(reason: string | null | undefined): string {
     return (ROTATION_REASONS as readonly string[]).includes(reason ?? '')
@@ -704,8 +733,69 @@ export function normalizeRotationReason(reason: string | null | undefined): stri
  * lost-access rotation. Same mapping mobile uses (epochReasonForRotationSignal
  * in cipherline-mobile's channelKeys/decisions.ts).
  */
-export function epochReasonForRotationSignal(reason: string | null | undefined): 'role_perm_changed' | 'member_left' {
-    return normalizeRotationReason(reason) === 'member_removed' ? 'member_left' : 'role_perm_changed';
+export function epochReasonForRotationSignal(reason: string | null | undefined): 'role_perm_changed' | 'member_left' | 'periodic' {
+    const r = normalizeRotationReason(reason);
+    if (r === 'member_removed') return 'member_left';
+    if (r === 'periodic') return 'periodic'; // in RecordEpochDto's allowlist
+    return 'role_perm_changed';
+}
+
+// ── Periodic rotation ──────────────────────────────────────────────────────
+//
+// One key covers a whole epoch, so a key leaked from any member's device reads
+// every message in that epoch, past and future, until the epoch changes. Before
+// this, epochs changed ONLY on lost access (leave/kick/ban/role edit): a server
+// where nobody left kept one key forever, although every key has always been
+// stamped `rotates_at = +7 days` and the shared contract promised a 7-day
+// rotation. Nothing ever read the stamp.
+//
+// Mechanism: a low-frequency sweep finds channels whose CURRENT epoch is past
+// its rotates_at and hands them to the existing lost-access rotation path with
+// reason 'periodic' — same jitter, same server arbitration (POST /epoch picks
+// one winner, losers discard and fetch it), same fresh recipient list. Holders
+// see different rotates_at values (it is stamped at DISTRIBUTION time), so the
+// earliest holder fires first rather than everyone at once.
+
+/** How often the sweep runs while connected. */
+export const PERIODIC_ROTATION_SWEEP_MS = 30 * 60 * 1000;
+/** First sweep after connect — late enough not to compete with boot work. */
+export const PERIODIC_ROTATION_FIRST_SWEEP_MS = 3 * 60 * 1000;
+/** Cap per sweep, so a long-offline device does not mint a storm at once. */
+export const PERIODIC_ROTATION_MAX_PER_SWEEP = 5;
+
+/**
+ * Whether this device should start a periodic rotation of a channel.
+ *
+ *  - rotatesAt must parse and be in the past;
+ *  - we must hold a key (nothing to rotate from otherwise);
+ *  - the server's latest epoch must be KNOWN and not ahead of ours: a device
+ *    that is behind has not received the current epoch yet and must not
+ *    judge its age (that is the other holders' job).
+ */
+export function isEpochDueForPeriodicRotation(params: {
+    rotatesAtIso: string | null | undefined;
+    nowMs: number;
+    localLatest: number | null | undefined;
+    serverLatest: number | null | undefined;
+}): boolean {
+    const { rotatesAtIso, nowMs, localLatest, serverLatest } = params;
+    if (localLatest == null || !Number.isSafeInteger(localLatest) || localLatest < 1) return false;
+    if (serverLatest == null || !Number.isSafeInteger(serverLatest) || serverLatest < 1) return false;
+    if (localLatest < serverLatest) return false;
+    if (typeof rotatesAtIso !== 'string') return false;
+    const due = Date.parse(rotatesAtIso);
+    if (!Number.isFinite(due)) return false;
+    return nowMs >= due;
+}
+
+/**
+ * For a periodic rotation, "another holder already rotated" is the END of the
+ * job: there is no departed member whose access must be cut, so the lost-access
+ * path's "verify in 20 s and rotate anyway" fallback would only mint a second,
+ * pointless epoch for a device that is merely behind.
+ */
+export function shouldVerifyAfterStandDown(reason: string | null | undefined): boolean {
+    return normalizeRotationReason(reason) !== 'periodic';
 }
 
 /**

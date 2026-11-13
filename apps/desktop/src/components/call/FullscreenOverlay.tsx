@@ -2,14 +2,20 @@ import { useSpeakerPromotion } from '../../hooks/useSpeakerPromotion';
 import { prioritizeForOverflow } from '../../utils/overflowPriority';
 import React, { useEffect } from 'react';
 import ReactDOM from 'react-dom';
+import { PresenceEnter } from './presenceMotion';
+import { currentCallPresenceTracker } from '../../utils/callPresenceLifecycle';
 import { useParticipants, useLocalParticipant } from '@livekit/components-react';
+import { useElementSize } from '../../hooks/useElementSize';
 import { Track, RemoteParticipant, Participant } from 'livekit-client';
 import { useCallContext } from '../../contexts/CallContext';
 import { useOsWindowFullscreen } from '../../hooks/useOsWindowFullscreen';
 import { useEscape } from '../../hooks/useEscape';
-import { VideoTile } from './VideoTile';
+import { CallStreamTile } from './LocalScreenShareTile';
+import { useHtmlFullscreenWhile } from '../../hooks/useHtmlFullscreenWhile';
 import { ParticipantCard } from './ParticipantCard';
 import { ScreenShareGate } from './ScreenShareGate';
+import { useShareHoldIds } from '../../hooks/useShareHold';
+import { SHARE_REPUBLISH_ATTR } from '../../utils/shareHold';
 import {
     bestGrid,
     chooseFullscreenLayout,
@@ -19,6 +25,9 @@ import {
     fullscreenConsoleBottom,
     fullscreenConsoleMetrics,
     fullscreenTitleStripHeight,
+    fillTargetState,
+    orderStage,
+    ownShareOnStage,
     stripCardSize,
     stripHeightBounds,
     stripMetricsAt,
@@ -27,6 +36,7 @@ import {
     FS_CONSOLE_DOCK_GAP_PX,
     STRIP_JUSTIFY_CONTENT,
     sameFocus,
+    type FocusRef,
     type StageTileRef,
 } from '../../utils/fullscreenCallLayout';
 import { ROSTER_ONLY } from '../../utils/callRosterEvents';
@@ -73,8 +83,8 @@ import { ROSTER_ONLY } from '../../utils/callRosterEvents';
  *    disabled outright (`focusToggleDisabled`) rather than letting a click
  *    swap between two identical pictures. The counting rule lives with the
  *    layout function; in short, a "video" is any tile that competes for stage
- *    space — your own camera included, an unsubscribed share's gate included,
- *    an audio-only participant not.
+ *    space — your own camera and your own share included, an unsubscribed
+ *    share's gate included, an audio-only participant not.
  *
  * 2. "It needs the zoom features we have on the non-fullscreen focused video."
  *    The stage tile is rendered with `isFocusedView`, which is what arms
@@ -112,6 +122,22 @@ import { ROSTER_ONLY } from '../../utils/callRosterEvents';
  *    ref below — deliberately NOT persisted to disk, which would mean a new
  *    `secureLocalStore` key and a `backupRegistry` classification for a purely
  *    ephemeral view preference.
+ *
+ * ── One video filling the screen
+ *
+ * Owner: "an option to right click a video in full screen and make it so that
+ * window takes up the entire screen." `fill` is one more layout, not a second
+ * renderer: `chooseFullscreenLayout` answers `solo` with nothing in the strip, so
+ * the same stage tile takes the whole overlay, the strip's band is gone, and the
+ * console falls to the viewport's edge and idles out as it does in grid mode. The
+ * title strip goes too.
+ *
+ * It also takes the OS window fullscreen, through the HTML API main already grants
+ * (see useHtmlFullscreenWhile for what that buys and what it costs): on Windows the
+ * OS draws its caption buttons over this portal whatever we render, so without it
+ * "the entire screen" would keep them, and the taskbar, in the picture. That is
+ * the one thing in this component that touches the window, and it ends with the
+ * fill. Fullscreen itself stays the in-app overlay it has always been.
  *
  * ── What was removed
  *
@@ -257,7 +283,6 @@ export const FullscreenOverlay = ({
     // See useOsWindowFullscreen's doc comment and "Reclaiming the titlebar"
     // above.
     const osWindowFullscreen = useOsWindowFullscreen();
-    const titleStripHeight = fullscreenTitleStripHeight(osWindowFullscreen);
 
     // Escape exits fullscreen through the shared stack. This layer is only
     // pushed while actually fullscreen, so a kit modal (screen-share picker),
@@ -292,6 +317,7 @@ export const FullscreenOverlay = ({
     // return: hooks have to run in the same order on every render (React error
     // #310), and the strip/grid hooks below depend on these counts.
     const remoteParticipants = participants.filter(p => p.identity !== localParticipant?.identity) as RemoteParticipant[];
+    const heldShares = useShareHoldIds();
 
     const byIdentity = new Map<string, Participant>();
     for (const p of participants) byIdentity.set(p.identity, p);
@@ -299,6 +325,16 @@ export const FullscreenOverlay = ({
     const cameras: Participant[] = [];
     const subscribedShares: RemoteParticipant[] = [];
     const gatedShares: RemoteParticipant[] = [];
+
+    // Your own share, for you and nobody else: a tile on this client's stage, with
+    // no effect on what is published. `ownShareOnStage` for the terms. Never in the
+    // watch set: you do not subscribe to yourself, and the remote loop below is
+    // the only thing that reads `subscribedScreenshares`.
+    const ownShareTile = localParticipant && ownShareOnStage({
+        sharing: localParticipant.isScreenShareEnabled,
+        republishing: !!localParticipant.attributes?.[SHARE_REPUBLISH_ATTR],
+        hidden: hiddenScreenShareIds.has(localParticipant.identity),
+    }) ? localParticipant.identity : null;
 
     // The local camera is a stage tile like any other. It is NOT excluded from
     // the "how many videos are there" count: if your self-view is the only
@@ -312,19 +348,19 @@ export const FullscreenOverlay = ({
             cameras.push(p);
         }
         const ssPub = p.getTrackPublication(Track.Source.ScreenShare);
-        if (ssPub && !hiddenScreenShareIds.has(p.identity)) {
+        // A share mid-republish keeps its place on the stage (utils/shareHold.ts).
+        if ((ssPub || heldShares.has(p.identity)) && !hiddenScreenShareIds.has(p.identity)) {
             if (subscribedScreenshares.has(p.identity)) subscribedShares.push(p);
             else gatedShares.push(p);
         }
     }
 
-    // Order: shares first (a room looking at a share is looking at the share),
-    // then cameras, then the click-to-watch gates.
-    const stage: StageTileRef[] = [
-        ...subscribedShares.map(p => ({ identity: p.identity, source: Track.Source.ScreenShare as const, gated: false })),
-        ...cameras.map(p => ({ identity: p.identity, source: Track.Source.Camera as const, gated: false })),
-        ...gatedShares.map(p => ({ identity: p.identity, source: Track.Source.ScreenShare as const, gated: true })),
-    ];
+    const stage: StageTileRef[] = orderStage({
+        watchedShares: subscribedShares.map(p => p.identity),
+        ownShare: ownShareTile,
+        cameras: cameras.map(p => p.identity),
+        gatedShares: gatedShares.map(p => p.identity),
+    });
 
     const staged = new Set(stage.map(t => t.identity));
     const audioOnly = participants.filter(p => !staged.has(p.identity)).map(p => p.identity);
@@ -345,7 +381,71 @@ export const FullscreenOverlay = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [isFullscreen, stageEmpty]);
 
-    const layout = chooseFullscreenLayout({ stage, audioOnly, focused: focusedStream });
+    // ── One video filling the screen ─────────────────────────────────────────
+    // See the header comment. Lives here, not in CallContext: nothing outside this
+    // view can show it, and leaving fullscreen forgets it. The docked focused view
+    // reaches it through CallContext's requestFill.
+    const [fill, setFill] = React.useState<FocusRef | null>(null);
+    const [fillSeenFullscreen, setFillSeenFullscreen] = React.useState(isFullscreen);
+    if (fillSeenFullscreen !== isFullscreen) {
+        setFillSeenFullscreen(isFullscreen);
+        if (!isFullscreen) setFill(null);
+    }
+    // "Fill Entire Screen" from the docked focused view: it brought us here to do this.
+    const fillRequest = callCtx.fillRequest;
+    useEffect(() => {
+        if (!isFullscreen || !fillRequest) return;
+        setFill(fillRequest);
+        callCtx.takeFillRequest();
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- callCtx is re-created per provider render
+    }, [isFullscreen, fillRequest]);
+    const fillState = fillTargetState(stage, fill, {
+        present: !!fill && byIdentity.has(fill.identity),
+        hidden: !!fill && (fill.source === Track.Source.Camera ? hiddenVideoIds : hiddenScreenShareIds).has(fill.identity),
+    });
+    const filled = fillState === 'live' || fillState === 'waiting';
+    const fillIdentity = fill?.identity;
+    useEffect(() => {
+        if (fillState !== 'waiting' && fillState !== 'gone') return;
+        // Off the stage: same grace as the empty stage below, longer while the
+        // sharer has said a republish is under way (the same check that keeps a
+        // focus in FocusedStreamBanner). Then it has ended, and this steps back.
+        let t: ReturnType<typeof setTimeout>;
+        const check = () => {
+            if (fillState === 'waiting' && fillIdentity && callCtx.isAdjusting(fillIdentity)) {
+                t = setTimeout(check, FULLSCREEN_EMPTY_GRACE_MS);
+                return;
+            }
+            setFill(null);
+        };
+        t = setTimeout(check, fillState === 'gone' ? 0 : FULLSCREEN_EMPTY_GRACE_MS);
+        return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- callCtx is re-created per provider render; only the target's state should re-arm this
+    }, [fillState, fillIdentity]);
+
+    // One level at a time: pushed after fullscreen's own layer, so it is reached
+    // first, and leaving the fill leaves you in fullscreen on the layout you had.
+    // In OS fullscreen the browser takes that press before any page sees it, so the
+    // callback below is the same step back by another route.
+    useEscape(() => setFill(null), isFullscreen && filled);
+    useHtmlFullscreenWhile(isFullscreen && filled, () => {
+        setFill(null);
+        window.dispatchEvent(new Event('close-all-popovers'));
+    });
+
+    // The menu row that started this is gone, and focus with it. Hand it to the
+    // stage so Tab and the arrow keys carry on from here, not from behind the overlay.
+    const stageRef = React.useRef<HTMLDivElement>(null);
+    const prevFilledRef = React.useRef(filled);
+    useEffect(() => {
+        if (prevFilledRef.current === filled) return;
+        prevFilledRef.current = filled;
+        stageRef.current?.focus({ preventScroll: true });
+    }, [filled]);
+
+    const titleStripHeight = filled ? 0 : fullscreenTitleStripHeight(osWindowFullscreen);
+
+    const layout = chooseFullscreenLayout({ stage, audioOnly, focused: focusedStream, fill: filled ? fill : null });
     const canToggleFocus = focusToggleMeaningful(layout);
 
     // ── Strip sizing ─────────────────────────────────────────────────────────
@@ -613,18 +713,11 @@ export const FullscreenOverlay = ({
     };
 
     // ── Grid measurement ─────────────────────────────────────────────────────
-    const gridRef = React.useRef<HTMLDivElement>(null);
-    const [gridSize, setGridSize] = React.useState<{ w: number; h: number }>({ w: 0, h: 0 });
-    React.useEffect(() => {
-        const el = gridRef.current;
-        if (!el) return;
-        const ro = new ResizeObserver(entries => {
-            const cr = entries[0]?.contentRect;
-            if (cr) setGridSize({ w: cr.width, h: cr.height });
-        });
-        ro.observe(el);
-        return () => ro.disconnect();
-    }, [layout.mode]); // re-measure when the grid element mounts after a mode change
+    // Keyed on the grid ELEMENT (./hooks/useElementSize.ts). It used to re-attach only
+    // when layout.mode changed, but the element does not exist until fullscreen opens
+    // (the early return below), so entering with the mode already 'grid' measured
+    // nothing and bestGrid sat on its unmeasured column ladder.
+    const { ref: gridRef, size: gridSize } = useElementSize<HTMLDivElement>();
 
     const gridCount = layout.mode === 'grid'
         ? layout.tiles.length + layout.people.length
@@ -768,6 +861,8 @@ export const FullscreenOverlay = ({
             canServerMute,
             onServerMuteTrack,
             onStopWatching: onStopWatchingScreenshare ? () => onStopWatchingScreenshare(identity) : undefined,
+            isFilled: filled && sameFocus(fill, { identity, source }),
+            onToggleFill: () => setFill(prev => (sameFocus(prev, { identity, source }) ? null : { identity, source })),
         };
     };
 
@@ -840,13 +935,9 @@ export const FullscreenOverlay = ({
             {tile.gated ? (
                 <ScreenShareGate {...gateProps(tile.identity)} />
             ) : (
-                <VideoTile
+                <CallStreamTile
                     {...tileProps(tile.identity, tile.source)}
                     isFocusedView={true}
-                    // The strip floats over the stage's bottom edge; keep the tile's
-                    // bottom corner chrome (stats readout) above it. The stage has
-                    // 8px (p-2) of padding of its own.
-                    overlayBottomPx={Math.max(0, strip.height - 8)}
                     // Solo mode: the click that used to cycle between two identical
                     // renderings is disabled at the source, not merely ignored.
                     focusToggleDisabled={!canToggleFocus}
@@ -856,10 +947,15 @@ export const FullscreenOverlay = ({
     );
 
     /** A fixed-size strip thumbnail. Never shrinks — see stripMetrics. */
-    const stripBox = (key: string, children: React.ReactNode) => (
-        <div key={key} className="shrink-0 h-full aspect-video rounded-xl overflow-hidden relative pointer-events-auto">
+    // Every cell / strip item is a PresenceEnter: inert when fullscreen opens
+    // (nobody in it just joined, so nothing replays), the join pop for someone
+    // who arrives while it is up. Keyed on the call's lifecycle, never on the
+    // cell's mount — see components/call/presenceMotion.
+    const presence = currentCallPresenceTracker();
+    const stripBox = (key: string, pid: string, children: React.ReactNode) => (
+        <PresenceEnter key={key} pid={pid} surface="fs" tracker={presence} className="shrink-0 h-full aspect-video rounded-xl overflow-hidden relative">
             {children}
-        </div>
+        </PresenceEnter>
     );
 
     const gridStyle: React.CSSProperties = {
@@ -902,27 +998,34 @@ export const FullscreenOverlay = ({
                 needed here. */}
             <div className="relative flex-1 min-h-0 flex flex-col">
                 {/* ── STAGE ───────────────────────────────────────────────────── */}
-                {/* With a strip, the stage fills the WHOLE column and the strip
-                    floats over its bottom edge: the video (and the zoom's
-                    fit/fill area) extends under the strip and the console
-                    instead of stopping at a solid band. */}
-                <div className={stripItems.length > 0
-                    ? 'absolute inset-0 overflow-hidden p-2'
-                    : 'flex-1 min-h-0 overflow-hidden p-2'}>
+                {/* The stage takes whatever height the STRIP below leaves it
+                    (`flex-1 min-h-0`), so the focused picture is letterboxed
+                    inside the space ABOVE the strip and nothing overlaps. With
+                    no strip (solo / nobody else to show) it is the only flex
+                    child and reclaims the whole column. */}
+                <div
+                    ref={stageRef}
+                    tabIndex={-1}
+                    aria-label={filled ? 'Video filling the screen. Press Escape to go back.' : undefined}
+                    className={`flex-1 min-h-0 overflow-hidden outline-none ${filled ? 'cl-fs-fill' : 'p-2'}`}
+                >
                     {(layout.mode === 'solo' || layout.mode === 'focus') && renderStage(layout.stage)}
 
                     {layout.mode === 'grid' && (
                         <div ref={gridRef} className="w-full h-full grid gap-2" style={gridStyle}>
                             {layout.tiles.map(tile => (
-                                <div key={`${tile.identity}-${tile.source}-${tile.gated}`} className={cellClass} style={cellStyle}>
+                                <PresenceEnter key={`${tile.identity}-${tile.source}-${tile.gated}`} pid={tile.identity} surface="fs" tracker={presence} className={cellClass} style={cellStyle}>
                                     {tile.gated
                                         ? <ScreenShareGate {...gateProps(tile.identity)} />
-                                        : <VideoTile {...tileProps(tile.identity, tile.source)} isGridView={true} videoCount={gridVideoCount} />}
-                                </div>
+                                        : <CallStreamTile {...tileProps(tile.identity, tile.source)} isGridView={true} videoCount={gridVideoCount} />}
+                                </PresenceEnter>
                             ))}
                             {layout.people.map(identity => (
-                                <div
+                                <PresenceEnter
                                     key={`audio-${identity}`}
+                                    pid={identity}
+                                    surface="fs"
+                                    tracker={presence}
                                     className={`${cellClass} flex items-center justify-center bg-cl-abyss border border-cl-border/30`}
                                     style={cellStyle}
                                 >
@@ -935,7 +1038,7 @@ export const FullscreenOverlay = ({
                                         out of `stage` and into `audioOnly`), which is the
                                         black tile the owner circled. */}
                                     <ParticipantCard {...cardProps(identity)} sizeMode="large" cornerChrome />
-                                </div>
+                                </PresenceEnter>
                             ))}
                         </div>
                     )}
@@ -945,13 +1048,16 @@ export const FullscreenOverlay = ({
                         // strip split to make: everyone gets an equal cell.
                         <div ref={gridRef} className="w-full h-full grid gap-2" style={gridStyle}>
                             {layout.people.map(identity => (
-                                <div
+                                <PresenceEnter
                                     key={`audio-${identity}`}
+                                    pid={identity}
+                                    surface="fs"
+                                    tracker={presence}
                                     className={`${cellClass} flex items-center justify-center bg-cl-abyss border border-cl-border/30`}
                                     style={cellStyle}
                                 >
                                     <ParticipantCard {...cardProps(identity)} sizeMode="large" cornerChrome />
-                                </div>
+                                </PresenceEnter>
                             ))}
                         </div>
                     )}
@@ -965,16 +1071,19 @@ export const FullscreenOverlay = ({
                     it replaced, which silently switched to `start` the moment the
                     row overflowed.
 
-                    Flat, not glass: this sits in normal flow against the cinema
-                    black with nothing textured behind it, so a wash here would read
-                    as a rendered plate. Glass is for the floating console only. */}
+                    Flat, not glass: an in-flow band UNDER the stage on `bg-cl-abyss`
+                    (a step lighter than the stage's cinema black). The stage is
+                    sized to the space above it, so the focused picture is
+                    letterboxed there and never covered. Glass is for the floating
+                    console only. */}
                 {stripItems.length > 0 && (
                     <div
-                        // Floats over the stage's bottom edge, no background of
-                        // its own. The container ignores the pointer so the
-                        // video (wheel zoom, drag pan, annotation) stays live
-                        // around the cards; the cards and the handle opt back in.
-                        className="absolute inset-x-0 bottom-0 z-10 w-full overflow-hidden pointer-events-none"
+                        // In-flow band UNDER the stage, on its own background
+                        // (cl-abyss, a step lighter than the stage's cinema
+                        // black) so the unfocused members never sit directly on
+                        // the focused picture. Regression 0484caca had floated
+                        // it over a full-height stage with no background.
+                        className="shrink-0 w-full overflow-hidden relative bg-cl-abyss"
                         style={{ height: strip.height }}
                     >
                         {/* The handle IS the strip's top border — a 7px grab band
@@ -999,7 +1108,7 @@ export const FullscreenOverlay = ({
                             onPointerUp={onDragEnd}
                             onPointerCancel={onDragEnd}
                             onKeyDown={onDragKey}
-                            className={`cl-fs-strip-handle absolute inset-x-0 top-0 h-[7px] z-30 pointer-events-auto ${dragging ? 'is-dragging' : ''}`}
+                            className={`cl-fs-strip-handle absolute inset-x-0 top-0 h-[7px] z-30 ${dragging ? 'is-dragging' : ''}`}
                         >
                             <span className="cl-fs-strip-grip" aria-hidden="true" />
                         </div>
@@ -1019,7 +1128,7 @@ export const FullscreenOverlay = ({
                             aria-label="Call participants"
                             onKeyDown={onStripKey}
                             onWheel={onStripWheel}
-                            className="cl-fs-strip-row h-full flex items-center gap-3 px-4 py-2 overflow-x-auto overflow-y-hidden pointer-events-none"
+                            className="cl-fs-strip-row h-full flex items-center gap-3 px-4 py-2 overflow-x-auto overflow-y-hidden"
                             style={{
                                 // LEFT-ALIGNED, at every width and every item
                                 // count — see STRIP_JUSTIFY_CONTENT's section
@@ -1070,17 +1179,17 @@ export const FullscreenOverlay = ({
                                     // (`stripBox`'s `aspect-video rounded-xl`) and do
                                     // carry the corner pill.
                                     return (
-                                        <div key={`audio-${item.identity}`} className="shrink-0 h-full flex items-center justify-center px-2 pointer-events-auto">
+                                        <PresenceEnter key={`audio-${item.identity}`} pid={item.identity} surface="fs" tracker={presence} className="shrink-0 h-full flex items-center justify-center px-2">
                                             <ParticipantCard {...cardProps(item.identity)} sizeMode={stripCardSize(strip.density)} />
-                                        </div>
+                                        </PresenceEnter>
                                     );
                                 }
                                 const { tile } = item;
                                 const key = `${tile.identity}-${tile.source}-${tile.gated}`;
-                                return stripBox(key, tile.gated
+                                return stripBox(key, tile.identity, tile.gated
                                     ? <ScreenShareGate {...gateProps(tile.identity)} />
                                     : (
-                                        <VideoTile
+                                        <CallStreamTile
                                             {...tileProps(tile.identity, tile.source)}
                                             // Sized exactly like a grid cell (fixed box,
                                             // object-contain) — NOT the sidebar's
@@ -1108,7 +1217,7 @@ export const FullscreenOverlay = ({
                                     const el = stripRowRef.current;
                                     el?.scrollBy({ left: Math.round(el.clientWidth * 0.8), behavior: 'smooth' });
                                 }}
-                                className="absolute top-1/2 -translate-y-1/2 z-20 pointer-events-auto rounded-full bg-black/55 backdrop-blur-sm px-2.5 py-1 text-xs font-medium text-white/90 hover:bg-black/70 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cl-lume"
+                                className="absolute top-1/2 -translate-y-1/2 z-20 rounded-full bg-black/55 backdrop-blur-sm px-2.5 py-1 text-xs font-medium text-white/90 hover:bg-black/70 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cl-lume"
                                 style={{ right: (stripLaneReservationPx ?? 0) + 8 }}
                             >
                                 +{stripHiddenCount}
