@@ -3334,19 +3334,30 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         // Only FLIP for a sane, on-screen-sized growth (skip giant images / pagination / first paint).
         if (!c || delta <= 2 || delta >= el.clientHeight) return;
         if (flipCleanupRef.current) flipCleanupRef.current();
+        // The column is promoted to its own compositor layer ONLY while it slides.
+        // It used to carry `will-change: transform` permanently, and Chromium never
+        // gives a will-change:transform layer LCD (ClearType/subpixel) text
+        // antialiasing - it falls back to greyscale, so all chat text looked soft.
+        // Every style set here is cleared in onEnd, leaving the text in the opaque
+        // pane's own layer where it gets subpixel AA again.
+        c.style.willChange = 'transform';
         c.style.transition = 'none';
         c.style.transform = `translateY(${delta}px)`;
         void c.offsetHeight; // force reflow so the invert paints before we play
         c.style.transition = 'transform .42s cubic-bezier(.22, 1, .36, 1)';
         c.style.transform = 'translateY(0)';
-        const onEnd = () => {
+        const onEnd = (e?: TransitionEvent) => {
+            // transitionend bubbles: a row's own hover/background transition must
+            // not end the column's slide early.
+            if (e && (e.target !== c || e.propertyName !== 'transform')) return;
             c.style.transition = '';
             c.style.transform = '';
+            c.style.willChange = '';
             c.removeEventListener('transitionend', onEnd);
             flipCleanupRef.current = null;
         };
         c.addEventListener('transitionend', onEnd);
-        flipCleanupRef.current = onEnd;
+        flipCleanupRef.current = () => onEnd();
     }, []);
     useEffect(() => () => { if (flipCleanupRef.current) flipCleanupRef.current(); }, []);
 
@@ -7082,7 +7093,10 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                     </div>
                 )}
 
-                <div ref={contentRef} className="flex flex-col flex-1" style={{ willChange: 'transform' }}>
+                {/* No permanent will-change here: see revealNewMessage. A will-change:
+                    transform layer loses ClearType/subpixel text, which made every
+                    message read soft next to Discord. */}
+                <div ref={contentRef} className="flex flex-col flex-1">
                 {/* Messages already in hand ALWAYS win over the loading gate, even
                     while membersFetching/chatLoading/messagesFetching is still true.
                     This pane remounts on every conversation switch (keyed by

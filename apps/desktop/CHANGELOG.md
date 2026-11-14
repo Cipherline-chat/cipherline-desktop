@@ -82,6 +82,7 @@ bakes it in at build time and shows it as the "What's new in X.Y.Z" dialog on th
 - A group icon set at creation shows straight away.
 - A full inbox now says "Their inbox is full" instead of a generic failure.
 - The "Message" hint in the box no longer disappears after sending.
+- Chat text is sharp on Windows again: messages use ClearType instead of the softer greyscale smoothing.
 - Home pins can be rearranged by dragging or with Alt+Arrow keys.
 
 #### Calls and voice
