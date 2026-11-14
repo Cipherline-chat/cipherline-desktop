@@ -19,8 +19,8 @@ privately to [security@cipherline.chat](mailto:security@cipherline.chat). See
   [release workflow](.github/workflows/release-stable.yml) builds Windows, macOS and Linux on
   GitHub-hosted runners, signs the Windows build (as Cipherline LLC) and the macOS build
   (signed and notarized by Apple), and records a build provenance attestation for every
-  installer. Starting with the first stable release built here (1.0.17), you can check that a
-  download was built from this repo:
+  installer. Starting with the first stable release built here (0.0.17, released as 1.0.17),
+  you can check that a download was built from this repo:
 
   ```bash
   gh attestation verify <installer> --repo Cipherline-chat/cipherline-desktop
