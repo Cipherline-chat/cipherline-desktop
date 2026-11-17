@@ -11,12 +11,14 @@ import { join } from 'node:path';
  */
 const src = readFileSync(join(__dirname, 'ChatPane.tsx'), 'utf8');
 const send = src.slice(src.indexOf('const handleSendAll = async'), src.indexOf('const [pendingCallMode'));
-const onKeyDown = src.slice(src.indexOf('onKeyDown={(e) => {\n                                        if (channelSuggestions.length > 0)'));
+const onKeyDown = src.slice(src.indexOf('if (e.nativeEvent.isComposing) return;\n                                        if (channelSuggestions.length > 0)'));
 
 describe('typed :name: + Enter', () => {
     it('both the big-room check and the real send convert through the ONE toWireText (typed shortcodes included)', () => {
-        expect(send).toContain('const wire = toWireText(inputText);');
-        expect(send).toContain('const wireText = toWireText(inputText);');
+        // (inputText with a whole-message text size lifted into the `size` field: richWire.extractUniformSize)
+        expect(send).toContain('const sized = extractUniformSize(inputText);');
+        expect(send).toContain('const wire = toWireText(sized.text);');
+        expect(send).toContain('const wireText = toWireText(sized.text);');
         // no second, picks-only conversion left to drift from it
         expect(src).not.toMatch(/buildEmojiWireText\(\s*buildWireText\(inputText/);
     });

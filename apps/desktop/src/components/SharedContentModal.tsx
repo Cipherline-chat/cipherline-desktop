@@ -28,6 +28,7 @@ import { acquireDecryptedMedia, putDecryptedMediaBlob, releaseDecryptedMedia } f
 import { API_BASE } from '../constants';
 import { saveReceivedFile } from './executableDownloadGuard';
 import { safeDisplayFilename } from '../utils/fileSafety';
+import { sharedLinksOf } from '../utils/formatting/plainText';
 
 export type SharedTab = 'media' | 'files' | 'links';
 
@@ -47,7 +48,6 @@ interface SharedContentModalProps {
     resolveSenderName?: (senderUserId: string | null) => string | null;
 }
 
-const URL_RE = /https?:\/\/[^\s<>"')\]]+/gi;
 const MEDIA_CAP = 60;
 const LIST_CAP = 200;
 
@@ -510,7 +510,9 @@ export const SharedContentModal: React.FC<SharedContentModalProps> = ({
                 if (item.mime.startsWith('image/') || item.mime.startsWith('video/')) media.push(item);
                 else files.push(item);
             } else if (c.type === 'text' && typeof c.text === 'string') {
-                for (const url of c.text.match(URL_RE) ?? []) {
+                // Parsed (utils/formatting/plainText): masked links list their real
+                // destination; URLs in code or a spoiler are not listed.
+                for (const url of sharedLinksOf(c.text)) {
                     links.push({ msgId: m.id, url, at: msgTime(m), senderId: m.sender_user_id ?? null });
                 }
             }

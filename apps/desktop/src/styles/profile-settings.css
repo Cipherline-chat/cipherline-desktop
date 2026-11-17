@@ -49,15 +49,69 @@
 .ps-count { font-size: 11.5px; color: var(--cl-faint, #5E6B8F); font-variant-numeric: tabular-nums; }
 .ps-count[data-warm] { color: var(--cl-glow, #FFC94D); }
 .ps-count[data-full] { color: var(--cl-flash, #FF6B5E); }
-.ps-tagbox { display: flex; align-items: stretch; gap: 8px; }
-.ps-tag {
-  display: flex; align-items: center; padding: 0 12px; border-radius: 12px; user-select: none;
-  font: 600 13px/1 var(--cl-font-mono, monospace); color: var(--cl-muted, #A7B3D4);
-  background: rgba(0, 0, 0, .25); border: 1px solid var(--cl-border, #2A3558);
+/* Username + #number as ONE field (owner, 2026-11-16: "it should just allow you to
+   change it right in the username field"). The box draws the .inp look (surface,
+   1.5px hairline, 13px radius, lume ring on focus); the two inputs inside are bare.
+   The "#0001" is an attached suffix segment: editable for Pro, locked otherwise.
+   UsernameTagField.tsx. */
+.ps-namefield {
+  display: flex; align-items: stretch; min-height: 46px; border-radius: 13px; overflow: hidden;
+  background: var(--cl-surface, #1C2542); border: 1.5px solid var(--cl-border, #2A3558);
+  transition: border-color .25s, box-shadow .25s;
 }
+.ps-namefield:focus-within { border-color: var(--cl-lume, #25E0C8); box-shadow: 0 0 14px rgba(37, 224, 200, .22); }
+.ps-namefield[data-invalid="true"] { border-color: var(--cl-flash, #FF6B5E); box-shadow: none; }
+.ps-namefield-name {
+  flex: 1; min-width: 0; border: 0; outline: none; background: none; padding: 11px 15px;
+  font: 400 14px/1.45 var(--cl-font-body, 'Nunito', sans-serif); color: var(--cl-text, #F4F7FF);
+}
+.ps-namefield-name::placeholder { color: var(--cl-faint, #5E6B8F); }
+.ps-namefield-name:disabled { color: var(--cl-muted, #A7B3D4); cursor: not-allowed; }
+.ps-namefield-num {
+  flex: none; display: flex; align-items: center; padding: 0 12px 0 13px; cursor: text;
+  border-left: 1.5px solid var(--cl-border, #2A3558); background: rgba(0, 0, 0, .18);
+  font: 600 14px/1 var(--cl-font-mono, 'JetBrains Mono', monospace); color: var(--cl-muted, #A7B3D4);
+  transition: background-color 140ms ease, color 140ms ease;
+}
+.ps-namefield-num[data-state="edit"]:hover { background: rgba(255, 255, 255, .05); }
+.ps-namefield-num[data-state="edit"]:focus-within { background: rgba(37, 224, 200, .09); color: var(--cl-lume, #25E0C8); }
+.ps-namefield-num[data-state="locked"] { cursor: pointer; }
+.ps-namefield-num[data-state="locked"]:hover, .ps-namefield-num[data-state="locked"]:focus-within { background: rgba(255, 201, 77, .07); }
+.ps-namefield-num[data-state="held"] { cursor: default; }
+.ps-namefield-hash { opacity: .75; padding-right: 1px; }
+.ps-namefield-digits {
+  width: 4.4ch; border: 0; outline: none; background: none; padding: 0;
+  font: inherit; color: var(--cl-text, #F4F7FF); font-variant-numeric: tabular-nums;
+}
+.ps-namefield-digits::placeholder { color: var(--cl-faint, #5E6B8F); }
+.ps-namefield-num[data-state="locked"] .ps-namefield-digits,
+.ps-namefield-num[data-state="held"] .ps-namefield-digits { color: var(--cl-muted, #A7B3D4); cursor: inherit; }
+/* The box's ring shows focus; the inputs inside draw none of their own. */
+.ps-namefield-name:focus, .ps-namefield-name:focus-visible,
+.ps-namefield-digits:focus, .ps-namefield-digits:focus-visible { outline: none; box-shadow: none; }
+.ps-namefield-status { flex: none; width: 14px; margin-left: 6px; display: inline-flex; align-items: center; justify-content: center; color: var(--cl-faint, #5E6B8F); }
+.ps-namefield-num[data-state="locked"] .ps-namefield-status { color: var(--cl-glow, #FFC94D); }
+.ps-namefield-status[data-kind="saved"] { color: var(--cl-lume, #25E0C8); animation: ps-fade-in 140ms ease-out both; }
+.ps-namefield-msg:empty { display: none; }
+.ps-namefield-upsell {
+  border: 0; padding: 0; background: none; cursor: pointer; font: inherit; font-weight: 800;
+  color: var(--cl-lume, #25E0C8); text-decoration: underline; text-underline-offset: 2px;
+}
+.ps-namefield-upsell:focus-visible { outline: 2px solid var(--cl-lume, #25E0C8); outline-offset: 2px; border-radius: 4px; }
 .ps-toggle-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .ps-toggle-row b { display: block; font-size: 13.5px; color: var(--cl-text, #F4F7FF); }
 .ps-toggle-row span { font-size: 12px; color: var(--cl-faint, #5E6B8F); }
+
+/* ── Time zone picker rows (TimeZonePicker → ClSelect `search`; the menu is
+   portaled to <body>, so these are global, qualified by .tzp-*) ── */
+.tzp-row { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.tzp-main { display: flex; min-width: 0; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.tzp-place { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.tzp-when { flex: none; white-space: pre; }
+.tzp-main .tzp-region { font-weight: 600; opacity: .8; }
+.tzp-sub { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font: 500 11px/1.3 var(--cl-font-mono, 'JetBrains Mono', monospace); color: var(--cl-faint, #5E6B8F); }
+.tzp-trigger { font-variant-numeric: tabular-nums; }
+.tzp-trigger .tzp-region, .tzp-trigger .tzp-off { font-weight: 600; color: var(--cl-muted, #A7B3D4); }
 
 /* ── Style: three picker tiles, one row when wide, else 2 + 1 (the last stretches) ── */
 .ps-style { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -294,7 +348,8 @@ button.ps-chip:disabled { opacity: .45; cursor: not-allowed; }
 .ps-steam-q { font-size: 12.5px; font-weight: 700; color: var(--cl-text, #F4F7FF); }
 
 @media (prefers-reduced-motion: reduce) {
-  .ps-spin, .ps-save[data-kind="saved"], .ps-combo-preview, .ps-plats { animation: none; }
+  .ps-spin, .ps-save[data-kind="saved"], .ps-combo-preview, .ps-plats, .ps-namefield-status[data-kind="saved"] { animation: none; }
+  .ps-namefield, .ps-namefield-num { transition: none; }
   .ps-hue, .ps-rchip { transition: none; }
 }
 
@@ -491,3 +546,6 @@ button.ps-chip:disabled { opacity: .45; cursor: not-allowed; }
   .pst-dot, .pst-preset, .pst-btn, .pst-tile { transition: none; }
   .pst-dot:hover:not(:disabled), .pst-preset:hover:not(:disabled) { transform: none; }
 }
+/* The #number inside its 24 h change cooldown (UsernameTagField): read-only, quiet. */
+.ps-namefield-num[data-state="cooldown"] { cursor: not-allowed; }
+.ps-namefield-num[data-state="cooldown"] .ps-namefield-digits { color: var(--cl-muted, #A7B3D4); cursor: inherit; }

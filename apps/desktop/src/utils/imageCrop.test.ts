@@ -11,7 +11,7 @@ import { describe, it, expect } from 'vitest';
  */
 import {
     coverScale, clampCrop, zoomAbout, IDENTITY_CROP, MAX_ZOOM,
-    AVATAR_OUTPUT, BANNER_OUTPUT,
+    AVATAR_OUTPUT, BANNER_OUTPUT, cssAspectRatio,
 } from './imageCrop';
 
 const FRAME = { w: 300, h: 300 };
@@ -140,5 +140,30 @@ describe('output presets', () => {
         // disagreed the preview would lie about the saved result.
         const frameH = Math.round(BANNER_FRAME.w / (BANNER_OUTPUT.width / BANNER_OUTPUT.height));
         expect(frameH).toBe(BANNER_FRAME.h);
+    });
+});
+
+describe('cssAspectRatio — a preview box is the exact shape of the crop', () => {
+    const ratioOf = (css: string) => { const [w, h] = css.split('/').map(Number); return w / h; };
+
+    it('banners preview at 2.5:1, the same ratio the cropper frames and exports', () => {
+        expect(cssAspectRatio(BANNER_OUTPUT)).toBe('1200 / 480');
+        expect(ratioOf(cssAspectRatio(BANNER_OUTPUT))).toBeCloseTo(2.5);
+        // ClImageCropper's wide frame (420 × round(420 / aspect)) has the same shape.
+        expect(ratioOf(cssAspectRatio(BANNER_OUTPUT))).toBeCloseTo(BANNER_FRAME.w / BANNER_FRAME.h);
+    });
+
+    it('legacy 1500×600 banners are the same shape, so they preview identically', () => {
+        expect(ratioOf(cssAspectRatio({ width: 1500, height: 600 }))).toBeCloseTo(ratioOf(cssAspectRatio(BANNER_OUTPUT)));
+    });
+
+    it('icons/avatars are square', () => {
+        expect(cssAspectRatio(AVATAR_OUTPUT)).toBe('512 / 512');
+    });
+
+    it('falls back to square for a degenerate size instead of an invalid "0 / 0"', () => {
+        for (const bad of [{ width: 0, height: 480 }, { width: 1200, height: 0 }, { width: -1, height: 5 }, { width: NaN, height: 1 }, { width: Infinity, height: 1 }]) {
+            expect(cssAspectRatio(bad)).toBe('1 / 1');
+        }
     });
 });

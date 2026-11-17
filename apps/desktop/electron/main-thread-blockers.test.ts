@@ -60,7 +60,7 @@ describe('main.ts keeps PipeWire probes off the main thread', () => {
         expect(main).toContain('mainWatchdog?.setRendererUnresponsive(false)');
         expect(main).toContain('mainWatchdog?.noteQuit()');
         expect(main).toContain('freezeMonitor.inflightHook = wd.board');
-        expect(main).toMatch(/if \(!SESSION_MARKER_ENABLED \|\| mainWatchdog\) return null;/);
+        expect(main).toMatch(/if \(!SESSION_MARKER_ENABLED \|\| mainWatchdog\) return \{ crash: null, startedAt: null \};/);
         // SESSION_MARKER_ENABLED already excludes the smoke test.
         expect(main).toMatch(/const SESSION_MARKER_ENABLED = !IS_SMOKE_TEST/);
     });

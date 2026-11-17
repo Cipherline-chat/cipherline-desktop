@@ -17,7 +17,10 @@ import React, { useRef } from 'react';
 import { Lock, Tag, Gamepad2, Pencil } from 'lucide-react';
 import { ClInput, ClSelect, ClToggle } from '../cl';
 import type { CallNameStyle, CallNamingSettings } from '@cipherline/shared';
-import { CALL_NAME_MAX_LENGTH } from '@cipherline/shared';
+import { CALL_NAME_MAX_LENGTH, DISPLAY_NAME_MAX_UNITS_PER_GRAPHEME } from '@cipherline/shared';
+
+/** Paste guard in UTF-16 units; the real limit (grapheme clusters) is validated. */
+const CALL_NAME_INPUT_MAX_UNITS = CALL_NAME_MAX_LENGTH * DISPLAY_NAME_MAX_UNITS_PER_GRAPHEME;
 import { callNamingFormError, previewCallNames } from '../../utils/callNaming';
 
 interface Props {
@@ -64,7 +67,7 @@ export const CallNamingSection: React.FC<Props> = ({ value, onChange, channelNam
         const cur = value.template ?? '';
         const at = el?.selectionStart ?? cur.length;
         const end = el?.selectionEnd ?? at;
-        const next = (cur.slice(0, at) + tok + cur.slice(end)).slice(0, CALL_NAME_MAX_LENGTH);
+        const next = cur.slice(0, at) + tok + cur.slice(end);
         set({ template: next });
         requestAnimationFrame(() => {
             el?.focus();
@@ -107,9 +110,9 @@ export const CallNamingSection: React.FC<Props> = ({ value, onChange, channelNam
                     <div className="mt-2 pl-9">
                         <ClInput
                             value={value.fixed_name ?? ''}
-                            onChange={e => set({ fixed_name: e.target.value.slice(0, CALL_NAME_MAX_LENGTH) })}
+                            onChange={e => set({ fixed_name: e.target.value })}
                             placeholder={`${channel} (leave empty to use the channel name)`}
-                            maxLength={CALL_NAME_MAX_LENGTH}
+                            maxLength={CALL_NAME_INPUT_MAX_UNITS}
                             aria-label="Call name"
                             disabled={disabled}
                             className="w-full"
@@ -121,9 +124,9 @@ export const CallNamingSection: React.FC<Props> = ({ value, onChange, channelNam
                         <ClInput
                             ref={templateRef}
                             value={value.template ?? ''}
-                            onChange={e => set({ template: e.target.value.slice(0, CALL_NAME_MAX_LENGTH) })}
+                            onChange={e => set({ template: e.target.value })}
                             placeholder="{channel} {n}"
-                            maxLength={CALL_NAME_MAX_LENGTH}
+                            maxLength={CALL_NAME_INPUT_MAX_UNITS}
                             aria-label="Call name pattern"
                             disabled={disabled}
                             className="w-full"

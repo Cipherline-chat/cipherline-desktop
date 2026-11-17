@@ -86,8 +86,59 @@ export interface PersonalEmojiPayload {
 export const PERSONAL_EMOJI_MAX_BYTES = 256 * 1024;
 export const PERSONAL_EMOJI_MAX_PER_MESSAGE = 6;
 
+/**
+ * The typeface a text message is shown in (additive, optional, cosmetic).
+ *
+ * A whole-message choice made in the composer's formatting bar. Carried as a
+ * field rather than as syntax inside `text` so the text itself stays clean: a
+ * client that predates it (desktop <= 0.1.x, mobile) ignores the field and
+ * shows the message in its normal font, exactly as typed. Absent = the default
+ * font. Only these ids exist; a reader validates against MESSAGE_FONTS and
+ * treats any other value as absent, so a future font degrades the same way.
+ * Readers map each id to fonts bundled IN the client (no remote font is ever
+ * fetched because of a message). Never parsed by the server: it lives inside
+ * the encrypted content. An `edit` carries the message's font too (absent =
+ * back to the default). Adding an id is additive: an older reader shows the
+ * message in its default font.
+ */
+export const MESSAGE_FONTS = ['serif', 'mono', 'hand', 'typewriter', 'marker', 'readable'] as const;
+export type MessageFont = typeof MESSAGE_FONTS[number];
+
+/** True for a font id this version knows; anything else renders as the default font. */
+export function isMessageFont(v: unknown): v is MessageFont {
+    return typeof v === 'string' && (MESSAGE_FONTS as readonly string[]).includes(v);
+}
+
+/**
+ * The text size a text message is shown at (additive, optional, cosmetic).
+ *
+ * Like `font`, a whole-message choice from the composer's formatting bar,
+ * carried as a field so the text stays clean. Absent = the normal size. A
+ * reader scales the WHOLE message by a fixed, capped factor (spans: below),
+ * validates against MESSAGE_SIZES and treats any other value as absent, so an
+ * older client (desktop <= 0.1.x, mobile) or a future size shows the message
+ * at the normal size. An `edit` carries the message's size too (absent = back
+ * to normal). Never parsed by the server: it lives inside the encrypted content.
+ *
+ * Size SPANS (2026-11-16) use the same two ids as inline syntax in `text`:
+ * `[small]…[/small]` and `[large]…[/large]` (nesting with the other Discord
+ * style syntax; `\[large]` is a literal; at most 200 honoured per message,
+ * and a text with more than 1000 openers is refused). Scales: small 0.875x,
+ * large 1.5x of the normal text size, both for the field and for spans; a
+ * span is absolute (not relative to the field or to an outer span). Clients
+ * send the field (and no span markers) when the whole message is one size.
+ * A reader without span support shows the markers as text.
+ */
+export const MESSAGE_SIZES = ['small', 'large'] as const;
+export type MessageSize = typeof MESSAGE_SIZES[number];
+
+/** True for a size id this version knows; anything else renders at the normal size. */
+export function isMessageSize(v: unknown): v is MessageSize {
+    return typeof v === 'string' && (MESSAGE_SIZES as readonly string[]).includes(v);
+}
+
 export type ClientContent =
-    | { client_msg_id?: string; type: 'text'; text: string; reply_to_id?: string; mentions?: MentionEntry[]; channel_refs?: ChannelRef[]; personal_emojis?: PersonalEmojiPayload[] }
+    | { client_msg_id?: string; type: 'text'; text: string; reply_to_id?: string; mentions?: MentionEntry[]; channel_refs?: ChannelRef[]; personal_emojis?: PersonalEmojiPayload[]; font?: MessageFont; size?: MessageSize }
     | {
         client_msg_id?: string;
         type: 'attachment';
@@ -139,7 +190,7 @@ export type ClientContent =
     }
     /** An edit carries the complete new text AND its complete `channel_refs`
      *  (absent = the edited text names no channel). See ChannelRef. */
-    | { client_msg_id?: string; type: 'edit'; target_id: string; text: string; channel_refs?: ChannelRef[]; personal_emojis?: PersonalEmojiPayload[] }
+    | { client_msg_id?: string; type: 'edit'; target_id: string; text: string; channel_refs?: ChannelRef[]; personal_emojis?: PersonalEmojiPayload[]; font?: MessageFont; size?: MessageSize }
     | { client_msg_id?: string; type: 'delete'; target_id: string }
     | { client_msg_id?: string; type: 'reaction'; target_id: string; emoji: string; action: 'add' | 'remove'; personal_emojis?: PersonalEmojiPayload[] }
     /**

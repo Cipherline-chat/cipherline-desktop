@@ -143,6 +143,13 @@ function queue(row: { at: number; ms: number; activity: string }): void {
     }, 1000);
 }
 
+/** One timing row for the Performance log (e.g. 'server_leave_api'). `activity`
+ *  must be a static label (main drops anything failing LABEL_RE). Diagnostics
+ *  only; never throws. */
+export function recordTimingRow(activity: string, ms: number): void {
+    try { queue({ at: Date.now(), ms: Math.round(ms), activity }); } catch { /* diagnostics only */ }
+}
+
 const timeOrigin = (): number =>
     (typeof performance !== 'undefined' && performance.timeOrigin ? performance.timeOrigin : Date.now() - nowMs());
 

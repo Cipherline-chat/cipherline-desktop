@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { WebrtcRing, WEBRTC_RING_SIZE, jitterBufferMs, type TrackStatsInput } from './webrtcRing';
+import { WebrtcRing, WEBRTC_RING_SIZE, jitterBufferMs, audioConcealPct, type TrackStatsInput } from './webrtcRing';
 import { gatherTrackStats, type RoomLike } from './webrtcRoomAdapter';
 import type { StatsEntry } from '../streamStatsHud';
 
@@ -179,5 +179,19 @@ describe('jitterBufferMs (inbound audio jitter-buffer delay, ms)', () => {
         expect(jitterBufferMs(undefined, 120, 2000)).toBeCloseTo(60);
         expect(jitterBufferMs(undefined, undefined, 10)).toBeUndefined();
         expect(jitterBufferMs({ jbDelay: 5, jbEmitted: 100 }, 5, 100)).toBeCloseTo(50);
+    });
+});
+
+describe('audioConcealPct (what the listener actually heard of the network)', () => {
+    it('is the share of the interval\'s samples the decoder made up', () => {
+        // 48000 samples in the interval, 4800 of them concealed -> 10 %
+        expect(audioConcealPct({ samples: 100_000 }, 148_000, 14_800, 10_000)).toBeCloseTo(10);
+        expect(audioConcealPct({ samples: 100_000 }, 148_000, 10_000, 10_000)).toBe(0);
+    });
+    it('is undefined when it cannot be measured (first sample, counter reset, no samples)', () => {
+        expect(audioConcealPct(undefined, 148_000, 14_800, 0)).toBeUndefined();
+        expect(audioConcealPct({ samples: 100_000 }, undefined, 14_800, 10_000)).toBeUndefined();
+        expect(audioConcealPct({ samples: 100_000 }, 100_000, 14_800, 10_000)).toBeUndefined();
+        expect(audioConcealPct({ samples: 100_000 }, 148_000, 100, 10_000)).toBeUndefined();
     });
 });

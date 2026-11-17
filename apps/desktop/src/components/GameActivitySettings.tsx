@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Gamepad2, Plus, X, RefreshCw, EyeOff, Trash2, PlayCircle, ListTree } from 'lucide-react';
+import { Gamepad2, Plus, X, RefreshCw, EyeOff, Trash2, PlayCircle, ListTree, Radio, Users } from 'lucide-react';
 import { type GameSettingsHook } from '../hooks/useGameSettings';
 import { ClToggle, ClButton, ClInput, ClSelect } from './cl';
 import type { ClSelectOption } from './cl';
@@ -8,6 +8,7 @@ import { SettingsDisclosure } from './settings/SettingsDisclosure';
 import { usePlayfulLine } from '../hooks/useEasterEggs';
 import { NO_GAME_POOL } from '../utils/eggPools';
 import { dayNumber } from '../utils/easterEggs';
+import { detailLines, needsTick, sharedPreviewLines, type GameDetail } from '../utils/richPresence';
 
 /**
  * Twilight · Game Activity — Descent redesign (phase 2): sd-card sections,
@@ -25,12 +26,28 @@ interface GameActivitySettingsProps {
     currentGameProcess?: string | null;
     /** Permanently ignores the currently-detected game and clears the live status. */
     onIgnoreCurrentGame: () => void;
+    /** What the game announces over Rich Presence (round, score, party, time). */
+    currentGameDetail?: GameDetail | null;
+    /** 'rpc' = an app that supports Rich Presence announced it; 'process' = the exe scan. */
+    currentGameSource?: 'process' | 'rpc' | null;
 }
 
-const GameActivitySettings: React.FC<GameActivitySettingsProps> = ({ gameSettings, currentGame, currentGameProcess, onIgnoreCurrentGame }) => {
+/** Re-render each second while a clock is on screen. */
+function useTick(active: boolean): number {
+    const [now, setNow] = useState(() => Date.now());
+    useEffect(() => {
+        if (!active) return;
+        const t = window.setInterval(() => setNow(Date.now()), 1000);
+        return () => window.clearInterval(t);
+    }, [active]);
+    return now;
+}
+
+
+const GameActivitySettings: React.FC<GameActivitySettingsProps> = ({ gameSettings, currentGame, currentGameProcess, onIgnoreCurrentGame, currentGameDetail = null, currentGameSource = null }) => {
     // Egg: the "nothing detected" hint rotates by day (the plain line is always first in the pool).
     const noGameLine = usePlayfulLine(NO_GAME_POOL[0], NO_GAME_POOL, dayNumber(new Date()));
-    const { settings, setShowGameActivity, addCustomGame, removeCustomGame, addIgnoredProcess, removeIgnoredProcess } = gameSettings;
+    const { settings, setShowGameActivity, setShareGameDetails, addCustomGame, removeCustomGame, addIgnoredProcess, removeIgnoredProcess } = gameSettings;
 
     const [processes, setProcesses] = useState<string[]>([]);
     const [loadingProcesses, setLoadingProcesses] = useState(false);
@@ -62,6 +79,14 @@ const GameActivitySettings: React.FC<GameActivitySettingsProps> = ({ gameSetting
         setAddingGame(false);
     };
 
+    const now = useTick(!!currentGame && needsTick(currentGameDetail));
+    const viaRpc = currentGameSource === 'rpc';
+    // `rpc:<id>` is an internal ignore key - never shown raw.
+    const exeLabel = currentGameProcess && !currentGameProcess.startsWith('rpc:') ? `${currentGameProcess}.exe` : null;
+    const localLines = currentGame ? detailLines(currentGameDetail, now) : [];
+    const shareDetails = settings.shareGameDetails !== false;
+    const shared = sharedPreviewLines(currentGame, currentGameDetail, settings.showGameActivity, shareDetails, now);
+
     const customGameProcessNames = new Set(settings.customGames.map(g => g.processName));
     const ignoredSet = new Set(settings.ignoredProcesses);
 
@@ -79,7 +104,7 @@ const GameActivitySettings: React.FC<GameActivitySettingsProps> = ({ gameSetting
             {/* Rich presence: the switch, then what it would share right now. */}
             <div className="sd-card" data-labels="Detected game">
                 <h3>Rich presence</h3>
-                <p className="sd-sub">Detection is an executable-name lookup on this machine — nothing is scanned, nothing leaves unless you share it.</p>
+                <p className="sd-sub">Detection is an executable-name lookup on this machine, plus what games and apps that support Rich Presence announce to this computer. Nothing leaves unless you share it.</p>
                 <div className="sd-row" style={{ borderTop: 'none' }}>
                     <span className={`sd-tile${settings.showGameActivity ? '' : ' sd-tile--dim'}`}><Gamepad2 size={16} /></span>
                     <div className="sd-rl">
@@ -94,12 +119,30 @@ const GameActivitySettings: React.FC<GameActivitySettingsProps> = ({ gameSetting
                         />
                     </div>
                 </div>
+                <div className="sd-row" data-testid="share-game-details-row">
+                    <span className={`sd-tile${settings.showGameActivity && shareDetails ? '' : ' sd-tile--dim'}`}><Radio size={16} /></span>
+                    <div className="sd-rl">
+                        <b>Share game details (round, score, party)</b>
+                        <span>From games and apps that support Rich Presence. Off: friends see the game name only. Their pictures and links are never loaded or shared.</span>
+                    </div>
+                    <div className="sd-rc">
+                        <ClToggle
+                            checked={settings.showGameActivity && shareDetails}
+                            onChange={setShareGameDetails}
+                            disabled={!settings.showGameActivity}
+                            aria-label="Share game details"
+                        />
+                    </div>
+                </div>
                 <div className="sd-row">
                     <span className={`sd-tile${currentGame ? '' : ' sd-tile--dim'}`}>
                         {currentGame ? <PlayCircle size={16} /> : <Gamepad2 size={16} />}
                     </span>
                     <div className="sd-rl">
                         <b>{currentGame ?? 'Nothing detected'}</b>
+                        {localLines.map((l, i) => (
+                            <span key={i} data-testid="game-detail-line" style={{ color: 'var(--cl-text)', fontVariantNumeric: 'tabular-nums' }}>{l}</span>
+                        ))}
                         <span>
                             {currentGame
                                 ? settings.showGameActivity
@@ -107,9 +150,9 @@ const GameActivitySettings: React.FC<GameActivitySettingsProps> = ({ gameSetting
                                     : 'Detected, but not shared — "Share what you\'re playing" is off above.'
                                 : noGameLine}
                         </span>
-                        {currentGame && currentGameProcess && (
+                        {currentGame && (viaRpc || exeLabel) && (
                             <span style={{ fontFamily: 'var(--cl-font-mono)', fontSize: 11, color: 'var(--cl-faint)', marginTop: 2 }}>
-                                matched {currentGameProcess}.exe
+                                {viaRpc ? `announced over Rich Presence${exeLabel ? ` by ${exeLabel}` : ''}` : `matched ${exeLabel}`}
                             </span>
                         )}
                     </div>
@@ -119,13 +162,24 @@ const GameActivitySettings: React.FC<GameActivitySettingsProps> = ({ gameSetting
                                 size="sm"
                                 variant="ghost"
                                 onClick={onIgnoreCurrentGame}
-                                tooltip={currentGameProcess ? `Never match ${currentGameProcess}.exe again` : undefined}
+                                tooltip={exeLabel ? `Never match ${exeLabel} again` : viaRpc ? "Never show this app's Rich Presence again" : undefined}
                             >
                                 <EyeOff size={12} /> Ignore this
                             </ClButton>
                         </div>
                     )}
                 </div>
+                {currentGame && (
+                    <div className="sd-row" data-testid="game-share-preview">
+                        <span className={`sd-tile${shared ? '' : ' sd-tile--dim'}`}><Users size={16} /></span>
+                        <div className="sd-rl">
+                            <b>What friends see</b>
+                            {shared
+                                ? shared.map((l, i) => <span key={i} data-testid="game-share-line" style={{ fontVariantNumeric: 'tabular-nums' }}>{l}</span>)
+                                : <span>Nothing. Your game is not shared.</span>}
+                        </div>
+                    </div>
+                )}
             </div>
 
             {/* Custom Games */}

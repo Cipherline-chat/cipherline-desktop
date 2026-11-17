@@ -163,6 +163,12 @@ The following packages are distributed under the Apache License, Version 2.0:
 - **reflect-metadata** — Copyright (c) Ron Buckton
 - **typescript** — Copyright (c) Microsoft Corporation
 
+Fonts bundled with the app (message fonts, `src/assets/fonts`, latin-subset woff2
+files as published by Google Fonts / Fontsource, unmodified):
+
+- **Special Elite** — Copyright (c) 2010 Brian J. Bonislawsky DBA Astigmatic (AOETI). Full text shipped as `licenses/fonts/SpecialElite-Apache-2.0.license`.
+- **Permanent Marker** — Copyright (c) 2010 Font Diner, Inc. Full text shipped as `licenses/fonts/PermanentMarker-Apache-2.0.license`.
+
 > Licensed under the Apache License, Version 2.0 (the "License"); you may not
 > use these files except in compliance with the License. You may obtain a copy
 > of the License at:
@@ -172,6 +178,22 @@ The following packages are distributed under the Apache License, Version 2.0:
 > Unless required by applicable law or agreed to in writing, software distributed
 > under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
 > CONDITIONS OF ANY KIND, either express or implied.
+
+---
+
+## SIL Open Font License 1.1 (fonts)
+
+The following fonts are bundled with the app (message fonts, `src/assets/fonts`) as
+latin-subset woff2 files exactly as published by Google Fonts / Fontsource (not
+modified by us). The full licence text of each ships inside the app as
+`licenses/fonts/<Font>-OFL.license` (from `public/licenses/fonts`), as the OFL requires.
+Approved by the owner on 2026-11-16 (OFL is not on the default allow-list).
+
+- **Lora** — Copyright 2011 The Lora Project Authors (https://github.com/cyrealtype/Lora-Cyrillic), with Reserved Font Name "Lora"
+- **Caveat** — Copyright 2014 The Caveat Project Authors (https://github.com/googlefonts/caveat)
+- **Atkinson Hyperlegible** — Copyright 2020 Braille Institute of America, Inc.
+
+Full license text: https://openfontlicense.org (SIL Open Font License, Version 1.1)
 
 ---
 

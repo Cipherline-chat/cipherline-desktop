@@ -153,17 +153,40 @@ export const formatMonth = (ym: string): string => `${MONTHS[Number(ym.slice(5, 
 /** 'YYYY-MM-DD' -> "Oct 21". */
 export const formatDay = (d: string): string => `${MONTHS[Number(d.slice(5, 7)) - 1] ?? ''} ${Number(d.slice(8, 10))}`;
 
+/**
+ * Does this Steam activity hold at least one meaningful PUBLIC stat? The rule
+ * for drawing the Steam showcase to viewers (2026-11-16):
+ *  - a private profile never has any (level / member-since / years are not
+ *    shown from it: that is what produced the empty "0 / <1 year" card);
+ *  - otherwise any of: playing now, recent or most-played games, a library or
+ *    playtime above 0, a badge count above 0, a level above 0.
+ * "Member since" / years alone do not count. When false the profile shows only
+ * the verified Steam connection (chip / "Verified on Steam" row).
+ */
+export function steamHasShowcaseStats(a: SteamActivity): boolean {
+    if (a.private) return false;
+    return !!a.nowPlaying || a.recent.length > 0 || a.topGames.length > 0
+        || (a.gameCount ?? 0) > 0 || (a.totalMinutes ?? 0) > 0
+        || (a.badgeCount ?? 0) > 0 || (a.level ?? 0) > 0;
+}
+
+/** Steam is hiding things AND nothing public is left to show: the owner should be told (and viewers see no card). */
+export const steamNeedsOwnerNotice = (a: SteamActivity): boolean => (a.private || a.gamesPrivate) && !steamHasShowcaseStats(a);
+
+/** How long Steam's answer can stay cached server-side (apps/api steam-data.service.ts STEAM_TTL: summary 60 s, library 6 h). */
+export const STEAM_PRIVACY_CACHE_NOTE = 'Changes to "My profile" show within about a minute; "Game details" can take up to 6 hours.';
+
 /** What Steam is hiding, as one line; null when nothing is. */
 export function steamPrivacyText(a: SteamActivity, isSelf: boolean): string | null {
     if (a.private) {
         return isSelf
             ? 'Your Steam profile is private, so only your level can show. In Steam, open your profile, Edit Profile > Privacy Settings, and set My profile to Public and Game details to Public.'
-            : 'Their Steam profile is private.';
+            : null;   // viewers are never told what someone's Steam hides (owner 2026-11-16)
     }
     if (a.gamesPrivate) {
         return isSelf
             ? 'Your Steam game details are private, so games, hours and achievements cannot show. In Steam: Edit Profile > Privacy Settings > Game details: Public.'
-            : 'Their Steam game details are private.';
+            : null;   // viewers are never told what someone's Steam hides (owner 2026-11-16)
     }
     if (isSelf && a.totalMinutes === 0 && (a.gameCount ?? 0) > 0) {
         return 'Steam hides your playtime. In Steam: Edit Profile > Privacy Settings, untick "Always keep my total playtime private".';

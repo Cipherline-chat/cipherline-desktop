@@ -34,6 +34,12 @@ export async function encryptBlobCore(file: Blob, key: CryptoKey, bundleIv: bool
     return { encryptedBlob, ivB64: bytesToBase64(iv) };
 }
 
+/** SHA-256 of a Blob's bytes, base64 (same as franking.sha256B64 of its bytes). */
+export async function sha256BlobB64Core(blob: Blob): Promise<string> {
+    const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', await blob.arrayBuffer()));
+    return bytesToBase64(digest);
+}
+
 /** `type` must already be sanitised by the caller (crypto.ts sanitizeMime). */
 export async function decryptBlobCore(encryptedBlob: Blob, key: CryptoKey, ivB64: string | null, type: string): Promise<Blob> {
     const combined = new Uint8Array(await encryptedBlob.arrayBuffer());

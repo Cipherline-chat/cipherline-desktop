@@ -46,7 +46,7 @@ describe('makeSliceYield', () => {
         expect(yields).toBe(2);
     });
 
-    it('bounds the longest synchronous stretch of a real sweep (long-task regression)', async () => {
+    it('a real sweep yields on budget and never starts a thread past it (long-task regression)', async () => {
         const policy: StoragePolicy = {
             attachmentRetention: '24h', messageRetention: '1mo',
             savedAttachmentIds: [], unsavedAttachmentIds: [], savedMessageIds: [], unsavedMessageIds: [],
@@ -58,27 +58,51 @@ describe('makeSliceYield', () => {
             state[`c${t}`] = Array.from({ length: 800 }, (_, i) => ({ id: `m${t}-${i}`, timestamp: new Date(now - i * 3_600_000).toISOString(), content: { type: 'text' } }));
         }
         const run = (id: string) => sweepRetention({ [id]: state[id] }, policy, now, { [id]: new Set() });
+        const ids = Object.keys(state);
+        const SLICE_MS = 8;
 
-        // Unsliced: the whole sweep is one task.
-        const t0 = performance.now();
-        for (const id of Object.keys(state)) run(id);
-        const whole = performance.now() - t0;
+        // Size the work to THIS machine. A fixed 60 threads was ~50-75 ms on the
+        // dev box but under two budgets on a fast GitHub runner once the JIT was
+        // warm, so the sliced pass yielded once and failed "expected 1 to be
+        // greater than 1". Warm up, take the MEDIAN per-thread cost (one GC pause
+        // or preemption cannot skew it), then run enough threads for at least
+        // eight budgets of work. A slower or contended machine only gets more.
+        for (const id of ids) run(id);
+        const costs = ids.map(id => { const t = performance.now(); run(id); return performance.now() - t; }).sort((a, b) => a - b);
+        const perThread = Math.max(costs[costs.length >> 1], 0.001);
+        const runs = Math.max(ids.length, Math.ceil((8 * SLICE_MS) / perThread));
 
-        // Sliced, as Dashboard runs it: measure every synchronous stretch.
-        let stretchStart = performance.now();
-        let longest = 0;
-        let yields = 0;
-        const sy = makeSliceYield(8, () => performance.now(), async () => {
-            longest = Math.max(longest, performance.now() - stretchStart);
-            yields++;
+        // Sliced, as Dashboard runs it: record each synchronous stretch, plus when
+        // its LAST thread started.
+        type Stretch = { start: number; lastRunStart: number; runs: number };
+        const stretches: Stretch[] = [];
+        let cur: Stretch = { start: performance.now(), lastRunStart: NaN, runs: 0 };
+        const sy = makeSliceYield(SLICE_MS, () => performance.now(), async () => {
+            stretches.push(cur);
             await new Promise(r => setTimeout(r, 0));
-            stretchStart = performance.now();
+            cur = { start: performance.now(), lastRunStart: NaN, runs: 0 };
         });
-        for (const id of Object.keys(state)) { await sy(); run(id); }
-        longest = Math.max(longest, performance.now() - stretchStart);
+        for (let i = 0; i < runs; i++) {
+            await sy();
+            cur.lastRunStart = performance.now();
+            cur.runs++;
+            run(ids[i % ids.length]);
+        }
+        stretches.push(cur);
+        const yields = stretches.length - 1;
 
-        expect(yields).toBeGreaterThan(1);
-        // One thread's sweep past the 8 ms budget is the most a stretch can be.
-        expect(longest).toBeLessThan(Math.max(whole / 2, 30));
+        // It yields. More than once: there are >= 8 budgets of work.
+        expect(yields, `runs=${runs} perThread=${perThread.toFixed(3)}ms`).toBeGreaterThan(1);
+        expect(Math.max(...stretches.map(s => s.runs)), 'one stretch ran the whole sweep').toBeLessThan(runs);
+
+        // No thread STARTS past the budget. A stretch can overrun only by the
+        // thread already running when the budget ran out, so the time before its
+        // last thread starts must be under the budget. That leaves out the
+        // threads' own wall time, where GC pauses and preemption on a shared
+        // runner land, and keeps what regresses: a checkpoint that does not
+        // yield, or a budget that is not enforced. The SLICE_MS slack absorbs a
+        // stall in the microseconds between a checkpoint and the next thread.
+        const worst = Math.max(...stretches.map(s => s.lastRunStart - s.start));
+        expect(worst, `stretches=${stretches.length}`).toBeLessThan(SLICE_MS * 2);
     });
 });

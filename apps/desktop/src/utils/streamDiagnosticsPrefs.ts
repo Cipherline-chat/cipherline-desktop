@@ -19,6 +19,7 @@ const HUD_KEY = 'cipherline_stream_stats_hud';
 const CODEC_KEY = 'cipherline_screenshare_codec';
 const HEVC_KEY = 'cipherline_allow_hevc';
 const SHARE_LOW_KEY = 'cipherline_share_low_layer';
+const IDR_PPS_RETRY_KEY = 'cipherline_e2ee_idr_pps_retry';
 
 const CODEC_PREFS: readonly ScreenShareCodecPref[] = ['auto', 'h264', 'vp9', 'vp8'];
 
@@ -78,6 +79,24 @@ export function useAllowHevc(): boolean {
 
 /** "Lighter copy for viewers (saves bandwidth)" — default ON since 2026-10-23
  *  (was off; see shareLowLayer.ts). Only an explicitly stored '0' turns it off. */
+/**
+ * Runtime kill switch for the E2EE worker's H.264 IDR pps-id retry (e2eeIdrPpsRetry.ts).
+ * Default ON; '0' turns it off. Read when a call's E2EE worker is created (the next call
+ * picks up a change). Device-local: not in backups.
+ */
+export function getE2eeIdrPpsRetryEnabled(): boolean {
+    return read(IDR_PPS_RETRY_KEY) !== '0';
+}
+
+export function setE2eeIdrPpsRetryEnabled(on: boolean): void {
+    try { secureLocalStore.setItem(IDR_PPS_RETRY_KEY, on ? '1' : '0'); } catch { /* locked store */ }
+    emit();
+}
+
+export function useE2eeIdrPpsRetryEnabled(): boolean {
+    return useSyncExternalStore(subscribe, getE2eeIdrPpsRetryEnabled, () => true);
+}
+
 export function getShareLowLayerEnabled(): boolean {
     return read(SHARE_LOW_KEY) !== '0';
 }

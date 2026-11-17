@@ -141,6 +141,7 @@ export const ReportProblemModal: React.FC<ReportProblemModalProps> = ({
             description,
             replyEmail: replyEmail.trim() || undefined,
             crash: category === 'crash' ? crashEntry?.crash ?? null : null,
+            previousSession: category === 'crash' ? crashEntry?.previous_session ?? null : null,
         });
     }, [prepared, category, step, request.trigger, description, replyEmail, crashEntry, snapshotTick]);
 

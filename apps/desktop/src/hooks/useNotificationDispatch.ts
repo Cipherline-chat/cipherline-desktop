@@ -25,8 +25,7 @@ import { computeDnd } from './useDndState';
 import { playSound } from '../utils/notificationSounds';
 import { resolveNotification, gateOnOtherDeviceAttention, type NotifDecision } from '../utils/notificationDecision';
 import { isMobileAttentive } from '../utils/remoteAttention';
-import { mentionsToDisplayText } from '../utils/mentionTokens';
-import { clipForPreview } from '../utils/messagePreviewText';
+import { toPlainText } from '../utils/messagePreviewText';
 import {
     selectNotificationAvatarId, getNotificationIconDataUrl, createToastSequencer,
     rasterizeCircleIcon, type NotifIconDeps,
@@ -123,7 +122,8 @@ export function useNotificationDispatch(options?: NotificationDispatchOptions) {
         // mention of any kind (user, role, @everyone, custom emoji).
         // Cut before de-tokenising: a toast shows a line or two, and this runs
         // for every arriving message with no click (utils/messagePreviewText).
-        const displayText = mentionsToDisplayText(clipForPreview(text));
+        // Formatting syntax removed and spoilers hidden: a toast must not reveal one.
+        const displayText = toPlainText(text);
         const windowFocused = typeof document !== 'undefined' && document.hasFocus();
 
         // 2. What does this message mean? Either the caller already resolved it

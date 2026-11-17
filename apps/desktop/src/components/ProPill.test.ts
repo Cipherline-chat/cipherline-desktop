@@ -68,10 +68,14 @@ describe('every place the Pro badge renders goes through ProPill', () => {
         expect(badges).toContain('testId="pro-badge"');
     });
 
-    it('the Settings > Profile identity card (yourself) uses ProPill with the fetched value', () => {
+    it('Settings > Profile no longer puts a Pro pill next to the Username label (owner 2026-11-16), and draws no tip-less gold pill', () => {
         const src = read('./settings/panes/ProfilePane.tsx');
-        expect(src).toMatch(/<ProPill proSince=\{isPro \? proSince : null\}/);
+        expect(src).not.toMatch(/<ProPill/);
+        expect(src).not.toMatch(/import \{ ProPill \}/);
+        expect(src).toContain('label="Username"');
         expect(src).not.toMatch(/variant="gold"/);
+        // Your own card preview still gets the Pro state + "member since" date.
+        expect(src).toMatch(/isPro, proSince: isPro \? proSince : null/);
     });
 
     it('the public-profile type carries the optional field', () => {

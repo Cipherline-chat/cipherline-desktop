@@ -21,6 +21,19 @@ export type { SendResult, SendFailure } from './sendPolicy';
 const isOnline = () => (typeof navigator === 'undefined' ? true : navigator.onLine !== false);
 
 export async function sendDiagnosticReport(body: DiagnosticReportBody, token: string): Promise<SendResult> {
+    const first = await postReport(body, token);
+    // `previous_session` is an optional key an older API may not expect: if the
+    // server refuses the report for its shape or size, send it once more without
+    // that key rather than lose the whole report.
+    if (!first.ok && (first.reason === 'rejected' || first.reason === 'too_large') && body.payload.previous_session) {
+        const { previous_session: dropped, ...payload } = body.payload;
+        void dropped;
+        return postReport({ ...body, payload }, token);
+    }
+    return first;
+}
+
+async function postReport(body: DiagnosticReportBody, token: string): Promise<SendResult> {
     if (!isOnline()) return { ok: false, reason: 'offline', message: FAILURE_COPY.offline };
     try {
         const res = await axios.post(`${API_BASE}/diagnostics/reports`, JSON.stringify(body), {

@@ -22,7 +22,7 @@ export const StatusEmoji: React.FC<{
     return <span className={className} aria-hidden="true">{parsed.value}</span>;
 };
 
-type EntryLike = Pick<FriendStatusEntry, 'status' | 'custom_status_text' | 'custom_status_emoji' | 'custom_status_expires_at' | 'current_game' | 'on_mobile'>;
+type EntryLike = Pick<FriendStatusEntry, 'status' | 'custom_status_text' | 'custom_status_emoji' | 'custom_status_expires_at' | 'current_game' | 'on_mobile'> & Partial<Pick<FriendStatusEntry, 'current_game_detail'>>;
 
 interface StatusLineProps {
     entry: EntryLike | null | undefined;
@@ -73,7 +73,8 @@ export const StatusLine: React.FC<StatusLineProps> = ({ entry, className, style,
         return <>{fallback}</>;
     }
     if (m.kind === 'game') {
-        return <span className={className} style={style}>{renderGame ? renderGame(m.game!) : `Playing ${m.game}`}</span>;
+        // The tooltip carries the Rich Presence lines (round, score) when shared.
+        return <span className={className} style={style} title={m.gameTooltip ?? undefined}>{renderGame ? renderGame(m.game!) : `Playing ${m.game}`}</span>;
     }
     const label = customStatusLabel(m);
     return (

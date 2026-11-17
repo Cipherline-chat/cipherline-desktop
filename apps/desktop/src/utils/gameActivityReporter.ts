@@ -20,20 +20,37 @@
  * The REST PATCH (`game_name`) keeps being sent too, for servers that predate
  * `presence:game` — they ignore the unknown socket event.
  *
+ * Rich Presence detail lines (`presence:game_detail`, utils/richPresence.ts)
+ * ride along: sent after the game they belong to, re-sent on every
+ * (re)connect, and COALESCED to at most one frame per DETAIL_MIN_INTERVAL_MS
+ * (a game may rewrite its score line every second; friends do not need every
+ * frame, and the server spaces its fan-out anyway). The last value always
+ * goes out. A game change drops the detail (the server does the same).
+ *
  * Pure of React; timers are injectable for tests.
  */
+import { sameWireDetail, type WireGameDetail } from './richPresence';
 
 /** Mirrors GAME_REPORT_REFRESH_MS in apps/api/src/gateway/presence.logic.ts. */
 export const GAME_REPORT_REFRESH_MS = 60_000;
 
+/** At most one `presence:game_detail` per this long (the last value always lands). */
+export const DETAIL_MIN_INTERVAL_MS = 15_000;
+
 export interface GameReporterTimers {
     setInterval(fn: () => void, ms: number): unknown;
     clearInterval(handle: unknown): void;
+    setTimeout?(fn: () => void, ms: number): unknown;
+    clearTimeout?(handle: unknown): void;
+    now?(): number;
 }
 
 const defaultTimers: GameReporterTimers = {
     setInterval: (fn, ms) => setInterval(fn, ms),
     clearInterval: (h) => clearInterval(h as ReturnType<typeof setInterval>),
+    setTimeout: (fn, ms) => setTimeout(fn, ms),
+    clearTimeout: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
+    now: () => Date.now(),
 };
 
 export class GameActivityReporter {
@@ -41,12 +58,52 @@ export class GameActivityReporter {
     private refresh: unknown = null;
     private readonly send: (game: string | null) => void;
     private readonly timers: GameReporterTimers;
+    private readonly sendDetail: ((d: WireGameDetail | null) => void) | null;
+    private detail: WireGameDetail | null = null;
+    /** What the CURRENT connection was last told (undefined = nothing yet). */
+    private sentDetail: WireGameDetail | null | undefined = undefined;
+    private detailSentAt = -Infinity;
+    private detailTimer: unknown = null;
 
     /** `send` delivers one `presence:game` frame on the current socket, if
-     *  one is open (a no-op otherwise — the next connect re-sends). */
-    constructor(send: (game: string | null) => void, timers: GameReporterTimers = defaultTimers) {
+     *  one is open (a no-op otherwise — the next connect re-sends).
+     *  `sendDetail` likewise for `presence:game_detail`. */
+    constructor(send: (game: string | null) => void, timers: GameReporterTimers = defaultTimers, sendDetail?: (d: WireGameDetail | null) => void) {
         this.send = send;
         this.timers = timers;
+        this.sendDetail = sendDetail ?? null;
+    }
+
+    get currentDetail(): WireGameDetail | null { return this.detail; }
+
+    /** The game's detail lines changed (null = none / not shared). Call after setGame. */
+    setDetail(detail: WireGameDetail | null): void {
+        const next = this.game ? detail : null;
+        if (sameWireDetail(next, this.detail)) return;
+        this.detail = next;
+        this.flushDetail();
+    }
+
+    private now(): number { return this.timers.now ? this.timers.now() : Date.now(); }
+
+    private flushDetail(): void {
+        if (!this.sendDetail) return;
+        if (this.sentDetail !== undefined && sameWireDetail(this.detail, this.sentDetail)) return;
+        const wait = this.detailSentAt + DETAIL_MIN_INTERVAL_MS - this.now();
+        if (wait > 0 && this.timers.setTimeout) {
+            if (this.detailTimer === null) {
+                this.detailTimer = this.timers.setTimeout(() => { this.detailTimer = null; this.flushDetail(); }, wait);
+            }
+            return;
+        }
+        this.sentDetail = this.detail;
+        this.detailSentAt = this.now();
+        this.sendDetail(this.detail);
+    }
+
+    private clearDetailTimer(): void {
+        if (this.detailTimer !== null) this.timers.clearTimeout?.(this.detailTimer);
+        this.detailTimer = null;
     }
 
     get current(): string | null { return this.game; }
@@ -56,6 +113,10 @@ export class GameActivityReporter {
         const next = game && game.trim() ? game : null;
         if (next === this.game) return;
         this.game = next;
+        // A new game (or none) starts with no detail; the server agrees.
+        this.detail = null;
+        this.sentDetail = null;
+        this.clearDetailTimer();
         this.send(next);
         this.schedule();
     }
@@ -64,11 +125,20 @@ export class GameActivityReporter {
     onConnected(): void {
         this.send(this.game);
         this.schedule();
+        // The new connection knows no detail yet: tell it now (not coalesced).
+        this.clearDetailTimer();
+        this.sentDetail = null;
+        if (this.detail && this.sendDetail) {
+            this.sentDetail = this.detail;
+            this.detailSentAt = this.now();
+            this.sendDetail(this.detail);
+        }
     }
 
     dispose(): void {
         if (this.refresh !== null) this.timers.clearInterval(this.refresh);
         this.refresh = null;
+        this.clearDetailTimer();
     }
 
     private schedule(): void {

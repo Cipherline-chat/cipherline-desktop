@@ -739,6 +739,101 @@ export const SafetyVerificationModal: React.FC<Props> = ({
 
     const anyKeyChanged = devices.some(d => d.state === 'key_changed');
 
+    /** "Your code, so they can check you too": copy + Send. Shared by Quick
+     *  verify and the verified all-clear, so verifying someone never takes away
+     *  the way to send them yours. */
+    const ownCodeSection = (standalone: boolean) => (
+                        <div className={standalone ? 'flex flex-col gap-1.5' : 'flex flex-col gap-1.5 pt-1 border-t border-white/[0.06]'}>
+                            <span className="text-xs text-cl-muted">
+                                Your code, so {remoteUsername} can check you too
+                            </span>
+                            {ownVerdict && (
+                                <OwnCoverage
+                                    verdict={ownVerdict}
+                                    names={ownNames}
+                                    onConfirm={handleConfirmOwn}
+                                    onReject={d => { void handleRejectOwn(d); }}
+                                />
+                            )}
+                            {myCodeAllowed ? (
+                                <div className="flex items-center gap-2" data-testid="my-code">
+                                    {/* `break-words`, never `break-all`: the code is read
+                                        aloud in four-character groups, and break-all splits
+                                        mid-group ("… WV / 64"), which is exactly the kind of
+                                        transcription ambiguity the grouping exists to avoid.
+                                        Wrapping at the spaces keeps every group intact. */}
+                                    <code className="flex-1 font-mono text-[12px] leading-snug text-cl-text break-words">
+                                        {formatCode(myCode)}
+                                    </code>
+                                    <ClButton
+                                        icon
+                                        size="sm"
+                                        variant="ghost"
+                                        onClick={handleCopy}
+                                        tooltip={
+                                            copyState === 'ok'   ? 'Copied'
+                                            : copyState === 'fail' ? 'Copy failed'
+                                            : 'Copy your code'
+                                        }
+                                    >
+                                        {copyState === 'ok'   ? <Check size={16} className="text-cl-ok" />
+                                         : copyState === 'fail' ? <X size={16} style={{ color: 'var(--cl-flash)' }} />
+                                         : <Copy size={16} />}
+                                    </ClButton>
+                                </div>
+                            ) : ownNotReady ? (
+                                <span className="text-xs text-cl-faint">Checking your devices. Close and reopen this in a moment.</span>
+                            ) : ownVerdict && myCode ? (
+                                /* Withheld: OwnCoverage above says why and offers the fix. */
+                                null
+                            ) : (
+                                <span className="text-xs text-cl-faint">Unavailable — could not read your own device keys.</span>
+                            )}
+                            {/* A tooltip is hover-only, so it cannot be the whole
+                                failure report — a user who clicked and saw nothing
+                                happen is precisely the one not hovering. This line
+                                states the failure in the flow, and names the manual
+                                recovery (the code above is selectable text). */}
+                            {copyState === 'fail' && (
+                                <span className="text-[11px] leading-snug" style={{ color: 'var(--cl-flash)' }} role="alert">
+                                    Could not write to the clipboard. Select the code above and copy it manually.
+                                </span>
+                            )}
+
+                            {/* Send — the convenience path. Deliberately worded
+                                as "so they can check it", not "verify me":
+                                sending a code through Cipherline cannot verify
+                                anything by itself, and the recipient's embed
+                                says so too. Hidden entirely outside a 1:1 DM
+                                (`onSendCode` undefined). */}
+                            {myCodeAllowed && onSendCode && (
+                                <>
+                                    <ClButton
+                                        size="sm"
+                                        fullWidth
+                                        pressAnim="send"
+                                        loading={sendState === 'sending'}
+                                        disabled={sendState === 'sent'}
+                                        onClick={handleSend}
+                                    >
+                                        {sendState === 'sent'
+                                            ? <><Check size={14} className="ico" /> Sent to {remoteUsername}</>
+                                            : <><Send size={14} className="ico" /> Send my code to {remoteUsername}</>}
+                                    </ClButton>
+                                    {sendState === 'error' && (
+                                        <span className="text-[11px] leading-snug" style={{ color: 'var(--cl-flash)' }} role="alert">
+                                            Could not send. Check your connection and try again.
+                                        </span>
+                                    )}
+                                    <span className="text-[11px] leading-snug text-cl-faint">
+                                        Safe to send, but it can't replace comparing outside Cipherline.
+                                    </span>
+                                </>
+                            )}
+                        </div>
+    );
+
+
     return (
         <ClModal
             open={isOpen}
@@ -1024,95 +1119,20 @@ export const SafetyVerificationModal: React.FC<Props> = ({
                         {/* Their turn: verification is directional, and a user
                             who only pastes has verified the contact without the
                             contact having verified them. */}
-                        <div className="flex flex-col gap-1.5 pt-1 border-t border-white/[0.06]">
-                            <span className="text-xs text-cl-muted">
-                                Your code, so {remoteUsername} can check you too
-                            </span>
-                            {ownVerdict && (
-                                <OwnCoverage
-                                    verdict={ownVerdict}
-                                    names={ownNames}
-                                    onConfirm={handleConfirmOwn}
-                                    onReject={d => { void handleRejectOwn(d); }}
-                                />
-                            )}
-                            {myCodeAllowed ? (
-                                <div className="flex items-center gap-2" data-testid="my-code">
-                                    {/* `break-words`, never `break-all`: the code is read
-                                        aloud in four-character groups, and break-all splits
-                                        mid-group ("… WV / 64"), which is exactly the kind of
-                                        transcription ambiguity the grouping exists to avoid.
-                                        Wrapping at the spaces keeps every group intact. */}
-                                    <code className="flex-1 font-mono text-[12px] leading-snug text-cl-text break-words">
-                                        {formatCode(myCode)}
-                                    </code>
-                                    <ClButton
-                                        icon
-                                        size="sm"
-                                        variant="ghost"
-                                        onClick={handleCopy}
-                                        tooltip={
-                                            copyState === 'ok'   ? 'Copied'
-                                            : copyState === 'fail' ? 'Copy failed'
-                                            : 'Copy your code'
-                                        }
-                                    >
-                                        {copyState === 'ok'   ? <Check size={16} className="text-cl-ok" />
-                                         : copyState === 'fail' ? <X size={16} style={{ color: 'var(--cl-flash)' }} />
-                                         : <Copy size={16} />}
-                                    </ClButton>
-                                </div>
-                            ) : ownNotReady ? (
-                                <span className="text-xs text-cl-faint">Checking your devices. Close and reopen this in a moment.</span>
-                            ) : ownVerdict && myCode ? (
-                                /* Withheld: OwnCoverage above says why and offers the fix. */
-                                null
-                            ) : (
-                                <span className="text-xs text-cl-faint">Unavailable — could not read your own device keys.</span>
-                            )}
-                            {/* A tooltip is hover-only, so it cannot be the whole
-                                failure report — a user who clicked and saw nothing
-                                happen is precisely the one not hovering. This line
-                                states the failure in the flow, and names the manual
-                                recovery (the code above is selectable text). */}
-                            {copyState === 'fail' && (
-                                <span className="text-[11px] leading-snug" style={{ color: 'var(--cl-flash)' }} role="alert">
-                                    Could not write to the clipboard. Select the code above and copy it manually.
-                                </span>
-                            )}
-
-                            {/* Send — the convenience path. Deliberately worded
-                                as "so they can check it", not "verify me":
-                                sending a code through Cipherline cannot verify
-                                anything by itself, and the recipient's embed
-                                says so too. Hidden entirely outside a 1:1 DM
-                                (`onSendCode` undefined). */}
-                            {myCodeAllowed && onSendCode && (
-                                <>
-                                    <ClButton
-                                        size="sm"
-                                        fullWidth
-                                        pressAnim="send"
-                                        loading={sendState === 'sending'}
-                                        disabled={sendState === 'sent'}
-                                        onClick={handleSend}
-                                    >
-                                        {sendState === 'sent'
-                                            ? <><Check size={14} className="ico" /> Sent to {remoteUsername}</>
-                                            : <><Send size={14} className="ico" /> Send my code to {remoteUsername}</>}
-                                    </ClButton>
-                                    {sendState === 'error' && (
-                                        <span className="text-[11px] leading-snug" style={{ color: 'var(--cl-flash)' }} role="alert">
-                                            Could not send. Check your connection and try again.
-                                        </span>
-                                    )}
-                                    <span className="text-[11px] leading-snug text-cl-faint">
-                                        Safe to send, but it can't replace comparing outside Cipherline.
-                                    </span>
-                                </>
-                            )}
-                        </div>
+                        {ownCodeSection(false)}
                     </div>
+                    )}
+
+                    {/* Your code stays reachable once they're verified. The
+                        all-clear replaces Quick verify, and with it this used to
+                        go too, so a verified contact could never be sent your
+                        code again (owner, 2026-11-16). Verification is
+                        directional: you having checked them says nothing about
+                        whether they still hold a check of you. */}
+                    {!showQuickVerify && (
+                        <div className="w-full rounded-xl border border-white/[0.06] bg-black/30 p-3.5">
+                            {ownCodeSection(true)}
+                        </div>
                     )}
 
                     {/* ── Manual comparison ────────────────────────────────────

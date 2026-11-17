@@ -15,7 +15,7 @@ describe('Reply is hidden where you cannot send', () => {
         expect(src).toMatch(/const canReplyHere = canComposeInThisChat\s*&& \(!isServerChannel \|\| channelPermissions === undefined\s*\|\| !!\(channelPermissions & Permissions\.SEND_MESSAGES\)\);/);
     });
     it('gates the hover-bar Reply button', () => {
-        expect(src).toMatch(/\{canReplyHere && \(\s*<MsgBarBtn\s*icon=\{<Reply \/>\}/);
+        expect(src).toMatch(/\{canReplyHere && \(\s*<MsgBarBtn\s*icon=\{<Reply\b[^}]*\}[^>]*\/>\}/);
     });
     it('gates the context-menu Reply item', () => {
         expect(src).toContain('if (canReplyToMessage(gateCtx) && canReplyHere) {');

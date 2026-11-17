@@ -769,7 +769,7 @@ describe('wiring in main.ts / preload / renderer', () => {
         // (both go through noteGlobalShortcutPress, which notes presence first - quick-share.wiring.test.ts)
         expect(main).toMatch(/function noteGlobalShortcutPress\(actionId: string\): void \{\s*captureConsent\.notePresence\(null\);/);
         expect(main).toMatch(/globalShortcut\.register\(accelerator, \(\) => \{\s*noteGlobalShortcutPress\(actionId\);/);
-        expect(main).toMatch(/new WaylandGlobalShortcuts\(\s*\(\) => dbusSessionBus\(\),\s*\(actionId\) => \{\s*noteGlobalShortcutPress\(actionId\);/);
+        expect(main).toMatch(/new WaylandGlobalShortcuts\(\s*\(\) => dbusSessionBus\(\),\s*\(actionId\) => \{\s*(?:\/\/[^\n]*\s*if \(isHoldSlot\(actionId\)\) \{ sendHoldState\(actionId, true\); return; \}\s*)?noteGlobalShortcutPress\(actionId\);/);
         // No IPC channel lets the renderer claim presence.
         expect(strip(main)).not.toMatch(/ipcMain\.(handle|on)\('capture:(presence|user|input)/);
     });
@@ -793,12 +793,14 @@ describe('wiring in main.ts / preload / renderer', () => {
         //  the 5th: the audio on/off toggle, which does not go through the republish;
         //  the 6th: opening a new source to prove it, before the live share is taken down;
         //  the 7th: acquireCaptureFirst, the Wayland portal's new source asked for before the live
-        //  share is touched - a capture like any other, so it presents its own grant)
-        expect(sc.match(/await mintShareGrant\(options\);/g)).toHaveLength(7);
+        //  share is touched - a capture like any other, so it presents its own grant;
+        //  the 8th: the retry of a transient NotReadableError after a quality-change teardown - the failed
+        //  attempt spent the grant, so each retry mints its own, still inside the click's presence window)
+        expect(sc.match(/await mintShareGrant\(options\);/g)).toHaveLength(8);
         expect(sc).toContain('resolveDesktopSource(pending.sourceId, pending.audio, pending.grantToken ?? undefined)');
         expect(sc).toContain('startWindowAudioCapture(rootPid, wasapiMode, grantTokenFor(shareGrantRef.current, sourceId))');
         // every parked pending share carries the grant
-        expect(sc.match(/pendingScreenShareRef\.current = pendingShare\(/g)).toHaveLength(6);
+        expect(sc.match(/pendingScreenShareRef\.current = pendingShare\(/g)).toHaveLength(7);
         expect(sc).not.toMatch(/pendingScreenShareRef\.current = \{ \.\.\.options/);
     });
 });

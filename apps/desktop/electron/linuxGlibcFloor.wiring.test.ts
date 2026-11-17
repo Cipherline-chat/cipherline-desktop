@@ -64,7 +64,7 @@ describe('rebuild-native:linux-compat: the container build', () => {
 
     it('does not touch the source lists (binding.gyp still builds the addon + the helper from the same files)', () => {
         const gyp = read('binding.gyp');
-        expect(gyp).toContain('"sources": [ "src-native/audio_capture.cc", "src-native/window_geometry.cc", "src-native/share_power.cc", "src-native/hdr_capture.cc" ]');
+        expect(gyp).toContain('"sources": [ "src-native/audio_capture.cc", "src-native/window_geometry.cc", "src-native/share_power.cc", "src-native/hdr_capture.cc", "src-native/key_state.cc", "src-native/audio_output_kind.cc" ]');
         expect(gyp).toContain('"sources": [ "src-native/audio_capture_linux.cc" ]');
         expect(gyp).toContain('"sources": [ "src-native/wayland_overlay/cl_wayland_overlay.c" ]');
     });

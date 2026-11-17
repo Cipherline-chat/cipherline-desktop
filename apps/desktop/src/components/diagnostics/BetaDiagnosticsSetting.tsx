@@ -8,7 +8,7 @@ const subscribeState = (cb: () => void) => betaReporter.subscribe(cb);
 const readServerEnabled = () => betaReporter.getState().serverEnabled;
 
 /**
- * Settings → Advanced → Help & feedback → "Share beta diagnostics".
+ * Settings → Advanced → Help & feedback → "Share early access diagnostics".
  *
  * Rendered ONLY while the server has beta diagnostics switched on (GET
  * /v1/client-status `beta_diagnostics`) — outside the beta there is nothing to
@@ -22,9 +22,9 @@ export const BetaDiagnosticsSetting: React.FC<{ userId: string | null; serverEna
     return (
         <div className="sd-row mt-3" style={{ borderTop: 'none' }}>
             <div className="sd-rl">
-                <b id="bd-setting-label">Share beta diagnostics</b>
+                <b id="bd-setting-label">Share early access diagnostics</b>
                 <span className="bd-setting-sub">
-                    During the closed beta, automatically send failure reports (scrubbed codes and counts), your hardware
+                    During early access, automatically send failure reports (scrubbed codes and counts), your hardware
                     profile and call-quality numbers. Never message content, names or who you talk to. Deleted after 30 days.
                 </span>
             </div>
@@ -33,7 +33,7 @@ export const BetaDiagnosticsSetting: React.FC<{ userId: string | null; serverEna
                     checked={on}
                     onChange={v => setBetaDiagEnabled(userId, v)}
                     disabled={!userId}
-                    aria-label="Share beta diagnostics"
+                    aria-label="Share early access diagnostics"
                 />
             </div>
         </div>

@@ -3,6 +3,7 @@ import type { PublicProfile } from '../utils/profileCache';
 import type { ProfileActivity } from '../components/profile/integrationTypes';
 import { useOptionalToken } from './useOptionalToken';
 import { useIntegrationActivity } from './useIntegrationActivity';
+import type { GameDetail } from '../utils/richPresence';
 
 /**
  * What a person is doing right now, for the activity row on the profile
@@ -25,16 +26,19 @@ export interface ProfileActivityInput {
     profile: PublicProfile | null;
     /** The live presence entry's game (null = none / offline / on mobile). */
     liveGame: string | null;
+    /** That game's Rich Presence detail lines, if any (utils/richPresence.ts). */
+    liveGameDetail?: GameDetail | null;
     status: UserStatus;
 }
 
-export function useProfileActivity({ userId, isSelf, profile, liveGame, status }: ProfileActivityInput): ProfileActivity[] {
+export function useProfileActivity({ userId, isSelf, profile, liveGame, liveGameDetail = null, status }: ProfileActivityInput): ProfileActivity[] {
     const token = useOptionalToken();
     return useIntegrationActivity({
         userId,
         token: token ?? null,
         steamId: profile?.steam?.steam_id ?? null,
         liveGame,
+        liveGameDetail,
         isSelf,
         offline: status === 'offline',
         username: profile?.username ?? null,

@@ -9,7 +9,7 @@ import type { HeldFrame } from '../../utils/shareHoldFrame';
  */
 
 /** The held frame. Sits where the <video> does and takes the same fit and corner clip. */
-export const ShareHoldPicture = ({ frame, clipPath }: { frame: HeldFrame; clipPath?: string }) => {
+export const ShareHoldPicture = ({ frame, clipPath, subtle }: { frame: HeldFrame; clipPath?: string; subtle?: boolean }) => {
     const hostRef = React.useRef<HTMLDivElement>(null);
     React.useLayoutEffect(() => {
         const host = hostRef.current;
@@ -23,7 +23,7 @@ export const ShareHoldPicture = ({ frame, clipPath }: { frame: HeldFrame; clipPa
             aria-hidden="true"
             data-share-hold-frame=""
             className="absolute inset-0 z-[1] pointer-events-none"
-            style={{ clipPath, filter: 'brightness(0.62) saturate(0.85)' }}
+            style={{ clipPath, filter: subtle ? 'brightness(0.86) saturate(0.9)' : 'brightness(0.62) saturate(0.85)' }}
         />
     );
 };

@@ -1,10 +1,10 @@
 import { shareInflight } from '../utils/inflightShare';
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import axios from 'axios';
 import { API_BASE } from '../constants';
 import { apiUrl } from '../utils/apiPath';
 import { secureLocalStore } from '../utils/secureLocalStore';
-import type { CallNamingSettings, CallMediaByUser } from '@cipherline/shared';
+import type { CallNamingSettings, CallMediaByUser, DividerStyle } from '@cipherline/shared';
 import { isQuietRenameRefusal } from '../utils/callNaming';
 import { applyCallMediaSeed, callMediaEntriesFromCalls } from '../utils/callMediaPresence';
 import { fetchWithRetry } from '../utils/fetchWithRetry';
@@ -123,6 +123,30 @@ export interface CategoryInfo {
     kind: 'text' | 'huddle';
     /** Lucide icon identifier for the category header. Null = kind default. */
     icon_name: string | null;
+    /** Sub-categories: the parent (top-level) category; null/absent = a
+     *  top-level category. Only sent to clients that ask for the tree
+     *  (`GET .../categories?tree=1`); one level of nesting. */
+    parent_category_id?: string | null;
+    /** @deprecated Retired (free emoji icons); ignored. Sub-categories use `icon_name`. */
+    icon_emoji?: string | null;
+}
+
+/** A decorative divider in the channel list (purely visual; no permissions).
+ *  `parent_category_id` is its container (null = the top of the list). */
+export interface DividerInfo {
+    divider_id: string;
+    server_id: string;
+    parent_category_id: string | null;
+    /** Which list: the text channel list (default / absent) or the Calls panel. */
+    list_kind?: 'text' | 'calls';
+    position: number;
+    /** A newer server's unknown style draws as `line`. */
+    style: DividerStyle;
+    label: string | null;
+    /** @deprecated Retired (free emoji icons); ignored. */
+    emoji?: string | null;
+    /** `#rrggbb`; label styles only. Null = the default (Glow gold). */
+    color: string | null;
 }
 
 /**
@@ -155,6 +179,10 @@ export interface ServerMemberInfo {
 
 export function useServers(token: string | null, userId?: string | null, deviceId?: string | null) {
     const [servers, setServers] = useState<ServerInfo[]>([]);
+    // Latest list for synchronous reads (removeServerLocal must return the
+    // removed entry without relying on a setState updater having run).
+    const serversRef = useRef<ServerInfo[]>([]);
+    serversRef.current = servers;
     const [loading, setLoading] = useState(false);
     const [serversError, setServersError] = useState<string | null>(null);
     const [channels, setChannels] = useState<Record<string, ChannelInfo[]>>({});
@@ -162,6 +190,9 @@ export function useServers(token: string | null, userId?: string | null, deviceI
     // doesn't clear the flag while a request for the new server is in flight.
     const [channelsLoading, setChannelsLoading] = useState<Record<string, boolean>>({});
     const [categories, setCategories] = useState<Record<string, CategoryInfo[]>>({});
+    /** Channel-list dividers per server (already filtered server-side to the
+     *  containers this member can see). */
+    const [dividers, setDividers] = useState<Record<string, DividerInfo[]>>({});
     /** Active Huddle calls keyed by huddle (channel) id. Updated reactively
      *  via the four `huddle:*` WS events; see useRealtime. */
     const [huddleCalls, setHuddleCalls] = useState<Record<string, HuddleCallInfo[]>>({});
@@ -199,6 +230,32 @@ export function useServers(token: string | null, userId?: string | null, deviceI
     }, [token, userId]);
 
     /**
+     * Optimistic leave: take a server off the rail NOW. Returns the removed
+     * entry (with its index) so a failed leave can put it back exactly where it
+     * was via `restoreServerLocal`. The server stays authoritative — the caller
+     * reconciles with `loadServers()` afterwards.
+     */
+    const removeServerLocal = useCallback((serverId: string): { server: ServerInfo; index: number } | null => {
+        const prev = serversRef.current;
+        const index = prev.findIndex(s => s.server_id === serverId);
+        if (index < 0) return null;
+        const removed = { server: prev[index], index };
+        setServers(cur => cur.filter(s => s.server_id !== serverId));
+        return removed;
+    }, []);
+
+    /** Undo `removeServerLocal` (leave failed). No-op if it is already back. */
+    const restoreServerLocal = useCallback((entry: { server: ServerInfo; index: number } | null) => {
+        if (!entry) return;
+        setServers(prev => {
+            if (prev.some(s => s.server_id === entry.server.server_id)) return prev;
+            const next = [...prev];
+            next.splice(Math.min(entry.index, next.length), 0, entry.server);
+            return next;
+        });
+    }, []);
+
+    /**
      * Paint the server list from cache the moment a userId is known, so the
      * rail isn't empty while the network fetch above is in flight. Never
      * clobbers a result that already landed — if `servers` is non-empty the
@@ -234,6 +291,21 @@ export function useServers(token: string | null, userId?: string | null, deviceI
         }
     }, [token]);
 
+    /** GET the dividers this member may see. Never throws: an API that
+     *  predates dividers (404) is "no dividers" ([]); any other failure is
+     *  null = keep whatever is already shown. */
+    const fetchDividers = useCallback(async (serverId: string): Promise<DividerInfo[] | null> => {
+        if (!token) return null;
+        try {
+            const res = await axios.get(apiUrl`/servers/${serverId}/dividers?list=all`, {
+                headers: { Authorization: `Bearer ${token}` },
+            });
+            return Array.isArray(res.data) ? res.data as DividerInfo[] : [];
+        } catch (err) {
+            return axios.isAxiosError(err) && err.response?.status === 404 ? [] : null;
+        }
+    }, [token]);
+
     const loadChannels = useCallback(async (serverId: string): Promise<ChannelInfo[] | null> => {
         if (!token) return null;
         // Paint this server's channels from cache first so opening a server is
@@ -248,6 +320,7 @@ export function useServers(token: string | null, userId?: string | null, deviceI
                     if (Array.isArray(parsed?.channels)) {
                         setChannels(prev => (prev[serverId] ? prev : { ...prev, [serverId]: parsed.channels }));
                         setCategories(prev => (prev[serverId] ? prev : { ...prev, [serverId]: parsed.categories ?? [] }));
+                        setDividers(prev => (prev[serverId] ? prev : { ...prev, [serverId]: parsed.dividers ?? [] }));
                     }
                 }
             } catch { /* corrupt cache — the fetch below is the source of truth */ }
@@ -256,26 +329,31 @@ export function useServers(token: string | null, userId?: string | null, deviceI
         setChannelsLoading(prev => ({ ...prev, [serverId]: true }));
         try {
             // Load channels, categories, and own permissions in parallel.
-            const [chRes, catRes] = await Promise.all([
+            const [chRes, catRes, divRes] = await Promise.all([
                 // Shared with the key sweep's list fetch (Dashboard.requestMissingChannelKeys)
                 // when both fire for the same server at once - one request, not two.
                 shareInflight(`ch:${token}:${serverId}`, () => axios.get(apiUrl`/servers/${serverId}/channels`, {
                     headers: { Authorization: `Bearer ${token}` },
                 })),
-                axios.get(apiUrl`/servers/${serverId}/categories`, {
+                // `tree=1`: this build draws sub-categories (without it the API
+                // flattens them for older clients).
+                axios.get(apiUrl`/servers/${serverId}/categories?tree=1`, {
                     headers: { Authorization: `Bearer ${token}` },
                 }).catch(() => ({ data: [] })), // tolerate older API instances
+                fetchDividers(serverId),
                 loadMyPermissions(serverId),     // fire-and-forget into myPermissions
             ]);
             const fetchedChannels: ChannelInfo[] = chRes.data ?? [];
             const fetchedCategories: CategoryInfo[] = catRes.data ?? [];
             setChannels(prev => ({ ...prev, [serverId]: fetchedChannels }));
             setCategories(prev => ({ ...prev, [serverId]: fetchedCategories }));
+            if (divRes) setDividers(prev => ({ ...prev, [serverId]: divRes }));
+            const fetchedDividers: DividerInfo[] = divRes ?? [];
             if (userId) {
                 try {
                     secureLocalStore.setItem(
                         channelsCacheKey(userId, serverId),
-                        JSON.stringify({ channels: fetchedChannels, categories: fetchedCategories }),
+                        JSON.stringify({ channels: fetchedChannels, categories: fetchedCategories, dividers: fetchedDividers }),
                     );
                 } catch { /* quota — cache is an optimisation, never required */ }
             }
@@ -290,7 +368,35 @@ export function useServers(token: string | null, userId?: string | null, deviceI
         } finally {
             setChannelsLoading(prev => ({ ...prev, [serverId]: false }));
         }
-    }, [token, userId, loadMyPermissions]);
+    }, [token, userId, loadMyPermissions, fetchDividers]);
+
+    /**
+     * Apply a change to one server's channel list RIGHT NOW (state + the
+     * persisted cache), without a round-trip. Used by the channel create /
+     * rename / delete flows to show the result the moment the server has
+     * accepted it (or, optimistically, before) instead of after a full
+     * refetch of the list. The refetch still happens afterwards as a
+     * reconcile, so this only has to be right for the common case.
+     */
+    const applyChannelsLocal = useCallback((serverId: string, update: (list: ChannelInfo[]) => ChannelInfo[]) => {
+        setChannels(prev => {
+            const base = prev[serverId];
+            if (!base) return prev;
+            const next = update(base);
+            if (next === base) return prev;
+            if (userId) {
+                try {
+                    const cached = secureLocalStore.getItem(channelsCacheKey(userId, serverId));
+                    const parsed = cached ? JSON.parse(cached) : {};
+                    secureLocalStore.setItem(
+                        channelsCacheKey(userId, serverId),
+                        JSON.stringify({ channels: next, categories: parsed?.categories ?? [], dividers: parsed?.dividers ?? [] }),
+                    );
+                } catch { /* cache is an optimisation, never required */ }
+            }
+            return { ...prev, [serverId]: next };
+        });
+    }, [userId]);
 
     /**
      * Pull the live list of calls under one Huddle. Called when the user
@@ -541,17 +647,33 @@ export function useServers(token: string | null, userId?: string | null, deviceI
         }
     }, [token]);
 
+    /** Categories (as a tree) AND dividers - the two halves of the channel
+     *  list's structure, always reloaded together. */
     const reloadCategories = useCallback(async (serverId: string) => {
         if (!token) return;
         try {
-            const res = await axios.get(apiUrl`/servers/${serverId}/categories`, {
-                headers: { Authorization: `Bearer ${token}` },
-            });
+            const [res, divs] = await Promise.all([
+                axios.get(apiUrl`/servers/${serverId}/categories?tree=1`, {
+                    headers: { Authorization: `Bearer ${token}` },
+                }),
+                fetchDividers(serverId),
+            ]);
             setCategories(prev => ({ ...prev, [serverId]: res.data ?? [] }));
+            if (divs) setDividers(prev => ({ ...prev, [serverId]: divs }));
         } catch (err) {
             console.error('[useServers] Failed to reload categories for', serverId, err);
         }
-    }, [token]);
+    }, [token, fetchDividers]);
+
+    /** Optimistic local edits to the categories / dividers of one server (the
+     *  sub-category + divider create/edit/delete/drag flows); the
+     *  `server:channels_changed` echo reconciles. */
+    const applyCategoriesLocal = useCallback((serverId: string, update: (list: CategoryInfo[]) => CategoryInfo[]) => {
+        setCategories(prev => (prev[serverId] ? { ...prev, [serverId]: update(prev[serverId]) } : prev));
+    }, []);
+    const applyDividersLocal = useCallback((serverId: string, update: (list: DividerInfo[]) => DividerInfo[]) => {
+        setDividers(prev => ({ ...prev, [serverId]: update(prev[serverId] ?? []) }));
+    }, []);
 
     const createServer = useCallback(async (name: string): Promise<ServerInfo | null> => {
         if (!token) return null;
@@ -629,12 +751,18 @@ export function useServers(token: string | null, userId?: string | null, deviceI
         channels,
         channelsLoading,
         categories,
+        dividers,
         huddleCalls,
         myPermissions,
         loadServers,
+        removeServerLocal,
+        restoreServerLocal,
         loadChannels,
+        applyChannelsLocal,
         loadMyPermissions,
         reloadCategories,
+        applyCategoriesLocal,
+        applyDividersLocal,
         loadHuddleCalls,
         loadGuestCallRoster,
         dropGuestCallRoster,

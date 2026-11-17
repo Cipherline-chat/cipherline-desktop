@@ -25,7 +25,7 @@ import { filterTermsAgainstStructured } from './sensitiveTerms';
 import {
     DIAGNOSTIC_LIMITS, DIAGNOSTIC_VERBATIM_KEYS,
     type CallEvent, type CrashInfo, type DiagnosticCategory, type DiagnosticPayload, type DiagnosticReportBody,
-    type DiagnosticTrigger, type EntitlementInfo, type PerfRow, type RecentError, type SystemInfo,
+    type DiagnosticTrigger, type EntitlementInfo, type PerfRow, type PreviousSession, type RecentError, type SystemInfo,
     type WebrtcSummary,
 } from './reportTypes';
 import type { CallEventInput } from './callEventsSource';
@@ -80,6 +80,7 @@ export function describeCollection(category: DiagnosticCategory): string[] {
     if (spec.callEvents) lines.push(`The last ${DIAGNOSTIC_LIMITS.maxCallEvents} call events: what the call engine decided (connection type and whether a relay was used, codec choices and fallbacks, quality-limit changes, freezes) — with tracks labelled “self-camera”, “remote-video-1” or “remote-share-1” (a shared screen), never who they belong to`);
     lines.push('How long this session’s requests to our servers took, grouped by kind of request (for example “GET servers/:id/channels: 12 requests, median 180 ms”), the 10 slowest, and how long the live connection took to open — never who, which server or channel, or any content');
     lines.push(`The last ${spec.perfRows} Performance log rows (freezes, window and power events, CPU and memory use)`);
+    if (spec.crash) lines.push('If the app closed unexpectedly: the last ~50 Performance log rows of the session that ended, whether a call, screen share or camera was live, and when that session started and was last seen running');
     return lines;
 }
 
@@ -103,6 +104,9 @@ export interface PerfLogInput { at: number; source: PerfRow['source']; ms: numbe
 export type { CallEventInput } from './callEventsSource';
 export interface RecentErrorInput { at: number; kind: RecentError['kind']; name?: string; message: string; stack?: string }
 
+/** Rows of the dead session kept in a report. */
+export const PREVIOUS_SESSION_MAX_ROWS = 60;
+
 /** Endpoint rows kept in `net_timing` (the snapshot is sorted worst-first). */
 const NET_TIMING_MAX_ENDPOINTS = 40;
 
@@ -122,6 +126,10 @@ export interface BundleInput {
     netTiming?: NetTimingSnapshot | null;
     webrtc?: WebrtcSummary | null;
     crash?: CrashInfo | null;
+    /** Main's record of the session that died (pending-crash entry); used for `unclean_exit` only. */
+    previousSession?: PreviousSession | null;
+    /** Main's counts of unclean exits it did not offer (`diagGetSuppressedUnclean`), crash-category reports only. */
+    suppressedUnclean?: Readonly<Record<string, number>> | null;
     recentErrors?: readonly RecentErrorInput[];
     /** The call engine's event log (callEventsSource.ts). Any order; newest are kept. */
     callEvents?: readonly CallEventInput[];
@@ -146,6 +154,18 @@ export interface BuiltReport {
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+const SUPPRESSED_UNCLEAN_KEYS: readonly string[] = ['installer_replaced', 'os_restart', 'external_kill_suspected'];
+/** Known class names only, counts as small positive integers; null when nothing is left. */
+export function sanitizeSuppressedUnclean(v: unknown): Record<string, number> | null {
+    if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+    const out: Record<string, number> = {};
+    for (const k of SUPPRESSED_UNCLEAN_KEYS) {
+        const n = (v as Record<string, unknown>)[k];
+        if (typeof n === 'number' && Number.isInteger(n) && n > 0) out[k] = Math.min(n, 999);
+    }
+    return Object.keys(out).length ? out : null;
+}
 
 const KEY_OK = /^[a-z][a-z0-9_]{0,63}$/;
 const EMAIL_OK = /^[^\s@<>()[\]\\,;:"]{1,64}@[A-Za-z0-9.-]{1,190}\.[A-Za-z]{2,24}$/;
@@ -295,6 +315,21 @@ export function buildDiagnosticReport(input: BundleInput): BuiltReport {
 
     if (spec.crash && input.crash) raw.crash = { ...input.crash };
 
+    // What the DEAD session was doing. Only for an unclean exit (incl. hung-exit); scrubbed below with the rest.
+    const ps = input.previousSession;
+    if (spec.crash && input.crash?.kind === 'unclean_exit' && ps && ps.rows.length + Object.keys(ps.state).length > 0) {
+        raw.previous_session = {
+            started_at: ps.started_at, last_written_at: ps.last_written_at, app_version: ps.app_version,
+            state: { ...ps.state },
+            rows: ps.rows.slice(-PREVIOUS_SESSION_MAX_ROWS).map(r => ({ t_s: r.t_s, source: r.source, ms: Math.round(r.ms), activity: r.activity })),
+        };
+    }
+
+    if (spec.crash && input.suppressedUnclean) {
+        const counts = sanitizeSuppressedUnclean(input.suppressedUnclean);
+        if (counts) raw.suppressed_unclean = counts;
+    }
+
     if (spec.recentErrors) {
         const errs = [...(input.recentErrors ?? [])].sort((a, b) => a.at - b.at).slice(-DIAGNOSTIC_LIMITS.maxRecentErrors);
         raw.recent_errors = errs.map(e => ({
@@ -351,6 +386,9 @@ export function fitPayload(p: DiagnosticPayload, max: number): string[] {
         if (p.perf_log && p.perf_log.rows.length > 20) {
             p.perf_log.rows = p.perf_log.rows.slice(Math.ceil(p.perf_log.rows.length / 2));
             trimmed.add('perf_log');
+        } else if (p.previous_session && p.previous_session.rows.length > 15) {
+            p.previous_session.rows = p.previous_session.rows.slice(Math.ceil(p.previous_session.rows.length / 2));
+            trimmed.add('previous_session');
         } else if (p.net_timing && p.net_timing.endpoints.length > 8) {
             p.net_timing.endpoints = p.net_timing.endpoints.slice(0, Math.ceil(p.net_timing.endpoints.length / 2));
             trimmed.add('net_timing');
@@ -379,6 +417,9 @@ export function fitPayload(p: DiagnosticPayload, max: number): string[] {
         } else if (p.perf_log && p.perf_log.rows.length > 0) {
             p.perf_log.rows = p.perf_log.rows.slice(Math.ceil(p.perf_log.rows.length / 2));
             trimmed.add('perf_log');
+        } else if (p.previous_session) {
+            delete p.previous_session;
+            trimmed.add('previous_session');
         } else if (p.webrtc && p.webrtc.samples.length > 0) {
             p.webrtc.samples = p.webrtc.samples.slice(1);
             trimmed.add('webrtc');

@@ -23,6 +23,7 @@ import {
     useStreamStatsHudEnabled, setStreamStatsHudEnabled,
     useScreenShareCodecPref, setScreenShareCodecPref,
     useAllowHevc, setAllowHevc, useShareLowLayerEnabled, setShareLowLayerEnabled,
+    useE2eeIdrPpsRetryEnabled, setE2eeIdrPpsRetryEnabled,
 } from '../utils/streamDiagnosticsPrefs';
 import { fetchVideoEncodeDriverStatus, requestVideoEncodeDriverInstall, videoEncodeDriverOutcomeText, type VideoEncodeDriverOutcome, type VideoEncodeDriverStatus } from '../utils/videoEncodeDriver';
 import { fetchNvidiaVaapiStatus, requestNvidiaVaapiInstall, nvidiaVaapiOutcomeText, type NvidiaVaapiOutcome, type NvidiaVaapiStatus } from '../utils/nvidiaVaapi';
@@ -419,6 +420,7 @@ const StreamDiagnosticsCard: React.FC = () => {
     const cameraCodec = useCameraCodecPref();
     const allowHevc = useAllowHevc();
     const shareLow = useShareLowLayerEnabled();
+    const idrPpsRetry = useE2eeIdrPpsRetryEnabled();
     const nativeHw = useNativeShareEnabled();
     // Linux only, and only where the preload bridge exists: nothing about it is shown on Windows/macOS.
     const nativeHwAvailable = window.electronAPI?.platform === 'linux' && !!window.nativeShare;
@@ -477,6 +479,13 @@ const StreamDiagnosticsCard: React.FC = () => {
                     <span>Also send a 720p copy of your screen share, for viewers watching it small or on a slower connection (so their picture keeps moving instead of freezing). For a 60 fps or 1440p share it runs from the first viewer, otherwise from 2. Only with a hardware encoder, and it switches itself off for the rest of the share if it costs your game anything. On by default.</span>
                 </div>
                 <ClToggle checked={shareLow} onChange={setShareLowLayerEnabled} />
+            </div>
+            <div className="sd-row">
+                <div className="sd-rl">
+                    <b>Phone-compatible keyframes (H.264)</b>
+                    <span>Re-encrypts the occasional H.264 keyframe so phones (and other WebRTC receivers) can read it instead of dropping it. Turn it off only if a call's video misbehaves; takes effect on your next call. On by default.</span>
+                </div>
+                <ClToggle checked={idrPpsRetry} onChange={setE2eeIdrPpsRetryEnabled} />
             </div>
             {nativeHwAvailable && (
                 <div className="sd-row">

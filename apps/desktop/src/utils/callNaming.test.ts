@@ -64,7 +64,9 @@ describe('settings form helpers', () => {
     it('the selected style\'s box must be valid', () => {
         expect(callNamingFormError(s({ style: 'template', template: '' }))).toMatch(/Enter a template/);
         expect(callNamingFormError(s({ style: 'template', template: '{game}' }))).toMatch(/Unknown placeholder/);
-        expect(callNamingFormError(s({ style: 'fixed', fixed_name: 'Raid 🎮' }))).toMatch(/letters, numbers/);
+        expect(callNamingFormError(s({ style: 'fixed', fixed_name: 'Raid 🎮!' }))).toBeNull(); // emoji + punctuation are fine
+        expect(callNamingFormError(s({ style: 'fixed', fixed_name: 'Raid\u200B' }))).toMatch(/hidden/);
+        expect(callNamingFormError(s({ style: 'fixed', fixed_name: 'Raid\u202Ex' }))).toMatch(/direction/);
         expect(callNamingFormError(s({ style: 'fixed', fixed_name: '' }))).toBeNull(); // = channel name
     });
 

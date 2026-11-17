@@ -29,6 +29,8 @@ Element.prototype.scrollIntoView = function () {};
 vi.mock('../../hooks/useAttachments', () => ({ useAttachments: () => ({ uploadEncryptedFile: vi.fn() }) }));
 
 const { CreateServerModal } = await import('./CreateServerModal');
+const { TEMPLATE_LINK_EXAMPLES } = await import('./TemplateImportGuide');
+const { looksLikeTemplateLink } = await import('../../utils/discordTemplate');
 type Preview = import('../../utils/discordTemplate').DiscordTemplatePreview;
 // jsdom's import.meta.url is not a file: URL — resolve from the package root
 // vitest runs in (apps/desktop).
@@ -188,5 +190,38 @@ describe('Create Server → Import from a Discord template', () => {
         await toPreview();
         await click(btn(/Use a different link/));
         expect(input(/Discord template link/)).not.toBeNull();
+    });
+
+    it('"How to import a template" is a keyboard-operable disclosure with the real link forms', async () => {
+        await mount();
+        await click(btn(/Import from a Discord template/));
+        const toggle = btn(/How to import a template/)!;
+        expect(toggle).toBeDefined();
+        expect(toggle.type).toBe('button'); // never submits the link form
+        expect(toggle.getAttribute('aria-expanded')).toBe('false');
+        expect(text()).not.toContain('Generate Template');
+        await click(toggle);
+        expect(toggle.getAttribute('aria-expanded')).toBe('true');
+        const panel = document.getElementById(toggle.getAttribute('aria-controls')!);
+        expect(panel).not.toBeNull();
+        for (const s of ['Server Settings → Server Template', 'Generate Template', 'Preview template', 'never connects to Discord', 'Create server', '500 channels or 250 roles']) {
+            expect(panel!.textContent).toContain(s);
+        }
+        for (const ex of TEMPLATE_LINK_EXAMPLES) expect(panel!.textContent).toContain(ex);
+        // All of it stays reachable in a small window: the body is the dialog's
+        // scroll container, and the panel is a focus stop so the keyboard can
+        // reach (and scroll to) the part below the toggle.
+        expect(panel!.closest('.dlg-body')!.classList.contains('dlg-body--scroll')).toBe(true);
+        expect(panel!.getAttribute('role')).toBe('region');
+        expect(panel!.tabIndex).toBe(0);
+        // Opening the guide is not an attempt to import anything.
+        expect(onPreviewTemplate).not.toHaveBeenCalled();
+        await click(toggle);
+        expect(toggle.getAttribute('aria-expanded')).toBe('false');
+        expect(document.getElementById(toggle.getAttribute('aria-controls')!)).toBeNull();
+    });
+
+    it('every link form the guide shows is one the import accepts', () => {
+        for (const ex of TEMPLATE_LINK_EXAMPLES) expect(looksLikeTemplateLink(ex)).toBe(true);
     });
 });

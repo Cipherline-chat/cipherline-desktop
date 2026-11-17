@@ -79,6 +79,8 @@ declare global {
         diagGetPendingCrashes?: () => Promise<unknown>;
         diagClearPendingCrashes?: (signatures?: string[]) => Promise<void>;
         diagMarkCrashesSeen?: (signatures?: string[]) => Promise<void>;
+        diagUncleanPromptOutcome?: (outcome: 'dismissed' | 'reviewed') => Promise<void>;
+        diagGetSuppressedUnclean?: () => Promise<unknown>;
         diagRecordRendererCrash?: (payload: { name?: string; message?: string; stack?: string }) => Promise<void>;
         diagSaveReport?: (category: string, json: string) => Promise<{ status: 'saved' | 'cancelled' }>;
         onOsLockScreen: (callback: () => void) => () => void;
@@ -219,6 +221,8 @@ declare global {
          *  (Windows only). Renderer should gate native capture on this, not on the mere
          *  presence of startWindowAudioCapture (which is always exposed by preload). */
         isAudioCaptureSupported: () => Promise<boolean>;
+        /** What the OS says about each output device (electron/audio-output-facts.ts); [] when unreadable. Optional: an older preload lacks it. */
+        getAudioOutputFacts?: () => Promise<unknown[]>;
         startWindowAudioCapture: (pid: number, mode?: 'include' | 'exclude', grantToken?: string) => Promise<boolean>;
         stopWindowAudioCapture: () => Promise<void>;
         /** Linux Wayland window shares: the apps playing audio right now, as handles main issued
@@ -446,6 +450,8 @@ declare global {
         configureDesktopShortcuts?: () => Promise<boolean>;
         syncGlobalShortcuts: (map: Record<string, string>, portalMap?: Record<string, string>) => Promise<{ failed: string[]; status?: { mode: 'native' | 'portal' | 'unavailable'; reason: string; desktop: string; portal?: { bound: string[]; notBound: string[] }; appId?: string } }>;
         onGlobalShortcut: (callback: (actionId: string) => void) => () => void;
+        setGlobalHoldKey?: (slot: 'push-to-talk' | 'push-to-mute', combo: string | null) => Promise<{ ok: true; watching: boolean } | { ok: false; reason: 'unsupported' | 'bad-key' | 'failed' }>;
+        onGlobalHoldState?: (callback: (slot: 'push-to-talk' | 'push-to-mute', down: boolean) => void) => () => void;
         getUserDataPath: () => Promise<string>;
         setContentProtection: (enabled: boolean) => void;
         onDeepLinkInvite: (cb: (code: string) => void) => (() => void);
@@ -455,9 +461,12 @@ declare global {
         /** First-launch install hand-off: one of OUR landing-page links on the
          *  clipboard (`{kind, code}`), else null. Never raw clipboard text. */
         peekAttributionClipboard: () => Promise<{ kind: 'ref' | 'invite'; code: string } | null>;
-        onGameDetected: (cb: (data: { name: string; processName: string }) => void) => (() => void);
+        /** `source: 'rpc'` = a local app announced it over Rich Presence, with detail lines (utils/richPresence.ts). */
+        onGameDetected: (cb: (data: import('./utils/richPresence').BridgeGame) => void) => (() => void);
         onGameStopped: (cb: () => void) => (() => void);
-        getCurrentGame: () => Promise<{ name: string; processName: string } | null>;
+        getCurrentGame: () => Promise<import('./utils/richPresence').BridgeGame | null>;
+        /** A game that normally announces Rich Presence is running while another Rich Presence app holds the endpoint. */
+        onRichPresenceHeld?: (cb: (data: { name: string }) => void) => (() => void);
         /** The detected game's executable icon (small PNG data URL), launcher and Steam id, read by main. */
         getCurrentGameArt?: () => Promise<{ name: string; icon: string | null; store: string | null; appId: number | null } | null>;
         /** Settings → Game activity off stops main's background process scan. */

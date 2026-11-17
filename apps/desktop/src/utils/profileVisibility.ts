@@ -129,14 +129,7 @@ export function deviceTimeZone(): string | null {
     }
 }
 
-export function listTimeZones(): string[] {
-    try {
-        const sv = (Intl as unknown as { supportedValuesOf?: (k: string) => string[] }).supportedValuesOf;
-        if (sv) return sv('timeZone');
-    } catch { /* fall through */ }
-    const d = deviceTimeZone();
-    return d ? [d] : [];
-}
+// The zone LIST (and its labels / search) lives in utils/timeZoneChoices.ts.
 
 /** "3:42 PM local time", computed on this device from the sender's zone.
  *  Null for an absent / invalid zone (never throws). */

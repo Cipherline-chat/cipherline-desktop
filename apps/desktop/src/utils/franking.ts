@@ -26,6 +26,8 @@
  * "unverified" if reported.
  */
 
+import { sha256BlobOffThread } from './attachmentCryptoWorker';
+
 export const FRANK_VERSION = 1;
 export const FRANK_MSG_MAGIC = 'CLFRANK1';
 
@@ -170,7 +172,9 @@ export const MAX_HASHED_FILE_BYTES = 64 * 1024 * 1024;
 export async function hashFileForCommitment(file: Blob): Promise<string | undefined> {
     try {
         if (file.size > MAX_HASHED_FILE_BYTES) return undefined;
-        return await sha256B64(await file.arrayBuffer());
+        // Off the UI thread: reading + copying a ~60 MB File and digesting it
+        // blocked the renderer for ~0.3-0.7 s (Node, 57 MiB) right after the upload.
+        return await sha256BlobOffThread(file);
     } catch {
         return undefined;
     }

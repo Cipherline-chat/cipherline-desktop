@@ -63,6 +63,24 @@ describe('mic_level call event', () => {
         expect(d.mic_gain_db).toBeCloseTo(4.4, 1);
     });
 
+    it('logs a gate_level event beside mic_level for the auto gate: threshold, floor, speech, share held open by the voice rule', () => {
+        for (let i = 0; i < MIC_LEVEL_LOG_MS / 1000; i++) {
+            recordMicLevelSecond(second({ inDb: -46.7, gateThrDb: -42, gateFloorDb: -58, gateRescuedFrac: 0.2 }));
+        }
+        const ev = getCallEvents().filter(e => e.kind === 'gate_level');
+        expect(ev).toHaveLength(1);
+        expect(ev[0].detail).toEqual({ thr_db: -42, speech_db: -46.7, floor_db: -58, voice_pct: 20 });
+        expect(validateCallEvent(ev[0])).toEqual([]);
+        // speech_db - thr_db is the number that says "the gate sits on the voice"
+        expect((ev[0].detail!.speech_db as number) - (ev[0].detail!.thr_db as number)).toBeLessThan(0);
+    });
+
+    it('no gate_level for a manual gate (no threshold of ours) and mic_level keeps its key budget', () => {
+        for (let i = 0; i < MIC_LEVEL_LOG_MS / 1000; i++) recordMicLevelSecond(second({ gateThrDb: null, gateFloorDb: null, gateRescuedFrac: null }));
+        expect(getCallEvents().filter(e => e.kind === 'gate_level')).toEqual([]);
+        expect(getCallEvents().filter(e => e.kind === 'mic_level')).toHaveLength(1);
+    });
+
     it('skips a window with only a cough in it', () => {
         expect(summarizeMicLevel({
             sec: 30, blocks: 11250, voiced: MIC_LEVEL_MIN_VOICED_BLOCKS - 1, inMs: 1, outMs: 1, peak: 0.1, held: 0, clip: 0,

@@ -110,6 +110,7 @@ import { createWaylandOverlay, type WaylandOverlay, type HelperProc } from './an
 import { cleanFrameHint, cleanDisplayChoice, cleanShowHint } from './annotation-overlay-wayland-protocol';
 import { isNativeWaylandClient } from './capture-flags';
 import { writePrivatePage, type PrivatePage } from './private-page-file';
+import { swallowStreamErrors } from './stdio-guard';
 import { overlayCanvasLayout, type OverlayCanvasLayout, type Rect } from './annotation-overlay-projection';
 import {
     resolveCapturedDisplay, parseScreenSourceIndex, parseWindowSourceHandle, cleanRect,
@@ -424,7 +425,9 @@ function makeX11Watcher(watchCompositor: boolean): X11Watcher {
             const bin = waylandOverlayHelperPath();
             if (!bin) return null;
             try {
-                return spawn(bin, ['--x11-watch'], { stdio: ['pipe', 'pipe', 'ignore'], env: waylandHelperEnv() }) as unknown as HelperProc;
+                const child = spawn(bin, ['--x11-watch'], { stdio: ['pipe', 'pipe', 'ignore'], env: waylandHelperEnv() });
+                swallowStreamErrors(child.stdin); swallowStreamErrors(child.stdout);   // EPIPE after the helper exits is async
+                return child as unknown as HelperProc;
             } catch { return null; }
         },
         log: (m) => console.log(m),
@@ -585,7 +588,9 @@ function waylandOverlay(): WaylandOverlay {
             if (!bin) return null;
             try {
                 // stderr is not read (the helper logs counts and states on stdout's protocol only).
-                return spawn(bin, [], { stdio: ['pipe', 'pipe', 'ignore'], env: waylandHelperEnv() }) as unknown as HelperProc;
+                const child = spawn(bin, [], { stdio: ['pipe', 'pipe', 'ignore'], env: waylandHelperEnv() });
+                swallowStreamErrors(child.stdin); swallowStreamErrors(child.stdout);   // EPIPE after the helper exits is async
+                return child as unknown as HelperProc;
             } catch { return null; }
         },
         getDisplays: () => {

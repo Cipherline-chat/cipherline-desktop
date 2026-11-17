@@ -1,10 +1,10 @@
 import React from 'react';
-import { EyeOff, Gamepad2, Trophy } from 'lucide-react';
+import { EyeOff, Gamepad2, RefreshCw, Trophy } from 'lucide-react';
 import { ProfileLinkIcon } from '../ProfileLinkIcon';
 import { IntegrationArt } from './IntegrationArt';
 import { openExternalLink } from '../../utils/openExternalLink';
 import {
-    formatDay, formatHours, formatMonth, formatPlaytime, steamLevelColor, steamPrivacyText, yearsSince,
+    formatDay, formatHours, formatMonth, formatPlaytime, steamLevelColor, steamPrivacyText, yearsSince, STEAM_PRIVACY_CACHE_NOTE,
     type SteamActivity, type SteamGameArt,
 } from '../../utils/integrations/api';
 import '../../styles/integrations.css';
@@ -42,6 +42,41 @@ export const SteamPrivacyHint: React.FC<{ activity: SteamActivity; isSelf: boole
             <EyeOff size={14} aria-hidden="true" />
             <span>{t}</span>
         </p>
+    );
+};
+
+/**
+ * The owner's notice when Steam is private and nothing public is left to show
+ * (see steamHasShowcaseStats): what they will look like, how to change it, and
+ * "Check again" (re-reads the card; the server caches Steam's answer, so the
+ * copy says how long a change can take). Viewers never see this: they get no
+ * card, just the verified Steam connection.
+ */
+export const SteamPrivateNotice: React.FC<{
+    activity: SteamActivity;
+    onCheckAgain?: () => void | Promise<void>;
+    className?: string;
+}> = ({ activity, onCheckAgain, className }) => {
+    const [busy, setBusy] = React.useState(false);
+    const what = activity.private ? 'profile' : 'game details';
+    const check = async () => {
+        if (!onCheckAgain || busy) return;
+        setBusy(true);
+        try { await onCheckAgain(); } finally { setBusy(false); }
+    };
+    return (
+        <div className={['ig-steam-private', 'ig-steam-notice', className ?? ''].filter(Boolean).join(' ')} data-self="true" data-testid="steam-private-notice" role="status">
+            <EyeOff size={14} aria-hidden="true" />
+            <div>
+                <p style={{ margin: 0 }}><b>Your Steam {what} {activity.private ? 'is' : 'are'} private.</b> Steam info (games, playtime, level and more) won't show on your Cipherline profile. You appear as a verified Steam account.</p>
+                <p style={{ margin: '4px 0 0' }}>To show it: in Steam, open your profile, then Edit Profile &gt; Privacy Settings, and set <b>My profile</b> and <b>Game details</b> to Public. {STEAM_PRIVACY_CACHE_NOTE}</p>
+                {onCheckAgain && (
+                    <button type="button" className="ig-steam-recheck" onClick={() => void check()} disabled={busy} data-testid="steam-check-again" style={{ marginTop: 6, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                        <RefreshCw size={12} aria-hidden="true" />{busy ? 'Checking...' : 'Check again'}
+                    </button>
+                )}
+            </div>
+        </div>
     );
 };
 
@@ -101,7 +136,7 @@ export const SteamShowcase: React.FC<{
                     <b><ProfileLinkIcon platform="steam" size={13} />{personaName ?? 'Steam'}</b>
                     <span>{[a.memberSince ? `Member since ${formatMonth(a.memberSince)}` : null].filter(Boolean).join(' · ') || 'Verified on Steam'}</span>
                 </span>
-                {a.level !== null && (
+                {a.level !== null && a.level > 0 && (
                     <span className="ig-steam-lvl">
                         <SteamLevelBadge level={a.level} />
                         {a.xp && (
@@ -214,13 +249,14 @@ export const SteamHighlight: React.FC<{
     const feature = a.nowPlaying
         ? { kind: 'Playing', name: a.nowPlaying.name }
         : a.topGames[0] ? { kind: 'Most played', name: a.topGames[0].name } : null;
-    // The full hint (with the Steam setting to change) is on the panel; here, one short line.
-    const privacy = a.private ? 'Steam profile is private' : a.gamesPrivate ? 'Game details are private on Steam' : null;
-    if (a.level === null && !facts && !feature && !privacy) return null;
+    // No "details are private" line here (owner 2026-11-16): the card shows what Steam does share
+    // (e.g. the level) and says nothing about what it hides. The account owner gets the how-to
+    // notice in their own settings / profile instead (SteamPrivateNotice).
+    if (a.level === null && !facts && !feature) return null;
     const inner = (
         <>
             {/* The level leads the row (far left), then a full-size "Steam" label (owner 2026-10-28). */}
-            {a.level !== null && <SteamLevelBadge level={a.level} size="sm" />}
+            {a.level !== null && a.level > 0 && <SteamLevelBadge level={a.level} size="sm" />}
             <span className="ppo-hl-title ig-hl-steam"><ProfileLinkIcon platform="steam" size={14} /> Steam</span>
             <span className="ig-hl">
                 <span className="ig-hl-txt">
@@ -232,7 +268,7 @@ export const SteamHighlight: React.FC<{
                     ) : (
                         <>
                             <b>{a.level !== null ? `Level ${a.level}` : 'Steam'}</b>
-                            <span>{privacy || facts}</span>
+                            {facts && <span>{facts}</span>}
                         </>
                     )}
                 </span>

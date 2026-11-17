@@ -22,6 +22,58 @@ bakes it in at build time and shows it as the "What's new in X.Y.Z" dialog on th
 
 ### Security
 
+## [0.1.1] - 2026-11-17
+
+### What's new
+
+- **Format your messages.** Bold, italic, underline, strikethrough, spoilers, code blocks, quotes and lists, written the way you already know (`**bold**`) or from the new formatting bar next to the paperclip. The message box shows the formatting as you type, and pasted Markdown or code can be formatted with one click.
+- **Fonts and text sizes.** Pick a font for a message (handwritten, typewriter, marker, readable and more) and make some words big and others small, all in one message. Nothing sticks after you send.
+- **Your game, in detail.** Games and apps that support Rich Presence (FiveM, FACEIT, Rainbow Six Siege and many more) show the round, score, party and time on your profile, and FiveM, RedM, alt:V, RAGE MP and FACEIT are now detected. You choose whether friends see the details.
+- **Sub-categories and dividers.** Organise a server's channel list with sub-categories one level deep and labelled dividers, in the channel list and the Calls panel.
+- **Custom #numbers for Pro.** Pro members can pick their own #0001-#9999 tag, right in the username field.
+- **Smoother calls.** A much gentler automatic voice gate, echo cancellation on Auto (on for speakers, off for headphones), push to talk that works while another app has focus, and screen shares that phones can decode.
+- **Clearer replies and server tools.** Replies show who wrote the original, roles can be changed from the member list and Server Settings, and the server audit log covers every admin action in plain sentences.
+
+### Changes
+
+#### Messages
+- Discord-style formatting with a formatting bar, live preview in the message box, seven fonts and Small / Normal / Large text that can be mixed within one message; notifications, previews and search always show plain text.
+- Pasting Markdown or code offers to format it; long code collapses like a long message, with expand and a full-screen reader.
+- Replies show the original sender's name; replies to files say "Image" or "Attachment".
+- Jumping to a far-back pinned message or reply lands on it the first time.
+- Right-click "Mark as Read" on channels, categories, servers and folders now stays read after a restart.
+- You can send your safety code again to someone you already verified.
+
+#### Servers
+- Sub-categories and dividers in the channel list and the Calls panel, with drag and drop; a sub-category can't be dropped outside a category.
+- Creating a channel takes you into it; creating, renaming and deleting channels show up instantly; channel names can use emoji and punctuation.
+- One role picker everywhere, a "Roles" flyout in member menus, and role changes from Server Settings -> Members.
+- The server audit log records every admin action, including role changes, sub-categories and dividers, in plain sentences.
+- Leaving a server is instant.
+
+#### Profiles and activity
+- Pro members can change their #number (once every 24 hours); a custom number is replaced by a random one when Pro ends.
+- Rich Presence: round, score, party and time for supporting games, with a "Share game details" switch.
+- Game detection for FiveM, RedM, alt:V, RAGE MP and FACEIT; Roblox no longer shows as playing after it closes.
+- "Last seen 20h ago" on profiles, a black centre on the Do Not Disturb dot, and a searchable time zone picker.
+- High-five achievements.
+
+#### Voice, video and screen share
+- The automatic voice gate is much less aggressive and listens for your voice, not just its level.
+- Echo cancellation is Auto by default, with a mid-call prompt if echo is detected.
+- Push to talk and push to mute work while another app has focus, on Windows and Linux; push to mute plays the mute sounds.
+- Screen shares and cameras are no longer half-dropped on phones, and no longer stop silently or go grey on a republish.
+- A one-time card for AMD and Intel graphics users on Windows and macOS asks for screen-share reports.
+
+#### App
+- Home "Happening now" stays compact with many calls; the server rail shows floating arrows for pings above or below.
+- The "Applying update" popup matches the installer.
+- Fewer false "closed unexpectedly" prompts and a fixed "write EPIPE" crash.
+
+### Security
+
+No publicly known vulnerabilities fixed in this release.
+
 ## [0.1.0] - 2026-11-14
 
 ### What's new

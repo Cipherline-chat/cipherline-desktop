@@ -73,7 +73,7 @@ export const DmProfileCard: React.FC<{
     const onMobile = entry.status !== 'offline' && !!entry.on_mobile;
     const playingNow = !!entry.current_game && entry.status !== 'offline' && !onMobile;
     const lastSeen = entry.status === 'offline' ? formatLastSeen(profile?.last_seen_at ?? null) : null;
-    const activities = useProfileActivity({ userId, isSelf: false, profile, liveGame: playingNow ? entry.current_game ?? null : null, status: entry.status });
+    const activities = useProfileActivity({ userId, isSelf: false, profile, liveGame: playingNow ? entry.current_game ?? null : null, liveGameDetail: playingNow ? entry.current_game_detail ?? null : null, status: entry.status });
 
     const data = useMemo(() => profile ? buildProfileCardData(profile, {
         isOwn: false,

@@ -662,6 +662,8 @@ void RegisterSharePower(napi_env env, napi_value exports);
 // hdr_capture.cc — tone-mapped Desktop Duplication of an HDR display for
 // screen shares (electron/hdr-share.ts).
 void RegisterHdrCapture(napi_env env, napi_value exports);
+// key_state.cc — system-wide key-held watcher for push-to-talk (electron/global-ptt.ts).
+void RegisterKeyState(napi_env env, napi_value exports);
 
 static napi_value Init(napi_env env, napi_value exports)
 {
@@ -679,6 +681,7 @@ static napi_value Init(napi_env env, napi_value exports)
     RegisterWindowGeometry(env, exports);
     RegisterSharePower(env, exports);
     RegisterHdrCapture(env, exports);
+    RegisterKeyState(env, exports);
 
     return exports;
 }

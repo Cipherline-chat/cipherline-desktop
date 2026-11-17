@@ -24,6 +24,13 @@
 
 /** A message strictly LONGER than this collapses. 5 000 itself does not. */
 export const LONG_MESSAGE_THRESHOLD = 5_000;
+/**
+ * A message of MORE lines than this collapses too, however short each line:
+ * a pasted 60-line code block is a tall message even at 1 500 characters.
+ * Lines are `\n`-separated (a code block's lines, list items, paragraphs);
+ * wrapping of a long line is covered by the character threshold.
+ */
+export const LONG_MESSAGE_MAX_LINES = 30;
 /** Target preview length when collapsed. */
 export const LONG_MESSAGE_PREVIEW_CHARS = 700;
 /** The cut is never moved further back than this (so a preview is never a stub). */
@@ -36,7 +43,14 @@ const WORDS_PER_MINUTE = 200;
 export interface TextSpan { start: number; end: number }
 
 export function isLongMessage(text: unknown): text is string {
-    return typeof text === 'string' && text.length > LONG_MESSAGE_THRESHOLD;
+    if (typeof text !== 'string') return false;
+    if (text.length > LONG_MESSAGE_THRESHOLD) return true;
+    // More than LONG_MESSAGE_MAX_LINES lines = at least that many line breaks.
+    let breaks = 0;
+    for (let at = text.indexOf('\n'); at >= 0; at = text.indexOf('\n', at + 1)) {
+        if (++breaks >= LONG_MESSAGE_MAX_LINES) return true;
+    }
+    return false;
 }
 
 // The inline constructs the renderer turns into something other than text.
@@ -147,15 +161,27 @@ export function readMinutes(text: string): number {
     return Math.max(1, Math.round(wordCount(text) / WORDS_PER_MINUTE));
 }
 
-export interface LongMessageStats { chars: number; minutes: number }
-
-export function longMessageStats(text: string): LongMessageStats {
-    return { chars: text.length, minutes: readMinutes(text) };
+export interface LongMessageStats {
+    chars: number;
+    minutes: number;
+    /** Set when the message is long because of its LINES (it is under the character threshold). */
+    lines?: number;
 }
 
-/** "Long message · 12,345 characters · ~3 min read" */
+export function longMessageStats(text: string): LongMessageStats {
+    const stats: LongMessageStats = { chars: text.length, minutes: readMinutes(text) };
+    if (text.length <= LONG_MESSAGE_THRESHOLD) {
+        let lines = 1;
+        for (let at = text.indexOf('\n'); at >= 0; at = text.indexOf('\n', at + 1)) lines++;
+        stats.lines = lines;
+    }
+    return stats;
+}
+
+/** "Long message · 12,345 characters · ~3 min read" (and "· 64 lines" first for a message long by lines) */
 export function longMessageLabel(stats: LongMessageStats): string {
-    return `Long message · ${stats.chars.toLocaleString('en-US')} characters · ~${stats.minutes} min read`;
+    const lines = stats.lines !== undefined ? `${stats.lines.toLocaleString('en-US')} lines · ` : '';
+    return `Long message · ${lines}${stats.chars.toLocaleString('en-US')} characters · ~${stats.minutes} min read`;
 }
 
 /**

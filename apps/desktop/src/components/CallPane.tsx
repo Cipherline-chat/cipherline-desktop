@@ -39,6 +39,8 @@ import { shouldPublishMicAtConnect } from '../utils/selfCallIntent';
 import { beginActivity, trackActivity } from '../utils/freezeLog';
 import { CallDiagnosticsRecorder } from './diagnostics/CallDiagnosticsRecorder';
 import { stableE2EEOptions } from '../utils/e2eeRoomOptions';
+import { IDR_PPS_CONFIG_KIND } from '../utils/e2eeAnnexB';
+import { getE2eeIdrPpsRetryEnabled } from '../utils/streamDiagnosticsPrefs';
 import { attachAnnexBStatsLog, attachDataPacketErrorLog, attachAudioLagLog } from '../utils/e2eeWorkerStats';
 import { installE2EESenderCodecPin, e2eeWorkerOf, type CodecPinRoom } from '../utils/e2eeSenderCodec';
 import { describeE2EEActivationFailure, type E2EEActivationFailure } from '../utils/e2eeActivation';
@@ -50,6 +52,7 @@ import { ROSTER_ONLY } from '../utils/callRosterEvents';
 import { noteRemoteVideoSubscribed } from '../utils/remoteVideoDemand';
 import { GamingVideoGuard } from './call/GamingVideoGuard';
 import { ShareBoostGuard } from './call/ShareBoostGuard';
+import { LocalMediaStopGuard } from './call/LocalMediaStopGuard';
 import { CallPerformanceGuard } from './call/CallPerformanceGuard';
 import { CallMilestones } from './call/CallMilestones';
 import { CallEventMonitor } from './call/CallEventMonitor';
@@ -99,6 +102,8 @@ function makeE2EEWorker(): Worker {
     attachAnnexBStatsLog(w);
     attachDataPacketErrorLog(w);
     attachAudioLagLog(w);
+    // Runtime kill switch for the H.264 IDR pps-id retry, read once here (default on); the worker applies it at each sender stream.
+    try { w.postMessage({ kind: IDR_PPS_CONFIG_KIND, data: { enabled: getE2eeIdrPpsRetryEnabled() } }); } catch { /* worker gone: default on */ }
     return w;
 }
 
@@ -563,7 +568,8 @@ const CallAudioEffects = ({ isInitiator, noRinging, roomConnected }: { isInitiat
         const detachShareHold = attachShareHoldToRoom(room as unknown as ShareHoldRoom);
         // A hold that ended with no stream to resume is the stop the cue was held back for.
         const offHoldEnded = shareHold.onEnded((_identity, end) => {
-            if (end === 'timeout' || end === 'cancelled') cues.shareHoldClosed();
+            // 'stopped': a real stop right after a republish - its own unpublish cue was held back while the hold was open.
+            if (end === 'timeout' || end === 'cancelled' || end === 'stopped') cues.shareHoldClosed();
         });
 
         // Defer enabling the cues past the first microtask so publications
@@ -1338,6 +1344,8 @@ export const CallPane = ({
                         and the one-time freeze offer. See the component. */}
                     <GamingVideoGuard />
                     <ShareBoostGuard />
+                    {/* Our camera / share stopping with no press: logged with a reason, cue + toast for the camera. */}
+                    <LocalMediaStopGuard />
 
                     {/* "Your PC is struggling to keep up" — sustained encoder CPU
                         starvation → a once-per-call offer to lower the camera. */}

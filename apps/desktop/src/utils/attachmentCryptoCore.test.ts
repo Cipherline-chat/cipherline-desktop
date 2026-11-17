@@ -5,6 +5,19 @@ beforeAll(() => {
     Object.assign(globalThis, { window: Object.assign((globalThis as { window?: object }).window ?? {}, { crypto: globalThis.crypto, btoa, atob }) });
 });
 
+describe('sha256BlobB64Core (franking commitment hash, run off-thread)', () => {
+    it('matches node:crypto sha256 for a 57 MiB blob, via core and via the worker-less fallback', async () => {
+        const { sha256BlobB64Core } = await import('./attachmentCryptoCore');
+        const { sha256BlobOffThread } = await import('./attachmentCryptoWorker');
+        const { createHash, randomBytes } = await import('node:crypto');
+        const buf = randomBytes(57 * 1024 * 1024);
+        const expected = createHash('sha256').update(buf).digest('base64');
+        const blob = new Blob([buf]);
+        expect(await sha256BlobB64Core(blob)).toBe(expected);
+        expect(await sha256BlobOffThread(blob)).toBe(expected);
+    }, 60_000);
+});
+
 const key = () => crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']);
 const bytes = (n: number) => { const u = new Uint8Array(n); for (let i = 0; i < n; i++) u[i] = (i * 31 + 7) & 0xff; return u; };
 const b64 = (u: Uint8Array) => btoa(String.fromCharCode(...u));

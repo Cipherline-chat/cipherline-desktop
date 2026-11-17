@@ -25,7 +25,10 @@ export const RailTile: React.FC<{
     onContextMenu?: (e: React.MouseEvent<HTMLButtonElement>) => void;
     onKeyDown?: (e: React.KeyboardEvent<HTMLButtonElement>) => void;
     'aria-haspopup'?: 'menu';
-}> = ({ icon, label, title, active, accent, badge, onClick, onContextMenu, onKeyDown, 'aria-haspopup': ariaHasPopup }) => {
+    /** Written as `data-rail-id` (an attribute, not a wrapper — see above) so
+     *  the rail's off-screen ping arrows can find this tile. */
+    railId?: string;
+}> = ({ icon, label, title, active, accent, badge, onClick, onContextMenu, onKeyDown, 'aria-haspopup': ariaHasPopup, railId }) => {
     const restColor = active ? 'var(--cl-lume)' : accent ? 'var(--cl-lume)' : 'var(--cl-muted)';
     return (
         <button
@@ -33,6 +36,7 @@ export const RailTile: React.FC<{
             onContextMenu={onContextMenu}
             onKeyDown={onKeyDown}
             aria-haspopup={ariaHasPopup}
+            data-rail-id={railId}
             title={title}
             className="no-drag"
             style={{

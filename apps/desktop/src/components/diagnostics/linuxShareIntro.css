@@ -30,7 +30,7 @@
 .lsi-backend { display: flex; align-items: flex-start; gap: 8px; margin-top: 10px; padding: 8px 10px; border-radius: 10px;
   background: var(--cl-sink); border: 1px solid rgba(42,53,88,.6); font-size: 12.5px; line-height: 1.45; color: var(--cl-muted); }
 .lsi-backend svg { flex: none; margin-top: 1px; color: var(--cl-lume); }
-.lsi-backend--vaapi svg { color: var(--cl-glow); }
+.lsi-backend--vaapi svg, .lsi-backend--gpu svg { color: var(--cl-glow); }
 
 .lsi-foot { display: flex; align-items: center; gap: 12px; margin-top: 14px; }
 .lsi-never { flex: 1; min-width: 0; display: flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 700; line-height: 1.4; color: var(--cl-muted); }

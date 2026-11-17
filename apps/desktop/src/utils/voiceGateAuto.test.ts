@@ -26,6 +26,7 @@ async function makeGate(msgs: Array<Record<string, unknown>>) {
     };
     /** The auto threshold in force (dBFS) after the audio fed so far. */
     run.posted = posted;
+    run.node = g as unknown as Record<string, number>;
     run.effDb = () => (g as unknown as { effDb: number }).effDb;
     return run;
 }
@@ -105,13 +106,22 @@ describe('voice gate AUTO mode (threshold left at its default)', () => {
 });
 const at = (s: number) => Math.round(s * SR);
 
+/** Breathing / movement stand-in: UNVOICED noise bursts (0.3 s every 0.4 s) at `db`. These tests used a voiced 125 Hz burst
+ *  until 2026-11-16, when the voice rule's range grew to 24 dB: a PITCHED sound 20 dB under the talker is now (correctly)
+ *  treated as speech, and real breath is not pitched. */
+function breathBursts(sec: number, db: number): Float32Array {
+    const y = new Float32Array(Math.round(sec * SR));
+    for (let c = 0; c * Math.round(0.4 * SR) < y.length; c++) y.set(noise(0.3, db, 20 + c).subarray(0, Math.min(Math.round(0.3 * SR), y.length - c * Math.round(0.4 * SR))), c * Math.round(0.4 * SR));
+    return y;
+}
+
 describe('voice gate AUTO: 60% of the way from room noise to speech (owner 2026-11-12: "adjusts too low", "picking up my breathing and movements", "very low noise floor")', () => {
     const auto = () => makeGate([{ type: 'gate', enabled: true }, { type: 'threshold', value: -45 }, { type: 'auto', value: true }]);
-    it('a loud, clean mic (-25 dBFS speech over a -52 floor) gets a gate well above floor + 7', async () => {
+    it('a loud, clean mic (-25 dBFS speech over a -52 floor) gets a gate well above floor + 6', async () => {
         const gate = await auto();
         gate(cat(noise(2, -52), sum(noise(12, -52, 2), talk(12, -25))));
         expect(gate.effDb()).toBeGreaterThan(-42);   // the old rule gave -45
-        expect(gate.effDb()).toBeLessThanOrEqual(-22); // never more than 30 dB over the floor
+        expect(gate.effDb()).toBeLessThanOrEqual(-36); // 2026-11-16: capped at -36 (was -30 in 0.1.0, -38 on staging until the 2026-11-16 data tune); never more than 22 dB over the floor
     });
     it('a quiet talker (-45 speech over -52) keeps the 7 dB minimum, so the speech still opens it', async () => {
         const gate = await auto();
@@ -130,7 +140,7 @@ describe('voice gate AUTO: 60% of the way from room noise to speech (owner 2026-
         gate(cat(noise(2, -72), sum(noise(10, -72, 2), talk(10, -30))));
         expect(gate.effDb()).toBeGreaterThan(-50);
         // Then breathing/movement only (-50 dBFS bursts), no speech.
-        const breath = gate(sum(noise(3, -72, 3), talk(3, -50)));
+        const breath = gate(sum(noise(3, -72, 3), breathBursts(3, -50)));
         expect(rmsDb(breath, Math.round(0.5 * SR), breath.length)).toBeLessThan(-75); // gated (after the hold from the preceding speech): silence
         // And speech still passes.
         const speech = gate(sum(noise(3, -72, 4), talk(3, -30)));
@@ -146,27 +156,27 @@ describe('voice gate AUTO, round 2 (owner 2026-11-13: "still too low all the tim
     it('low-noise mic, normal speech -30 over a -72 floor: gate ~-38 (was -46); breathing at -45 is gated; CONTROL: a gate at the old -46 lets it through', async () => {
         const gate = await auto();
         gate(cat(noise(2, -72), sum(noise(12, -72, 2), talk(12, -30))));
-        expect(gate.effDb()).toBeGreaterThan(-41);
-        expect(gate.effDb()).toBeLessThan(-35);
-        const breath = gate(sum(noise(3, -72, 3), talk(3, -45)));
+        expect(gate.effDb()).toBeGreaterThan(-43); // 2026-11-16: -40 (was -36): 12 dB under speech, 22 max over the floor
+        expect(gate.effDb()).toBeLessThan(-37);
+        const breath = gate(sum(noise(3, -72, 3), breathBursts(3, -50)));
         expect(tail(breath)).toBeLessThan(-75);
-        // control: the same breathing through a manual gate at the previous auto value (-46)
-        const old = await manual(-46);
-        expect(tail(old(sum(noise(3, -72, 3), talk(3, -45))))).toBeGreaterThan(-52);
+        // control: the same breathing through a manual gate at the round-1 auto value (-46) passes
+        const old = await manual(-52);
+        expect(tail(old(sum(noise(3, -72, 3), breathBursts(3, -50))))).toBeGreaterThan(-57);
         // and speech still passes the new gate
         expect(tail(gate(sum(noise(3, -72, 4), talk(3, -30))))).toBeGreaterThan(-36);
     });
 
-    it("the owner's own mic (raw speech -45 over a -78 floor): gate about -51 (was -56); movement at -57 is gated, speech passes", async () => {
+    it("the owner's own mic (raw speech -45 over a -78 floor): gate about -55 (was -51); movement at -60 is gated, speech passes", async () => {
         const gate = await auto();
         gate(cat(noise(2, -78), sum(noise(20, -78, 2), talk(20, -45))));
-        expect(gate.effDb()).toBeGreaterThan(-54);
-        expect(gate.effDb()).toBeLessThan(-48);
-        expect(tail(gate(sum(noise(3, -78, 3), talk(3, -57))))).toBeLessThan(-80);
+        expect(gate.effDb()).toBeGreaterThan(-58);
+        expect(gate.effDb()).toBeLessThan(-52);
+        expect(tail(gate(sum(noise(3, -78, 3), talk(3, -62))))).toBeLessThan(-80);
         expect(tail(gate(sum(noise(3, -78, 4), talk(3, -45))))).toBeGreaterThan(-50);
-        // control: the old rule's -56 would have passed that movement
-        const old = await manual(-56);
-        expect(tail(old(sum(noise(3, -78, 3), talk(3, -57))))).toBeGreaterThan(-62);
+        // control: a manual gate at -60 would have passed that movement
+        const old = await manual(-65);
+        expect(tail(old(sum(noise(3, -78, 3), talk(3, -62))))).toBeGreaterThan(-68);
     });
 
     it('a quiet talker (-45 over -52) is not made worse: still at the 7 dB minimum and the speech opens it', async () => {
@@ -197,10 +207,10 @@ describe('voice gate AUTO, round 2 (owner 2026-11-13: "still too low all the tim
         expect(rmsDb(fixed, at(13), at(15))).toBeGreaterThan(-50);
     });
 
-    it('stays inside the clamp (-60..-30) for a loud mic (-15 speech)', async () => {
+    it('stays inside the clamp (-60..-36) for a loud mic (-15 speech)', async () => {
         const gate = await auto();
         gate(cat(noise(2, -60), sum(noise(10, -60, 2), talk(10, -15))));
-        expect(gate.effDb()).toBeLessThanOrEqual(-30);
+        expect(gate.effDb()).toBeLessThanOrEqual(-36);
     });
 });
 
@@ -218,5 +228,142 @@ describe('gate worklet reports the quietest moment of each second (for the backg
         quiet(noise(3, -75, 2));
         const q = quiet.posted.filter(m => m.type === 'gateStats').map(m => m.minDb as number);
         expect(Math.max(...q)).toBeLessThan(-70);
+    });
+});
+
+describe('voice gate AUTO, 2026-11-16 (owner: "auto voicegate sucks - it is too high"): quiet speech and word tails pass', () => {
+    const auto = () => makeGate([{ type: 'gate', enabled: true }, { type: 'threshold', value: -45 }, { type: 'auto', value: true }]);
+    const manual = (thr: number) => makeGate([{ type: 'gate', enabled: true }, { type: 'threshold', value: thr }, { type: 'auto', value: false }]);
+    /** Syllables 0.15 s every 0.25 s whose level cycles through `offs` (dB under `peakDb`), like real speech. */
+    function syll(sec: number, peakDb: number, offs: number[]): Float32Array {
+        const y = new Float32Array(Math.round(sec * SR));
+        let ph = 0;
+        for (let i = 0; i < y.length; i++) {
+            ph += 125 / SR; ph -= Math.floor(ph);
+            let v = 0; for (let h = 1; h <= 25; h++) v += Math.sin(2 * Math.PI * h * ph) / h;
+            const t = i / SR, n = Math.floor(t / 0.25), k = t - n * 0.25;
+            const env = k < 0.15 ? Math.min(1, Math.min(k, 0.15 - k) / 0.015) : 0;
+            y[i] = v * env * dbToLinear(peakDb - offs[n % offs.length]) / 1.9;
+        }
+        return y;
+    }
+    const OFFS = [0, 3, 6, 10, 4, 12, 2, 8];
+    it('quiet speech (-40 over a -55 floor, then -45 over -52) opens: gate is under the speech and its level survives', async () => {
+        for (const [floor, sp] of [[-55, -40], [-52, -45]] as const) {
+            const gate = await auto();
+            const y = gate(cat(noise(2, floor), sum(noise(15, floor, 2), talk(15, sp))));
+            expect(gate.effDb()).toBeLessThan(sp - 1.5);               // under the speech level
+            expect(rmsDb(y, at(8), at(17))).toBeGreaterThan(sp - 3);  // voice is not chopped
+        }
+    });
+    it('threshold sits about 10+ dB under a steady speech level, and never above -36 on a clean mic', async () => {
+        for (const sp of [-40, -35, -30]) {
+            const gate = await auto();
+            gate(cat(noise(2, -75), sum(noise(15, -75, 2), talk(15, sp))));
+            expect(gate.effDb()).toBeLessThanOrEqual(Math.max(sp - 10, -75 + 6));
+            expect(gate.effDb()).toBeLessThanOrEqual(-36);
+        }
+    });
+    it('pure noise floor stays gated (a -60 floor and a -52 floor, no speech)', async () => {
+        for (const fl of [-60, -52]) {
+            const gate = await auto();
+            const y = gate(noise(8, fl));
+            expect(rmsDb(y, at(3), at(8))).toBeLessThan(fl - 25);
+        }
+    });
+    it('natural dynamics: syllables 10-12 dB under the peak pass (control: the old-rules level, -50, chops them)', async () => {
+        const x = cat(noise(2, -62), sum(noise(20, -62, 2), syll(20, -37, OFFS)));
+        const gate = await auto();
+        const y = gate(x);
+        // the quietest syllables (offset 12 and 10 dB) sit in cycle positions 5 and 3; measure those windows after warm-up
+        const win = (sig: Float32Array, pos: number) => {
+            let e = 0, c = 0;
+            for (let n = 40; n < 80; n++) if (n % OFFS.length === pos) { const a = at(2 + n * 0.25 + 0.03); e += rmsDb(sig, a, a + at(0.09)); c++; }
+            return e / c;
+        };
+        expect(win(y, 5)).toBeGreaterThan(win(x, 5) - 3);
+        expect(win(y, 3)).toBeGreaterThan(win(x, 3) - 3);
+        const old = await manual(-50); // what the pre-2026-11-16 rules (60% / -8 dB) settled on for this speech
+        expect(win(old(x), 5)).toBeLessThan(win(x, 5) - 4);
+    });
+    it('hold: 0.25-0.32 s after the last burst the auto gate is still open, while a manual gate with the same threshold has closed (manual untouched)', async () => {
+        const x = cat(talk(1.2, -30), noise(1, -52, 6)); // last burst ends at 1.1 s; the tail is below either gate's threshold
+        const from = at(1.1 + 0.25), to = at(1.1 + 0.32);
+        const a = await auto(); const m = await manual(-45);
+        const ya = a(x), ym = m(x);
+        expect(rmsDb(ya, from, to) - rmsDb(x, from, to)).toBeGreaterThan(-3);   // still open
+        expect(rmsDb(ym, from, to) - rmsDb(x, from, to)).toBeLessThan(-30);     // manual: hold 150 ms + 50 ms release => shut
+    });
+});
+
+/** Voiced bursts (0.3 s every 0.4 s), each cycle at its own RMS level `dbs[i % n]`. */
+function burstsAt(sec: number, dbs: number[]): Float32Array {
+    const y = new Float32Array(Math.round(sec * SR));
+    const cyc = Math.round(0.4 * SR);
+    for (let c = 0; c * cyc < y.length; c++) {
+        const seg = talk(0.4, dbs[c % dbs.length]);
+        y.set(seg.subarray(0, Math.min(seg.length, y.length - c * cyc)), c * cyc);
+    }
+    return y;
+}
+/** Share of `cycles` bursts starting at `from` s whose core (0.1-0.25 s of the 0.4 s cycle) keeps more than `minDb` through the gate. */
+function keptShare(y: Float32Array, from: number, cycles: number, minDb: number): number {
+    let kept = 0;
+    for (let c = 0; c < cycles; c++) {
+        const a = at(from + c * 0.4 + 0.1);
+        if (rmsDb(y, a, a + at(0.15)) > minDb) kept++;
+    }
+    return kept / cycles;
+}
+
+describe('voice gate AUTO: the voice rule keeps quiet-but-voiced speech (reports c03022d3 / a663d053, 2026-11-16)', () => {
+    const auto = () => makeGate([{ type: 'gate', enabled: true }, { type: 'threshold', value: -45 }, { type: 'auto', value: true }]);
+    // a663d053's windows: speech after the gate -46.7 / -43.8 / -40.9 / -37.6 dBFS next to -27..-22 passages. The auto
+    // threshold follows the LOUD syllables (speech tracker), so the same talker's quiet ones sit under it.
+    const phrase = () => cat(noise(2, -60), sum(noise(10, -60, 2), burstsAt(10, [-30])), sum(noise(8, -60, 3), burstsAt(8, [-47])));
+
+    it('a quiet phrase after loud speech (-30 then -47 dBFS, floor -60) is not chopped', async () => {
+        const gate = await auto();
+        expect(keptShare(gate(phrase()), 16, 10, -52)).toBeGreaterThanOrEqual(0.9);
+        // CONTROL: the identical audio with the voice rule switched off loses most of them
+        const off = await auto(); off.node.VOICE_RESCUE_DB = 1e9;
+        expect(keptShare(off(phrase()), 16, 10, -52)).toBeLessThanOrEqual(0.3);
+        expect(gate.effDb()).toBeGreaterThan(-52); // the level threshold is above the quiet speech: only the voice rule saved it
+    });
+
+
+    it('breathing-like noise bursts (unvoiced, -50 dBFS over a -72 floor) are still gated after a loud talker', async () => {
+        const gate = await auto();
+        gate(cat(noise(2, -72), sum(noise(10, -72, 2), burstsAt(10, [-30]))));
+        const bursts = new Float32Array(at(4));
+        for (let c = 0; c < 10; c++) bursts.set(noise(0.3, -50, 10 + c), c * at(0.4));
+        const y = gate(sum(noise(4, -72, 5), bursts));
+        expect(rmsDb(y, at(1), at(4))).toBeLessThan(-70);
+    });
+
+    it('steady room noise is never "voice": it stays gated after a talker stops', async () => {
+        const gate = await auto();
+        gate(cat(noise(2, -60), sum(noise(8, -60, 2), burstsAt(8, [-35]))));
+        const y = gate(noise(8, -58, 3));
+        expect(rmsDb(y, at(3), at(8))).toBeLessThan(-80);
+    });
+
+    it('a voiced sound far under the talker (-60 dBFS against a -30 dBFS talker) is outside the voice range and stays gated', async () => {
+        const gate = await auto();
+        gate(cat(noise(2, -80), sum(noise(10, -80, 2), burstsAt(10, [-30]))));
+        const y = gate(sum(noise(5, -80, 4), burstsAt(5, [-60])));
+        expect(rmsDb(y, at(1), at(5))).toBeLessThan(-75);
+    });
+
+    it('reports its threshold, floor and voice-rule blocks once a second; manual mode reports no threshold', async () => {
+        const gate = await auto();
+        gate(phrase());
+        const stats = gate.posted.filter(m => m.type === 'gateStats') as Array<{ thrDb: number; floorDb: number; rescued: number }>;
+        expect(typeof stats[stats.length - 1].thrDb).toBe('number');
+        expect(typeof stats[stats.length - 1].floorDb).toBe('number');
+        expect(stats.some(m => m.rescued > 0)).toBe(true);
+        const man = await makeGate([{ type: 'gate', enabled: true }, { type: 'threshold', value: -45 }, { type: 'auto', value: false }]);
+        man(noise(2, -50));
+        expect((man.posted.filter(m => m.type === 'gateStats')[0] as { thrDb: number | null }).thrDb).toBeNull();
     });
 });

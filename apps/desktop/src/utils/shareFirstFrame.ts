@@ -45,6 +45,7 @@
  *
  * Pure of React; DOM objects are injected so it is unit-tested with fakes.
  */
+import { retryTransientCapture } from './shareCaptureRetry';
 import { Track } from 'livekit-client';
 import type { LocalParticipant, LocalTrack, ScreenShareCaptureOptions, TrackPublishOptions } from 'livekit-client';
 
@@ -229,6 +230,11 @@ export interface SettledPublishHooks {
     /** The capture exists and its first frame has been waited for; nothing is published yet. */
     onSettled?: (s: SettledCapture) => void;
     waitOptions?: WaitOptions;
+    /** Retry delays for a transient createScreenTracks failure (shareCaptureRetry.ts); none (the default) = no retry. */
+    retryDelaysMs?: readonly number[];
+    /** Run before each retry (a spent capture grant is renewed here). */
+    beforeRetry?: () => Promise<void>;
+    onRetry?: (n: number, err: unknown) => void;
 }
 
 /**
@@ -253,7 +259,12 @@ export async function publishScreenShareSettled(
         await lp.setScreenShareEnabled(true, capture, publish);
         return null;
     }
-    const tracks: LocalTrack[] = await lp.createScreenTracks({ ...capture });
+    // A transient capture failure (NotReadableError / AbortError: the OS capturer still letting go of the
+    // source a torn-down share just used) is retried when the caller says so (shareCaptureRetry.ts).
+    const tracks: LocalTrack[] = await retryTransientCapture(async (n) => {
+        if (n > 0) await hooks.beforeRetry?.();
+        return lp.createScreenTracks({ ...capture });
+    }, { delaysMs: hooks.retryDelaysMs ?? [], onRetry: hooks.onRetry });
     let settled: SettledCapture | null = null;
     try {
         const video = tracks.find(t => t.kind === Track.Kind.Video);

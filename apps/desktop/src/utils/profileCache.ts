@@ -241,6 +241,9 @@ export function fetchProfile(
     token: string,
     opts?: { maxAgeMs?: number },
 ): Promise<PublicProfile> {
+    // '__system__' is the synthetic sender of system rows, not an account: the
+    // server answers 404 (it used to 500). Don't even ask.
+    if (userId === '__system__') return Promise.reject(new Error('no profile for the system sender'));
     const maxAgeMs = opts?.maxAgeMs ?? 0;
     const cached = cache.get(userId);
     if (cached && maxAgeMs > 0 && Date.now() - cached.fetchedAt < maxAgeMs) return Promise.resolve(cached.profile);

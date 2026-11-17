@@ -35,7 +35,7 @@
     "categories": [
       {
         "ref": "k:2:text",
-        "name": "Primary Channels",
+        "name": "💬 Primary Channels",
         "kind": "text",
         "position": 1000,
         "overrides": [],
@@ -43,7 +43,7 @@
       },
       {
         "ref": "k:6:text",
-        "name": "Media",
+        "name": "📺 Media",
         "kind": "text",
         "position": 2000,
         "overrides": [],
@@ -51,7 +51,7 @@
       },
       {
         "ref": "k:10:text",
-        "name": "Special Channels",
+        "name": "⭐ Special Channels",
         "kind": "text",
         "position": 3000,
         "overrides": [],
@@ -59,7 +59,7 @@
       },
       {
         "ref": "k:13:text",
-        "name": "Voice Channels",
+        "name": "🔈Voice Channels",
         "kind": "text",
         "position": 4000,
         "overrides": [],
@@ -67,7 +67,7 @@
       },
       {
         "ref": "k:13:huddle",
-        "name": "Voice Channels",
+        "name": "🔈Voice Channels",
         "kind": "huddle",
         "position": 1000,
         "overrides": [],
@@ -75,7 +75,7 @@
       },
       {
         "ref": "k:16:text",
-        "name": "Admin stuff",
+        "name": "🔨 Admin stuff",
         "kind": "text",
         "position": 5000,
         "overrides": [
@@ -89,7 +89,7 @@
       },
       {
         "ref": "k:16:huddle",
-        "name": "Admin stuff",
+        "name": "🔨 Admin stuff",
         "kind": "huddle",
         "position": 2000,
         "overrides": [

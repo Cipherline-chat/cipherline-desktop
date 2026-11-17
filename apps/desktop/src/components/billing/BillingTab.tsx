@@ -23,6 +23,8 @@ import { formatBillingDateOr, cancellationKeepProSentence, formatPlanPrice, foun
 import { nudges } from '../../utils/firstWeekNudgeStore';
 import { useOwnedServersOverFreeStorage } from '../../hooks/useServerStorageStatus';
 import { CancelServerStorageNotice } from './CancelServerStorageNotice';
+import { CancelTagNotice } from './CancelTagNotice';
+import { PRO_TAG_FEATURE_TITLE } from '../../utils/discriminatorField';
 import { FounderCancelPrompt } from './FounderCancelPrompt';
 import { FounderStatusPanel } from './FounderStatusPanel';
 import { IntervalSwitch } from './IntervalSwitch';
@@ -85,6 +87,8 @@ const PRO_PERKS = [
     ['HD video calls + screen sharing', 'free: audio calls'],
     ['2 GB file uploads', 'free: 100 MB'],
     ['Bigger saved storage that grows with your server (100 MB to 10 GB)', 'free: 25 MB per server'],
+    // Owner 2026-11-16: "Add custom #0001 Tags to the list of features on pro".
+    [`${PRO_TAG_FEATURE_TITLE}: pick the number after your name`, 'free: a random #number'],
 ] as const;
 
 export const BillingTab: React.FC = () => {
@@ -92,7 +96,7 @@ export const BillingTab: React.FC = () => {
         status, statusError, refresh, openInAppCheckout, extendTrial,
         setCancellation, fetchPaymentMethod, fetchInvoices,
     } = useSubscription();
-    const { token, userId } = useAuth();
+    const { token, userId, user } = useAuth();
     const { push: pushToast } = useToast();
 
     const [referral, setReferral] = useState<ReferralStatus | null>(null);
@@ -409,7 +413,7 @@ export const BillingTab: React.FC = () => {
                             {isExpired && (hadPro
                                 ? <>Your Pro subscription ended {status.current_period_end ? <>on {formatDate(status.current_period_end)}</> : null} — you’re on the free tier now. Text, audio calls, and encrypted backups keep working; video, screen share and big uploads are paused until you resubscribe, and servers you own keep a flat 25 MB of saved storage.</>
                                 : <>Your trial ended {status.trial_ends_at ? <>on {formatDate(status.trial_ends_at)}</> : null} — you’re on the free tier now. Text, audio calls, and encrypted backups keep working.</>)}
-                            {(status.subscription_status !== 'active' && !trialLive && status.subscription_status !== 'canceled_pending' && !isPastDue && !isExpired) && <>Messaging &amp; audio calls are free. Pro adds video, 2 GB uploads &amp; bigger server storage.</>}
+                            {(status.subscription_status !== 'active' && !trialLive && status.subscription_status !== 'canceled_pending' && !isPastDue && !isExpired) && <>Messaging &amp; audio calls are free. Pro adds video, 2 GB uploads, bigger server storage &amp; custom #0001 tags.</>}
                         </div>
                     </div>
                 </div>
@@ -501,6 +505,9 @@ export const BillingTab: React.FC = () => {
                             </p>
 
                             <CancelServerStorageNotice overCount={serversOverFree} />
+
+                            {/* What happens to the #number when Pro ENDS (owner 2026-11-16). */}
+                            <CancelTagNotice discriminator={user?.discriminator ?? null} custom={user?.discriminator_custom === true} />
                         </>
                     );
                     // A founder with the lock in force gets the big slide-to-cancel

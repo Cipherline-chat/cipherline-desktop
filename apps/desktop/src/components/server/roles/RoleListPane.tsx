@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Plus, X } from 'lucide-react';
+import { Plus, Search, X } from 'lucide-react';
 import { ClButton, ClInput, ClSelect } from '../../cl';
 import type { ClSelectOption, ClSelectReorderConfig } from '../../cl';
 import { readableRoleColorHex, roleColorHexFromInt } from '../../../utils/roleColor';
@@ -7,6 +7,7 @@ import { computeMovePosition } from './roleReorderMath';
 import { sortRolesForDisplay } from './roleOrder';
 import { useEscape } from '../../../hooks/useEscape';
 import type { Role } from './types';
+import { filterRolesByQuery, shouldShowRoleSearch } from './rolePickerModel';
 
 interface Props {
     roles: Role[];
@@ -69,11 +70,25 @@ export const RoleListPane: React.FC<Props> = ({
     const draggableRoles = useMemo(() => sorted.filter(r => !r.is_everyone), [sorted]);
     const everyoneRole = useMemo(() => sorted.find(r => r.is_everyone), [sorted]);
 
+    // Over ROLE_SEARCH_THRESHOLD roles a search box narrows the dropdown (which
+    // already scrolls inside its own capped height). While a query is active
+    // the dropdown shows only the matches and drag-to-reorder is off: a move
+    // inside a filtered subset can't be placed in the full hierarchy.
+    const searchable = shouldShowRoleSearch(draggableRoles.length);
+    const [query, setQuery] = useState('');
+    const filtering = searchable && query.trim() !== '';
+    useEscape(() => setQuery(''), filtering);
+    const matches = useMemo(
+        () => (filtering ? filterRolesByQuery(sorted, query) : sorted),
+        [filtering, sorted, query],
+    );
+
     const options: ClSelectOption<string>[] = useMemo(() => {
+        if (filtering) return matches.map(r => ({ value: r.role_id, label: roleOptionLabel(r) }));
         const opts = draggableRoles.map(r => ({ value: r.role_id, label: roleOptionLabel(r) }));
         if (everyoneRole) opts.push({ value: everyoneRole.role_id, label: roleOptionLabel(everyoneRole) });
         return opts;
-    }, [draggableRoles, everyoneRole]);
+    }, [filtering, matches, draggableRoles, everyoneRole]);
 
     // Runs the SAME persistence path the old up/down buttons (and the rail
     // before them) used — compute the new midpoint `position` via
@@ -116,7 +131,7 @@ export const RoleListPane: React.FC<Props> = ({
         void moveRole(fromIndex, toIndex);
     };
 
-    const reorderConfig: ClSelectReorderConfig<string> | undefined = (canManage && onReorder)
+    const reorderConfig: ClSelectReorderConfig<string> | undefined = (canManage && onReorder && !filtering)
         ? {
             isLocked: (id) => id === everyoneRole?.role_id,
             onReorder: handleSelectReorder,
@@ -151,16 +166,44 @@ export const RoleListPane: React.FC<Props> = ({
                 no drag affordance at all. @everyone is `isLocked` — it can't be
                 picked up, and the drop indicator never lands past it — so it
                 stays pinned last exactly like the old rail pinned it. */}
-            <div className="flex-1 min-w-0">
+            <div className="flex-1 min-w-0 flex items-center gap-2">
+                {searchable && (
+                    <label
+                        className="flex items-center gap-1.5 h-[32px] px-2.5 rounded-lg bg-cl-sink/60 border border-solid border-cl-border/50 focus-within:border-cl-lume/50 shrink-0"
+                        style={{ width: 180 }}
+                    >
+                        <Search size={12} className="text-cl-faint shrink-0" aria-hidden="true" />
+                        <input
+                            type="text"
+                            value={query}
+                            onChange={e => setQuery(e.target.value)}
+                            onKeyDown={e => {
+                                // Enter jumps straight to the first match.
+                                if (e.key === 'Enter' && filtering && matches[0]) { e.preventDefault(); onSelect(matches[0].role_id); setQuery(''); }
+                            }}
+                            placeholder={`Search ${draggableRoles.length} roles`}
+                            aria-label="Search roles"
+                            spellCheck={false}
+                            autoComplete="off"
+                            className="bg-transparent border-0 p-0 focus:ring-0 outline-none text-[12.5px] text-cl-text placeholder:text-cl-faint w-full"
+                            data-testid="role-list-search"
+                        />
+                    </label>
+                )}
                 {roles.length === 0 ? (
                     <span className="text-[12px] text-cl-faint px-1">No roles yet.</span>
+                ) : filtering && matches.length === 0 ? (
+                    <span className="text-[12px] text-cl-faint px-1" role="status" data-testid="role-list-no-match">
+                        No roles match “{query.trim()}”
+                    </span>
                 ) : (
                     <ClSelect
                         options={options}
                         value={selectedRoleId ?? options[0]?.value ?? ''}
-                        onChange={onSelect}
-                        style={{ width: '100%', maxWidth: 320 }}
-                        ariaLabel="Select role to edit"
+                        onChange={(id) => { onSelect(id); setQuery(''); }}
+                        placeholder={filtering ? `${matches.length} matching role${matches.length === 1 ? '' : 's'}…` : undefined}
+                        style={{ width: '100%', maxWidth: 320, minWidth: 0 }}
+                        ariaLabel={filtering ? `Select role to edit (${matches.length} matching)` : 'Select role to edit'}
                         reorder={reorderConfig}
                     />
                 )}

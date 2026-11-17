@@ -28,3 +28,6 @@ export * from './attribution';
 export * from './call-media';
 export * from './name-rules';
 export * from './system-messages';
+export * from './display-name';
+export * from './channel-layout';
+export * from './channel-icons';

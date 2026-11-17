@@ -580,6 +580,10 @@ void Export(napi_env env, napi_value exports, const char* name, napi_callback cb
 
 }  // namespace
 
+// audio_output_kind.cc (speakers vs headphones). Registered from here so the three per-platform
+// addon Init functions stay untouched.
+void RegisterAudioOutputKind(napi_env env, napi_value exports);
+
 void RegisterSharePower(napi_env env, napi_value exports) {
     Export(env, exports, "setProcessPowerThrottling", SetProcessPowerThrottling);
     Export(env, exports, "getForegroundInfo", GetForegroundInfo);
@@ -587,4 +591,5 @@ void RegisterSharePower(napi_env env, napi_value exports) {
     Export(env, exports, "setTimerResolution", SetTimerResolution);
     Export(env, exports, "setGpuSchedulingPriority", SetGpuSchedulingPriority);
     Export(env, exports, "getGpuSchedulingPriority", GetGpuSchedulingPriority);
+    RegisterAudioOutputKind(env, exports);
 }

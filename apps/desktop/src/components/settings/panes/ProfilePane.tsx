@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect, useLayoutEffect, useMemo, useCallba
 import { createPortal } from 'react-dom';
 import { useAuth } from '../../../contexts/AuthContext';
 import { Image as ImageIcon, Camera, Trash2, Lock, Check, Loader2, AlertCircle, Maximize2, Share2 } from 'lucide-react';
-import { ClInput, ClTextarea, ClImageCropper, ClSegment, ClToggle } from '../../cl';
+import { ClTextarea, ClImageCropper, ClSegment, ClToggle } from '../../cl';
 import { SettingsDisclosure } from '../SettingsDisclosure';
 import { SettingsDisclosureFlatCards } from '../settingsDisclosureFlat';
 import { REVEAL_EVENT } from '../revealSetting';
@@ -25,7 +25,7 @@ import { useAvatarBroadcast } from '../../../hooks/useAvatarBroadcast';
 import { saveAvatarKey } from '../../../utils/avatarKeyStore';
 import { uploadAvatarBlob } from '../../../utils/avatarUpload';
 import { fetchProfile, noteProfileEdited, type PublicProfile } from '../../../utils/profileCache';
-import { ProPill } from '../../ProPill';
+import { UsernameTagField } from './UsernameTagField';
 import { AVATAR_OUTPUT, BANNER_OUTPUT } from '../../../utils/imageCrop';
 import { IMAGE_ACCEPT_ATTR, validateImageUpload } from '../../../utils/imageUploadValidation';
 import { useToast } from '../../../contexts/ToastContext';
@@ -40,7 +40,8 @@ import { isAnimatedFile, animatedPickError } from '../../../utils/animatedImage'
 import { supportsAnimatedCrop } from '../../../utils/animatedCrop/client';
 import { readTheme } from '../../../utils/profileTheme';
 import { showcaseBlocksOf } from '../../../utils/profileExtras';
-import { deviceTimeZone, isValidTimeZone, listTimeZones, type ViewAs } from '../../../utils/profileVisibility';
+import { deviceTimeZone, isValidTimeZone, type ViewAs } from '../../../utils/profileVisibility';
+import { TimeZonePicker } from './TimeZonePicker';
 import { usernameFieldState, usernameBlocksSave, usernameSaveError } from '../../../utils/usernameField';
 import { requestOpenSettings } from '../../../utils/openSettingsRequest';
 import { useSteamCard } from '../../../hooks/useProfileRelations';
@@ -142,7 +143,6 @@ export const ProfilePane: React.FC<{ onDirtyChange?: (dirty: boolean) => void }>
     // Opt-in time zone. Empty = unset.
     const [timeZone, setTimeZone] = useState(user?.time_zone || '');
     const suggestedZone = useMemo(() => deviceTimeZone(), []);
-    const zoneOptions = useMemo(() => listTimeZones(), []);
     const timeZoneInvalid = timeZone.trim() !== '' && !isValidTimeZone(timeZone.trim());
     // (An empty zone = local time not shown.)
     const [avatarUrl, setAvatarUrl] = useState<string | null>(user?.avatar_url ?? null);
@@ -573,29 +573,30 @@ export const ProfilePane: React.FC<{ onDirtyChange?: (dirty: boolean) => void }>
                         <p className="ps-note">Your avatar is public: it shows on your invite link. Chats, files and calls stay encrypted.</p>
 
                         <div className="ps-fields">
-                            <div className="cl-fld" style={{ margin: 0 }}>
-                                <label htmlFor="pf-username" className="flex items-center gap-2">Username {isPro && <ProPill proSince={isPro ? proSince : null} />}</label>
-                                <div className="ps-tagbox">
-                                    <div className="flex-1">
-                                        <ClInput
-                                            id="pf-username"
-                                            type="text"
-                                            value={effectiveUsernameDraft}
-                                            onChange={(e) => setUsernameDraft(e.target.value)}
-                                            placeholder="Username"
-                                            maxLength={32}
-                                            minLength={3}
-                                            disabled={usernameLocked}
-                                            aria-invalid={usernameInvalid || !!usernameErrorFor}
-                                            aria-describedby="sd-username-msg"
-                                            style={{ width: '100%' }}
-                                        />
-                                    </div>
-                                    {user?.discriminator !== null && user?.discriminator !== undefined && (
-                                        <span className="ps-tag" aria-label={`Your tag ${padDiscriminator(user.discriminator)}`}>#{padDiscriminator(user.discriminator)}</span>
-                                    )}
-                                </div>
-                                <div id="sd-username-msg" aria-live="polite">
+                            {/* Username and its #number: one field, the number an attached segment
+                                (UsernameTagField: edits / saves the number; this pane owns the name). */}
+                            <UsernameTagField
+                                label="Username"
+                                usernameInvalid={usernameInvalid || !!usernameErrorFor}
+                                usernameDirty={!usernameLocked && usernameDraft.trim() !== '' && usernameDraft.trim() !== (user?.username || '')}
+                                usernameInput={
+                                    <input
+                                        id="pf-username"
+                                        className="ps-namefield-name"
+                                        type="text"
+                                        value={effectiveUsernameDraft}
+                                        onChange={(e) => setUsernameDraft(e.target.value)}
+                                        placeholder="Username"
+                                        maxLength={32}
+                                        minLength={3}
+                                        autoComplete="off"
+                                        spellCheck={false}
+                                        disabled={usernameLocked}
+                                        aria-invalid={usernameInvalid || !!usernameErrorFor}
+                                        aria-describedby="sd-username-msg"
+                                    />
+                                }
+                                usernameMessages={<>
                                     {usernameField.kind === 'locked' && (
                                         <p className="ps-note flex items-center gap-1" style={{ marginTop: 6 }}>
                                             <Lock size={11} aria-hidden /> {usernameField.message}
@@ -612,8 +613,8 @@ export const ProfilePane: React.FC<{ onDirtyChange?: (dirty: boolean) => void }>
                                             Saves when you leave this page, with a new #tag under this name. You can change it once every 24 hours.
                                         </p>
                                     )}
-                                </div>
-                            </div>
+                                </>}
+                            />
 
                             <div className="cl-fld ps-rel" style={{ margin: 0 }}>
                                 <label htmlFor="pf-bio">About me</label>
@@ -644,21 +645,11 @@ export const ProfilePane: React.FC<{ onDirtyChange?: (dirty: boolean) => void }>
                                 {showsTime && (
                                     <div className="cl-fld" style={{ margin: '10px 0 0' }}>
                                         <label htmlFor="pf-time-zone">Time zone</label>
-                                        <ClInput
+                                        <TimeZonePicker
                                             id="pf-time-zone"
-                                            type="text"
-                                            list="pf-time-zone-list"
                                             value={timeZone}
-                                            onChange={(e) => setTimeZone(e.target.value)}
-                                            placeholder={suggestedZone || 'Europe/Paris'}
-                                            maxLength={64}
-                                            aria-invalid={timeZoneInvalid}
-                                            aria-describedby="pf-time-zone-msg"
-                                            style={{ width: '100%' }}
+                                            onChange={setTimeZone}
                                         />
-                                        <datalist id="pf-time-zone-list">
-                                            {zoneOptions.map((z) => <option key={z} value={z} />)}
-                                        </datalist>
                                         <div id="pf-time-zone-msg" aria-live="polite">
                                             {timeZoneInvalid
                                                 ? <p className="cl-fmsg">Pick a zone from the list, like Europe/Paris.</p>

@@ -1,6 +1,7 @@
 import React, { useRef, useEffect, useState, useCallback, useSyncExternalStore } from 'react';
 import { Volume2, Headphones, Video, VideoOff, SlidersHorizontal, AudioLines } from 'lucide-react';
-import { eventToCombo, formatCombo } from '../hooks/useKeybinds';
+import { PttKeybind } from './PttKeybind';
+import { PTT_NO_KEY_HINT } from '../utils/pushToTalk';
 import {
     DEFAULT_VOICE_SETTINGS,
     MIC_VOLUME_MAX,
@@ -29,7 +30,8 @@ import { registerOutputAudioContext, unregisterOutputAudioContext } from '../uti
 import { testSpeakers, DEFAULT_SOUNDS } from '../utils/notificationSounds';
 import { describeSpeakerTest } from '../utils/speakerTestSummary';
 import { subscribe as subscribeAudioHealth, getSnapshot as getAudioHealthSnapshot } from '../utils/audioHealth';
-import { ClToggle, ClButton, ClSelect } from './cl';
+import { describeAutoEcho } from '../utils/outputKind';
+import { ClToggle, ClButton, ClSelect, ClSegment } from './cl';
 import { NoiseSuppressionEngine, NoiseSuppressionInfo } from './NoiseSuppressionEngine';
 import type { ClSelectOption } from './cl';
 import { useCameraQualityTier, setCameraQualityTier, useIncomingVideoMode, setIncomingVideoMode } from '../utils/cameraQualityPrefs';
@@ -48,7 +50,6 @@ const INCOMING_MODE_HELP: Record<IncomingVideoMode, string> = {
     reduced: 'Easier on your PC: other cameras in low quality (the one speaking a little sharper), at most 9 decoded at once — the rest show their avatar until they talk. A camera you focus stays sharp.',
     datasaver: 'For metered connections: every camera in low quality, a focused one in medium, at most 9 at once, and screen shares capped at 30 fps where the sharer allows it.',
 };
-import { useEscape } from '../hooks/useEscape';
 import { GamingVideoSetting } from './settings/GamingVideoSetting';
 import { SettingsDisclosure } from './settings/SettingsDisclosure';
 import { VvRow as Row } from './settings/VvRow';
@@ -71,6 +72,7 @@ interface VoiceVideoSettingsProps {
 
 /** Shown under Echo cancellation, not only behind its "i". */
 const ECHO_NOTE = 'Only recommended when using speakers — leave it off with headphones.';
+type EchoMode = 'auto' | 'on' | 'off';
 
 // ── Volume Slider (0-200%) ────────────────────────────────────────────────────
 
@@ -247,70 +249,6 @@ const GateSlider: React.FC<{
                 {locked ? '≈' : ''}{threshold} dB
             </span>}
         </>
-    );
-};
-
-// ── PTT Keybind Recorder ──────────────────────────────────────────────────────
-
-const PttKeybind: React.FC<{
-    value: string | null;
-    onSet: (v: string | null) => void;
-}> = ({ value, onSet }) => {
-    const [recording, setRecording] = useState(false);
-
-    useEffect(() => {
-        if (!recording) return;
-        const onKey = (e: KeyboardEvent) => {
-            e.preventDefault();
-            e.stopPropagation();
-            // Escape (any modifiers) is handled entirely by the useEscape
-            // layer below — unlike KeybindSettings' recorder, Escape is never
-            // itself a bindable PTT key here, so there is no combo case to
-            // fall through to.
-            if (e.key === 'Escape') return;
-            const combo = eventToCombo(e);
-            if (combo) { onSet(combo); setRecording(false); }
-        };
-        window.addEventListener('keydown', onKey, { capture: true });
-        return () => window.removeEventListener('keydown', onKey, { capture: true });
-    }, [recording, onSet]);
-
-    // Escape cancels the capture through the shared stack — the same
-    // ordering guarantee as KeybindSettings' recorder (see its comment):
-    // this layer, pushed while `recording`, wins over any host settings
-    // panel's own Escape-to-close beneath it.
-    useEscape(() => setRecording(false), recording);
-
-    return (
-        <div className="flex items-center gap-1.5">
-            {value && !recording && (
-                <ClButton
-                    icon
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => onSet(null)}
-                    tooltip="Clear keybind"
-                >
-                    ×
-                </ClButton>
-            )}
-            <button
-                type="button"
-                onClick={() => setRecording(r => !r)}
-                className={`sd-kbd vv-kbd${recording ? ' sd-rec' : ''}`}
-                style={{ border: 'none', background: 'none', cursor: 'pointer', padding: 0 }}
-                title={recording ? 'Press a key combo — Esc cancels' : 'Click to rebind'}
-                aria-label={recording ? 'Recording push to talk key, press a key combo, Escape cancels' : value ? `Push to talk key: ${formatCombo(value)}. Click to change` : 'Set push to talk key'}
-            >
-                {recording ? (
-                    <i>Press keys…</i>
-                ) : value ? (
-                    formatCombo(value).split(' + ').map((k, i) => <i key={i}>{k}</i>)
-                ) : (
-                    <i className="vv-kbd-empty">Set keybind</i>
-                )}
-            </button>
-        </div>
     );
 };
 
@@ -654,6 +592,8 @@ async function resolvePreviewMic(stored: string, s: VoiceSettings): Promise<stri
 
 export const VoiceVideoSettings: React.FC<VoiceVideoSettingsProps> = ({ voice }) => {
     const { settings, deviceProfiles } = voice;
+    // Bumped when push to talk is switched on with no key: opens the key field's capture straight away.
+    const [pttCapture, setPttCapture] = useState(0);
     const cameraTier = useCameraQualityTier();
     const incomingMode = useIncomingVideoMode();
 
@@ -805,6 +745,13 @@ export const VoiceVideoSettings: React.FC<VoiceVideoSettingsProps> = ({ voice })
     // re-open the preview (same as the call does with restartTrack). Skipped on
     // mount, where the effect above has just opened it with the current value.
     const echoCancellationSetting = resolveEchoCancellation(settings.echoCancellation);
+    // Auto / On / Off: Auto follows the output device until the user picks On or Off (utils/outputKind.ts).
+    const echoMode: EchoMode = voice.echoAuto.auto ? 'auto' : echoCancellationSetting ? 'on' : 'off';
+    const echoAutoNote = voice.echoAuto.auto ? describeAutoEcho(voice.echoAuto.outputKind) : ECHO_NOTE;
+    const onEchoMode = (m: EchoMode) => {
+        if (m === 'auto') voice.setEchoCancellationAuto();
+        else voice.setEchoCancellation(m === 'on');
+    };
     const echoMountedRef = useRef(false);
     useEffect(() => {
         if (!echoMountedRef.current) { echoMountedRef.current = true; return; }
@@ -1066,22 +1013,27 @@ export const VoiceVideoSettings: React.FC<VoiceVideoSettingsProps> = ({ voice })
                         />
                     </div>
                 )}
-                <Row label="Push to talk" info="Hold a key to transmit; you are silent otherwise. Click the key to change it. The same on every microphone.">
+                <Row label="Push to talk" note={settings.pushToTalk && !settings.pushToTalkKey ? PTT_NO_KEY_HINT : undefined} info="Hold a key to transmit; you are silent otherwise. Any key works, including a modifier such as Alt. Works while another program has focus (Windows, Linux X11, and Wayland desktops with the shortcuts portal; on Wayland the key needs a non-modifier key). Click the key to change it; it is the same key as in Keybinds, and the same on every microphone.">
                     {settings.pushToTalk && (
                         <PttKeybind
                             value={settings.pushToTalkKey}
                             onSet={voice.setPushToTalkKey}
+                            captureSignal={pttCapture}
                         />
                     )}
-                    <ClToggle checked={settings.pushToTalk} onChange={voice.setPushToTalk} aria-label="Push to talk" />
+                    <ClToggle checked={settings.pushToTalk} onChange={(v) => { if (v && !settings.pushToTalkKey) setPttCapture(n => n + 1); voice.setPushToTalk(v); }} aria-label="Push to talk" />
                 </Row>
                 <Row
                     label="Echo cancellation"
-                    kind="switch"
-                    note={ECHO_NOTE}
-                    info={`Stops people hearing themselves when your mic picks up your speakers. ${ECHO_NOTE} Off by default. Remembered per microphone, so it can be on for a laptop mic and off for your headset.`}
+                    kind="block"
+                    note={echoAutoNote}
+                    info={`Stops people hearing themselves when your mic picks up your speakers. ${ECHO_NOTE} Auto (the default until you choose) turns it on for speakers, and when the output type is unknown, and off for headphones or a headset; it follows you when you switch outputs, even during a call. Choose On or Off to decide yourself: that choice then always wins. Remembered per microphone, so it can be on for a laptop mic and off for your headset.`}
                 >
-                    <ClToggle checked={echoCancellationSetting} onChange={voice.setEchoCancellation} aria-label="Echo cancellation" />
+                    <ClSegment<EchoMode>
+                        options={[{ value: 'auto', label: 'Auto' }, { value: 'on', label: 'On' }, { value: 'off', label: 'Off' }]}
+                        value={echoMode}
+                        onChange={onEchoMode}
+                    />
                 </Row>
                 <Row
                     label="Auto gain control"

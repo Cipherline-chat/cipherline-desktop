@@ -37,6 +37,7 @@
  */
 import { createScrubber, type Scrubber } from './diagnostics-scrub';
 import type { linuxSessionInfo } from './capture-flags';
+import { sanitizeRows, sanitizeState, type PreviousSession } from './previous-session';
 
 // ── Types (structural copy of the renderer's CrashInfo / SystemInfo) ─────────
 
@@ -72,6 +73,13 @@ export interface PendingCrash {
      * like `count` and `seen`: never part of the report wire format.
      */
     handled?: CrashHandled;
+    /**
+     * What the session that died was doing (electron/previous-session.ts): only
+     * on `unclean_exit` records. Rides along with the record to the renderer,
+     * which puts it in the report as `payload.previous_session`. Already
+     * scrubbed by main; never part of `crash`.
+     */
+    previous_session?: PreviousSession;
     crash: CrashInfoLike;
 }
 
@@ -266,11 +274,14 @@ export function crashSignature(c: CrashInfoLike): string {
  * crash that happened AGAIN). The list never exceeds MAX_PENDING_CRASHES; the
  * oldest falls off.
  */
-export function addPendingCrash(list: readonly PendingCrash[], crash: CrashInfoLike): PendingCrash[] {
+export function addPendingCrash(list: readonly PendingCrash[], crash: CrashInfoLike, previousSession?: PreviousSession | null, seen = false): PendingCrash[] {
     const signature = crashSignature(crash);
     const existing = list.find(p => p.signature === signature);
     const rest = list.filter(p => p.signature !== signature);
-    const next: PendingCrash = { signature, count: (existing?.count ?? 0) + 1, seen: false, crash };
+    const next: PendingCrash = {
+        signature, count: (existing?.count ?? 0) + 1, seen, crash,
+        ...(previousSession && crash.kind === 'unclean_exit' ? { previous_session: previousSession } : {}),
+    };
     const out = [...rest, next];
     return out.length > MAX_PENDING_CRASHES ? out.slice(out.length - MAX_PENDING_CRASHES) : out;
 }
@@ -308,10 +319,23 @@ export function parsePendingCrashes(raw: unknown): PendingCrash[] {
             count: typeof it.count === 'number' && it.count > 0 ? Math.min(Math.trunc(it.count), 1_000_000) : 1,
             seen: it.seen === true,
             ...(typeof it.handled === 'string' && CRASH_HANDLED.has(it.handled) ? { handled: it.handled } : {}),
+            ...(crash.kind === 'unclean_exit' ? previousSessionOf(it.previous_session) : {}),
             crash,
         });
     }
     return out;
+}
+
+/** A persisted `previous_session`, re-validated (the store is trusted, but cheap to be strict). */
+function previousSessionOf(v: unknown): { previous_session: PreviousSession } | Record<string, never> {
+    if (!v || typeof v !== 'object') return {};
+    const p = v as Partial<PreviousSession>;
+    if (typeof p.started_at !== 'string' || !ISO_RE.test(p.started_at) || typeof p.last_written_at !== 'string' || !ISO_RE.test(p.last_written_at)) return {};
+    const version = pick(p.app_version, VERSION_RE);
+    if (!version) return {};
+    // Round-trips through the file parser's row / state rules; no new accepted shapes.
+    const rows = sanitizeRows(p.rows);
+    return { previous_session: { started_at: p.started_at, last_written_at: p.last_written_at, app_version: version, state: sanitizeState(p.state), rows } };
 }
 
 // ── Unclean-exit marker ──────────────────────────────────────────────────────
@@ -450,7 +474,7 @@ export class PendingCrashStore {
         // Persisted (older) first, then anything captured this launch.
         let merged = persisted;
         for (const p of this.list) {
-            merged = addPendingCrash(merged, p.crash);
+            merged = addPendingCrash(merged, p.crash, p.previous_session);
             const m = merged.find(x => x.signature === p.signature);
             if (m) { m.count = Math.max(m.count, p.count); m.seen = p.seen; if (p.handled) m.handled = p.handled; }
         }
@@ -458,14 +482,15 @@ export class PendingCrashStore {
         this.persist();
     }
 
-    add(crash: CrashInfoLike | null): void {
+    /** `seen` = kept for a manual report / opted-in auto-send, but no boot prompt (unclean-exit-ledger.ts). */
+    add(crash: CrashInfoLike | null, previousSession?: PreviousSession | null, seen = false): void {
         if (!crash) return;
-        this.list = addPendingCrash(this.list, crash);
+        this.list = addPendingCrash(this.list, crash, previousSession, seen);
         this.persist();
     }
 
     all(): PendingCrash[] {
-        return this.list.map(p => ({ ...p, crash: { ...p.crash } }));
+        return this.list.map(p => ({ ...p, crash: { ...p.crash }, ...(p.previous_session ? { previous_session: { ...p.previous_session, rows: p.previous_session.rows.map(r => ({ ...r })) } } : {}) }));
     }
 
     markSeen(signatures?: readonly string[]): void {

@@ -15,6 +15,7 @@ import { activeCustom, nextCustomExpiry } from '../utils/customStatus';
 import { OwnStatusSync, selfPresenceBus, type OwnChoice, type PendingLocalChange } from '../utils/ownStatusSync';
 import { GameActivityReporter } from '../utils/gameActivityReporter';
 import { forgetOwnGameArt, loadOwnGameArt } from '../utils/gameArt';
+import { parseBridgeDetail, sameDetail, toWireGameDetail, type GameDetail, type WireGameDetail } from '../utils/richPresence';
 export { IDLE_THRESHOLD_SECONDS, IDLE_POLL_INTERVAL_MS } from '../utils/idleThreshold';
 
 // The status model (types, colours, restore rule) lives in a dependency-free
@@ -42,9 +43,13 @@ interface UseUserStatusOptions {
     sendPresenceIdle?: (idle: boolean) => void;
     /** Report this connection's game (`presence:game`). From useRealtime. */
     sendPresenceGame?: (game: string | null) => void;
+    /** Report the game's Rich Presence detail lines (`presence:game_detail`). From useRealtime. */
+    sendPresenceGameDetail?: (detail: WireGameDetail | null) => void;
+    /** Settings ▸ Game Activity ▸ "Share game details". Off = the name only is shared. */
+    shareGameDetails?: boolean;
 }
 
-export function useUserStatus({ token, userId, acceptedFriends, showGameActivity = true, wsConnectCount = 0, sendPresenceIdle, sendPresenceGame }: UseUserStatusOptions) {
+export function useUserStatus({ token, userId, acceptedFriends, showGameActivity = true, wsConnectCount = 0, sendPresenceIdle, sendPresenceGame, sendPresenceGameDetail, shareGameDetails = true }: UseUserStatusOptions) {
     const [myStatus, setMyStatusState] = useState<UserStatus>(() =>
         initialStatusFromSaved(secureLocalStore.getItem(`cipherline_status_${userId}`)),
     );
@@ -64,6 +69,13 @@ export function useUserStatus({ token, userId, acceptedFriends, showGameActivity
     // display name so Settings ▸ Game Activity can offer "ignore this game"
     // for whatever's currently detected without a second IPC round-trip.
     const [myCurrentGameProcess, setMyCurrentGameProcess] = useState<string | null>(null);
+    // What the game announces about itself over Rich Presence (round, score,
+    // party, time) — shown on this device always; shared only while
+    // shareGameDetails is on. 'rpc' = it came from a local Rich Presence app.
+    const [myCurrentGameDetail, setMyCurrentGameDetail] = useState<GameDetail | null>(null);
+    const [myCurrentGameSource, setMyCurrentGameSource] = useState<'process' | 'rpc' | null>(null);
+    const myDetailRef = useRef<GameDetail | null>(null);
+    const shareDetailsRef = useRef(shareGameDetails);
 
     // Map of friend user_id → their live status
     const [friendStatuses, setFriendStatuses] = useState<Record<string, FriendStatusEntry>>(() => {
@@ -108,8 +120,16 @@ export function useUserStatus({ token, userId, acceptedFriends, showGameActivity
     // older servers.
     const sendGameRef = useRef(sendPresenceGame);
     useEffect(() => { sendGameRef.current = sendPresenceGame; }, [sendPresenceGame]);
+    const sendDetailRef = useRef(sendPresenceGameDetail);
+    useEffect(() => { sendDetailRef.current = sendPresenceGameDetail; }, [sendPresenceGameDetail]);
     const gameReporterRef = useRef<GameActivityReporter | null>(null);
-    if (!gameReporterRef.current) gameReporterRef.current = new GameActivityReporter(g => sendGameRef.current?.(g));
+    if (!gameReporterRef.current) gameReporterRef.current = new GameActivityReporter(g => sendGameRef.current?.(g), undefined, d => sendDetailRef.current?.(d));
+    // "Share game details" toggled: send the lines now, or withdraw them.
+    useEffect(() => {
+        shareDetailsRef.current = shareGameDetails;
+        const d = myDetailRef.current;
+        gameReporterRef.current?.setDetail(shareGameDetails && d ? toWireGameDetail(d) : null);
+    }, [shareGameDetails]);
     useEffect(() => () => gameReporterRef.current?.dispose(), []);
     const myStatusRef = useRef(myStatus);
     const myCurrentGameRef = useRef(myCurrentGame);
@@ -351,16 +371,28 @@ export function useUserStatus({ token, userId, acceptedFriends, showGameActivity
 
         // Game changes set the ref synchronously so the PATCH (which reads it)
         // carries the new value; see pushAmbient.
-        const setGame = (name: string | null, processName: string | null) => {
-            // Your own game's icon is read on this computer the moment the game is found, so it is
-            // already cached when a profile opens (utils/gameArt.ts). Nothing here is sent anywhere.
-            if (name) void loadOwnGameArt(name); else forgetOwnGameArt(myCurrentGameRef.current);
-            noteOwnGame(name, myCurrentGameRef.current);
-            myCurrentGameRef.current = name;
-            setMyCurrentGame(name);
+        const setGame = (name: string | null, processName: string | null, detail: GameDetail | null = null, source: 'process' | 'rpc' | null = null) => {
+            const nameChanged = name !== myCurrentGameRef.current;
+            if (nameChanged) {
+                // Your own game's icon is read on this computer the moment the game is found, so it is
+                // already cached when a profile opens (utils/gameArt.ts). Nothing here is sent anywhere.
+                if (name) void loadOwnGameArt(name); else forgetOwnGameArt(myCurrentGameRef.current);
+                noteOwnGame(name, myCurrentGameRef.current);
+                myCurrentGameRef.current = name;
+                setMyCurrentGame(name);
+                gameReporterRef.current?.setGame(name);
+            }
             setMyCurrentGameProcess(processName);
-            gameReporterRef.current?.setGame(name);
-            pushAmbient();
+            setMyCurrentGameSource(name ? source : null);
+            // A new round / score line alone changes only the detail: no PATCH,
+            // no status re-send — just a (coalesced) presence:game_detail.
+            const d = name ? detail : null;
+            if (!sameDetail(d, myDetailRef.current)) {
+                myDetailRef.current = d;
+                setMyCurrentGameDetail(d);
+            }
+            gameReporterRef.current?.setDetail(shareDetailsRef.current && d ? toWireGameDetail(d) : null);
+            if (nameChanged) pushAmbient();
         };
 
         // Main scans running processes in the background only while someone
@@ -375,13 +407,13 @@ export function useUserStatus({ token, userId, acceptedFriends, showGameActivity
         }
 
         // Query current game on mount (in case a game was already running when app launched)
-        electronAPI.getCurrentGame().then((game: { name: string; processName: string } | null) => {
-            if (game) setGame(game.name, game.processName);
+        type Detected = { name: string; processName: string; source?: unknown; detail?: unknown };
+        const fromBridge = (g: Detected) => setGame(g.name, g.processName, parseBridgeDetail(g.detail), g.source === 'rpc' ? 'rpc' : 'process');
+        electronAPI.getCurrentGame().then((game: Detected | null) => {
+            if (game) fromBridge(game);
         }).catch(() => {});
 
-        const unsubDetected = electronAPI.onGameDetected(({ name, processName }: { name: string; processName: string }) => {
-            setGame(name, processName);
-        });
+        const unsubDetected = electronAPI.onGameDetected((g: Detected) => fromBridge(g));
         const unsubStopped = electronAPI.onGameStopped(() => {
             setGame(null, null);
         });
@@ -458,8 +490,11 @@ export function useUserStatus({ token, userId, acceptedFriends, showGameActivity
     const clearGame = useCallback(() => {
         noteOwnGame(null, myCurrentGameRef.current);
         myCurrentGameRef.current = null;
+        myDetailRef.current = null;
         setMyCurrentGame(null);
         setMyCurrentGameProcess(null);
+        setMyCurrentGameDetail(null);
+        setMyCurrentGameSource(null);
         gameReporterRef.current?.setGame(null);
         pushAmbient();
     }, [pushAmbient]);
@@ -471,6 +506,8 @@ export function useUserStatus({ token, userId, acceptedFriends, showGameActivity
         myCustomExpiresAt,
         myCurrentGame,
         myCurrentGameProcess,
+        myCurrentGameDetail,
+        myCurrentGameSource,
         setStatus,
         setMyCustomText,
         setMyCustomEmoji,

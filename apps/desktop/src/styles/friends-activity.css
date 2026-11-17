@@ -121,6 +121,8 @@
   font-family: var(--cl-font-body); font-size: 12px; line-height: 1.35; color: var(--cl-muted);
 }
 .fa-card-also { display: flex; align-items: center; gap: 5px; color: var(--cl-faint); }
+/* Rich Presence party / clock line: tabular so the ticking clock does not jitter. */
+.fa-card-meta { color: var(--cl-faint); font-variant-numeric: tabular-nums; }
 .fa-card-also > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .fa-card-also svg { flex: 0 0 auto; }
 

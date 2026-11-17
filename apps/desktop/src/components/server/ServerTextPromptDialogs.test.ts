@@ -32,11 +32,22 @@ afterEach(() => {
 const footBtn = (t: string) => [...document.querySelectorAll('.dlg-foot-actions button')].find(b => b.textContent?.trim() === t) as HTMLButtonElement;
 const submitForm = () => act(async () => { document.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })); });
 
-describe('cleanCallName', () => {
-    it('strips characters the API rejects and trims', () => {
-        expect(cleanCallName("  Strategy <b>night</b>!  ")).toBe('Strategy bnightb');
-        expect(cleanCallName("Dawn's call_1.0-x")).toBe("Dawn's call_1.0-x");
-        expect(cleanCallName('###')).toBe('');
+describe('cleanCallName / callNameDraftError', () => {
+    it('only trims: nothing is stripped (the API rule allows emoji and punctuation)', () => {
+        expect(cleanCallName("  Strategy <b>night</b>!  ")).toBe('Strategy <b>night</b>!');
+        expect(cleanCallName("Dawn's call_1.0-x \u{1F3AE}")).toBe("Dawn's call_1.0-x \u{1F3AE}");
+        expect(cleanCallName('###')).toBe('###');
+    });
+
+    it('reports a rejected character instead of removing it', async () => {
+        const { callNameDraftError } = await import('../../utils/callName');
+        expect(callNameDraftError('Raid night \u{1F468}\u200D\u{1F469}\u200D\u{1F467}!')).toBeNull();
+        expect(callNameDraftError('')).toBeNull();
+        expect(callNameDraftError('   ')).toBeNull();
+        expect(callNameDraftError('a\u202Eb')).toMatch(/direction-control/);
+        expect(callNameDraftError('a\u200Bb')).toMatch(/hidden/);
+        expect(callNameDraftError('x'.repeat(61))).toMatch(/60/);
+        expect(callNameDraftError('\u{1F525}'.repeat(60))).toBeNull();
     });
 });
 
@@ -54,11 +65,33 @@ describe('RenameCallDialog', () => {
         expect(document.querySelector('.dlg-subtitle')?.textContent).toMatch(/Everyone in the call/);
     });
 
-    it('Rename is disabled and Enter submits nothing when nothing valid is typed', async () => {
-        const { onSubmit } = await mount('###');
+    it('Rename is disabled and Enter submits nothing when the name is empty', async () => {
+        const { onSubmit } = await mount('   ');
         expect(footBtn('Rename').disabled).toBe(true);
         await submitForm();
         expect(onSubmit).not.toHaveBeenCalled();
+    });
+
+    it('a name with a rejected character shows why, and cannot be submitted; punctuation and emoji can', async () => {
+        const bad = await mount('Strategy\u202E night');
+        expect(document.querySelector('.dlg-error')?.textContent).toMatch(/direction-control/);
+        expect(footBtn('Rename').disabled).toBe(true);
+        await submitForm();
+        expect(bad.onSubmit).not.toHaveBeenCalled();
+        await act(async () => { root.unmount(); });
+        root = createRoot(host);
+        const good = await mount('Strategy night! \u{1F3AE}');
+        expect(document.querySelector('.dlg-error')).toBeNull();
+        expect(footBtn('Rename').disabled).toBe(false);
+        await submitForm();
+        expect(good.onSubmit).toHaveBeenCalledTimes(1);
+    });
+
+    it('shows the server\u2019s refusal (an older API still on the plain-text rule)', async () => {
+        const onSubmit = vi.fn(); const onClose = vi.fn();
+        await act(async () => { root.render(React.createElement(RenameCallDialog, { open: true, draft: 'Night \u{1F3AE}', onDraftChange: () => {}, onSubmit, onClose, error: 'Name may only contain letters' })); });
+        await act(async () => { vi.advanceTimersByTime(80); });
+        expect(document.querySelector('.dlg-error')?.textContent).toBe('Name may only contain letters');
     });
 
     it('a valid name submits once (control)', async () => {

@@ -8,21 +8,16 @@ import { EncryptedAvatar } from './EncryptedAvatar';
 import { useAuth } from '../contexts/AuthContext';
 import ClButton from './ClButton';
 import { useEscape } from '../hooks/useEscape';
-import { mentionsToDisplayText } from '../utils/mentionTokens';
-import { clipForPreview, messageTextMatches } from '../utils/messagePreviewText';
+import { toPlainText, messageTextMatches } from '../utils/messagePreviewText';
+import { embedUrlsOf } from '../utils/formatting/plainText';
 import { previewSnippet } from '../utils/longMessage';
 import { safeDisplayFilename } from '../utils/fileSafety';
 import { extractYouTubeId } from '../utils/youtubeLink';
 import KlipyGifEmbed from './KlipyGifEmbed';
 import type { ReportedMessageRef } from '../utils/franking';
 
-// ── URL helpers (mirrors ChatPane) ────────────────────────────────────────────
-
-const URL_REGEX = /https?:\/\/[^\s<>"{}|\\^`[\]]+/g;
-
-function extractUrls(text: string): string[] {
-    return text.match(URL_REGEX) ?? [];
-}
+// URLs for the thumbnail come from utils/formatting/plainText embedUrlsOf (the
+// same rule as the chat's embeds).
 
 // extractYouTubeId lives in ../utils/youtubeLink (host-pinned, unit-tested).
 
@@ -237,9 +232,11 @@ const PinnedMessagesPanel: React.FC<PinnedMessagesPanelProps> = ({
                         // extraction below still runs on this same value —
                         // mention tokens never contain a URL, so nothing is lost.
                         const textContent = msg.content?.type === 'text'
-                            ? mentionsToDisplayText(clipForPreview(msg.content.text))
+                            ? toPlainText(msg.content.text)
                             : null;
-                        const urls = textContent ? extractUrls(textContent) : [];
+                        // From the raw text, so a URL in code / a spoiler is not previewed
+                        // and a masked link previews its real destination.
+                        const urls = msg.content?.type === 'text' ? embedUrlsOf(String(msg.content.text ?? '')) : [];
                         const firstYtId = urls.map(extractYouTubeId).find(Boolean) ?? null;
 
                         return (

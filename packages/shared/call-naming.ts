@@ -22,6 +22,14 @@
  * by each viewer from what that viewer is already allowed to know.
  */
 
+import {
+    CALL_DISPLAY_NAME_MAX_GRAPHEMES,
+    callNameError,
+    clipGraphemes,
+    displayNameError,
+    stripHiddenCharacters,
+} from './display-name';
+
 export type CallNameStyle = 'host' | 'numbered' | 'fixed' | 'template';
 export type CallGameMode = 'replace' | 'off';
 
@@ -58,16 +66,11 @@ export const DEFAULT_CALL_NAMING: Readonly<CallNamingSettings> = Object.freeze({
     locked: false,
 });
 
-/** Same ceiling as a manual rename (RenameHuddleCallDto / renameCall). */
-export const CALL_NAME_MAX_LENGTH = 60;
+/** Same ceiling as a manual rename (RenameHuddleCallDto / renameCall), in
+ *  grapheme clusters (one emoji = 1). */
+export const CALL_NAME_MAX_LENGTH = CALL_DISPLAY_NAME_MAX_GRAPHEMES;
 export const CALL_NAME_TOKENS = ['host', 'channel', 'n'] as const;
 export type CallNameToken = typeof CALL_NAME_TOKENS[number];
-
-/** Literal characters allowed in a fixed name or a template — the same set
- *  a manual rename and a channel name accept (letters, digits, space,
- *  apostrophe, hyphen, underscore, period). Rules out control characters,
- *  bidi overrides, zero-width tricks and look-alike scripts by construction. */
-const PLAIN_CHARS = /^[a-zA-Z0-9 '\-_.]*$/;
 
 /** Error codes the API returns for refused renames. Clients treat both as a
  *  quiet no-op (the UI already hides the action), never an error toast. */
@@ -88,16 +91,15 @@ const isPlainObject = (v: unknown): v is Record<string, unknown> =>
 export function fixedNameError(name: string): string | null {
     const t = name.trim();
     if (t.length < 1) return 'Enter a name, or leave it empty to use the channel name';
-    if (t.length > CALL_NAME_MAX_LENGTH) return `Keep it to ${CALL_NAME_MAX_LENGTH} characters`;
-    if (!PLAIN_CHARS.test(t)) return "Use letters, numbers, spaces and ' - _ . only";
-    return null;
+    // Same rule as a manual rename and a channel name (shared/display-name.ts):
+    // any script, punctuation and emoji; no control / hidden characters.
+    return callNameError(t);
 }
 
 /** Validate a template. Returns an error message, or null when valid. */
 export function templateError(template: string): string | null {
     const t = template.trim();
     if (t.length < 1) return 'Enter a template';
-    if (t.length > CALL_NAME_MAX_LENGTH) return `Keep it to ${CALL_NAME_MAX_LENGTH} characters`;
     let literal = '';
     const re = /\{([^{}]*)\}/g;
     let last = 0;
@@ -110,8 +112,9 @@ export function templateError(template: string): string | null {
     }
     literal += t.slice(last);
     if (literal.includes('{') || literal.includes('}')) return 'Every { needs a matching } around {host}, {channel} or {n}';
-    if (!PLAIN_CHARS.test(literal)) return "Use letters, numbers, spaces and ' - _ . only (plus placeholders)";
-    return null;
+    // The whole template is held to the display-name rule (placeholders are
+    // plain ASCII, so they pass it); the literal text alone may be empty.
+    return displayNameError(t, { maxGraphemes: CALL_NAME_MAX_LENGTH });
 }
 
 export type CallNamingValidation =
@@ -205,16 +208,18 @@ export interface CallNameContext {
     takenNames?: readonly string[];
 }
 
-/** Remove control / format characters (incl. bidi overrides and zero-width
- *  joiners) and collapse whitespace. Applied to substituted values: a
- *  nickname is not held to the plain-text set a template is. */
+/** Remove control / format characters (incl. bidi overrides and stray
+ *  zero-width joiners; emoji ZWJ / tag sequences survive) and collapse
+ *  whitespace. Applied to substituted values: a nickname is not held to the
+ *  display-name rule a template is. */
 function clean(s: string): string {
-    return s.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, '').replace(/\s+/g, ' ').trim();
+    return stripHiddenCharacters(s);
 }
 
+/** Cap to the call-name length in grapheme clusters, never cutting an emoji
+ *  sequence in half. */
 function clip(s: string): string {
-    const cps = Array.from(s);
-    return cps.length <= CALL_NAME_MAX_LENGTH ? s : cps.slice(0, CALL_NAME_MAX_LENGTH).join('').trimEnd();
+    return clipGraphemes(s, CALL_NAME_MAX_LENGTH);
 }
 
 function fillTemplate(template: string, ctx: CallNameContext, n: number): string {

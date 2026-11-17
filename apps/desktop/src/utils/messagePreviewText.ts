@@ -1,4 +1,5 @@
 import { mentionsToDisplayText } from './mentionTokens';
+import { stripFormatting } from './formatting/plainText';
 
 /**
  * Message text as a user SEES it, for every place that previews or searches a
@@ -12,6 +13,11 @@ import { mentionsToDisplayText } from './mentionTokens';
  * showed the raw token. Everything routes through `mentionsToDisplayText`
  * (the same form the OS notification and pinned panel already use) so a
  * preview always reads like the message it previews.
+ *
+ * Formatting syntax is removed too (utils/formatting/plainText.ts): a preview
+ * of `**ship it**` reads "ship it", and a spoiler previews as "[spoiler]" —
+ * never its hidden text — in every one of these surfaces. Copy Text and edit
+ * keep the raw syntax (they use `displayTextOf`, which does not strip).
  *
  * Searching matches the DISPLAY text too. A user can search for "@dawson" and
  * find the message that reads "@dawson …", and a fragment of a user id no
@@ -38,13 +44,46 @@ export function clipForPreview(text: unknown, max: number = PREVIEW_SCAN_MAX): s
     return text.slice(0, cut);
 }
 
-/** Display text of a message's content, cut for a preview (see PREVIEW_SCAN_MAX). */
-export function displayPreviewOf(content: { text?: unknown } | null | undefined): string | undefined {
-    const text = content?.text;
-    return typeof text === 'string' ? mentionsToDisplayText(clipForPreview(text)) : undefined;
+export interface PlainTextOptions {
+    /**
+     * `'display'` (default): mention / emoji tokens become `@name` / `:name:`.
+     * `'keep'`: tokens stay for a caller that resolves them itself (the
+     * conversation list draws custom emoji as images).
+     */
+    tokens?: 'display' | 'keep';
+    /** How much of the text is looked at (default PREVIEW_SCAN_MAX). */
+    max?: number;
 }
 
-/** Display text of a message's content, or undefined when it has no text. */
+/**
+ * THE plain-text form of a message, for every surface outside the rendered
+ * message body: OS notifications, the conversation list, reply quotes and the
+ * "Replying to" bar, the pinned / saved panel, search results and excerpts.
+ *
+ *   `**testing**`            -> "testing"
+ *   `||secret||`             -> "[spoiler]"  (never the hidden text)
+ *   ```` ```js\nx()\n``` ```` -> "x()"        (code is the message: its text stays)
+ *   `[docs](https://…)`      -> "docs";  `<https://x.y>` -> "https://x.y"
+ *   `# Title`, `> quote`, `- item`, `\*` escapes -> the words, with "• " for bullets
+ *
+ * Cut first (PREVIEW_SCAN_MAX), then the formatting syntax removed
+ * (utils/formatting/plainText.ts), then tokens shown as display text.
+ * `ChatPane.plainTextSites.test.ts` scans the source for every read of message
+ * text and fails on one that reaches a preview surface without coming through
+ * here.
+ */
+export function toPlainText(text: unknown, opts: PlainTextOptions = {}): string {
+    const plain = stripFormatting(clipForPreview(text, opts.max));
+    return opts.tokens === 'keep' ? plain : mentionsToDisplayText(plain);
+}
+
+/** `toPlainText` of a message's content, or undefined when it has no text. */
+export function displayPreviewOf(content: { text?: unknown } | null | undefined): string | undefined {
+    const text = content?.text;
+    return typeof text === 'string' ? toPlainText(text) : undefined;
+}
+
+/** Display text of a message's content (formatting syntax KEPT — Copy Text, edit), or undefined when it has no text. */
 export function displayTextOf(content: { text?: unknown } | null | undefined): string | undefined {
     const text = content?.text;
     return typeof text === 'string' ? mentionsToDisplayText(text) : undefined;
@@ -55,7 +94,7 @@ export function messageTextMatches(text: string | null | undefined, query: strin
     const q = query.trim().toLowerCase();
     if (!q) return true;
     if (typeof text !== 'string' || !text) return false;
-    return mentionsToDisplayText(text).toLowerCase().includes(q);
+    return mentionsToDisplayText(stripFormatting(text)).toLowerCase().includes(q);
 }
 
 export interface SearchExcerpt {
@@ -72,7 +111,7 @@ export interface SearchExcerpt {
 export function searchExcerpt(text: string | null | undefined, query: string, context = 30): SearchExcerpt | null {
     const needle = query.trim().toLowerCase();
     if (!needle || typeof text !== 'string' || !text) return null;
-    const shown = mentionsToDisplayText(text);
+    const shown = mentionsToDisplayText(stripFormatting(text));
     const i = shown.toLowerCase().indexOf(needle);
     if (i < 0) return null;
     const start = Math.max(0, i - context);

@@ -138,7 +138,9 @@ describe('ChatPane wiring', () => {
         expect(src).toContain("(lateNightPlaceholder ?? 'Message…')");
     });
 
-    it('is the only composer textarea (DMs, groups, channels, threads, edit all share it)', () => {
-        expect((src.match(/<textarea/g) ?? []).length).toBe(1);
+    it('is the only composer box (DMs, groups, channels, threads, edit all share it)', () => {
+        // The WYSIWYG box (components/composer/RichComposer) replaced the textarea.
+        expect((src.match(/<RichComposer\b/g) ?? []).length).toBe(1);
+        expect((src.match(/<textarea/g) ?? []).length).toBe(0);
     });
 });

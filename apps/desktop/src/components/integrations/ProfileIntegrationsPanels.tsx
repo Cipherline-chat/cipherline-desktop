@@ -1,8 +1,9 @@
 import React from 'react';
-import { useSteamCard } from '../../hooks/useProfileRelations';
+import { refreshSteamCard, useSteamCard } from '../../hooks/useProfileRelations';
 import { useUserIntegrations } from '../../hooks/useIntegrations';
-import { SteamShowcase } from './SteamShowcase';
+import { SteamPrivateNotice, SteamShowcase } from './SteamShowcase';
 import { SpotifyShowcase } from './SpotifyShowcase';
+import { steamHasShowcaseStats, steamNeedsOwnerNotice } from '../../utils/integrations/api';
 import '../../styles/integrations.css';
 
 /**
@@ -25,10 +26,19 @@ export const ProfileIntegrationsPanels: React.FC<{
     const { spotify } = useUserIntegrations(userId, token);
     // Your own card carries your stats even while you hide them (for Settings); your profile follows the switch.
     const activity = steam && !(isSelf && steam.statsHidden) ? steam.activity ?? null : null;
-    if (!activity && spotify.length === 0) return null;
+    // Private Steam with nothing public to show: viewers get no card (the verified Steam row stands alone); you get the how-to.
+    const showCard = !!activity && steamHasShowcaseStats(activity);
+    const ownerNotice = isSelf && !!activity && steamNeedsOwnerNotice(activity);
+    if (!showCard && !ownerNotice && spotify.length === 0) return null;
     return (
         <>
-            {activity && (
+            {ownerNotice && activity && (
+                <section className="pfp-panel-card ig-panel" aria-labelledby={`ig-steam-${userId}`}>
+                    <h3 className="pcd-sec-title" id={`ig-steam-${userId}`}>Steam</h3>
+                    <SteamPrivateNotice activity={activity} onCheckAgain={token ? () => refreshSteamCard(userId, token) : undefined} />
+                </section>
+            )}
+            {showCard && activity && (
                 <section className="pfp-panel-card ig-panel" aria-labelledby={`ig-steam-${userId}`}>
                     <h3 className="pcd-sec-title" id={`ig-steam-${userId}`}>Steam</h3>
                     <SteamShowcase activity={activity} token={token} isSelf={isSelf} personaName={steam?.persona_name ?? null} avatar={steam?.avatar ?? null} />

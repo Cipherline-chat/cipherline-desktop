@@ -1,6 +1,6 @@
 import React from 'react';
 import { motion, useReducedMotion, type Variants } from 'framer-motion';
-import { Sparkles, Upload, Video, MonitorUp } from 'lucide-react';
+import { Sparkles, Upload, Video, MonitorUp, Hash } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { ClModal, ClButton } from '../cl';
 import { useSubscription } from '../../contexts/SubscriptionContext';
@@ -18,7 +18,8 @@ export type UpgradeReason =
     | 'video'
     | 'screenshare'
     | 'video_call'
-    | 'upload';
+    | 'upload'
+    | 'discriminator';
 
 interface Props {
     open: boolean;
@@ -49,11 +50,17 @@ const COPY: Record<UpgradeReason, { Icon: LucideIcon; title: string; subtitle: s
         title: 'File too large for the free plan',
         subtitle: `This file exceeds the ${FREE_UPLOAD_LIMIT_LABEL} free-tier upload limit. Cipherline Pro lifts it to ${PRO_UPLOAD_LIMIT_LABEL}.`,
     },
+    discriminator: {
+        Icon: Hash,
+        title: 'Changing your #number is a Pro feature',
+        subtitle: 'Pick the number after your name (like #0042) with Cipherline Pro. It is not included in the free trial.',
+    },
 };
 
 const PERKS: string[] = [
     '**HD video calls** & screen sharing',
     'Upload files up to **2 GB**',
+    '**Custom #0001 tags**: pick the number after your name',
     '**Bigger saved storage** that grows with your server (100 MB to 10 GB)',
 ];
 

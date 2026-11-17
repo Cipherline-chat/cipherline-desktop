@@ -143,7 +143,7 @@ describe('sanitizeChannelRefs (received, sender-controlled)', () => {
         expect(sanitizeChannelRefs([{ id: 'a', name: 'two\nlines' }])).toEqual([]);
         expect(sanitizeChannelRefs([{ id: '', name: 'n' }, { id: 'a', name: '' }])).toEqual([]);
         expect(sanitizeChannelRefs([{ id: 'x'.repeat(65), name: 'n' }])).toEqual([]);
-        expect(sanitizeChannelRefs([{ id: 'a', name: 'n'.repeat(101) }])).toEqual([]);
+        expect(sanitizeChannelRefs([{ id: 'a', name: 'n'.repeat(201) }])).toEqual([]);
     });
     it('first entry per name wins, capped', () => {
         expect(sanitizeChannelRefs([{ id: 'a', name: 'n' }, { id: 'b', name: 'n' }])).toEqual([{ id: 'a', name: 'n' }]);
@@ -346,5 +346,41 @@ describe('revealChannelRow', () => {
         expect(revealChannelRow('c-absent', root)).toBe(false);
         expect(revealChannelRow('x"], body, [a="', root)).toBe(false);
         expect(querySelector).toHaveBeenCalledTimes(1);
+    });
+});
+
+describe('channel names with emoji and punctuation', () => {
+    const fam = '\u{1F468}‍\u{1F469}‍\u{1F467}';
+    const emojiName = `\u{1F3AE} game night! (EU) ${fam}`;
+    const refs = [{ id: 'c-fun', name: emojiName }, { id: 'c-q', name: 'what?' }];
+
+    it('a #link to an emoji / punctuated name matches exactly and stops at the next boundary', () => {
+        const text = `join #${emojiName} now, or #what? later`;
+        const spans = findChannelRefSpans(text, refs);
+        expect(spans.map(s => s.ref.id)).toEqual(['c-fun', 'c-q']);
+        expect(text.slice(spans[0].start, spans[0].end)).toBe(`#${emojiName}`);
+        expect(text.slice(spans[1].start, spans[1].end)).toBe('#what?');
+    });
+
+    it('a name ending in an emoji matches at the end of the text', () => {
+        const spans = findChannelRefSpans('see #fun \u{1F3AE}', [{ id: 'c1', name: 'fun \u{1F3AE}' }]);
+        expect(spans).toHaveLength(1);
+    });
+
+    it('sanitizeChannelRefs accepts a maximal name (25 emoji families = 200 UTF-16 units) and drops longer', () => {
+        const longest = fam.repeat(25); // 200 units
+        expect(sanitizeChannelRefs([{ id: 'a', name: longest }])).toHaveLength(1);
+        expect(sanitizeChannelRefs([{ id: 'a', name: longest + 'x' }])).toHaveLength(0);
+    });
+
+    it('the picker query accepts as many characters as a name can hold', () => {
+        const q = '\u{1F525}'.repeat(50);
+        expect(detectChannelTrigger(`hi #${q}`)?.query).toBe(q);
+    });
+
+    it('the picker filters emoji names', () => {
+        const c = [{ channel: { name: '\u{1F3AE} game night' } }, { channel: { name: 'general' } }];
+        expect(rankChannelCandidates(c, '\u{1F3AE}').map(x => x.channel.name)).toEqual(['\u{1F3AE} game night']);
+        expect(rankChannelCandidates(c, 'game').map(x => x.channel.name)).toEqual(['\u{1F3AE} game night']);
     });
 });

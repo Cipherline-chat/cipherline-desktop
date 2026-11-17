@@ -101,6 +101,7 @@ export const SETTINGS_INDEX: Record<PaneId, SettingsIndexEntry[]> = {
     keybinds: [
         { label: 'Keyboard shortcuts', keywords: ['hotkeys', 'bindings'] },
         { label: 'Mute keybind', keywords: ['push to talk', 'ptt', 'toggle mute'] },
+        { label: 'Push to talk key', keywords: ['ptt', 'hold to talk', 'push to talk keybind'] },
         { label: 'Global shortcuts', keywords: ['background keybinds', 'system wide'] },
         { label: 'Lock screen keybind', keywords: ['screen lock hotkey'] },
         { label: 'Drawing request keybinds', keywords: ['annotation', 'annotate', 'allow drawing', 'approve request', 'decline request'] },

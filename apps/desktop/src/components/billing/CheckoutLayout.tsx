@@ -14,20 +14,23 @@
  */
 import React from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Check, MonitorUp, ShieldCheck, Sparkles, Upload, Video, HardDrive } from 'lucide-react';
+import { Check, MonitorUp, ShieldCheck, Sparkles, Upload, Video, HardDrive, Hash } from 'lucide-react';
 import { formatConfirmedTotal, formatTotalBreakdown, type BillingInterval, type SubscribeResult } from '@cipherline/shared';
 import { Keys, type KeysSignal } from '../mascot/Keys';
 import { FREE_UPLOAD_LIMIT_LABEL, PRO_UPLOAD_LIMIT_LABEL } from '../../utils/uploadLimitCopy';
+import { PRO_TAG_FEATURE_TITLE, PRO_TAG_FEATURE_DETAIL } from '../../utils/discriminatorField';
 import '../../styles/checkout.css';
 
 /** What Pro adds over the free tier. Mirrors UpgradePromptModal's PERKS,
  *  ProWelcome and BillingService.getEntitlements: video + screen share, the
- *  upload cap, the per-server saved-storage quota. */
+ *  upload cap, the per-server saved-storage quota - and the custom #number
+ *  (BillingService.canChangeDiscriminator; owner 2026-11-16). */
 export const CHECKOUT_FEATURES = [
     { key: 'video', Icon: Video, title: 'HD video calls', detail: 'Camera on in any call' },
     { key: 'screen', Icon: MonitorUp, title: 'Screen sharing', detail: 'Share your screen live' },
     { key: 'upload', Icon: Upload, title: `${PRO_UPLOAD_LIMIT_LABEL} file uploads`, detail: `Up from ${FREE_UPLOAD_LIMIT_LABEL}` },
     { key: 'storage', Icon: HardDrive, title: 'Bigger saved storage', detail: 'Grows with your server' },
+    { key: 'tag', Icon: Hash, title: PRO_TAG_FEATURE_TITLE, detail: PRO_TAG_FEATURE_DETAIL },
 ] as const;
 
 export const UNLOCK_LINE = 'Everything unlocks the moment this goes through.';

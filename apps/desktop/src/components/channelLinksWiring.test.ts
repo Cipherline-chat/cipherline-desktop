@@ -36,8 +36,9 @@ describe('send / edit carry channel_refs (server channels only)', () => {
         expect(chatPane).toContain('const channelRefs = activeChannel ? collectChannelRefs(wireText, channelRefMapRef.current) : [];');
     });
     it('channel text message and edit include them', () => {
-        expect(chatPane).toContain("...(channelRefs.length > 0 ? { channel_refs: channelRefs } : {}) };");
-        expect(chatPane).toContain("dispatchAction({ type: 'edit', target_id: editingId, text: wireText, ...(channelRefs.length > 0 ? { channel_refs: channelRefs } : {}) })");
+        // (followed by the message font, and a size field only for a one-size message: richWire.extractUniformSize)
+        expect(chatPane).toContain("...(channelRefs.length > 0 ? { channel_refs: channelRefs } : {}), ...fontField(composerFont), ...sizeField(sized.size) };");
+        expect(chatPane).toContain("dispatchAction({ type: 'edit', target_id: editingId, text: wireText, ...(channelRefs.length > 0 ? { channel_refs: channelRefs } : {}), ...fontField(composerFont), ...sizeField(sized.size) })");
     });
     it('negative control: the DM content literal does not carry channel_refs', () => {
         const dm = chatPane.split('\n').find(l => l.includes("const content: ClientContent = bareInviteCode"));
@@ -51,10 +52,11 @@ describe('send / edit carry channel_refs (server channels only)', () => {
     it('every channel edit-apply site passes the edit\'s refs', () => {
         // The own-send path inline; the live receive path and the history
         // fold both go through applyChannelEditDelete (F3 authorization).
-        expect(dashboard.match(/editedContent\(thread\[idx\]\.content, content\.text, content\.channel_refs\)/g)).toHaveLength(1);
+        // (fourth / fifth arguments: the edit's message font and size)
+        expect(dashboard.match(/editedContent\(thread\[idx\]\.content, content\.text, content\.channel_refs, content\.font, content\.size\)/g)).toHaveLength(1);
         expect(dashboard).toContain('applyChannelEditDelete(thread, liveAction, { moderatorDeleteTargets })');
         expect(dashboard).not.toMatch(/editedContent\([^)]*content\.text\)/);
-        expect(historyMerge).toContain('editedContent(next[idx].content, c.text, c.channel_refs)');
+        expect(historyMerge).toContain('editedContent(next[idx].content, c.text, c.channel_refs, (c as { font?: unknown }).font, (c as { size?: unknown }).size)');
     });
 });
 
@@ -63,7 +65,8 @@ describe('rendering + navigation', () => {
         expect(chatPane).toContain('isServerChannel && msg.content.channel_refs');
         // one renderer (renderBody) draws the row, the collapsed preview and the reader
         expect(chatPane).toContain('sanitizeChannelRefs(msg.content.channel_refs)');
-        expect(chatPane).toContain('spans: findChannelRefSpans(t, channelRefs)');
+        // Per formatted run: the formatter hands each plain run to renderTextWithMentions.
+        expect(chatPane).toContain('spans: findChannelRefSpans(leaf, channelRefs)');
         expect(chatPane).toContain('<ChannelRefPill key={key} channelRef={ref} visibleChannels={linkChannels} onNavigate={navigateToChannel} />');
     });
     it('rows re-render when the channel list changes (rename shows at once)', () => {

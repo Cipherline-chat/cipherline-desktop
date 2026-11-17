@@ -5,7 +5,10 @@ import {
     eventToCombo, formatCombo,
     type BindableAction, type KeybindHook,
 } from '../hooks/useKeybinds';
-import { ClButton } from './cl';
+import { ClButton, ClToggle } from './cl';
+import { PttKeybind } from './PttKeybind';
+import { PTT_NO_KEY_HINT } from '../utils/pushToTalk';
+import type { VoiceSettingsHook } from '../hooks/useVoiceSettings';
 import { useEscape } from '../hooks/useEscape';
 import { OPEN_SHORTCUTS_EVENT } from '../utils/shortcutsSheet';
 import {
@@ -20,6 +23,8 @@ import { writeToClipboard } from '../utils/clipboard';
  */
 interface KeybindSettingsProps {
     keybinds: KeybindHook;
+    /** Push to talk is a voice setting, not a keybind: this row edits THAT setting (the same one Voice & Video edits). */
+    voice?: VoiceSettingsHook;
 }
 
 /** A combo as keycap chips. Click starts capture; caps breathe while recording. */
@@ -40,7 +45,7 @@ const KeyCaps: React.FC<{ combo: string | null; capturing: boolean; onClick: () 
     </button>
 );
 
-export const KeybindSettings: React.FC<KeybindSettingsProps> = ({ keybinds }) => {
+export const KeybindSettings: React.FC<KeybindSettingsProps> = ({ keybinds, voice }) => {
     const { binds, setBind, resetAll, resetOne, defaults, globalShortcutStatus } = keybinds;
     const globalNotice = globalShortcutNotice(globalShortcutStatus);
     const labelOf = useCallback((id: string) => ACTIONS.find(a => a.id === id)?.label ?? id, []);
@@ -56,6 +61,8 @@ export const KeybindSettings: React.FC<KeybindSettingsProps> = ({ keybinds }) =>
         )
         : [];
     const [linesCopied, setLinesCopied] = useState(false);
+    // Bumped when push to talk is switched on with no key: opens the key field's capture straight away.
+    const [pttCapture, setPttCapture] = useState(0);
     // A key the desktop remembers can only be changed in the desktop's own settings (KDE ignores a later one).
     const desktopKeys = globalShortcutStatus?.portal?.desktopKeys ?? {};
     const elsewhere = new Set(globalShortcutStatus?.portal?.elsewhere ?? []);
@@ -253,6 +260,32 @@ export const KeybindSettings: React.FC<KeybindSettingsProps> = ({ keybinds }) =>
                         <h3>{cat.label}</h3>
                         <p className="sd-sub">{hintFor(cat)}</p>
                         {rows}
+                        {cat.id === 'controls' && voice && (
+                            <div className="sd-row" data-testid="ptt-keybind-row">
+                                <div className="sd-rl">
+                                    <b>Push to talk</b>
+                                    <span>Hold to transmit; your mic is closed otherwise. Works while another program has focus (Windows, Linux X11, and Wayland desktops with the shortcuts portal). The same setting as Voice &amp; Video.</span>
+                                    {voice.settings.pushToTalk && !voice.settings.pushToTalkKey && (
+                                        <span role="status" data-testid="ptt-no-key-hint" style={{ color: 'var(--cl-glow)' }}>{PTT_NO_KEY_HINT}</span>
+                                    )}
+                                </div>
+                                <div className="sd-rc">
+                                    <PttKeybind value={voice.settings.pushToTalkKey} onSet={voice.setPushToTalkKey} captureSignal={pttCapture} />
+                                    <ClToggle checked={voice.settings.pushToTalk} onChange={(v) => { if (v && !voice.settings.pushToTalkKey) setPttCapture(n => n + 1); voice.setPushToTalk(v); }} aria-label="Push to talk" />
+                                </div>
+                            </div>
+                        )}
+                        {cat.id === 'controls' && voice && (
+                            <div className="sd-row" data-testid="push-to-mute-keybind-row">
+                                <div className="sd-rl">
+                                    <b>Push to mute</b>
+                                    <span>Hold to be muted; let go and your mic goes back to how it was (it never unmutes you if you were already muted). Works while another program has focus. Not used while Push to talk is on.</span>
+                                </div>
+                                <div className="sd-rc">
+                                    <PttKeybind value={voice.settings.pushToMuteKey} onSet={voice.setPushToMuteKey} what="push to mute" />
+                                </div>
+                            </div>
+                        )}
                     </div>
                 );
             })}

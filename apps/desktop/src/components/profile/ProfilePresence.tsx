@@ -2,6 +2,7 @@ import React from 'react';
 import { MobileStatusGlyph } from '../MobileStatusGlyph';
 import { StatusLine } from '../StatusLine';
 import { STATUS_CONFIG } from '../../hooks/useUserStatus';
+import { statusDotFill } from '../../utils/userStatusModel';
 import type { FriendStatusEntry } from '../../hooks/useUserStatus';
 
 /** The presence line + custom status shown under a name on the profile card (the game is the activity row below it). */
@@ -18,7 +19,7 @@ export const ProfilePresence: React.FC<{
             <span className="pcd-status-line">
                 {lastSeen ? <span>{lastSeen}</span> : (
                     <>
-                        <span className="pcd-status-dot" style={{ backgroundColor: cfg.color }} aria-hidden="true" />
+                        <span className="pcd-status-dot" style={{ background: statusDotFill(entry.status, cfg.color) }} aria-hidden="true" />
                         <b style={{ color: cfg.color }}>{cfg.label}</b>
                         {onMobile && <span>· on mobile</span>}
                     </>
@@ -40,6 +41,6 @@ export const ProfileAvatarBadge: React.FC<{ entry: FriendStatusEntry; onMobile: 
             <MobileStatusGlyph status={entry.status} size={16} />
         </span>
     ) : (
-        <span className="pcd-dot" style={{ backgroundColor: cfg.color }} title={cfg.label} />
+        <span className="pcd-dot" style={{ background: statusDotFill(entry.status, cfg.color) }} title={cfg.label} />
     );
 };

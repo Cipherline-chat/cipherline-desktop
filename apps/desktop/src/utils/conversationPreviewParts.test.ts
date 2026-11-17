@@ -39,6 +39,8 @@ describe('wiring', () => {
     it('the conversation rail renders text previews through ConversationPreviewText', () => {
         const src = readFileSync(join(__dirname, '../components/Dashboard.tsx'), 'utf8');
         expect(src).toContain('<ConversationPreviewText');
-        expect(src).toContain('text={clipForPreview(lastMsg.content.text)}');
+        // Cut AND formatting syntax removed (messagePreviewText toPlainText); tokens kept for the
+        // preview component, which draws custom emoji itself.
+        expect(src).toContain("text={toPlainText(lastMsg.content.text, { tokens: 'keep' })}");
     });
 });

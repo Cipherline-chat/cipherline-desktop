@@ -52,6 +52,21 @@ export const AVATAR_OUTPUT = { width: 512, height: 512 } as const;
 export const BANNER_OUTPUT = { width: 1200, height: 480 } as const;
 
 /**
+ * CSS `aspect-ratio` value for an export size — so a preview box is exactly
+ * the shape the cropper frames and encodes (`ClImageCropper` derives its frame
+ * from the same `outputWidth / outputHeight`). Showing a cropped banner in a
+ * fixed-height, full-width box re-crops it a second time with `object-cover`,
+ * which is the "preview looks nothing like what I positioned" bug this exists
+ * to prevent. A degenerate size falls back to square rather than emitting an
+ * invalid `0 / 0`.
+ */
+export function cssAspectRatio(size: { readonly width: number; readonly height: number }): string {
+    const { width, height } = size;
+    if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return '1 / 1';
+    return `${width} / ${height}`;
+}
+
+/**
  * One JPEG quality for every cropped upload. Replaces the 0.8/0.85 split that
  * the four hand-rolled resize copies had drifted into for no stated reason.
  */

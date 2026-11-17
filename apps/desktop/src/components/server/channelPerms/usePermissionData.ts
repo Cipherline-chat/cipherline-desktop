@@ -42,6 +42,10 @@ interface Opts {
     token: string | null;
     /** Parent category whose overrides a channel inherits (null = none). */
     inheritFromCategoryId: string | null;
+    /** Sub-categories: the OUTER tier - the parent of `inheritFromCategoryId`
+     *  when that is a sub-category (the cascade is category -> sub-category
+     *  -> channel). Omit / null for a top-level category. */
+    inheritOuterCategoryId?: string | null;
     /** The saved overrides being edited: a channel's or a category's. */
     own: OwnTarget | null;
     /** Pass the caller's server bits if the parent already has them. */
@@ -55,13 +59,14 @@ const keyOf = (t: OwnTarget | null) => (t ? `${t.scope}:${t.id}` : '');
 /** Stable empty value, so consumers memoising on `ownRows` don't churn. */
 const NO_ROWS: WireOverride[] = [];
 
-export function usePermissionData({ serverId, token, inheritFromCategoryId, own, myPermissions }: Opts) {
+export function usePermissionData({ serverId, token, inheritFromCategoryId, inheritOuterCategoryId = null, own, myPermissions }: Opts) {
     const [roles, setRoles] = useState<Role[]>([]);
     const [members, setMembers] = useState<EditorMember[]>([]);
     const [fetchedPerms, setFetchedPerms] = useState<bigint | null>(null);
     const [rolesState, setRolesState] = useState<'loading' | 'ready' | 'error'>('loading');
     const [rolesError, setRolesError] = useState<string | null>(null);
     const [inheritedResult, setInheritedResult] = useState<{ id: string; overrides: PermOverride[]; ok: boolean } | null>(null);
+    const [outerResult, setOuterResult] = useState<{ id: string; overrides: PermOverride[]; ok: boolean } | null>(null);
     const [ownResult, setOwnResult] = useState<{ key: string; rows: WireOverride[] | null; error: string | null } | null>(null);
     const [reloadTick, setReloadTick] = useState(0);
 
@@ -114,6 +119,19 @@ export function usePermissionData({ serverId, token, inheritFromCategoryId, own,
         return () => { cancelled = true; };
     }, [serverId, token, inheritFromCategoryId, reloadTick]);
 
+    // The outer inherited tier (a sub-category's parent category).
+    useEffect(() => {
+        if (!token || !inheritOuterCategoryId) return;
+        let cancelled = false;
+        const id = inheritOuterCategoryId;
+        axios.get(apiUrl`/servers/${serverId}/categories/${id}/overrides`, auth(token))
+            .then(res => {
+                if (!cancelled) setOuterResult({ id, ok: true, overrides: ((res.data ?? []) as WireOverride[]).map(overrideFromWire) });
+            })
+            .catch(() => { if (!cancelled) setOuterResult({ id, ok: false, overrides: [] }); });
+        return () => { cancelled = true; };
+    }, [serverId, token, inheritOuterCategoryId, reloadTick]);
+
     // The target's own saved overrides (edit mode).
     const ownKey = keyOf(own);
     const ownScope = own?.scope;
@@ -155,6 +173,13 @@ export function usePermissionData({ serverId, token, inheritFromCategoryId, own,
     }, []);
 
     const inheritedCurrent = inheritFromCategoryId && inheritedResult?.id === inheritFromCategoryId ? inheritedResult : null;
+    const outerCurrent = inheritOuterCategoryId && outerResult?.id === inheritOuterCategoryId ? outerResult : null;
+    const outerState = !inheritOuterCategoryId ? 'idle' as const
+        : !outerCurrent ? 'loading' as const
+            : outerCurrent.ok ? 'ready' as const : 'error' as const;
+    const innerState = !inheritFromCategoryId ? 'idle' as const
+        : !inheritedCurrent ? 'loading' as const
+            : inheritedCurrent.ok ? 'ready' as const : 'error' as const;
     const ownCurrent = ownKey && ownResult?.key === ownKey ? ownResult : null;
 
     return {
@@ -162,9 +187,12 @@ export function usePermissionData({ serverId, token, inheritFromCategoryId, own,
         myPerms: myPermissions ?? fetchedPerms,
         rolesState, rolesError,
         inherited: inheritedCurrent?.overrides ?? [],
-        inheritedState: !inheritFromCategoryId ? 'idle' as const
-            : !inheritedCurrent ? 'loading' as const
-                : inheritedCurrent.ok ? 'ready' as const : 'error' as const,
+        /** The outer tier's overrides (sub-category's parent); [] when none. */
+        inheritedOuter: outerCurrent?.overrides ?? [],
+        // Worst of the two tiers: an error anywhere is an error, else loading.
+        inheritedState: innerState === 'error' || outerState === 'error' ? 'error' as const
+            : innerState === 'loading' || outerState === 'loading' ? 'loading' as const
+                : innerState,
         /** null while loading; [] when there is nothing to edit yet (create). */
         ownRows: !ownKey ? NO_ROWS : (ownCurrent?.rows ?? null),
         ownError: ownCurrent?.error ?? null,

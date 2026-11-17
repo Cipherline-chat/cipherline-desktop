@@ -168,10 +168,17 @@ const ALLOWED_KEYS = new Set([
     // Linux hardware (NVENC) screen share: which path/why, the GPU model + driver version (a hardware fact, not a person), sizes and rates.
     'backend', 'gpu', 'driver', 'api', 'sustained', 'w', 'h', 'src_w', 'src_h', 'detail', 'phase', 'latched', 'encoder', 'enc_fps', 'eff_fps', 'enc_ms_p95', 'requested', 'started', 'code', 'msg', 'kbps', 'dropped',
     'speech_db', 'gain_db',
+    // output_kind / echo_detected / echo_prompt / aec_stats: enums, a correlation, a delay, seconds, dB figures.
+    'via', 'corr', 'delay_ms', 'aec_on', 'speech_s', 'action', 'erl_db', 'erle_db',
     // mic_level / rx_level (micLevelLog.ts, useParticipantAudio): dBFS levels, percentages and a
     // clipped-sample count - never audio. (`slot` above is the remote-av-N placeholder.)
     'raw_db', 'ns_db', 'out_db', 'peak_db', 'clip', 'lim_pct', 'talk_pct', 'gate_pct', 'mic_gain_db', 'wire_db', 'rx_gain_db', 'heard_db', 'src_pct', 'fresh_pct', 'vf_fps', 'pres_fps', 'gap_p95_ms', 'gap_max_ms', 'late_pct',
     'after_s',
+    // camera_stop / camera_track / share_end / share_start retry (mediaSelfStop.ts, LocalMediaStopGuard): reason enum
+    // (`reason`, above), the capture track's readyState enum, ms since a track `ended`, a state enum, a retry count, a boolean.
+    'ready', 'ended_ms', 'state', 'n', 'camera', 'kept_old',
+    // remote_video_grey / flicker watch (remote camera): consecutive-grey streak, held flag, end marker.
+    'streak', 'held', 'end',
     'participants', 'count', 'pc', 'type', 'local', 'remote', 'turn', 'protocol',
     'width', 'height', 'fps', 'tier', 'cap_tier', 'why',
     'codec', 'profile', 'hardware', 'reason', 'verdict', 'kept', 'from', 'to',
@@ -202,6 +209,8 @@ const ALLOWED_KEYS = new Set([
     'web_audio_extra_ms', 'base_latency_ms', 'output_latency_ms', 'sample_rate', 'dropped_ms', 'trims',
     // E2EE frame health (e2eeWorkerStats.ts): frame counts only.
     'frames', 'rewritten', 'short_sc', 'leading', 'key_rewritten', 'delta_rewritten',
+    // H.264 IDR pps-id retry (e2eeIdrPpsRetry.ts): keyframe counts only.
+    'checked', 'retried', 'extra', 'gave_up', 'not_encrypted', 'timeouts',
     // Annotation overlay / transport health (desktopAnnotationOverlay.ts,
     // useAnnotationTransport.ts, e2eeWorkerStats.ts): outcome + reason enums,
     // share KIND (screen|window), a display COUNT, booleans.

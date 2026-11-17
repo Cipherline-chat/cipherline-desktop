@@ -84,6 +84,18 @@ export async function swapShareCodec(
     // REPUBLISH_HOLD_MS), then stop the old track object — the clone keeps
     // the capture source alive.
     await (deps.sleep ?? sleepMs)(deps.holdMs ?? REPUBLISH_HOLD_MS);
+    // Never trade a working publication for a dead one. A clone whose capture ended while the
+    // two were held (the OS took the display / window back: an exclusive-fullscreen game, a mode
+    // change) would be unpublished by LiveKit the moment the old track goes, and the share would
+    // end with no event and no sound (staging.229 report: share_hold 'stopped' 13 ms after the swap).
+    // Keep the old publication if it is still live, and say so.
+    if ((clone.readyState as string) === 'ended') {
+        try { await lp.unpublishTrack(fresh as never, true); } catch { /* already gone */ }
+        const oldLive = (old.mediaStreamTrack.readyState as string) !== 'ended';
+        logCallEvent('share_swap_abort', { codec, why: 'clone_ended', kept_old: oldLive });
+        log(`[ScreenShare] codec switch to ${codec} aborted: the new capture ended (${oldLive ? 'keeping the current publication' : 'the current one is gone too'})`);
+        return false;
+    }
     const announced = await deps.announce?.();
     try { await lp.unpublishTrack(old as never, true); } catch { /* already gone */ }
     // Not yet: the unpublish resolves here before viewers have seen it, and a flag

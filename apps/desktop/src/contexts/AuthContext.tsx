@@ -28,6 +28,13 @@ interface AuthState {
          *  utils/usernameField.ts. */
         username_changed_at?: string | null,
         next_username_change_at?: string | null,
+        /** /auth/me, own profile only: the #number's own 24 h cooldown (null =
+         *  a change is allowed now) and whether the current number was CHOSEN
+         *  (Pro) rather than allocated - only a chosen one is replaced when Pro
+         *  ends. Absent on an older API (= never locked, not custom). See
+         *  utils/discriminatorField.ts. */
+        next_discriminator_change_at?: string | null,
+        discriminator_custom?: boolean,
         /** /auth/me: opt-in IANA time zone and
          *  the visibility settings (`{}` = Public). Absent on an older API.
          *  See utils/profileVisibility.ts. */

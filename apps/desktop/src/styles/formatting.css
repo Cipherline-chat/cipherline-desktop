@@ -1,0 +1,245 @@
+/* ============================================================================
+   Message formatting (components/formatting/FormattedText.tsx) and the
+   composer's formatting bar (components/composer/FormatToolbar.tsx).
+
+   Headings are STRUCTURE, NOT SIZE: no rule here makes a heading or a span
+   bigger than the text around it. Weight, colour, letter-spacing and a little
+   spacing do the work instead. The one size control is the WHOLE message's
+   (owner, 2026-11-16, utils/formatting/messageSize.ts): the body sets
+   `--cl-msg-scale` (0.875 / 1 / 1.5, capped) and the fixed-px pieces here
+   (code blocks, their language label) multiply by it, so everything in the
+   message scales together.
+
+   No @import and no remote fonts: every face is one the app already loads
+   (Nunito / Fredoka / JetBrains Mono) or a woff2 file bundled with the app.
+   ============================================================================ */
+/* ── Message fonts (utils/formatting/messageFont.ts) ─────────────────────────
+   Latin-subset woff2 files bundled IN the app (src/assets/fonts; licences in
+   LICENSES.md + public/licenses/fonts). Never a remote URL. A face is read
+   only when something on screen uses it (the picker, or a message in it):
+   that is how @font-face loading works, so nothing is preloaded. */
+@font-face{font-family:'Cipherline Lora';font-style:normal;font-weight:400;font-display:swap;src:url('../assets/fonts/lora-latin-400-normal.woff2') format('woff2');unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}
+@font-face{font-family:'Cipherline Atkinson Hyperlegible';font-style:normal;font-weight:400;font-display:swap;src:url('../assets/fonts/atkinson-hyperlegible-latin-400-normal.woff2') format('woff2');unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}
+@font-face{font-family:'Cipherline Lora';font-style:italic;font-weight:400;font-display:swap;src:url('../assets/fonts/lora-latin-400-italic.woff2') format('woff2');unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}
+@font-face{font-family:'Cipherline Atkinson Hyperlegible';font-style:italic;font-weight:400;font-display:swap;src:url('../assets/fonts/atkinson-hyperlegible-latin-400-italic.woff2') format('woff2');unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}
+@font-face{font-family:'Cipherline Lora';font-style:normal;font-weight:700;font-display:swap;src:url('../assets/fonts/lora-latin-700-normal.woff2') format('woff2');unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}
+@font-face{font-family:'Cipherline Atkinson Hyperlegible';font-style:normal;font-weight:700;font-display:swap;src:url('../assets/fonts/atkinson-hyperlegible-latin-700-normal.woff2') format('woff2');unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}
+@font-face{font-family:'Cipherline Lora';font-style:italic;font-weight:700;font-display:swap;src:url('../assets/fonts/lora-latin-700-italic.woff2') format('woff2');unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}
+@font-face{font-family:'Cipherline Atkinson Hyperlegible';font-style:italic;font-weight:700;font-display:swap;src:url('../assets/fonts/atkinson-hyperlegible-latin-700-italic.woff2') format('woff2');unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}
+@font-face{font-family:'Cipherline Caveat';font-style:normal;font-weight:400;font-display:swap;size-adjust:115%;src:url('../assets/fonts/caveat-latin-400-normal.woff2') format('woff2');unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}
+@font-face{font-family:'Cipherline Caveat';font-style:normal;font-weight:700;font-display:swap;size-adjust:115%;src:url('../assets/fonts/caveat-latin-700-normal.woff2') format('woff2');unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}
+@font-face{font-family:'Cipherline Special Elite';font-style:normal;font-weight:400;font-display:swap;src:url('../assets/fonts/special-elite-latin-400-normal.woff2') format('woff2');unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}
+@font-face{font-family:'Cipherline Permanent Marker';font-style:normal;font-weight:400;font-display:swap;size-adjust:88%;src:url('../assets/fonts/permanent-marker-latin-400-normal.woff2') format('woff2');unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}
+
+/* Per-face calibration lives in the @font-face `size-adjust` above, measured
+   against Nunito at the same font-size (x-height / cap height, canvas
+   TextMetrics): Caveat's x-height is 72% of Nunito's, so it is drawn at 115%
+   (its capitals then sit ~14% taller, its lowercase still smaller); Permanent
+   Marker's x-height is 120%, so it is drawn at 88%. Lora, Special Elite and
+   Atkinson already match (98-100%). size-adjust scales only that face — the
+   computed font-size stays 15px, emoji and code are untouched — so no font
+   makes a message bigger than its neighbours ("text can't shout"). Code always
+   stays the mono face. */
+[data-msg-font="marker"]{letter-spacing:.01em}
+/* Headings follow the message's face instead of the display font. */
+[data-msg-font] .cl-fmt-h1{font-family:inherit}
+/* Faces with one weight: bold is drawn heavier by the browser; keep it from smearing. */
+[data-msg-font="marker"] .cl-fmt-b,[data-msg-font="typewriter"] .cl-fmt-b{-webkit-text-stroke:.35px currentColor;font-weight:400}
+
+
+.cl-fmt{display:block;min-width:0}
+.cl-fmt-p{min-width:0}
+
+/* ── inline ── */
+.cl-fmt-b{font-weight:800}
+.cl-fmt-i{font-style:italic}
+.cl-fmt-u{text-decoration:underline;text-underline-offset:2px;text-decoration-thickness:1.5px}
+.cl-fmt-s{text-decoration:line-through;text-decoration-thickness:1.5px;opacity:.85}
+.cl-fmt-u .cl-fmt-s,.cl-fmt-s .cl-fmt-u{text-decoration:underline line-through}
+
+.cl-fmt-code{
+  font-family:var(--cl-font-mono);font-size:.86em;
+  background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.08);
+  border-radius:5px;padding:.08em .38em;white-space:pre-wrap;word-break:break-word;
+  font-variant-ligatures:none;
+  color:var(--cl-text);
+}
+
+.cl-fmt-link{
+  color:var(--cl-lume);text-decoration:underline;text-underline-offset:2px;
+  text-decoration-color:rgba(37,224,200,.45);cursor:pointer;border-radius:3px;
+}
+.cl-fmt-link:hover{text-decoration-color:var(--cl-lume)}
+.cl-fmt-link:focus-visible{outline:2px solid var(--cl-lume);outline-offset:1px}
+.cl-fmt-dest{
+  font-family:var(--cl-font-mono);font-size:12px;line-height:1.45;color:var(--cl-text);
+  background:var(--cl-sink);border:1px solid var(--cl-border);border-radius:9px;
+  padding:8px 10px;word-break:break-all;user-select:text;
+}
+
+/* Spoiler: a filled pill whose content is blurred AND faded until revealed
+   (blur alone can leave short words legible). */
+.cl-fmt-spoiler{
+  border-radius:4px;padding:0 .12em;cursor:pointer;
+  background:rgba(94,107,143,.55);box-decoration-break:clone;-webkit-box-decoration-break:clone;
+  transition:background-color .15s ease;
+}
+.cl-fmt-spoiler:hover{background:rgba(94,107,143,.75)}
+.cl-fmt-spoiler:focus-visible{outline:2px solid var(--cl-lume);outline-offset:1px}
+.cl-fmt-spoiler-inner{filter:blur(5px);opacity:.55;user-select:none;-webkit-user-select:none;pointer-events:none}
+.cl-fmt-spoiler[data-revealed]{background:rgba(255,255,255,.07);cursor:text}
+@media (prefers-reduced-motion:reduce){.cl-fmt-spoiler{transition:none}}
+
+/* ── blocks ── */
+.cl-fmt-h{font-size:inherit;line-height:1.45;margin:.45em 0 .1em}
+.cl-fmt > .cl-fmt-h:first-child,.cl-fmt-quote > .cl-fmt-h:first-child{margin-top:0}
+.cl-fmt-h1{
+  font-family:var(--cl-font-display);font-weight:600;letter-spacing:.012em;color:var(--cl-text);
+  padding-bottom:.12em;border-bottom:1px solid rgba(255,255,255,.08);
+}
+.cl-fmt-h2{font-weight:800;color:var(--cl-lume)}
+.cl-fmt-h3{font-weight:800;color:var(--cl-muted);text-transform:uppercase;letter-spacing:.07em}
+.cl-fmt-sub{color:var(--cl-faint);font-weight:600}
+
+.cl-fmt-quote{
+  margin:2px 0;padding:1px 0 1px 11px;border-left:3px solid var(--cl-border);
+  color:inherit;
+}
+
+.cl-fmt-list{margin:1px 0;padding-left:1.45em;white-space:normal}
+.cl-fmt-list > li{white-space:pre-wrap;padding-left:.1em}
+ul.cl-fmt-list{list-style:disc outside}
+ul.cl-fmt-list ul.cl-fmt-list{list-style-type:circle}
+ul.cl-fmt-list ul.cl-fmt-list ul.cl-fmt-list{list-style-type:square}
+ol.cl-fmt-list{list-style:decimal outside}
+.cl-fmt-list li::marker{color:var(--cl-muted)}
+
+/* Code block: dark well, language + copy row, horizontal scroll, never wraps. */
+.cl-fmt-pre{
+  margin:4px 0;max-width:100%;border-radius:10px;overflow:hidden;
+  background:var(--cl-abyss);border:1px solid rgba(255,255,255,.07);
+  white-space:normal;
+}
+.cl-fmt-pre-head{
+  display:flex;align-items:center;justify-content:space-between;gap:8px;
+  padding:4px 6px 0 11px;user-select:none;-webkit-user-select:none;
+}
+.cl-fmt-pre-lang{font-family:var(--cl-font-mono);font-size:calc(10.5px * var(--cl-msg-scale, 1));letter-spacing:.06em;text-transform:uppercase;color:var(--cl-faint)}
+.cl-fmt-pre-copy{
+  display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;
+  border:0;border-radius:7px;background:none;color:var(--cl-faint);cursor:pointer;
+  transition:color .12s ease,background-color .12s ease;
+}
+.cl-fmt-pre-copy:hover{color:var(--cl-text);background:rgba(255,255,255,.07)}
+.cl-fmt-pre-copy:focus-visible{outline:2px solid var(--cl-lume);outline-offset:1px}
+.cl-fmt-pre pre{margin:0;overflow-x:auto;padding:4px 12px 10px}
+/* A long message's collapsed preview shows a code block's first lines, fading out. */
+.cl-fmt-pre--clipped pre{
+  -webkit-mask-image:linear-gradient(to bottom,#000 45%,transparent);
+          mask-image:linear-gradient(to bottom,#000 45%,transparent);
+}
+.cl-fmt-pre code{
+  display:block;white-space:pre;font-family:var(--cl-font-mono);font-size:calc(12.5px * var(--cl-msg-scale, 1));line-height:1.55;
+  color:#DCE3F5;tab-size:4;
+  /* JetBrains Mono draws => / -> / != as ligatures; code shows what was typed. */
+  font-variant-ligatures:none;
+}
+
+/* Highlight tokens: brand-adjacent hues that stay readable on --cl-abyss. */
+.cl-hl-kw{color:#C7A6FF}
+.cl-hl-str{color:#FFD47A}
+.cl-hl-num{color:#FF9F85}
+.cl-hl-com{color:var(--cl-faint);font-style:italic}
+.cl-hl-lit{color:#FF8A7E}
+.cl-hl-fn{color:var(--cl-lume)}
+.cl-hl-type{color:#7CC9FF}
+.cl-hl-prop{color:#7CC9FF}
+.cl-hl-tag{color:#FF8A7E}
+.cl-hl-attr{color:#FFD47A}
+.cl-hl-meta{color:#C7A6FF}
+.cl-hl-add{color:#6EE79A;background:rgba(74,222,128,.08)}
+.cl-hl-del{color:#FF8A9E;background:rgba(255,92,122,.08)}
+
+/* ============================================================================
+   Composer formatting bar
+   ============================================================================ */
+
+/* The "Aa" toggle that sits next to the paperclip. */
+.fmt-toggle{gap:1px;font-family:var(--cl-font-display);font-weight:600;font-size:14px;line-height:1;min-width:32px}
+.fmt-toggle-aa{letter-spacing:-.02em}
+.fmt-toggle-chev{transition:transform .18s ease;margin-top:-1px}
+.fmt-toggle[aria-expanded="true"]{color:var(--cl-lume);background:var(--cl-lume-tint)}
+.fmt-toggle[aria-expanded="true"] .fmt-toggle-chev{transform:rotate(180deg)}
+.fmt-toggle[data-font]::after{
+  content:'';position:absolute;top:5px;right:4px;width:5px;height:5px;border-radius:50%;background:var(--cl-glow);
+}
+.fmt-toggle{position:relative}
+
+/* The bar floats above the composer pill (which is itself floating over the
+   feed), so it must be OPAQUE. */
+.fmt-bar{
+  position:absolute;left:6px;bottom:calc(100% + 8px);z-index:40;
+  display:flex;align-items:center;flex-wrap:wrap;gap:2px;max-width:calc(100% - 12px);
+  padding:4px;border-radius:14px;
+  background:var(--cl-deep);border:1.5px solid var(--cl-border);
+  box-shadow:0 8px 28px rgba(0,0,0,.42);
+  animation:fmt-bar-in .16s ease-out;
+}
+@keyframes fmt-bar-in{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+.fmt-btn{
+  position:relative;display:inline-flex;align-items:center;justify-content:center;gap:4px;
+  min-width:30px;height:30px;padding:0 6px;border:0;border-radius:9px;background:none;cursor:pointer;
+  color:var(--cl-muted);font-family:var(--cl-font-body);font-size:13px;font-weight:800;
+  transition:color .12s ease,background-color .12s ease;
+}
+.fmt-btn:hover{color:var(--cl-text);background:rgba(255,255,255,.07)}
+.fmt-btn:focus-visible{outline:2px solid var(--cl-lume);outline-offset:-2px}
+.fmt-btn[aria-expanded="true"]{color:var(--cl-lume);background:var(--cl-lume-tint)}
+/* On at the caret (the WYSIWYG box reports it): bold is on, you are in a list… */
+.fmt-btn[aria-pressed="true"]{color:var(--cl-lume);background:var(--cl-lume-tint)}
+.fmt-btn-size{gap:3px}
+.fmt-size-glyph{display:inline-flex;align-items:baseline;font-family:var(--cl-font-display);font-weight:700;font-size:14px;line-height:1;margin-right:2px}
+.fmt-size-glyph small{font-size:10px;margin-right:1px}
+.fmt-btn-font{padding:0 8px 0 9px;font-weight:700}
+.fmt-sep{width:1px;height:18px;background:var(--cl-border);margin:0 3px;flex:none}
+
+.fmt-menu{
+  position:absolute;bottom:calc(100% + 6px);right:0;z-index:41;min-width:210px;
+  padding:5px;border-radius:13px;background:var(--cl-deep);border:1.5px solid var(--cl-border);
+  box-shadow:0 10px 30px rgba(0,0,0,.45);animation:fmt-bar-in .14s ease-out;
+}
+.fmt-menu-label{padding:5px 9px 4px;font-size:10.5px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:var(--cl-faint)}
+.fmt-menu-item{
+  display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;
+  padding:7px 9px;border:0;border-radius:9px;background:none;cursor:pointer;text-align:left;color:var(--cl-text);
+}
+.fmt-menu-item:hover,.fmt-menu-item:focus-visible{background:rgba(255,255,255,.07);outline:none}
+.fmt-menu-item[aria-checked="true"]{background:var(--cl-lume-tint)}
+.fmt-menu-name{font-size:15px;line-height:1.2}
+.fmt-menu-hint{display:block;font-family:var(--cl-font-body);font-size:11.5px;color:var(--cl-faint);margin-top:1px}
+.fmt-menu-check{color:var(--cl-lume);flex:none}
+
+/* "Paste as formatted text?" — sits where the big-paste chip does, above the pill. */
+.fmt-paste{
+  display:flex;align-items:center;gap:8px;flex-wrap:wrap;
+  margin:0 8px 6px;padding:6px 6px 6px 12px;border-radius:13px;
+  background:var(--cl-deep);border:1.5px solid rgba(37,224,200,.35);
+  box-shadow:0 4px 18px rgba(0,0,0,.3);font-size:12.5px;color:var(--cl-text);
+  animation:fmt-bar-in .16s ease-out;
+}
+.fmt-paste-ico{color:var(--cl-lume);flex:none}
+.fmt-paste-text{flex:1 1 auto;min-width:0;font-weight:700}
+.fmt-paste-text small{display:block;font-weight:600;font-size:11px;color:var(--cl-faint)}
+.fmt-paste-btn{
+  border:0;border-radius:9px;padding:6px 11px;cursor:pointer;font:inherit;font-weight:800;font-size:12px;
+  background:rgba(255,255,255,.06);color:var(--cl-muted);transition:background-color .12s ease,color .12s ease;
+}
+.fmt-paste-btn:hover{background:rgba(255,255,255,.1);color:var(--cl-text)}
+.fmt-paste-btn--go{background:var(--cl-lume);color:var(--cl-on-lume)}
+.fmt-paste-btn--go:hover{background:var(--cl-lume-hi);color:var(--cl-on-lume)}
+.fmt-paste-btn:focus-visible{outline:2px solid var(--cl-lume);outline-offset:1px}
+
+@media (prefers-reduced-motion:reduce){
+  .fmt-bar,.fmt-menu,.fmt-paste{animation:none}
+  .fmt-toggle-chev,.fmt-btn{transition:none}
+}

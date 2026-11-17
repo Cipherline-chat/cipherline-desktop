@@ -83,6 +83,9 @@ export const ACTION_DESCRIPTIONS: Record<string, string> = {
   'leave-call': 'Leave call',
   'quick-screenshare': 'Quick screen share',
   'lock-screen': 'Lock Cipherline',
+  // Hold keys: Activated = pressed, Deactivated = released (the only press/release the portal gives).
+  'push-to-talk': 'Push to talk (hold)',
+  'push-to-mute': 'Push to mute (hold)',
   'approve-annotation-request': 'Allow drawing request',
   'decline-annotation-request': 'Decline drawing request',
 };
@@ -277,6 +280,8 @@ export class WaylandGlobalShortcuts {
     private readonly onFired: (actionId: string) => void,
     private readonly appId: string = PORTAL_APP_ID,
     private readonly log: (m: string) => void = () => {},
+    /** The desktop reported the key RELEASED (portal `Deactivated`): hold keys only. */
+    private readonly onReleased: (actionId: string) => void = () => {},
   ) {}
 
   private token(prefix: string): string { return `${prefix}${process.pid}x${Date.now().toString(36)}${++this.tokenSeq}`; }
@@ -288,10 +293,11 @@ export class WaylandGlobalShortcuts {
     this.sender = (await bus.uniqueName()).replace(/^:/, '').replace(/\./g, '_');
     bus.addMatch(`type='signal',interface='${GS}'`);
     this.unsubscribe = bus.onMessage((m) => {
-      if (m.interface !== GS || m.member !== 'Activated') return;
+      if (m.interface !== GS || (m.member !== 'Activated' && m.member !== 'Deactivated')) return;
       const body = Array.isArray(m.body) ? m.body : [];
       if (body[0] !== this.session || typeof body[1] !== 'string') return;
-      if (this.active.has(body[1])) this.onFired(body[1]);
+      if (!this.active.has(body[1])) return;
+      if (m.member === 'Activated') this.onFired(body[1]); else this.onReleased(body[1]);
     });
     this.bus = bus;
     return bus;

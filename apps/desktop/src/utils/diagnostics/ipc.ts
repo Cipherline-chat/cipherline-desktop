@@ -4,7 +4,7 @@
  * the wire types in reportTypes.ts, and anything unexpected is dropped — the
  * same posture as screenShareDiagnostics.ts's parseMainDiagnostics.
  */
-import type { CrashInfo, SystemInfo } from './reportTypes';
+import type { CrashInfo, PerfRow, PreviousSession, SystemInfo } from './reportTypes';
 
 const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
 const num = (v: unknown, d = 0): number => (typeof v === 'number' && Number.isFinite(v) ? v : d);
@@ -157,7 +157,31 @@ export interface PendingCrashEntry {
      * bookkeeping only (like `seen`); not part of the report.
      */
     handled?: CrashHandled;
+    /** Unclean exits only: what the dead session was doing (main's record, re-validated here). */
+    previous_session?: PreviousSession;
     crash: CrashInfo;
+}
+
+const ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/;
+const ROW_SOURCES = ['main', 'renderer', 'event', 'metrics'] as const;
+const STATE_KEYS = ['in_call', 'sharing', 'camera_live', 'window_visible', 'window_focused'] as const;
+const ROW_ACTIVITY = /^[a-z0-9 _.:=%,/()+<>|-]{0,300}$/i;
+
+/** Narrow main's `previous_session` field by field; anything unexpected is dropped (the whole record if it is not even shaped right). */
+export function parsePreviousSession(v: unknown): PreviousSession | undefined {
+    if (!isObj(v)) return undefined;
+    if (typeof v.started_at !== 'string' || !ISO.test(v.started_at) || typeof v.last_written_at !== 'string' || !ISO.test(v.last_written_at)) return undefined;
+    if (typeof v.app_version !== 'string' || v.app_version.length > 64) return undefined;
+    const state: PreviousSession['state'] = {};
+    if (isObj(v.state)) for (const k of STATE_KEYS) if (typeof v.state[k] === 'boolean') state[k] = v.state[k] as boolean;
+    const rows: PerfRow[] = [];
+    for (const r of (Array.isArray(v.rows) ? v.rows : []).slice(-60)) {
+        if (!isObj(r) || typeof r.t_s !== 'number' || !Number.isFinite(r.t_s) || r.t_s > 0) continue;
+        if (!(ROW_SOURCES as readonly unknown[]).includes(r.source) || typeof r.ms !== 'number' || !Number.isFinite(r.ms) || r.ms < 0) continue;
+        if (typeof r.activity !== 'string' || !ROW_ACTIVITY.test(r.activity)) continue;
+        rows.push({ t_s: r.t_s, source: r.source as PerfRow['source'], ms: Math.round(r.ms), activity: r.activity });
+    }
+    return { started_at: v.started_at, last_written_at: v.last_written_at, app_version: v.app_version, state, rows };
 }
 
 export function parsePendingCrashesReply(v: unknown): PendingCrashEntry[] {
@@ -176,8 +200,10 @@ export function parsePendingCrashesReply(v: unknown): PendingCrashEntry[] {
         const m = str(c.message, 2000); if (m) crash.message = m;
         const st = str(c.stack, 16_000); if (st) crash.stack = st;
         const av = str(c.app_version_at_crash, 64); if (av) crash.app_version_at_crash = av;
+        const previous = crash.kind === 'unclean_exit' ? parsePreviousSession(item.previous_session) : undefined;
         out.push({
             signature: item.signature.slice(0, 600),
+            ...(previous ? { previous_session: previous } : {}),
             count: Math.max(1, Math.round(num(item.count, 1))),
             seen: item.seen === true,
             ...((CRASH_HANDLED as readonly unknown[]).includes(item.handled) ? { handled: item.handled as CrashHandled } : {}),

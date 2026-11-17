@@ -8,12 +8,18 @@ import { join } from 'node:path';
  * the real composer is driven in a browser by harness/emoji-shortcodes-shots.mjs).
  */
 const src = readFileSync(join(__dirname, 'ChatPane.tsx'), 'utf8');
-const typing = src.slice(src.indexOf('const handleInputTyping = '), src.indexOf('const insertEmojiSuggestion = '));
-const textarea = src.slice(src.indexOf('data-chat-input'), src.indexOf('{emojiSuggestions.length > 0 && inputRef.current && ('));
+const typing = src.slice(src.indexOf('const handleComposerChange = '), src.indexOf('const insertEmojiSuggestion = '));
+const textarea = src.slice(src.indexOf('<RichComposer\n'), src.indexOf('{emojiSuggestions.length > 0 && composerEl && ('));
 
 describe('composer shortcode wiring', () => {
     it('the change handler converts a typed closing colon before the autocomplete runs', () => {
-        expect(typing).toContain('convertTypedShortcode(val, cursor,');
+        // On the box's PLAIN text and caret (a formatting marker never hides the colon).
+        expect(typing).toContain('convertTypedShortcode(plain, cursor, inputRef.current)');
+        // Every menu trigger (`:` / `@` / `#`) reads the plain text before the caret — never
+        // the serialised message text, where `**` in front of an `@` / `#` would hide it —
+        // and nothing triggers inside code.
+        expect(typing).toContain("const before = inCode ? '' : plain.slice(0, cursor);");
+        expect(typing).not.toMatch(/val\.slice\(0, cursor\)/);
         expect(typing.indexOf('convertTypedShortcode(')).toBeLessThan(typing.indexOf('searchEmojiWithCustom('));
     });
 

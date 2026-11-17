@@ -81,6 +81,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { siteFromWindowTitles, type SiteKey } from './browser-site';
+import { swallowStreamErrors } from './stdio-guard';
 
 export type ListenSource =
     | 'spotify' | 'apple_music' | 'youtube_music' | 'tidal' | 'deezer' | 'amazon_music' | 'soundcloud' | 'browser' | 'other';
@@ -1408,6 +1409,17 @@ export class MediaSessionReader {
             if (this.buf.length > HELPER_LINE_MAX_CHARS) { this.buf = ''; dropping = true; }
         });
         c.stderr.on('data', () => { /* never logged: it can carry track titles */ });
+        // A write to a helper that already exited fails ASYNCHRONOUSLY with EPIPE (an 'error' on stdin,
+        // not a throw from write()), and an unhandled stream 'error' kills the main process. Treat it as
+        // "helper died": drop the child so the next read respawns it, and answer pending reads with null.
+        const helperGone = () => {
+            if (this.child === c) { this.child = null; this.arts.clear(); this.diags.clear(); }
+            for (const w of this.waiters.splice(0)) w(null);
+            try { c.kill(); } catch { /* gone */ }
+        };
+        swallowStreamErrors(c.stdin, helperGone);
+        swallowStreamErrors(c.stdout, helperGone);
+        swallowStreamErrors(c.stderr, helperGone);
         c.on('error', (e: NodeJS.ErrnoException) => {
             if (e?.code === 'ENOENT') this.unsupported = 'no_powershell';
             if (this.child === c) this.child = null;

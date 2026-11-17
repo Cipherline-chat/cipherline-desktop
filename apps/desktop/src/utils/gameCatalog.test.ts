@@ -47,6 +47,9 @@ describe('gameCatalog', () => {
 
     it('finds a game despite case, punctuation, trademark signs and spellings', () => {
         expect(lookupKnownGame('counter-strike 2')?.steamAppId).toBe(730);
+        // The detector (electron/game-detector.ts) appends "(FACEIT)" when the FACEIT client runs next to CS2; it is still CS2 on Steam.
+        expect(lookupKnownGame('Counter-Strike 2 (FACEIT)')?.steamAppId).toBe(730);
+        expect(lookupKnownGame('Counter-Strike 2 (FACEIT)')?.only).toBe('steam');
         expect(lookupKnownGame('HELLDIVERS™ 2')?.steamAppId).toBe(553850);
         expect(lookupKnownGame('Baldur’s Gate 3')?.steamAppId).toBe(1086940);
         expect(lookupKnownGame('PUBG: BATTLEGROUNDS')?.steamAppId).toBe(578080);

@@ -16,6 +16,9 @@ import {
     type ActiveNowCard, type ActiveNowMedia, type FriendActivityEntry, type FriendCall,
 } from '../utils/friendActivity';
 import type { FriendStatusEntry } from '../utils/userStatusModel';
+import { detailSummary, needsTick, partyLine, timeLine, type GameDetail } from '../utils/richPresence';
+import { useGameArt } from '../hooks/useGameArt';
+import { safeImageSrc } from '../utils/safeMediaUrl';
 import '../styles/friends-activity.css';
 
 /**
@@ -55,6 +58,9 @@ export interface FriendsActivityPanelProps {
     localCallSession: { voiceChannelId: string | null; huddleCallId: string | null } | null;
     onOpenProfile: (userId: string, anchor: { x: number; y: number }) => void;
     onJoinCall?: (call: FriendCall) => void;
+    /** Hide Join for a call the user may see but not connect to (UX mirror of
+     *  the server's CONNECT gate). Absent = always offer. */
+    canJoinCall?: (call: FriendCall) => boolean;
     now: number;
 }
 
@@ -91,6 +97,29 @@ const MediaArt: React.FC<{ media: ActiveNowMedia }> = ({ media }) => (
 
 const sourceName = (s: string): string | null => SOURCE_LABEL[s as ActivitySource] ?? null;
 
+/** The game's picture from OUR game art (hooks/useGameArt.ts — never the app's own
+ *  Rich Presence image keys / URLs), else the controller. */
+const GameArtBox: React.FC<{ name: string; token: string | null }> = ({ name, token }) => {
+    const g = useGameArt(name, { isSelf: false, token });
+    const src = safeImageSrc(g.art ?? null);
+    return src
+        ? <span className="fa-art fa-art--cover" data-kind="game"><img src={src} alt="" draggable={false} /></span>
+        : <span className="fa-art" data-kind="game"><GameControllerIcon size={22} /></span>;
+};
+
+/** "Party 2 of 5 · 12:34 elapsed", ticking once a second while shown. */
+const RichMeta: React.FC<{ d: GameDetail }> = ({ d }) => {
+    const [now, setNow] = useState(() => Date.now());
+    const tick = needsTick(d);
+    React.useEffect(() => {
+        if (!tick) return;
+        const t = window.setInterval(() => setNow(Date.now()), 1000);
+        return () => window.clearInterval(t);
+    }, [tick]);
+    const text = [partyLine(d), timeLine(d, now)].filter(Boolean).join(' \u00b7 ');
+    return text ? <span className="fa-card-detail fa-card-meta" data-testid="fa-rich-meta">{text}</span> : null;
+};
+
 /** Someone playing / listening / watching: the art (cover, or the kind's glyph) with
  *  their avatar tucked on its corner, then name · kind, the title and a detail line. */
 const SoloCard: React.FC<{
@@ -99,12 +128,14 @@ const SoloCard: React.FC<{
     token: string | null;
     onOpenProfile: FriendsActivityPanelProps['onOpenProfile'];
     index: number;
-}> = ({ card, friend, token, onOpenProfile, index }) => {
+    /** The game's Rich Presence detail lines, when the friend shares them. */
+    rich?: GameDetail | null;
+}> = ({ card, friend, token, onOpenProfile, index, rich = null }) => {
     const { game, media } = card;
     const kind: 'game' | 'listening' | 'watching' = game ? 'game' : media!.kind;
     const kindLabel = kind === 'game' ? 'Playing' : kind === 'watching' ? 'Watching' : 'Listening to';
     const title = game ?? media!.track;
-    const detail = kind === 'game' ? null : [media!.artist, kind === 'listening' ? sourceName(media!.source) : null].filter(Boolean).join(' · ');
+    const detail = kind === 'game' ? detailSummary(rich) : [media!.artist, kind === 'listening' ? sourceName(media!.source) : null].filter(Boolean).join(' · ');
     // Playing AND listening: the music as a small second line.
     const also = game && media
         ? { icon: <ActivitySourceIcon kind={media.kind} source={media.source} size={11} />, text: `${media.kind === 'watching' ? 'Watching' : 'Listening to'} ${media.track}` }
@@ -115,7 +146,7 @@ const SoloCard: React.FC<{
             <button type="button" className="fa-card-btn" aria-label={label} onClick={e => onOpenProfile(friend.user_id, anchorOf(e))}>
                 <span className="fa-artwrap">
                     {kind === 'game'
-                        ? <span className="fa-art" data-kind="game"><GameControllerIcon size={22} /></span>
+                        ? <GameArtBox name={game!} token={token} />
                         : <MediaArt media={media!} />}
                     <span className="fa-art-av"><Avatar friend={friend} token={token} size={22} /></span>
                 </span>
@@ -126,6 +157,7 @@ const SoloCard: React.FC<{
                     </span>
                     <span className="fa-card-title" title={title}>{title}</span>
                     {detail && <span className="fa-card-detail" title={detail}>{detail}</span>}
+                    {kind === 'game' && rich && <RichMeta d={rich} />}
                     {also && <span className="fa-card-also">{also.icon}<span>{also.text}</span></span>}
                 </span>
             </button>
@@ -141,8 +173,9 @@ const CallCard: React.FC<{
     token: string | null;
     onOpenProfile: FriendsActivityPanelProps['onOpenProfile'];
     onJoinCall?: (call: FriendCall) => void;
+    canJoin?: boolean;
     index: number;
-}> = ({ call, members, token, onOpenProfile, onJoinCall, index }) => {
+}> = ({ call, members, token, onOpenProfile, onJoinCall, canJoin = true, index }) => {
     const others = call.participantIds.length - members.length - (call.mine ? 1 : 0);
     const names = members.map(m => m.username);
     const who = names.length === 1 ? names[0] : names.length === 2 ? `${names[0]} & ${names[1]}` : `${names[0]}, ${names[1]} +${names.length - 2}`;
@@ -173,7 +206,7 @@ const CallCard: React.FC<{
                 <span className="fa-card-with" title={`${names.join(', ')}${extra}`}>{who}{extra && <span className="fa-faint">{extra}</span>}</span>
                 {call.mine
                     ? <span className="fa-here">You&apos;re here</span>
-                    : onJoinCall && (
+                    : onJoinCall && canJoin && (
                         <button type="button" className="fa-join" onClick={() => onJoinCall(call)} aria-label={`Join ${call.channelName} in ${call.serverName}`}>
                             Join
                         </button>
@@ -244,7 +277,7 @@ const Skeleton: React.FC = () => (
 
 export const FriendsActivityPanel: React.FC<FriendsActivityPanelProps> = ({
     token, friends, blockedIds, loading, friendStatuses, presence, entries,
-    voiceParticipants, huddleCalls, channels, servers, localCallSession, onOpenProfile, onJoinCall, now,
+    voiceParticipants, huddleCalls, channels, servers, localCallSession, onOpenProfile, onJoinCall, canJoinCall, now,
 }) => {
     const [expanded, setExpanded] = useState(false);
     const byId = useMemo(() => new Map(friends.map(f => [f.user_id, f])), [friends]);
@@ -314,12 +347,12 @@ export const FriendsActivityPanel: React.FC<FriendsActivityPanelProps> = ({
                             <CallCard
                                 key={`${g.call.kind}:${g.call.id}`} call={g.call}
                                 members={g.userIds.map(id => byId.get(id)).filter((f): f is ActivityFriend => !!f)}
-                                token={token} onOpenProfile={onOpenProfile} onJoinCall={onJoinCall} index={i}
+                                token={token} onOpenProfile={onOpenProfile} onJoinCall={onJoinCall} canJoin={canJoinCall ? canJoinCall(g.call) : true} index={i}
                             />
                         ))}
                         {groups.solo.map((c, i) => {
                             const f = byId.get(c.userId);
-                            return f ? <SoloCard key={c.userId} card={c} friend={f} token={token} onOpenProfile={onOpenProfile} index={groups.calls.length + i} /> : null;
+                            return f ? <SoloCard key={c.userId} card={c} friend={f} token={token} onOpenProfile={onOpenProfile} index={groups.calls.length + i} rich={c.game && !friendStatuses[c.userId]?.on_mobile ? friendStatuses[c.userId]?.current_game_detail ?? null : null} /> : null;
                         })}
                     </ul>
                 )}

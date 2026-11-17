@@ -20,11 +20,12 @@
  * The worker is created on first use and terminated after IDLE_MS without
  * work, so an idle app holds no extra thread.
  */
-import { encryptBlobCore, decryptBlobCore } from './attachmentCryptoCore';
+import { encryptBlobCore, decryptBlobCore, sha256BlobB64Core } from './attachmentCryptoCore';
 
 const IDLE_MS = 30_000;
 
-type Pending = { resolve: (v: { blob: Blob; ivB64?: string }) => void; reject: (e: unknown) => void };
+type Result = { blob: Blob; ivB64?: string; sha256B64?: string };
+type Pending = { resolve: (v: Result) => void; reject: (e: unknown) => void };
 
 let worker: Worker | null = null;
 let broken = false;
@@ -58,11 +59,11 @@ async function getWorker(): Promise<Worker> {
         if (worker) return worker; // a concurrent caller won the race
         const w = new Ctor();
         w.onmessage = (e: MessageEvent) => {
-            const m = e.data as { id: number; ok: boolean; blob?: Blob; ivB64?: string; name?: string; message?: string };
+            const m = e.data as { id: number; ok: boolean; blob?: Blob; ivB64?: string; sha256B64?: string; name?: string; message?: string };
             const p = pending.get(m.id);
             if (!p) return;
             pending.delete(m.id);
-            if (m.ok && m.blob) p.resolve({ blob: m.blob, ivB64: m.ivB64 });
+            if (m.ok && (m.blob || m.sha256B64)) p.resolve({ blob: m.blob as Blob, ivB64: m.ivB64, sha256B64: m.sha256B64 });
             else p.reject(new DOMException(m.message ?? 'Attachment crypto failed', m.name ?? 'OperationError'));
         };
         w.onerror = (e) => {
@@ -81,10 +82,10 @@ async function getWorker(): Promise<Worker> {
     }
 }
 
-async function viaWorker(msg: Record<string, unknown>): Promise<{ blob: Blob; ivB64?: string }> {
+async function viaWorker(msg: Record<string, unknown>): Promise<Result> {
     const w = await getWorker();
     const id = ++seq;
-    const result = new Promise<{ blob: Blob; ivB64?: string }>((resolve, reject) => pending.set(id, { resolve, reject }));
+    const result = new Promise<Result>((resolve, reject) => pending.set(id, { resolve, reject }));
     try {
         w.postMessage({ id, ...msg });
     } catch (err) {
@@ -112,6 +113,16 @@ export async function decryptBlobOffThread(encryptedBlob: Blob, key: CryptoKey, 
     } catch (err) {
         if (!(err instanceof WorkerUnavailable)) throw err;
         return decryptBlobCore(encryptedBlob, key, ivB64, type);
+    }
+}
+
+/** SHA-256 (base64) of a Blob computed off the UI thread; in-thread fallback. */
+export async function sha256BlobOffThread(blob: Blob): Promise<string> {
+    try {
+        return (await viaWorker({ op: 'sha256', blob })).sha256B64!;
+    } catch (err) {
+        if (!(err instanceof WorkerUnavailable)) throw err;
+        return sha256BlobB64Core(blob);
     }
 }
 

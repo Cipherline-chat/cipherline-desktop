@@ -129,7 +129,21 @@ function topOutboundVideo(entries: Map<string, StatsEntry>): StatsEntry | undefi
     return top;
 }
 
-interface AudioSnap { at: number; bytes: number; lost: number; recv: number; jbDelay?: number; jbEmitted?: number }
+interface AudioSnap { at: number; bytes: number; lost: number; recv: number; jbDelay?: number; jbEmitted?: number; samples?: number; concealed?: number; accel?: number; decel?: number }
+
+/**
+ * Share (%) of the samples received in the last interval that the decoder had to make up (packet-loss concealment,
+ * "concealed"), speed up away ("accel": the jitter buffer draining a backlog) or stretch ("decel": it ran dry and
+ * stretched audio). A robotic / bubbling voice with loss 0 and a quiet jitter number is invisible without these:
+ * they are what the listener actually HEARD of the network (2026-11-16: reports c03022d3 / a663d053 had only loss and
+ * jitter, which could not tell "the network" from "the sender's own processing"). undefined when not measurable.
+ */
+export function audioConcealPct(prev: { samples?: number } | undefined, samples: number | undefined, delta: number | undefined, prevDelta: number | undefined): number | undefined {
+    if (prev?.samples === undefined || samples === undefined || delta === undefined || prevDelta === undefined) return undefined;
+    const total = samples - prev.samples;
+    if (!(total > 0) || delta < prevDelta) return undefined;
+    return Math.min(100, ((delta - prevDelta) / total) * 100);
+}
 
 /**
  * Average audio jitter-buffer delay over the last interval, ms: the delta of
@@ -307,7 +321,11 @@ export class WebrtcRing {
                 const prev = this.prevAudio.get(t.ref);
                 const jbDelay = num(rtp?.jitterBufferDelay);
                 const jbEmitted = num(rtp?.jitterBufferEmittedCount);
-                this.prevAudio.set(t.ref, { at, bytes, lost, recv, jbDelay, jbEmitted });
+                const samples = num(rtp?.totalSamplesReceived);
+                const concealed = num(rtp?.concealedSamples);
+                const accel = num(rtp?.removedSamplesForAcceleration);
+                const decel = num(rtp?.insertedSamplesForDeceleration);
+                this.prevAudio.set(t.ref, { at, bytes, lost, recv, jbDelay, jbEmitted, samples, concealed, accel, decel });
                 const jb = jitterBufferMs(prev, jbDelay, jbEmitted);
                 const dt = prev ? (at - prev.at) / 1000 : 0;
                 const dl = prev ? Math.max(0, lost - prev.lost) : 0;
@@ -323,6 +341,9 @@ export class WebrtcRing {
                     packets_lost_pct: prev && dl + dr > 0 ? r1((dl / (dl + dr)) * 100) : undefined,
                     jitter_ms: num(rtp?.jitter) !== undefined ? r1(num(rtp?.jitter)! * 1000) : undefined,
                     jb_ms: jb !== undefined ? r0(jb) : undefined,
+                    concealed_pct: r1(audioConcealPct(prev, samples, concealed, prev?.concealed)),
+                    accel_pct: r1(audioConcealPct(prev, samples, accel, prev?.accel)),
+                    decel_pct: r1(audioConcealPct(prev, samples, decel, prev?.decel)),
                 }));
             }
         }

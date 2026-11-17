@@ -1,4 +1,5 @@
 import type React from 'react';
+import type { GameDetail } from '../../utils/richPresence';
 
 /**
  * The shapes the profile surfaces draw for integrations (Steam, Spotify,
@@ -45,6 +46,12 @@ export interface ProfileActivity {
      * reporter's device attaches it: utils/integrations/coverReport.ts).
      */
     report?: (() => void) | null;
+    /**
+     * A game's Rich Presence detail lines (round, score, party, elapsed /
+     * remaining time) — utils/richPresence.ts. Plain text; drawn under the
+     * title, the time ticking live.
+     */
+    rich?: GameDetail | null;
 }
 
 /** A connected account, drawn as a card on the Integrations tab. */

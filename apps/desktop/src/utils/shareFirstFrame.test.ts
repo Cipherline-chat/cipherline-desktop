@@ -303,6 +303,38 @@ describe('publishScreenShareSettled', () => {
         expect(f.raw.publishTrack).not.toHaveBeenCalled();
     });
 
+    it('a transient NotReadableError is retried when asked (quality change after a teardown), renewing the grant first', async () => {
+        vi.useFakeTimers();
+        const cap = fakeCapture();
+        const { el } = fakeElement(cap);
+        const f = fakeParticipant(cap);
+        f.raw.createScreenTracks.mockRejectedValueOnce(Object.assign(new Error('busy'), { name: 'NotReadableError' }));
+        const beforeRetry = vi.fn(async () => {});
+        const onRetry = vi.fn();
+        const p = publishScreenShareSettled(f.lp, {}, {}, {
+            waitOptions: { createElement: () => el, makeStream: () => ({}) },
+            retryDelaysMs: [10], beforeRetry, onRetry,
+        });
+        const done = p.catch(e => e);
+        await vi.advanceTimersByTimeAsync(20);
+        cap.arrive();
+        cap.raw.getSettings = () => ({ ...BOX });
+        await vi.advanceTimersByTimeAsync(60);
+        await done;
+        expect(f.raw.createScreenTracks).toHaveBeenCalledTimes(2);
+        expect(beforeRetry).toHaveBeenCalledTimes(1);
+        expect(onRetry).toHaveBeenCalledWith(1, expect.objectContaining({ name: 'NotReadableError' }));
+        expect(f.raw.publishTrack).toHaveBeenCalled();
+    });
+
+    it('without retryDelaysMs a NotReadableError still fails at once (a plain start)', async () => {
+        const cap = fakeCapture();
+        const f = fakeParticipant(cap);
+        f.raw.createScreenTracks.mockRejectedValueOnce(Object.assign(new Error('busy'), { name: 'NotReadableError' }));
+        await expect(publishScreenShareSettled(f.lp, {}, {})).rejects.toMatchObject({ name: 'NotReadableError' });
+        expect(f.raw.createScreenTracks).toHaveBeenCalledTimes(1);
+    });
+
     it('an existing screen-share publication keeps the stock behaviour (nothing new is captured)', async () => {
         const cap = fakeCapture();
         const f = fakeParticipant(cap, { existingPub: true });

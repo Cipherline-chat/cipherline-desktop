@@ -251,3 +251,27 @@ describe('launch-time unlocks are never silent', () => {
         expect(got.sort()).toEqual(['msgs-10', 'profile-custom', 'verify-1']);
     });
 });
+
+describe('tracker: high fives', () => {
+    it('unlocks Fin Five at 10, Flipper Slap at 100 and Starfish at 1,000, and nothing earlier', () => {
+        const h = harness();
+        for (let i = 0; i < 9; i++) h.t.noteHighFive();
+        expect(h.unlocks).not.toContain('fives-10');
+        h.t.noteHighFive();
+        expect(h.unlocks).toEqual(['fives-10']);
+        for (let i = 0; i < 89; i++) h.t.noteHighFive();
+        expect(h.unlocks).toEqual(['fives-10']);
+        h.t.noteHighFive();
+        expect(h.unlocks).toEqual(['fives-10', 'fives-100']);
+        for (let i = 0; i < 899; i++) h.t.noteHighFive();
+        expect(h.unlocks).not.toContain('fives-1000');
+        h.t.noteHighFive();
+        expect(h.unlocks).toEqual(['fives-10', 'fives-100', 'fives-1000']);
+        expect(h.t.totals().highFives).toBe(1000);
+    });
+    it('a single high five unlocks nothing (there is no tier at 1)', () => {
+        const h = harness();
+        h.t.noteHighFive();
+        expect(h.unlocks).toEqual([]);
+    });
+});

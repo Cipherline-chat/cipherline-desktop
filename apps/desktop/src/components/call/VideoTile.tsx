@@ -3,6 +3,7 @@ import React from 'react';
 import ReactDOM from 'react-dom';
 import { useIsSpeaking, useConnectionState } from '@livekit/components-react';
 import { Track, RemoteTrackPublication, VideoQuality, Participant, ParticipantEvent } from 'livekit-client';
+import { usePttUiState, selfMicShownMuted } from '../../utils/pushToTalk';
 import { shouldShowMuteBadge, type CallConnectionState } from '../../utils/muteBadge';
 import { useParticipantTrackState } from './useParticipantTrackState';
 import { MicOff, Headphones, Monitor, MonitorOff, VideoOff } from 'lucide-react';
@@ -43,6 +44,7 @@ import { speakingShadow } from '../../utils/callPersonalizationStyle';
 import { shouldPlayShareAudio } from '../../utils/screenShareAudioWatch';
 import { useShareHoldFrame } from '../../hooks/useShareHold';
 import { ShareHoldPicture, ShareHoldNote } from './ShareHoldPlaceholder';
+import { useCameraSwapHold } from '../../hooks/useCameraSwapHold';
 import { ShareFallbackNoteFor } from './ShareFallbackNote';
 // vtMeta is derived inline from useParticipantMetadata (the reactive source)
 // so we don't need the string-input parser here.
@@ -327,6 +329,10 @@ export function useIsMicMuted(p: Participant): boolean {
             p.off(ParticipantEvent.LocalTrackUnpublished, refresh);
         };
     }, [p, compute]);
+    // YOUR OWN mic in push-to-talk: waiting for the key is not "muted" (no red badge on your own tile or
+    // row); only a deliberate Mute is. Everyone else's badge is their track, as before.
+    const pttUi = usePttUiState();
+    if (p.isLocal) return selfMicShownMuted(pttUi, !muted);
     return muted;
 }
 
@@ -707,13 +713,36 @@ export const VideoTile = ({
     // Without capturing, videoRef.current is null when the effect cleans up (React nullifies
     // refs before cleanup runs), and track.detach(null) falls through to the no-argument form
     // which detaches from ALL elements, blanking every other tile showing the same track.
+    // A remote camera keeps its last picture across a track swap (utils/cameraSwapHold.ts):
+    // detach blanks the element, so the frame is taken in the cleanup, just before.
+    const tileKeyRef = React.useRef('');
+    const tileKey = `${p.identity}:${String(source)}`;
+    React.useLayoutEffect(() => { tileKeyRef.current = tileKey; }, [tileKey]);
+    const camHold = useCameraSwapHold({
+        enabled: !isLocal && !isScreenShare,
+        participant: p, source,
+        videoRef, wrapperRef,
+        liveTrack: p.getTrackPublication(source)?.track ?? null,
+        trackName: (() => { const sid = p.getTrackPublication(source)?.trackSid; return sid ? trackPlaceholder(sid, 'remote-video') : null; })(),
+    });
+    const captureCameraHold = camHold.capture;
     React.useEffect(() => {
         const trackPub = p.getTrackPublication(source);
         const track = trackPub?.track;
         const el = videoRef.current;
         if (!track || !el) return;
+        const attachedKey = tileKey;
         track.attach(el);
-        return () => { track.detach(el); };
+        return () => {
+            // A swap only: a replacement for this participant + source must already be there
+            // (and not muted). Muted / unpublished with no replacement = the camera is OFF.
+            const cur = p.getTrackPublication(source);
+            captureCameraHold(el, tileKeyRef.current === attachedKey, {
+                muted: !!cur?.isMuted || !!trackPub?.isMuted,
+                replacementKnown: !!cur && !cur.isMuted && !!cur.track && cur.track !== track,
+            });
+            track.detach(el);
+        };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- the live track publication is deliberately evaluated in the dependency list so the effect re-attaches when the track is (un)published or replaced
     }, [p, source, p.getTrackPublication(source)?.track]);
 
@@ -986,7 +1015,7 @@ export const VideoTile = ({
     // takes the last frame and keeps it up, in the place and at the size the
     // picture had, until the new track paints.
     const hold = useShareHoldFrame({ identity: isScreenShare ? p.identity : undefined, videoRef, wrapperRef, liveTrack });
-    const heldFrame = hold.placeholder ? hold.frame : null;
+    const heldFrame = hold.placeholder ? hold.frame : camHold.frame;
     // A hold starting or ending changes what the picture is without the <video>
     // telling anyone, so tell them: the zoom clip, the annotation layout and the
     // focused banner's fit all listen for this, and nothing else needs wiring.
@@ -1376,7 +1405,7 @@ export const VideoTile = ({
                 // element rides inside the zoom/pan transform. See fitClipPath.
                 style={!usesZoomPan && fitClipPath ? { clipPath: fitClipPath } : undefined}
             />
-            {heldFrame && <ShareHoldPicture frame={heldFrame} clipPath={fitClipPath} />}
+            {heldFrame && <ShareHoldPicture frame={heldFrame} clipPath={fitClipPath} subtle={!hold.placeholder} />}
             <AnnotationOverlay
                 videoRef={videoRef}
                 trackKey={annotKey}

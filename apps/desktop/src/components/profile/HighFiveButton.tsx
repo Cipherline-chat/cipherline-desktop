@@ -3,6 +3,7 @@ import axios from 'axios';
 import { Hand } from 'lucide-react';
 import { apiUrl } from '../../utils/apiPath';
 import { highFiveAgainLabel, highFiveResultOf } from '../../utils/profileExtras';
+import { noteAchievementHighFive } from '../../utils/achievements/tracker';
 import { invalidateProfile } from '../../utils/profileCache';
 import '../../styles/profile-card.css';
 
@@ -75,6 +76,7 @@ export const HighFiveButton: React.FC<{
             const res = await axios.post(apiUrl`/users/${userId}/high-five`, {}, { headers: { Authorization: `Bearer ${token}` }, timeout: 15000 });
             if (highFiveResultOf(res.status) === 'sent') {
                 sentThisSession.set(userId, { until: Date.now() + DAY_MS, known: true });
+                noteAchievementHighFive(); // achievements: a local count only; a 429 'already' below never counts
                 bump((n) => n + 1); setBumped(shown + 1); setBurst(Date.now()); invalidateProfile(userId);
             }
         } catch (e) {

@@ -2,6 +2,7 @@
  * The achievements tracker: the ONE place local events become progress.
  *
  *   noteMessage(serverId)   ChatPane: the server accepted a message of yours
+ *   noteHighFive()          HighFiveButton: the server accepted a high five (a count only, never who)
  *   noteVerified(peerId)    keyVerification.markVerified: a safety number was verified
  *   signalCall(...)         Dashboard (via useAchievementSignals): call/voice state
  *   signalGame(name)        Dashboard: the detected game
@@ -17,7 +18,7 @@
  */
 import { satisfied, ACHIEVEMENT_IDS } from './catalog';
 import {
-    addCallTime, addGameTime, addMessage, addVerified, computeTotals, dayKey, emptyState, mergeState, monthKey,
+    addCallTime, addGameTime, addHighFive, addMessage, addVerified, computeTotals, dayKey, emptyState, mergeState, monthKey,
     notePeople, parseState, sameState, setMostPlayedPref, unlockIds, type AchievementsState, type Totals,
 } from './state';
 import { addPlay, parseBuckets, topGames, type PlayedGame, type WeeklyBuckets } from './mostPlayed';
@@ -143,6 +144,9 @@ export function createTracker(env: TrackerEnv) {
         noteMessage(serverId: string | null) {
             commit(addMessage(state, env.deviceId, serverId, dayKey(new Date(env.now()))));
         },
+        noteHighFive() {
+            commit(addHighFive(state, env.deviceId));
+        },
         noteVerified(peerId: string) {
             const next = addVerified(state, peerId);
             if (next !== state) commit(next);
@@ -219,6 +223,9 @@ export const getTracker = (): AchievementsTracker | null => active;
 
 export function noteAchievementMessage(serverId: string | null): void {
     try { active?.noteMessage(serverId); } catch { /* cosmetic */ }
+}
+export function noteAchievementHighFive(): void {
+    try { active?.noteHighFive(); } catch { /* cosmetic */ }
 }
 export function noteAchievementVerified(peerId: string): void {
     try { active?.noteVerified(peerId); } catch { /* cosmetic */ }

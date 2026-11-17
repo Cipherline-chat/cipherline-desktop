@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
+import type { WireGameDetail } from '../utils/richPresence';
 import { presenceBus, type WirePresence } from '../utils/presenceState';
 import { HIGH_FIVE_EVENT } from '../utils/profileMoments';
 import { parseReferralRedeemed, referralRedeemedBus } from '../utils/referralEvents';
@@ -313,6 +314,16 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
         const ws = wsRef.current;
         if (ws && ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ event: 'presence:game', data: { game } }));
+        }
+    }, []);
+    /** `presence:game_detail` — the Rich Presence detail lines of the game
+     *  last sent over `presence:game` (null = none). Only while the user
+     *  shares game details; coalesced by utils/gameActivityReporter.ts. An
+     *  older server has no handler and ignores it. */
+    const sendPresenceGameDetail = useCallback((detail: WireGameDetail | null) => {
+        const ws = wsRef.current;
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ event: 'presence:game_detail', data: { detail } }));
         }
     }, []);
     /** Continuity — self-read sync (see isSelfReadEvent above). Append-only
@@ -1679,6 +1690,7 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
         statusChangedEvent,
         sendPresenceIdle,
         sendPresenceGame,
+        sendPresenceGameDetail,
         callEndedEvent,
         soloKickEvent,
         answeredElsewhereEvent,

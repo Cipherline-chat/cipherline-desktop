@@ -7,6 +7,7 @@
  */
 import React from 'react';
 import { RailScrollbar } from './RailScrollbar';
+import { RailPingArrows } from './RailPingArrows';
 import { useRailMembrane } from './useRailMembrane';
 import type { RestBox } from './railMembrane';
 
@@ -27,7 +28,11 @@ export const RailTrack: React.FC<{
     /** Receives the scrolling element (the track itself when `scroll`). */
     scrollRef?: React.MutableRefObject<HTMLDivElement | null>;
     onScroll?: () => void;
-}> = ({ activeIndex, children, scroll, scrollRef, onScroll }) => {
+    /** `scroll` tracks only: `data-rail-id`s of the tiles showing a red badge
+     *  (railOffscreenPings.pingedRailKeys). Any scrolled out of the box raise
+     *  the edge arrows (RailPingArrows). */
+    pingKeys?: readonly string[];
+}> = ({ activeIndex, children, scroll, scrollRef, onScroll, pingKeys }) => {
     const track = React.useRef<HTMLDivElement | null>(null);
     const setTrack = React.useCallback((el: HTMLDivElement | null) => {
         track.current = el;
@@ -144,6 +149,9 @@ export const RailTrack: React.FC<{
         <div className="cl-rail-box">
             {trackEl}
             <RailScrollbar target={track} />
+            {/* Siblings of the track (never children: the pill above is
+                measured from the track's children by index). */}
+            {pingKeys && <RailPingArrows target={track} pingKeys={pingKeys} />}
         </div>
     );
 };

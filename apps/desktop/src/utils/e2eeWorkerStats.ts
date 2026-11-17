@@ -6,7 +6,7 @@
  * Counts only — no identities, no content.
  */
 import { logCallEvent } from './callEventLog';
-import { ANNEXB_STATS_KIND, type AnnexBStats } from './e2eeAnnexB';
+import { ANNEXB_STATS_KIND, IDR_PPS_STATS_KIND, type AnnexBStats } from './e2eeAnnexB';
 import { audioLagStatsFromMessage } from './e2eeAudioLag';
 
 const n = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
@@ -20,9 +20,18 @@ export function annexBStatsFromMessage(data: unknown): AnnexBStats | null {
     };
 }
 
+/** H.264 IDR pps-id retry counts (e2eeIdrPpsRetry.ts), or null. */
+export function idrPpsStatsFromMessage(data: unknown): { checked: number; retried: number; extra: number; gaveUp: number; notEncrypted: number; timeouts: number } | null {
+    const d = (data as { kind?: string; data?: Record<string, unknown> } | null);
+    if (!d || d.kind !== IDR_PPS_STATS_KIND || !d.data) return null;
+    return { checked: n(d.data.checked), retried: n(d.data.retried), extra: n(d.data.extraAttempts), gaveUp: n(d.data.gaveUp), notEncrypted: n(d.data.notEncrypted), timeouts: n(d.data.timeouts) };
+}
+
 /** Listen on the call's E2EE worker. Uses addEventListener: LiveKit owns `onmessage`. */
 export function attachAnnexBStatsLog(worker: Pick<Worker, 'addEventListener'>): void {
     worker.addEventListener('message', (ev: MessageEvent) => {
+        const p = idrPpsStatsFromMessage(ev.data);
+        if (p) { logCallEvent('e2ee_idr_pps', { checked: p.checked, retried: p.retried, extra: p.extra, gave_up: p.gaveUp, not_encrypted: p.notEncrypted, timeouts: p.timeouts }); return; }
         const s = annexBStatsFromMessage(ev.data);
         if (!s) return;
         logCallEvent('e2ee_annexb', {

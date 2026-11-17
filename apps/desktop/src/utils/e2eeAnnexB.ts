@@ -64,6 +64,7 @@
  * instead of queued, video passes untouched.
  */
 import { createAudioLagStage, AUDIO_LAG_STATS_KIND, type AudioLagStats } from './e2eeAudioLag';
+import { createIdrPpsRetry, type PpsRetryStats } from './e2eeIdrPpsRetry';
 
 export type E2EEVideoCodec = 'vp8' | 'h264' | 'vp9' | 'av1' | 'h265';
 
@@ -169,6 +170,10 @@ export interface AnnexBStats {
 
 export const ANNEXB_STATS_KIND = 'cl:annexb-stats';
 export const ANNEXB_STATS_EVERY_MS = 10_000;
+/** Worker -> page: H.264 IDR pps-id retry counts (e2eeIdrPpsRetry.ts). */
+export const IDR_PPS_STATS_KIND = 'cl:idr-pps-stats';
+/** Page -> worker, once at worker start: `{ kind, data: { enabled: boolean } }`. Absent / malformed = enabled (default on). Consumed here, never forwarded to LiveKit. */
+export const IDR_PPS_CONFIG_KIND = 'cl:idr-pps-config';
 
 /**
  * Is this an H.26x frame? Mirrors how LiveKit's cryptor decides
@@ -210,18 +215,29 @@ interface WorkerScopeLike {
  * packets and everything else go to LiveKit untouched. Returns false (and
  * changes nothing) when there is no LiveKit handler to wrap.
  */
-export function installAnnexBCanonicalizer(scope: WorkerScopeLike, now: () => number = () => Date.now()): boolean {
+export function installAnnexBCanonicalizer(
+    scope: WorkerScopeLike,
+    now: () => number = () => Date.now(),
+    opts: { /** H.264 IDR pps-id retry (e2eeIdrPpsRetry.ts); default on. */ idrPpsRetry?: boolean } = {},
+): boolean {
     const inner = scope.onmessage;
     if (typeof inner !== 'function') return false;
     let rtpMap: ReadonlyMap<number, string> = new Map();
     const pinned = new Map<string, string>();
     const stats: AnnexBStats = { frames: 0, rewritten: 0, shortStartCode: 0, leadingData: 0, keyRewritten: 0, deltaRewritten: 0 };
+    const ppsStats: PpsRetryStats = { checked: 0, retried: 0, extraAttempts: 0, gaveUp: 0, notEncrypted: 0, timeouts: 0 };
+    // Runtime switch (page setting, sent once at worker start). `opts.idrPpsRetry === false` is the compile-time override.
+    let retryEnabled = true;
     let lastReport = now();
     let reported = false;
     const report = () => {
         const t = now();
         if (t - lastReport < ANNEXB_STATS_EVERY_MS) return;
         lastReport = t;
+        if (ppsStats.checked > 0) {
+            try { scope.postMessage({ kind: IDR_PPS_STATS_KIND, data: { ...ppsStats } }); } catch { /* page gone */ }
+            ppsStats.checked = ppsStats.retried = ppsStats.extraAttempts = ppsStats.gaveUp = ppsStats.notEncrypted = ppsStats.timeouts = 0;
+        }
         if (stats.frames === 0 || (reported && stats.rewritten === 0)) return;
         reported = true;
         try { scope.postMessage({ kind: ANNEXB_STATS_KIND, data: { ...stats } }); } catch { /* page gone */ }
@@ -235,6 +251,10 @@ export function installAnnexBCanonicalizer(scope: WorkerScopeLike, now: () => nu
     scope.onmessage = function (this: unknown, ev: MessageEvent) {
         const msg = ev?.data as { kind?: string; data?: Record<string, unknown> } | undefined;
         try {
+            if (msg?.kind === IDR_PPS_CONFIG_KIND) {
+                retryEnabled = msg.data?.enabled !== false;
+                return; // ours: LiveKit's handler never sees it
+            }
             if (msg?.kind === 'setRTPMap' && msg.data?.map instanceof Map) {
                 rtpMap = msg.data.map as Map<number, string>;
             } else if (msg?.kind === 'updateCodec' && typeof msg.data?.trackId === 'string' && typeof msg.data?.codec === 'string') {
@@ -259,12 +279,31 @@ export function installAnnexBCanonicalizer(scope: WorkerScopeLike, now: () => nu
                         controller.enqueue(frame);
                     },
                 });
+                // H.264 IDR keyframes: re-encrypt until a libwebrtc receiver can read the
+                // pps id (e2eeIdrPpsRetry.ts). Needs the cryptor's output sink too.
+                const retry = opts.idrPpsRetry !== false && retryEnabled && msg.data.writableStream instanceof WritableStream
+                    ? createIdrPpsRetry<EncodedFrameLike>({
+                        codecOf: (f) => {
+                            const pt = f.getMetadata?.().payloadType;
+                            return (pt !== undefined ? rtpMap.get(pt) : undefined) ?? pinned.get(trackId) ?? codecArg;
+                        },
+                        stats: ppsStats,
+                    })
+                    : null;
                 // Audio-lag cap FIRST, so it sees how long the frame waited
                 // before anything in this worker touched it (e2eeAudioLag.ts).
-                const readableStream = (msg.data.readableStream as ReadableStream<EncodedFrameLike>)
+                let upstream = (msg.data.readableStream as ReadableStream<EncodedFrameLike>)
                     .pipeThrough(createAudioLagStage<EncodedFrameLike>('send', postLag, now))
                     .pipeThrough(canonical);
-                ev = { data: { ...msg, data: { ...msg.data, readableStream } } } as MessageEvent;
+                let writableStream = msg.data.writableStream;
+                if (retry) {
+                    try {
+                        writableStream = retry.wrapSink(msg.data.writableStream as WritableStream<EncodedFrameLike>);
+                        upstream = upstream.pipeThrough(retry.hold);
+                    } catch { /* keep LiveKit's own sink: no retry */ }
+                }
+                const readableStream = upstream;
+                ev = { data: { ...msg, data: { ...msg.data, readableStream, writableStream } } } as MessageEvent;
             } else if (msg?.kind === 'decode' && msg.data?.readableStream instanceof ReadableStream) {
                 // Incoming: only the audio-lag cap (video and the cryptor untouched).
                 const readableStream = (msg.data.readableStream as ReadableStream<EncodedFrameLike>)

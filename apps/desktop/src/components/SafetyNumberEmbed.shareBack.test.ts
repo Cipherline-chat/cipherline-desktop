@@ -34,6 +34,7 @@ vi.mock('../utils/keyVerification', () => ({
 }));
 
 const LABEL = 'Share mine back';
+const AGAIN = 'Send mine again';
 let SafetyNumberEmbed: React.FC<Record<string, unknown>>;
 let code: string;
 let computeContactCode: typeof import('../utils/verificationCode').computeContactCode;
@@ -115,13 +116,14 @@ describe('sends only on an explicit click', () => {
 });
 
 describe('the states of the button', () => {
-    it('sent: the button goes, a quiet line replaces it', async () => {
+    it('sent: a quiet line appears and the button becomes "Send mine again"', async () => {
         render({ onShareBack: async () => 'sent' });
         await settle();
         expect(button(LABEL)).toBeTruthy();
         click(LABEL);
         await settle();
         expect(button(LABEL)).toBeUndefined();
+        expect(button(AGAIN)).toBeTruthy();
         expect(host.querySelector('.cl-sn-shared')?.textContent).toContain('You shared yours, so Alice can check it too');
         // A plain line, not a result row: it must not read as a verdict on the keys.
         expect(host.querySelector('.cl-sn-shared')?.closest('.cl-sn-result')).toBeNull();
@@ -134,6 +136,22 @@ describe('the states of the button', () => {
         expect(button(LABEL)).toBeUndefined();
         expect(host.querySelector('.cl-sn-shared')).not.toBeNull();
         expect(text()).not.toContain('then share yours');
+    });
+
+    // Owner, 2026-11-16: having shared long ago must not lock you out of
+    // sending your code to them again.
+    it('an already-settled card can still send your code again, once per click', async () => {
+        const send = vi.fn(async () => 'sent' as const);
+        render({ onShareBack: send, alreadySharedBack: true });
+        await settle();
+        expect(send).not.toHaveBeenCalled();
+        click(AGAIN);
+        await settle();
+        expect(send).toHaveBeenCalledTimes(1);
+        click(AGAIN);
+        await settle();
+        expect(send).toHaveBeenCalledTimes(2);
+        expect(host.querySelector('.cl-sn-shared')).not.toBeNull();
     });
 
     it('failed: says so and the same button retries', async () => {

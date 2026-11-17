@@ -25,6 +25,7 @@
 
 import secureLocalStore from '../../utils/secureLocalStore';
 import { BACKUP_RESTORED_EVENT } from '../../services/backupRegistry';
+import { RAIL_LAYOUT_CHANGED_EVENT } from '../../services/serverRailSyncService';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
     EMPTY_LAYOUT, addServerToFolder, applyRailDrop, createFolder, flattenServerIds, forgetServer,
@@ -125,6 +126,13 @@ export function useServerRailLayout(userId: string | null | undefined, currentId
         try {
             secureLocalStore.setItem(`cipherline_server_rail_layout_${userId}`, serializeRailLayout(saved));
             secureLocalStore.setItem(`cipherline_server_rail_order_${userId}`, JSON.stringify(flattenServerIds(saved)));
+            // Stamp the change time the own-device sync's last-write-wins runs
+            // on (services/serverRailSyncService.ts), then tell it. This effect
+            // only runs for a USER change (dirtyRef): adopting a remote layout
+            // or restoring a backup goes through reread() and never lands here,
+            // so a synced-in layout cannot echo back out.
+            secureLocalStore.setItem(`cipherline_server_rail_sync_ts_${userId}`, String(Date.now()));
+            window.dispatchEvent(new CustomEvent(RAIL_LAYOUT_CHANGED_EVENT, { detail: { userId } }));
         } catch { /* quota — non-fatal */ }
     }, [saved, userId]);
 

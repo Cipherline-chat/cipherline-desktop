@@ -6,6 +6,7 @@ import { DialogForm, DialogField, DialogStack, DialogNote, DialogSteps } from '.
 import { BusyLabel } from '../dialog/BusyLabel';
 import { IMAGE_ACCEPT_ATTR, validateImageUpload } from '../../utils/imageUploadValidation';
 import { ChannelIconRenderer } from './ChannelIconPicker';
+import { TemplateImportGuide } from './TemplateImportGuide';
 import { AVATAR_OUTPUT } from '../../utils/imageCrop';
 import {
     buildPreviewTree,
@@ -123,7 +124,9 @@ export const DiscordTemplateImport: React.FC<DiscordTemplateImportProps> = ({
                     subtitle="Channels, roles and permissions, ready to go"
                 />
                 <DialogForm onSubmit={() => { void submitLink(); }}>
-                    <DialogBody>
+                    {/* The body scrolls between the fixed header and footer:
+                        the "How to import" guide is taller than a small window. */}
+                    <DialogBody className="dlg-body--scroll">
                         <DialogStack>
                             <DialogField
                                 label="Discord template link"
@@ -149,6 +152,7 @@ export const DiscordTemplateImport: React.FC<DiscordTemplateImportProps> = ({
                                 We build the channels, categories, roles and permissions for you. Cipherline fetches the
                                 template itself, so your device never connects to Discord. Messages are never part of a template.
                             </DialogNote>
+                            <TemplateImportGuide />
                             {fetching && (
                                 <div className="flex flex-col gap-2" aria-hidden="true">
                                     <div className="dlg-skel" style={{ height: 16, width: 192 }} />

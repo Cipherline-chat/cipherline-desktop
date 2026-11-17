@@ -10,6 +10,10 @@ export interface CustomGameEntry {
 
 export interface GameSettings {
     showGameActivity: boolean;
+    /** Under showGameActivity: also share the Rich Presence detail lines a
+     *  game announces (round, score, party, time). Off = the game name only.
+     *  Default on. Your own detail still shows on this device either way. */
+    shareGameDetails: boolean;
     customGames: CustomGameEntry[];
     ignoredProcesses: string[];
 }
@@ -22,6 +26,7 @@ export const gameSettingsKey = (userId: string) => `cipherline_game_settings_${u
 
 const DEFAULTS: GameSettings = {
     showGameActivity: true,
+    shareGameDetails: true,
     customGames: [],
     ignoredProcesses: [],
 };
@@ -81,6 +86,11 @@ export function useGameSettings(userId?: string | null) {
         setSettings(prev => ({ ...prev, showGameActivity: v }));
     }, []);
 
+    const setShareGameDetails = useCallback((v: boolean) => {
+        dirtyRef.current = true;
+        setSettings(prev => ({ ...prev, shareGameDetails: v }));
+    }, []);
+
     const addCustomGame = useCallback((processName: string, displayName: string) => {
         dirtyRef.current = true;
         setSettings(prev => {
@@ -125,6 +135,7 @@ export function useGameSettings(userId?: string | null) {
     return useMemo(() => ({
         settings,
         setShowGameActivity,
+        setShareGameDetails,
         addCustomGame,
         removeCustomGame,
         addIgnoredProcess,
@@ -132,6 +143,7 @@ export function useGameSettings(userId?: string | null) {
     }), [
         settings,
         setShowGameActivity,
+        setShareGameDetails,
         addCustomGame,
         removeCustomGame,
         addIgnoredProcess,

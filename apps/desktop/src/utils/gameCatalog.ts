@@ -64,7 +64,7 @@ const g = (name: string, o: Omit<KnownGame, 'name'> = {}): KnownGame => ({ name,
  */
 export const KNOWN_GAMES: readonly KnownGame[] = [
     // Valve: sold on Steam only.
-    g('Counter-Strike 2', { steamAppId: 730, only: 'steam' }),
+    g('Counter-Strike 2', { steamAppId: 730, only: 'steam', names: ['Counter-Strike 2 (FACEIT)'] }), // the detector appends "(FACEIT)" when the FACEIT client runs alongside
     g('Dota 2', { steamAppId: 570, only: 'steam' }),
     g('Team Fortress 2', { steamAppId: 440, only: 'steam' }),
     g('Left 4 Dead 2', { steamAppId: 550, only: 'steam' }),

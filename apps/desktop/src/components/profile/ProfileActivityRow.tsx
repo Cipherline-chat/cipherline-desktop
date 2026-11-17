@@ -9,6 +9,7 @@ import { ActivitySourceIcon } from '../integrations/PlatformLogo';
 import { useContextMenu } from '../../hooks/useContextMenu';
 import { MenuHost } from '../primitives/MenuHost';
 import type { ProfileActivity } from './integrationTypes';
+import { detailSummary, needsTick, partyLine, timeLine, type GameDetail } from '../../utils/richPresence';
 
 /**
  * "Playing / Listening to / Watching / Streaming" - what someone is doing now.
@@ -65,6 +66,51 @@ const Progress: React.FC<{ p: NonNullable<ProfileActivity['progress']> }> = ({ p
     );
 };
 
+/** Re-render once a second while mounted (only used where a clock is shown). */
+function useNow(active: boolean): number {
+    const [now, setNow] = useState(() => Date.now());
+    useEffect(() => {
+        if (!active) return;
+        const t = window.setInterval(() => setNow(Date.now()), 1000);
+        return () => window.clearInterval(t);
+    }, [active]);
+    return now;
+}
+
+/**
+ * A game's Rich Presence lines under its title (full profile): "Ranked • Round 3",
+ * "Score 2 – 1", "Party 2 of 5 · 12:34 elapsed". Plain text from the player's
+ * game (validated in main, at the bridge and by the API); the clock ticks live.
+ */
+export const RichLines: React.FC<{ d: GameDetail }> = ({ d }) => {
+    const now = useNow(needsTick(d));
+    const party = partyLine(d);
+    const time = timeLine(d, now);
+    const meta = [party, time].filter(Boolean).join(' \u00b7 ');
+    return (
+        <span className="pfa-rich" data-testid="profile-activity-rich">
+            {d.details && <span className="pfa-detail">{d.details}</span>}
+            {d.state && <span className="pfa-detail">{d.state}</span>}
+            {meta && <span className="pfa-meta">{meta}</span>}
+        </span>
+    );
+};
+
+/** Compact rows: "Party 2 of 5 · 12:34 elapsed" under the one-liner, ticking; nothing when neither exists. */
+const CompactMeta: React.FC<{ d: GameDetail }> = ({ d }) => {
+    const now = useNow(needsTick(d));
+    const meta = [partyLine(d), timeLine(d, now)].filter(Boolean).join(' \u00b7 ');
+    return meta ? <span className="pfa-meta" data-testid="profile-activity-rich-meta">{meta}</span> : null;
+};
+const hasMeta = (d: GameDetail | null | undefined): d is GameDetail => !!d && (d.partyMax !== null || d.start !== null || d.end !== null);
+
+/** Wraps the one-liner and its meta line in a column only when there IS a meta line (no layout change otherwise). */
+const StackIf: React.FC<{ on: boolean; children: React.ReactNode }> = ({ on, children }) =>
+    on ? <span className="pfa-stack">{children}</span> : <>{children}</>;
+
+/** The compact one-liner's detail: the Rich Presence summary when there is one. */
+const lineDetail = (a: ProfileActivity): string | null => (a.rich ? detailSummary(a.rich) : null) ?? a.detail ?? null;
+
 /**
  * A friend's end-to-end encrypted cover can be reported (the server cannot see
  * it, so the reporter's device attaches it). Reporting lives on the row's
@@ -110,7 +156,8 @@ export interface OpenProfile { onOpen: () => void; label: string }
  */
 const OpenableRow: React.FC<{ a: ProfileActivity; open: OpenProfile }> = ({ a, open }) => {
     const art = safeImageSrc(a.art ?? null);
-    const text = `${KIND_LABEL[a.kind]} ${a.title}${a.detail ? ` \u00b7 ${a.detail}` : ''}`;
+    const detail = lineDetail(a);
+    const text = `${KIND_LABEL[a.kind]} ${a.title}${detail ? ` \u00b7 ${detail}` : ''}`;
     const url = a.url;
     const linkLabel = a.linkLabel ?? `Open ${a.title} in your browser`;
     const follow = (e: React.SyntheticEvent) => {
@@ -124,16 +171,19 @@ const OpenableRow: React.FC<{ a: ProfileActivity; open: OpenProfile }> = ({ a, o
             <span className="pfa-art" data-kind={a.kind} data-source={a.source} data-shape={art ? a.artShape ?? undefined : undefined}>
                 {art ? <img key={art} src={art} alt="" draggable={false} /> : <SourceIcon a={a} size={14} />}
             </span>
-            <span className="pfa-line">
-                {KIND_LABEL[a.kind]}{' '}
-                {url ? (
-                    <span className="pfa-link" role="link" tabIndex={0} aria-label={linkLabel} title={linkLabel} onClick={follow}
-                        onKeyDown={(e) => { if (e.key === 'Enter') follow(e); }}>
-                        <b>{a.title}</b>
-                    </span>
-                ) : <b>{a.title}</b>}
-                {a.detail && <span className="pfa-detail"> · {a.detail}</span>}
-            </span>
+            <StackIf on={hasMeta(a.rich)}>
+                <span className="pfa-line">
+                    {KIND_LABEL[a.kind]}{' '}
+                    {url ? (
+                        <span className="pfa-link" role="link" tabIndex={0} aria-label={linkLabel} title={linkLabel} onClick={follow}
+                            onKeyDown={(e) => { if (e.key === 'Enter') follow(e); }}>
+                            <b>{a.title}</b>
+                        </span>
+                    ) : <b>{a.title}</b>}
+                    {detail && <span className="pfa-detail"> · {detail}</span>}
+                </span>
+                {hasMeta(a.rich) && <CompactMeta d={a.rich} />}
+            </StackIf>
             {url && <ExternalLink className="pfa-ext" size={12} aria-hidden="true" data-testid="profile-activity-ext" />}
         </div>
     );
@@ -141,8 +191,9 @@ const OpenableRow: React.FC<{ a: ProfileActivity; open: OpenProfile }> = ({ a, o
 
 const RowBody: React.FC<{ a: ProfileActivity; full: boolean }> = ({ a, full }) => {
     const art = safeImageSrc(a.art ?? null);
+    const oneLine = lineDetail(a);
     // The whole text, for when it is cut short with an ellipsis (long video titles).
-    const text = `${KIND_LABEL[a.kind]} ${a.title}${a.detail ? ` \u00b7 ${a.detail}` : ''}`;
+    const text = `${KIND_LABEL[a.kind]} ${a.title}${oneLine ? ` \u00b7 ${oneLine}` : ''}`;
     const body = (
         <>
             <span className="pfa-art" data-kind={a.kind} data-source={a.source} data-shape={art ? a.artShape ?? undefined : undefined}>
@@ -153,14 +204,17 @@ const RowBody: React.FC<{ a: ProfileActivity; full: boolean }> = ({ a, full }) =
                 <span className="pfa-txt">
                     <span className="pfa-kind">{KIND_LABEL[a.kind]}</span>
                     <b className="pfa-title">{a.title}</b>
-                    {a.detail && <span className="pfa-detail">{a.detail}</span>}
+                    {a.rich ? <RichLines d={a.rich} /> : a.detail && <span className="pfa-detail">{a.detail}</span>}
                     {a.progress && <Progress p={a.progress} />}
                 </span>
             ) : (
                 // One line: "Listening to <b>Song</b> · Artist".
-                <span className="pfa-line">
-                    {KIND_LABEL[a.kind]} <b>{a.title}</b>{a.detail && <span className="pfa-detail"> · {a.detail}</span>}
-                </span>
+                <StackIf on={hasMeta(a.rich)}>
+                    <span className="pfa-line">
+                        {KIND_LABEL[a.kind]} <b>{a.title}</b>{oneLine && <span className="pfa-detail"> · {oneLine}</span>}
+                    </span>
+                    {hasMeta(a.rich) && <CompactMeta d={a.rich} />}
+                </StackIf>
             )}
         </>
     );

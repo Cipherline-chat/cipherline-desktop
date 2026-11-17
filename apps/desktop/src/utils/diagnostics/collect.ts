@@ -16,7 +16,7 @@ import { getScreenShareCodecPref, getStreamStatsHudEnabled } from '../streamDiag
 import { getScreenShareSession } from '../screenShareDiagnostics';
 import { parseStartupFlagsState } from '../startupFlags';
 import { readKeybindsSnapshot, unboundGlobalActions } from '../../hooks/useKeybinds';
-import { buildDiagnosticReport, type BuiltReport, type PerfLogInput, type SettingsSnapshot } from './bundle';
+import { buildDiagnosticReport, sanitizeSuppressedUnclean, type BuiltReport, type PerfLogInput, type SettingsSnapshot } from './bundle';
 import { buildSettingsSnapshot, type NotificationPrefsLike, type VoiceSettingsLike } from './settingsSnapshot';
 import { collectSensitiveTerms } from './sensitiveTerms';
 import { getRecentErrors, type CapturedError } from './recentErrors';
@@ -25,7 +25,7 @@ import { readCallEvents, readPinnedCallEvents, type CallEventInput } from './cal
 import { startShareSnapshot, type ShareSnapshotHandle } from '../shareSnapshot';
 import { avSyncSnapshotEvents, sampleAvSyncNow } from '../avSyncMonitor';
 import { addUnboundShortcuts, parsePendingCrashesReply, parseSystemInfoReply, type PendingCrashEntry } from './ipc';
-import type { CrashInfo, DiagnosticCategory, DiagnosticTrigger, SystemInfo, WebrtcSummary } from './reportTypes';
+import type { CrashInfo, DiagnosticCategory, DiagnosticTrigger, PreviousSession, SystemInfo, WebrtcSummary } from './reportTypes';
 
 export interface LiveContext {
     user: { username?: string | null; email?: string | null } | null;
@@ -53,6 +53,8 @@ export interface PreparedInputs {
      */
     shareSnapshot?: ShareSnapshotHandle;
     pendingCrashes: PendingCrashEntry[];
+    /** Unclean exits main did not offer (counts, last 14 days); null/absent when none. */
+    suppressedUnclean?: Record<string, number> | null;
     recentErrors: CapturedError[];
     sensitiveTerms: string[];
 }
@@ -89,7 +91,7 @@ export async function prepareReportInputs(ctx: LiveContext): Promise<PreparedInp
     const api = typeof window !== 'undefined' ? window.electronAPI : undefined;
     // Started first so its ~10 s window overlaps the IPC below and the user's typing.
     const snapshot = startShareSnapshot();
-    const [sysRaw, crashesRaw, perf, devices, flags, avSync] = await Promise.all([
+    const [sysRaw, crashesRaw, perf, devices, flags, avSync, suppressedRaw] = await Promise.all([
         api?.diagGetSystemInfo?.().catch(() => null) ?? Promise.resolve(null),
         api?.diagGetPendingCrashes?.().catch(() => null) ?? Promise.resolve(null),
         fetchFreezeLog().catch(() => []),
@@ -99,6 +101,7 @@ export async function prepareReportInputs(ctx: LiveContext): Promise<PreparedInp
         // the IPC above; bounded). Carried as `av_sync_estimate` call events —
         // no wire-schema change. Identity-free (per-call placeholders).
         sampleAvSyncNow().catch(() => []),
+        api?.diagGetSuppressedUnclean?.().catch(() => null) ?? Promise.resolve(null),
     ]);
     const now = Date.now();
     const parsed = parseSystemInfoReply(sysRaw, APP_VERSION, BUILD_COMMIT);
@@ -135,6 +138,7 @@ export async function prepareReportInputs(ctx: LiveContext): Promise<PreparedInp
         pinnedCallEvents: readPinnedCallEvents(),
         ...(snapshot ? { shareSnapshot: snapshot } : {}),
         pendingCrashes: parsePendingCrashesReply(crashesRaw),
+        suppressedUnclean: sanitizeSuppressedUnclean(suppressedRaw),
         recentErrors: getRecentErrors(),
         sensitiveTerms,
     };
@@ -146,6 +150,8 @@ export function buildFromPrepared(p: PreparedInputs, o: {
     description?: string;
     replyEmail?: string;
     crash?: CrashInfo | null;
+    /** The pending-crash entry's `previous_session` (unclean exits only). */
+    previousSession?: PreviousSession | null;
 }): BuiltReport {
     const snapEvents = p.shareSnapshot?.events() ?? [];
     return buildDiagnosticReport({
@@ -166,6 +172,8 @@ export function buildFromPrepared(p: PreparedInputs, o: {
         pinnedCallEvents: p.pinnedCallEvents,
         snapshotCallEvents: snapEvents,
         crash: o.crash ?? null,
+        previousSession: o.previousSession ?? null,
+        suppressedUnclean: p.suppressedUnclean ?? null,
         recentErrors: p.recentErrors,
         scrub: { sensitiveTerms: p.sensitiveTerms, homeDir: p.homeDir },
     });

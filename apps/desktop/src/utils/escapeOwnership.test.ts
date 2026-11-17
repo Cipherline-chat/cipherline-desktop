@@ -38,7 +38,7 @@ const ALLOWLIST: Record<string, string> = {
         + 'combo — see that file\'s comments for why the decision has to live '
         + 'in one place',
 
-    'components/VoiceVideoSettings.tsx':
+    'components/PttKeybind.tsx':
         'same shape as KeybindSettings\'s recorder: the PTT combo-capture '
         + "window listener skips Escape (`if (e.key === 'Escape') return;`) and "
         + 'defers to its own useEscape layer, which always cancels (Escape is '

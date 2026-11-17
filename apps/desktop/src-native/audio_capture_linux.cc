@@ -1368,6 +1368,8 @@ void RegisterWindowGeometry(napi_env env, napi_value exports);
 void RegisterSharePower(napi_env env, napi_value exports);
 // hdr_capture.cc — tone-mapped Desktop Duplication of an HDR display (no-ops off Windows).
 void RegisterHdrCapture(napi_env env, napi_value exports);
+// key_state.cc: system-wide key-held watcher (X11 poll) for push-to-talk / push-to-mute.
+void RegisterKeyState(napi_env env, napi_value exports);
 
 static napi_value Init(napi_env env, napi_value exports) {
     napi_value fn;
@@ -1390,6 +1392,7 @@ static napi_value Init(napi_env env, napi_value exports) {
     RegisterWindowGeometry(env, exports);
     RegisterSharePower(env, exports);
     RegisterHdrCapture(env, exports);
+    RegisterKeyState(env, exports);
     return exports;
 }
 

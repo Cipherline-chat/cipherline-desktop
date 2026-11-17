@@ -1,4 +1,5 @@
 import { useEffect, useMemo } from 'react';
+import type { GameDetail } from '../utils/richPresence';
 import { useArt } from './useIntegrations';
 import { useSteamCardEntry } from './useProfileRelations';
 import { steamNowPlayingTrusted } from '../utils/integrations/ownGameEnd';
@@ -48,6 +49,8 @@ export interface IntegrationActivity {
     glyph?: GameGlyph | null;
     /** Report the picture shown (a friend's end-to-end encrypted cover only). */
     report?: (() => void) | null;
+    /** Rich Presence detail lines of a game (round, score, party, time). */
+    rich?: GameDetail | null;
 }
 
 export interface IntegrationActivityInput {
@@ -56,6 +59,8 @@ export interface IntegrationActivityInput {
     /** The verified Steam id the profile carries (null = none / hidden). */
     steamId: string | null;
     liveGame: string | null;
+    /** The live game's Rich Presence detail lines (utils/richPresence.ts). */
+    liveGameDetail?: GameDetail | null;
     /** Your own profile: your own game's executable icon is available (main read it on this computer). */
     isSelf?: boolean;
     /** Published presence; nothing shows for someone offline. */
@@ -64,7 +69,7 @@ export interface IntegrationActivityInput {
     username?: string | null;
 }
 
-export function useIntegrationActivity({ userId, token, steamId, liveGame, isSelf = false, offline, username }: IntegrationActivityInput): IntegrationActivity[] {
+export function useIntegrationActivity({ userId, token, steamId, liveGame, liveGameDetail = null, isSelf = false, offline, username }: IntegrationActivityInput): IntegrationActivity[] {
     // Steam's now-playing expires 90 s after its fetch and is re-read every minute while this stays open
     // (hooks/useProfileRelations.ts); on YOUR profile it also waits out a game this app saw end.
     const { card: steam, at: steamAt } = useSteamCardEntry(steamId ? userId : null, token);
@@ -89,6 +94,7 @@ export function useIntegrationActivity({ userId, token, steamId, liveGame, isSel
             out.push({
                 kind: 'playing', title: liveGame, source: 'game', art: game.art, artShape: game.artShape,
                 detail: game.detail, url: game.url, linkLabel: game.linkLabel, glyph: game.glyph,
+                rich: liveGameDetail,
             });
         } else if (steamNow) {
             out.push({
@@ -118,5 +124,5 @@ export function useIntegrationActivity({ userId, token, steamId, liveGame, isSel
             });
         }
         return out;
-    }, [offline, liveGame, game, steamNow, steamArt, steamRec, heard, friendArt, sealed, openReport, username, userId]);
+    }, [offline, liveGame, liveGameDetail, game, steamNow, steamArt, steamRec, heard, friendArt, sealed, openReport, username, userId]);
 }

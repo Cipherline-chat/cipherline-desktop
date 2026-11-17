@@ -82,7 +82,7 @@ function fakeProfiles(): { api: AudioDeviceProfilesApi; updates: unknown[][]; fo
 function fakeVoice(overrides: Partial<VoiceSettings> = {}, deviceProfiles: AudioDeviceProfilesApi = fakeProfiles().api) {
     const calls: Record<string, unknown[][]> = {};
     const settings = { ...DEFAULT_VOICE_SETTINGS, ...overrides };
-    const voice = new Proxy({ settings, deviceProfiles } as Record<string, unknown>, {
+    const voice = new Proxy({ settings, deviceProfiles, echoAuto: { auto: true, outputKind: 'unknown', outputKindSource: 'none' } } as Record<string, unknown>, {
         get(t, prop: string) {
             if (prop in t) return t[prop];
             // every setter / reset: record the call
@@ -195,11 +195,12 @@ describe('Voice & Video: explanations live behind the "i"', () => {
         expect(host.textContent).not.toContain('Evens out how loud each person sounds');
     });
 
-    it('Echo cancellation says "speakers only" on the page AND in its "i"', async () => {
+    it('Echo cancellation says "speakers only" in its "i" and shows what Auto resolved to on the page', async () => {
         await renderPane();
         const NOTE = 'Only recommended when using speakers — leave it off with headphones.';
         const row = Array.from(host.querySelectorAll('.vv-row')).find(r => r.querySelector('b')?.textContent === 'Echo cancellation')!;
-        expect(row.querySelector('.vv-rnote')!.textContent).toBe(NOTE);
+        // never chosen -> Auto; no output facts in a test DOM -> unknown -> treated as speakers
+        expect(row.querySelector('.vv-rnote')!.textContent).toBe('Auto (on — output type unknown)');
         const b = row.querySelector('button[aria-label="About Echo cancellation"]') as HTMLButtonElement;
         act(() => { b.click(); });
         const tip = document.getElementById(b.getAttribute('aria-describedby')!)!;

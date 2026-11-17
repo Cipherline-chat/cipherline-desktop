@@ -141,3 +141,35 @@ describe('shouldAdvanceChannelCursor', () => {
         expect(shouldAdvanceChannelCursor({ ...base, ...patch })).toBe(false);
     });
 });
+
+import { channelsToMarkReadOnServer } from './channelReadSync';
+import { readFileSync } from 'fs';
+import { resolve } from 'path';
+
+describe('channelsToMarkReadOnServer', () => {
+    it('reports only channels with an unread or mention count, once each', () => {
+        expect(channelsToMarkReadOnServer(['a', 'b', 'c', 'a', 'd'], { a: 2, b: 0 }, { c: 1 })).toEqual(['a', 'c']);
+    });
+    it('nothing to clear → no requests', () => {
+        expect(channelsToMarkReadOnServer(['a', 'b'], {}, {})).toEqual([]);
+    });
+});
+
+// Owner, 2026-11-16: right-click "Mark as Read" came back after a reload,
+// because every channel-side menu only cleared local counts and never moved
+// the server cursor the counts are rebuilt from.
+describe('every channel "Mark as Read" advances the server cursor', () => {
+    const src = readFileSync(resolve(__dirname, '../components/Dashboard.tsx'), 'utf8');
+    it('markChannelsReadNow posts the cursor for each channel it clears', () => {
+        expect(src).toMatch(/const markChannelsReadNow = \(ids: readonly string\[\]\) => \{[\s\S]{0,400}?channelsToMarkReadOnServer\([\s\S]{0,300}?markChannelReadOnServerRef\.current\(id\)/);
+    });
+    it('server rail, folder and channel list all use it', () => {
+        expect(src).toContain('onSelect: () => markChannelsReadNow(srvChannelIds),');
+        expect(src).toMatch(/label: 'Mark folder as read',\s*onSelect: \(\) => markChannelsReadNow\(/);
+        expect(src).toContain('onMarkChannelRead={(cid) => markChannelsReadNow([cid])}');
+    });
+    it('no channel menu clears counts locally without the server', () => {
+        expect(src).not.toMatch(/onMarkChannelRead=\{\(cid\) => \{\s*setChannelUnreadCounts/);
+        expect(src).not.toMatch(/label: 'Mark (as Read|folder as read)',[\s\S]{0,400}?setChannelUnreadCounts\(clear/);
+    });
+});

@@ -56,10 +56,10 @@ describe('ProWelcome — the celebration layer', () => {
         expect(playSound.mock.calls[0][0]).toBe('celebration');
     });
 
-    it('lists only what Pro actually adds (video, screen share, the upload cap, storage)', () => {
+    it('lists only what Pro actually adds (video, screen share, the upload cap, storage, the custom #number)', () => {
         mount();
         const titles = Array.from(document.querySelectorAll('.pcel-perk-t')).map(e => e.textContent);
-        expect(titles).toEqual(['HD video', 'Screen share', '2 GB uploads', 'More storage']);
+        expect(titles).toEqual(['HD video', 'Screen share', '2 GB uploads', 'More storage', 'Custom #0001 tags']);
         expect(document.querySelector('.pcel-perks')!.textContent).toContain('Up from 100 MB');
     });
 

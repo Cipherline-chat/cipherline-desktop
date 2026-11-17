@@ -38,6 +38,7 @@ type Call = [string, string, unknown?];
 let calls: Call[] = [];
 let channelOverrides: Record<string, unknown[]> = {};
 let failOverridePatch = false;
+let failPost = false;
 let myPerms = '';
 
 const roles = [
@@ -71,6 +72,7 @@ vi.mock('axios', () => ({
         post: vi.fn(async (url: string, body: Record<string, unknown>) => {
             const p = path(url);
             calls.push(['POST', p, body]);
+            if (failPost) throw { response: { status: 500, data: { message: 'boom' } } };
             const id = `new-${calls.length}`;
             return { data: { channel_id: id, server_id: 's1', position: 1000, topic: null, icon_emoji: null, icon_name: null, active_call_session_id: null, member_limit: null, max_calls: null, parent_category_id: null, ...body } };
         }),
@@ -100,6 +102,7 @@ beforeEach(() => {
     calls = [];
     channelOverrides = {};
     failOverridePatch = false;
+    failPost = false;
     myPerms = s((1n << 30n) - 1n);
     host = document.createElement('div');
     document.body.appendChild(host);
@@ -237,6 +240,46 @@ describe('create', () => {
         await flush(40);
         expect(patches().map(c => (c[2] as { target_id: string }).target_id).sort()).toEqual([MOD, HELPER].sort());
         expect(h.onSaved).toHaveBeenCalledTimes(1);
+    });
+});
+
+describe('names: emoji and punctuation (shared display-name rule)', () => {
+    const alert = () => document.querySelector('#channel-name-error');
+    const createBtn = () => [...document.querySelectorAll('button')].find(b => b.textContent?.trim() === 'Create') as HTMLButtonElement | undefined;
+
+    it('keeps emoji, "!" and "?" as typed and sends them trimmed, with no inline error', async () => {
+        await mount({ defaultKind: 'text' });
+        await typeName('  \u{1F3AE} game night!? (EU) \u{1F468}\u200D\u{1F469}\u200D\u{1F467}  ');
+        expect(nameInput().value).toBe('  \u{1F3AE} game night!? (EU) \u{1F468}\u200D\u{1F469}\u200D\u{1F467}  ');
+        expect(alert()).toBeNull();
+        await press(nameInput(), 'Enter');
+        await flush(20);
+        expect(posts()).toHaveLength(1);
+        expect(posts()[0][2]).toEqual({ name: '\u{1F3AE} game night!? (EU) \u{1F468}\u200D\u{1F469}\u200D\u{1F467}', kind: 'text' });
+    });
+
+    it('a rejected character is NOT silently deleted: it stays, an inline error says why, and nothing is sent', async () => {
+        await mount({ defaultKind: 'text' });
+        await typeName('abc\u202Edef');
+        expect(nameInput().value).toBe('abc\u202Edef');
+        expect(alert()?.textContent).toMatch(/direction-control/);
+        expect(nameInput().getAttribute('aria-invalid')).toBe('true');
+        expect(createBtn()?.disabled).toBe(true);
+        await press(nameInput(), 'Enter');
+        await flush(20);
+        expect(posts()).toHaveLength(0);
+        // Fixing it clears the error and re-enables Create (control).
+        await typeName('abcdef');
+        expect(alert()).toBeNull();
+        expect(createBtn()?.disabled).toBe(false);
+    });
+
+    it('over-length is counted in characters, not UTF-16 units: 50 emoji fit, 51 do not', async () => {
+        await mount({ defaultKind: 'text' });
+        await typeName('\u{1F525}'.repeat(50));
+        expect(alert()).toBeNull();
+        await typeName('\u{1F525}'.repeat(51));
+        expect(alert()?.textContent).toMatch(/50 characters/);
     });
 });
 
@@ -577,5 +620,109 @@ describe('Call behavior: "End call when the starter leaves" (Calls channels)', (
             root.render(React.createElement(CallBehaviorSection, { value: false, onChange: () => {}, disabled: true }));
         });
         expect(sw().disabled).toBe(true);
+    });
+});
+
+describe('navigate into the new channel (optimistic create)', () => {
+    const makeOptimism = () => ({
+        addPending: vi.fn(), settle: vi.fn(), dropPending: vi.fn(), patch: vi.fn(), committed: vi.fn(), fail: vi.fn(),
+    });
+    const optimismProps = (extra: Record<string, unknown> = {}) => ({ defaultKind: 'text', optimism: makeOptimism(), onNavigateToCreated: vi.fn(), ...extra });
+
+    it('opens the REAL channel (not the pending temp id) after the key work settles', async () => {
+        const order: string[] = [];
+        const props = optimismProps({
+            onCreated: vi.fn(async () => { await new Promise(r => setTimeout(r, 15)); order.push('keyed'); }),
+            onNavigateToCreated: vi.fn(() => { order.push('navigate'); }),
+        });
+        await mount(props);
+        await typeName('fresh');
+        await press(nameInput(), 'Enter');
+        await flush(60);
+        const nav = props.onNavigateToCreated as ReturnType<typeof vi.fn>;
+        expect(nav).toHaveBeenCalledTimes(1);
+        const target = nav.mock.calls[0][0] as { channel_id: string };
+        expect(target.channel_id).toMatch(/^new-/);
+        expect(target.channel_id.startsWith('pending:')).toBe(false);
+        expect(order).toEqual(['keyed', 'navigate']);
+    });
+
+    it('does not navigate when "Create another" is checked', async () => {
+        const props = optimismProps();
+        const h = await mount(props);
+        await click([...document.querySelectorAll('[role="checkbox"]')].find(b => b.textContent?.includes('Create another')));
+        await typeName('one');
+        await press(nameInput(), 'Enter');
+        await flush(40);
+                expect(props.onNavigateToCreated).not.toHaveBeenCalled();
+        expect(h.onClose).not.toHaveBeenCalled();
+    });
+
+    it('does not navigate when the server refuses (placeholder dropped, error shown)', async () => {
+        failPost = true;
+        const props = optimismProps();
+        await mount(props);
+        await typeName('nope');
+        await press(nameInput(), 'Enter');
+        await flush(40);
+        const o = props.optimism as ReturnType<typeof makeOptimism>;
+        expect(o.dropPending).toHaveBeenCalledTimes(1);
+        expect(o.fail).toHaveBeenCalledTimes(1);
+        expect(props.onNavigateToCreated).not.toHaveBeenCalled();
+    });
+
+    it('navigates to a Calls channel too (the caller only reveals it, never joins)', async () => {
+        const props = optimismProps({ defaultKind: 'huddle' });
+        await mount(props);
+        await typeName('lounge');
+        await press(nameInput(), 'Enter');
+        await flush(40);
+        const nav = props.onNavigateToCreated as ReturnType<typeof vi.fn>;
+        expect(nav).toHaveBeenCalledTimes(1);
+        expect((nav.mock.calls[0][0] as { kind: string }).kind).toBe('huddle');
+    });
+
+    it('still navigates if key minting rejects (the normal open path re-asks)', async () => {
+        const props = optimismProps({ onCreated: vi.fn(async () => { throw new Error('mint failed'); }) });
+        await mount(props);
+        await typeName('x-chan');
+        await press(nameInput(), 'Enter');
+        await flush(40);
+        expect(props.onNavigateToCreated).toHaveBeenCalledTimes(1);
+    });
+});
+
+describe('navigate into the new channel (override-carrying create, waits for server)', () => {
+    it('navigates after the overrides landed and the dialog closed', async () => {
+        const onNavigateToCreated = vi.fn();
+        const h = await mount({ defaultKind: 'text', onNavigateToCreated });
+        await click(radio('Staff only'));
+        await typeName('mods');
+        await press(nameInput(), 'Enter');
+        await flush(60);
+        expect(h.onSaved).toHaveBeenCalledTimes(1);
+        expect(onNavigateToCreated).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not navigate when some overrides failed (dialog stays open as the editor)', async () => {
+        failOverridePatch = true;
+        const onNavigateToCreated = vi.fn();
+        await mount({ defaultKind: 'text', onNavigateToCreated });
+        await click(radio('Staff only'));
+        await typeName('secret2');
+        await press(nameInput(), 'Enter');
+        await flush(60);
+        expect(onNavigateToCreated).not.toHaveBeenCalled();
+    });
+
+    it('does not navigate with Create another checked', async () => {
+        const onNavigateToCreated = vi.fn();
+        await mount({ defaultKind: 'text', onNavigateToCreated });
+        await click(radio('Staff only'));
+        await click([...document.querySelectorAll('[role="checkbox"]')].find(b => b.textContent?.includes('Create another')));
+        await typeName('three');
+        await press(nameInput(), 'Enter');
+        await flush(60);
+        expect(onNavigateToCreated).not.toHaveBeenCalled();
     });
 });

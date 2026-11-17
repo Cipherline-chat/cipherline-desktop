@@ -26,6 +26,7 @@
 
 import type { UserStatus, FriendStatusEntry } from './userStatusModel';
 import { activeCustom } from './customStatus';
+import { parseWireGameDetail, sameDetail } from './richPresence';
 
 export interface WirePresence {
     user_id: string;
@@ -34,6 +35,8 @@ export interface WirePresence {
     custom_status_emoji?: string | null;
     custom_status_expires_at?: string | null;
     game_name?: string | null;
+    /** Rich Presence detail lines of that game (newer servers only). */
+    game_detail?: unknown;
     /** Only ever true while visibly present on phones alone. Absent from
      *  older servers → false. */
     on_mobile?: boolean;
@@ -75,6 +78,8 @@ export function toEntry(w: WirePresence): FriendStatusEntry {
         // the machine that went away; the server nulls it too, this keeps an
         // older server from resurrecting it).
         current_game: visible && !onMobile ? (w.game_name ?? null) : null,
+        // Same rule as the game, and never without one. Validated again here.
+        ...(visible && !onMobile && w.game_name && w.game_detail ? { current_game_detail: parseWireGameDetail(w.game_detail) } : {}),
         on_mobile: onMobile,
     };
 }
@@ -94,6 +99,7 @@ function sameEntry(a: FriendStatusEntry | undefined, b: FriendStatusEntry): bool
         && a.custom_status_emoji === b.custom_status_emoji
         && (a.custom_status_expires_at ?? null) === (b.custom_status_expires_at ?? null)
         && a.current_game === b.current_game
+        && sameDetail(a.current_game_detail ?? null, b.current_game_detail ?? null)
         && (a.on_mobile ?? false) === (b.on_mobile ?? false);
 }
 

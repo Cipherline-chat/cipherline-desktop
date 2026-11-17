@@ -29,8 +29,9 @@ import { formatFriendsSince, type ShowcaseBlock } from '../../utils/profileExtra
 import { formatLocalTime } from '../../utils/profileVisibility';
 import type { PublicProfile } from '../../utils/profileCache';
 import type { ProfileLink } from '../../utils/profileLinks';
-import { useSteamCard, visibleSteamActivity, type Mutuals } from '../../hooks/useProfileRelations';
-import { SteamHighlight } from '../integrations/SteamShowcase';
+import { refreshSteamCard, useSteamCard, visibleSteamActivity, type Mutuals } from '../../hooks/useProfileRelations';
+import { SteamHighlight, SteamPrivateNotice } from '../integrations/SteamShowcase';
+import { steamNeedsOwnerNotice } from '../../utils/integrations/api';
 import type { ProfileActivity, ProfileConnection } from './integrationTypes';
 import type { ProfileCardData, ProfileFullTab } from './profileCardData';
 import '../../styles/profile-card.css';
@@ -189,7 +190,10 @@ export const ProfileFullView: React.FC<ProfileFullViewProps> = ({
     });
 
     // The overview's Steam block carries the stats row too (the full panel is on Integrations).
-    const steamActivity = visibleSteamActivity(useSteamCard(data?.steam ? userId : null, token), isSelf);
+    const steamCard = useSteamCard(data?.steam ? userId : null, token);
+    const steamActivity = visibleSteamActivity(steamCard, isSelf);
+    // Your own private Steam: the how-to inline instead of an empty card (others get just the verified row).
+    const steamOwnerNotice = isSelf && steamCard?.activity && !steamCard.statsHidden && steamNeedsOwnerNotice(steamCard.activity) ? steamCard.activity : null;
     const openSteam = (steamId: string) => {
         if (onOpenSteam) onOpenSteam(steamId);
         else openExternalLink(steamProfileUrl(steamId));
@@ -203,6 +207,7 @@ export const ProfileFullView: React.FC<ProfileFullViewProps> = ({
                         <SteamHighlight className="pcd-steam-hl" activity={steamActivity} token={token} isSelf={isSelf}
                             onOpen={tabs.includes('integrations') ? (e) => { e.stopPropagation(); setTab('integrations'); } : undefined} />
                     )}
+                    {steamOwnerNotice && <SteamPrivateNotice activity={steamOwnerNotice} onCheckAgain={token ? () => refreshSteamCard(userId, token) : undefined} />}
                 </ProfileCardSteam>
             ) : null;
             case 'games': return <ProfileCardWidgets key={b} widgets={{ games: [...data.games] }} friendsOnly={data.gamesFriendsOnly} />;

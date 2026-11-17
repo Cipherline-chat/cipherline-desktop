@@ -100,6 +100,28 @@ describe('CategoryFormDialog', () => {
         expect(h.onSaved).toHaveBeenCalledTimes(1);
     });
 
+    it('names: emoji and punctuation are kept and sent; a rejected character shows an error instead of being deleted', async () => {
+        const h = await mount({});
+        const input = document.querySelector('input[aria-label="Category name"]') as HTMLInputElement;
+        const typeIn = async (v: string) => act(async () => {
+            Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, v);
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+        });
+        await typeIn('abc\u200Bdef');
+        expect(input.value).toBe('abc\u200Bdef');
+        expect(document.querySelector('#category-name-error')?.textContent).toMatch(/hidden/);
+        await act(async () => { input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); });
+        await flush(20);
+        expect(calls.filter(c => c[0] === 'POST')).toHaveLength(0);
+
+        await typeIn(' \u{1F4E2} Announcements & News! ');
+        expect(document.querySelector('#category-name-error')).toBeNull();
+        await act(async () => { input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); });
+        await flush(30);
+        expect(calls.filter(c => c[0] === 'POST')).toEqual([['POST', '/servers/s1/categories', { name: '\u{1F4E2} Announcements & News!', kind: 'text', icon_name: null }]]);
+        expect(h.onSaved).toHaveBeenCalledTimes(1);
+    });
+
     it('edit: clearing a role sends a DELETE for it and no category PATCH', async () => {
         catOverrides = [{ target_kind: 'role', target_id: MOD, allow_bits: s(P.VIEW_CHANNEL), deny_bits: '0' }];
         const h = await mount({ category: { category_id: CAT, server_id: 's1', name: 'Staff', position: 1, kind: 'text', icon_name: null } });
@@ -111,5 +133,42 @@ describe('CategoryFormDialog', () => {
         await flush(30);
         expect(calls.filter(c => c[0] !== 'GET')).toEqual([['DELETE', `/servers/s1/categories/${CAT}/overrides/role/${MOD}`]]);
         expect(h.onSaved).toHaveBeenCalledTimes(1);
+    });
+
+    describe('sub-categories always have a parent', () => {
+        const top = (id: string, name: string, extra: Record<string, unknown> = {}) =>
+            ({ category_id: id, server_id: 's1', name, position: 1, kind: 'text', icon_name: null, parent_category_id: null, ...extra });
+        const CRAFT_ID = '20000000-0000-4000-8000-000000000001';
+        const SUB_ID = '20000000-0000-4000-8000-000000000002';
+        const CALLS_ID = '20000000-0000-4000-8000-000000000003';
+        const cats = [top(CRAFT_ID, 'Crafting'), top(SUB_ID, 'Wood', { parent_category_id: CRAFT_ID }), top(CALLS_ID, 'Calls', { kind: 'huddle' })];
+        const typeName = async (v: string) => {
+            const input = document.querySelector('input[aria-label="Sub-category name"], input[aria-label="Category name"]') as HTMLInputElement;
+            await act(async () => {
+                Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, v);
+                input.dispatchEvent(new Event('input', { bubbles: true }));
+            });
+            await act(async () => { input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); });
+            await flush(30);
+        };
+
+        it('with a valid top-level parent: POST carries the parent; no top-level choice; no emoji button', async () => {
+            await mount({ parentCategoryId: CRAFT_ID, categories: cats });
+            expect(document.body.textContent).toMatch(/in crafting/i);
+            expect(document.body.textContent).not.toMatch(/top level/i);
+            expect(document.querySelector('[aria-label^="Sub-category emoji"]')).toBeNull();
+            await typeName('Paper');
+            const post = calls.find(c => c[0] === 'POST' && c[1] === '/servers/s1/categories');
+            expect(post?.[2]).toEqual({ name: 'Paper', kind: 'text', icon_name: null, parent_category_id: CRAFT_ID });
+        });
+
+        it.each([['a sub-category', SUB_ID], ['a Calls category', CALLS_ID], ['an unknown id', '20000000-0000-4000-8000-0000000000ff']])(
+            'a parent that is %s is not a parent: it creates an ordinary category, never an orphan sub-category', async (_n, parentCategoryId) => {
+                await mount({ parentCategoryId, categories: cats });
+                await typeName('Plain');
+                const post = calls.find(c => c[0] === 'POST' && c[1] === '/servers/s1/categories');
+                expect(post?.[2]).toEqual({ name: 'Plain', kind: 'text', icon_name: null });
+            },
+        );
     });
 });

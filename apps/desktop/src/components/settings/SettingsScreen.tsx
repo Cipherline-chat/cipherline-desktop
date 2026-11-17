@@ -136,6 +136,9 @@ export interface SettingsScreenProps {
     /** Executable behind `currentGame` — shown next to it, since a wrong
      *  match is only diagnosable from the exe name. */
     currentGameProcess?: string | null;
+    /** Rich Presence detail lines of `currentGame`, and where it came from. */
+    currentGameDetail?: import('../../utils/richPresence').GameDetail | null;
+    currentGameSource?: 'process' | 'rpc' | null;
     /** Permanently ignores the currently-detected game and clears the live status. No-op if nothing's currently detected. */
     onIgnoreCurrentGame: () => void;
     privacy: PrivacySettingsHook;
@@ -147,7 +150,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
     onClose, initialTab,
     retention, messagesState, onClearAllMessages,
     conversations, onPurgeConversation, onPurgeTypeNow, countExpiringForType, serverStorage,
-    keybinds, voice, gameSettings, currentGame, currentGameProcess, onIgnoreCurrentGame, privacy, screenLock, gif, onLogout,
+    keybinds, voice, gameSettings, currentGame, currentGameProcess, currentGameDetail, currentGameSource, onIgnoreCurrentGame, privacy, screenLock, gif, onLogout,
 }) => {
     // Resolved once: initialTab only picks where the Descent opens.
     const [initial] = useState(() => resolveSettingsTarget(initialTab));
@@ -320,8 +323,8 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
                                 {pane === 'devices' && <DevicesPane />}
                                 {pane === 'voice' && <VoiceVideoSettings voice={voice} />}
                                 {pane === 'notifications' && <NotificationsTab />}
-                                {pane === 'keybinds' && <KeybindSettings keybinds={keybinds} />}
-                                {pane === 'activity' && <GameActivitySettings gameSettings={gameSettings} currentGame={currentGame} currentGameProcess={currentGameProcess} onIgnoreCurrentGame={onIgnoreCurrentGame} />}
+                                {pane === 'keybinds' && <KeybindSettings keybinds={keybinds} voice={voice} />}
+                                {pane === 'activity' && <GameActivitySettings gameSettings={gameSettings} currentGame={currentGame} currentGameProcess={currentGameProcess} currentGameDetail={currentGameDetail} currentGameSource={currentGameSource} onIgnoreCurrentGame={onIgnoreCurrentGame} />}
                                 {pane === 'privacy' && <PrivacySettings privacy={privacy} screenLock={screenLock} keybinds={keybinds} />}
                                 {pane === 'storage' && (
                                     <>

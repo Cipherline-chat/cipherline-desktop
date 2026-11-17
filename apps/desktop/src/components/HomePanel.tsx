@@ -17,12 +17,11 @@ import { type PinnedHomeItem } from '../utils/homePins';
 import { HomePinsGrid, type PinDnd } from './HomePinsGrid';
 import { pickRecent } from '../utils/homeRecents';
 import {
-    isLocalCallRow, resolvePinnedChannelAction,
-    type HomeCallRow, type LocalCallSession,
+    resolvePinnedChannelAction,
+    type LocalCallSession,
 } from '../utils/homeActiveCalls';
 import { summarizeCallRoster, labelVoiceUsers } from '../utils/serverCallPresence';
-import { CallMediaSummary } from './CallMediaSummary';
-import { huddleCallMediaKey, voiceChannelMediaKey } from '../utils/callMediaPresence';
+import { HomeCallsTile, type HomeCallEntry } from './HomeCallsTile';
 import { useBackupState, useBackupNudge } from '../hooks/useBackupState';
 import { ClInput } from './cl';
 import { useEscape } from '../hooks/useEscape';
@@ -646,6 +645,13 @@ export const HomePanel: React.FC<HomePanelProps> = ({
         return map;
     }, [friends]);
 
+    /** Accepted friends' ids — ranks "Happening now" (calls with friends first). */
+    const friendIds = useMemo(() => {
+        const ids = new Set<string>();
+        for (const f of friends?.accepted ?? []) if (f?.user_id) ids.add(f.user_id);
+        return ids;
+    }, [friends]);
+
     /** Attachment id to paint for a conversation row — freshest source first. */
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     const convAvatarId = useCallback((conv: any): string | null => {
@@ -679,7 +685,7 @@ export const HomePanel: React.FC<HomePanelProps> = ({
     // ad-hoc id comparison at the render site — the two id spaces (voice
     // CHANNEL id vs. huddle CALL id) are easy to mix up, and mixing them up
     // silently mislabels sibling calls. See utils/homeActiveCalls.
-    const activeCalls = useMemo(() => {
+    const activeCalls = useMemo<HomeCallEntry[]>(() => {
         const allChannels = Object.values(serverChannels).flat();
 
         const voiceCalls = Object.entries(voiceParticipants)
@@ -688,11 +694,13 @@ export const HomePanel: React.FC<HomePanelProps> = ({
                 const channel = allChannels.find(c => c.channel_id === channelId);
                 const server = servers.find(s => s.server_id === channel?.server_id);
                 if (!channel || !server) return null;
-                return {
-                    key: `voice-${channelId}`, channel, server, participantIds,
-                    row: { kind: 'voice', channelId } as HomeCallRow,
+                const entry: HomeCallEntry = {
+                    key: `voice-${channelId}`, name: channel.name, channel, server, participantIds,
+                    startedAt: null, // an always-on voice channel has no start time
+                    row: { kind: 'voice', channelId },
                     onJoin: () => onJoinVoiceChannel(channel),
                 };
+                return entry;
             })
             .filter((x): x is NonNullable<typeof x> => x !== null);
 
@@ -704,11 +712,16 @@ export const HomePanel: React.FC<HomePanelProps> = ({
                         const channel = allChannels.find(ch => ch.channel_id === huddleId);
                         const server = servers.find(s => s.server_id === channel?.server_id);
                         if (!channel || !server) return null;
-                        return {
-                            key: `huddle-${c.call_id}`, channel, server, participantIds: c.participants,
-                            row: { kind: 'huddle', callId: c.call_id, channelId: huddleId } as HomeCallRow,
+                        const started = Date.parse(c.spawned_at);
+                        const entry: HomeCallEntry = {
+                            // The CALL's own name: a Calls channel can host several at once.
+                            key: `huddle-${c.call_id}`, name: c.name || channel.name, channel, server,
+                            participantIds: c.participants,
+                            startedAt: Number.isFinite(started) ? started : null,
+                            row: { kind: 'huddle', callId: c.call_id, channelId: huddleId },
                             onJoin: () => onJoinHuddleCall(c.call_id, c.name || channel.name),
                         };
+                        return entry;
                     })
                     .filter((x): x is NonNullable<typeof x> => x !== null)
             );
@@ -1007,72 +1020,19 @@ export const HomePanel: React.FC<HomePanelProps> = ({
                         </section>
                     )}
 
-                    {/* Live calls.
-                        The row for the call you are ALREADY in never offers
-                        Join — pressing it was a no-op anyway (both join
-                        handlers early-return on the active session), and the
-                        rest of the app never offers Join on your own call
-                        either: HuddleCallCard drops the button entirely under
-                        `isMine`, and FloatingHuddleCard (the card you get after
-                        navigating away from your call's server) reuses that
-                        exact treatment. Home follows the same rule, with no
-                        button at all: a "Return" here read as "rejoin" to
-                        someone already in the call (owner 2026-10-31).
-                        Leaving stays where it lives everywhere else — the
-                        ControlBar in the right-hand call panel, which is
-                        mounted on Home too whenever a call is live. */}
-                    {activeCalls.map(call => {
-                        const mine = isLocalCallRow(call.row, localCallSession);
-                        return (
-                        <section
-                            key={call.key}
-                            className="hd-tile hd-a--lume hd-t--call hd-t--wide"
-                            data-ob-anchor="home-tile"
-                            data-mine={mine ? 'true' : undefined}
-                        >
-                            <div className="hd-head">
-                                <span className="hd-ic">
-                                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                                         strokeWidth="2.2" strokeLinecap="round">
-                                        <path d="M4 6a2 2 0 0 1 2-2h2l2 5-2 1a12 12 0 0 0 6 6l1-2 5 2v2a2 2 0 0 1-2 2A16 16 0 0 1 4 6z" />
-                                    </svg>
-                                </span>
-                                <h2>Happening now</h2>
-                                {mine && <span className="hd-live">In call</span>}
-                                <span className="hd-wave" aria-hidden="true"><i /><i /><i /></span>
-                            </div>
-                            <div className="hd-callrow">
-                                <div className="hd-stack">
-                                    {call.participantIds.slice(0, 3).map(uid => (
-                                        <EncryptedAvatar
-                                            key={uid} userId={uid} token={token}
-                                            attachmentId={serverMemberAvatarMaps?.[call.server.server_id]?.[uid] ?? voiceUserAvatarIds?.[uid] ?? null}
-                                            className="w-full h-full" fallbackSize={12}
-                                            disableClickProfile bypassFriendGate
-                                        />
-                                    ))}
-                                </div>
-                                <div className="hd-callinfo">
-                                    <p className="hd-callname">{call.channel.name}</p>
-                                    <p className="hd-callwhere">
-                                        {call.server.name} · {call.participantIds.length} in call
-                                        {mine ? ' · you’re in this one' : ''}
-                                        {/* Who's sharing / on camera — server presence, so it
-                                            shows whether or not you're in this call. */}
-                                        <CallMediaSummary
-                                            mediaKey={call.row.kind === 'voice'
-                                                ? voiceChannelMediaKey(call.row.channelId)
-                                                : huddleCallMediaKey(call.row.callId)}
-                                            participantIds={call.participantIds}
-                                            names={voiceUserNames}
-                                        />
-                                    </p>
-                                </div>
-                                {!mine && <button className="hd-btn" onClick={call.onJoin}>Join</button>}
-                            </div>
-                        </section>
-                        );
-                    })}
+                    {/* Live calls — ONE tile, one compact line per call, the
+                        rest folded behind "+N more" (HomeCallsTile +
+                        utils/homeCallsList). Renders nothing with no call. */}
+                    <HomeCallsTile
+                        calls={activeCalls}
+                        localCallSession={localCallSession}
+                        friendIds={friendIds}
+                        token={token}
+                        serverMemberAvatarMaps={serverMemberAvatarMaps}
+                        voiceUserAvatarIds={voiceUserAvatarIds}
+                        voiceUserNames={voiceUserNames}
+                        onSelectServer={onSelectServer}
+                    />
 
                     {/* Pinned — servers, DMs, group chats and channels. */}
                     <section className="hd-tile hd-a--lavender hd-t--full" data-ob-anchor="home-tile">

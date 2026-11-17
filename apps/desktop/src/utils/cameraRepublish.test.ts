@@ -175,6 +175,21 @@ describe('swapShareCodec — make-before-break for the screen share', () => {
         expect((fresh.mediaStreamTrack as MediaStreamTrack).contentHint).toBe('motion');
         expect(lp.pubs[0].opts.screenShareEncoding?.maxFramerate).toBe(90);
     });
+    it('a clone whose capture ended during the hold is dropped and the old publication is KEPT (staging.229: share ended 13 ms after a swap)', async () => {
+        const lp = fakeRoom();
+        const old = liveShare('h264');
+        lp.pubs.push({ source: Track.Source.ScreenShare, track: old, opts: {} as TrackPublishOptions });
+        const ok = await swapShareCodec(lp as never, 'h265', { resolution: '1440p', frameRate: 90 }, {
+            makeTrack: mst => ({ mediaStreamTrack: mst }), lowerLayer: false, reason: 'everyone can decode H.265', log: () => {},
+            // the capture dies while the two are held
+            sleep: async () => { (lp.pubs[1].track.mediaStreamTrack as unknown as { readyState: string }).readyState = 'ended'; },
+        });
+        expect(ok).toBe(false);
+        expect(lp.pubs.map(p => p.track)).toEqual([old]);          // the new one is gone, the working one stays
+        expect(lp.order).toEqual(['publish:h265:single', 'unpublish']);
+        const ev = getCallEvents().find(e => e.kind === 'share_swap_abort');
+        expect(ev?.detail).toMatchObject({ codec: 'h265', why: 'clone_ended', kept_old: true });
+    });
     it('same codec or an ended capture → nothing', async () => {
         const lp = fakeRoom();
         lp.pubs.push({ source: Track.Source.ScreenShare, track: liveShare('vp8'), opts: {} as TrackPublishOptions });

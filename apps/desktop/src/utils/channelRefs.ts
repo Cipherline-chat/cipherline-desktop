@@ -30,10 +30,12 @@ export const UNAVAILABLE_CHANNEL_LABEL = 'unknown-channel';
 
 /** Caps on what a reader accepts from a (sender-controlled) `channel_refs`. */
 export const MAX_CHANNEL_REFS = 25;
-const MAX_REF_NAME_LEN = 100;
+// A channel name is at most 50 grapheme clusters = 200 UTF-16 units (display-name rule).
+const MAX_REF_NAME_LEN = 200;
 const MAX_REF_ID_LEN = 64;
-/** Channel names are at most 50 chars (CreateChannelDto); the query never needs more. */
-const MAX_QUERY_LEN = 50;
+/** Channel names are at most 50 characters, counted as grapheme clusters, i.e. up to
+ *  200 UTF-16 units with emoji (CreateChannelDto); the query never needs more. */
+const MAX_QUERY_LEN = 200;
 
 /** The channel fields this module reads (a structural subset of ChannelInfo). */
 export interface LinkableChannel {
@@ -53,6 +55,8 @@ export interface LinkableCategory {
     category_id: string;
     name: string;
     position: number;
+    /** Sub-categories: the parent (top-level) category. */
+    parent_category_id?: string | null;
 }
 
 // ── Composer trigger ──────────────────────────────────────────────────────────
@@ -117,7 +121,7 @@ export interface ChannelTrigger {
  * may not be whitespace (`# heading`), and a `#` inside code never triggers.
  */
 export function detectChannelTrigger(before: string): ChannelTrigger | null {
-    const m = before.match(/(?:^|(?<=\s))#([^#@<>\n]{0,50})$/);
+    const m = before.match(/(?:^|(?<=\s))#([^#@<>\n]{0,200})$/);
     if (!m) return null;
     const raw = m[1];
     if (/^\s/.test(raw)) return null;
@@ -152,7 +156,8 @@ export function linkableChannels<C extends LinkableChannel>(channels: readonly C
 
 export interface ChannelCandidate {
     channel: LinkableChannel;
-    /** Category the channel sits under, or null when uncategorized. */
+    /** Category the channel sits under, or null when uncategorized. For a
+     *  channel in a sub-category: "Parent › Sub" (a breadcrumb). */
     categoryName: string | null;
     /** 'text' channels, or 'call' for Calls/voice channels. */
     group: 'text' | 'call';
@@ -170,20 +175,36 @@ export function buildChannelCandidates(
 ): ChannelCandidate[] {
     const cats = new Map<string, LinkableCategory>();
     for (const c of categories ?? []) cats.set(c.category_id, c);
-    const catPos = (ch: LinkableChannel) => {
-        const cat = ch.parent_category_id ? cats.get(ch.parent_category_id) : undefined;
-        return cat ? cat.position : -1; // uncategorized sits on top, like the sidebar
+    /** The channel's direct category, and - for a sub-category - its parent. */
+    const chainOf = (ch: LinkableChannel): { top?: LinkableCategory; sub?: LinkableCategory } => {
+        const direct = ch.parent_category_id ? cats.get(ch.parent_category_id) : undefined;
+        const parent = direct?.parent_category_id ? cats.get(direct.parent_category_id) : undefined;
+        return parent ? { top: parent, sub: direct } : { top: direct };
+    };
+    // Sidebar order: top-level category position, then the item's place in
+    // that category (a sub-category's channels sit at the sub-category's slot,
+    // the same space its sibling channels use), then position inside it.
+    const sortKey = (ch: LinkableChannel): [number, number, number, number] => {
+        const { top, sub } = chainOf(ch);
+        if (!top) return [-1, ch.position, 0, 0]; // uncategorized sits on top, like the sidebar
+        return sub ? [top.position, sub.position, 1, ch.position] : [top.position, ch.position, 0, 0];
     };
     return linkableChannels(channels, serverId)
-        .map((channel): ChannelCandidate => ({
-            channel,
-            categoryName: (channel.parent_category_id && cats.get(channel.parent_category_id)?.name) || null,
-            group: channel.kind === 'text' ? 'text' : 'call',
-        }))
-        .sort((a, b) =>
-            (a.group === b.group ? 0 : a.group === 'text' ? -1 : 1)
-            || catPos(a.channel) - catPos(b.channel)
-            || a.channel.position - b.channel.position);
+        .map((channel): ChannelCandidate => {
+            const { top, sub } = chainOf(channel);
+            return {
+                channel,
+                categoryName: top ? (sub ? `${top.name} › ${sub.name}` : top.name) : null,
+                group: channel.kind === 'text' ? 'text' : 'call',
+            };
+        })
+        .sort((a, b) => {
+            if (a.group !== b.group) return a.group === 'text' ? -1 : 1;
+            const ka = sortKey(a.channel);
+            const kb = sortKey(b.channel);
+            for (let i = 0; i < ka.length; i++) if (ka[i] !== kb[i]) return ka[i] - kb[i];
+            return 0;
+        });
 }
 
 /** Filter + rank by name: prefix matches before substring matches, each in input order. */

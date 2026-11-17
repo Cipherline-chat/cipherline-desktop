@@ -142,3 +142,30 @@ export function shouldAdvanceChannelCursor(p: {
         && p.windowFocused
         && p.documentVisible;
 }
+
+/**
+ * The channels a "Mark as Read" (channel, category, server, folder) must
+ * report to the server: those with a local unread or mention count.
+ *
+ * Clearing the local badge alone is not a read. The count is rebuilt from the
+ * server cursor (`GET /servers/:id/unread`) on every reconnect and restart, so
+ * a menu that only cleared local state "worked" until the next reload and then
+ * every count came back (owner, 2026-11-16). Each id returned here gets one
+ * `POST /channels/:cid/read`; ids already at zero are skipped so marking a big
+ * server or folder read does not spend the caller's global request budget on
+ * channels with nothing to clear.
+ */
+export function channelsToMarkReadOnServer(
+    ids: Iterable<string>,
+    unread: CountMap,
+    mentions: CountMap,
+): string[] {
+    const out: string[] = [];
+    const seen = new Set<string>();
+    for (const id of ids) {
+        if (seen.has(id)) continue;
+        seen.add(id);
+        if ((unread[id] ?? 0) > 0 || (mentions[id] ?? 0) > 0) out.push(id);
+    }
+    return out;
+}

@@ -1,7 +1,7 @@
 import { useEffect, useReducer, useState } from 'react';
 import axios from 'axios';
 import { apiUrl } from '../utils/apiPath';
-import { readSteamActivity, type SteamActivity } from '../utils/integrations/api';
+import { readSteamActivity, steamHasShowcaseStats, type SteamActivity } from '../utils/integrations/api';
 
 /**
  * The two extra reads behind the profile card, each cached for a minute per
@@ -215,7 +215,9 @@ export function useSteamCard(userId: string | null, token: string | null): Steam
  */
 export function visibleSteamActivity(card: SteamCard | null, isSelf: boolean): SteamActivity | null {
     if (!card?.activity) return null;
-    return isSelf && card.statsHidden ? null : card.activity;
+    if (isSelf && card.statsHidden) return null;
+    // Private / empty Steam: no card (the verified Steam row on the profile stands alone). See steamHasShowcaseStats.
+    return steamHasShowcaseStats(card.activity) ? card.activity : null;
 }
 
 /** After you link / unlink: forget your own cached card. */

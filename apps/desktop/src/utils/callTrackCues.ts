@@ -113,6 +113,9 @@ export function shareStopCue(ready: boolean, adjusting: boolean, otherSameSource
     return ready && !adjusting && !otherSameSourceRemains;
 }
 
+/** The cue for OUR camera stopping with no press (components/call/LocalMediaStopGuard): the one a press plays. */
+export function cameraStopCue(): 'camera_off' { return 'camera_off'; }
+
 /** Per participant+source, when it was last unpublished. Plain data — owned by the cue effect. */
 export class UnpublishMemory {
     private last = new Map<string, number>();

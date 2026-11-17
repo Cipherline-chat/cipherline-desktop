@@ -3,7 +3,8 @@ import { PhoneCall, UserPen } from 'lucide-react';
 import { ClModal, ClButton, ClInput } from '../cl';
 import { DialogHeader, DialogBody, DialogFooter, DialogError } from '../dialog/DialogFrame';
 import { DialogForm, DialogField } from '../dialog/DialogExtras';
-import { cleanCallName } from '../../utils/callName';
+import { CALL_NAME_MAX_LENGTH, DISPLAY_NAME_MAX_UNITS_PER_GRAPHEME, graphemeLength } from '@cipherline/shared';
+import { callNameDraftError, cleanCallName } from '../../utils/callName';
 
 /**
  * Two small one-field prompts from the server panel, in the house dialog
@@ -17,9 +18,12 @@ export const RenameCallDialog: React.FC<{
     onDraftChange: (v: string) => void;
     onSubmit: () => void;
     onClose: () => void;
-}> = ({ open, draft, onDraftChange, onSubmit, onClose }) => {
+    /** The server's reason when it refused the rename. */
+    error?: string | null;
+}> = ({ open, draft, onDraftChange, onSubmit, onClose, error = null }) => {
     const id = useId();
-    const canSubmit = cleanCallName(draft).length > 0;
+    const nameError = callNameDraftError(draft);
+    const canSubmit = cleanCallName(draft).length > 0 && nameError === null;
     return (
         <ClModal open={open} onClose={onClose} width={400} label="Rename call" cardClassName="dlg-card">
             <DialogHeader
@@ -29,19 +33,21 @@ export const RenameCallDialog: React.FC<{
             />
             <DialogForm onSubmit={() => { if (canSubmit) onSubmit(); }}>
                 <DialogBody>
-                    <DialogField label="Call name" htmlFor={id} aside={`${draft.length}/60`}>
+                    <DialogField label="Call name" htmlFor={id} aside={`${graphemeLength(draft.trim())}/${CALL_NAME_MAX_LENGTH}`}>
                         <ClInput
                             id={id}
                             value={draft}
                             onChange={e => onDraftChange(e.target.value)}
-                            maxLength={60}
+                            maxLength={CALL_NAME_MAX_LENGTH * DISPLAY_NAME_MAX_UNITS_PER_GRAPHEME}
+                            aria-invalid={nameError !== null}
                             placeholder="Call name"
                             autoComplete="off"
                             autoFocus
                         />
                     </DialogField>
                 </DialogBody>
-                <DialogFooter hint="Letters, numbers, spaces and . - _ '">
+                {(nameError ?? error) && <DialogError>{nameError ?? error}</DialogError>}
+                <DialogFooter hint="Any letters, emoji and punctuation">
                     <ClButton type="button" variant="ghost" size="sm" onClick={onClose}>Cancel</ClButton>
                     <ClButton type="submit" size="sm" disabled={!canSubmit}>Rename</ClButton>
                 </DialogFooter>

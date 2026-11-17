@@ -368,9 +368,9 @@
   margin: clamp(18px, 3vmin, 32px) 0 0;
   padding: 0;
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: clamp(8px, 1.1vmin, 14px);
-  width: min(720px, 100%);
+  width: min(860px, 100%);
 }
 .pcel-perk {
   background: var(--pcel-tile);
@@ -390,6 +390,8 @@
 @media (min-width: 3000px) and (min-height: 1700px) { .pcel-stage { zoom: 1.65; } }
 @media (max-width: 760px) {
   .pcel-perks { grid-template-columns: repeat(2, minmax(0, 1fr)); width: min(420px, 100%); }
+  /* Five perks on two columns: the last one spans the row. */
+  .pcel-perk:last-child:nth-child(odd) { grid-column: 1 / -1; }
 }
 
 .pcel-cta {

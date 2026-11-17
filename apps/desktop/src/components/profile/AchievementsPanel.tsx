@@ -1,6 +1,6 @@
 import React, { useMemo, useRef, useState } from 'react';
 import {
-    Mic, Timer, Users, Flame, ShieldCheck, Server, MessageSquare, Egg, CalendarDays, Gamepad2, Moon, Ear, Laptop, CircleUserRound, Trophy, Lock,
+    Mic, Timer, Users, Flame, ShieldCheck, Server, MessageSquare, Egg, CalendarDays, Gamepad2, Moon, Ear, Laptop, CircleUserRound, Hand, Trophy, Lock,
     ChevronLeft, ChevronRight, type LucideIcon,
 } from 'lucide-react';
 import { ACHIEVEMENTS, type AchievementDef, type Progress, type ProgressUnit } from '../../utils/achievements/catalog';
@@ -25,7 +25,7 @@ import '../../styles/profile-card.css';
 
 const ICONS: Record<string, LucideIcon> = {
     mic: Mic, timer: Timer, users: Users, flame: Flame, shield: ShieldCheck, server: Server, message: MessageSquare,
-    egg: Egg, calendar: CalendarDays, gamepad: Gamepad2, moon: Moon, ear: Ear, laptop: Laptop, portrait: CircleUserRound,
+    egg: Egg, calendar: CalendarDays, gamepad: Gamepad2, moon: Moon, ear: Ear, laptop: Laptop, portrait: CircleUserRound, hand: Hand,
 };
 const TIER_LABEL = { bronze: 'Bronze', silver: 'Silver', gold: 'Gold' } as const;
 

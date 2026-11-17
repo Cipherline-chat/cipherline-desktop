@@ -91,6 +91,9 @@ const RESOLVE_NAME: Record<string, string> = {
 
 type IconKey = keyof typeof ALL_ICONS;
 
+/** Every name the picker can store (lucide spelling). The shared CHANNEL_ICON_NAMES allowlist the API enforces must equal this (test). */
+export const CHANNEL_ICON_STORED_NAMES: string[] = Object.keys(ALL_ICONS).map(k => STORED_NAME_FOR[k] ?? k);
+
 const GROUPED: { label: string; keys: IconKey[] }[] = [
     { label: 'Communication', keys: ['Hash', 'MessageSquare', 'MessagesSquare', 'Megaphone', 'Mail', 'AtSign', 'MessageCircle', 'Phone', 'Send', 'Reply'] },
     { label: 'Voice / Video',  keys: ['Volume2', 'Mic', 'Video', 'Headphones', 'Radio', 'PhoneCall', 'Podcast', 'Voicemail'] },

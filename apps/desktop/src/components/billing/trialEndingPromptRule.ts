@@ -210,7 +210,7 @@ export function trialPromptCopy(s: TrialPromptStatus, now: Date = new Date()): T
             wasPrice: regularPriceAfterFoundersLabel({ period: null, tax: false }),
             priceNote: 'If your subscription ever ends, so does the founding price.',
             riseNote: `After the first 10,000 subscribers, Pro goes up to ${regularPriceAfterFoundersLabel({ period: 'mo' })}.`,
-            perks: [`The ${FOUNDER_BADGE_NAME} on your profile`, 'Video calls and screen share', '2 GB uploads and bigger server storage'],
+            perks: [`The ${FOUNDER_BADGE_NAME} on your profile`, 'Video calls and screen share', '2 GB uploads and bigger server storage', 'Custom #number tags'],
             primaryLabel: `Lock in ${perMonth}`,
         };
     }
@@ -222,7 +222,7 @@ export function trialPromptCopy(s: TrialPromptStatus, now: Date = new Date()): T
         headline: null,
         qualifier: null,
         wasPrice: null,
-        perks: ['Video calls and screen share', '2 GB uploads', 'Bigger server storage'],
+        perks: ['Video calls and screen share', '2 GB uploads', 'Bigger server storage', 'Custom #number tags'],
         primaryLabel: `Keep Pro at ${perMonth}`,
     };
 }

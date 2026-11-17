@@ -88,7 +88,7 @@ export const DIAGNOSTIC_VERBATIM_KEYS: Readonly<Record<string, RegExp>> = {
     // (Deliberately NOT `kind`: that key is the crash / media enum above.)
     event: /^[a-z][a-z0-9_]{0,39}$/,
     trigger: /^(?:manual|crash_prompt|auto_crash|in_call|freeze_offer)$/,
-    platform: /^(?:win32|darwin|linux)$/,
+    platform: /^(?:win32|darwin|linux|android|ios)$/,
     // `system.global_shortcuts.actions[].accelerator`: a key combo such as `CommandOrControl+Shift+F10`.
     // Verbatim because the scrubber reads a long letters-and-digits run as a base64 blob and would
     // blank the one fact the report exists to show. Printable ASCII without `@` or whitespace.
@@ -133,6 +133,23 @@ export interface DiagnosticPayload {
     net_timing?: NetTimingSnapshot;
     webrtc?: WebrtcSummary;
     crash?: CrashInfo;
+    /**
+     * Only on `unclean_exit` crash reports (kind unclean_exit, incl. hung-exit):
+     * what the session that DIED was doing - its newest perf-log rows, a few
+     * booleans, and when it started / was last known alive. Written by main
+     * while that session ran (electron/previous-session.ts). OPTIONAL KEY
+     * (absent from older clients and from every other kind of report); same
+     * content rules as `perf_log`.
+     */
+    previous_session?: PreviousSession;
+    /**
+     * Crash-category reports only: how many unclean exits (last 14 days) this
+     * install did NOT prompt about because they were not plausibly our crash -
+     * `{installer_replaced, os_restart, external_kill_suspected}` -> count.
+     * Counts only, kept locally by main (electron/unclean-exit-ledger.ts).
+     * OPTIONAL KEY (absent when nothing was suppressed and from older clients).
+     */
+    suppressed_unclean?: Record<string, number>;
     recent_errors?: RecentError[];
     /**
      * What the call engine decided, oldest first. Present (possibly empty) for
@@ -234,6 +251,17 @@ export interface EntitlementInfo {
     max_upload_mb: number;
 }
 
+export interface PreviousSession {
+    /** ISO: when the dead session started. */
+    started_at: string;
+    /** ISO: it was alive at least until here (the upper bound on its life is unknown). */
+    last_written_at: string;
+    app_version: string;
+    state: { in_call?: boolean; sharing?: boolean; camera_live?: boolean; window_visible?: boolean; window_focused?: boolean };
+    /** Oldest first; `t_s` is seconds relative to `last_written_at` (<= 0), NOT to `generated_at`. */
+    rows: PerfRow[];
+}
+
 export interface PerfRow {
     t_s: number;
     source: 'main' | 'renderer' | 'event' | 'metrics';
@@ -288,6 +316,10 @@ export interface InboundTrackStats {
     jitter_ms?: number;
     /** Audio only: average jitter-buffer delay over the last interval, ms. */
     jb_ms?: number;
+    /** Audio only: % of the last interval's samples the decoder made up (concealed = packet-loss concealment), sped up (accel: jitter-buffer backlog drain) or stretched (decel: buffer ran dry). */
+    concealed_pct?: number;
+    accel_pct?: number;
+    decel_pct?: number;
     frames_dropped?: number;
     freeze_count?: number;
     /** Cumulative RTCP counts this RECEIVER sent / decoded: keyframe requests (PLI + FIR), NACKs, keyframes decoded. */

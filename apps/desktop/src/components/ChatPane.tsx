@@ -1,8 +1,9 @@
 import secureLocalStore from '../utils/secureLocalStore';
+import { senderDisplayName } from '../utils/senderDisplayName';
+import { replyQuoteLine } from '../utils/replyQuoteLine';
 import { hasConversationDeviceRoster } from '../utils/conversationDeviceRoster';
 import { attachmentToDeleteWithMessage } from '../utils/attachmentOnDelete';
 import { openExternalLink } from '../utils/openExternalLink';
-import { placeCaretAtEnd } from '../utils/composerCaret';
 import { composerDrafts } from '../utils/composerDraftStore';
 import { draftKey } from '../utils/composerDrafts';
 import { freeTierTooLargeDetail } from '../utils/uploadLimitCopy';
@@ -27,7 +28,7 @@ import { recordEggFound } from '../utils/eggProgress';
 import { mergeIfChanged, setIfChanged } from '../utils/renderMemo';
 import { formatHourMinute, formatNumericDate, formatWeekdayShortMonthDay, formatWeekdayLongMonthDay, formatLongMonthDayYear } from '../utils/messageTimeFormat';
 import { ClButton } from './ClButton';
-import { createPortal } from 'react-dom';
+import { createPortal, flushSync } from 'react-dom';
 import { useMessagePagination, MESSAGE_PAGE_SIZE } from '../hooks/useMessagePagination';
 import { HistoryGapRow } from './HistoryGapRow';
 import { ChannelKeyWait, ChannelKeyWaitBanner } from './ChannelKeyWait';
@@ -52,6 +53,8 @@ import { messageRetentionMs, attachmentRetentionMs, UNSAVE_EXPIRY_MS, getEffecti
 import axios from 'axios';
 import { useAuth } from '../contexts/AuthContext';
 import { useOpenProfile } from '../contexts/ProfileOpenContext';
+import { useRolePicker } from '../contexts/RolePickerContext';
+import { rolesMenuItem } from './server/roles/rolesMenuItem';
 import { scheduleProfilePrefetch } from '../utils/profileCache';
 import { useToast } from '../contexts/ToastContext';
 import { useSubscription } from '../contexts/SubscriptionContext';
@@ -61,12 +64,12 @@ import { downloadEncryptedAttachment, AttachmentDownloadError, describeDownloadE
 import { getRemovedAttachmentIds, markAttachmentRemoved } from '../utils/removedAttachmentTracker';
 import { PrioritySemaphore } from '../utils/avatarWarmQueue';
 import { trackActivity } from '../utils/freezeLog';
-import type { ClientContent, KlipyGifRef } from '@cipherline/shared';
+import type { ClientContent, KlipyGifRef, MessageFont } from '@cipherline/shared';
 import { Permissions, parseKlipyGifRef, isKlipyMediaUrl } from '@cipherline/shared';
 import { requestMoment, mentionMoment, selfReact } from '../utils/moments';
 import { noteAchievementMessage } from '../utils/achievements/tracker';
 import { mentionTokenMatcher, type MentionTokenMatch, extractMentionsFromText, parseMentionToken, mentionsToDisplayText, messageTextMentionsUser, messageTextMentionsRole } from '../utils/mentionTokens';
-import { displayTextOf, displayPreviewOf, messageTextMatches } from '../utils/messagePreviewText';
+import { displayTextOf, toPlainText, messageTextMatches } from '../utils/messagePreviewText';
 import { isLongMessage, previewSnippet } from '../utils/longMessage';
 import { LongMessageBody } from './LongMessage';
 import { UNDECRYPTABLE_KIND, placeholderText } from '../utils/dmInbound';
@@ -182,6 +185,7 @@ import {
     snapshotUserNames,
 } from '../utils/peerIdentityCache';
 import { MsgBarBtn } from './primitives/MsgBarBtn';
+import { shouldReturnFocusToRow } from '../utils/menuFocusReturn';
 import { ChromeText } from './primitives/ChromeText';
 import { MsgActionBar } from './primitives/MsgActionBar';
 import { ConfirmDialog } from './primitives/ConfirmDialog';
@@ -202,6 +206,16 @@ import {
 import { claimFirstSendOfDay, claimOnTheHour } from '../utils/composerFunLedger';
 import { EveryoneConfirmDialog } from './composer/EveryoneConfirmDialog';
 import { ImpactFx, SendSpamReaction, SendChime, ComposerRipple } from './composer/ComposerFun';
+import { FormatToolbar } from './composer/FormatToolbar';
+import { MarkdownPastePrompt } from './composer/MarkdownPastePrompt';
+import { renderFormatted, renderFormattedPreview } from './formatting/FormattedText';
+import { shortcutAction, type FormatAction } from '../utils/formatting/composerFormat';
+import { composerPastePrompt, type ComposerPastePrompt } from '../utils/formatting/composerPaste';
+import { applyMessageSize, extractUniformSize } from '../utils/formatting/richWire';
+import { RichComposer, type RichComposerHandle, type ActiveFormats } from './composer/RichComposer';
+import { embedUrlsOf } from '../utils/formatting/plainText';
+import { fontField, fontStackFor, messageFontOf } from '../utils/formatting/messageFont';
+import { messageSizeOf, scaledPx, sizeField, sizeScaleFor } from '../utils/formatting/messageSize';
 import { buildAttachmentInitiateBody } from '../utils/attachmentInitiate';
 import { writeToClipboard } from '../utils/clipboard';
 import { copyImageWithToast, copyImageSourceFor, embedImageUrlOf } from '../utils/copyImage';
@@ -261,6 +275,8 @@ async function chunkEncryptFile(
 // ── URL embed helpers ─────────────────────────────────────────────────────────
 
 const URL_REGEX = /https?:\/\/[^\s<>"{}|\\^`[\]]+/g;
+/** Ctrl vs Cmd for the composer's formatting shortcuts (same test as Dashboard's isMac). */
+const IS_MAC = typeof navigator !== 'undefined' && navigator.userAgent.toLowerCase().includes('macintosh');
 
 /** Matches a Cipherline server invite URL and captures the invite code. */
 const INVITE_URL_RE = /^https?:\/\/cipherline\.chat\/invite\/([A-Za-z0-9_-]+)$/i;
@@ -1724,6 +1740,12 @@ const NOOP_TYPING: (event: 'typing:start' | 'typing:stop', cid: string) => void 
 const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, keyChangedSenders, senderWarnings = {}, onKeyChangeResolved, messages, messagesFetching = false, onMessageSent, onAddToGroup, typingUsers, sendTypingEvent: sendTypingEventProp, activeCall, onCallChange, getCallKey, onStartingCallChange, chatSearch = '', friendRemovedEvent, onCloseChatRequest, notifPref = 'all', onSetNotifMode, retention, friendStatuses, pinnedMsgIds, onPinMessage, onUnpinMessage, serverSavedIds = [], onServerSaveMessage, onServerUnsaveMessage, pinnedSidebarExpanded, onTogglePinnedSidebar, onOpenPinnedCallOverlay, pinnedSearchQuery, jumpToMessageRef, onOpenProfile, avatarUpdatedEvent, activeChannel = null, emojisChangedEvent, serverChannels, serverCategories, onNavigateToChannel, onChannelMessageSent, onPatchSentMessage, memberRoleColors, serverMemberNicknames, channelMessageRetention, channelAttachmentRetention, convType, servers = [], onInviteJoin, onInviteCodeClick, channelPermissions, channelKeyMissing = false, channelKeyCoolingOff = false, onChannelKeyMissing, onRetryChannelKeys, historyGaps = NO_HISTORY_GAPS, historyStart = false, onFillHistoryGap, onLoadMessageContext, readReceipts = {}, sendReadReceipt, showReadReceipts = true, myUserId = '', onReport }) => {
     const { token, deviceId, user, userId: authUserId } = useAuth();
     const openProfileCtx = useOpenProfile();
+    const rolePicker = useRolePicker();
+    /** In a server channel, profiles open with the server attached so the card
+     *  shows the member's roles (and, for managers, the "+" role button). */
+    const serverProfileCtx = activeChannel
+        ? { roleIds: [] as string[], roles: [] as Array<{ role_id: string; name: string; color: number }>, serverId: activeChannel.server_id }
+        : undefined;
     const toast = useToast();
     // "Message yourself": a one-member DM. Derived from the chat's own shape
     // (`other_user_id` is YOUR id) so it holds for every way the chat can be
@@ -1880,6 +1902,24 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
     const [sendChime, setSendChime] = useState(0);      // >0 = rings playing (key)
     const [composerRipple, setComposerRipple] = useState(0);
     const [pasteChip, setPasteChip] = useState<string | null>(null);
+    // ── Formatting (utils/formatting, components/composer/FormatToolbar) ──────
+    // The bar's open state lasts the session (like Slack's bar). The message
+    // FONT is per message: nothing sticks after a send (owner, 2026-11-16:
+    // "make it so all of them is never remembered after I send the message").
+    // It lives in this pane's state only — never in a draft, in
+    // secureLocalStore or anywhere else — so a conversation switch (the pane
+    // remounts) starts at Default too. Text SIZE is a span style in the box
+    // (owner, same day: "highlight some text make it big, and other text make
+    // it small, all in one message"): it lives in the text like bold, and a
+    // size armed for what you type next is dropped when the box is cleared.
+    const [formatBarOpen, setFormatBarOpen] = useState(false);
+    const [composerFont, setComposerFont] = useState<MessageFont | null>(null);
+    /** The font in use before an edit loaded the edited message's own. */
+    const preEditFontRef = useRef<MessageFont | null>(null);
+    /** What is active at the composer's caret, for the bar's pressed buttons. */
+    const [composerFormats, setComposerFormats] = useState<ActiveFormats | null>(null);
+    /** A Markdown- or code-looking paste awaiting "Format / Keep as plain": where it went in (plain-text offset in the box), what went in, which offer. */
+    const [mdPaste, setMdPaste] = useState<{ start: number; inserted: string; source: string; offer: ComposerPastePrompt; landed?: boolean } | null>(null);
     const funTimersRef = useRef<number[]>([]);
     const arrowUpSeqRef = useRef(0);
     useEffect(() => () => {
@@ -2241,7 +2281,12 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
     const preservedScrollHeightRef = useRef<number | null>(null);
     const feedRef = useRef<HTMLDivElement>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
-    const inputRef = useRef<HTMLTextAreaElement>(null);
+    /** The composer box (components/composer/RichComposer): a WYSIWYG editor with a textarea-like handle. */
+    const inputRef = useRef<RichComposerHandle>(null);
+    /** The box's element, for the suggestion menus to anchor to (state, so render never reads the ref). */
+    const [composerEl, setComposerEl] = useState<HTMLElement | null>(null);
+    /** Set around our own edits of the box (a suggestion picked) so they don't reopen a menu. */
+    const suppressTriggersRef = useRef(false);
     const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const hasSentOnce = useRef(false); // guard: don't steal focus on mount
     const autoDecryptingRef = useRef<Set<string>>(new Set()); // in-flight auto-decrypt guard
@@ -2649,6 +2694,9 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
     const reactionHoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
     const [highlightedMsgId, setHighlightedMsgId] = useState<string | null>(null);
     const pendingScrollMsgIdRef = useRef<string | null>(null);
+    /** Until this time (ms) a jump-to-message is scrolling: the feed's
+     *  scroll-to-top "load earlier" must not prepend rows under it. */
+    const jumpScrollUntilRef = useRef(0);
 
     // Listen for global keybind events dispatched by Dashboard
     useEffect(() => {
@@ -2760,7 +2808,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         );
     };
     // Typing the closing colon of a complete known name converts it in the box.
-    const convertTypedShortcode = useComposerShortcodes({ serverEmojis, myEmojiEntries, emojiTokenMapRef, setInputText });
+    const convertTypedShortcode = useComposerShortcodes({ serverEmojis, myEmojiEntries, emojiTokenMapRef });
     // A pick is remembered per conversation: a `:name:` picked in one server
     // must never leak into another chat's send (stale-token bug), and the
     // composer's draft survives a switch as plain `:name:` text, which the
@@ -2800,7 +2848,11 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         if (msgContextMenu.isOpen || !msgCtxOpenIdRef.current) return;
         const id = msgCtxOpenIdRef.current;
         msgCtxOpenIdRef.current = null;
-        document.getElementById(`msg-${id}`)?.focus();
+        // The menu unmounts ~290ms after a pick (flash + exit animation), AFTER an
+        // action like Reply has already focused the composer. Returning focus
+        // unconditionally stole it back, so only do it if focus was left homeless.
+        const row = document.getElementById(`msg-${id}`);
+        if (shouldReturnFocusToRow(document.activeElement, row)) row?.focus();
     }, [msgContextMenu.isOpen]);
     // Ticker forces a re-render every 30s so "will be deleted in Xh" badges count down.
     const [nowTick, setNowTick] = useState(0);
@@ -3872,13 +3924,16 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         }
     };
 
-    const handleInputTyping = (e: React.ChangeEvent<HTMLTextAreaElement | HTMLInputElement>) => {
-        const val = e.target.value;
+    /**
+     * Every change in the composer box (components/composer/RichComposer).
+     * `val` is the message text (formatting as syntax — what is sent and
+     * drafted); `plain` is what the box shows and `caret` an offset in it. The
+     * suggestion menus read the PLAIN text, so a formatting marker never hides
+     * an `@` / `#` / `:` in front of the caret.
+     */
+    const handleComposerChange = (val: string, { plain, caret }: { plain: string; caret: number }) => {
         setInputText(val);
-        if (e.target instanceof HTMLTextAreaElement) {
-            e.target.style.height = 'auto'; // reset to measure true content height
-            e.target.style.height = `${Math.min(e.target.scrollHeight, 260)}px`;
-        }
+        if (suppressTriggersRef.current) return;
 
         // Write-then-erase egg: remember the longest this draft ever got, and
         // when it collapses back to empty, count that as one erase.
@@ -3896,7 +3951,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         }
 
         // ALL CAPS detection — 6+ consecutive uppercase-only letters
-        const loud = /[A-Z]{6,}/.test(val) && val !== val.toLowerCase();
+        const loud = /[A-Z]{6,}/.test(plain) && plain !== plain.toLowerCase();
         setLoudInput(loud);
         if (loud) recordEggFound('caps-inflate');
         // Something to send now: the disabled-send reaction (if any) is moot.
@@ -3906,10 +3961,12 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         }
 
         // ── :emoji: autocomplete detection ────────────────────────────────────
-        const cursor = (e.target as HTMLTextAreaElement).selectionStart ?? val.length;
-        const before = val.slice(0, cursor);
+        const cursor = caret;
+        // Inside inline code or a code block nothing is a mention, emoji or channel.
+        const inCode = inputRef.current?.caretInCode() ?? false;
+        const before = inCode ? '' : plain.slice(0, cursor);
         // The closing colon of a complete `:name:` turns it into the emoji right here.
-        convertTypedShortcode(val, cursor, e.target instanceof HTMLTextAreaElement ? e.target : null);
+        if (!inCode) convertTypedShortcode(plain, cursor, inputRef.current);
         // Match a lone colon followed by 2+ word chars with no space since it
         const triggerMatch = before.match(/:([a-z0-9_+-]{2,})$/i);
         if (triggerMatch) {
@@ -4047,20 +4104,26 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         if (suggestion.custom || suggestion.personal) {
             emojiTokenMapRef.current[displayText] = `<:${suggestion.name}:${suggestion.id}>`;
         }
-        const before = inputText.slice(0, emojiQueryRange.start);
-        const after = inputText.slice(emojiQueryRange.end);
-        const next = before + displayText + after;
-        setInputText(next);
         setEmojiSuggestions([]);
         setEmojiQueryRange(null);
-        requestAnimationFrame(() => {
-            const ta = inputRef.current;
-            if (ta) {
-                const pos = emojiQueryRange.start + displayText.length;
-                ta.focus();
-                ta.setSelectionRange(pos, pos);
-            }
-        });
+        // The range is in the box's plain text; the box keeps the style around it.
+        replaceInComposer(emojiQueryRange.start, emojiQueryRange.end, displayText);
+    };
+
+    /** Put a picked suggestion into the box as one undoable edit, caret after it, without reopening a menu. */
+    const replaceInComposer = (start: number, end: number, text: string) => {
+        const ed = inputRef.current;
+        if (!ed) return;
+        suppressTriggersRef.current = true;
+        try { ed.replaceRange(start, end, text); } finally { suppressTriggersRef.current = false; }
+        ed.focus();
+    };
+    /** `text` + one space over [start, end), swallowing the spaces already after it. */
+    const replaceWithSpaced = (start: number, end: number, text: string) => {
+        const plain = inputRef.current?.getPlain() ?? '';
+        let e = end;
+        while (plain[e] === ' ') e++;
+        replaceInComposer(start, e, `${text} `);
     };
 
     const insertMentionSuggestion = (suggestion: MentionSuggestion) => {
@@ -4075,21 +4138,10 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         } else if (suggestion.type === 'role') {
             mentionTokenMapRef.current[suggestion.label] = `<@r:${suggestion.id}:${suggestion.label}>`;
         }
-        const before = inputText.slice(0, mentionQueryRange.start);
-        const after  = inputText.slice(mentionQueryRange.end);
-        // Always add a trailing space after the token if there isn't one
-        const next = before + displayToken + (after.startsWith(' ') ? '' : ' ') + after.trimStart();
-        setInputText(next);
         setMentionSuggestions([]);
         setMentionQueryRange(null);
-        requestAnimationFrame(() => {
-            const ta = inputRef.current;
-            if (ta) {
-                const pos = mentionQueryRange.start + displayToken.length + 1;
-                ta.focus();
-                ta.setSelectionRange(pos, pos);
-            }
-        });
+        // Always one space after the token.
+        replaceWithSpaced(mentionQueryRange.start, mentionQueryRange.end, displayToken);
     };
 
     const insertChannelSuggestion = (candidate: ChannelCandidate) => {
@@ -4099,20 +4151,9 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         const name = candidate.channel.name;
         const displayToken = `#${name}`;
         channelRefMapRef.current[name] = candidate.channel.channel_id;
-        const before = inputText.slice(0, channelQueryRange.start);
-        const after  = inputText.slice(channelQueryRange.end);
-        const next = before + displayToken + (after.startsWith(' ') ? '' : ' ') + after.trimStart();
-        setInputText(next);
         setChannelSuggestions([]);
         setChannelQueryRange(null);
-        requestAnimationFrame(() => {
-            const ta = inputRef.current;
-            if (ta) {
-                const pos = channelQueryRange.start + displayToken.length + 1;
-                ta.focus();
-                ta.setSelectionRange(pos, pos);
-            }
-        });
+        replaceWithSpaced(channelQueryRange.start, channelQueryRange.end, displayToken);
     };
 
     /**
@@ -4199,25 +4240,63 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         setTimeout(() => inputRef.current?.focus(), 0);
     };
 
-    const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement | HTMLInputElement>) => {
+    /** A formatting-bar button or shortcut, applied to the composer's selection (RichComposer.applyFormat). */
+    const runFormatAction = (action: FormatAction) => {
+        const ed = inputRef.current;
+        if (!ed || sending || cooldownSecs > 0 || !canSend) return;
+        ed.applyFormat(action);
+        ed.focus();
+    };
+
+    /**
+     * "Format" on the paste prompt: swap the pasted range (plain-text offsets
+     * in the box) for its formatted form — Markdown shown formatted, or code
+     * in a code block — if it is still intact. One undoable step.
+     */
+    const formatPastedMarkdown = () => {
+        const p = mdPaste;
+        setMdPaste(null);
+        const ed = inputRef.current;
+        if (!p || !ed || ed.getPlain().slice(p.start, p.start + p.inserted.length) !== p.inserted) return;
+        const end = p.start + p.inserted.length;
+        if (p.offer.kind === 'code') ed.replaceWithCodeBlock(p.start, end, p.offer.lang);
+        else ed.replaceWithWire(p.start, end, p.offer.wire);
+        ed.focus();
+    };
+
+    // The prompt belongs to that exact pasted text: it goes away once the text
+    // is edited, deleted or sent.
+    useEffect(() => {
+        if (!mdPaste) return;
+        const plain = inputRef.current?.getPlain() ?? '';
+        const here = plain.slice(mdPaste.start, mdPaste.start + mdPaste.inserted.length) === mdPaste.inserted;
+        if (!mdPaste.landed) { if (here) setMdPaste({ ...mdPaste, landed: true }); }
+        else if (!here) setMdPaste(null);
+    }, [inputText, mdPaste]);
+
+    /**
+     * A paste into the composer, before the box inserts it. The box reads
+     * text/plain ONLY (pasted HTML can never bring markup or styles in), and
+     * calls this first: files are staged here (true = handled, nothing is
+     * typed); a text paste gets its length warnings.
+     */
+    const handlePaste = (e: React.ClipboardEvent<HTMLDivElement>, text: string): boolean => {
         const raw = Array.from(e.clipboardData.files);
         if (raw.length > 0) {
-            e.preventDefault();
             if (!canAttach) {
                 toast.push({
                     kind: 'warning',
                     title: 'No permission',
                     message: "You don't have permission to attach files in this channel.",
                 });
-                return;
+                return true;
             }
             const files = filterUploadableFiles(raw);
             if (files.length > 0) setStagedFiles(prev => [...prev, ...files]);
-            return;
+            return true;
         }
-        // Text paste — warn if the clipboard plus the current input would exceed
-        // the cap (the browser's maxLength will silently clamp otherwise).
-        const text = e.clipboardData.getData('text');
+        // Warn if the clipboard plus the current text would exceed the cap
+        // (the box cuts a paste to fit).
         if (text && inputText.length + text.length > MAX_TEXT_MESSAGE_LENGTH) {
             const fits = Math.max(0, MAX_TEXT_MESSAGE_LENGTH - inputText.length);
             toast.push({
@@ -4232,6 +4311,19 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
             setPasteChip(BIG_PASTE_LINES[Math.floor(Date.now() / 1000) % BIG_PASTE_LINES.length]);
             funLater(() => setPasteChip(null), 2700);
         }
+        return false;
+    };
+
+    /**
+     * After a text paste went in (as literal text): offer to format it —
+     * Markdown from elsewhere (ChatGPT, GitHub…) or our own syntax shown
+     * formatted, or code as a code block (utils/formatting/composerPaste).
+     * Only when the whole paste went in: a cut paste is not that text any more.
+     */
+    const handlePasted = (start: number, inserted: string, original: string) => {
+        const offer = inserted === original.replace(/\r\n?/g, '\n') ? composerPastePrompt(original) : null;
+        if (offer) setMdPaste({ start, inserted, source: original, offer, landed: true });
+        else setMdPaste(null);
     };
 
     const removeStagedFile = (idx: number) => {
@@ -4881,6 +4973,49 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         });
     };
 
+    /**
+     * Centre a painted message row in the feed and flash it. Returns false when
+     * the row isn't in the DOM. Smooth-scrolls, then re-measures once the
+     * scroll has had time to land and corrects instantly if the row moved
+     * (rows above it decrypting, images sizing in) so a long jump still ends
+     * ON the message. Scroll-to-top loading is held off while it runs.
+     */
+    const centreMessageRow = useCallback((id: string): boolean => {
+        const feedEl = feedRef.current;
+        if (!feedEl) return false;
+        const rowEl = () => document.getElementById(`msg-${id}`);
+        const msgEl = rowEl();
+        if (!msgEl) return false;
+
+        // Disengage auto-follow so the layout effect won't snap us back.
+        followBottomRef.current = false;
+        isAtBottomRef.current   = false;
+        setShowScrollBtn(true);
+        jumpScrollUntilRef.current = Date.now() + 1500;
+
+        // Scroll the feed container directly — more reliable than scrollIntoView
+        // which walks all scrollable ancestors and can hit the wrong container.
+        const offCentre = (el: HTMLElement) => {
+            const feedRect = feedEl.getBoundingClientRect();
+            const msgRect  = el.getBoundingClientRect();
+            return msgRect.top - feedRect.top - (feedRect.height - msgRect.height) / 2;
+        };
+        feedEl.scrollTo({ top: Math.max(0, feedEl.scrollTop + offCentre(msgEl)), behavior: 'smooth' });
+        for (const ms of [700, 1300]) {
+            setTimeout(() => {
+                const el = rowEl();
+                const feed = feedRef.current;
+                if (!el || !feed || followBottomRef.current) return; // left, or the reader went back to the bottom
+                const off = offCentre(el);
+                if (Math.abs(off) > 24) feed.scrollTo({ top: Math.max(0, feed.scrollTop + off), behavior: 'auto' });
+            }, ms);
+        }
+
+        setHighlightedMsgId(id);
+        setTimeout(() => setHighlightedMsgId(prev => (prev === id ? null : prev)), 1800);
+        return true;
+    }, []);
+
     /** Scroll the feed to centre a message row by id, flash it, expand pagination if needed. */
     const jumpToMessage = useCallback((targetId: string) => {
         // Resolve ID: also try matching content.client_msg_id for group-chat cross-device
@@ -4894,30 +5029,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
             return (byClient?.id as string | undefined) ?? targetId;
         })();
 
-        const doScroll = (id: string): boolean => {
-            const feedEl = feedRef.current;
-            if (!feedEl) return false;
-            const msgEl = document.getElementById(`msg-${id}`);
-            if (!msgEl) return false;
-
-            // Disengage auto-follow so the layout effect won't snap us back.
-            followBottomRef.current = false;
-            isAtBottomRef.current   = false;
-            setShowScrollBtn(true);
-
-            // Scroll the feed container directly — more reliable than scrollIntoView
-            // which walks all scrollable ancestors and can hit the wrong container.
-            const feedRect = feedEl.getBoundingClientRect();
-            const msgRect  = msgEl.getBoundingClientRect();
-            const centredTop = feedEl.scrollTop
-                + msgRect.top  - feedRect.top
-                - (feedRect.height - msgRect.height) / 2;
-            feedEl.scrollTo({ top: Math.max(0, centredTop), behavior: 'smooth' });
-
-            setHighlightedMsgId(id);
-            setTimeout(() => setHighlightedMsgId(prev => (prev === id ? null : prev)), 1800);
-            return true;
-        };
+        const doScroll = (id: string): boolean => centreMessageRow(id);
 
         if (doScroll(resolvedId)) return;
 
@@ -4946,7 +5058,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
             if (!pending) return; // already handled by the effect below
             if (doScroll(pending)) pendingScrollMsgIdRef.current = null;
         }, 200);
-    }, [pagination, messages, isServerChannel, channelId, onLoadMessageContext, toast]);
+    }, [pagination, messages, isServerChannel, channelId, onLoadMessageContext, toast, centreMessageRow]);
 
     // Keep the jumpToMessage function accessible to Dashboard (for call-overlay jump).
     useEffect(() => {
@@ -4965,26 +5077,8 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
     useEffect(() => {
         const id = pendingScrollMsgIdRef.current;
         if (!id) return;
-        const feedEl = feedRef.current;
-        if (!feedEl) return;
-        const msgEl = document.getElementById(`msg-${id}`);
-        if (!msgEl) return;
-
-        pendingScrollMsgIdRef.current = null;
-        followBottomRef.current = false;
-        isAtBottomRef.current   = false;
-        setShowScrollBtn(true);
-
-        const feedRect = feedEl.getBoundingClientRect();
-        const msgRect  = msgEl.getBoundingClientRect();
-        const centredTop = feedEl.scrollTop
-            + msgRect.top  - feedRect.top
-            - (feedRect.height - msgRect.height) / 2;
-        feedEl.scrollTo({ top: Math.max(0, centredTop), behavior: 'smooth' });
-
-        setHighlightedMsgId(id);
-        setTimeout(() => setHighlightedMsgId(prev => (prev === id ? null : prev)), 1800);
-    }, [pagination.displayed]);
+        if (centreMessageRow(id)) pendingScrollMsgIdRef.current = null;
+    }, [pagination.displayed, centreMessageRow]);
 
     // ── Instant reactions (utils/pendingReactions.ts) ──────────────────────────
     // A click changes the chip at once; the E2EE `reaction` message is sent
@@ -5053,6 +5147,9 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
     // eslint-disable-next-line react-hooks/exhaustive-deps -- reactionMineKeys is derived from user/deviceId/activeChannel
     }, [messages, reactionsVersion, reactionConvKey]);
 
+    /** The latest handleSendAll (a send that converts a pending shortcut first re-enters through it after a flush). */
+    const sendAllRef = useRef<(e?: React.FormEvent, opts?: { everyoneConfirmed?: boolean }) => Promise<void>>(async () => {});
+
     /** Whatever was in the composer when an edit was opened, restored on cancel. */
     const preEditDraftRef = useRef<string>('');
     /** Set by startEdit: put the caret at the end of the composer once the
@@ -5065,12 +5162,12 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         if (caretToEndRef.current) {
             caretToEndRef.current = false;
             restoreCaretRef.current = false;
-            placeCaretAtEnd(ta);
-        } else if (restoreCaretRef.current && ta.value === inputText) {
+            ta.placeCaretAtEnd();
+        } else if (restoreCaretRef.current) {
             // A restored draft: caret at its end and the box sized to it, but
             // without taking focus — the pane may open with focus elsewhere.
             restoreCaretRef.current = false;
-            placeCaretAtEnd(ta, { focus: false });
+            ta.placeCaretAtEnd({ focus: false });
         }
     });
 
@@ -5109,7 +5206,13 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
     const startEdit = (msg: any) => {
         // Opening an edit replaces the composer contents; hold the draft so
         // Escape / Cancel can hand it back instead of silently eating it.
-        if (!editingId) preEditDraftRef.current = inputText;
+        if (!editingId) {
+            preEditDraftRef.current = inputText;
+            preEditFontRef.current = composerFont;
+        }
+        // The edit shows (and keeps, unless changed) the message's own font; a
+        // whole-message `size` loads as a size span over all of its text.
+        setComposerFont(messageFontOf(msg.content));
         setEditingId(msg.id);
         setReplyingId(null);
         // The composer speaks DISPLAY text (`@name`, `:party:`); the stored
@@ -5125,7 +5228,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         // Same round-trip for #channel links: an untouched `#name` keeps its
         // link on save instead of silently becoming plain text.
         channelRefMapRef.current   = { ...channelRefMapRef.current, ...channelRefNameMap(msg.content.channel_refs) };
-        setInputText(mentionsToDisplayText(rawText));
+        setInputText(applyMessageSize(mentionsToDisplayText(rawText), messageSizeOf(msg.content)));
         // Caret to the END of the message being edited, box scrolled there.
         // The layout effect above does it once React has committed the new
         // value (placing it from a bare timer raced the commit, and a focus()
@@ -5136,7 +5239,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         setTimeout(() => {
             if (!caretToEndRef.current) return;
             caretToEndRef.current = false;
-            placeCaretAtEnd(inputRef.current);
+            inputRef.current?.placeCaretAtEnd();
         }, 0);
     };
 
@@ -5150,15 +5253,10 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
             setEditingId(null);
             setInputText(preEditDraftRef.current);
             preEditDraftRef.current = '';
+            setComposerFont(preEditFontRef.current);
         }
         setReplyingId(id);
-        setTimeout(() => {
-            const ta = inputRef.current;
-            if (!ta) return;
-            ta.style.height = 'auto';
-            ta.style.height = `${Math.min(ta.scrollHeight, 260)}px`;
-            ta.focus();
-        }, 0);
+        setTimeout(() => inputRef.current?.focus(), 0);
     };
 
     /** Abandon the in-progress edit, restore the pre-edit draft, refocus the composer. */
@@ -5167,17 +5265,10 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         preEditDraftRef.current = '';
         setEditingId(null);
         setInputText(draft);
-        setTimeout(() => {
-            const ta = inputRef.current;
-            if (!ta) return;
-            ta.style.height = 'auto';
-            ta.style.height = `${Math.min(ta.scrollHeight, 260)}px`;
-            ta.focus();
-            // Caret to the end of the restored draft rather than wherever the
-            // edited text left it.
-            const end = ta.value.length;
-            ta.setSelectionRange(end, end);
-        }, 0);
+        setComposerFont(preEditFontRef.current);
+        // Caret to the end of the restored draft rather than wherever the
+        // edited text left it.
+        setTimeout(() => inputRef.current?.placeCaretAtEnd(), 0);
     };
 
     // Escape backs out of an edit wherever focus is — the composer handler
@@ -5358,6 +5449,17 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
 
     const handleSendAll = async (e?: React.FormEvent, opts?: { everyoneConfirmed?: boolean }) => {
         e?.preventDefault();
+        // A shortcut typed right up to the send (`**bold**` then Enter) converts
+        // first, like Slack; the send then runs on the converted text.
+        if (inputRef.current?.commitPending()) {
+            flushSync(() => {});
+            return sendAllRef.current(undefined, opts);
+        }
+        // Text size (utils/formatting/richWire extractUniformSize): ONE size for
+        // the whole message goes out as the per-message `size` field with clean
+        // text (what older clients render best); mixed sizes stay [small] /
+        // [large] spans in the text, with no field.
+        const sized = extractUniformSize(inputText);
         if (!bundleReady) { toast.push({ kind: 'info', title: 'Please Wait', message: 'Establishing secure session — please wait a moment' }); return; }
         if (sending || (stagedFiles.length === 0 && !inputText.trim())) {
             if (!sending && stagedFiles.length === 0 && !inputText.trim()) {
@@ -5402,7 +5504,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         let bigRoomMass: 'everyone' | 'here' | null = null;
         if (activeChannel && !editingId && inputText.trim()) {
             try {
-                const wire = toWireText(inputText);
+                const wire = toWireText(sized.text);
                 const parsed = extractInviteCode(wire.trim()) ? [] : extractMentionsFromText(wire);
                 const memberCount = mentionMembers.length || null;
                 if (needsEveryoneConfirm({
@@ -5460,12 +5562,14 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
             sendTimestamps.current.push(Date.now()); // the rate limiter counts it NOW, not after the round trip
             emojiTokenMapRef.current = {}; // picks belong to the message just sent
             setInputText('');
+            // Nothing sticks after a send: the next message starts at the
+            // default font and size, with no style switched on.
+            setComposerFont(null);
             setLoudInput(false);
             emptySendRef.current = 0;
             draftHighWater.current = 0;
             draftErases.current = 0;
             attachRemovals.current = 0;
-            setTimeout(() => { if (inputRef.current) inputRef.current.style.height = 'auto'; }, 0);
             setReplyingId(null);
             if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
             sendTypingEvent('typing:stop', activeChat.id);
@@ -5507,7 +5611,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                 // Transform display text (@label) → wire tokens (<@type:id:label>) before sending.
                 // For channel mode we have a full label→token map; for DM/group mode the map is
                 // populated with @everyone/@here only (no member list needed there).
-                const wireText = toWireText(inputText);
+                const wireText = toWireText(sized.text);
                 // #channel links: server channels only, and only the picked /
                 // seeded names still present in the final text.
                 const channelRefs = activeChannel ? collectChannelRefs(wireText, channelRefMapRef.current) : [];
@@ -5517,7 +5621,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                     // and routes through the channel Sender Key + the channel
                     // edit endpoint when applicable. An edit carries its
                     // complete channel_refs (none = the field is omitted).
-                    await dispatchAction({ type: 'edit', target_id: editingId, text: wireText, ...(channelRefs.length > 0 ? { channel_refs: channelRefs } : {}) });
+                    await dispatchAction({ type: 'edit', target_id: editingId, text: wireText, ...(channelRefs.length > 0 ? { channel_refs: channelRefs } : {}), ...fontField(composerFont), ...sizeField(sized.size) });
                     setEditingId(null);
                 } else if (activeChannel) {
                     // ── Sender Keys channel message path ──────────────────────────────
@@ -5569,7 +5673,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                     }
                     const msgContent: ClientContent = bareInviteCode
                         ? { client_msg_id: safeUUID, type: 'server_invite', code: bareInviteCode }
-                        : { client_msg_id: safeUUID, type: 'text', text: wireText, ...(replyingId ? { reply_to_id: replyingId } : {}), ...(mentions.length > 0 ? { mentions } : {}), ...(channelRefs.length > 0 ? { channel_refs: channelRefs } : {}) };
+                        : { client_msg_id: safeUUID, type: 'text', text: wireText, ...(replyingId ? { reply_to_id: replyingId } : {}), ...(mentions.length > 0 ? { mentions } : {}), ...(channelRefs.length > 0 ? { channel_refs: channelRefs } : {}), ...fontField(composerFont), ...sizeField(sized.size) };
                     // Big room + @everyone/@here (confirmed above): this row lands
                     // with an impact instead of the usual entrance.
                     if (bigRoomMass && mentionsEveryone) impactSlot.arm(ownRowKey(safeUUID));
@@ -5625,7 +5729,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                     if (dmMentionMo) requestMoment(dmMentionMo);
                     const content: ClientContent = bareInviteCode
                         ? { client_msg_id: safeUUID, type: 'server_invite', code: bareInviteCode }
-                        : { client_msg_id: safeUUID, type: 'text', text: wireText, ...(replyingId ? { reply_to_id: replyingId } : {}), ...(mentions.length > 0 ? { mentions } : {}) };
+                        : { client_msg_id: safeUUID, type: 'text', text: wireText, ...(replyingId ? { reply_to_id: replyingId } : {}), ...(mentions.length > 0 ? { mentions } : {}), ...fontField(composerFont), ...sizeField(sized.size) };
                     const sentMsg = {
                         id: content.client_msg_id!,
                         content,
@@ -5665,6 +5769,10 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                     if (editingId) preEditDraftRef.current = '';
                     emojiTokenMapRef.current = {}; // picks belong to the message just sent
                     setInputText(resumeDraft);
+                    // Nothing sticks after a send. Saving an edit hands back the
+                    // draft's own font: the edited message's never carries over
+                    // to the next one.
+                    setComposerFont(editingId ? preEditFontRef.current : null);
                     setLoudInput(false);
                     emptySendRef.current = 0;
                     // A send empties the field too, but it isn't second-guessing —
@@ -5673,7 +5781,6 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                     draftHighWater.current = 0;
                     draftErases.current = 0;
                     attachRemovals.current = 0;
-                    setTimeout(() => { if (inputRef.current) inputRef.current.style.height = 'auto'; }, 0);
                     setReplyingId(null);
                     if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
                     sendTypingEvent('typing:stop', activeChat.id);
@@ -5768,6 +5875,9 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
     // that was live when it opened.
     const handleSendAllRef = useRef<typeof handleSendAll | null>(null);
     useEffect(() => { handleSendAllRef.current = handleSendAll; });
+    // sendAllRef: a LAYOUT effect, which flushSync runs synchronously, so it is
+    // the current handler right after the flushSync in handleSendAll.
+    useLayoutEffect(() => { sendAllRef.current = handleSendAll; });
 
     const [pendingCallMode, setPendingCallMode] = useState<boolean | null>(null);
 
@@ -6270,15 +6380,29 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
         // Same target as clicking the sender's name in the header: your own
         // profile for "You", the sender's for anyone else.
         const nameTargetId = isMe ? (user?.user_id ?? null) : (msg.sender_user_id ?? null);
+        const authorGroup: ContextMenuItem[] = [];
         if (nameTargetId && (openProfileCtx || onOpenProfile)) {
-            groups.push([{
+            authorGroup.push({
                 icon: <User />, label: 'View Profile',
                 onSelect: () => {
-                    if (openProfileCtx) openProfileCtx(nameTargetId, { x: e.clientX, y: e.clientY });
+                    if (openProfileCtx) openProfileCtx(nameTargetId, { x: e.clientX, y: e.clientY }, serverProfileCtx);
                     else onOpenProfile!(nameTargetId);
                 },
-            }]);
+            });
         }
+        // Server channels: managers change the author's roles right here —
+        // "Roles ▸" opens the shared role picker as a hover flyout beside the
+        // menu. MANAGE_ROLES/ADMINISTRATOR + at least one role below the
+        // viewer's highest; the API enforces both.
+        if (nameTargetId && activeChannel && rolePicker?.canAssignRoles(activeChannel.server_id)) {
+            const authorName = (serverMemberNicknames?.[nameTargetId]) ?? userIdToUsername[nameTargetId] ?? undefined;
+            authorGroup.push(rolesMenuItem({
+                serverId: activeChannel.server_id,
+                userId: nameTargetId,
+                displayName: authorName,
+            }));
+        }
+        if (authorGroup.length) groups.push(authorGroup);
 
         // ── Pin / Save ────────────────────────────────────────────────────────
         const pinSaveGroup: ContextMenuItem[] = [];
@@ -7029,7 +7153,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                         if (anchor && row) anchor.top = row.getBoundingClientRect().top - el.getBoundingClientRect().top;
                     }
                     checkBottom();
-                    if (el && el.scrollTop < 80 && !chatSearch.trim()) {
+                    if (el && el.scrollTop < 80 && !chatSearch.trim() && Date.now() >= jumpScrollUntilRef.current) {
                         if (pagination.hasMore) {
                             preservedScrollHeightRef.current = el.scrollHeight;
                             pagination.loadMore();
@@ -7624,10 +7748,12 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                         // the row has one. `sender_device_id` is chosen by the
                         // sender, so resolving it first let a group member show
                         // under another member's name and avatar.
-                        const resolvedName = (activeChannel && msg.sender_user_id && serverMemberNicknames?.[msg.sender_user_id])
-                            ?? (msg.sender_user_id ? userIdToUsername[msg.sender_user_id] : null)
-                            ?? (msg.sender_user_id ? null : deviceToUsername[msg.sender_device_id])
-                            ?? (isMe ? (user?.username ?? 'You') : 'Unknown User');
+                        const nameCtx = {
+                            inServerChannel: !!activeChannel, nicknames: serverMemberNicknames,
+                            userIdToUsername, deviceToUsername,
+                            myUserId: user?.user_id, myUsername: user?.username, myDeviceIds,
+                        };
+                        const resolvedName = senderDisplayName(msg, nameCtx);
                         const resolvedAvatar = isMe
                             ? (user?.avatar_url || undefined)
                             : (msg.sender_user_id
@@ -7897,7 +8023,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                                 } : undefined}
                                                 onClick={nameClickable ? (e) => {
                                                     e.stopPropagation();
-                                                    if (openProfileCtx) openProfileCtx(nameTargetId!, { x: e.clientX, y: e.clientY });
+                                                    if (openProfileCtx) openProfileCtx(nameTargetId!, { x: e.clientX, y: e.clientY }, serverProfileCtx);
                                                     else onOpenProfile!(nameTargetId!);
                                                 } : undefined}
                                             >
@@ -7941,14 +8067,26 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                     })()}
 
                                     {/* Reply quote preview — click to jump to the original message */}
-                                    {msg.content?.reply_to_id && (
-                                        <div
-                                            onClick={(e) => { e.stopPropagation(); jumpToMessage(msg.content.reply_to_id); }}
-                                            className="text-[12px] p-2 rounded-lg mb-1 opacity-70 border-l-2 border-cl-lume/50 bg-white/[0.03] w-fit max-w-full min-w-0 overflow-hidden whitespace-nowrap text-ellipsis cursor-pointer hover:bg-white/[0.06] hover:opacity-90 transition-colors"
-                                        >
-                                            {previewSnippet(displayPreviewOf(replyTarget?.content) ?? '') || 'Original message'}
-                                        </div>
-                                    )}
+                                    {/* Like mobile (owner, 2026-11-16): who sent the original on
+                                        top, then one line of it. No name while the original isn't
+                                        loaded: "Original message" says nothing about who. */}
+                                    {msg.content?.reply_to_id && (() => {
+                                        const replyLine = replyQuoteLine(replyTarget?.content, c => previewSnippet(toPlainText(c.text)));
+                                        const replyWho = replyTarget ? senderDisplayName(replyTarget, nameCtx) : null;
+                                        return (
+                                            <div
+                                                onClick={(e) => { e.stopPropagation(); jumpToMessage(msg.content.reply_to_id); }}
+                                                data-testid="reply-quote"
+                                                aria-label={`Reply to ${replyWho ?? 'a message'}: ${replyLine}`}
+                                                className="flex flex-col gap-0.5 text-[12px] px-2 py-1.5 rounded-lg mb-1 opacity-80 border-l-2 border-cl-lume/50 bg-white/[0.03] w-fit max-w-full min-w-0 overflow-hidden cursor-pointer hover:bg-white/[0.06] hover:opacity-95 transition-colors"
+                                            >
+                                                {replyWho && (
+                                                    <span data-testid="reply-quote-author" className="text-[11px] font-bold leading-tight text-cl-lume truncate">{replyWho}</span>
+                                                )}
+                                                <span className="leading-snug text-cl-text truncate">{replyLine}</span>
+                                            </div>
+                                        );
+                                    })()}
 
                                     {/* Body */}
                                     {msg.content?.type === 'text' ? (
@@ -7971,7 +8109,10 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                                 // emoji-only message that contains one needs the dedicated
                                                 // jumbo renderer instead of the raw-text fast path below.
                                                 const hasCustomToken = emojiOnly && trimmed.includes('<:');
-                                                let fontSize = '15px';
+                                                // The sender's message size (validated allowlist, capped;
+                                                // utils/formatting/messageSize.ts). Jumbo emoji ignore it.
+                                                const msgSize = messageSizeOf(msg.content);
+                                                let fontSize = scaledPx(15, msgSize);
                                                 let lineHeight: string | number = 'normal';
                                                 if (emojiOnly) {
                                                     const n = countEmojis(trimmed);
@@ -7986,23 +8127,44 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                                 const channelRefs = isServerChannel && msg.content.channel_refs
                                                     ? sanitizeChannelRefs(msg.content.channel_refs)
                                                     : null;
-                                                const renderBody = (t: string) => renderTextWithMentions(t, user?.user_id ?? null, memberRoleColors, onInviteCodeClick, resolveEmoji, token, serverEmojisLoading, noServerEmojiContext, mentionedUserIsKnown, handleMentionClick,
-                                                    // #channel links: server channels only, refs validated
-                                                    // (sender-controlled), resolved by id against what this
-                                                    // reader can see (utils/channelRefs.ts).
-                                                    channelRefs
-                                                        ? {
-                                                            spans: findChannelRefSpans(t, channelRefs),
-                                                            renderRef: (ref, key) => (
-                                                                <ChannelRefPill key={key} channelRef={ref} visibleChannels={linkChannels} onNavigate={navigateToChannel} />
-                                                            ),
-                                                        }
-                                                        : undefined);
+                                                // Formatting (components/formatting/FormattedText): the
+                                                // parser splits the text into formatted runs and hands every
+                                                // plain run back here, so mentions, custom emoji, #channel
+                                                // links, invites and URL linkify all work inside formatting.
+                                                // Code shows tokens as `@name`; a masked link's label is text
+                                                // only (never a second, nested link).
+                                                const renderLeaf = (leaf: string, _key: string, ctx: { inLink: boolean }): React.ReactNode => (ctx.inLink
+                                                    ? mentionsToDisplayText(leaf)
+                                                    : renderTextWithMentions(leaf, user?.user_id ?? null, memberRoleColors, onInviteCodeClick, resolveEmoji, token, serverEmojisLoading, noServerEmojiContext, mentionedUserIsKnown, handleMentionClick,
+                                                        // #channel links: server channels only, refs validated
+                                                        // (sender-controlled), resolved by id against what this
+                                                        // reader can see (utils/channelRefs.ts).
+                                                        channelRefs
+                                                            ? {
+                                                                spans: findChannelRefSpans(leaf, channelRefs),
+                                                                renderRef: (ref, key) => (
+                                                                    <ChannelRefPill key={key} channelRef={ref} visibleChannels={linkChannels} onNavigate={navigateToChannel} />
+                                                                ),
+                                                            }
+                                                            : undefined));
+                                                // A long message's collapsed preview is a cut of the text:
+                                                // a ``` fence the cut left open is closed for display.
+                                                const renderBody = (t: string) => renderFormatted(t, {
+                                                    renderLeaf,
+                                                    codeText: mentionsToDisplayText,
+                                                    truncated: t.length < rawText.length,
+                                                });
 
                                                 return (
                                                     <div
                                                         className="text-white/90 break-words whitespace-pre-wrap overflow-hidden"
-                                                        style={{ fontSize, lineHeight, wordBreak: 'break-word' }}
+                                                        // The sender's message font (validated allowlist; bundled faces only).
+                                                        data-msg-font={messageFontOf(msg.content) ?? undefined}
+                                                        data-msg-size={!emojiOnly && msgSize ? msgSize : undefined}
+                                                        style={{
+                                                            fontSize, lineHeight, wordBreak: 'break-word', fontFamily: fontStackFor(messageFontOf(msg.content)),
+                                                            ...(!emojiOnly && msgSize ? { ['--cl-msg-scale' as string]: String(sizeScaleFor(msgSize)) } : {}),
+                                                        }}
                                                     >
                                                         {longMsg
                                                             ? (
@@ -8010,6 +8172,9 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                                                     id={msg.id}
                                                                     text={rawText}
                                                                     renderText={renderBody}
+                                                                    // Formatting-aware collapsed preview: cut on the parsed
+                                                                    // tree, never leaving a fence / spoiler / list open.
+                                                                    renderPreview={(t) => renderFormattedPreview(t, { renderLeaf, codeText: mentionsToDisplayText })}
                                                                     renderDeps={[
                                                                         user?.user_id ?? null, memberRoleColors, onInviteCodeClick, resolveEmoji, token,
                                                                         serverEmojisLoading, noServerEmojiContext, mentionedUserIsKnown, handleMentionClick,
@@ -8042,8 +8207,9 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                             {/* URL embeds — invite cards, YouTube player, or generic link card */}
                                             {(() => {
                                                 const text: string = msg.content.text ?? '';
-                                                const matches = [...text.matchAll(new RegExp(URL_REGEX.source, 'g'))].map(m => m[0]);
-                                                const unique = [...new Set(matches)].slice(0, 3);
+                                                // Bare URLs + masked-link destinations; never a URL in
+                                                // code, in a spoiler, or written as <url> (utils/formatting/plainText).
+                                                const unique = embedUrlsOf(text).slice(0, 3);
                                                 if (unique.length === 0) return null;
                                                 return (
                                                     <div className="flex flex-col gap-1 w-full items-start">
@@ -8277,7 +8443,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                         )}
                                         {canReplyHere && (
                                             <MsgBarBtn
-                                                icon={<Reply />}
+                                                icon={<Reply style={{ transform: 'translateY(-1px)' }} /* optical nudge: the short, bottom-heavy arrow reads ~1px low (owner 2026-11-16, measured) */ />}
                                                 label="Reply"
                                                 onClick={() => beginReply(msg.id)}
                                             />
@@ -8562,7 +8728,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                         )}
                         {replyingId && (() => {
                             const replyTarget = messages.find(m => m.id === replyingId);
-                            const replyText   = previewSnippet(displayPreviewOf(replyTarget?.content) ?? '') || (replyTarget?.content?.type === 'attachment' ? safeDisplayFilename(replyTarget?.content?.filename) : 'Message');
+                            const replyText   = previewSnippet(toPlainText(replyTarget?.content?.text)) || (replyTarget?.content?.type === 'attachment' ? safeDisplayFilename(replyTarget?.content?.filename) : 'Message');
                             return (
                                 <div className="flex items-center justify-between px-3 py-2 bg-cl-surface border border-[var(--cl-border)] rounded-[14px] relative min-w-0">
                                     <div className="flex items-center gap-2 text-[13px] min-w-0 overflow-hidden">
@@ -8699,6 +8865,16 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                             {/* Big paste (once per session): a short chip, then gone. */}
                             {pasteChip && <div className="cmp-chip" aria-hidden="true" data-paste-chip="">{pasteChip}</div>}
 
+                            {/* Pasted Markdown: offer to convert it (utils/formatting/markdownPaste). */}
+                            {mdPaste?.landed && (
+                                <MarkdownPastePrompt
+                                    kind={mdPaste.offer.kind}
+                                    lang={mdPaste.offer.kind === 'code' ? mdPaste.offer.lang : null}
+                                    onFormat={formatPastedMarkdown}
+                                    onKeep={() => setMdPaste(null)}
+                                />
+                            )}
+
                             <form
                                 ref={composerFormRef}
                                 onSubmit={handleSendAll}
@@ -8740,8 +8916,24 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                     </button>
                                 )}
 
-                                <textarea
-                                    data-chat-input
+                                {/* Formatting: "Aa" toggle + the bar it opens above the pill. */}
+                                {canSend && (
+                                    <FormatToolbar
+                                        open={formatBarOpen}
+                                        onOpenChange={setFormatBarOpen}
+                                        onAction={(a) => runFormatAction(a)}
+                                        active={composerFormats}
+                                        font={composerFont}
+                                        onFontChange={setComposerFont}
+                                        size={composerFormats?.size ?? null}
+                                        onSizeChange={(sz) => { inputRef.current?.applySize(sz); inputRef.current?.focus(); }}
+                                        focusComposer={() => inputRef.current?.focus()}
+                                        isMac={IS_MAC}
+                                        disabled={sending || cooldownSecs > 0}
+                                    />
+                                )}
+
+                                <RichComposer
                                     placeholder={
                                         flashedPlaceholder ?? (keyMissing
                                             ? (channelKeyCoolingOff
@@ -8753,20 +8945,26 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                                     ? 'Add a caption…'
                                                     : isSelfChat ? 'Message yourself…' : (lateNightPlaceholder ?? 'Message…'))
                                     }
+                                    ariaLabel={editingId ? 'Edit message' : 'Message'}
                                     value={inputText}
-                                    onChange={handleInputTyping}
+                                    onChange={handleComposerChange}
                                     onFocus={() => setComposerFocused(true)}
                                     onBlur={() => setComposerFocused(false)}
                                     onPaste={handlePaste}
+                                    onPasted={handlePasted}
+                                    onFormats={setComposerFormats}
+                                    onElement={setComposerEl}
                                     disabled={sending || cooldownSecs > 0 || !canSend}
                                     ref={inputRef}
+                                    dataFont={composerFont ?? undefined}
+                                    fontFamily={fontStackFor(composerFont)}
                                     autoFocus
                                     maxLength={MAX_TEXT_MESSAGE_LENGTH}
-                                    className={`flex-1 min-w-0 bg-transparent border-none outline-none ring-0 text-[14.5px] font-medium resize-none [&::-webkit-scrollbar]:hidden [scrollbar-width:none] ${cooldownSecs > 0 ? 'text-white/30' : 'text-white/90'} ${!canSend ? 'cursor-not-allowed placeholder-white/30 italic' : 'placeholder-white/25'}`}
-                                    rows={1}
-                                    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
-                                    style={{ display: 'block', padding: '2px 4px', lineHeight: '22px', minHeight: 22, maxHeight: 260, overflowY: 'auto', outline: 'none', outlineWidth: 0, boxShadow: 'none', border: 0, background: 'transparent', WebkitAppearance: 'none', appearance: 'none', WebkitBoxShadow: 'none' as any }}
+                                    className={`flex-1 min-w-0 bg-transparent font-medium ${cooldownSecs > 0 ? 'text-white/30' : 'text-white/90'}`}
+                                    style={{ padding: '2px 4px' }}
                                     onKeyDown={(e) => {
+                                        // An IME composition owns every key until it commits.
+                                        if (e.nativeEvent.isComposing) return;
                                         if (channelSuggestions.length > 0) {
                                             if (e.key === 'ArrowUp') { e.preventDefault(); setSelectedChannelIdx(i => nextSuggestionIndex(i, channelSuggestions.length, 'up')); return; }
                                             if (e.key === 'ArrowDown') { e.preventDefault(); setSelectedChannelIdx(i => nextSuggestionIndex(i, channelSuggestions.length, 'down')); return; }
@@ -8782,6 +8980,23 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                             if (e.key === 'ArrowDown') { e.preventDefault(); setSelectedSuggestionIdx(i => nextSuggestionIndex(i, emojiSuggestions.length, 'down')); return; }
                                             if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) { e.preventDefault(); insertEmojiSuggestion(emojiSuggestions[selectedSuggestionIdx]); return; }
                                         }
+                                        // Formatting shortcuts (Ctrl/Cmd+B/I/U/E/K, +Shift+X/C) —
+                                        // the same edits the formatting bar's buttons make.
+                                        const fmtAction = shortcutAction(e, IS_MAC);
+                                        if (fmtAction) {
+                                            e.preventDefault();
+                                            runFormatAction(fmtAction);
+                                            return;
+                                        }
+                                        // Shift+Enter: a list continues (an empty item ends it), a
+                                        // quote / code block continues, ``` starts a code block,
+                                        // anything else is a new line. Enter alone always sends
+                                        // (below). RichComposer.newline / richDoc.newlineAt.
+                                        if (e.key === 'Enter' && e.shiftKey) {
+                                            e.preventDefault();
+                                            inputRef.current?.newline();
+                                            return;
+                                        }
                                         // Up on an empty composer edits your last message
                                         // (Discord/Slack/iMessage convention). Every guard
                                         // lives in shouldOpenEditorOnArrowUp — when it says no
@@ -8790,15 +9005,16 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                         // suggestion-menu blocks above already claimed Up and
                                         // returned, so reaching here means no menu is open.
                                         if (e.key === 'ArrowUp') {
-                                            const ta = e.currentTarget;
+                                            const ed = inputRef.current;
+                                            const edSel = ed?.getSelection() ?? { start: 0, end: 0 };
                                             const candidate = findLastEditableOwnMessage(messages, {
                                                 myUserId: user?.user_id,
                                                 myDeviceIds,
                                             });
                                             const arrowCtx = {
-                                                composerText: inputText,
-                                                selectionStart: ta.selectionStart ?? 0,
-                                                selectionEnd: ta.selectionEnd ?? 0,
+                                                composerText: ed?.getPlain() ?? inputText,
+                                                selectionStart: edSel.start,
+                                                selectionEnd: edSel.end,
                                                 isEditing: !!editingId,
                                                 isReplying: !!replyingId,
                                                 hasOpenSuggestions: mentionSuggestions.length > 0 || emojiSuggestions.length > 0,
@@ -8821,13 +9037,15 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                             }
                                             return;
                                         }
+                                        // ``` + Enter opens a code block instead of sending.
+                                        if (e.key === 'Enter' && !e.shiftKey && inputRef.current?.enterShortcut()) { e.preventDefault(); return; }
                                         if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSendAll(e); }
                                     }}
                                 />
 
-                                {emojiSuggestions.length > 0 && inputRef.current && (
+                                {emojiSuggestions.length > 0 && composerEl && (
                                     <SuggestionMenu
-                                        anchorEl={inputRef.current}
+                                        anchorEl={composerEl}
                                         sectionLabel="Emoji"
                                         selectedIndex={selectedSuggestionIdx}
                                         items={emojiSuggestions.map((s): SuggestionMenuItem => ({
@@ -8855,11 +9073,11 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                     />
                                 )}
 
-                                {channelSuggestions.length > 0 && inputRef.current && (
+                                {channelSuggestions.length > 0 && composerEl && (
                                     // Same menu shell and keys as @mentions. Only channels this
                                     // reader can VIEW are ever candidates (buildChannelCandidates).
                                     <SuggestionMenu
-                                        anchorEl={inputRef.current}
+                                        anchorEl={composerEl}
                                         sectionLabel="Channels"
                                         selectedIndex={selectedChannelIdx}
                                         items={channelSuggestions.map((c): SuggestionMenuItem => ({
@@ -8881,7 +9099,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                     />
                                 )}
 
-                                {mentionSuggestions.length > 0 && inputRef.current && (() => {
+                                {mentionSuggestions.length > 0 && composerEl && (() => {
                                     // Two members can share a display name — usernames aren't
                                     // globally unique, only (username, discriminator) is (see
                                     // packages/shared/user.ts), and a nickname can equal someone
@@ -8893,7 +9111,7 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                     // among the `user` rows currently visible in this list.
                                     return (
                                     <SuggestionMenu
-                                        anchorEl={inputRef.current}
+                                        anchorEl={composerEl}
                                         sectionLabel="Members"
                                         selectedIndex={selectedMentionIdx}
                                         items={mentionSuggestions.map((s): SuggestionMenuItem => {
@@ -9092,12 +9310,11 @@ const ChatPane: React.FC<ChatPaneProps> = ({ bundleReady = false, activeChat, ke
                                                 if (!emoji.native && emoji.id && pickedName) {
                                                     emojiTokenMapRef.current[displayText] = `<:${pickedName}:${emoji.id}>`;
                                                 }
-                                                const ta = inputRef.current;
-                                                if (ta) {
-                                                    const start = ta.selectionStart ?? ta.value.length;
-                                                    const end = ta.selectionEnd ?? ta.value.length;
-                                                    setInputText(ta.value.slice(0, start) + displayText + ta.value.slice(end));
-                                                    requestAnimationFrame(() => { ta.focus(); const pos = start + displayText.length; ta.setSelectionRange(pos, pos); });
+                                                const ed = inputRef.current;
+                                                if (ed) {
+                                                    suppressTriggersRef.current = true;
+                                                    try { ed.insertAtSelection(displayText); } finally { suppressTriggersRef.current = false; }
+                                                    requestAnimationFrame(() => ed.focus());
                                                 } else {
                                                     setInputText(prev => prev + displayText);
                                                 }

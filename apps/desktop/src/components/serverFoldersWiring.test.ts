@@ -44,9 +44,10 @@ describe('server folders — Dashboard wiring', () => {
     });
 
     it('leaving a server takes it out of its folder (persisted)', () => {
-        const leave = dash.indexOf('/servers/${leaveServerTarget.server_id}/leave');
+        const leave = dash.indexOf('/servers/${sid}/leave');
         expect(leave).toBeGreaterThan(-1);
-        expect(dash.slice(leave, leave + 900)).toContain('railLayout.forget(leaveServerTarget.server_id)');
+        // Runs in the post-success cleanup of the optimistic leave.
+        expect(dash.slice(leave, leave + 2500)).toContain('railLayout.forget(sid)');
     });
 
     it('folder context menu offers rename, colour and remove (ungroup)', () => {

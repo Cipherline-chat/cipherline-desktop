@@ -619,6 +619,11 @@ img {
 :root[data-cl-fs-idle="on"] .cl-fs-fill,
 :root[data-cl-fs-idle="on"] .cl-fs-fill * { cursor: none !important; }
 
+/* Channel-list drag over a spot the item cannot land (a sub-category over the
+ * top of the list): ServerChannelList sets this class on <html> while the
+ * pointer is there. Every row carries its own cursor, so it has to win. */
+html.cl-drag-refused, html.cl-drag-refused * { cursor: not-allowed !important; }
+
 /* ── The participant strip's resize handle ──────────────────────────────────
  * The handle IS the strip's top border: a 7px grab band sitting on the same
  * hairline the strip used to draw with `border-t`, so there is no second line

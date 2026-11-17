@@ -267,7 +267,7 @@
   .avx .dot{position:absolute;right:-2px;bottom:-2px;width:12px;height:12px;border-radius:50%;border:3px solid var(--deep)}
   .dot.onl{background:var(--ok);animation:ping 2.4s ease-out infinite}
   .dot.idle{background:var(--glow)}
-  .dot.dnd{background:var(--flash)}
+  .dot.dnd{background:radial-gradient(circle closest-side,#000 0 36%,var(--flash) 42%)} /* DND: small black centre (owner 2026-11-16) */
   .dot.off{background:var(--faint)}
   .chrow{display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:11px;font-weight:700;font-size:14px;color:var(--muted);transition:background .15s;cursor:pointer;max-width:260px}
   .chrow:hover{background:var(--surface)}

@@ -73,7 +73,7 @@ export const KV_RULES: KvRule[] = [
     // server never sees them, so the encrypted backup is their only way to
     // survive a reinstall.
     { pattern: 'cipherline_server_rail_layout_{uid}',   match: 'exact',  include: true,  why: 'Server rail layout: order + server folders (name, colour, members)' },
-    { pattern: 'cipherline_category_collapsed_{uid}_',  match: 'prefix', include: true,  why: 'Collapsed channel categories' },
+    { pattern: 'cipherline_category_collapsed_{uid}_',  match: 'prefix', include: true,  why: 'Collapsed channel categories and sub-categories (one map per server)' },
     { pattern: 'cipherline_ignored_{uid}_',             match: 'prefix', include: true,  why: 'Ignored/blocked server members (safety)' },
     // ── Excluded: TRUST state never travels in a backup or history transfer (F2) ──
     // Safety-number pins, unresolved sender warnings and the own-device ledger
@@ -174,12 +174,15 @@ export const KV_RULES: KvRule[] = [
     { pattern: 'cipherline_listening_asked_{uid}',      match: 'exact',  include: true,  why: 'One-time "Show what you\u2019re listening to?" question already shown, restored with the answer it led to' },
     { pattern: 'cipherline_gaming_video_offer',         match: 'exact',  include: false, why: 'Gaming-video freeze offer snooze — about this device’s gaming load, never travels' },
     { pattern: 'cipherline_allow_hevc',                 match: 'exact',  include: false, why: 'Allow H.265 when everyone supports it — about this device’s GPU, never travels' },
+    { pattern: 'cipherline_e2ee_idr_pps_retry',     match: 'exact',  include: false, why: 'Runtime kill switch for the call E2EE worker\u2019s H.264 keyframe pps-id retry (utils/e2eeIdrPpsRetry.ts) — a device-local testing/safety switch, never travels' },
     { pattern: 'cipherline_share_low_layer',            match: 'exact',  include: false, why: 'Screen share lighter copy for viewers — about this device’s encoder, never travels' },
     { pattern: 'cipherline_native_share_hw',            match: 'exact',  include: false, why: 'Hardware screen share (Linux) switch — about this device’s GPU/desktop, never travels' },
     { pattern: 'cipherline_nvidia_vaapi_prompt_shown', match: 'exact',  include: false, why: 'One-time NVIDIA video-driver card dismissed — about THIS machine\u2019s GPU/packages, never travels' },
     { pattern: 'cipherline_video_encode_driver_prompt_shown', match: 'exact',  include: false, why: 'One-time Intel/AMD video-encoder-driver card dismissed \u2014 about THIS machine\u2019s GPU/packages, never travels' },
     { pattern: 'cipherline_native_share_token',         match: 'exact',  include: false, why: 'Screen-capture portal grant (restore token) — a permission on THIS desktop session, must never be restored elsewhere' },
     { pattern: 'cipherline_linux_share_intro_seen',     match: 'exact',  include: false, why: 'One-time "screen sharing on Linux is new" card already shown (utils/linuxShareIntro.ts) — about THIS machine’s first share, a new machine says it again' },
+    { pattern: 'cipherline_gpu_share_intro_seen',       match: 'exact',  include: false, why: 'One-time "help us make screen sharing smoother" card (Windows/macOS, AMD/Intel GPU) already shown (utils/linuxShareIntro.ts) — about THIS machine’s GPU and first share, a new machine says it again' },
+    { pattern: 'cipherline_rpc_held_tip',               match: 'exact',  include: false, why: 'One-time "Discord is getting this game\u2019s Rich Presence" tip already shown, per game or never (utils/richPresenceTip.ts) \u2014 about THIS machine\u2019s apps, a new machine says it again' },
     { pattern: 'cipherline_annot_screen_choice',       match: 'exact',  include: false, why: 'Last "Which screen are you sharing?" answer (Linux/Wayland annotation overlay) — a display layout and portal-grant binding of THIS desktop, never travels' },
     // Camera quality (cameraQualityPrefs.ts) and the "PC is struggling" offer
     // (performanceOffer.ts): both describe THIS machine's CPU/GPU/camera.
@@ -235,6 +238,7 @@ export const KV_RULES: KvRule[] = [
     { pattern: 'cipherline_storage_policy_{uid}',       match: 'exact',  include: false, why: 'Retention policy — per-device, never travels; only its explicitly SAVED ids ride in vault.retentionSaves (retentionPortability.ts)' },
     { pattern: 'cipherline_voice_settings',             match: 'exact',  include: false, why: 'vault.voiceSettings' },
     { pattern: 'cipherline_keybinds',                   match: 'exact',  include: false, why: 'vault.keybinds' },
+    { pattern: 'cipherline_echo_prompt_v1',                 match: 'exact',  include: false, why: 'in-call echo prompt nag state (dismissal count / never); per device, not worth restoring' },
     { pattern: 'cipherline_voice_defaults_migrated_v1', match: 'exact',  include: false, why: 'one-time voice-defaults migration marker (Light NS, echo off); per device' },
     { pattern: 'cipherline_keybinds_migrated_v1',       match: 'exact',  include: false, why: 'one-time keybind migration marker; per device, like the binds it guards' },
     { pattern: 'cipherline_keybinds_migrated_v2',       match: 'exact',  include: false, why: 'one-time camera keybind migration marker (Ctrl+Shift+V); per device, like v1' },
@@ -280,7 +284,7 @@ export const KV_RULES: KvRule[] = [
     { pattern: 'cipherline_channel_mentions_',          match: 'prefix', include: false, why: 'Counter' },
     { pattern: 'cipherline_servers_{uid}',              match: 'exact',  include: false, why: 'Server-list cache' },
     { pattern: 'cipherline_game_art_v1',                match: 'exact',  include: false, why: 'Per-device cache of game pictures (own executable icons read from THIS computer + store pictures): derived, device-specific, rebuilt the next time the game is seen (utils/gameArt.ts)' },
-    { pattern: 'cipherline_srv_channels_{uid}',         match: 'prefix', include: false, why: 'Channel-list cache' },
+    { pattern: 'cipherline_srv_channels_{uid}',         match: 'prefix', include: false, why: 'Channel-list cache (channels, categories incl. sub-categories, dividers)' },
     { pattern: 'cipherline_server_notif_defaults_{uid}', match: 'exact', include: false, why: 'Server-side defaults cache' },
     { pattern: 'cipherline_muted_servers_{uid}',        match: 'exact',  include: false, why: 'Legacy, migrated into server notif prefs' },
     { pattern: 'cipherline_pin_ledger_{uid}',           match: 'exact',  include: false, why: 'Pin-sync bookkeeping' },
@@ -293,6 +297,8 @@ export const KV_RULES: KvRule[] = [
     { pattern: 'cipherline_profile_notes_sync_view_{uid}', match: 'exact', include: false, why: 'Notes-sync bookkeeping (what this DEVICE knows about the profile_notes slot — device-specific, must not restore)' },
     { pattern: 'cipherline_profile_notes_{uid}',        match: 'exact',  include: true,  why: 'Private notes on people (utils/profileNotes.ts): only you ever see them. Your own account data, so a restore keeps them; the merge is per-person last-writer-wins with tombstones, so a restore can only add or lose to a newer edit' },
     { pattern: 'cipherline_friend_anniversaries_{uid}', match: 'exact', include: false, why: 'Which friend anniversaries this DEVICE already toasted this year (utils/profileMoments.ts) — a per-device nudge ledger, restoring it would only suppress or repeat a toast' },
+    { pattern: 'cipherline_server_rail_sync_ts_{uid}',   match: 'exact',  include: false, why: 'Server-rail sync bookkeeping (when THIS device last changed its rail layout, for last-write-wins — device-specific, must not restore)' },
+    { pattern: 'cipherline_server_rail_sync_view_{uid}', match: 'exact',  include: false, why: 'Server-rail sync bookkeeping (what this DEVICE knows about the server_rail slot, for anti-entropy — device-specific, must not restore)' },
     { pattern: 'cipherline_saves_sync_view_{uid}',      match: 'exact',  include: false, why: 'Saves-sync bookkeeping (what this DEVICE knows about the personal_saves slot — device-specific, must not restore)' },
     { pattern: 'cipherline_local_channel_pin_ledger_{uid}', match: 'exact', include: false, why: 'Channel-save sync bookkeeping (LWW ledger; the saves themselves are vault.localChannelPins)' },
     { pattern: 'cipherline_last_activity_{uid}',        match: 'exact',  include: false, why: 'Derived from history' },

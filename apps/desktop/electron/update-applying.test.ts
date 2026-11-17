@@ -3,8 +3,16 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
     ApplyingUpdatePopup, applyingUpdateHtml, applyingVersionLabel, APPLYING_UPDATE_MS, APPLYING_BAR_MS,
+    APPLYING_STATUSES, APPLYING_STATUS_STEP_MS, APPLYING_CARD_W, APPLYING_CARD_H, APPLYING_SHADOW_MARGIN, APPLYING_CARD_BG,
+    applyingUpdateWindowPlan,
     type ApplyingUpdateDeps,
 } from './update-applying';
+import {
+    SPLASH_TOKENS_CSS, SPLASH_KEYFRAMES_CSS, SPLASH_CARD_CSS, SPLASH_MARK_CSS, SPLASH_FOOTER_CSS,
+    SPLASH_HEADLINE_CSS, SPLASH_TITLEBAR_MARK_SVG, SPLASH_WORKING_MARK_HTML,
+} from './splash-style';
+import { installerSplashHtml } from './installer-splash';
+import { createHash } from 'node:crypto';
 
 function rig(over: Partial<ApplyingUpdateDeps> = {}) {
     const timers: Array<{ fn: () => void; ms: number }> = [];
@@ -111,6 +119,96 @@ describe('applying-update page', () => {
         expect(html).toContain("default-src 'none'");
         expect(html).toContain('prefers-reduced-motion: reduce');
     });
+
+    it('is built from the installer splash styles, verbatim', () => {
+        const html = applyingUpdateHtml('1.0.25');
+        for (const [name, chunk] of Object.entries({
+            SPLASH_TOKENS_CSS, SPLASH_KEYFRAMES_CSS, SPLASH_CARD_CSS, SPLASH_MARK_CSS, SPLASH_FOOTER_CSS,
+            SPLASH_HEADLINE_CSS, SPLASH_TITLEBAR_MARK_SVG, SPLASH_WORKING_MARK_HTML,
+        })) {
+            expect(chunk.length, name).toBeGreaterThan(20);
+            expect(html.includes(chunk), name).toBe(true);
+            expect(installerSplashHtml('1.0.25', true).includes(chunk), `installer ${name}`).toBe(true);
+        }
+        expect(html).toContain('<div class="big">Applying update</div>');
+        expect(html).toContain('<div class="sub">Updating to 1.0.25</div>');
+        expect(html).toContain('<span class="ver">updating 1.0.25</span>');
+        expect(applyingUpdateHtml('')).toContain('<span class="ver">updating</span>');
+    });
+
+    it('never fetches fonts (unlike the installer) and sets no color-scheme (a transparent window must stay transparent)', () => {
+        const html = applyingUpdateHtml('1.0.25', { floating: true });
+        expect(html).not.toMatch(/fonts\.googleapis|fonts\.gstatic|@font-face|url\(/);
+        expect(html).toContain("'Fredoka'");
+        expect(html).not.toMatch(/color-scheme\s*:/);
+        expect(installerSplashHtml('1.0.25', true)).toContain('fonts.googleapis.com'); // positive control for the matcher
+    });
+
+    it('status lines rotate in CSS only: one step each, the last one stays', () => {
+        const html = applyingUpdateHtml('1.0.25');
+        for (const s of APPLYING_STATUSES) expect(html).toContain(`<span class="st">${s}</span>`);
+        expect(APPLYING_STATUS_STEP_MS * APPLYING_STATUSES.length).toBeLessThanOrEqual(APPLYING_UPDATE_MS);
+        const last = APPLYING_STATUSES.length;
+        expect(html).toMatch(new RegExp(`\\.st:nth-child\\(1\\) \\{ opacity: 1; animation: st-out 160ms ease-in ${APPLYING_STATUS_STEP_MS}ms forwards; \\}`));
+        expect(html).toMatch(new RegExp(`\\.st:nth-child\\(${last}\\) \\{ opacity: 0; animation: st-in 160ms ease-out ${(last - 1) * APPLYING_STATUS_STEP_MS}ms forwards; \\}`));
+        expect(html).toContain(`animation: fill ${APPLYING_BAR_MS}ms`);
+        expect(html).toContain(`animation: pct ${APPLYING_BAR_MS}ms`);
+    });
+
+    it('reduced motion stops every animation and rests at a full bar', () => {
+        const html = applyingUpdateHtml('1.0.25');
+        const rm = html.slice(html.indexOf('@media (prefers-reduced-motion: reduce)'));
+        expect(rm).toContain('.pulse-ring, .statusdot, .headline, .st, .pct::after, .bar-fill, .mark-wrap rect { animation: none !important; }');
+        expect(rm).toContain('.bar-fill { width: 100%; }');
+        expect(rm).toContain('.pct::after { --p: 100; }');
+    });
+
+    it('floating = the installer card as is; fill = the card is the window, square', () => {
+        expect(applyingUpdateHtml('1.0.25', { floating: true })).toContain('<html lang="en" class="float">');
+        expect(applyingUpdateHtml('1.0.25', { floating: false })).toContain('<html lang="en" class="fill">');
+        expect(applyingUpdateHtml('1.0.25')).toContain('<html lang="en" class="fill">');
+        expect(applyingUpdateHtml('1.0.25')).toContain('html.fill .card { width: 100%; height: 100%; border-radius: 0; box-shadow: none; }');
+    });
+});
+
+describe('applyingUpdateWindowPlan', () => {
+    it.each(['win32', 'darwin'])('%s: transparent window, card floats with room for its shadow', (platform) => {
+        const p = applyingUpdateWindowPlan(platform);
+        expect(p).toEqual({
+            transparent: true,
+            width: APPLYING_CARD_W + 2 * APPLYING_SHADOW_MARGIN,
+            height: APPLYING_CARD_H + 2 * APPLYING_SHADOW_MARGIN,
+            backgroundColor: '#00000000',
+            page: { floating: true },
+        });
+        // The installer shadow (0 24px 60px) reaches 84px below the card.
+        expect(SPLASH_CARD_CSS).toContain('box-shadow: 0 24px 60px');
+        expect(APPLYING_SHADOW_MARGIN).toBeGreaterThanOrEqual(24 + 60);
+    });
+
+    it.each(['linux', 'freebsd', 'openbsd', ''])('%s: opaque window, the card fills it', (platform) => {
+        expect(applyingUpdateWindowPlan(platform)).toEqual({
+            transparent: false, width: APPLYING_CARD_W, height: APPLYING_CARD_H,
+            backgroundColor: APPLYING_CARD_BG, page: { floating: false },
+        });
+        // The opaque window paints the card's own colour before the page does.
+        expect(SPLASH_TOKENS_CSS).toContain(`--cl-deep:    ${APPLYING_CARD_BG}`);
+        expect(SPLASH_CARD_CSS).toContain('width: 440px');
+        expect(APPLYING_CARD_W).toBe(440);
+    });
+});
+
+describe('splash-style.ts extraction left the installer page byte-identical', () => {
+    // sha256 of installerSplashHtml() output, recorded on origin/staging e2f82b16 BEFORE the styles
+    // moved into splash-style.ts. If you change the installer on purpose, re-record these.
+    it.each([
+        ['0.1.1', false, '6b4ba9628b3f5abd9ab18b7638643d33c284af697c0a439a566050173a975f4a'],
+        ['0.1.1', true, 'e48f6e7a2864e8259a4060d191919f3d5ef4d10f25482ebbb130126e1fe39e7d'],
+        ['0.1.1-staging.232', true, '224c11af51f556d22f0633a85731bc939c3c9196a229cfcc8cb4db23a4383242'],
+        ['1.0<x>', false, '0e5d110b3da91b9668b7a3658bcc330875617a9df074d1a710dc836ad0f4901d'],
+    ])('%s isUpdate=%s', (v, isUpdate, sha) => {
+        expect(createHash('sha256').update(installerSplashHtml(v, isUpdate)).digest('hex')).toBe(sha);
+    });
 });
 
 describe('wiring in main.ts / window file', () => {
@@ -131,7 +229,13 @@ describe('wiring in main.ts / window file', () => {
             expect(WIN).toContain(needle);
         }
         expect(WIN).not.toMatch(/preload:|openExternal\(/);
-        for (const f of ['applying-update-window.ts', 'update-applying.ts']) {
+        // Every geometry / transparency choice comes from the tested per-OS plan.
+        for (const needle of ['const plan = applyingUpdateWindowPlan(process.platform);', 'width: plan.width', 'height: plan.height',
+            'transparent: plan.transparent', 'backgroundColor: plan.backgroundColor', 'applyingUpdateHtml(version, plan.page)']) {
+            expect(WIN).toContain(needle);
+        }
+        expect(WIN).not.toMatch(/backgroundColor: '#|transparent: (true|false)|width: \d|height: \d/);
+        for (const f of ['applying-update-window.ts', 'update-applying.ts', 'splash-style.ts', 'installer-splash.ts']) {
             expect(readFileSync(join(__dirname, f), 'utf8')).not.toMatch(/from '\.\.\/src/);
         }
     });

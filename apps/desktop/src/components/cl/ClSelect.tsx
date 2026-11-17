@@ -1,15 +1,44 @@
-import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { GripVertical } from 'lucide-react';
+import { GripVertical, Search } from 'lucide-react';
 import { useDismissOnOutsideClick } from '../../hooks/useDismissOnOutsideClick';
 import { useEscape } from '../../hooks/useEscape';
 import { playIco } from '../../utils/clPhysics';
 import { computeSelectPlacement } from './selectPlacement';
 import { DRAG_THRESHOLD_PX, computeReorderDropIndex, applyReorderDrop } from './reorderMath';
+import { ClSearch } from './ClInput';
 
 export interface ClSelectOption<T extends string> {
     value: T;
     label: React.ReactNode;
+    /** What the closed trigger shows when this option is selected. Defaults
+     *  to `label`; set it when the menu row is richer (two lines, a clock…)
+     *  than fits the single-line, ellipsizing trigger. */
+    triggerLabel?: React.ReactNode;
+}
+
+/**
+ * Opt-in search box at the top of the open menu (type to filter). Omitting
+ * the prop leaves `ClSelect` exactly as it was. With it, the menu becomes a
+ * combobox: focus moves into the search field on open (and is held there —
+ * Tab doesn't leave the popover), arrows / PageUp / PageDown move the
+ * highlight, Enter picks, Escape closes and returns focus to the trigger, and
+ * typing a character on the focused, closed trigger opens the menu with that
+ * character already searched.
+ */
+export interface ClSelectSearchConfig<T extends string> {
+    /** Filter (and optionally rank) for a non-empty query. */
+    filter: (options: ClSelectOption<T>[], query: string) => ClSelectOption<T>[];
+    placeholder?: string;
+    /** Accessible name for the search field. Defaults to the placeholder. */
+    ariaLabel?: string;
+    /** Shown in place of the rows when nothing matches. */
+    emptyText?: (query: string) => React.ReactNode;
+    /** Fixed row height in px. When set, the list is windowed: only the rows
+     *  in view (plus a small overscan) are mounted, so a several-hundred-row
+     *  list opens and filters without a long task. Every row must render at
+     *  exactly this height (ClSelect pins it inline). */
+    rowHeight?: number;
 }
 
 /**
@@ -59,12 +88,26 @@ interface ClSelectProps<T extends string> {
     /** Enables drag-to-reorder (+ a keyboard equivalent) inside the open
      *  menu. Omit for a plain select — fully backward compatible. */
     reorder?: ClSelectReorderConfig<T>;
+    /** Adds a search box to the menu — see ClSelectSearchConfig. Takes
+     *  precedence over `reorder` (reordering a filtered view is meaningless). */
+    search?: ClSelectSearchConfig<T>;
+    /** Fired when the menu opens / closes (e.g. to refresh live labels). */
+    onOpenChange?: (open: boolean) => void;
+    /** id for the trigger button, so an external `<label htmlFor>` names it. */
+    id?: string;
 }
 
 /** Opens-without-picking before the chevron shrugs (catalog). */
 const SHRUG_AT = 4;
 /** `.sel.open .chev`'s rotate-back transition is .35s — wait it out. */
 const CHEV_SETTLE_MS = 360;
+/** Searchable menus keep ONE height while you type (no jumping as matches
+ *  come and go); the rows scroll beneath the pinned search field. */
+const SEARCH_MENU_H = 340;
+/** Windowed lists mount this many rows beyond each edge of the view. */
+const LIST_OVERSCAN = 6;
+
+let selectSeq = 0;
 
 // Guide SVGs, verbatim.
 const Chev = React.forwardRef<SVGSVGElement>((_props, ref) => (
@@ -84,9 +127,36 @@ const MChk = () => (
  * `overflow: hidden` ancestor (e.g. the SettingsModal container).
  */
 export function ClSelect<T extends string>({
-    options, value, onChange, placeholder, disabled, className, style, ariaLabel, reorder,
+    options, value, onChange, placeholder, disabled, className, style, ariaLabel, reorder: reorderProp, search, onOpenChange, id,
 }: ClSelectProps<T>) {
+    const reorder = search ? undefined : reorderProp;
     const [open, setOpen] = useState(false);
+    const [query, setQuery] = useState('');
+    const searchRef = useRef<HTMLInputElement>(null);
+    const [uid] = useState(() => `clsel-${++selectSeq}`);
+    // What the menu lists: every option, or (searchable + a query) the matches.
+    // Without `search` this is `options` itself, so every index below means
+    // exactly what it did before the search feature existed.
+    const shown = useMemo(
+        () => (search && query.trim() ? search.filter(options, query) : options),
+        [search, options, query],
+    );
+    // Windowing (search.rowHeight): which slice of `shown` is mounted.
+    const rowH = search?.rowHeight ?? 0;
+    const listRef = useRef<HTMLDivElement>(null);
+    const [listScroll, setListScroll] = useState(0);
+    const win = rowH
+        ? (() => {
+            // The list is never taller than the whole menu, so sizing the
+            // window by SEARCH_MENU_H can only over-render a row or two (when
+            // the menu is clamped by the viewport) — never leave a gap.
+            const h = SEARCH_MENU_H;
+            const top = Math.max(0, Math.min(listScroll, shown.length * rowH - h));
+            const start = Math.max(0, Math.floor(top / rowH) - LIST_OVERSCAN);
+            const end = Math.min(shown.length, Math.ceil((top + h) / rowH) + LIST_OVERSCAN);
+            return { start, end };
+        })()
+        : { start: 0, end: shown.length };
     const [picked, setPicked] = useState<T | null>(null);
     const [swapping, setSwapping] = useState(false);
     const [hl, setHl] = useState(-1);
@@ -190,12 +260,22 @@ export function ClSelect<T extends string>({
         setMenuZ(maxZ + 1);
     }, []);
 
+    const onOpenChangeRef = useRef(onOpenChange);
+    useEffect(() => { onOpenChangeRef.current = onOpenChange; });
+    const openSeenRef = useRef(false);
     useEffect(() => {
+        if (open) openSeenRef.current = true;
+        if (openSeenRef.current) onOpenChangeRef.current?.(open);
         if (open) {
             setMenuMounted(true);
             const r = requestAnimationFrame(() => setMenuShown(true));
             return () => cancelAnimationFrame(r);
         }
+        // Closing with focus inside the (portaled) menu — the search field, a
+        // row — hands it back to the trigger instead of dropping it on <body>.
+        // An outside click that put focus somewhere else is left alone.
+        const active = document.activeElement;
+        if (active && menuRef.current?.contains(active)) triggerRef.current?.focus({ preventScroll: true });
         setMenuShown(false);
         const t = setTimeout(() => setMenuMounted(false), 200);
         return () => clearTimeout(t);
@@ -203,11 +283,11 @@ export function ClSelect<T extends string>({
 
     useLayoutEffect(() => {
         const el = menuRef.current;
-        if (!menuMounted || !el) return;
+        if (!menuMounted || !el || search) return;
         // scrollHeight ignores the inline max-height cap; +2 for the border.
         const h = Math.min(280, el.scrollHeight + 2);
         if (h !== menuNatH) setMenuNatH(h);
-    }, [menuMounted, menuPos, options.length, menuNatH]);
+    }, [menuMounted, menuPos, options.length, menuNatH, search]);
 
     // Keep the fixed-position menu aligned when the user scrolls or resizes.
     useEffect(() => {
@@ -221,15 +301,60 @@ export function ClSelect<T extends string>({
     }, [open, calcMenuPos]);
 
     // On open, seed the highlight at the current value and scroll it into view.
+    const scrolledOnOpenRef = useRef(false);
+    // While searching, the highlight follows the query: the selected value if
+    // it is still listed, else the best (first) match.
+    // A searchable list may also be (re)built just AFTER opening — e.g. a
+    // caller refreshing live labels from onOpenChange — so for one, a new
+    // `options` re-seeds too (and re-centres the selected row), or the
+    // highlight would keep pointing at an index into the old list.
     useEffect(() => {
         if (!open) { setHl(-1); return; }
-        const idx = Math.max(0, options.findIndex((o) => o.value === value));
+        const idx = Math.max(0, shown.findIndex((o) => o.value === value));
         setHl(idx);
-    }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+        if (search && !query.trim()) scrolledOnOpenRef.current = false;
+    }, [open, query, search ? options : null]); // eslint-disable-line react-hooks/exhaustive-deps
 
     useEffect(() => {
-        if (open && hl >= 0) optRefs.current[hl]?.scrollIntoView({ block: 'nearest' });
-    }, [open, hl]);
+        if (!search && open && hl >= 0) optRefs.current[hl]?.scrollIntoView({ block: 'nearest' });
+    }, [open, hl]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    useEffect(() => {
+        if (!search) return;
+        // Searchable lists are long: the selected row opens CENTRED (it may
+        // be 200 rows down); moves after that scroll only as far as needed.
+        if (!open) { scrolledOnOpenRef.current = false; return; }
+        if (hl < 0) return;
+        const mode = scrolledOnOpenRef.current ? 'nearest' : 'center';
+        if (rowH) {
+            // Windowed: the target row may not be mounted, so scroll by
+            // arithmetic, and mirror the position into state straight away
+            // (the scroll event lands a frame later) so the right slice renders.
+            const list = listRef.current;
+            if (!list) return;
+            const h = list.clientHeight || SEARCH_MENU_H;
+            const top = hl * rowH;
+            let next = list.scrollTop;
+            if (mode === 'center') next = top - (h - rowH) / 2;
+            else if (top < next) next = top;
+            else if (top + rowH > next + h) next = top + rowH - h;
+            next = Math.max(0, Math.min(next, shown.length * rowH - h));
+            list.scrollTop = next;
+            setListScroll(next);
+            scrolledOnOpenRef.current = true;
+            return;
+        }
+        const el = optRefs.current[hl];
+        if (!el) return;
+        el.scrollIntoView?.({ block: mode });
+        scrolledOnOpenRef.current = true;
+    }, [open, hl, search, menuMounted, shown, rowH]);
+
+    // Searchable menu: focus the search field once the portal has mounted;
+    // the query starts fresh on every open (type-to-search may seed it).
+    useEffect(() => {
+        if (search && open && menuMounted) searchRef.current?.focus({ preventScroll: true });
+    }, [search, open, menuMounted]);
 
     // Keyboard equivalent of the pointer drag: Alt+Arrow on the highlighted
     // option swaps it with its neighbour. Raw HTML5 drag-and-drop has no
@@ -263,6 +388,14 @@ export function ClSelect<T extends string>({
             if (e.key === 'ArrowDown' || e.key === 'ArrowUp' || e.key === 'Enter' || e.key === ' ') {
                 e.preventDefault();
                 calcMenuPos();
+                setQuery('');
+                setOpen(true);
+            } else if (search && e.key.length === 1 && e.key !== ' ' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+                // Type-to-search: the keystroke that opens the menu becomes
+                // the first character of the query instead of being lost.
+                e.preventDefault();
+                calcMenuPos();
+                setQuery(e.key);
                 setOpen(true);
             }
             return;
@@ -332,6 +465,23 @@ export function ClSelect<T extends string>({
         announceMove(st.value, newIndex);
     };
 
+    // Keys in the search field. Escape goes through the shared stack
+    // (useEscape above); Tab is swallowed so focus stays in the popover.
+    const onSearchKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
+        const last = shown.length - 1;
+        const page = 6;
+        if (e.key === 'ArrowDown') { e.preventDefault(); setHl((i) => Math.min(last, i + 1)); }
+        else if (e.key === 'ArrowUp') { e.preventDefault(); setHl((i) => Math.max(0, i - 1)); }
+        else if (e.key === 'PageDown') { e.preventDefault(); setHl((i) => Math.min(last, i + page)); }
+        else if (e.key === 'PageUp') { e.preventDefault(); setHl((i) => Math.max(0, i - page)); }
+        else if (e.key === 'Enter') {
+            e.preventDefault();
+            if (hl >= 0 && shown[hl]) choose(shown[hl].value);
+        } else if (e.key === 'Tab') {
+            e.preventDefault();
+        }
+    };
+
     const choose = (v: T) => {
         // Guide order: the row flashes (mflash) for 170ms while the menu is
         // still open and the trigger STILL shows the old label — only when the
@@ -348,6 +498,23 @@ export function ClSelect<T extends string>({
         }, 170);
     };
 
+    // Searchable: the rows scroll in their own listbox under the pinned search
+    // field. Plain: rows stay direct children of the menu (unchanged DOM).
+    const wrapList = (rows: React.ReactNode) => (search
+        ? (
+            <div
+                ref={listRef}
+                className="selm-list"
+                role="listbox"
+                id={`${uid}-list`}
+                aria-label={ariaLabel}
+                onScroll={rowH > 0 ? (e) => setListScroll(e.currentTarget.scrollTop) : undefined}
+            >
+                {rows}
+            </div>
+        )
+        : rows);
+
     return (
         <span className="cl-kit" style={{ display: 'contents' }}>
             <div
@@ -362,40 +529,69 @@ export function ClSelect<T extends string>({
                     disabled={disabled}
                     onClick={() => {
                         if (disabled) return;
-                        if (!open) calcMenuPos();
+                        if (!open) { calcMenuPos(); setQuery(''); }
                         setOpen((v) => !v);
                     }}
                     onKeyDown={onTriggerKey}
+                    id={id}
                     aria-haspopup="listbox"
                     aria-expanded={open}
                     aria-label={ariaLabel}
                 >
-                    <span className={swapping ? 'swap' : undefined}>{selected ? selected.label : (placeholder ?? 'Select…')}</span>
+                    <span className={swapping ? 'swap' : undefined}>{selected ? (selected.triggerLabel ?? selected.label) : (placeholder ?? 'Select…')}</span>
                     <Chev ref={chevRef} />
                 </button>
             </div>
             {menuMounted && menuPos && (() => {
                 const pl = computeSelectPlacement(
                     { top: menuPos.top, bottom: menuPos.bottom },
-                    menuNatH || Math.min(280, options.length * 38 + 14),
+                    search ? SEARCH_MENU_H : (menuNatH || Math.min(280, options.length * 38 + 14)),
                     menuPos.vh,
                 );
                 return createPortal(
                 <div className="cl-kit">
                     <div
                         ref={menuRef}
-                        className={`selm cl-portal${menuShown ? ' open' : ''}`}
-                        role="listbox"
+                        className={`selm cl-portal${search ? ' selm--search' : ''}${menuShown ? ' open' : ''}`}
+                        role={search ? undefined : 'listbox'}
                         style={{
                             position: 'fixed',
                             ...(pl.openUp ? { top: 'auto', bottom: pl.bottom } : { top: pl.top }),
                             maxHeight: pl.maxHeight,
+                            ...(search ? { height: pl.maxHeight } : undefined),
                             left: menuPos.left,
                             width: menuPos.width,
                             right: 'auto',  // override CSS `right: 0`
                             zIndex: menuZ,
                         }}
                     >
+                        {search && (
+                            <div className="selm-search">
+                                <ClSearch
+                                    ref={searchRef}
+                                    icon={<Search size={15} aria-hidden="true" />}
+                                    type="text"
+                                    role="combobox"
+                                    aria-expanded={open}
+                                    aria-controls={`${uid}-list`}
+                                    aria-autocomplete="list"
+                                    aria-activedescendant={hl >= win.start && hl < win.end ? `${uid}-o-${hl}` : undefined}
+                                    aria-label={search.ariaLabel ?? search.placeholder ?? 'Search'}
+                                    placeholder={search.placeholder ?? 'Search…'}
+                                    value={query}
+                                    onChange={(e) => setQuery(e.target.value)}
+                                    onKeyDown={onSearchKey}
+                                    autoComplete="off"
+                                    spellCheck={false}
+                                />
+                            </div>
+                        )}
+                        {wrapList(<>
+                        {search && shown.length === 0 && (
+                            <div className="selm-empty" role="status">
+                                {search.emptyText ? search.emptyText(query) : `Nothing matches “${query.trim()}”.`}
+                            </div>
+                        )}
                         {reorder && (
                             // Visually hidden — announces keyboard AND pointer
                             // moves, since neither is otherwise conveyed to a
@@ -408,7 +604,11 @@ export function ClSelect<T extends string>({
                                 {liveMsg}
                             </div>
                         )}
-                        {options.map((o, i) => {
+                        {rowH > 0 && win.start > 0 && (
+                            <div aria-hidden="true" style={{ height: win.start * rowH, flex: 'none' }} />
+                        )}
+                        {(rowH > 0 ? shown.slice(win.start, win.end) : shown).map((o, k) => {
+                            const i = win.start + k;   // index into `shown` (win.start is 0 unless windowed)
                             // While picking, only the picked row reads as selected
                             // (guide clears the others on click); otherwise value-based.
                             const isOn = picked !== null ? picked === o.value : value === o.value;
@@ -427,14 +627,29 @@ export function ClSelect<T extends string>({
                                         ref={(n) => { optRefs.current[i] = n; }}
                                         type="button"
                                         role="option"
+                                        id={search ? `${uid}-o-${i}` : undefined}
+                                        // Searchable: the search field is the one tab stop
+                                        // (the popover's focus trap); rows are reached by
+                                        // arrow keys via aria-activedescendant.
+                                        tabIndex={search ? -1 : undefined}
                                         aria-selected={isOn}
+                                        // Windowed rows: tell AT where this row sits in the full list.
+                                        aria-setsize={rowH > 0 ? shown.length : undefined}
+                                        aria-posinset={rowH > 0 ? i + 1 : undefined}
                                         className={[isOn ? 'on' : '', picked === o.value ? 'picked' : ''].filter(Boolean).join(' ')}
                                         style={{
+                                            ...(rowH > 0 ? { height: rowH, flex: 'none', boxSizing: 'border-box' } : undefined),
                                             ...(hl === i ? { background: 'rgba(37,224,200,.1)', color: 'var(--cl-text)' } : undefined),
                                             ...(isDraggingThis ? { opacity: 0.35 } : undefined),
                                             ...(draggableRow ? { cursor: isDraggingThis ? 'grabbing' : 'grab', touchAction: 'none' } : undefined),
                                         }}
-                                        onMouseEnter={() => { if (!dragStateRef.current) setHl(i); }}
+                                        // Searchable lists scroll under a still pointer as
+                                        // the arrow keys move; only a REAL pointer move may
+                                        // take the highlight, or it would snap back to
+                                        // whatever row slid beneath the cursor.
+                                        onMouseEnter={search ? undefined : () => { if (!dragStateRef.current) setHl(i); }}
+                                        onMouseMove={search ? (e) => { if ((e.movementX || e.movementY) && hl !== i) setHl(i); } : undefined}
+                                        onMouseDown={search ? (e) => e.preventDefault() : undefined}
                                         onClick={() => {
                                             if (suppressClickRef.current) { suppressClickRef.current = false; return; }
                                             choose(o.value);
@@ -463,6 +678,10 @@ export function ClSelect<T extends string>({
                                 style={{ height: 2, margin: '2px 10px', borderRadius: 1, background: 'var(--cl-lume, #25e0c8)', boxShadow: '0 0 6px var(--cl-lume, #25e0c8)' }}
                             />
                         )}
+                        {rowH > 0 && win.end < shown.length && (
+                            <div aria-hidden="true" style={{ height: (shown.length - win.end) * rowH, flex: 'none' }} />
+                        )}
+                        </>)}
                     </div>
                 </div>,
                 document.body,

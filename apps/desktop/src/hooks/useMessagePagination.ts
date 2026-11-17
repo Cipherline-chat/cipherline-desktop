@@ -65,7 +65,12 @@ export function useMessagePagination<T>(allMessages: T[], resetKey: string | nul
     const ensureVisible = useCallback((msgId: string) => {
         const idx = rows.findIndex(m => m?.id === msgId);
         if (idx === -1) return false;
-        if (idx < startIdx) anchorAt(idx);
+        // A page of headroom ABOVE the target. Anchoring on the target itself
+        // made it the first row, so centring it scrolled to the very top, the
+        // feed's scroll-to-top "load earlier" fired mid-jump, and the prepend
+        // left the reader ~a page above the message (owner, 2026-11-16: a far
+        // pinned-message jump "doesn't take you to the message first try").
+        if (idx < startIdx) anchorAt(Math.max(0, idx - PAGE_SIZE));
         return true;
     }, [rows, startIdx, anchorAt]);
 

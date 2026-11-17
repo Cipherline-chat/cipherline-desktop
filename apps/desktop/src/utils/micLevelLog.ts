@@ -22,6 +22,11 @@
  *   gate_pct    share of the window the voice gate was open
  *   mic_gain_db the Settings mic-volume slider, as dB
  *
+ * The AUTO voice gate adds a second event, `gate_level` (same window, so the two line up): thr_db / floor_db (its
+ * mean threshold and tracked floor, dBFS), speech_db (mic_level's) and voice_pct, the share of the window the gate was
+ * held open ONLY by its pitch rule. speech_db - thr_db under ~6 dB means the threshold sits on the voice (quiet
+ * syllables are chopped); a large voice_pct means the pitch rule was doing that work (2026-11-16).
+ *
  * Numbers only, never audio, in memory until the user sends a report. Levels are
  * averaged as POWER (mean-square), not as dB, so one loud syllable does not
  * hide a quiet talker and silence does not drag the mean down (only voiced
@@ -45,6 +50,8 @@ export interface MicLevelAcc {
     gateSum: number; gateN: number;
     rawMs: number; nsMs: number; tapN: number;
     micGainDb: number;
+    /** Auto gate threshold / floor / voice-rule shares (optional: absent in a window without an auto gate). */
+    thrSum?: number; thrN?: number; floorSum?: number; floorN?: number; rescSum?: number; rescN?: number;
 }
 
 const fresh = (): MicLevelAcc => ({
@@ -77,6 +84,18 @@ export function summarizeMicLevel(a: MicLevelAcc): Record<string, number> | null
     return detail;
 }
 
+/** The `gate_level` detail for a window (auto gate only), or null. Pure. */
+export function summarizeGateLevel(a: MicLevelAcc): Record<string, number> | null {
+    if (a.voiced < MIC_LEVEL_MIN_VOICED_BLOCKS || a.blocks <= 0 || (a.thrN ?? 0) <= 0) return null;
+    const detail: Record<string, number> = {
+        thr_db: r1(a.thrSum! / a.thrN!),
+        speech_db: r1(db(a.inMs / a.voiced)),
+    };
+    if ((a.floorN ?? 0) > 0) detail.floor_db = r1(a.floorSum! / a.floorN!);
+    if ((a.rescN ?? 0) > 0) detail.voice_pct = Math.round((100 * a.rescSum!) / a.rescN!);
+    return detail;
+}
+
 /** Fold in one second from the voice processor; logs when a window is full. */
 export function recordMicLevelSecond(s: MicLevelSecond): void {
     acc.sec += 1;
@@ -85,12 +104,17 @@ export function recordMicLevelSecond(s: MicLevelSecond): void {
     acc.held += s.held; acc.clip += s.clip;
     if (s.voiceActive) { acc.gainSum += s.gainDb; acc.gainN++; }
     if (s.gateOpenFrac !== null) { acc.gateSum += s.gateOpenFrac; acc.gateN++; }
+    if (s.gateThrDb != null) { acc.thrSum = (acc.thrSum ?? 0) + s.gateThrDb; acc.thrN = (acc.thrN ?? 0) + 1; }
+    if (s.gateFloorDb != null) { acc.floorSum = (acc.floorSum ?? 0) + s.gateFloorDb; acc.floorN = (acc.floorN ?? 0) + 1; }
+    if (s.gateRescuedFrac != null && s.gateThrDb != null) { acc.rescSum = (acc.rescSum ?? 0) + s.gateRescuedFrac; acc.rescN = (acc.rescN ?? 0) + 1; }
     if (s.rawMs !== null && s.nsMs !== null) { acc.rawMs += s.rawMs; acc.nsMs += s.nsMs; acc.tapN++; }
     acc.micGainDb = s.micGainDb;
     if (acc.sec * 1000 < MIC_LEVEL_LOG_MS) return;
     const detail = summarizeMicLevel(acc);
+    const gate = summarizeGateLevel(acc);
     acc = fresh();
     if (detail) logCallEvent('mic_level', detail);
+    if (detail && gate) logCallEvent('gate_level', gate);
 }
 
 /** A call ended (or a new one began): forget the partial window. */

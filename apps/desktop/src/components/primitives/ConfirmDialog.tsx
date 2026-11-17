@@ -31,7 +31,7 @@
 import React, { useRef, useState } from 'react';
 import { AlertTriangle } from 'lucide-react';
 import { ClButton, ClModal } from '../cl';
-import { DialogHeader, DialogBody, DialogFooter, DialogText } from '../dialog/DialogFrame';
+import { DialogHeader, DialogBody, DialogFooter, DialogText, type DialogTone } from '../dialog/DialogFrame';
 
 /** Exit-animation window before the chosen callback runs. ClModal's own exit
  *  transition is ~180ms; the parent unmounts this component right after the
@@ -57,6 +57,15 @@ export interface ConfirmOptions {
     hint?: React.ReactNode;
     /** Callback invoked when the user confirms. */
     onConfirm: () => void;
+    /** The action is not possible right now: `message` / `hint` say why and
+     *  what to do instead, and the footer is a single primary "Got it" that
+     *  just closes - no confirm button at all (a disabled one reads as
+     *  clickable). */
+    confirmDisabled?: boolean;
+    /** Header icon tile tone + glyph. Default: the danger triangle. A plain
+     *  notice (`confirmDisabled`) that is not a warning can pass a calmer one. */
+    tone?: DialogTone;
+    icon?: React.ReactNode;
 }
 
 interface Props extends ConfirmOptions {
@@ -70,6 +79,9 @@ export const ConfirmDialog: React.FC<Props> = ({
     hint,
     onConfirm,
     onCancel,
+    confirmDisabled = false,
+    tone = 'danger',
+    icon,
 }) => {
     const [closing, setClosing] = useState(false);
     const pendingActionRef = useRef<(() => void) | null>(null);
@@ -96,15 +108,21 @@ export const ConfirmDialog: React.FC<Props> = ({
             cardClassName="dlg-card dlg-card--confirm"
             label={title}
         >
-            <DialogHeader tone="danger" icon={<AlertTriangle size={18} strokeWidth={2.2} />} title={title} />
+            <DialogHeader tone={tone} icon={icon ?? <AlertTriangle size={18} strokeWidth={2.2} />} title={title} />
             {message && (
                 <DialogBody>
                     <DialogText>{message}</DialogText>
                 </DialogBody>
             )}
             <DialogFooter hint={hint}>
-                <ClButton variant="ghost" size="sm" onClick={() => startClose(onCancel)}>Cancel</ClButton>
-                <ClButton variant="danger" size="sm" onClick={() => startClose(onConfirm)}>{confirmLabel}</ClButton>
+                {confirmDisabled ? (
+                    <ClButton size="sm" onClick={() => startClose(onCancel)}>Got it</ClButton>
+                ) : (
+                    <>
+                        <ClButton variant="ghost" size="sm" onClick={() => startClose(onCancel)}>Cancel</ClButton>
+                        <ClButton variant="danger" size="sm" onClick={() => startClose(onConfirm)}>{confirmLabel}</ClButton>
+                    </>
+                )}
             </DialogFooter>
         </ClModal>
     );

@@ -6,15 +6,22 @@
  * presets) and the full per-role / per-member editor on the Permissions tab.
  * Channels under a category inherit its overrides unless they set their own,
  * which is exactly what the editor's "Inherits …" lines on a channel show.
+ *
+ * Also creates / edits SUB-CATEGORIES (`parentCategoryId`, or a category
+ * whose `parent_category_id` is set): an optional approved icon (the same picker channels use) before the name, a
+ * "Sits in" picker (another top-level category; a NEW sub-category can never sit at top level), and the
+ * parent's overrides shown as the tier it inherits - the cascade is
+ * category -> sub-category -> channel, resolved by the server.
  */
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import axios from 'axios';
-import { Folder, Radio, X, Plus, Trash2, Save, SlidersHorizontal, CornerDownLeft } from 'lucide-react';
+import { Folder, Radio, X, Plus, Trash2, Save, SlidersHorizontal, CornerDownLeft, CornerDownRight } from 'lucide-react';
 import { apiUrl } from '../../utils/apiPath';
 import type { CategoryInfo, ChannelInfo } from '../../hooks/useServers';
 import { ChannelIconDropdown, ChannelIconRenderer } from './ChannelIconPicker';
-import { ClButton, ClModal, ClInput, ClSegment, ClConfirm } from '../cl';
+import { ClButton, ClModal, ClInput, ClSegment, ClConfirm, ClSelect } from '../cl';
+import type { PermTier } from './channelPerms/effectivePermissions';
 import { useModalExit } from '../../hooks/useModalExit';
 import { channelPermissionMask } from './roles/permissions';
 import { ChannelPermissionEditor, type CopySource } from './channelPerms/ChannelPermissionEditor';
@@ -25,6 +32,7 @@ import { computeGuard } from './channelPerms/editorGuard';
 import { roleFromWire } from './channelPerms/effectivePermissions';
 import { countTargets, draftFromRows, draftsEqual, type DraftMap } from './channelPerms/overrideDraft';
 import { describeFailures, saveOverrideDiff } from './channelPerms/saveOverrides';
+import { channelNameDraftError, CHANNEL_NAME_INPUT_MAX_UNITS } from '../../utils/displayName';
 
 type Tab = 'overview' | 'permissions';
 
@@ -43,17 +51,18 @@ interface Props {
     /** For "Copy from…". */
     categories?: CategoryInfo[];
     channels?: ChannelInfo[];
+    /** Create a SUB-CATEGORY of this top-level category. */
+    parentCategoryId?: string | null;
 }
 
 const sectionLabel = 'text-[10.5px] font-mono font-semibold uppercase tracking-widest text-cl-faint mb-1.5';
-const toPlainText = (s: string) => s.replace(/[^a-zA-Z0-9 '\-_.]/g, '');
 const errText = (e: unknown, fallback: string) =>
     ((e as { response?: { data?: { message?: unknown } } })?.response?.data?.message as string | undefined) ?? fallback;
 
 export const CategoryFormDialog: React.FC<Props> = ({
     serverId, token, category, kind = 'text',
     onClose, onSaved, onDelete, initialTab,
-    ownerUserId = null, currentUserId = null, myPermissions, categories, channels,
+    ownerUserId = null, currentUserId = null, myPermissions, categories, channels, parentCategoryId = null,
 }) => {
     const { closing, handleClose } = useModalExit(onClose, 260);
 
@@ -66,6 +75,22 @@ export const CategoryFormDialog: React.FC<Props> = ({
     const [tab, setTab] = useState<Tab>(initialTab ?? 'overview');
     const [name, setName] = useState(category?.name ?? '');
     const [iconName, setIconName] = useState<string | null>(category?.icon_name ?? null);
+    // Sub-categories: where it sits ('' = top level).
+    // A NEW sub-category always has a parent: one of the top-level text categories.
+    // A parent that is not one (stale id, a sub-category, a Calls category) means
+    // there is no sub-category to make: it is an ordinary category.
+    const [pickedParent, setPickedParent] = useState<string>(() => {
+        if (category) return category.parent_category_id ?? '';
+        if (!parentCategoryId) return '';
+        const ok = !categories || categories.some(c => c.category_id === parentCategoryId && c.kind === 'text' && !c.parent_category_id);
+        return ok ? parentCategoryId : '';
+    });
+    const isSub = !!pickedParent;
+    // Calls categories and sub-categories carry an icon from the approved set.
+    const hasIcon = isHuddle || isSub;
+    const parentCat = isSub ? (categories ?? []).find(c => c.category_id === pickedParent) ?? null : null;
+    // A category that has sub-categories of its own cannot become one.
+    const hasSubs = !!editing && (categories ?? []).some(c => c.parent_category_id === editing.category_id);
     const [saving, setSaving] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [confirmDiscard, setConfirmDiscard] = useState(false);
@@ -79,7 +104,9 @@ export const CategoryFormDialog: React.FC<Props> = ({
 
     const data = usePermissionData({
         serverId, token,
-        inheritFromCategoryId: null, // a category is the first override tier
+        // A top-level category is the first override tier; a sub-category
+        // inherits its parent's.
+        inheritFromCategoryId: parentCat?.category_id ?? null,
         own: editing ? { scope: 'category', id: editing.category_id } : null,
         myPermissions,
     });
@@ -87,10 +114,13 @@ export const CategoryFormDialog: React.FC<Props> = ({
     const everyoneRoleId = data.roles.find(r => r.is_everyone)?.role_id ?? null;
 
     const baseline: DraftMap = useMemo(() => (data.ownRows ? draftFromRows(data.ownRows) : {}), [data.ownRows]);
+    const inheritedTiers: PermTier[] = useMemo(() => (parentCat
+        ? [{ kind: 'category' as const, label: `category ‘${parentCat.name}’`, overrides: data.inherited }]
+        : []), [parentCat, data.inherited]);
     const guard = useMemo(() => computeGuard({
         roles: permRoles, members: data.members, ownerUserId, currentUserId,
-        myPermissions: data.myPerms ?? 0n, baseline, scope: 'category', inheritedTiers: [],
-    }), [permRoles, data.members, ownerUserId, currentUserId, data.myPerms, baseline]);
+        myPermissions: data.myPerms ?? 0n, baseline, scope: 'category', inheritedTiers,
+    }), [permRoles, data.members, ownerUserId, currentUserId, data.myPerms, baseline, inheritedTiers]);
     const { state: editor, dispatch, reset } = useOverrideEditor(guard);
 
     // Load saved overrides into the draft once per category (during render).
@@ -103,12 +133,14 @@ export const CategoryFormDialog: React.FC<Props> = ({
     const permsReady = data.rolesState === 'ready' && data.myPerms !== null && (!editing || data.ownRows !== null);
     const overrideCount = countTargets(editor.draft, mask);
 
+    const parentDirty = isEdit && pickedParent !== (editing!.parent_category_id ?? '');
     const overviewDirty = isEdit
-        ? name.trim() !== editing!.name || (isHuddle && (iconName ?? null) !== (editing!.icon_name ?? null))
+        ? name.trim() !== editing!.name || (hasIcon && (iconName ?? null) !== (editing!.icon_name ?? null)) || parentDirty
         : name.trim().length > 0;
     const permsDirty = !draftsEqual(baseline, editor.draft);
     const dirty = overviewDirty || permsDirty;
-    const canSubmit = name.trim().length >= 1 && !saving && (isEdit ? dirty : true) && (permsReady || !permsDirty);
+    const nameError = channelNameDraftError(name);
+    const canSubmit = name.trim().length >= 1 && nameError === null && !saving && (isEdit ? dirty : true) && (permsReady || !permsDirty);
 
     const requestClose = () => {
         if (dirty && !saving) setConfirmDiscard(true);
@@ -144,7 +176,10 @@ export const CategoryFormDialog: React.FC<Props> = ({
     const handleCreate = async () => {
         const res = await axios.post(
             apiUrl`/servers/${serverId}/categories`,
-            { name: name.trim(), kind: effectiveKind, icon_name: isHuddle ? (iconName || null) : null },
+            {
+                name: name.trim(), kind: effectiveKind, icon_name: hasIcon ? (iconName || null) : null,
+                ...(isSub ? { parent_category_id: pickedParent } : {}),
+            },
             auth,
         );
         const created: CategoryInfo = res.data;
@@ -166,9 +201,16 @@ export const CategoryFormDialog: React.FC<Props> = ({
         const cat = editing!;
         let saved = cat;
         if (overviewDirty) {
-            const iconPayload = isHuddle ? (iconName || null) : null;
-            await axios.patch(apiUrl`/servers/${serverId}/categories/${cat.category_id}`, { name: name.trim(), icon_name: iconPayload }, auth);
-            saved = { ...cat, name: name.trim(), icon_name: iconPayload };
+            const iconPayload = hasIcon ? (iconName || null) : null;
+            const body: Record<string, unknown> = { name: name.trim(), icon_name: iconPayload };
+            // Free-emoji icons are retired: clear any left over from before.
+            if (cat.icon_emoji) body.icon_emoji = '';
+            if (parentDirty) body.parent_category_id = pickedParent; // '' = top level
+            const res = await axios.patch(apiUrl`/servers/${serverId}/categories/${cat.category_id}`, body, auth);
+            saved = {
+                ...cat, ...(res.data ?? {}),
+                name: name.trim(), icon_name: iconPayload, icon_emoji: null, parent_category_id: pickedParent || null,
+            };
             setEditing(saved);
         }
         if (permsDirty) {
@@ -189,13 +231,22 @@ export const CategoryFormDialog: React.FC<Props> = ({
             if (isEdit) await handleSaveEdit();
             else await handleCreate();
         } catch (e) {
-            setError(errText(e, isEdit ? 'Failed to save category' : 'Failed to create category'));
+            setError(errText(e, isEdit ? `Failed to save ${noun}` : `Failed to create ${noun}`));
         } finally {
             setSaving(false);
         }
     };
 
-    const scopeLabel = name.trim() || 'this category';
+    const scopeLabel = name.trim() || (isSub ? 'this sub-category' : 'this category');
+    const noun = isSub ? 'sub-category' : 'category';
+    // "Sits in": the other top-level text categories, or top level.
+    const parentOptions = useMemo(() => [
+        { value: '', label: 'Top level (a category)' },
+        ...(categories ?? [])
+            .filter(c => c.kind === 'text' && !c.parent_category_id && c.category_id !== editing?.category_id)
+            .sort((a, b) => a.position - b.position)
+            .map(c => ({ value: c.category_id, label: c.name })),
+    ], [categories, editing?.category_id]);
 
     const permsBody = () => {
         if (data.rolesState === 'error' || data.ownError) {
@@ -224,7 +275,7 @@ export const CategoryFormDialog: React.FC<Props> = ({
                 members={data.members}
                 ownerUserId={ownerUserId}
                 currentUserId={currentUserId}
-                inheritedTiers={[]}
+                inheritedTiers={inheritedTiers}
                 state={editor}
                 dispatch={dispatch}
                 guard={guard}
@@ -239,7 +290,7 @@ export const CategoryFormDialog: React.FC<Props> = ({
                 open={!closing}
                 onClose={requestClose}
                 width={860}
-                label={isEdit ? `Edit category ${editing!.name}` : 'Create category'}
+                label={isEdit ? `Edit ${noun} ${editing!.name}` : `Create ${noun}`}
                 cardClassName="mcard--panel"
             >
                 <div
@@ -248,14 +299,18 @@ export const CategoryFormDialog: React.FC<Props> = ({
                 >
                     <div className="flex items-center gap-3 px-5 py-3 border-b border-cl-border/40 shrink-0">
                         <div className="w-8 h-8 rounded-xl bg-cl-lume/15 flex items-center justify-center text-cl-lume border border-solid border-cl-lume/20 shrink-0">
-                            {(isHuddle && iconName) ? <ChannelIconRenderer name={iconName} size={15} /> : isHuddle ? <Radio size={15} /> : <Folder size={15} />}
+                            {(hasIcon && iconName) ? <ChannelIconRenderer name={iconName} size={15} />
+                                : isHuddle ? <Radio size={15} />
+                                    : isSub ? <CornerDownRight size={15} /> : <Folder size={15} />}
                         </div>
                         <div className="min-w-0 flex-1">
                             <div className="text-[9px] font-mono font-semibold uppercase text-cl-faint truncate m-0" style={{ letterSpacing: '1.3px' }}>
-                                {isEdit ? (isHuddle ? 'Calls Category' : 'Text Category') : (isHuddle ? 'New Calls Category' : 'New Category')}
+                                {isSub
+                                    ? `${isEdit ? 'Sub-category' : 'New Sub-category'}${parentCat ? ` · in ${parentCat.name}` : ''}`
+                                    : isEdit ? (isHuddle ? 'Calls Category' : 'Text Category') : (isHuddle ? 'New Calls Category' : 'New Category')}
                             </div>
                             <h2 className="font-display font-semibold text-[16px] text-cl-text truncate m-0">
-                                {isEdit ? editing!.name : (isHuddle ? 'Create Calls category' : 'Create category')}
+                                {isEdit ? editing!.name : isSub ? 'Create sub-category' : (isHuddle ? 'Create Calls category' : 'Create category')}
                             </h2>
                         </div>
                         <ClSegment<Tab>
@@ -290,19 +345,37 @@ export const CategoryFormDialog: React.FC<Props> = ({
                                         {isHuddle && (
                                             <ChannelIconDropdown value={iconName} onChange={setIconName} fallbackIcon={<Radio size={16} />} />
                                         )}
+                                        {isSub && (
+                                            <ChannelIconDropdown value={iconName} onChange={setIconName} fallbackIcon={<CornerDownRight size={16} />} />
+                                        )}
                                         <ClInput
                                             ref={inputRef}
                                             value={name}
-                                            onChange={e => setName(toPlainText(e.target.value))}
-                                            placeholder={isHuddle ? 'Calls' : 'Channels'}
-                                            maxLength={50}
-                                            aria-label="Category name"
+                                            onChange={e => setName(e.target.value)}
+                                            placeholder={isHuddle ? 'Calls' : isSub ? 'Woodworking' : 'Channels'}
+                                            maxLength={CHANNEL_NAME_INPUT_MAX_UNITS}
+                                            aria-label={isSub ? 'Sub-category name' : 'Category name'}
+                                            aria-invalid={nameError !== null}
+                                            aria-describedby={nameError ? 'category-name-error' : undefined}
                                             onKeyDown={(e: React.KeyboardEvent) => {
                                                 if (e.key === 'Enter' && !e.ctrlKey && !e.metaKey) { e.preventDefault(); void submit(); }
                                             }}
                                         />
                                     </div>
+                                    {nameError && <div id="category-name-error" role="alert" className="cl-fmsg">{nameError}</div>}
                                 </div>
+                                {(isEdit ? (!isHuddle && (isSub || !hasSubs) && parentOptions.length > 1) : (isSub && parentOptions.length > 2)) && (
+                                    <div className="sm:w-72">
+                                        <div className={sectionLabel}>Sits in</div>
+                                        <ClSelect
+                                            options={isEdit ? parentOptions : parentOptions.filter(o => o.value !== '')}
+                                            value={pickedParent}
+                                            onChange={setPickedParent}
+                                            ariaLabel="Parent category"
+                                            style={{ width: '100%' }}
+                                        />
+                                    </div>
+                                )}
                                 <div>
                                     <div className="flex items-center justify-between">
                                         <div className={sectionLabel}>Who can access</div>
@@ -325,7 +398,7 @@ export const CategoryFormDialog: React.FC<Props> = ({
                                             members={data.members}
                                             ownerUserId={ownerUserId}
                                             currentUserId={currentUserId}
-                                            inheritedTiers={[]}
+                                            inheritedTiers={inheritedTiers}
                                             syncCategoryName={null}
                                             state={editor}
                                             dispatch={dispatch}
@@ -335,7 +408,9 @@ export const CategoryFormDialog: React.FC<Props> = ({
                                         />
                                     )}
                                     <div className="text-[11px] text-cl-faint mt-2.5">
-                                        Channels in this category follow these settings unless they set their own.
+                                        {isSub && parentCat
+                                            ? `Starts from ‘${parentCat.name}’. Channels in this sub-category follow these settings unless they set their own.`
+                                            : 'Channels in this category follow these settings unless they set their own.'}
                                     </div>
                                 </div>
                             </div>
@@ -373,7 +448,7 @@ export const CategoryFormDialog: React.FC<Props> = ({
                 onClose={() => setConfirmDiscard(false)}
                 onConfirm={() => { setConfirmDiscard(false); handleClose(); }}
                 title="Discard changes?"
-                message={isEdit ? 'Your unsaved changes to this category will be lost.' : 'This category hasn’t been created yet.'}
+                message={isEdit ? `Your unsaved changes to this ${noun} will be lost.` : `This ${noun} hasn’t been created yet.`}
                 confirmLabel="Discard"
                 danger
                 overlayStyle={{ zIndex: 1010 }}

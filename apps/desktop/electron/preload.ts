@@ -149,6 +149,41 @@ ipcRenderer.on('perf:frame-ping', (_e, id: unknown) => {
  * renderer from allowlisting an arbitrary path for encryption and upload). The wrapper
  * drops the event; the page gets no arguments, and a function that unsubscribes.
  */
+// ── Game activity payload (main: electron/rich-presence.ts GameActivity) ────
+// Re-checked at the bridge: the renderer only ever receives this exact shape.
+// Inlined (a sandboxed preload cannot require local modules).
+interface BridgeGameDetail {
+    details: string | null; state: string | null;
+    partySize: number | null; partyMax: number | null;
+    start: number | null; end: number | null;
+}
+interface BridgeGame { name: string; processName: string; source: 'process' | 'rpc'; detail: BridgeGameDetail | null }
+function bridgeText(v: unknown, max: number): string | null {
+    return typeof v === 'string' && v.length > 0 && v.length <= max ? v : null;
+}
+function bridgeInt(v: unknown, lo: number, hi: number): number | null {
+    return typeof v === 'number' && Number.isInteger(v) && v >= lo && v <= hi ? v : null;
+}
+function toBridgeGame(raw: unknown): BridgeGame | null {
+    if (!raw || typeof raw !== 'object') return null;
+    const r = raw as Record<string, unknown>;
+    const name = bridgeText(r.name, 200);
+    const processName = bridgeText(r.processName, 300);
+    if (!name || !processName) return null;
+    let detail: BridgeGameDetail | null = null;
+    if (r.detail && typeof r.detail === 'object') {
+        const d = r.detail as Record<string, unknown>;
+        const partyMax = bridgeInt(d.partyMax, 1, 1_000_000);
+        const partySize = partyMax !== null ? bridgeInt(d.partySize, 0, partyMax) : null;
+        detail = {
+            details: bridgeText(d.details, 128), state: bridgeText(d.state, 128),
+            partySize: partySize !== null ? partySize : null, partyMax: partySize !== null ? partyMax : null,
+            start: bridgeInt(d.start, 1, 8.64e15), end: bridgeInt(d.end, 1, 8.64e15),
+        };
+    }
+    return { name, processName, source: r.source === 'rpc' ? 'rpc' : 'process', detail };
+}
+
 function subscribeNoArgs(channel: string, cb: () => void): () => void {
     const wrapped = () => cb();
     ipcRenderer.on(channel, wrapped);
@@ -429,6 +464,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
         ipcRenderer.invoke('audio:get-own-pid'),
     isAudioCaptureSupported: (): Promise<boolean> =>
         ipcRenderer.invoke('audio:is-capture-supported'),
+    // Output device facts (form factor / port / transport) for the echo-cancellation auto default.
+    getAudioOutputFacts: (): Promise<unknown[]> =>
+        ipcRenderer.invoke('audio:output-facts'),
     startWindowAudioCapture: (pid: number, mode: 'include' | 'exclude' = 'include', grantToken?: string): Promise<boolean> =>
         ipcRenderer.invoke('audio:start-window-capture', pid, mode, grantToken),
     stopWindowAudioCapture: (): Promise<void> =>
@@ -614,6 +652,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     diagGetPendingCrashes: (): Promise<unknown> => ipcRenderer.invoke('diag:get-pending-crashes'),
     diagClearPendingCrashes: (signatures?: string[]): Promise<void> => ipcRenderer.invoke('diag:clear-pending-crashes', signatures),
     diagMarkCrashesSeen: (signatures?: string[]): Promise<void> => ipcRenderer.invoke('diag:mark-crashes-seen', signatures),
+    diagUncleanPromptOutcome: (outcome: 'dismissed' | 'reviewed'): Promise<void> => ipcRenderer.invoke('diag:unclean-prompt-outcome', outcome),
+    diagGetSuppressedUnclean: (): Promise<unknown> => ipcRenderer.invoke('diag:get-suppressed-unclean'),
     diagRecordRendererCrash: (payload: { name?: string; message?: string; stack?: string }): Promise<void> =>
         ipcRenderer.invoke('diag:record-renderer-crash', payload),
     /** Main shows the save dialog; only the report TEXT crosses the bridge. */
@@ -759,6 +799,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
         return () => ipcRenderer.removeListener('global-shortcut-fired', wrapped);
     },
 
+    // System-wide HOLD keys (push-to-talk / push-to-mute): main watches whether the chosen combo is held (works
+    // while Cipherline is unfocused) and sends down/up. `combo` null stops that slot's watch. ok:false /
+    // 'unsupported' = this session or an older native build has no watcher: the renderer's focused-window
+    // listener is then the only path. `slot`: 'push-to-talk' | 'push-to-mute'.
+    setGlobalHoldKey: (slot: 'push-to-talk' | 'push-to-mute', combo: string | null): Promise<{ ok: true; watching: boolean } | { ok: false; reason: 'unsupported' | 'bad-key' | 'failed' }> =>
+        ipcRenderer.invoke('hold-key:set', slot, combo),
+    onGlobalHoldState: (callback: (slot: 'push-to-talk' | 'push-to-mute', down: boolean) => void): (() => void) => {
+        const wrapped = (_e: Electron.IpcRendererEvent, slot: 'push-to-talk' | 'push-to-mute', down: boolean) => callback(slot, down === true);
+        ipcRenderer.on('hold-key:state', wrapped);
+        return () => ipcRenderer.removeListener('hold-key:state', wrapped);
+    },
+
     // Custom window controls (Windows / Linux)
     minimizeWindow: () => ipcRenderer.send('win:minimize'),
     maximizeWindow: () => ipcRenderer.send('win:maximize'),
@@ -778,8 +830,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // Returns an unsubscribe function. processName is the matched executable
     // name — what settings' ignore list operates on (Settings ▸ Game Activity
     // needs it to offer "ignore what's currently detected").
-    onGameDetected: (cb: (data: { name: string; processName: string }) => void): (() => void) => {
-        const listener = (_event: Electron.IpcRendererEvent, data: { name: string; processName: string }) => cb(data);
+    // `source: 'rpc'` = announced by a local app over Rich Presence, with its
+    // validated detail lines (electron/rich-presence.ts); processName is then
+    // the sender's executable or `rpc:<application id>`.
+    onGameDetected: (cb: (data: BridgeGame) => void): (() => void) => {
+        const listener = (_event: Electron.IpcRendererEvent, data: unknown) => {
+            const g = toBridgeGame(data);
+            if (g) cb(g);
+        };
         ipcRenderer.on('game:detected', listener);
         return () => ipcRenderer.removeListener('game:detected', listener);
     },
@@ -788,7 +846,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
         ipcRenderer.on('game:stopped', listener);
         return () => ipcRenderer.removeListener('game:stopped', listener);
     },
-    getCurrentGame: (): Promise<{ name: string; processName: string } | null> => ipcRenderer.invoke('game:get-current'),
+    getCurrentGame: async (): Promise<BridgeGame | null> => toBridgeGame(await ipcRenderer.invoke('game:get-current')),
+    // A game that normally announces Rich Presence is running, but another
+    // Rich Presence app holds the local endpoint (electron/rich-presence.ts
+    // HeldHintTracker). Carries the game's name only.
+    onRichPresenceHeld: (cb: (data: { name: string }) => void): (() => void) => {
+        const listener = (_event: Electron.IpcRendererEvent, data: unknown) => {
+            const name = data && typeof data === 'object' ? bridgeText((data as { name?: unknown }).name, 200) : null;
+            if (name) cb({ name });
+        };
+        ipcRenderer.on('game:rpc-held', listener);
+        return () => ipcRenderer.removeListener('game:rpc-held', listener);
+    },
     // The detected game's picture + launcher, read from this computer by main
     // (electron/game-art.ts). Checked again here at the bridge: only a small PNG
     // data URL, a known launcher word and a plain Steam app number get through.

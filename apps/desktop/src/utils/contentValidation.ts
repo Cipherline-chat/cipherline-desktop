@@ -24,6 +24,7 @@
  */
 
 import { klipyGifProblem } from '@cipherline/shared';
+import { MAX_SIZE_TAGS } from './formatting/messageSize';
 
 /** utils/dmInbound.ts UNDECRYPTABLE_KIND (a test pins the two together). */
 const UNDECRYPTABLE_KIND = 'undecryptable' as const;
@@ -110,9 +111,50 @@ function channelRefsProblem(v: unknown): string | null {
     return Array.isArray(v) && v.length <= LIST_MAX ? null : 'channel_refs must be a bounded array';
 }
 
+/**
+ * The optional message `font` (packages/shared MESSAGE_FONTS). Cosmetic, so an
+ * id this client does not know is NOT a problem — it renders in the default
+ * font (utils/formatting/messageFont.ts), which is how a future font degrades.
+ * Only a non-string or an absurdly long value is refused.
+ */
+export const FONT_ID_MAX = 32;
+function fontProblem(field: string, v: unknown): string | null {
+    return optional(v, x => isStr(x, FONT_ID_MAX)) ? null : `${field} must be a short string`;
+}
+
+/**
+ * The optional message `size` (packages/shared MESSAGE_SIZES). Cosmetic, like
+ * `font`: an id this client does not know renders at the normal size
+ * (utils/formatting/messageSize.ts); only a non-string or an absurdly long
+ * value is refused.
+ */
+export const SIZE_ID_MAX = 16;
+function sizeProblem(field: string, v: unknown): string | null {
+    return optional(v, x => isStr(x, SIZE_ID_MAX)) ? null : `${field} must be a short string`;
+}
+
 function textProblem(field: string, v: unknown): string | null {
     if (typeof v !== 'string') return `${field} must be a string`;
     if (v.length > MAX_RECEIVED_TEXT_LENGTH) return `${field} is too long`;
+    return sizeSpansProblem(field, v);
+}
+
+/**
+ * Text-size spans (`[small]` / `[large]`, utils/formatting/markdown.ts): only
+ * those two allowlisted tags exist, and the renderer honours at most
+ * MAX_SIZE_SPANS per message (the rest show at the size around them). A text
+ * carrying more than MAX_SIZE_TAGS openers is no message a person wrote — it
+ * is refused like any other malformed content. Cheap: a scan only when `[`
+ * is followed by a tag name at all.
+ */
+function sizeSpansProblem(field: string, v: string): string | null {
+    if (!v.includes('[small]') && !v.includes('[large]')) return null;
+    let n = 0;
+    for (let at = v.indexOf('['); at >= 0; at = v.indexOf('[', at + 1)) {
+        if (v.startsWith('[small]', at) || v.startsWith('[large]', at)) {
+            if (++n > MAX_SIZE_TAGS) return `${field} has too many size spans`;
+        }
+    }
     return null;
 }
 
@@ -130,7 +172,7 @@ export function isReservedObjectKey(key: string): boolean {
 }
 
 const VARIANTS: Record<string, Check> = {
-    text: c => textProblem('text.text', c.text) ?? mentionsProblem(c.mentions) ?? channelRefsProblem(c.channel_refs),
+    text: c => textProblem('text.text', c.text) ?? mentionsProblem(c.mentions) ?? channelRefsProblem(c.channel_refs) ?? fontProblem('text.font', c.font) ?? sizeProblem('text.size', c.size),
     attachment: c => {
         if (!isId(c.attachment_id)) return 'attachment.attachment_id must be a string id';
         if (!isStr(c.filename, FILENAME_MAX)) return 'attachment.filename must be a string';
@@ -162,7 +204,7 @@ const VARIANTS: Record<string, Check> = {
     },
     edit: c => {
         if (!isId(c.target_id)) return 'edit.target_id must be a string id';
-        return textProblem('edit.text', c.text) ?? channelRefsProblem(c.channel_refs);
+        return textProblem('edit.text', c.text) ?? channelRefsProblem(c.channel_refs) ?? fontProblem('edit.font', c.font) ?? sizeProblem('edit.size', c.size);
     },
     delete: c => (isId(c.target_id) ? null : 'delete.target_id must be a string id'),
     reaction: c => {

@@ -367,6 +367,34 @@ export const ReportPreview: React.FC<{ body: DiagnosticReportBody; trimmed: stri
                 </Section>
             )}
 
+            {p.previous_session && (
+                <Section title="Session that ended" count={`${p.previous_session.rows.length} rows`}>
+                    <KV rows={[
+                        ['Started', new Date(p.previous_session.started_at).toLocaleString()],
+                        ['Last seen running', new Date(p.previous_session.last_written_at).toLocaleString()],
+                        ['In a call', p.previous_session.state.in_call === undefined ? '—' : p.previous_session.state.in_call ? 'Yes' : 'No'],
+                        ['Sharing screen', p.previous_session.state.sharing === undefined ? '—' : p.previous_session.state.sharing ? 'Yes' : 'No'],
+                    ]} />
+                    {p.previous_session.rows.length > 0 && (
+                        <div className="rp-tablewrap">
+                            <table className="rp-table">
+                                <tbody>
+                                    {p.previous_session.rows.slice(-12).reverse().map((r, i) => (
+                                        <tr key={i}>
+                                            <td>{ago(r.t_s)}</td>
+                                            <td>{r.source}</td>
+                                            <td className="rp-num">{r.ms > 0 ? `${r.ms} ms` : ''}</td>
+                                            <td className="rp-wrap">{r.activity}</td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                            {p.previous_session.rows.length > 12 && <div className="rp-help" style={{ marginTop: 6 }}>Plus {p.previous_session.rows.length - 12} older rows — all of them are in Raw JSON.</div>}
+                        </div>
+                    )}
+                </Section>
+            )}
+
             {trimmed.length > 0 && (
                 <div className="rp-help" style={{ marginTop: 10 }}>
                     Trimmed to fit the size limit: the oldest {trimmed.join(', ').replace(/_/g, ' ')} entries were left out.

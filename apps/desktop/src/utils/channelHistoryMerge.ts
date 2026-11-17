@@ -17,6 +17,7 @@
 import { frankingFieldsAfterEdit, withoutFranking, type StoredFranking } from './franking';
 import { adoptServerCopy } from './pendingSend';
 import { sanitizeChannelRefs } from './channelRefs';
+import { withEditFont } from './formatting/messageFont';
 
 /** A cached or freshly-decrypted channel row, as far as the merge cares.
  *  Structurally a superset-tolerant view of Dashboard's `StoredChannelMsg`. */
@@ -111,7 +112,7 @@ export function applyChannelEditDelete<T extends ChannelRow>(thread: T[], action
         // original's (utils/franking.ts frankingFieldsAfterEdit).
         next[idx] = {
             ...withoutFranking(next[idx]),
-            content: editedContent(next[idx].content, c.text, c.channel_refs),
+            content: editedContent(next[idx].content, c.text, c.channel_refs, (c as { font?: unknown }).font, (c as { size?: unknown }).size),
             edited: true,
             ...frankingFieldsAfterEdit(action),
         } as T;
@@ -147,17 +148,20 @@ const tsOf = (m: ChannelRow): number => new Date(m.timestamp).getTime();
  * latest text it held. A later real decrypt of the original never downgrades
  * it back: the upgrade path only replaces PLACEHOLDERS.
  */
-export function editedContent(targetContent: unknown, text: string, channelRefs?: unknown): Record<string, unknown> {
+export function editedContent(targetContent: unknown, text: string, channelRefs?: unknown, font?: unknown, size?: unknown): Record<string, unknown> {
     // `#channel` links (utils/channelRefs.ts) travel with the text they mark,
     // so the edit's own `channel_refs` REPLACES the original's — absent means
     // the new text names no channel. Keeping the old array would let a link
     // re-attach to a `#name` the edit typed by hand. Validated on the way in
     // (sender-controlled), and never written as an empty array.
     const refs = sanitizeChannelRefs(channelRefs);
+    // The message font and size (utils/formatting/messageFont.ts,
+    // messageSize.ts) follow the same rule: the edit's replace the original's;
+    // absent = the default.
     const withRefs = (c: Record<string, unknown>): Record<string, unknown> => {
         const rest = { ...c };
         delete rest.channel_refs;
-        return refs.length > 0 ? { ...rest, channel_refs: refs } : rest;
+        return withEditFont(refs.length > 0 ? { ...rest, channel_refs: refs } : rest, font, size);
     };
     if (isUndecryptablePlaceholder({ content: targetContent })) return withRefs({ type: 'text', text });
     return withRefs({ ...(targetContent as object), text });

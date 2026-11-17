@@ -505,6 +505,22 @@ function playbackInfoOf(path: PlaybackPath, nsEnabled: boolean): PlaybackInfo {
 }
 
 /**
+ * The far end as the echo detector needs it: the RECEIVED track of every remote
+ * microphone / share-audio chain the listener can currently hear. A chain that is
+ * silenced (local mute of that person, our own deafen, a server deafen) plays
+ * nothing, so it can echo nothing and is left out. Tapping the received track
+ * rather than a playback node works for both playback paths (element and Web
+ * Audio) and sits upstream of the user's volume sliders, which only scale how
+ * loud the echo is, not its shape (utils/echoDetector.ts correlates shapes).
+ */
+export function getAudibleFarEndTracks(): MediaStreamTrack[] {
+    const out: MediaStreamTrack[] = [];
+    micChains.forEach(c => { if (!c.silenced && c.track.readyState === 'live') out.push(c.track); });
+    ssAudioChains.forEach(c => { if (!c.silenced && c.track.readyState === 'live') out.push(c.track); });
+    return out;
+}
+
+/**
  * The playback path + latency inputs for one remote participant's audio —
  * what the A/V-sync monitor (utils/avSync.ts) needs to turn getStats() into
  * an offset estimate. Null when no chain exists for it.

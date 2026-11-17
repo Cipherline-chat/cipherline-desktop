@@ -76,7 +76,7 @@ export const ReportProblemHost: React.FC = () => {
         let sent = 0;
         let sentClosed = 0;
         for (const entry of plan.send) {
-            const { body } = buildFromPrepared(prepared, { category: 'crash', trigger: 'auto_crash', crash: entry.crash });
+            const { body } = buildFromPrepared(prepared, { category: 'crash', trigger: 'auto_crash', crash: entry.crash, previousSession: entry.previous_session ?? null });
             const r = await sendDiagnosticReport(body, tok);
             if (!r.ok) break; // offline / rate-limited: keep them pending for next time
             sent++;
@@ -132,15 +132,17 @@ export const ReportProblemHost: React.FC = () => {
     const onReview = useCallback(() => {
         if (!prompt) return;
         markSeen(prompt.unseen);
+        if (prompt.entry.crash.kind === 'unclean_exit') void api?.diagUncleanPromptOutcome?.('reviewed').catch(() => {});
         setPrompt(null);
         openReportProblem({ category: 'crash', trigger: 'crash_prompt', step: 'preview' });
-    }, [prompt, markSeen]);
+    }, [prompt, markSeen, api]);
 
     const onNotNow = useCallback(() => {
         if (!prompt) return;
         markSeen(prompt.unseen);
+        if (prompt.entry.crash.kind === 'unclean_exit') void api?.diagUncleanPromptOutcome?.('dismissed').catch(() => {});
         setPrompt(null);
-    }, [prompt, markSeen]);
+    }, [prompt, markSeen, api]);
 
     const onCrashSent = useCallback((sig: string) => { void api?.diagClearPendingCrashes?.([sig]).catch(() => {}); }, [api]);
 

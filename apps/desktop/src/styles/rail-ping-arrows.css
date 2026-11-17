@@ -1,0 +1,60 @@
+/* RailPingArrows (components/rail/RailPingArrows.tsx): the "unseen ping"
+   pills pinned to the top / bottom edge of the rail's server box.
+
+   Same vocabulary as RailBadge (components/RailBadge.tsx) on purpose: Flash
+   coral fill, --cl-on-flash ink, 10px/800 Nunito tabular digits, a 2px abyss
+   sink ring, fully rounded. Flash = others / notifications — never Lume, which
+   is you / selection. Hover / focus follow the channel list's red @mention
+   edge pill (styles/offscreen-unread.css), its sibling feature one pane over.
+   A soft drop shadow lifts the pill off the tiles that
+   scroll under it. Sized for the 56px-wide box (6px padding either side of the
+   44px tiles): "^ 9+" is ~34px.
+
+   Positioned against .cl-rail-box (position:relative, overflow:hidden), a
+   sibling of the scrolling track, so it stays on the visible edge. z-index is
+   above the tiles' badge layers (z-10) and the drag drop-line (z-30). */
+.cl-rail-ping {
+  position: absolute; left: 50%; z-index: 40;
+  display: inline-flex; align-items: center; justify-content: center; gap: 1px;
+  height: 18px; min-width: 26px; padding: 0 5px 0 3px; box-sizing: border-box;
+  border: 2px solid var(--cl-abyss); border-radius: 99px;
+  background: var(--cl-flash); color: var(--cl-on-flash);
+  font-family: var(--cl-font-body); font-size: 10px; font-weight: 800; line-height: 1;
+  font-variant-numeric: tabular-nums;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, .5);
+  cursor: pointer;
+  transform: translateX(-50%);
+  transition: background-color .12s ease;
+  /* Pop in, then float: a still pill is easy to miss against busy server
+     icons, so it drifts a couple of px toward the ping it points at and back,
+     forever, until the ping is on screen (the pill unmounts). */
+  animation:
+    cl-rail-ping-in .18s cubic-bezier(.2, .7, .3, 1) both,
+    cl-rail-ping-float 1.6s ease-in-out .18s infinite;
+}
+.cl-rail-ping--up { top: 4px; --cl-rail-ping-from: -4px; --cl-rail-ping-drift: -3px; }
+.cl-rail-ping--down { bottom: 4px; --cl-rail-ping-from: 4px; --cl-rail-ping-drift: 3px; }
+.cl-rail-ping:hover { background: var(--cl-flash-press); }
+/* Hold still under the pointer / keyboard focus so it is easy to click. */
+.cl-rail-ping:hover, .cl-rail-ping:focus-visible { animation-play-state: running, paused; }
+.cl-rail-ping:focus-visible { outline: 2px solid var(--cl-lume); outline-offset: 1px; }
+/* Same cap-height trim as .cl-rail-badge-num so the digits sit centred on
+   every platform's font metrics. */
+.cl-rail-ping-num { display: inline-block; text-box: trim-both cap alphabetic; }
+@keyframes cl-rail-ping-float {
+  0%, 100% { transform: translateX(-50%) translateY(0); }
+  50%      { transform: translateX(-50%) translateY(var(--cl-rail-ping-drift, 0)); }
+}
+@keyframes cl-rail-ping-in {
+  from { opacity: 0; transform: translateX(-50%) translateY(var(--cl-rail-ping-from, 0)); }
+  to   { opacity: 1; transform: translateX(-50%); }
+}
+/* Visually hidden polite live region (same clip idiom as the rail's reorder
+   announcement in Dashboard.tsx). */
+.cl-rail-ping-live {
+  position: absolute; width: 1px; height: 1px; overflow: hidden;
+  clip: rect(0 0 0 0); white-space: nowrap;
+}
+@media (prefers-reduced-motion: reduce) {
+  .cl-rail-ping { animation: none; transition: none; }
+}

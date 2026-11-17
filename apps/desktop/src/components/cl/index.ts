@@ -15,7 +15,7 @@ export { ClCheckbox, ClRadio } from './ClCheckbox';
 export { ClSegment } from './ClSegment';
 export type { ClSegmentOption } from './ClSegment';
 export { ClSelect } from './ClSelect';
-export type { ClSelectOption, ClSelectReorderConfig } from './ClSelect';
+export type { ClSelectOption, ClSelectReorderConfig, ClSelectSearchConfig } from './ClSelect';
 export { computeReorderDropIndex, applyReorderDrop, DRAG_THRESHOLD_PX } from './reorderMath';
 export { ClModal } from './ClModal';
 export { ClImageCropper } from './ClImageCropper';

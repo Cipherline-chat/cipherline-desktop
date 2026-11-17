@@ -3,7 +3,7 @@ import { getCallEvents, clearCallEvents } from './callEventLog';
 import {
     formatDecodeCaps, parseDecodeCaps, roomHevcState, hevcCapableCount, HevcPolicy, shareWantsHevc, liveShareWantsHevc, remoteCapsAtTick, hevcSwitchReason, probeHevcDecode, probeHevcEncode,
     HEVC_ATTR, HEVC_JOIN_GRACE_MS, HEVC_UP_MS, HEVC_MIN_GAP_MS,
-    HEVC_RETRY_MS, markHevcFailed, hasHevcFailed, markHevcGpuLost, effectiveHevcCaps, __resetHevcForTests,
+    HEVC_RETRY_MS, HEVC_RETRY_VERDICT_MS, HEVC_RETRY_MAX_MS, markHevcFailed, hasHevcFailed, markHevcGpuLost, effectiveHevcCaps, __resetHevcForTests,
 } from './hevcNegotiation';
 
 describe('capability advertisement format', () => {
@@ -171,7 +171,7 @@ describe('a failed H.265 is retried after 12 minutes', () => {
         hasHevcFailed(13 * MIN);
         const ev = getCallEvents().filter(e => e.kind === 'h265_retry');
         expect(ev).toHaveLength(1);
-        expect(ev[0].detail).toEqual({ after_s: 720 });
+        expect(ev[0].detail).toEqual({ after_s: 720, streak: 1 });
     });
 
     it('effectiveHevcCaps follows the expiry; a GPU loss is still permanent (negative control)', () => {
@@ -348,5 +348,46 @@ describe('hevcSwitchReason', () => {
             }
         }
         expect(hevcSwitchReason(false, '', 'alone')).not.toBe('someone cannot decode H.265');
+    });
+});
+
+// Report 2026-11-16: an H.265 camera that silently fell to OpenH264 was retried every 12 min, and each
+// retry blanked + swapped the camera tile for every viewer. A retry that fails again backs off.
+describe('a retry that fails again backs the window off', () => {
+    const MIN = 60_000;
+    beforeEach(() => { __resetHevcForTests(); clearCallEvents(); });
+
+    it('retry fails within the verdict window -> next window x3, then x9, capped', () => {
+        markHevcFailed(0);
+        expect(hasHevcFailed(12 * MIN)).toBe(false);                // retry begins
+        markHevcFailed(12 * MIN + 5_000);                           // drift verdict 5 s later
+        expect(hasHevcFailed(12 * MIN + 5_000 + 36 * MIN - 1)).toBe(true);
+        expect(hasHevcFailed(12 * MIN + 5_000 + 36 * MIN)).toBe(false);
+        const t2 = 12 * MIN + 5_000 + 36 * MIN;
+        markHevcFailed(t2 + 5_000);
+        expect(hasHevcFailed(t2 + 5_000 + 108 * MIN - 1)).toBe(true);
+        expect(hasHevcFailed(t2 + 5_000 + 108 * MIN)).toBe(false);
+    });
+
+    it('capped at HEVC_RETRY_MAX_MS', () => {
+        let t = 0; markHevcFailed(t);
+        for (let i = 0; i < 8; i++) {
+            while (hasHevcFailed(t)) t += MIN;
+            markHevcFailed(t + 1_000);
+        }
+        expect(hasHevcFailed(t + 1_000 + HEVC_RETRY_MAX_MS - 1)).toBe(true);
+        expect(hasHevcFailed(t + 1_000 + HEVC_RETRY_MAX_MS)).toBe(false);
+    });
+
+    it('a failure later than the verdict window is a new event: plain window again', () => {
+        markHevcFailed(0);
+        hasHevcFailed(12 * MIN);
+        markHevcFailed(12 * MIN + HEVC_RETRY_VERDICT_MS + 1);
+        expect(hasHevcFailed(12 * MIN + HEVC_RETRY_VERDICT_MS + 1 + 12 * MIN)).toBe(false);
+    });
+
+    it('the retry event carries the streak', () => {
+        markHevcFailed(0); hasHevcFailed(12 * MIN);
+        expect(getCallEvents().at(-1)?.detail).toEqual({ after_s: 720, streak: 1 });
     });
 });

@@ -61,6 +61,16 @@ export const CALL_EVENT_KINDS = [
     // (same silent encoder fallback as share_codec_drift; cameraPublish.handleCameraDrift):
     // codec names, the encoder implementation name, a layer count, an action enum.
     'camera_codec_drift',
+    // Our own camera or screen share stopped WITHOUT a press (utils/mediaSelfStop.ts,
+    // components/call/LocalMediaStopGuard): camera_stop = what stopped it (reason enum:
+    // device_ended | muted_unprompted | unpublished_unprompted), the capture track's
+    // readyState, whether a track `ended` was seen just before (ms), whether a share was live;
+    // camera_track = the capture track's own ended / mute / unmute (state enum, ms in that
+    // state); share_end = the share went away unprompted (reason enum, the capture's
+    // readyState, ms since a track `ended`); share_swap_abort = a codec swap was dropped
+    // because the new capture was already dead (shareRepublish.swapShareCodec). Enums,
+    // booleans and milliseconds only - never a device id or label.
+    'camera_stop', 'camera_track', 'share_end', 'share_swap_abort',
     'share_codec', 'share_start_check', 'share_fallback', 'share_low_layer', 'share_picker',
     // A share start: stage timings (codec probe, acquire + publish), or the
     // DOMException type when it failed (SidebarConference.startScreenShareFrom).
@@ -198,6 +208,9 @@ export const CALL_EVENT_KINDS = [
     // %); a remote share held at / released from its lower layer because its
     // full layer was not getting through (shareLossFallback.ts).
     'rx_layer', 'rx_video_health', 'share_rx_fallback',
+    // A remote CAMERA's picture went away: reason = swap (track replaced; the tile held its last frame - held, end = painted|timeout, ms)
+    // | unpublished | unsubscribed | muted (room events, ms = until it came back; see utils/remoteCameraGap.ts).
+    'rx_video_gap',
     // The viewer chose "Keep full quality" on the fallback's notice: no more
     // automatic drops for that share (track placeholder + whether a cap came off).
     'share_rx_optout',
@@ -209,7 +222,8 @@ export const CALL_EVENT_KINDS = [
     // And what a listener gets from ONE remote talker (placeholder `slot`): the wire level
     // they send, the gain the listener's leveler applied and the level heard (useParticipantAudio).
     // Numbers only, never audio.
-    'mic_level', 'rx_level',
+    // `gate_level`: the AUTO voice gate's threshold / floor / share held open by its pitch rule for the same window (micLevelLog.ts).
+    'mic_level', 'gate_level', 'rx_level',
     'load_trigger', 'offer_shown', 'offer_answer',
     // H.265 was latched off by a failure and its retry window (hevcNegotiation.ts HEVC_RETRY_MS) ended.
     'h265_caps', 'h265_switch', 'h265_retry',
@@ -217,6 +231,8 @@ export const CALL_EVENT_KINDS = [
     // reason enum only — a viewer's decrypt failures, a sender's rewritten
     // 3-byte start codes.
     'e2ee_annexb', 'e2ee_decrypt_error',
+    // H.264 IDR keyframes re-encrypted so a libwebrtc receiver can read the pps id (e2eeIdrPpsRetry.ts): counts only.
+    'e2ee_idr_pps',
     // A DATA packet (annotations, reactions…) failed to decrypt/encrypt in the
     // E2EE worker — livekit-client drops those silently (e2eeWorkerStats.ts).
     'e2ee_data_error',
@@ -285,6 +301,13 @@ export const CALL_EVENT_KINDS = [
     // path (webgl | canvas2d) and a reason enum (verified, blank, lost, threw, no_webgl, remembered,
     // forced, css_opacity). Enums only.
     'dots_render',
+    // Echo cancellation, auto default + detection (outputKind.ts, echoDetector.ts, useEchoDetection.ts):
+    //   output_kind  - what the output pick is: type = speakers|headphones|unknown, via = os|label|none.
+    //   echo_detected - the mic carries a delayed copy of what we play (AEC was off): correlation (0..1),
+    //                   delay ms, aec_on (always false), seconds of far-end speech, passing windows. Levels only.
+    //   echo_prompt  - the user's answer to the in-call prompt: action = shown|turn_on|dismiss|never.
+    //   aec_stats    - Chromium's own echo figures while AEC runs (erl_db, erle_db).
+    'output_kind', 'echo_detected', 'echo_prompt', 'aec_stats',
 ] as const;
 export type CallEventKind = (typeof CALL_EVENT_KINDS)[number];
 

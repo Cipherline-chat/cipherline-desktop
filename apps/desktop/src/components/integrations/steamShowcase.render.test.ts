@@ -17,17 +17,20 @@ vi.hoisted(() => {
     });
 });
 const steam = vi.hoisted(() => ({ card: null as unknown, asked: [] as Array<string | null> }));
-vi.mock('../../hooks/useIntegrations', async (orig) => ({ ...(await orig<object>()), useArt: () => null }));
+vi.mock('../../hooks/useIntegrations', async (orig) => ({ ...(await orig<object>()), useArt: () => null, useUserIntegrations: () => ({ spotify: [] }) }));
+const refresh = vi.hoisted(() => vi.fn(() => Promise.resolve()));
 vi.mock('../../hooks/useProfileRelations', async (orig) => ({
     ...(await orig<object>()),
+    refreshSteamCard: refresh,
     useSteamCard: (id: string | null) => { steam.asked.push(id); return id ? steam.card : null; },
 }));
 vi.mock('../../hooks/useEncryptedAvatar', () => ({
     useEncryptedAvatar: () => null, evictAvatar: () => {}, avatarUrlMime: () => null, peekAvatarUrl: () => null,
 }));
 
-import { SteamHighlight, SteamShowcase } from './SteamShowcase';
-import { readSteamActivity, steamPrivacyText, type SteamActivity } from '../../utils/integrations/api';
+import { SteamHighlight, SteamPrivateNotice, SteamShowcase } from './SteamShowcase';
+import { ProfileIntegrationsPanels } from './ProfileIntegrationsPanels';
+import { readSteamActivity, steamHasShowcaseStats, steamNeedsOwnerNotice, steamPrivacyText, type SteamActivity } from '../../utils/integrations/api';
 import { ProfilePopoutCard } from '../profile/ProfilePopoutCard';
 import type { ProfileCardData } from '../profile/profileCardData';
 
@@ -84,12 +87,13 @@ describe('SteamShowcase (full panel)', () => {
         expect(host.querySelector('[data-testid="steam-privacy-hint"]')).toBeNull();
     });
 
-    it('private game details: names the exact Steam setting for the owner, says only "private" to others', () => {
+    it('private game details: names the exact Steam setting for the owner, says nothing to others', () => {
         render(h(SteamShowcase, { activity: activity({ games_private: true }), token: 't', isSelf: true }));
         expect(host.querySelector('[data-testid="steam-privacy-hint"]')!.textContent).toContain('Game details: Public');
         expect(text()).not.toContain('Most played');
         render(h(SteamShowcase, { activity: activity({ games_private: true }), token: 't' }));
-        expect(host.querySelector('[data-testid="steam-privacy-hint"]')!.textContent).toBe('Their Steam game details are private.');
+        expect(host.querySelector('[data-testid="steam-privacy-hint"]')).toBeNull();
+        expect(text()).not.toMatch(/private/i);
     });
 
     it('private profile and hidden playtime hints', () => {
@@ -111,14 +115,15 @@ describe('SteamHighlight (one row)', () => {
         expect(row.querySelector('.ig-lvl')!.textContent).toBe('42');
     });
 
-    it('nothing playing: the most played game; private: the hint (owner) / just the level', () => {
+    it('nothing playing: the most played game; private: just the level, no "private" text', () => {
         render(h(SteamHighlight, { activity: activity({ now_playing: null }), token: 't' }));
         expect(text()).toContain('Dota 2');
         render(h(SteamHighlight, { activity: activity({ private: true }), token: 't', isSelf: true }));
         expect(text()).toContain('Level 42');
-        expect(text()).toContain('Steam profile is private');
+        expect(text()).not.toMatch(/private/i);
         render(h(SteamHighlight, { activity: activity({ games_private: true, now_playing: null }), token: 't' }));
-        expect(text()).toContain('Game details are private on Steam');
+        expect(text()).toContain('Level 42');
+        expect(text()).not.toMatch(/private/i);
     });
 });
 
@@ -148,5 +153,86 @@ describe('the profile preview carries the Steam highlight', () => {
         steam.card = card({ statsHidden: true });
         render(h(ProfilePopoutCard, { userId: 'me', token: 't', isSelf: true, data: data(), avatarId: null, bannerId: null }));
         expect(host.querySelector('[data-testid="steam-highlight"]')).toBeNull();
+    });
+});
+
+// Private Steam (2026-11-16): no showcase card for viewers (just the verified Steam row); the owner gets a how-to.
+const PRIVATE_WIRE = { private: true, games_private: false, level: 0, xp: { into_level: 0, level_span: 100, to_next: 100 }, badge_count: null, member_since: null, game_count: null, total_minutes: null, top_games: [], now_playing: null, recent: [], achievements: null };
+const privateActivity = (o: object = {}): SteamActivity => readSteamActivity({ ...PRIVATE_WIRE, ...o })!;
+
+describe('steamHasShowcaseStats (the show/hide rule)', () => {
+    it('private profile: never, even with a level or a member-since month', () => {
+        expect(steamHasShowcaseStats(privateActivity())).toBe(false);
+        expect(steamHasShowcaseStats(privateActivity({ level: 12, member_since: '2015-01' }))).toBe(false);
+    });
+    it('public profile, private game details: only a real public stat counts (level > 0, badges > 0, playing now)', () => {
+        const gp = { games_private: true, level: 0, badge_count: null, member_since: '2020-05', game_count: null, total_minutes: null, top_games: [], recent: [], now_playing: null, achievements: null };
+        expect(steamHasShowcaseStats(activity({ ...gp }))).toBe(false); // member-since alone is not a stat
+        expect(steamHasShowcaseStats(activity({ ...gp, level: 7 }))).toBe(true);
+        expect(steamHasShowcaseStats(activity({ ...gp, badge_count: 3 }))).toBe(true);
+        expect(steamHasShowcaseStats(activity({ ...gp, now_playing: WIRE.now_playing }))).toBe(true);
+        expect(steamNeedsOwnerNotice(activity({ ...gp }))).toBe(true);
+        expect(steamNeedsOwnerNotice(activity({ ...gp, level: 7 }))).toBe(false);
+    });
+    it('fully public profile: unchanged', () => {
+        expect(steamHasShowcaseStats(activity())).toBe(true);
+        expect(steamNeedsOwnerNotice(activity())).toBe(false);
+    });
+});
+
+describe('private Steam on a profile', () => {
+    const data = (): ProfileCardData => ({
+        name: 'Gabe', discriminator: 1, theme: null, decoration: null, effect: null,
+        blocks: ['links'], topAchievements: [], games: [], links: [], interests: [], achievementCount: null, mostPlayed: [],
+        steam: { steamId: '76561197960287930', personaName: 'Gaben', avatar: null },
+    });
+    const card = (a: SteamActivity) => ({ steam_id: '76561197960287930', persona_name: 'Gaben', avatar: null, activity: a });
+
+    it('viewer: no Steam card, no "0" level, no "<1 years", no hint; the verified Steam chip stays', () => {
+        steam.card = card(privateActivity());
+        render(h(ProfilePopoutCard, { userId: 'u1', token: 't', isSelf: false, data: data(), avatarId: null, bannerId: null }));
+        expect(host.querySelector('[data-testid="steam-highlight"]')).toBeNull();
+        render(h(ProfileIntegrationsPanels, { userId: 'u1', isSelf: false, token: 't', steamId: '76561197960287930' }));
+        expect(host.innerHTML).toBe('');
+        expect(text()).not.toContain('private');
+        expect(host.querySelector('[data-testid="steam-showcase"]')).toBeNull();
+    });
+    it('a public profile with private game details but a real level still shows the card', () => {
+        steam.card = card(activity({ games_private: true, level: 9, member_since: '2020-05', game_count: null, total_minutes: null, top_games: [], recent: [], now_playing: null, achievements: null }));
+        render(h(ProfileIntegrationsPanels, { userId: 'u1', isSelf: false, token: 't', steamId: '76561197960287930' }));
+        expect(host.querySelector('[data-testid="steam-showcase"]')).not.toBeNull();
+    });
+    it('level 0 draws no level ring', () => {
+        render(h(SteamShowcase, { activity: activity({ level: 0, xp: { into_level: 0, level_span: 100, to_next: 100 } }), token: 't' }));
+        expect(host.querySelector('.ig-lvl')).toBeNull();
+        expect(text()).not.toContain('XP to');
+    });
+    it('owner (own profile Integrations tab): the notice instead of the card', () => {
+        steam.card = card(privateActivity());
+        render(h(ProfileIntegrationsPanels, { userId: 'me', isSelf: true, token: 't', steamId: '76561197960287930' }));
+        expect(host.querySelector('[data-testid="steam-showcase"]')).toBeNull();
+        expect(host.querySelector('[data-testid="steam-private-notice"]')).not.toBeNull();
+    });
+});
+
+describe('SteamPrivateNotice (owner)', () => {
+    it('says what viewers see, names the Steam settings and the cache delay; Check again re-reads', async () => {
+        const again = vi.fn(() => Promise.resolve());
+        render(h(SteamPrivateNotice, { activity: privateActivity(), onCheckAgain: again }));
+        const t = text();
+        expect(t).toContain('Your Steam profile is private.');
+        expect(t).toContain("won't show on your Cipherline profile");
+        expect(t).toContain('verified Steam account');
+        expect(t).toContain('Edit Profile > Privacy Settings');
+        expect(t).toContain('My profile');
+        expect(t).toContain('Game details');
+        expect(t).toContain('up to 6 hours');
+        await act(async () => { (host.querySelector('[data-testid="steam-check-again"]') as HTMLButtonElement).click(); });
+        expect(again).toHaveBeenCalledTimes(1);
+    });
+    it('game-details-only wording; no button without a handler', () => {
+        render(h(SteamPrivateNotice, { activity: activity({ games_private: true }) }));
+        expect(text()).toContain('Your Steam game details are private.');
+        expect(host.querySelector('[data-testid="steam-check-again"]')).toBeNull();
     });
 });

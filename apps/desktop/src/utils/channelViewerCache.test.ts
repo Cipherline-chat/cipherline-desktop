@@ -419,7 +419,9 @@ describe('wiring (source)', () => {
         expect(dash).toMatch(/invalidateServerChannelViewers\(serverMembersChangedEvent\.server_id\);/);
         expect(dash).toMatch(/invalidateAllRosters\(\);\n\s*invalidateAllChannelViewers\(\);/);
         expect(dash).toMatch(/dropServerChannelViewers\(server_id\);/);
-        expect(dash).toMatch(/dropServerChannelViewers\(leaveServerTarget\.server_id\);/);
+        // Leave is optimistic now (utils/leaveServerOptimistic): the drop runs in cleanupLocal, i.e.
+        // only after the server committed the leave, on the captured id `sid`.
+        expect(dash).toMatch(/cleanupLocal: \(\) => \{[\s\S]{0,400}?dropServerChannelViewers\(sid\);/);
     });
 
     it('memory-only: the module never touches storage', () => {

@@ -21,82 +21,212 @@
  * No `electron` import and no import from ../src (the rootDir trap): unit-testable.
  */
 
+import {
+    SPLASH_TOKENS_CSS, SPLASH_KEYFRAMES_CSS, SPLASH_CARD_CSS, SPLASH_MARK_CSS, SPLASH_FOOTER_CSS,
+    SPLASH_HEADLINE_CSS, SPLASH_TITLEBAR_MARK_SVG, SPLASH_WORKING_MARK_HTML,
+} from './splash-style';
+
 /** How long the install is held back while the popup is up. */
 export const APPLYING_UPDATE_MS = 1800;
 /** The bar's fill animation; slightly shorter than the hold so it reads 100% before the quit. */
 export const APPLYING_BAR_MS = 1500;
 
+/**
+ * The status line, in the installer's update wording (installer-splash.ts
+ * `statusesJs`, isUpdate). CSS-only rotation (the page runs no script): each
+ * line holds for APPLYING_STATUS_STEP_MS and the last one stays.
+ */
+export const APPLYING_STATUSES: readonly string[] = ['applying update…', 'swapping in the new build…', 'almost there…'];
+export const APPLYING_STATUS_STEP_MS = Math.round(APPLYING_UPDATE_MS / APPLYING_STATUSES.length);
+
+/** The card: the installer's card (440 wide), shortened to this popup's content. */
+export const APPLYING_CARD_W = 440;
+export const APPLYING_CARD_H = 310;
+/**
+ * Room around the floating card for its drop shadow (transparent window only).
+ * The installer's shadow is `0 24px 60px`: it reaches 24 + 60 = 84px below the
+ * card, so anything less clips it in a visible straight line.
+ */
+export const APPLYING_SHADOW_MARGIN = 88;
+/** The card's colour (--cl-deep). The opaque window paints it before the page does. */
+export const APPLYING_CARD_BG = '#131A30';
+
 const VERSION_RE = /[^0-9A-Za-z.+-]/g;
+
+/** The version itself: allow-listed characters only, bounded (may be empty). */
+function safeVersion(version: string | null | undefined): string {
+    return String(version ?? '').replace(VERSION_RE, '').slice(0, 40);
+}
 
 /** The version as shown: allow-listed characters only, bounded, never empty text. */
 export function applyingVersionLabel(version: string | null | undefined): string {
-    const v = String(version ?? '').replace(VERSION_RE, '').slice(0, 40);
+    const v = safeVersion(version);
     return v ? `Updating to ${v}` : 'Updating Cipherline';
 }
 
-export function applyingUpdateHtml(version: string | null | undefined): string {
+export interface ApplyingUpdatePageOptions {
+    /**
+     * true: a transparent window; the card floats in it with the installer's
+     * 20px radius and drop shadow, exactly like the installer splash.
+     * false (default): an opaque window; the card fills it edge to edge, square,
+     * keeping the installer's 1px border as its edge.
+     */
+    floating?: boolean;
+}
+
+export interface ApplyingUpdateWindowPlan {
+    transparent: boolean;
+    width: number;
+    height: number;
+    backgroundColor: string;
+    page: ApplyingUpdatePageOptions;
+}
+
+/**
+ * Per-OS window choice. The installer splash is a transparent window around a
+ * floating rounded card; that look is reproduced only where a transparent window
+ * is reliably composited:
+ *   - Windows (DWM composition is always on since Windows 8) and macOS (always
+ *     composited): transparent, the card floats with the installer's radius and
+ *     shadow. These are the same window options the installer splash ships with.
+ *   - Linux and anything else: OPAQUE, the card fills the window. On X11 with no
+ *     compositing manager Chromium paints a "transparent" window black
+ *     (annotation-overlay-target.ts), which would put black corners and a black
+ *     shadow margin around the card; the only reliable compositor test is an
+ *     async X11 probe, too slow for a 1.8 s popup. Opaque = square corners (or
+ *     the desktop's own rounding under CSD), with the card's border as the edge.
+ */
+export function applyingUpdateWindowPlan(platform: string): ApplyingUpdateWindowPlan {
+    if (platform === 'win32' || platform === 'darwin') {
+        return {
+            transparent: true,
+            width: APPLYING_CARD_W + 2 * APPLYING_SHADOW_MARGIN,
+            height: APPLYING_CARD_H + 2 * APPLYING_SHADOW_MARGIN,
+            backgroundColor: '#00000000',
+            page: { floating: true },
+        };
+    }
+    return { transparent: false, width: APPLYING_CARD_W, height: APPLYING_CARD_H, backgroundColor: APPLYING_CARD_BG, page: { floating: false } };
+}
+
+/** CSS-only status rotation: line i fades in at i*step and (unless last) out at (i+1)*step. */
+function statusCss(): string {
+    const n = APPLYING_STATUSES.length;
+    const step = APPLYING_STATUS_STEP_MS;
+    return APPLYING_STATUSES.map((_, i) => {
+        const anims: string[] = [];
+        if (i > 0) anims.push(`st-in 160ms ease-out ${i * step}ms forwards`);
+        if (i < n - 1) anims.push(`st-out 160ms ease-in ${(i + 1) * step}ms forwards`);
+        return `  .st:nth-child(${i + 1}) { opacity: ${i === 0 ? 1 : 0}; animation: ${anims.join(', ')}; }`;
+    }).join('\n');
+}
+
+/*
+ * The look IS the installer splash (installer-splash.ts): its tokens, card,
+ * title bar, working mark (pulse rings + bouncing tentacles), headline type,
+ * mono status line with a blinking dot, percentage, and the sink-well bar all
+ * come verbatim from splash-style.ts, which the installer uses too. This page
+ * adds only what differs: the "Applying update" / "Updating to X" headline in
+ * the stage, a CSS-timed bar + percentage + status rotation (no script), the
+ * fill-the-window variant for an opaque window, and reduced motion.
+ *
+ * Fonts: NOT the installer's Google Fonts @import (this page fetches nothing).
+ * The same family names come first, then platform fallbacks.
+ */
+export function applyingUpdateHtml(version: string | null | undefined, opts: ApplyingUpdatePageOptions = {}): string {
     const label = applyingVersionLabel(version);
+    // The installer's title-bar label in update mode ("updating 0.1.1").
+    const titleVer = `updating ${safeVersion(version)}`.trim();
+    const mode = opts.floating ? 'float' : 'fill';
+    const ease = 'cubic-bezier(.45,0,.25,1)';
+    const statuses = APPLYING_STATUSES.map(s => `<span class="st">${s}</span>`).join('');
     return `<!DOCTYPE html>
-<html lang="en">
+<html lang="en" class="${mode}">
 <head>
 <meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:">
 <title>Applying update</title>
 <style>
-  :root { color-scheme: dark; }
+${SPLASH_TOKENS_CSS}
+  /* No color-scheme here, like the installer: a dark color-scheme can give the
+     root canvas an opaque dark backdrop, which would fill the transparent window. */
+  :root {
+    --cl-font-display: 'Fredoka', 'Nunito', ui-rounded, 'SF Pro Rounded', 'Segoe UI Variable Display', 'Segoe UI', system-ui, Ubuntu, Cantarell, sans-serif;
+    --cl-font-body: 'Nunito', ui-rounded, 'Segoe UI Variable Text', 'Segoe UI', system-ui, Ubuntu, Cantarell, sans-serif;
+    --cl-font-mono: 'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'SF Mono', Menlo, Consolas, 'DejaVu Sans Mono', monospace;
+  }
   * { box-sizing: border-box; }
-  html, body { height: 100%; margin: 0; background: #0B0F1E; }
+  html, body { height: 100%; margin: 0; background: transparent; }
   body {
     display: flex; align-items: center; justify-content: center;
-    font-family: 'Nunito', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
-    color: #F4F7FF; overflow: hidden; user-select: none; cursor: default;
+    font-family: var(--cl-font-body);
+    overflow: hidden; user-select: none; cursor: default;
   }
-  .card {
-    position: relative; width: 100%; height: 100%;
-    background: radial-gradient(120% 90% at 50% 0%, #1C2542 0%, #131A30 55%, #0B0F1E 100%);
-    border: 1px solid #2A3558; border-radius: 16px;
-    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
-    padding: 0 36px; overflow: hidden;
+
+${SPLASH_KEYFRAMES_CSS}
+  @keyframes st-in  { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+  @keyframes st-out { from { opacity: 1; } to { opacity: 0; transform: translateY(-3px); } }
+  @keyframes fill   { from { width: 0%; } to { width: 100%; } }
+  @property --p { syntax: '<integer>'; inherits: false; initial-value: 0; }
+  @keyframes pct    { from { --p: 0; } to { --p: 100; } }
+
+${SPLASH_CARD_CSS}
+${SPLASH_MARK_CSS}
+${SPLASH_FOOTER_CSS}
+${SPLASH_HEADLINE_CSS}
+
+  .card { height: ${APPLYING_CARD_H}px; }
+  .titlebar { -webkit-app-region: no-drag; }
+  /* Opaque window: the card IS the window. Square; its 1px border is the edge. */
+  html.fill .card { width: 100%; height: 100%; border-radius: 0; box-shadow: none; }
+
+  .stage {
+    flex: 1; min-height: 0;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 16px; padding: 6px 28px 2px;
   }
-  .halo {
-    position: absolute; top: 18px; left: 50%; width: 120px; height: 120px; margin-left: -60px;
-    background: radial-gradient(circle, rgba(37,224,200,.28) 0%, rgba(37,224,200,0) 68%);
-    animation: halo 2.2s ease-in-out infinite;
-  }
-  .mark { position: relative; width: 64px; height: 53px; filter: drop-shadow(0 0 10px rgba(37,224,200,.6)); animation: bob 1.4s ease-in-out infinite; }
-  .title { position: relative; margin-top: 10px; font-family: 'Fredoka', 'Nunito', system-ui, sans-serif; font-weight: 600; font-size: 20px; letter-spacing: .2px; }
-  .sub { position: relative; font-size: 13px; font-weight: 600; color: #A7B3D4; }
-  .track { position: relative; width: 100%; height: 6px; margin-top: 14px; border-radius: 999px; background: #1C2542; border: 1px solid #2A3558; overflow: hidden; }
-  .fill {
-    height: 100%; width: 100%; border-radius: 999px; transform-origin: left center;
-    background: linear-gradient(90deg, #0E8F7C, #25E0C8 70%, #3BEAD6);
-    box-shadow: 0 0 12px rgba(37,224,200,.55);
-    animation: fill ${APPLYING_BAR_MS}ms ease-in-out forwards;
-  }
-  @keyframes fill { 0% { transform: scaleX(0); } 100% { transform: scaleX(1); } }
-  @keyframes bob  { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-3px); } }
-  @keyframes halo { 0%,100% { opacity: .55; transform: scale(1); } 50% { opacity: 1; transform: scale(1.12); } }
+  /* The delayed ring must not sit, unanimated and off-centre, before its delay. */
+  .pulse-ring { opacity: 0; }
+
+  .statustext { display: grid; }
+  .st { grid-area: 1 / 1; white-space: nowrap; }
+${statusCss()}
+  .pct::after { counter-reset: p var(--p); content: counter(p) '%'; animation: pct ${APPLYING_BAR_MS}ms ${ease} forwards; }
+  .bar-fill { animation: fill ${APPLYING_BAR_MS}ms ${ease} forwards; }
+
   @media (prefers-reduced-motion: reduce) {
-    .mark, .halo { animation: none; }
-    .fill { animation: none; transform: none; }
+    .pulse-ring, .statusdot, .headline, .st, .pct::after, .bar-fill, .mark-wrap rect { animation: none !important; }
+    .bar-fill { width: 100%; }
+    .pct::after { --p: 100; }
   }
 </style>
 </head>
 <body>
   <div class="card" role="status" aria-live="polite">
-    <div class="halo"></div>
-    <svg class="mark" viewBox="0 0 110 90" aria-hidden="true">
-      <rect x="22.5" y="44" width="13" height="34" rx="6.5" fill="#25E0C8"/>
-      <rect x="39.8" y="44" width="13" height="34" rx="6.5" fill="#25E0C8"/>
-      <rect x="57.1" y="44" width="13" height="34" rx="6.5" fill="#25E0C8"/>
-      <rect x="74.4" y="44" width="13" height="34" rx="6.5" fill="#25E0C8"/>
-      <path d="M21 48 A34 34 0 0 1 89 48 L89 53 L21 53 Z" fill="#25E0C8"/>
-      <path d="M33.5 40 l3.75 -5 l3.75 5 l3.75 -5 l3.75 5" fill="none" stroke="#0B0F1E" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
-      <path d="M61.5 40 l3.75 -5 l3.75 5 l3.75 -5 l3.75 5" fill="none" stroke="#0B0F1E" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
-    </svg>
-    <div class="title">Applying update</div>
-    <div class="sub">${label}</div>
-    <div class="track"><div class="fill"></div></div>
+    <div class="titlebar">
+${SPLASH_TITLEBAR_MARK_SVG}
+      <span class="brand">cipherline</span>
+      <span class="spacer"></span>
+      <span class="ver">${titleVer}</span>
+    </div>
+
+    <div class="stage">
+${SPLASH_WORKING_MARK_HTML}
+      <div class="headline">
+        <div class="big">Applying update</div>
+        <div class="sub">${label}</div>
+      </div>
+    </div>
+
+    <div class="footer">
+      <div class="statusline">
+        <span class="statusdot"></span>
+        <span class="statustext">${statuses}</span>
+        <span class="spacer"></span>
+        <span class="pct"></span>
+      </div>
+      <div class="bar"><div class="bar-fill"></div></div>
+    </div>
   </div>
 </body>
 </html>`;

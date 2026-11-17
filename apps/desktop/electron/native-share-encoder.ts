@@ -118,6 +118,8 @@ export interface NativeShareEncoderHandle {
 export function startNativeShareEncoder(a: NativeShareEncoderArgs, onChunk: (b: Buffer) => void, onExit: (code: number | null) => void, onLine?: (line: string) => void): NativeShareEncoderHandle {
     const child = spawn(a.helperPath, helperArgv(a), { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env } });
     child.stdin.on('error', () => { /* helper gone: onExit handles it */ });
+    child.stdout.on('error', () => { /* helper gone: onExit handles it */ });
+    child.stderr.on('error', () => { /* helper gone: onExit handles it */ });
     if (a.capture?.restoreToken) child.stdin.write(`TOKEN ${a.capture.restoreToken}\n`);
     child.stdout.on('data', onChunk);
     // stderr carries one-line JSON (events, applied bitrate, final stats). Line-buffered, bounded, never parsed for control.

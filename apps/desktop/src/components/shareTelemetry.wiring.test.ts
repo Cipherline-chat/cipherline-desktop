@@ -59,7 +59,14 @@ describe('viewer (CallEventMonitor)', () => {
             expect(line, line).toMatch(/resolveShareRef\(|watches\.(get|set)\(|seen\.add\(|decode\.(get|set)\(|rx\.(get|set)\(|trackPlaceholder\(|\.trackSid, |\{ forEach|shareFallbackNotice\.isOptedOut\(/);
         }
         expect(CEM).not.toMatch(/logCallEvent\([^)]*trackSid/);
-        expect(CEM).not.toMatch(/\.identity|\.metadata\b|participant\.name/);
+        // The remote-camera gap tracker (utils/remoteCameraGap.ts) keys its per-participant map on `p.identity`
+        // (gaps.lost / gaps.back / gaps.drop, and the local-participant self-check). The identity is a MAP KEY only:
+        // the logged event carries a remote-video-N placeholder (`g.track`), never the identity (asserted below).
+        const withoutGapKeys = CEM.split('\n')
+            .filter(l => !/gaps\.(lost|back|drop)\(p\.identity\b/.test(l))
+            .join('\n');
+        expect(withoutGapKeys).not.toMatch(/\.identity|\.metadata\b|participant\.name/);
+        expect(CEM).toContain("logCallEvent('rx_video_gap', { track: g.track, reason: g.reason, ms: g.ms })");
     });
 });
 

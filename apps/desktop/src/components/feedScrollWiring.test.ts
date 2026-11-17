@@ -108,7 +108,8 @@ describe('the anchor is restored without fighting the deliberate snaps', () => {
     it('keeps jump-to-message, pinned-jump and load-older history scrolling intact', () => {
         // These three deliberately move the viewport and must not have been
         // collateral damage. Each is identified by its own distinctive call.
-        expect(src).toContain("feedEl.scrollTo({ top: Math.max(0, centredTop), behavior: 'smooth' })");
+        // Jump-to-message centres through centreMessageRow (2026-11-16).
+        expect(src).toContain("feedEl.scrollTo({ top: Math.max(0, feedEl.scrollTop + offCentre(msgEl)), behavior: 'smooth' })");
         expect(src).toMatch(/preservedScrollHeightRef\.current !== null[\s\S]{0,300}?el\.scrollTop \+= delta/);
     });
 });

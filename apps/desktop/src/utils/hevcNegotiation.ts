@@ -258,14 +258,32 @@ export async function probeHevcEncode(deps: HevcProbeDeps = {}): Promise<boolean
  * unchanged. `now` is injectable so the window is testable without timers.
  */
 export const HEVC_RETRY_MS = 12 * 60_000;
+/**
+ * A retry that fails the SAME way is a machine fact, not a fluke (report 2026-11-16: an
+ * NVIDIA box whose H.265 camera encoder silently fell to OpenH264 on every attempt). Each
+ * retry costs every viewer a blank-then-swapped camera tile (the H.265 publication carries
+ * nothing until the drift check republishes), so a failure that lands within
+ * HEVC_RETRY_VERDICT_MS of a retry lifting widens the next window x3, capped. A failure
+ * any later than that is a new event and gets the plain window.
+ */
+export const HEVC_RETRY_VERDICT_MS = 90_000;
+export const HEVC_RETRY_MAX_MS = 6 * 60 * 60_000;
 let hevcFailedAt: number | null = null;
-export function markHevcFailed(now: number = Date.now()): void { hevcFailedAt = now; }
+let hevcFailStreak = 0;
+let hevcRetriedAt: number | null = null;
+const hevcWindowMs = (): number => Math.min(HEVC_RETRY_MS * 3 ** Math.max(0, hevcFailStreak - 1), HEVC_RETRY_MAX_MS);
+export function markHevcFailed(now: number = Date.now()): void {
+    hevcFailStreak = hevcRetriedAt !== null && now - hevcRetriedAt <= HEVC_RETRY_VERDICT_MS ? hevcFailStreak + 1 : 1;
+    hevcRetriedAt = null;
+    hevcFailedAt = now;
+}
 export function hasHevcFailed(now: number = Date.now()): boolean {
     if (hevcFailedAt === null) return false;
-    if (now - hevcFailedAt < HEVC_RETRY_MS) return true;
+    if (now - hevcFailedAt < hevcWindowMs()) return true;
     const afterS = Math.floor((now - hevcFailedAt) / 1000);
     hevcFailedAt = null;
-    logCallEvent('h265_retry', { after_s: afterS });
+    hevcRetriedAt = now;
+    logCallEvent('h265_retry', { after_s: afterS, streak: hevcFailStreak });
     return false;
 }
 
@@ -321,4 +339,4 @@ export function effectiveHevcCaps(
     return { decode: probed.decode, encode: probed.encode && !state.failed };
 }
 
-export function __resetHevcForTests(): void { hevcFailedAt = null; hevcGpuLost = false; hevcDecodeFailedAt = null; }
+export function __resetHevcForTests(): void { hevcFailedAt = null; hevcFailStreak = 0; hevcRetriedAt = null; hevcGpuLost = false; hevcDecodeFailedAt = null; }

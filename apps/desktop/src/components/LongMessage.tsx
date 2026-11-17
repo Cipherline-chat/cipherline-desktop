@@ -14,7 +14,8 @@ import {
 import '../styles/long-message.css';
 
 /**
- * A text message past LONG_MESSAGE_THRESHOLD characters, collapsed.
+ * A text message past LONG_MESSAGE_THRESHOLD characters or
+ * LONG_MESSAGE_MAX_LINES lines (utils/longMessage isLongMessage), collapsed.
  *
  *   collapsed  a ~700-character preview (utils/longMessage.collapsedPreview)
  *              with a fade-out, and a footer: "Long message · 12,345
@@ -45,6 +46,12 @@ export interface LongMessageBodyProps {
     renderDeps: readonly unknown[];
     /** Spans the collapsed cut must not land inside (e.g. `#channel` links). */
     protectedSpans?: readonly TextSpan[];
+    /**
+     * The collapsed preview, built by the caller from the WHOLE text (ChatPane:
+     * a formatting-aware cut, components/formatting renderFormattedPreview).
+     * Without it the preview is `renderText` of a text prefix.
+     */
+    renderPreview?: (text: string) => React.ReactNode;
     senderName: string;
     timestamp: string;
     /** Show an "edited" mark in the footer (the row header carries it otherwise). */
@@ -52,7 +59,7 @@ export interface LongMessageBodyProps {
 }
 
 export const LongMessageBody: React.FC<LongMessageBodyProps> = ({
-    id, text, renderText, renderDeps, protectedSpans, senderName, timestamp, edited,
+    id, text, renderText, renderDeps, protectedSpans, renderPreview, senderName, timestamp, edited,
 }) => {
     const [open, setOpen] = useState(() => longMessageExpansion.has(id));
     const [reader, setReader] = useState(false);
@@ -68,7 +75,7 @@ export const LongMessageBody: React.FC<LongMessageBodyProps> = ({
     // the (possibly huge) tree is rebuilt only when one of those really changes.
     const depsKey = useShallowStable(renderDeps);
     /* eslint-disable react-hooks/exhaustive-deps -- renderText intentionally omitted: see depsKey */
-    const previewNodes = useMemo(() => (open ? null : renderText(preview)), [open, preview, depsKey]);
+    const previewNodes = useMemo(() => (open ? null : renderPreview ? renderPreview(text) : renderText(preview)), [open, preview, text, depsKey]);
     const fullNodes = useMemo(() => (open ? renderText(text) : null), [open, text, depsKey]);
     /* eslint-enable react-hooks/exhaustive-deps */
 

@@ -23,12 +23,13 @@
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Crown, Video, MonitorUp, Upload, HardDrive } from 'lucide-react';
+import { Crown, Video, MonitorUp, Upload, HardDrive, Hash } from 'lucide-react';
 import cipherlineMark from '../assets/cipherline-mark.svg';
 import { useNotificationPrefsSafe } from '../contexts/NotificationContext';
 import { useEscape } from '../hooks/useEscape';
 import { playSound } from '../utils/notificationSounds';
 import { FREE_UPLOAD_LIMIT_LABEL, PRO_UPLOAD_LIMIT_LABEL } from '../utils/uploadLimitCopy';
+import { PRO_TAG_FEATURE_TITLE } from '../utils/discriminatorField';
 import '../styles/pro-celebration.css';
 
 /** When "Let's go" has finished rising (its 2.75 s delay + 0.6 s ease, less the tail). */
@@ -44,6 +45,7 @@ const PERKS = [
     { Icon: MonitorUp, title: 'Screen share', detail: 'Share your screen live' },
     { Icon: Upload, title: `${PRO_UPLOAD_LIMIT_LABEL} uploads`, detail: `Up from ${FREE_UPLOAD_LIMIT_LABEL}` },
     { Icon: HardDrive, title: 'More storage', detail: 'Grows with your server' },
+    { Icon: Hash, title: PRO_TAG_FEATURE_TITLE, detail: 'Pick your own number' },
 ] as const;
 
 /** Deterministic drifting motes (no Math.random at render). */

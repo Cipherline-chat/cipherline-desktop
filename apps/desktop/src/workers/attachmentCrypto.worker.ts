@@ -5,12 +5,13 @@
  * result Blob's copy into blob storage all happen here instead of on the UI
  * thread.
  */
-import { encryptBlobCore, decryptBlobCore } from '../utils/attachmentCryptoCore';
+import { encryptBlobCore, decryptBlobCore, sha256BlobB64Core } from '../utils/attachmentCryptoCore';
 
 const post = (msg: unknown) => (self as unknown as Worker).postMessage(msg);
 
 type Req =
     | { id: number; op: 'enc'; blob: Blob; key: CryptoKey; bundleIv: boolean }
+    | { id: number; op: 'sha256'; blob: Blob }
     | { id: number; op: 'dec'; blob: Blob; key: CryptoKey; ivB64: string | null; type: string };
 
 self.onmessage = async (e: MessageEvent<Req>) => {
@@ -19,6 +20,8 @@ self.onmessage = async (e: MessageEvent<Req>) => {
         if (m.op === 'enc') {
             const { encryptedBlob, ivB64 } = await encryptBlobCore(m.blob, m.key, m.bundleIv);
             post({ id: m.id, ok: true, blob: encryptedBlob, ivB64 });
+        } else if (m.op === 'sha256') {
+            post({ id: m.id, ok: true, sha256B64: await sha256BlobB64Core(m.blob) });
         } else {
             const blob = await decryptBlobCore(m.blob, m.key, m.ivB64, m.type);
             post({ id: m.id, ok: true, blob });

@@ -9,6 +9,8 @@ import { onOutputDeviceChange, refreshOutputDevices } from '../utils/audioOutput
 import { setIncomingLevelerEnabled } from '../utils/incomingLeveler';
 import { isNoiseSuppressionMode, type NoiseSuppressionMode } from '../utils/nsLatency';
 import { useAudioDeviceProfiles } from './useAudioDeviceProfiles';
+import { effectiveEchoCancellation, resolveEchoAutoFlag, type OutputKind } from '../utils/outputKind';
+import { useOutputKind } from '../utils/outputKindProbe';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -19,9 +21,16 @@ export interface VoiceSettings {
      *  whistling / whispering, ~2.7 ms). See utils/nsLatency.ts. */
     noiseSuppressionMode: NoiseSuppressionMode;
     // Chromium's acoustic echo cancellation on the mic capture (audioInput.ts
-    // micCaptureConstraints). Default OFF for new installs (DEFAULT_ECHO_CANCELLATION);
-    // a saved choice is honoured as-is. Applied live mid-call.
+    // micCaptureConstraints). While `echoCancellationAuto` is true this field is only the
+    // remembered boolean and the EFFECTIVE value (what `settings.echoCancellation` reads
+    // as from the hook) follows the output device: on for speakers / unknown, off for
+    // headphones (utils/outputKind.ts). Once the user picks On or Off it is that choice.
+    // Applied live mid-call.
     echoCancellation: boolean;
+    // True until the user explicitly picks On/Off in Settings (or the in-call prompt). A saved
+    // blob from before this flag existed also starts on Auto (owner, 2026-11-16; resolveEchoAutoFlag):
+    // only a choice made in the On / Auto / Off setting is kept.
+    echoCancellationAuto: boolean;
     volumeNormalization: boolean;
     // "Normalize voice volume" (Settings -> Voice & Video -> Output): a gentle
     // per-talker leveler on what you HEAR, behind everyone's own sender-side
@@ -29,11 +38,13 @@ export interface VoiceSettings {
     normalizeIncomingVolume: boolean;
     voiceGate: boolean;
     voiceGateThreshold: number; // dBFS, range -60 to -20 — the MANUAL threshold, used only when voiceGateAuto is false
-    /** Gate "Automatic" (default ON): the gate follows the measured noise floor + 7 dB and
+    /** Gate "Automatic" (default ON): the gate follows the measured noise floor and speech level (see GATE_WORKLET_SOURCE) and
      *  voiceGateThreshold is ignored (but kept, for when the user switches Automatic off). */
     voiceGateAuto: boolean;
     pushToTalk: boolean;
     pushToTalkKey: string | null;
+    /** Hold this key to be muted (normal voice-activity mode only; inert while push-to-talk is on). null = off. */
+    pushToMuteKey: string | null;
     micDeviceId: string;
     speakerDeviceId: string;
     cameraDeviceId: string;
@@ -80,13 +91,17 @@ export const DEFAULT_VOICE_SETTINGS: VoiceSettings = {
     // whatever they saved, and a blob from before the mode existed loads as Strong.
     noiseSuppressionMode: 'light',
     echoCancellation: DEFAULT_ECHO_CANCELLATION,
+    echoCancellationAuto: true,
     volumeNormalization: true,
     normalizeIncomingVolume: true,
     voiceGate: true,
     voiceGateThreshold: -45,
     voiceGateAuto: true,
     pushToTalk: false,
+    // No default key (owner decision 2026-11-16): the user picks one when they turn push-to-talk on. Until
+    // then the mic stays closed. Any key, including a bare modifier such as Alt, can be bound.
     pushToTalkKey: null,
+    pushToMuteKey: null,
     micDeviceId: '',
     speakerDeviceId: '',
     cameraDeviceId: '',
@@ -119,6 +134,8 @@ export function loadVoiceSettings(): VoiceSettings {
         const merged = { ...DEFAULT_VOICE_SETTINGS, ...saved };
         // Saved before this setting existed → default (ON); a non-boolean → default.
         merged.echoCancellation = resolveEchoCancellation(merged.echoCancellation);
+        // No Auto flag yet (saved before the On / Auto / Off setting): Auto (see resolveEchoAutoFlag).
+        merged.echoCancellationAuto = resolveEchoAutoFlag(saved);
         if (typeof merged.micVolume === 'number') merged.micVolume = Math.min(merged.micVolume, MIC_VOLUME_MAX);
         // Output used to go to 300%; an existing user above the ceiling comes down to it.
         if (typeof merged.speakerVolume === 'number') merged.speakerVolume = Math.min(merged.speakerVolume, SPEAKER_VOLUME_MAX);
@@ -130,6 +147,8 @@ export function loadVoiceSettings(): VoiceSettings {
         // takes the default (ON) for everyone, and the saved voiceGateThreshold stays as the manual value
         // for when Automatic is switched off (not read as a deliberate choice — it may be an old default).
         if (typeof saved?.voiceGateAuto !== 'boolean') merged.voiceGateAuto = true;
+        // Push-to-talk on with no key stays unbound (the UI asks for a key; the mic stays closed). A saved key, Alt included, is kept.
+        if (typeof merged.pushToTalkKey !== 'string' || merged.pushToTalkKey === '') merged.pushToTalkKey = null;
         for (const k of RETIRED_VOICE_SETTING_KEYS) delete (merged as Record<string, unknown>)[k];
         return merged;
     } catch {
@@ -175,7 +194,10 @@ export function useVoiceSettings(userId?: string | null) {
 
     const setNoiseSuppression    = useCallback((v: boolean) => update({ noiseSuppression: v }), [update]);
     const setNoiseSuppressionMode = useCallback((v: NoiseSuppressionMode) => { if (isNoiseSuppressionMode(v)) update({ noiseSuppressionMode: v }); }, [update]);
-    const setEchoCancellation      = useCallback((v: boolean) => update({ echoCancellation: v }), [update]);
+    // An explicit On/Off is a user choice: it stops the Auto behaviour for good (until Auto is picked again).
+    const setEchoCancellation      = useCallback((v: boolean) => update({ echoCancellation: v, echoCancellationAuto: false }), [update]);
+    // Back to Auto. Not recorded per device (it is not a per-mic value).
+    const setEchoCancellationAuto  = useCallback(() => setSettings(prev => ({ ...prev, echoCancellationAuto: true })), []);
     const setVolumeNormalization = useCallback((v: boolean) => update({ volumeNormalization: v }), [update]);
     const setNormalizeIncomingVolume = useCallback((v: boolean) => update({ normalizeIncomingVolume: v }), [update]);
     const setVoiceGate           = useCallback((v: boolean) => update({ voiceGate: v }), [update]);
@@ -183,6 +205,7 @@ export function useVoiceSettings(userId?: string | null) {
     const setVoiceGateThreshold  = useCallback((v: number) => update({ voiceGateThreshold: Math.max(-60, Math.min(-20, v)) }), [update]);
     const setPushToTalk          = useCallback((v: boolean) => update({ pushToTalk: v }), [update]);
     const setPushToTalkKey       = useCallback((v: string | null) => update({ pushToTalkKey: v }), [update]);
+    const setPushToMuteKey       = useCallback((v: string | null) => update({ pushToMuteKey: v }), [update]);
     /** `device`: the picked MediaDeviceInfo (or its label/groupId), so the pick
      *  can be found again if its id changes. Omit only for "follow the default". */
     const setMicDeviceId         = useCallback((v: string, device?: Pick<MediaDeviceInfo, 'label' | 'groupId'> | null) => {
@@ -269,13 +292,31 @@ export function useVoiceSettings(userId?: string | null) {
     const setVadProbability    = useCallback((v: number) => { vadProbabilityRef.current    = v; }, []);
     const setCurrentInputLevel = useCallback((v: number) => { currentInputLevelRef.current = v; }, []);
 
+    // ── Echo cancellation: the stored choice, resolved against the output device ──
+    // Every consumer (call capture constraints, mic warm-up, Settings meter, the live
+    // toggle that re-opens the mic) reads `settings.echoCancellation`, so resolving it
+    // HERE makes the auto default, and its re-evaluation on a device change, reach all
+    // of them - including mid-call - without each knowing about Auto.
+    const { kind: outputKind, source: outputKindSource } = useOutputKind(settings.speakerDeviceId);
+    const echoEffective = effectiveEchoCancellation({ auto: settings.echoCancellationAuto, stored: settings.echoCancellation, kind: outputKind });
+    const effectiveSettings = useMemo<VoiceSettings>(
+        () => (settings.echoCancellation === echoEffective ? settings : { ...settings, echoCancellation: echoEffective }),
+        [settings, echoEffective],
+    );
+    const echoAuto = useMemo(
+        () => ({ auto: settings.echoCancellationAuto, outputKind: outputKind as OutputKind, outputKindSource }),
+        [settings.echoCancellationAuto, outputKind, outputKindSource],
+    );
+
     return useMemo(() => ({
-        settings,
+        settings: effectiveSettings,
+        echoAuto,
         anyProcessingEnabled,
         deviceProfiles,
         setNoiseSuppression,
         setNoiseSuppressionMode,
         setEchoCancellation,
+        setEchoCancellationAuto,
         setVolumeNormalization,
         setNormalizeIncomingVolume,
         setVoiceGate,
@@ -283,6 +324,7 @@ export function useVoiceSettings(userId?: string | null) {
         setVoiceGateThreshold,
         setPushToTalk,
         setPushToTalkKey,
+        setPushToMuteKey,
         setMicDeviceId,
         setSpeakerDeviceId,
         setCameraDeviceId,
@@ -298,14 +340,15 @@ export function useVoiceSettings(userId?: string | null) {
         setVadProbability,
         setCurrentInputLevel,
     }), [
-        settings, anyProcessingEnabled, deviceProfiles,
+        effectiveSettings, echoAuto, anyProcessingEnabled, deviceProfiles,
         setNoiseSuppression,
         setNoiseSuppressionMode,
         setEchoCancellation,
+        setEchoCancellationAuto,
         setVolumeNormalization,
         setNormalizeIncomingVolume,
         setVoiceGate, setVoiceGateAuto, setVoiceGateThreshold,
-        setPushToTalk, setPushToTalkKey,
+        setPushToTalk, setPushToTalkKey, setPushToMuteKey,
         setMicDeviceId, setSpeakerDeviceId, setCameraDeviceId,
         setMicVolume, setSpeakerVolume,
         setEqEnabled, setEqBand, resetEqBands,

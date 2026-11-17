@@ -104,7 +104,7 @@ export function crashRecordFor(event: CrashEvent, quitting: boolean, ctx: CrashC
 }
 
 /** Why a quit was asked for — logging only; every trigger is handled alike. */
-export type QuitTrigger = 'before-quit' | 'session-end' | 'os-shutdown' | 'quit-and-install' | 'startup-install' | 'reopen-install' | 'relaunch';
+export type QuitTrigger = 'before-quit' | 'session-end' | 'os-shutdown' | 'quit-and-install' | 'startup-install' | 'reopen-install' | 'relaunch' | 'signal';
 
 export interface SessionLifecycleDeps {
     /** Packaged (or opted in) and not the smoke test — see main.ts. */

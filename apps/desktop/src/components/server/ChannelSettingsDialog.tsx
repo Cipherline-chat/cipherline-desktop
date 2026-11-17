@@ -26,6 +26,7 @@ import {
 } from 'lucide-react';
 import { apiUrl } from '../../utils/apiPath';
 import type { ChannelInfo, CategoryInfo } from '../../hooks/useServers';
+import { decideCreateNavigation } from './createChannelNavigation';
 import { ChannelIconDropdown } from './ChannelIconPicker';
 import {
     CHANNEL_NAME_IMPATIENCE, IMPATIENCE_AFTER_FOCUSES, channelNameEgg, pickRotating,
@@ -50,8 +51,36 @@ import {
 } from '../../utils/callNaming';
 import '../../styles/server-dock.css';
 import { isSecondGeneral, requestMoment } from '../../utils/moments';
+import { channelNameDraftError, CHANNEL_NAME_INPUT_MAX_UNITS } from '../../utils/displayName';
 
 type Tab = 'overview' | 'permissions';
+
+/**
+ * How the host list shows a create / edit BEFORE the server has answered.
+ * When it is supplied and the change touches no permission overrides, the
+ * dialog applies the change through these, closes at once, and finishes the
+ * request in the background; a refusal comes back through `fail` after
+ * `dropPending` / the reverting `patch`. Changes that carry overrides keep the
+ * old wait-for-the-server flow, because their result (which members can see
+ * the channel, who gets its key) is not knowable up front.
+ *
+ * The server stays the authority throughout: nothing here skips a check, and
+ * the channel's Sender Key is still minted by `onCreated` only after the
+ * server has created the channel.
+ */
+export interface ChannelOptimism {
+    /** Show a placeholder row for a channel being created. */
+    addPending(temp: ChannelInfo): void;
+    /** The server created it: swap the placeholder for the real row. */
+    settle(tempId: string, saved: ChannelInfo): void;
+    /** The server refused: remove the placeholder. */
+    dropPending(tempId: string): void;
+    /** Apply (or roll back) field changes on an existing channel row. */
+    patch(channelId: string, patch: Partial<ChannelInfo>): void;
+    /** The server accepted the change: reconcile the list in the background. */
+    committed(): void;
+    fail(message: string): void;
+}
 
 // ── Limit picker ───────────────────────────────────────────────────────────
 // Preset chips + a compact custom field. Deliberately NOT a slider: limits
@@ -123,7 +152,6 @@ const LimitField: React.FC<LimitFieldProps> = ({ icon, label, sublabel, value, m
     );
 };
 
-const toPlainText = (s: string) => s.replace(/[^a-zA-Z0-9 '\-_.]/g, '');
 const sectionLabel = 'text-[10.5px] font-mono font-semibold uppercase tracking-widest text-cl-faint mb-1.5';
 const errText = (e: unknown, fallback: string) =>
     ((e as { response?: { data?: { message?: unknown } } })?.response?.data?.message as string | undefined) ?? fallback;
@@ -144,7 +172,12 @@ interface Props {
     /** Fired ONLY on creation, after the override PATCHes have landed — so the
      *  caller mints & distributes the channel's Sender Key to exactly the set
      *  of members who can VIEW it post-override. */
-    onCreated?: (channel: ChannelInfo) => void;
+    onCreated?: (channel: ChannelInfo) => void | Promise<void>;
+    /** Fired after a successful create when the dialog is NOT staying open
+     *  ("Create another" unchecked): put the user in the new channel. Receives
+     *  the REAL channel (never the optimistic placeholder) and runs after
+     *  `onCreated` has settled, so the channel's key is already minted. */
+    onNavigateToCreated?: (channel: ChannelInfo) => void;
     /** Fired when a channel was created but the dialog STAYS OPEN ("Create
      *  another", or some overrides failed and need a retry). Passing it is
      *  what enables the "Create another" toggle. */
@@ -156,12 +189,14 @@ interface Props {
     myPermissions?: bigint;
     /** Other channels, for "Copy from…". */
     channels?: ChannelInfo[];
+    /** Optimistic create / edit (see ChannelOptimism). Absent = wait for the server. */
+    optimism?: ChannelOptimism;
 }
 
 export const ChannelSettingsDialog: React.FC<Props> = ({
     serverId, token, channel, defaultCategoryId, defaultKind,
-    categories, canManage = false, onClose, onSaved, onDelete, onCreated, onCreatedKeepOpen,
-    ownerUserId = null, currentUserId = null, myPermissions, channels,
+    categories, canManage = false, onClose, onSaved, onDelete, onCreated, onNavigateToCreated, onCreatedKeepOpen,
+    ownerUserId = null, currentUserId = null, myPermissions, channels, optimism,
 }) => {
     const { closing, handleClose } = useModalExit(onClose, 260);
 
@@ -191,17 +226,29 @@ export const ChannelSettingsDialog: React.FC<Props> = ({
     const [confirmDiscard, setConfirmDiscard] = useState(false);
 
     const mask = useMemo(() => channelPermissionMask(kind), [kind]);
-    const orderedCategories = useMemo(
-        () => [...categories].filter(c => !c.kind || c.kind === kind).sort((a, b) => a.position - b.position),
-        [categories, kind],
-    );
+    // Tree order: each top-level category followed by its sub-categories.
+    const orderedCategories = useMemo(() => {
+        const same = categories.filter(c => !c.kind || c.kind === kind);
+        const ids = new Set(same.map(c => c.category_id));
+        const isSub = (c: CategoryInfo) => !!c.parent_category_id && ids.has(c.parent_category_id);
+        const tops = same.filter(c => !isSub(c)).sort((a, b) => a.position - b.position);
+        return tops.flatMap(t => [
+            t,
+            ...same.filter(c => isSub(c) && c.parent_category_id === t.category_id).sort((a, b) => a.position - b.position),
+        ]);
+    }, [categories, kind]);
     // A category of the other kind (after switching type) simply doesn't apply.
     const parentCategory = orderedCategories.find(c => c.category_id === pickedParentId) ?? null;
     const parentId = parentCategory?.category_id ?? '';
+    // A sub-category's channels inherit TWO tiers: its parent's, then its own.
+    const outerCategory = parentCategory?.parent_category_id
+        ? orderedCategories.find(c => c.category_id === parentCategory.parent_category_id) ?? null
+        : null;
 
     const data = usePermissionData({
         serverId, token,
         inheritFromCategoryId: parentCategory?.category_id ?? null,
+        inheritOuterCategoryId: outerCategory?.category_id ?? null,
         own: editing ? { scope: 'channel', id: editing.channel_id } : null,
         myPermissions,
     });
@@ -211,9 +258,12 @@ export const ChannelSettingsDialog: React.FC<Props> = ({
 
     // What the server holds right now — re-derived whenever it is re-read.
     const baseline: DraftMap = useMemo(() => (data.ownRows ? draftFromRows(data.ownRows) : {}), [data.ownRows]);
-    const inheritedTiers: PermTier[] = useMemo(() => parentCategory
-        ? [{ kind: 'category', label: `category ‘${parentCategory.name}’`, overrides: data.inherited }]
-        : [], [parentCategory, data.inherited]);
+    const inheritedTiers: PermTier[] = useMemo(() => [
+        ...(outerCategory ? [{ kind: 'category' as const, label: `category ‘${outerCategory.name}’`, overrides: data.inheritedOuter }] : []),
+        ...(parentCategory
+            ? [{ kind: 'category' as const, label: `${outerCategory ? 'sub-category' : 'category'} ‘${parentCategory.name}’`, overrides: data.inherited }]
+            : []),
+    ], [outerCategory, parentCategory, data.inherited, data.inheritedOuter]);
     // The guard resolves the caller's permissions IN this channel (inherited
     // tier + saved baseline), which is what the server checks each write
     // against — not their server-wide bits.
@@ -338,7 +388,8 @@ export const ChannelSettingsDialog: React.FC<Props> = ({
     }, [token, categories, channels, serverId, editing?.channel_id]);
 
     // ── Save / create ──────────────────────────────────────────────────────
-    const canSubmit = name.trim().length >= 1 && !saving && (isEdit ? dirty : true) && (permsReady || !permsDirty)
+    const nameError = channelNameDraftError(name);
+    const canSubmit = name.trim().length >= 1 && nameError === null && !saving && (isEdit ? dirty : true) && (permsReady || !permsDirty)
         && callNamingError === null;
     const auth = { headers: { Authorization: `Bearer ${token}` } };
     const overridesBase = (channelId: string) => apiUrl`/servers/${serverId}/channels/${channelId}/overrides`;
@@ -356,6 +407,49 @@ export const ChannelSettingsDialog: React.FC<Props> = ({
         } else if (topic.trim()) {
             body.topic = topic;
         }
+        // Optimistic: no overrides to send, so the channel's final shape is
+        // exactly what was typed. Show it now, finish in the background.
+        if (optimism && !permsDirty) {
+            const tempId = `pending:${crypto.randomUUID()}`;
+            const label = `${kind === 'huddle' ? '' : '#'}${name.trim()}`;
+            optimism.addPending({
+                channel_id: tempId, server_id: serverId, kind, name: name.trim(),
+                topic: kind === 'huddle' || !topic.trim() ? null : topic,
+                icon_emoji: null, icon_name: iconName, position: 0,
+                parent_category_id: parentId || null, active_call_session_id: null,
+                member_limit: kind === 'huddle' && memberLimit > 0 ? memberLimit : null,
+                max_calls: kind === 'huddle' && maxCalls > 0 ? maxCalls : null,
+            });
+            const request = axios.post(apiUrl`/servers/${serverId}/channels`, body, auth);
+            const keepOpenChosen = !!(createAnother && onCreatedKeepOpen);
+            if (keepOpenChosen) {
+                setCreatedFlash(`Creating ${label}`);
+                setName('');
+                setTopic('');
+                setNameEgg(null);
+                setTab('overview');
+                requestAnimationFrame(() => nameInputRef.current?.focus());
+            } else {
+                handleClose();
+            }
+            void request.then(res => {
+                const created: ChannelInfo = res.data;
+                optimism.settle(tempId, created);
+                if (isSecondGeneral(created, channels)) requestMoment('double-general');
+                // Mint & distribute the Sender Key only now that the server has
+                // actually created the channel (no overrides => everyone).
+                // Key work starts first and is awaited before navigating, so the
+                // jump-in finds the creator's key installed rather than a stall.
+                const keyed = Promise.resolve(onCreated?.(created)).catch(() => { /* non-fatal: the normal open path re-asks */ });
+                optimism.committed();
+                const nav = decideCreateNavigation({ ok: true, channel: created, keepOpen: keepOpenChosen });
+                if (nav.action !== 'none') void keyed.then(() => onNavigateToCreated?.(created));
+            }, (e: unknown) => {
+                optimism.dropPending(tempId);
+                optimism.fail(errText(e, `Couldn't create ${label}`));
+            });
+            return;
+        }
         const res = await axios.post(apiUrl`/servers/${serverId}/channels`, body, auth);
         const saved: ChannelInfo = res.data;
         // Moment: a second #general. Names of this server's channels only.
@@ -368,7 +462,7 @@ export const ChannelSettingsDialog: React.FC<Props> = ({
         });
         // The channel exists either way — key distribution follows whatever
         // audience actually landed.
-        onCreated?.(saved);
+        const keyed = Promise.resolve(onCreated?.(saved)).catch(() => { /* non-fatal */ });
 
         const failure = describeFailures(result);
         if (failure) {
@@ -393,6 +487,9 @@ export const ChannelSettingsDialog: React.FC<Props> = ({
         }
         onSaved(saved);
         handleClose();
+        if (decideCreateNavigation({ ok: true, channel: saved, keepOpen: false }).action !== 'none') {
+            void keyed.then(() => onNavigateToCreated?.(saved));
+        }
     };
 
     const handleSaveEdit = async () => {
@@ -409,6 +506,35 @@ export const ChannelSettingsDialog: React.FC<Props> = ({
                 ...(callNamingDirty ? { call_naming: callNamingPayload(callNaming) } : {}),
                 ...(endCallDirty ? { end_call_when_starter_leaves: endCallWhenStarterLeaves } : {}),
             };
+            const next: Partial<ChannelInfo> = {
+                name: name.trim(),
+                icon_name: iconName,
+                topic: kind === 'huddle' ? null : (topic.length === 0 ? null : topic),
+                parent_category_id: parentId.length === 0 ? null : parentId,
+                member_limit: kind === 'huddle' ? (memberLimit === 0 ? null : memberLimit) : null,
+                max_calls: kind === 'huddle' ? (maxCalls === 0 ? null : maxCalls) : null,
+                ...(callNamingDirty ? { call_naming: callNamingPayload(callNaming) } : {}),
+                ...(endCallDirty ? { end_call_when_starter_leaves: endCallWhenStarterLeaves } : {}),
+            };
+            // Optimistic: no override changes ride along, so the row is exactly
+            // `next`. Show it, close, and roll back with a toast on refusal.
+            if (optimism && !permsDirty) {
+                const prev: Partial<ChannelInfo> = {
+                    name: ch.name, icon_name: ch.icon_name, topic: ch.topic,
+                    parent_category_id: ch.parent_category_id, member_limit: ch.member_limit, max_calls: ch.max_calls,
+                    call_naming: ch.call_naming, end_call_when_starter_leaves: ch.end_call_when_starter_leaves,
+                };
+                optimism.patch(ch.channel_id, next);
+                handleClose();
+                void axios.patch(apiUrl`/servers/${serverId}/channels/${ch.channel_id}`, body, auth).then(
+                    () => optimism.committed(),
+                    (e: unknown) => {
+                        optimism.patch(ch.channel_id, prev);
+                        optimism.fail(errText(e, `Couldn't save #${ch.name}. Your change was undone.`));
+                    },
+                );
+                return;
+            }
             await axios.patch(apiUrl`/servers/${serverId}/channels/${ch.channel_id}`, body, auth);
             saved = {
                 ...ch,
@@ -457,7 +583,10 @@ export const ChannelSettingsDialog: React.FC<Props> = ({
 
     const categoryOptions = [
         { value: '', label: 'No category' },
-        ...orderedCategories.map(c => ({ value: c.category_id, label: c.name })),
+        ...orderedCategories.map(c => {
+            const parent = c.parent_category_id ? orderedCategories.find(p => p.category_id === c.parent_category_id) : undefined;
+            return { value: c.category_id, label: parent ? `${parent.name} › ${c.name}` : c.name };
+        }),
     ];
     const kindWord = kind === 'huddle' ? 'Calls channel' : 'channel';
     const showPermissions = canManage || !isEdit;
@@ -613,18 +742,22 @@ export const ChannelSettingsDialog: React.FC<Props> = ({
                                             <ClInput
                                                 ref={nameInputRef}
                                                 value={name}
-                                                onChange={e => handleNameChange(toPlainText(e.target.value))}
+                                                onChange={e => handleNameChange(e.target.value)}
                                                 onFocus={handleNameFocus}
                                                 placeholder={namePlaceholder}
-                                                maxLength={50}
+                                                maxLength={CHANNEL_NAME_INPUT_MAX_UNITS}
                                                 aria-label={`${kindWord} name`}
+                                                aria-invalid={nameError !== null}
+                                                aria-describedby={nameError ? 'channel-name-error' : undefined}
                                                 className="flex-1"
                                                 onKeyDown={(e: React.KeyboardEvent) => {
                                                     if (e.key === 'Enter' && !e.ctrlKey && !e.metaKey) { e.preventDefault(); void submit(); }
                                                 }}
                                             />
                                         </div>
-                                        {nameEgg && <div className="cl-fmsg note">{nameEgg}</div>}
+                                        {nameError
+                                            ? <div id="channel-name-error" role="alert" className="cl-fmsg">{nameError}</div>
+                                            : nameEgg && <div className="cl-fmsg note">{nameEgg}</div>}
                                     </div>
                                     <div className="sm:w-56 shrink-0">
                                         <div className={sectionLabel}>Category</div>

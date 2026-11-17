@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
     hasCustomProfile,
-    addCallTime, addGameTime, addMessage, addVerified, computeTotals, emptyState, longestStreak, markDay, mergeState,
+    addCallTime, addGameTime, addHighFive, addMessage, addVerified, computeTotals, emptyState, longestStreak, markDay, mergeState,
     notePeople, parseState, sameState, sanitizeState, setMostPlayedPref, unlockIds, type AchievementsState,
 } from './state';
 
@@ -182,5 +182,29 @@ describe('starter totals', () => {
         expect(hasCustomProfile({ profile_theme: { primary: '#fff', accent: '#000' } })).toBe(true);
         expect(hasCustomProfile({ avatar_decoration: 'halo' })).toBe(true);
         expect(hasCustomProfile({ profile_effect: 'snow' })).toBe(true);
+    });
+});
+
+describe('high fives given', () => {
+    const ctx = { eggCount: 0, accountCreatedMs: null, now: 0 };
+    it('counts per device, sums across devices, and a reinstall adds rather than overwrites', () => {
+        let a = emptyState();
+        for (let i = 0; i < 6; i++) a = addHighFive(a, 'devA');
+        let b = emptyState();
+        for (let i = 0; i < 5; i++) b = addHighFive(b, 'devB');
+        expect(computeTotals(a, ctx).highFives).toBe(6);
+        const m = mergeState(a, b);
+        expect(computeTotals(m, ctx).highFives).toBe(11);
+        expect(computeTotals(mergeState(m, m), ctx).highFives).toBe(11); // idempotent
+        expect(computeTotals(mergeState(m, a), ctx).highFives).toBe(11); // an older replica never lowers it
+    });
+    it('stores only a number: no user id appears in the serialised state', () => {
+        const s = addHighFive(emptyState(), 'devA');
+        expect(JSON.stringify(s)).not.toMatch(/user|target|recipient/i);
+        expect(s.devices.devA.highFives).toBe(1);
+    });
+    it('sanitising drops junk counts and keeps good ones', () => {
+        const s = sanitizeState({ devices: { d: { highFives: -3 }, e: { highFives: 7.9 }, f: { highFives: 'x' } } });
+        expect([s.devices.d.highFives, s.devices.e.highFives, s.devices.f.highFives]).toEqual([0, 7, 0]);
     });
 });

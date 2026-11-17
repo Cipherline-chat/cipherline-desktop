@@ -267,3 +267,29 @@ describe('useServerRailLayout — live restore (importLocalHistory into a RUNNIN
         expect(shape(latest!.layout)).toEqual(['s2', 's1', 's3']);
     });
 });
+
+describe('useServerRailLayout — own-device sync hooks (server_rail slot)', () => {
+    const tsKey = (u: string) => `cipherline_server_rail_sync_ts_${u}`;
+
+    it('a USER change stamps the change time and announces it; mount and an adopted remote layout do neither', () => {
+        readyUser = A;
+        const seen: string[] = [];
+        const on = (e: Event) => { seen.push((e as CustomEvent<{ userId: string }>).detail.userId); };
+        window.addEventListener('cipherline:server-rail-changed', on);
+        try {
+            mount(A, ['s1', 's2', 's3']);
+            expect(seen).toEqual([]);
+            expect(store.has(tsKey(A))).toBe(false);
+            store.set(serverRailLayoutKey(A), JSON.stringify({ v: 2, items: ['s3', 's1', 's2'] }));
+            act(() => { window.dispatchEvent(new CustomEvent(BACKUP_RESTORED_EVENT, { detail: { userId: A, source: 'rail-sync' } })); });
+            expect(shape(latest!.layout)).toEqual(['s3', 's1', 's2']);
+            expect(seen).toEqual([]);
+            expect(store.has(tsKey(A))).toBe(false);
+            act(() => { latest!.moveBy(serverKey('s3'), 1); });
+            expect(seen).toEqual([A]);
+            expect(Number(store.get(tsKey(A)))).toBeGreaterThan(0);
+        } finally {
+            window.removeEventListener('cipherline:server-rail-changed', on);
+        }
+    });
+});

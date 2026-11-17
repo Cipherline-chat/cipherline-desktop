@@ -298,9 +298,11 @@ describe('ChatPane / PinnedMessagesPanel wiring (source scan)', () => {
     });
 
     it('the reply quote and the composer reply bar cap what they lay out', () => {
-        // displayPreviewOf = displayTextOf on the first PREVIEW_SCAN_MAX chars (utils/messagePreviewText).
-        expect(chat).toContain("previewSnippet(displayPreviewOf(replyTarget?.content) ?? '') || 'Original message'");
-        expect(chat).toContain("const replyText   = previewSnippet(displayPreviewOf(replyTarget?.content) ?? '')");
+        // toPlainText = plain text of the first PREVIEW_SCAN_MAX chars (utils/messagePreviewText).
+        // The quote line goes through replyQuoteLine (reply-quote-author), which falls back to 'Original message'
+        // itself; the text path is still clipped by previewSnippet over toPlainText.
+        expect(chat).toContain("replyQuoteLine(replyTarget?.content, c => previewSnippet(toPlainText(c.text)))");
+        expect(chat).toContain("const replyText   = previewSnippet(toPlainText(replyTarget?.content?.text))");
     });
 
     it('the pinned list clamps the text it hands to the browser', () => {

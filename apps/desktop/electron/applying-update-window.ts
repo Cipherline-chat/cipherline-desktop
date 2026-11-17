@@ -1,5 +1,5 @@
 import { BrowserWindow } from 'electron';
-import { applyingUpdateHtml } from './update-applying';
+import { applyingUpdateHtml, applyingUpdateWindowPlan } from './update-applying';
 import { lockPageZoom } from './page-zoom-lock';
 
 /**
@@ -14,9 +14,14 @@ import { lockPageZoom } from './page-zoom-lock';
  * ignores mouse input.
  */
 export function openApplyingUpdateWindow(version: string): () => void {
+    // Looks like the installer splash. Windows / macOS: a transparent window with
+    // the card floating in it (the installer splash's own window options). Linux:
+    // an opaque window the card fills edge to edge, because without a compositor a
+    // transparent window paints black there. applyingUpdateWindowPlan says why.
+    const plan = applyingUpdateWindowPlan(process.platform);
     const win = new BrowserWindow({
-        width: 360,
-        height: 200,
+        width: plan.width,
+        height: plan.height,
         resizable: false,
         minimizable: false,
         maximizable: false,
@@ -27,7 +32,10 @@ export function openApplyingUpdateWindow(version: string): () => void {
         skipTaskbar: true,
         alwaysOnTop: true,
         focusable: false,
-        backgroundColor: '#0B0F1E',
+        transparent: plan.transparent,
+        backgroundColor: plan.backgroundColor,
+        // roundedCorners is left at its default (true), as the installer splash
+        // does: on Linux that is the desktop's own rounding where it has one (CSD).
         title: 'Cipherline',
         webPreferences: {
             contextIsolation: true,
@@ -51,7 +59,8 @@ export function openApplyingUpdateWindow(version: string): () => void {
         const reveal = () => { try { if (!win.isDestroyed() && !win.isVisible()) win.showInactive(); } catch { /* closing */ } };
         win.once('ready-to-show', reveal);
         setTimeout(reveal, 500).unref?.(); // a paint that never reports must not leave the screen empty
-        win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(applyingUpdateHtml(version))).catch(() => { /* cosmetic */ });
+        const page = applyingUpdateHtml(version, plan.page);
+        win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(page)).catch(() => { /* cosmetic */ });
     } catch (e) {
         close();
         throw e;

@@ -4,6 +4,8 @@
  * storage) so render code and tests can import it on its own.
  */
 
+import type { GameDetail } from './richPresence';
+
 export type UserStatus = 'online' | 'away' | 'dnd' | 'offline';
 
 export interface FriendStatusEntry {
@@ -13,6 +15,9 @@ export interface FriendStatusEntry {
     /** ISO instant the custom status clears (server-enforced); absent/null = never. */
     custom_status_expires_at?: string | null;
     current_game: string | null;
+    /** The game's Rich Presence detail lines (round, score, party, time), when
+     *  the player shares them (utils/richPresence.ts). Absent/null = none. */
+    current_game_detail?: GameDetail | null;
     /** Visibly present on phones only — render the phone glyph instead of
      *  the dot. Always false while offline. */
     on_mobile?: boolean;
@@ -44,3 +49,15 @@ export const STATUS_CONFIG: Record<UserStatus, { label: string; color: string }>
 export function initialStatusFromSaved(saved: string | null | undefined): UserStatus {
     return saved === 'dnd' || saved === 'offline' ? saved : 'online';
 }
+
+/**
+ * The fill for a round status dot. Do Not Disturb gets a small black centre
+ * (owner 2026-11-16) so it reads as "do not disturb" and not just "red", like the
+ * DND glyphs people know. Use as the dot's `background` (not backgroundColor).
+ */
+export function statusDotFill(status: UserStatus | string | undefined, color: string): string {
+    return status === 'dnd'
+        ? `radial-gradient(circle closest-side, #000 0 36%, ${color} 42%)`
+        : color;
+}
+

@@ -93,13 +93,15 @@ describe('call sites use the display transform', () => {
         const at = src.indexOf('Reply quote preview');
         expect(at).toBeGreaterThan(-1);
         const block = src.slice(at, at + 900);
-        expect(block).toMatch(/displayPreviewOf\(/);
+        // toPlainText: the one plain-text function (cut, formatting stripped, tokens as names).
+        // reply-quote-author: the text line comes from replyQuoteLine, whose text snippet is toPlainText of the original.
+        expect(block).toMatch(/replyQuoteLine\(replyTarget\?\.content, c => previewSnippet\(toPlainText\(c\.text\)\)\)/);
         expect(block).not.toMatch(/\)\?\.content\?\.text \|\|/);
     });
 
     it('ChatPane: the "Replying to" bar over the composer', () => {
         const src = read('components/ChatPane.tsx');
-        expect(src).toMatch(/const replyText\s*=\s*previewSnippet\(displayPreviewOf\(replyTarget\?\.content\)/);
+        expect(src).toMatch(/const replyText\s*=\s*previewSnippet\(toPlainText\(replyTarget\?\.content\?\.text\)\)/);
     });
 
     it('ChatPane: in-chat search matches the display text', () => {
@@ -117,10 +119,13 @@ describe('call sites use the display transform', () => {
     it('PinnedMessagesPanel: search matches the display text (rows already render it)', () => {
         const src = read('components/PinnedMessagesPanel.tsx');
         expect(src).toMatch(/messageTextMatches\(text, searchQuery\)/);
-        expect(src).toMatch(/mentionsToDisplayText\(clipForPreview\(msg\.content\.text/);
+        // toPlainText = cut, strip formatting, THEN de-tokenise.
+        expect(src).toMatch(/toPlainText\(msg\.content\.text\)/);
     });
 
     it('notifications already render the display text', () => {
-        expect(read('hooks/useNotificationDispatch.ts')).toMatch(/mentionsToDisplayText\(clipForPreview\(text\)\)/);
+        expect(read('hooks/useNotificationDispatch.ts')).toMatch(/const displayText = toPlainText\(text\);/);
+        expect(read('utils/messagePreviewText.ts')).toContain('const plain = stripFormatting(clipForPreview(text, opts.max));');
+        expect(read('utils/messagePreviewText.ts')).toContain("return opts.tokens === 'keep' ? plain : mentionsToDisplayText(plain);");
     });
 });

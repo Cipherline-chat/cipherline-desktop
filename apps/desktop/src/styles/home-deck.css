@@ -355,7 +355,7 @@
 }
 /* Mini avatar cluster inside a Friends-row .hd-live pill — who a friend is
    actually on the call WITH, not just that they're on one. Same overlap
-   idiom as .hd-stack (the "Happening now" call card's avatar row) at a
+   idiom as .hd-call-stack (the "Happening now" call rows' avatars) at a
    smaller size to fit an inline pill; capped at 3 with a "+N" chip for the
    rest (see HomePanel's callRoster, built via utils/serverCallPresence's
    summarizeCallRoster). */
@@ -510,20 +510,134 @@
 .hd-t--call::before {
   background: radial-gradient(130px 84px at 100% 0, color-mix(in srgb, var(--hd-accent) 14%, transparent), transparent 70%);
 }
-.hd-callrow { display: flex; align-items: center; gap: 12px; }
-.hd-callinfo { flex: 1 1 auto; min-width: 0; }
-.hd-callname {
-  font-family: var(--cl-font-display); font-weight: 600; font-size: 15px;
-  color: var(--cl-text); margin: 0 0 2px;
+/* ONE tile for every live call (HomeCallsTile): one compact line per call,
+   the first few shown and the rest behind "+N more" (utils/homeCallsList).
+   A line is 34px: avatar slot · name · server (muted, truncates FIRST) ·
+   count · media icons · Join / "In call". The slot is as wide as the widest
+   stack SHOWN (--hd-stack-w, set by HomeCallsTile), so names align down the
+   list with avatars flush-left and no gap reserved for avatars nobody has.
+   Two-across only when the list itself is >= 1240px wide — set by
+   HomeCallsTile via data-cols, never by a container query, so the fold limit
+   and the columns can't disagree. A SINGLE call gets its own two-line row
+   (.hd-call--solo, below). No row is ever filled to mark "your" call (owner
+   2026-11-16: "not a fan of the highlighted text") — the quiet "In call" tag
+   says it; rows only tint on hover. */
+.hd-t--call .hd-head { margin-bottom: 8px; }
+.hd-calls {
+  list-style: none; margin: 0 -6px; padding: 0;
+  display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px;
+}
+.hd-calls[data-cols="2"] { grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 12px; }
+.hd-call {
+  display: flex; align-items: center; gap: 6px; min-width: 0; height: 34px;
+  padding-right: 4px; border-radius: 9px;
+  transition: background .16s;
+}
+.hd-call:hover { background: rgba(255, 255, 255, .035); }
+.hd-call-open {
+  flex: 1 1 auto; min-width: 0; height: 100%;
+  display: flex; align-items: center; gap: 8px; padding: 0 6px;
+  border: 0; border-radius: 9px; background: transparent; color: inherit;
+  font-family: var(--cl-font-body); text-align: left; cursor: pointer;
+}
+.hd-call-open:disabled { cursor: default; }
+.hd-call-open:focus-visible { outline: 2px solid var(--cl-lume); outline-offset: -2px; }
+.hd-call-stack { display: flex; align-items: center; flex: 0 0 auto; min-width: var(--hd-stack-w, 0); }
+.hd-call-stack > * {
+  width: 20px; height: 20px; border-radius: 99px; overflow: hidden; flex: 0 0 auto;
+  margin-left: -6px; box-shadow: 0 0 0 2px var(--cl-sink);
+}
+.hd-call-stack > *:first-child { margin-left: 0; }
+.hd-call-name {
+  flex: 0 1 auto; min-width: 0;
+  font-size: 13px; font-weight: 700; color: var(--cl-text);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.hd-callwhere { margin: 0; font-size: 11.5px; color: var(--cl-faint); font-family: var(--cl-font-body); }
-.hd-stack { display: flex; flex: 0 0 auto; }
-.hd-stack > * {
-  width: 27px; height: 27px; border-radius: 99px; overflow: hidden;
-  margin-left: -7px; box-shadow: 0 0 0 2px var(--cl-sink);
+/* Shrink factor dwarfs the name's, so the server gives up ALL its room before
+   the call name loses a character. */
+.hd-call-srv {
+  flex: 0 1000 auto; min-width: 0;
+  font-size: 12px; color: var(--cl-faint);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.hd-stack > *:first-child { margin-left: 0; }
+.hd-call-n {
+  flex: 0 0 auto; display: inline-flex; align-items: center; gap: 3px;
+  font-family: var(--cl-font-mono); font-size: 11px; font-weight: 600;
+  font-variant-numeric: tabular-nums; color: var(--cl-muted);
+}
+.hd-call-n svg { opacity: .75; }
+.hd-call-media { flex: 0 0 auto; display: inline-flex; align-items: center; font-size: 11px; color: var(--cl-lume); }
+.hd-call .hd-call-media > * { margin-left: 0; } /* drop CallMediaSummary's inline-text ml-1.5 */
+.hd-call-media:empty { display: none; }
+.hd-call-act { flex: 0 0 auto; }
+.hd-btn.hd-btn--sm { padding: 4px 12px; border-radius: 8px; font-size: 11.5px; }
+/* "In call" on your own call: lume text + a small static dot, no pill fill
+   (the header's .hd-wave already carries the "live" motion). */
+.hd-call-here {
+  display: inline-flex; align-items: center; gap: 6px; padding: 0 6px;
+  font-family: var(--cl-font-mono); font-size: 10px; font-weight: 600;
+  letter-spacing: .08em; text-transform: uppercase; color: var(--cl-lume);
+  white-space: nowrap;
+}
+.hd-call-here i {
+  width: 6px; height: 6px; border-radius: 99px; flex: 0 0 auto;
+  background: var(--cl-lume);
+}
+
+/* Single call: the old card's information in a two-line row — a bigger
+   overlapping stack (≤ 4 discs, "+N" past that), the call name as the primary
+   line in the display face, "server · N in call · media" under it, and Join /
+   "In call" centred on the row. */
+/* Paired with the backup nudge, the grid row is as tall as the nudge: the
+   lone row sits centred in the space under the header instead of leaving it
+   all empty below. On its own the tile is header + row (no stretch). */
+.hd-t--solo { display: flex; flex-direction: column; }
+.hd-t--solo .hd-calls { flex: 1 1 auto; align-content: center; }
+.hd-call--solo { height: auto; min-height: 50px; gap: 10px; padding-right: 6px; }
+.hd-call--solo .hd-call-open { gap: 12px; padding: 6px; }
+.hd-call--solo .hd-call-stack > * {
+  width: 28px; height: 28px; margin-left: -8px; box-shadow: 0 0 0 2px var(--cl-sink);
+}
+.hd-call--solo .hd-call-stack > *:first-child { margin-left: 0; }
+.hd-call-stackmore {
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--cl-surface); color: var(--cl-muted);
+  font-family: var(--cl-font-mono); font-size: 10px; font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.hd-call-body { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.hd-call--solo .hd-call-name {
+  display: block; max-width: 100%;
+  font-family: var(--cl-font-display); font-size: 15px; font-weight: 600; line-height: 1.25;
+}
+.hd-call-meta {
+  display: flex; align-items: center; gap: 6px; min-width: 0;
+  font-size: 12px; line-height: 1.3; color: var(--cl-faint);
+}
+.hd-call--solo .hd-call-srv { color: var(--cl-muted); }
+.hd-call-sep { flex: 0 0 auto; opacity: .6; }
+.hd-call--solo .hd-call-n {
+  font-family: var(--cl-font-body); font-size: 12px; font-weight: 600; color: var(--cl-faint);
+  white-space: nowrap;
+}
+.hd-calls-more {
+  display: inline-flex; align-items: center; gap: 5px;
+  margin: 4px 0 0 -6px; padding: 4px 8px;
+  border: 0; border-radius: 7px; background: transparent; cursor: pointer;
+  font-family: var(--cl-font-mono); font-size: 10.5px; font-weight: 600;
+  letter-spacing: .06em; color: var(--cl-muted);
+  transition: color .16s, background .16s;
+}
+.hd-calls-more:hover { color: var(--cl-text); background: rgba(255, 255, 255, .035); }
+.hd-calls-more:focus-visible { outline: 2px solid var(--cl-lume); outline-offset: 1px; }
+.hd-calls-more svg { transition: transform .2s ease; }
+.hd-calls-more svg.is-up { transform: rotate(180deg); }
+/* Rows revealed by "+N more" ease in; collapsing is instant (they unmount). */
+.hd-call--extra { animation: hd-call-in .22s ease-out both; }
+@keyframes hd-call-in {
+  from { opacity: 0; transform: translateY(-3px); }
+  to   { opacity: 1; transform: none; }
+}
 .hd-wave { display: inline-flex; align-items: flex-end; gap: 2px; height: 11px; flex: 0 0 auto; }
 .hd-wave i { width: 2.5px; border-radius: 2px; background: var(--cl-lume); animation: hd-bounce 1.05s ease-in-out infinite; }
 .hd-wave i:nth-child(1) { height: 5px;  animation-delay: 0s; }
@@ -669,6 +783,8 @@
   .hd-count, .hd-pill { animation: none; }
   .hd-host::after { animation: none; opacity: 0; }
   .hd-wave i { animation: none; }
+  .hd-call--extra { animation: none; }
+  .hd-calls-more svg { transition: none; }
   .hd-card:hover { transform: none; }
   .hd-btn:active { transform: none; }
   .hd-pinlift > .hd-card { transform: none; }

@@ -19,6 +19,7 @@ import type { AppUpdater } from 'electron-updater';
 import * as path from 'path';
 import * as fs from 'fs';
 import { execFile } from 'child_process';
+import { collectAudioOutputFacts } from './audio-output-facts';
 import * as os from 'os';
 import * as nodeCrypto from 'crypto';
 import { getLocalIdentityPub, migrateSpkPubIfMissing, ensureSignalIdentity, signIdentityMessage, generateRotationBundle, lowestHeldOtpId, type StatusAwareRotationOptions } from './signal-identity';
@@ -26,7 +27,11 @@ import { SpkCandidateOrder } from './spk-candidates';
 import { MediaSessionReader } from './media-session';
 import { MediaWatcher, parseWatchOpts, describeRead, describeWatch } from './media-watch';
 import { MusicPresenceProbe } from './music-detect';
-import { detectCurrentGame, getCurrentGameCached, getRunningProcessList, setCustomGames, setIgnoredProcesses, resetHeuristicSessions, nextGamePollDelayMs, GAME_POLL_MS, GAME_POLL_SETTLE_MS, getSteamAppId, peekDetectedGame } from './game-detector';
+import { detectCurrentGame, getCurrentGameCached, getRunningProcessList, setCustomGames, setIgnoredProcesses, resetHeuristicSessions, nextGamePollDelayMs, GAME_POLL_MS, GAME_POLL_SETTLE_MS, getSteamAppId, peekDetectedGame, gameNameForProcess, isProcessIgnored, isGameNameIgnored, type DetectedGame } from './game-detector';
+import { RpcIpcServer } from './rpc-ipc-server';
+import { rpcAppName, isKnownRpcGameName } from './rpc-app-names';
+import { gameNameKey, type RpcPresence } from './rpc-activity';
+import { mergeGameActivity, activityKey, processNameForPid, senderAlias, HeldHintTracker, RpcListenerGate, type GameActivity } from './rich-presence';
 import { GameArtResolver, type ImageLike } from './game-art';
 import { secureStore } from './storage';
 import { showKeyringNotice } from './keyring-notice';
@@ -149,9 +154,10 @@ import {
 import { buildGlobalShortcutsReport, type GlobalShortcutSyncRecord } from './global-shortcut-report';
 import { probeGlobalShortcutsPortal } from './global-shortcut-portal';
 import {
-  WaylandGlobalShortcuts, buildPortalShortcuts, ensureDesktopEntry, dbusSessionBus, cleanupLegacyKdeComponent, PORTAL_APP_ID,
+  WaylandGlobalShortcuts, buildPortalShortcuts, acceleratorToPortalTrigger, ACTION_DESCRIPTIONS, ensureDesktopEntry, dbusSessionBus, cleanupLegacyKdeComponent, PORTAL_APP_ID,
 } from './wayland-global-shortcuts';
 import { validateGlobalShortcutMap } from './global-shortcut-payload';
+import { GlobalHoldKeyWatcher, holdKeyBackend, isHoldSlot, comboToAccelerator, HOLD_SLOTS, type HoldSlot, type GlobalPttResult } from './global-ptt';
 import { isTrustedSenderUrl, channelRequiresSenderCheck } from './ipc-guard';
 import { validateClipboardPng } from './clipboard-image';
 import {
@@ -209,7 +215,10 @@ import {
   type GpuInfoLike, type CrashInfoLike,
 } from './diagnostics';
 import { AddonOffload } from './addon-offload';
-import { MainWatchdog, FREEZE_RECORD_FILE, crashFromFreezeRecord } from './freeze-evidence';
+import { MainWatchdog, FREEZE_RECORD_FILE, crashFromFreezeRecord, parseFreezeRecord } from './freeze-evidence';
+import { PrevSessionWriter, PREV_SESSION_FILE, consumePreviousSessionFile } from './previous-session';
+import { classifyEnvNow, deadSessionFrom } from './unclean-exit-classify';
+import { UncleanLedgerStore, UNCLEAN_LEDGER_FILE, judgeUncleanExit, suppressedCounts, withDismissed, withReviewed } from './unclean-exit-ledger';
 import { SessionLifecycle, crashRecordFor, type CrashEvent, type QuitTrigger } from './session-lifecycle';
 import { beginLinkSession, bindLinkSession, openActiveLinkSession, endLinkSession, sealLinkGrant, type LinkGrantPayload } from './link-grant';
 import { applyAvatarKey } from './avatar-key-policy';
@@ -225,6 +234,11 @@ import {
   resolveStagingLockMode, decideSetChannel, STAGING_LOCKED_ERROR,
   type StagingLockStatus, type StagingUnlockResult,
 } from './staging-lock';
+import { installStdioGuard } from './stdio-guard';
+
+// First statement after the imports: a broken stdout/stderr pipe (app launched from a terminal that
+// closed) must never become an uncaught `write EPIPE` that kills the main process.
+installStdioGuard();
 
 // ── MED-3: ONE dev/prod switch, anchored to app.isPackaged ─────────────────
 //
@@ -332,6 +346,11 @@ let audioCaptureAddon: {
   getWindowExe?(hwnd: string): unknown;
   getWindowInfo?(hwnd: string): unknown;
   getScreenRectFromDeviceIndex?(index: number): unknown;
+  // System-wide key-held watcher for push-to-talk (src-native/key_state.cc, Windows + Linux X11). electron/global-ptt.ts.
+  watchKeys?(slot: number, groups: number[][], callback: (down: boolean) => void): boolean;
+  stopWatchingKeys?(slot?: number): void;
+  // Speakers-or-headphones facts (src-native/audio_output_kind.cc, Windows + macOS). Optional like the others.
+  getAudioOutputEndpoints?(): unknown;
 } & HdrNative | null = null;
 
 /**
@@ -410,13 +429,73 @@ const recordCrash = (event: CrashEvent): void => {
   } catch (e) { console.error('[Main] could not record crash:', e); }
 };
 /** This instance is THE live one: judge the previous session, arm ours. */
+// Prompt rate limit + counts of suppressed unclean exits (electron/unclean-exit-ledger.ts):
+// a tiny plain JSON in userData, only timestamps / counts / class names.
+const uncleanLedger = new UncleanLedgerStore(fs, () => path.join(app.getPath('userData'), UNCLEAN_LEDGER_FILE), SESSION_MARKER_ENABLED);
 const startSessionMarker = (): void => {
   try {
     const leftover = sessionLifecycle.start();
     // A freeze record outranks the plain unclean exit: it says WHAT hung (and
     // survives a quit request, which drops the marker). electron/freeze-evidence.ts.
-    pendingCrashes.add(startFreezeEvidence() ?? leftover);
+    const freeze = startFreezeEvidence();
+    const crash = freeze.crash ?? leftover;
+    // What the dead session was doing (electron/previous-session.ts): attached
+    // to the record only if it is THE SAME session; the file is consumed
+    // either way, BEFORE this session's writer can overwrite it.
+    const expectedStart = freeze.crash ? freeze.startedAt : (leftover ? Date.parse(leftover.occurred_at) : null);
+    const prev = consumePreviousSession(Number.isFinite(expectedStart) ? expectedStart : null);
+    // Is this really "Cipherline crashed"? (electron/unclean-exit-classify.ts) An
+    // installer replacing the app, an OS restart and an external kill of an idle
+    // hidden app are counted locally and never offered; a real candidate is kept
+    // and prompts at most once a day (unclean-exit-ledger.ts).
+    if (crash && crash.kind === 'unclean_exit' && SESSION_MARKER_ENABLED) {
+      const verdict = judgeUncleanExit(uncleanLedger, deadSessionFrom(crash, prev, Number.isFinite(expectedStart) ? expectedStart : null, !!freeze.crash), classifyEnvNow({
+        now: Date.now(), platform: process.platform, execPath: process.execPath, env: process.env,
+        stat: (p) => { try { return fs.statSync(p); } catch { return null; } },
+        uptimeSeconds: os.uptime(), currentVersion: app.getVersion(),
+      }));
+      console.log(`[Main] unclean exit of the previous session: ${verdict.action === 'suppress' ? `suppressed (${verdict.cls}: ${verdict.reason})` : `kept (${verdict.reason}${verdict.seen ? `, not prompting: ${verdict.why}` : ''})`}`);
+      if (verdict.action === 'keep') pendingCrashes.add(crash, prev, verdict.seen);
+    } else {
+      pendingCrashes.add(crash, prev);
+    }
+    startPrevSessionWriter();
   } catch (e) { console.error('[Main] session marker:', e); }
+};
+// Previous-session evidence (electron/previous-session.ts): the newest perf-log
+// rows + a few booleans of THIS session, kept in userData by main (throttled,
+// atomic) while the unclean-exit marker is armed, so an `unclean_exit` report can
+// say what the dead session was doing. Same gates as the marker: packaged (or
+// opted in), never the smoke test (no startup disk writes), only THE live instance.
+let prevSessionWriter: PrevSessionWriter | null = null;
+let prevSessionConsumed = false;
+const prevSessionFile = (): string => path.join(app.getPath('userData'), PREV_SESSION_FILE);
+/** Read + delete the previous session's file; the record to attach, or null. Once per process. */
+const consumePreviousSession = (expectedStartedAt: number | null) => {
+  if (!SESSION_MARKER_ENABLED || prevSessionConsumed) return null;
+  prevSessionConsumed = true;
+  return consumePreviousSessionFile(fs, prevSessionFile(), expectedStartedAt, app.getVersion(), Date.now(), diagScrubber);
+};
+const startPrevSessionWriter = (): void => {
+  if (!SESSION_MARKER_ENABLED || prevSessionWriter) return;
+  try {
+    const w = new PrevSessionWriter({
+      fs, file: prevSessionFile(), version: app.getVersion(), now: () => Date.now(),
+      entries: () => freezeMonitor.snapshot(),
+      state: () => {
+        const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
+        return {
+          in_call: callMediaActive, sharing: sharingActive, camera_live: cameraLiveActive,
+          ...(win ? { window_visible: win.isVisible() && !win.isMinimized(), window_focused: win.isFocused() } : {}),
+        };
+      },
+      isArmed: () => sessionLifecycle.armed,
+      scrubber: diagScrubber,
+      onLog: (m) => console.warn(m),
+    }, true);
+    w.start();
+    prevSessionWriter = w;
+  } catch (e) { console.error('[Main] previous-session evidence:', e); }
 };
 // Freeze evidence (electron/freeze-evidence.ts): a watchdog thread keeps a tiny
 // record on disk WHILE the app is hung (main blocked > 6 s, or the renderer
@@ -425,14 +504,16 @@ const startSessionMarker = (): void => {
 // the smoke test (no startup disk writes), and only THE live instance.
 let mainWatchdog: MainWatchdog | null = null;
 /** Consume the previous session's freeze record, then start this session's watchdog. */
-const startFreezeEvidence = (): CrashInfoLike | null => {
-  if (!SESSION_MARKER_ENABLED || mainWatchdog) return null;
+const startFreezeEvidence = (): { crash: CrashInfoLike | null; startedAt: number | null } => {
+  if (!SESSION_MARKER_ENABLED || mainWatchdog) return { crash: null, startedAt: null };
   const file = path.join(app.getPath('userData'), FREEZE_RECORD_FILE);
   let previous: CrashInfoLike | null = null;
+  let previousStartedAt: number | null = null;
   try {
     let text: string | null = null;
     try { text = fs.readFileSync(file, 'utf8'); } catch { text = null; }
     previous = crashFromFreezeRecord(text, Date.now(), app.getVersion());
+    if (previous && text !== null) previousStartedAt = parseFreezeRecord(text)?.started_at ?? null;
     if (text !== null) { try { fs.unlinkSync(file); } catch { /* already gone */ } }
   } catch { /* evidence only */ }
   try {
@@ -445,7 +526,7 @@ const startFreezeEvidence = (): CrashInfoLike | null => {
     ctxTimer.unref?.();
     mainWatchdog = wd;
   } catch (e) { console.error('[Main] freeze evidence:', e); }
-  return previous;
+  return { crash: previous, startedAt: previousStartedAt };
 };
 /** A quit was asked for — the marker goes now, synchronously. */
 const beginQuit = (trigger: QuitTrigger): void => {
@@ -922,6 +1003,7 @@ const syncCallPriority = (change: { enabled?: boolean; inCall?: boolean; sharing
   if (change.inCall !== undefined) { callPriority.setInCall(change.inCall); callMediaActive = change.inCall; }
   if (change.sharing !== undefined) { sharePriority.setSharing(change.sharing); sharingActive = change.sharing; }
   if (change.cameraLive !== undefined) cameraLiveActive = change.cameraLive;
+  if (change.inCall !== undefined || change.sharing !== undefined || change.cameraLive !== undefined) prevSessionWriter?.notable();
   // Our camera published: the webcam's (Video Capture) process gets the throttle opt-out + GPU class with NO share running.
   if (change.cameraLive !== undefined) sharePriority.setCameraLive(change.cameraLive);
   if (callPriority.active && !callPriorityTimer) {
@@ -1925,6 +2007,7 @@ async function createWindow(csp: string, startHidden = false, unmapped = false) 
   mainWindow.webContents.on('unresponsive', () => {
     console.warn('[Main] Renderer unresponsive');
     mainWatchdog?.setRendererUnresponsive(true);
+    prevSessionWriter?.notable();
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('main:renderer-unresponsive');
     }
@@ -2238,6 +2321,17 @@ ipcMain.handle('diag:get-pending-crashes', () => pendingCrashes.all());
 // No argument = all; otherwise only the given signatures.
 ipcMain.handle('diag:clear-pending-crashes', (_e, signatures: unknown) => { pendingCrashes.remove(parseSignatures(signatures)); });
 ipcMain.handle('diag:mark-crashes-seen', (_e, signatures: unknown) => { pendingCrashes.markSeen(parseSignatures(signatures)); });
+// The unclean-exit boot prompt was answered (electron/unclean-exit-ledger.ts): two
+// "Not now" in a row mute unclean-exit prompts for 7 days. Only 'dismissed' /
+// 'reviewed' are accepted; anything else is ignored.
+ipcMain.handle('diag:unclean-prompt-outcome', (_e, outcome: unknown) => {
+  if (!SESSION_MARKER_ENABLED) return;
+  if (outcome === 'dismissed') uncleanLedger.update(l => withDismissed(l, Date.now()));
+  else if (outcome === 'reviewed') uncleanLedger.update(l => withReviewed(l));
+});
+// How many unclean exits were NOT offered (installer_replaced / os_restart /
+// external_kill_suspected), last 14 days, for the next report. Counts only.
+ipcMain.handle('diag:get-suppressed-unclean', () => (SESSION_MARKER_ENABLED ? suppressedCounts(uncleanLedger.load(), Date.now()) : null));
 // GPU process restart → renderer recovery (electron/gpu-restart.ts). The
 // renderer answers what it did; a HANDLED restart's crash record is marked
 // seen so the next launch does not say "closed unexpectedly" about an app
@@ -2298,6 +2392,7 @@ freezeMonitor.onStall = (ms) => {
   if (ms < 1000 || Date.now() - lastStallMetricsAt < 5000) return;
   lastStallMetricsAt = Date.now();
   sampleMetrics('after-stall', 0);
+  prevSessionWriter?.notable();
 };
 // "Run a 60-second freeze capture" (Settings → Advanced → Performance log):
 // main stalls from 100 ms, metrics every 2 s, then back to normal.
@@ -5076,6 +5171,18 @@ app.whenReady().then(async () => {
   let gsPortalProbe: Promise<PortalProbeResult> | null = null;
   const gsPortal = (): Promise<PortalProbeResult> => (gsPortalProbe ??= probeGlobalShortcutsPortal());
   let waylandShortcuts: WaylandGlobalShortcuts | null = null;
+  // Hold keys (push-to-talk / push-to-mute) on Wayland: their combos, and the last map the renderer synced,
+  // so a change of either re-binds the whole portal session with both.
+  const holdCombos: Partial<Record<HoldSlot, string>> = {};
+  let lastWaylandSync: { map: Record<string, string>; rejected: string[] } | null = null;
+  const sendHoldState = (slot: HoldSlot, down: boolean) => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('hold-key:state', slot, down);
+  };
+  const holdPortalSpecs = (): { id: string; description: string; trigger: string }[] => HOLD_SLOTS.flatMap((slot) => {
+    const combo = holdCombos[slot];
+    const trigger = combo ? acceleratorToPortalTrigger(comboToAccelerator(combo)) : null;
+    return trigger ? [{ id: slot, description: ACTION_DESCRIPTIONS[slot] ?? slot, trigger }] : [];
+  });
   // Syncs await D-Bus on Wayland; serialize them so two quick syncs (arm, then
   // disarm a moment later) cannot interleave and leave the earlier map bound.
   let gsSyncChain: Promise<unknown> = Promise.resolve();
@@ -5123,18 +5230,24 @@ app.whenReady().then(async () => {
       waylandShortcuts = new WaylandGlobalShortcuts(
         () => dbusSessionBus(),
         (actionId) => {
+          // Hold keys (push-to-talk / push-to-mute) are press+release: the press is the "down" half.
+          if (isHoldSlot(actionId)) { sendHoldState(actionId, true); return; }
           noteGlobalShortcutPress(actionId); // the desktop delivered the key press, not renderer code
           mainWindow?.webContents.send('global-shortcut-fired', actionId);
         },
         undefined,
         (m) => console.warn(m),
+        (actionId) => { if (isHoldSlot(actionId)) sendHoldState(actionId, false); },
       );
       void cleanupLegacyKdeComponent();
     }
+    lastWaylandSync = { map, rejected };
     const { specs, skipped } = buildPortalShortcuts(map);
+    // The hold keys ride in the same portal session (one BindShortcuts per session), so a change of either asks again.
+    specs.push(...holdPortalSpecs());
     const setup = await waylandShortcuts.sync(specs);
     const status = withPortalResult({ ...statusAfterPortalSetup(decision, setup), desktop: gsDesktop }, setup, PORTAL_APP_ID);
-    const failed = [...rejected, ...skipped, ...(setup.ok ? setup.denied : specs.map((x) => x.id))];
+    const failed = [...rejected, ...skipped, ...(setup.ok ? setup.denied : specs.map((x) => x.id))].filter((id) => !isHoldSlot(id));
     // The user changed a key and the desktop (KDE) kept the old one without asking: open the desktop's own
     // shortcut dialog so the change can take effect there. Never at startup (ignoredChanges is empty on the
     // first sync of a launch) and never twice for one change (a repeat sync returns ignoredChanges: []).
@@ -5192,6 +5305,41 @@ app.whenReady().then(async () => {
     globalShortcut.unregisterAll();
     void waylandShortcuts?.dispose().catch(() => undefined);
   });
+
+  // --- System-wide hold keys: push-to-talk and push-to-mute (work while Cipherline is unfocused) ---
+  // They are HOLDS, so they need key-up as well as key-down; Electron's globalShortcut only reports presses
+  // (and cannot take a bare modifier such as Alt). The renderer says which combo (the same string as its voice
+  // setting); main finds out whether it is held (electron/global-ptt.ts): Windows and Linux X11 through the
+  // native addon, native Wayland through the GlobalShortcuts portal's Activated / Deactivated. Nothing is
+  // intercepted: the key still reaches whatever app has focus.
+  const portalSetHold = async (slot: HoldSlot, combo: string | null): Promise<GlobalPttResult> => {
+    if (combo === null) delete holdCombos[slot];
+    else {
+      if (!acceleratorToPortalTrigger(comboToAccelerator(combo))) return { ok: false, reason: 'bad-key' }; // e.g. a bare modifier
+      holdCombos[slot] = combo;
+    }
+    const base = lastWaylandSync ?? { map: {}, rejected: [] };
+    const run = gsSyncChain.then(() => syncWaylandGlobalShortcuts(base.map, base.rejected));
+    gsSyncChain = run.catch(() => undefined);
+    const res = await run;
+    if (combo === null) return { ok: true, watching: false };
+    // `watching` only when the desktop really bound it: otherwise a release in another window would never arrive.
+    return res.status.mode === 'portal' && (res.status.portal?.bound.includes(slot) ?? false)
+      ? { ok: true, watching: true }
+      : { ok: false, reason: 'unsupported' };
+  };
+  const globalHold = new GlobalHoldKeyWatcher(
+    () => audioCaptureAddon,
+    () => holdKeyBackend(process.platform, process.env, process.platform === 'linux' && isNativeWaylandClient(process.env, gsOzone())),
+    (slot, down) => sendHoldState(slot, down),
+    portalSetHold,
+  );
+  ipcMain.handle('hold-key:set', async (event, slot: unknown, combo: unknown) => {
+    if (!isTrustedSender(event)) return { ok: false, reason: 'failed' };
+    if (!isHoldSlot(slot)) return { ok: false, reason: 'bad-key' };
+    return globalHold.setKey(slot, combo);
+  });
+  app.on('will-quit', () => globalHold.stop());
 
   // --- Screen Lock: notify the renderer when the OS locks/sleeps ---
   // 'lock-screen' fires on Windows + macOS only; 'suspend' fires everywhere
@@ -5925,6 +6073,16 @@ app.whenReady().then(async () => {
   // whether to go through the native WASAPI addon (Windows) or fall back to
   // Electron/Chromium's getDisplayMedia audio (other platforms / missing addon).
   ipcMain.handle('audio:is-capture-supported', () => nativeAudioCaptureReady());
+
+  // "Speakers or headphones?" facts for the echo-cancellation auto default (audio-output-facts.ts;
+  // the renderer decides what they mean). Descriptors only; [] when nothing can be read.
+  ipcMain.handle('audio:output-facts', () => collectAudioOutputFacts({
+    platform: process.platform,
+    addon: audioCaptureAddon,
+    run: (cmd, args, timeoutMs) => new Promise<string>((resolve, reject) => {
+      execFile(cmd, args, { timeout: timeoutMs, windowsHide: true, maxBuffer: 1024 * 1024 }, (err, stdout) => (err ? reject(err) : resolve(String(stdout))));
+    }),
+  }));
 
   // Display refresh rates. Screen capture is fundamentally sampling the
   // compositor's output, so it can never produce more distinct frames per
@@ -7472,30 +7630,110 @@ app.whenReady().then(async () => {
     } catch { /* corrupt entry — renderer re-syncs on mount anyway */ }
   }
 
+  // What the renderer was last told (activityKey: exe + name + source + detail lines).
   let lastDetectedGame: string | null = null;
+  // The process scan's answer, and what a local app announced over Rich
+  // Presence (electron/rpc-ipc-server.ts) with its sending process resolved.
+  // electron/rich-presence.ts merges the two into the ONE game the renderer sees.
+  let lastScanGame: DetectedGame | null = null;
+  let rpcPresence: RpcPresence | null = null;
+  let rpcSender: { process: string | null; game: string | null } = { process: null, game: null };
+  let rpcSeq = 0;
+  let rpcServer: RpcIpcServer | null = null;
+  const heldHint = new HeldHintTracker();
+
+  const mergedActivity = (scan: DetectedGame | null): GameActivity | null => mergeGameActivity(scan, rpcPresence, {
+    appName: rpcAppName,
+    senderProcess: rpcSender.process,
+    senderGame: rpcSender.game,
+    isIgnored: isProcessIgnored,
+    isNameIgnored: (n) => isGameNameIgnored(n, gameNameKey),
+  });
+
+  const publishGameActivity = () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    const game = mergedActivity(lastScanGame);
+    // Identity is compared on a composite key — the same title from a
+    // different exe, or a new round/score line, is a change to deliver.
+    const key = activityKey(game);
+    if (key !== lastDetectedGame) {
+      const wasName = lastDetectedGame ? mergedNameOfKey(lastDetectedGame) : null;
+      lastDetectedGame = key;
+      if (game) {
+        mainWindow.webContents.send('game:detected', game);
+        // Logs the title and source only — never the detail lines.
+        if (wasName !== game.name) console.log(`[GameDetector] Game started: ${game.name} (${game.processName}, ${game.source})`);
+      } else {
+        mainWindow.webContents.send('game:stopped');
+        console.log('[GameDetector] Game stopped');
+      }
+    }
+    // One-time hint: a game known to announce Rich Presence is running, but
+    // another Rich Presence server (Discord) holds the endpoint, so nothing
+    // reaches us. The renderer applies the once-per-device rule.
+    const hint = heldHint.tick({
+      scanGame: lastScanGame?.name ?? null,
+      knownRpcGame: !!lastScanGame && isKnownRpcGameName(lastScanGame.name),
+      foreignListener: rpcServer?.foreignListenerPresent ?? false,
+      rpcActive: game?.source === 'rpc',
+      enabled: rpcGate.running,
+      now: Date.now(),
+    });
+    if (hint) mainWindow.webContents.send('game:rpc-held', { name: hint });
+  };
+  const mergedNameOfKey = (k: string): string | null => {
+    try { const v = JSON.parse(k) as unknown[]; return typeof v[1] === 'string' ? v[1] : null; } catch { return null; }
+  };
+
+  const onRpcPresence = async (p: RpcPresence | null) => {
+    const seq = ++rpcSeq;
+    let sender: { process: string | null; game: string | null } = { process: null, game: null };
+    if (p && p.pid !== null) {
+      const proc = await processNameForPid(p.pid).catch(() => null);
+      sender = { process: proc, game: proc ? (gameNameForProcess(proc) ?? senderAlias(proc)) : null };
+    }
+    if (seq !== rpcSeq) return; // a newer update arrived while resolving
+    rpcPresence = p;
+    rpcSender = sender;
+    publishGameActivity();
+  };
+
+  // The local Rich Presence listener: only while the user shares game
+  // activity (`game:set-enabled`), never in the CI smoke test.
+  const rpcGate = new RpcListenerGate({
+    smokeTest: IS_SMOKE_TEST,
+    create: () => {
+      const server = new RpcIpcServer({
+        platform: process.platform,
+        env: process.env,
+        markerPath: path.join(USER_DATA_DIR, 'rich-presence-socket.json'),
+        onPresence: (p) => { void onRpcPresence(p); },
+        log: (line) => console.log(line),
+      });
+      rpcServer = server;
+      return {
+        start: () => server.start(),
+        stop: async () => {
+          await server.stop();
+          if (rpcServer === server) rpcServer = null;
+          rpcSeq++;
+          rpcPresence = null;
+          rpcSender = { process: null, game: null };
+          publishGameActivity();
+        },
+      };
+    },
+  });
+  app.on('before-quit', () => { void rpcGate.setEnabled(false); });
 
   const runGameCheck = () => freezeMonitor.track('game:detect', runGameCheckOnce);
   const runGameCheckOnce = async () => {
     if (!mainWindow || mainWindow.isDestroyed()) return;
     try {
-      const game = await detectCurrentGame();
-      if (!mainWindow || mainWindow.isDestroyed()) return;
-      // detectCurrentGame now returns the full DetectedGame (name +
-      // processName) rather than a bare name, so the renderer can show which
-      // executable matched and offer to ignore it. Identity is compared on a
-      // composite key — the same title launched from a different exe is a
-      // genuinely different detection.
-      const gameKey = game ? `${game.processName}:${game.name}` : null;
-      if (gameKey !== lastDetectedGame) {
-        lastDetectedGame = gameKey;
-        if (game) {
-          mainWindow.webContents.send('game:detected', game);
-          console.log(`[GameDetector] Game started: ${game.name} (${game.processName})`);
-        } else {
-          mainWindow.webContents.send('game:stopped');
-          console.log('[GameDetector] Game stopped');
-        }
-      }
+      // detectCurrentGame returns the full DetectedGame (name + processName),
+      // so the renderer can show which executable matched and offer to ignore it.
+      lastScanGame = await detectCurrentGame();
+      publishGameActivity();
     } catch (err) {
       console.warn('[GameDetector] Poll error:', err);
     }
@@ -7536,7 +7774,7 @@ app.whenReady().then(async () => {
   // On-demand query from renderer (mount, screen-share picker). The poller has
   // almost always answered within the last poll interval; reuse that instead
   // of starting a second full scan.
-  ipcMain.handle('game:get-current', () => getCurrentGameCached(GAME_POLL_MS));
+  ipcMain.handle('game:get-current', async () => mergedActivity(await getCurrentGameCached(GAME_POLL_MS)));
   // The picture + launcher of the game that was just detected (electron/game-art.ts).
   // No argument on purpose: the renderer cannot name a process or a path, it can
   // only ask about the game THIS process detected. The executable's path is used
@@ -7558,12 +7796,18 @@ app.whenReady().then(async () => {
     now: () => Date.now(),
   });
   ipcMain.handle('game:get-current-art', async () => {
-    const game = peekDetectedGame();
+    // The merged game (a Rich Presence title included); its processName is an
+    // executable name or `rpc:<id>`, which game-art's isSafeProcessName refuses.
+    const game = mergedActivity(peekDetectedGame());
     return game ? gameArt.get({ name: game.name, processName: game.processName }) : null;
   });
-  // Settings → Game activity off: stop scanning in the background entirely.
+  // Settings → Game activity off: stop scanning in the background entirely,
+  // and close the local Rich Presence listener. It is opened only on an
+  // explicit `true` from the renderer (the user's saved choice), never by the
+  // main process's own default.
   ipcMain.on('game:set-enabled', (_e, enabled: unknown) => {
     const on = enabled !== false;
+    void rpcGate.setEnabled(enabled === true);
     if (on === gameDetectionEnabled) return;
     gameDetectionEnabled = on;
     if (on) scheduleGamePoll(0);
@@ -7658,6 +7902,8 @@ app.whenReady().then(async () => {
   ipcMain.on('game:set-ignored', (_e, ignored: string[]) => {
     setIgnoredProcesses(ignored);
     try { secureStore.set('gameIgnoredProcesses', JSON.stringify(ignored)); } catch { /* best-effort */ }
+    // A Rich Presence activity may have just become ignored (or un-ignored).
+    publishGameActivity();
   });
 
   // ── Google Drive OAuth ──────────────────────────────────────────────────────
@@ -7780,6 +8026,24 @@ app.whenReady().then(async () => {
 // force-kills a quit that is still running ~1.3 s after it starts.
 app.on('before-quit', () => beginQuit('before-quit'));
 
+// Linux / macOS: the desktop session (logout, shutdown, `kill`) ends the app
+// with SIGTERM / SIGHUP, and Electron's default for those is to exit WITHOUT
+// emitting before-quit — so the marker would survive and the next launch would
+// report an "unclean exit" for an ordinary logout. Treat them as a quit request:
+// drop the marker, then quit through the normal path. A second signal while the
+// quit is still running ends the process at once (a stuck quit must not make
+// `kill` useless). Windows never delivers these; registering is harmless there.
+let termSignalSeen = false;
+const onTermSignal = (sig: string): void => {
+  console.log(`[Main] ${sig}: quitting`);
+  beginQuit('signal');
+  if (termSignalSeen) { process.exit(0); return; }
+  termSignalSeen = true;
+  try { app.quit(); } catch { process.exit(0); }
+};
+process.on('SIGTERM', () => onTermSignal('SIGTERM'));
+process.on('SIGHUP', () => onTermSignal('SIGHUP'));
+
 // Continuity (cross-device attention routing): tell the renderer the app is
 // going down so it can send one last off-cycle `presence:heartbeat
 // {active:false}` before the socket dies — without this, a quit looks
@@ -7818,6 +8082,8 @@ app.on('before-quit', () => {
 // window lands after the flush above.
 app.on('will-quit', () => {
   try { secureStore.flush(); } catch { /* logged by the store */ }
+  // The quit is really happening: the previous-session file is not evidence of anything now.
+  try { prevSessionWriter?.finish(); } catch { /* evidence only */ }
   // Already done in before-quit; idempotent. Kept for any path that reaches
   // will-quit without it.
   beginQuit('before-quit');

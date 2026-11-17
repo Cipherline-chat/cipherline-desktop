@@ -137,3 +137,47 @@ describe('crash-vs-quit wiring in main.ts', () => {
         expect(block(CODE, 'const sessionLifecycle = new SessionLifecycle(')).toContain('markerEnabled: SESSION_MARKER_ENABLED');
     });
 });
+
+describe('Linux / macOS quit paths drop the marker', () => {
+    it('SIGTERM and SIGHUP (desktop-session logout, `kill`) are a quit request: marker dropped, then a normal quit', () => {
+        const handler = block(CODE, 'const onTermSignal = ');
+        expect(handler).toContain("beginQuit('signal')");
+        expect(handler.indexOf("beginQuit('signal')")).toBeLessThan(handler.indexOf('app.quit()'));
+        expect(CODE).toContain("process.on('SIGTERM', () => onTermSignal('SIGTERM'))");
+        expect(CODE).toContain("process.on('SIGHUP', () => onTermSignal('SIGHUP'))");
+    });
+    it('a second signal while the quit is running ends the process (a stuck quit must not make kill useless)', () => {
+        expect(block(CODE, 'const onTermSignal = ')).toContain('process.exit(0)');
+    });
+    it('macOS Cmd+Q / Dock Quit / the last window closing all reach before-quit (which drops the marker)', () => {
+        // Cmd+Q and Dock > Quit raise app.quit() -> before-quit; window-all-closed only calls app.quit().
+        const wac = block(CODE, "app.on('window-all-closed'");
+        expect(wac).toContain('app.quit()');
+        expect(wac).not.toMatch(/app\.exit\(/);
+        expect(CODE).toContain("app.on('before-quit', () => beginQuit('before-quit'));");
+    });
+});
+
+describe('unclean-exit classification wiring', () => {
+    const start = block(CODE, 'const startSessionMarker = ');
+    it('every unclean exit is judged before it can become a pending record, and a suppressed one is never added', () => {
+        expect(start).toContain('judgeUncleanExit(uncleanLedger, deadSessionFrom(');
+        expect(start).toMatch(/if \(verdict\.action === 'keep'\) pendingCrashes\.add\(crash, prev, verdict\.seen\)/);
+        // the only other add is for non-unclean kinds / disabled marker
+        expect(start.match(/pendingCrashes\.add\(/g)).toHaveLength(2);
+    });
+    it('the classifier is fed the real exe change time and OS uptime', () => {
+        expect(start).toContain('classifyEnvNow(');
+        expect(start).toContain('process.execPath');
+        expect(start).toContain('os.uptime()');
+    });
+    it('the ledger is gated like the marker (no disk under the smoke test)', () => {
+        expect(CODE).toMatch(/new UncleanLedgerStore\(fs, \(\) => path\.join\(app\.getPath\('userData'\), UNCLEAN_LEDGER_FILE\), SESSION_MARKER_ENABLED\)/);
+    });
+    it('the new modules never import from src/ (rootDir trap)', () => {
+        for (const f of ['unclean-exit-classify.ts', 'unclean-exit-ledger.ts']) {
+            const src = fs.readFileSync(path.resolve(__dirname, f), 'utf8');
+            expect(src).not.toMatch(/from\s+['"]\.\.\/src\//);
+        }
+    });
+});

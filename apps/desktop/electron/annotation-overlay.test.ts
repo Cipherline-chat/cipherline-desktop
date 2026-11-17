@@ -317,7 +317,8 @@ describe('Linux Wayland with the native overlay helper', () => {
                 writableLength: 0,
                 destroyed: false,
             },
-            stdout: { on: (_e: string, cb: (c: Buffer) => void) => { data = cb; queueMicrotask(() => data?.(Buffer.from(`HELLO 1\nOUT 0 DP-1 0 0 1920 1080 1 1920 1080\n${ready}\n`))); } },
+            // Only the 'data' listener is the protocol channel; the stdio-guard's standing 'error' listener must not replace it.
+            stdout: { on: (e: string, cb: (c: Buffer) => void) => { if (e !== 'data') return; data = cb; queueMicrotask(() => data?.(Buffer.from(`HELLO 1\nOUT 0 DP-1 0 0 1920 1080 1 1920 1080\n${ready}\n`))); } },
             on: () => child,
             kill: () => true,
         };

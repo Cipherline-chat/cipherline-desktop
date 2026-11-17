@@ -8,6 +8,7 @@
  * read there); the client mirrors it for UX only and has no load-bearing check.
  */
 
+import { detailSummary } from './richPresence';
 import { isNameAllowed } from '@cipherline/shared';
 import type { FriendStatusEntry } from './userStatusModel';
 
@@ -138,7 +139,7 @@ export interface StatusLineModel {
  * game.
  */
 export function statusLineModel(
-    entry: Pick<FriendStatusEntry, 'status' | 'custom_status_text' | 'custom_status_emoji' | 'custom_status_expires_at' | 'current_game' | 'on_mobile'> | null | undefined,
+    entry: Pick<FriendStatusEntry, 'status' | 'custom_status_text' | 'custom_status_emoji' | 'custom_status_expires_at' | 'current_game' | 'on_mobile'> & Partial<Pick<FriendStatusEntry, 'current_game_detail'>> | null | undefined,
     now: number = Date.now(),
 ): StatusLineModel {
     const none: StatusLineModel = { kind: 'none', emoji: null, text: null, game: null, gameTooltip: null };
@@ -146,9 +147,12 @@ export function statusLineModel(
     const onMobile = !!entry.on_mobile;
     const game = !onMobile && entry.current_game ? entry.current_game : null;
     const custom = activeCustom(entry.custom_status_text, entry.custom_status_emoji, entry.custom_status_expires_at, now);
-    if (custom && game) return { kind: 'custom+game', emoji: custom.emoji, text: custom.text, game, gameTooltip: `Playing ${game}` };
+    // "Playing X — Ranked • Round 3 · Score 2 – 1" on hover, when the game shares Rich Presence lines.
+    const rich = game ? detailSummary(entry.current_game_detail ?? null) : null;
+    const tip = game ? `Playing ${game}${rich ? ` \u2014 ${rich}` : ''}` : null;
+    if (custom && game) return { kind: 'custom+game', emoji: custom.emoji, text: custom.text, game, gameTooltip: tip };
     if (custom) return { kind: 'custom', emoji: custom.emoji, text: custom.text, game: null, gameTooltip: null };
-    if (game) return { kind: 'game', emoji: null, text: null, game, gameTooltip: `Playing ${game}` };
+    if (game) return { kind: 'game', emoji: null, text: null, game, gameTooltip: tip };
     return none;
 }
 

@@ -360,7 +360,9 @@ describe('full-screen moments (utils/moments.ts, components/moments/)', () => {
     });
     it('revolving door: remembered on a successful leave, detected from the server list', () => {
         const dash = read('components/Dashboard.tsx');
-        expect(dash).toMatch(/noteServerLeft\(leaveServerTarget\.server_id\);/);
+        // Only on a SUCCESSFUL leave: leave is optimistic, and this lives in cleanupLocal, which
+        // leaveServerOptimistic runs after the server commits (never on rollback).
+        expect(dash).toMatch(/cleanupLocal: \(\) => \{[\s\S]{0,400}?noteServerLeft\(sid\);/);
         expect(dash).toMatch(/if \(serverRejoined\(servers\.map\(sv => sv\.server_id\)\)\) requestMoment\('revolving-door'\);/);
     });
 });

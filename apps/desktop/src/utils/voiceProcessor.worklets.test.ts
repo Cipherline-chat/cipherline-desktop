@@ -43,7 +43,7 @@ class FakeWorkletNode {
 const track = () => ({ applyConstraints: async () => {} }) as unknown as MediaStreamTrack;
 const settings = {
     noiseSuppression: true, noiseSuppressionMode: 'strong', volumeNormalization: true, voiceGate: false, voiceGateThreshold: -50,
-    pushToTalk: false, pushToTalkKey: '', micDeviceId: '', speakerDeviceId: '', cameraDeviceId: '',
+    pushToTalk: false, pushToTalkKey: '', pushToMuteKey: null, micDeviceId: '', speakerDeviceId: '', cameraDeviceId: '',
     micVolume: 100, speakerVolume: 100, eqEnabled: false, eqBands: [0, 0, 0, 0, 0],
     cameraBrightness: 100, cameraContrast: 100, cameraSaturation: 100,
 } as never;

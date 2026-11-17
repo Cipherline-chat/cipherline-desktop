@@ -18,6 +18,8 @@ import { ShareFpsNote } from '../ShareFpsNote';
 import { MicIcon, CamIcon, HeadphonesIcon } from '../icons/SlashableIcon';
 import { ClSlider } from '../ClSlider';
 import { playIco } from '../../utils/clPhysics';
+import { usePttUiState, pttMicDisplay } from '../../utils/pushToTalk';
+import { formatCombo } from '../../hooks/useKeybinds';
 import { recordEggFound } from '../../utils/eggProgress';
 import { bumpStreak, firesAt, type Streak } from '../../utils/eggStreak';
 import { computeTooltipPlacement, type TooltipPlacement } from '../cl/tooltipPlacement';
@@ -898,7 +900,13 @@ export const ControlBar = ({
         document.body
     );
 
-    const micOn    = !!localParticipant?.isMicrophoneEnabled;
+    const micLive  = !!localParticipant?.isMicrophoneEnabled;
+    // Push-to-talk: the mic is closed until the key is held, which is not "muted". Waiting for the key
+    // shows a calm grey mic, holding it shows green (transmitting), and only a deliberate Mute is red.
+    const pttUi = usePttUiState();
+    const micDisplay = pttMicDisplay(pttUi, micLive);
+    const micOn    = micDisplay === 'normal' ? micLive : micDisplay === 'held';
+    const pttKeyLabel = voice?.settings?.pushToTalkKey ? formatCombo(voice.settings.pushToTalkKey) : 'your key';
     const camOn    = !!localParticipant?.isCameraEnabled;
 
     return (
@@ -914,9 +922,10 @@ export const ControlBar = ({
             <div className="cl-console-inner" data-live-share={isScreensharing || undefined}>
 
                 <CtrlBtn
-                    pulse={micOn ? undefined : 'off'}
+                    pulse={micDisplay === 'idle' ? undefined : micDisplay === 'held' ? 'live' : micOn ? undefined : 'off'}
                     disabled={micDisabled}
-                    tone={micOn ? 'neutral' : 'off'}
+                    tone={micDisplay === 'held' ? 'live' : micDisplay === 'idle' ? 'neutral' : micOn ? 'neutral' : 'off'}
+                    style={micDisplay === 'idle' ? { color: 'rgba(255,255,255,0.45)' } : undefined}
                     onClick={(e) => {
                         bumpMicDizzy(e.currentTarget as HTMLElement);
                         onToggleMic();
@@ -925,10 +934,13 @@ export const ControlBar = ({
                     title={
                         serverMutedAudio    ? "Your microphone has been muted by a moderator"
                         : micDisabled       ? "You don't have permission to speak in this channel"
+                        : micDisplay === 'held' ? 'Transmitting (push to talk)'
+                        : micDisplay === 'idle' ? `Push to talk: hold ${pttKeyLabel} to speak. Click to mute`
+                        : micDisplay === 'muted' ? 'Unmute (push to talk is paused)'
                         : micOn ? 'Mute' : 'Unmute'
                     }
                 >
-                    <span className="cl-ico"><MicIcon off={!micOn} className={iconSize} /></span>
+                    <span className="cl-ico"><MicIcon off={micDisplay === 'idle' ? false : !micOn} className={iconSize} /></span>
                 </CtrlBtn>
 
                 <CtrlBtn

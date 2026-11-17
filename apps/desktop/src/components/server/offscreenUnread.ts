@@ -80,7 +80,14 @@ export interface ModelEntry {
 }
 
 export interface ModelChannel { channel_id: string }
-export interface ModelCategory { category_id: string; channels: ModelChannel[] }
+export interface ModelCategory {
+    category_id: string;
+    /** The category's OWN channels (not those of its sub-categories). */
+    channels: ModelChannel[];
+    /** Sub-categories (one level). Collapsing the parent rolls these up too;
+     *  a collapsed sub-category under an open parent stands in for its own. */
+    subcategories?: ModelCategory[];
+}
 
 export interface ModelInput {
     uncategorized: ModelChannel[];
@@ -122,29 +129,42 @@ export function buildUnreadModel(i: ModelInput): Map<string, ModelEntry> {
             key: channelKey(ch.channel_id), kind, mentions: mentionsOf(ch.channel_id), channelId: ch.channel_id,
         });
     }
-    for (const cat of i.categories) {
-        if (!i.collapsed[cat.category_id]) {
-            for (const ch of cat.channels) {
-                const kind = kindOf(ch.channel_id);
-                if (kind) out.set(channelKey(ch.channel_id), {
-                    key: channelKey(ch.channel_id), kind, mentions: mentionsOf(ch.channel_id), channelId: ch.channel_id,
-                });
-            }
-            continue;
+    const rows = (list: ModelChannel[]) => {
+        for (const ch of list) {
+            const kind = kindOf(ch.channel_id);
+            if (kind) out.set(channelKey(ch.channel_id), {
+                key: channelKey(ch.channel_id), kind, mentions: mentionsOf(ch.channel_id), channelId: ch.channel_id,
+            });
         }
+    };
+    const rollup = (categoryId: string, list: ModelChannel[]) => {
         let kind: UnreadKind | null = null;
         let mentions = 0;
         let first: string | null = null;
-        for (const ch of cat.channels) {
+        for (const ch of list) {
             const k = kindOf(ch.channel_id);
             if (!k) continue;
             kind = kind ? strongerKind(kind, k) : k;
             mentions += mentionsOf(ch.channel_id);
             first ??= ch.channel_id;
         }
-        if (kind && first) out.set(categoryKey(cat.category_id), {
-            key: categoryKey(cat.category_id), kind, mentions, channelId: first, expandCategoryId: cat.category_id,
+        if (kind && first) out.set(categoryKey(categoryId), {
+            key: categoryKey(categoryId), kind, mentions, channelId: first, expandCategoryId: categoryId,
         });
+    };
+    for (const cat of i.categories) {
+        const subs = cat.subcategories ?? [];
+        if (i.collapsed[cat.category_id]) {
+            // Everything under a collapsed category, sub-categories included,
+            // rolls up into its header.
+            rollup(cat.category_id, [...cat.channels, ...subs.flatMap(s => s.channels)]);
+            continue;
+        }
+        rows(cat.channels);
+        for (const sub of subs) {
+            if (i.collapsed[sub.category_id]) rollup(sub.category_id, sub.channels);
+            else rows(sub.channels);
+        }
     }
     return out;
 }

@@ -58,8 +58,10 @@ vi.mock('../utils/secureLocalStore', () => ({
     },
 }));
 
+/** Flip to make every one of Alice's devices read as verified (the all-clear). */
+let aliceVerified = false;
 vi.mock('../utils/keyVerification', () => ({
-    getDeviceVerification: () => ({ state: 'unverified', legacy: false }),
+    getDeviceVerification: () => ({ state: aliceVerified ? 'verified' : 'unverified', legacy: false }),
     markVerified: vi.fn(),
     acknowledgeKeyChange: vi.fn(),
     getKnownDevices: () => ({}),
@@ -90,6 +92,7 @@ function baselineLedger() {
 }
 
 beforeEach(() => {
+    aliceVerified = false;
     mem.clear();
     posts.length = 0;
     ledger._resetSession();
@@ -208,5 +211,46 @@ describe('migration: first open after upgrade', () => {
         await settle();
         expect(q('[data-testid="my-code"]')).not.toBeNull();
         expect(ledger.loadOwnLedger(ME)?.devices[PHONE.device_id]?.status).toBe('baseline');
+    });
+});
+
+// Owner, 2026-11-16: once a contact is verified the all-clear replaced Quick
+// verify, and "your code" + Send went with it, so you could never send your
+// code to someone you had already verified.
+describe('your code: still sendable once they are verified', () => {
+    it('all-clear shows your code and Send, and Send sends', async () => {
+        aliceVerified = true;
+        baselineLedger();
+        directories[ME] = mine();
+        const onSendCode = vi.fn(async () => {});
+        render({ onSendCode });
+        await settle();
+        expect(q('.cl-allclear')).not.toBeNull();
+        expect(q('#cl-verify-code-input')).toBeNull();
+        expect(q('[data-testid="my-code"]')).not.toBeNull();
+        click('Send my code to Alice');
+        await settle();
+        expect(onSendCode).toHaveBeenCalledTimes(1);
+    });
+
+    it('control: unverified, your code is shown once (inside Quick verify), not twice', async () => {
+        baselineLedger();
+        directories[ME] = mine();
+        render();
+        await settle();
+        expect(q('.cl-allclear')).toBeNull();
+        expect(qa('[data-testid="my-code"]')).toHaveLength(1);
+    });
+
+    it('all-clear, re-check opened: your code is still shown exactly once', async () => {
+        aliceVerified = true;
+        baselineLedger();
+        directories[ME] = mine();
+        render();
+        await settle();
+        click('Check their code again');
+        await settle();
+        expect(q('#cl-verify-code-input')).not.toBeNull();
+        expect(qa('[data-testid="my-code"]')).toHaveLength(1);
     });
 });

@@ -26,7 +26,7 @@ export const BREADCRUMB_KINDS: ReadonlySet<string> = new Set([
     // refresh rate and a decoder name only. share_rx_snap / share_tx_snap are
     // report-time only and never reach the call log, so they are not here.
     'share_net', 'share_display', 'share_rx_fps', 'share_rx_start',
-    'camera_codec', 'camera_start_check', 'camera_codec_drift',
+    'camera_codec', 'camera_start_check', 'camera_codec_drift', 'camera_stop', 'camera_track', 'share_end', 'share_swap_abort',
     'ns_load_fallback', 'audio_render', 'e2ee_audio_lag', 'av_sync_applied',
     'gpu_process_restarted', 'video_recovery', 'mic_device_switch',
 ]);

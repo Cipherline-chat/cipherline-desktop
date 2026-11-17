@@ -15,6 +15,12 @@
 // inlined from apps/desktop/src/index.css (:root) since the splash loads as a
 // self-contained data: URL with no access to the app's stylesheet.
 //
+// The tokens, keyframes, card / title bar, working mark, footer + bar and
+// headline styles live in splash-style.ts, shared verbatim with the "Applying
+// update" popup (update-applying.ts) so the two cannot drift. Moving them there
+// left this page's output byte-identical (sha256 pinned in
+// update-applying.test.ts). Change them there, and check both pages.
+//
 // The main process drives it via webContents.executeJavaScript():
 //   window.clProgress(pct)        — set the real target % (bar eases toward it)
 //   window.clStatus(text)         — optional status-line override
@@ -22,6 +28,11 @@
 //
 // The top title bar is `-webkit-app-region: drag` so the frameless window can
 // be moved around the screen.
+
+import {
+  SPLASH_TOKENS_CSS, SPLASH_KEYFRAMES_CSS, SPLASH_CARD_CSS, SPLASH_MARK_CSS, SPLASH_FOOTER_CSS,
+  SPLASH_HEADLINE_CSS, SPLASH_TITLEBAR_MARK_SVG, SPLASH_WORKING_MARK_HTML,
+} from './splash-style';
 
 export function installerSplashHtml(version: string, isUpdate = false): string {
   const safeVersion = String(version).replace(/[^0-9A-Za-z.\-+]/g, '');
@@ -47,25 +58,7 @@ export function installerSplashHtml(version: string, isUpdate = false): string {
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Fredoka:wght@400;500;600&family=Nunito:wght@400;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
 
-  :root {
-    --cl-abyss:   #0B0F1E;
-    --cl-deep:    #131A30;
-    --cl-surface: #1C2542;
-    --cl-border:  #2A3558;
-    --cl-sink:    #0A1120;
-    --cl-lume:        #25E0C8;
-    --cl-lume-hi:     #3BEAD6;
-    --cl-lume-deep:   #0E8F7C;
-    --cl-glow:    #FFC94D;
-    --cl-ok:      #4ADE80;
-    --cl-text:  #F4F7FF;
-    --cl-muted: #A7B3D4;
-    --cl-faint: #5E6B8F;
-    --cl-font-display: 'Fredoka', system-ui, sans-serif;
-    --cl-font-body:    'Nunito', system-ui, sans-serif;
-    --cl-font-mono:    'JetBrains Mono', ui-monospace, monospace;
-    --cl-spring: cubic-bezier(.34, 1.56, .64, 1);
-  }
+${SPLASH_TOKENS_CSS}
 
   * { box-sizing: border-box; }
   html, body { height: 100%; }
@@ -81,51 +74,9 @@ export function installerSplashHtml(version: string, isUpdate = false): string {
     cursor: default;
   }
 
-  @keyframes cl-blink { 0%,100%{opacity:.22} 50%{opacity:1} }
-  @keyframes cl-bars  { 0%{transform:scaleY(.34)} 100%{transform:scaleY(1)} }
-  @keyframes cl-ring  { 0%{transform:translate(-50%,-50%) scale(.5);opacity:.55} 75%{opacity:0} 100%{transform:translate(-50%,-50%) scale(2.2);opacity:0} }
-  @keyframes cl-tape  { from{transform:translateY(0)} to{transform:translateY(-50%)} }
-  @keyframes cl-pop   { 0%{transform:scale(.62)} 55%{transform:scale(1.1)} 100%{transform:scale(1)} }
-  @keyframes cl-breathe { 0%,100%{transform:scale(1)} 50%{transform:scale(1.035)} }
-  @keyframes cl-halo  { 0%,100%{opacity:.42;transform:translate(-50%,-50%) scale(1)} 50%{opacity:.72;transform:translate(-50%,-50%) scale(1.14)} }
-  @keyframes cl-ringdone { 0%{transform:translate(-50%,-50%) scale(.45);opacity:.6} 80%{opacity:0} 100%{transform:translate(-50%,-50%) scale(2.5);opacity:0} }
-  @keyframes cl-confetti { 0%{transform:translate(0,0) scale(0) rotate(0deg);opacity:0} 14%{opacity:1} 72%{opacity:1} 100%{transform:translate(var(--dx),var(--dy)) scale(1) rotate(var(--r));opacity:0} }
-  @keyframes cl-glowpulse { 0%,100%{box-shadow:0 0 16px rgba(37,224,200,.30)} 50%{box-shadow:0 0 26px rgba(37,224,200,.55)} }
-  @keyframes cl-rise  { 0%{transform:translateY(9px);opacity:0} 100%{transform:translateY(0);opacity:1} }
-  @keyframes cl-fadein { 0%{opacity:0} 100%{opacity:1} }
+${SPLASH_KEYFRAMES_CSS}
 
-  .card {
-    position: relative;
-    width: 440px;
-    background: var(--cl-deep);
-    border: 1px solid var(--cl-border);
-    border-radius: 20px;
-    box-shadow: 0 24px 60px rgba(0,0,0,.6);
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-  }
-
-  /* the title bar drags the whole window */
-  .titlebar {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 16px 20px;
-    border-bottom: 1px solid var(--cl-border);
-    -webkit-app-region: drag;
-  }
-  .titlebar .brand {
-    font-family: var(--cl-font-display);
-    font-weight: 500;
-    font-size: 16px;
-    color: var(--cl-text);
-  }
-  .titlebar .ver {
-    font-family: var(--cl-font-mono);
-    font-size: 11px;
-    color: var(--cl-faint);
-  }
+${SPLASH_CARD_CSS}
 
   .stage {
     position: relative;
@@ -143,8 +94,7 @@ export function installerSplashHtml(version: string, isUpdate = false): string {
     height: 320px;
   }
 
-  .mark-wrap { position: relative; width: 84px; height: 70px; display: flex; align-items: center; justify-content: center; }
-  .pulse-ring { position: absolute; left: 50%; top: 50%; width: 58px; height: 58px; border-radius: 50%; border: 1.5px solid var(--cl-lume); animation: cl-ring 2.6s ease-out infinite; }
+${SPLASH_MARK_CSS}
 
   .tape-mask {
     position: relative; width: 160px; height: 78px; overflow: hidden;
@@ -161,20 +111,7 @@ export function installerSplashHtml(version: string, isUpdate = false): string {
   }
   .key-pill .fp { font-family: var(--cl-font-mono); font-size: 13px; color: var(--cl-lume); letter-spacing: 1px; }
 
-  .footer { padding: 0 24px 22px; display: flex; flex-direction: column; gap: 13px; }
-  .statusline { display: flex; align-items: center; gap: 8px; min-height: 18px; }
-  .statusdot { width: 7px; height: 7px; border-radius: 99px; background: var(--cl-lume); box-shadow: 0 0 8px var(--cl-lume); flex: none; animation: cl-blink 1.4s ease-in-out infinite; }
-  .statustext { font-family: var(--cl-font-mono); font-size: 13px; color: var(--cl-muted); letter-spacing: .2px; }
-  .spacer { flex: 1; }
-  .pct { font-family: var(--cl-font-mono); font-size: 12px; color: var(--cl-faint); }
-
-  .bar { position: relative; height: 8px; border-radius: 99px; background: var(--cl-sink); border: 1px solid var(--cl-border); overflow: hidden; }
-  .bar-fill {
-    height: 100%; width: 0%; border-radius: 99px;
-    background: linear-gradient(90deg, var(--cl-lume-deep), var(--cl-lume));
-    box-shadow: 0 0 12px rgba(37,224,200,.5);
-    transition: width .22s ease-out;
-  }
+${SPLASH_FOOTER_CSS}
 
   /* ===== done state ===== */
   #done { display: none; }
@@ -183,16 +120,14 @@ export function installerSplashHtml(version: string, isUpdate = false): string {
   .ring-done { position: absolute; left: 50%; top: 50%; width: 78px; height: 78px; border-radius: 50%; border: 2px solid var(--cl-lume); opacity: 0; animation: cl-ringdone 1.4s ease-out 2; }
   .done-mark { position: relative; z-index: 2; animation: cl-pop 560ms var(--cl-spring) both; }
   .done-mark > div { animation: cl-breathe 3.2s ease-in-out infinite; }
-  .headline { display: flex; flex-direction: column; align-items: center; gap: 5px; animation: cl-rise 460ms var(--cl-spring) both; animation-delay: 200ms; }
-  .headline .big { font-family: var(--cl-font-display); font-weight: 600; font-size: 27px; color: var(--cl-text); letter-spacing: -.5px; white-space: nowrap; }
-  .headline .sub { font-size: 13.5px; color: var(--cl-muted); white-space: nowrap; }
+${SPLASH_HEADLINE_CSS}
   .confetti { position: absolute; left: 50%; top: 50%; }
 </style>
 </head>
 <body>
   <div class="card">
     <div class="titlebar">
-      <svg width="20" height="17" viewBox="0 0 110 90"><rect x="22.5" y="44" width="13" height="34" rx="6.5" fill="#25E0C8"></rect><rect x="39.8" y="44" width="13" height="34" rx="6.5" fill="#25E0C8"></rect><rect x="57.1" y="44" width="13" height="34" rx="6.5" fill="#25E0C8"></rect><rect x="74.4" y="44" width="13" height="34" rx="6.5" fill="#25E0C8"></rect><path d="M21 48 A34 34 0 0 1 89 48 L89 53 L21 53 Z" fill="#25E0C8"></path></svg>
+${SPLASH_TITLEBAR_MARK_SVG}
       <span class="brand">cipherline</span>
       <span class="spacer"></span>
       <span class="ver" id="ver">${verbing} ${safeVersion}</span>
@@ -201,19 +136,7 @@ export function installerSplashHtml(version: string, isUpdate = false): string {
     <div class="stage">
       <!-- ===== WORKING ===== -->
       <div id="working" style="display:flex; flex-direction:column; align-items:center; gap:18px;">
-        <div class="mark-wrap">
-          <div class="pulse-ring"></div>
-          <div class="pulse-ring" style="animation-delay:1.3s;"></div>
-          <svg width="70" height="58" viewBox="0 0 110 90" style="position:relative; z-index:2; filter:drop-shadow(0 0 10px rgba(37,224,200,.6));">
-            <rect x="22.5" y="44" width="13" height="34" rx="6.5" fill="#25E0C8" style="transform-box:fill-box; transform-origin:center bottom; animation:cl-bars 760ms var(--cl-spring) infinite alternate; animation-delay:0ms;"></rect>
-            <rect x="39.8" y="44" width="13" height="34" rx="6.5" fill="#25E0C8" style="transform-box:fill-box; transform-origin:center bottom; animation:cl-bars 760ms var(--cl-spring) infinite alternate; animation-delay:130ms;"></rect>
-            <rect x="57.1" y="44" width="13" height="34" rx="6.5" fill="#25E0C8" style="transform-box:fill-box; transform-origin:center bottom; animation:cl-bars 760ms var(--cl-spring) infinite alternate; animation-delay:260ms;"></rect>
-            <rect x="74.4" y="44" width="13" height="34" rx="6.5" fill="#25E0C8" style="transform-box:fill-box; transform-origin:center bottom; animation:cl-bars 760ms var(--cl-spring) infinite alternate; animation-delay:390ms;"></rect>
-            <path d="M21 48 A34 34 0 0 1 89 48 L89 53 L21 53 Z" fill="#25E0C8"></path>
-            <path d="M33.5 40 l3.75 -5 l3.75 5 l3.75 -5 l3.75 5" fill="none" stroke="#0B0F1E" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"></path>
-            <path d="M61.5 40 l3.75 -5 l3.75 5 l3.75 -5 l3.75 5" fill="none" stroke="#0B0F1E" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"></path>
-          </svg>
-        </div>
+${SPLASH_WORKING_MARK_HTML}
 
         <div class="tape-mask">
           <div class="tape-scroll" id="tape"></div>

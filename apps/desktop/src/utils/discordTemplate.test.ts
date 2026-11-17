@@ -65,15 +65,15 @@ describe('buildPreviewTree', () => {
             groups.map(g => [g.category?.name ?? '(none)', g.channels.map(c => c.name)]);
         expect(flat(tree.text)).toEqual([
             ['(none)', ['join_and_leave']],
-            ['Primary Channels', ['general_chat', 'files_pictures', 'bot_commands']],
-            ['Media', ['self_promotion', 'game_clips', 'yt_videos']],
-            ['Special Channels', ['car_discussions', 'memes']],
-            ['Voice Channels', ['music_commands']],
-            ['Admin stuff', ['private_chat', 'logs']],
+            ['💬 Primary Channels', ['general_chat', 'files_pictures', 'bot_commands']],
+            ['📺 Media', ['self_promotion', 'game_clips', 'yt_videos']],
+            ['⭐ Special Channels', ['car_discussions', 'memes']],
+            ['🔈Voice Channels', ['music_commands']],
+            ['🔨 Admin stuff', ['private_chat', 'logs']],
         ]);
         expect(flat(tree.calls)).toEqual([
-            ['Voice Channels', ['New Channel']],
-            ['Admin stuff', ['Private Voice']],
+            ['🔈Voice Channels', ['New Channel']],
+            ['🔨 Admin stuff', ['Private Voice']],
         ]);
     });
 

@@ -5,7 +5,8 @@ import { ClButton } from '../cl';
 import { useEscape } from '../../hooks/useEscape';
 import { usePrefersReducedMotion } from '../../hooks/usePrefersReducedMotion';
 import {
-    dismissLinuxShareIntro, revealLinuxShareIntro, useLinuxShareIntro, type ShareBackendKind,
+    dismissLinuxShareIntro, revealLinuxShareIntro, useLinuxShareIntro, type ShareBackendKind, type ShareIntroVariant,
+    type GpuShareVendor, shareIntroVariant,
 } from '../../utils/linuxShareIntro';
 import howToVideo from '../../assets/linux-share-report.webm';
 import howToPoster from '../../assets/linux-share-report-poster.webp';
@@ -23,6 +24,10 @@ import './linuxShareIntro.css';
  * It is loaded as a blob: URL (CSP media-src 'self' blob:): the packaged app's static server answers Range requests with
  * the whole file and an octet-stream type, which a <video> tolerates badly; a blob plays and loops the same in dev and
  * prod. Reduced motion: no autoplay, the poster with a play button instead.
+ *
+ * Two variants share this card, the clip and the rules: 'linux' (above) and 'gpu' — Windows/macOS on AMD or Intel
+ * graphics, "Help us make screen sharing smoother" (2026-11-16). The gpu variant names the user's vendor and has no
+ * encoder line (that line is about Linux's native helper).
  */
 
 const BACKEND_LINE: Record<ShareBackendKind, { text: string; tone: 'ok' | 'new' }> = {
@@ -59,12 +64,16 @@ function useVideoBlobUrl(asset: string | null): string | null | 'failed' {
 
 export interface LinuxShareIntroCardViewProps {
     backend: ShareBackendKind;
+    /** Default 'linux'. */
+    variant?: ShareIntroVariant;
+    /** The 'gpu' variant names this vendor ("your AMD graphics"). */
+    vendor?: GpuShareVendor;
     onDismiss: () => void;
     /** Test seam: the clip's URL (skips the fetch). */
     videoSrc?: string | null;
 }
 
-export const LinuxShareIntroCardView: React.FC<LinuxShareIntroCardViewProps> = ({ backend, onDismiss, videoSrc }) => {
+export const LinuxShareIntroCardView: React.FC<LinuxShareIntroCardViewProps> = ({ backend, variant = 'linux', vendor, onDismiss, videoSrc }) => {
     const reduced = usePrefersReducedMotion();
     const loaded = useVideoBlobUrl(videoSrc === undefined ? howToVideo : null);
     const src = videoSrc !== undefined ? videoSrc : (loaded === 'failed' ? null : loaded);
@@ -82,14 +91,15 @@ export const LinuxShareIntroCardView: React.FC<LinuxShareIntroCardViewProps> = (
     };
 
     const line = BACKEND_LINE[backend];
+    const gpu = variant === 'gpu';
 
     return (
         <div className="cl-kit" style={{ display: 'contents' }}>
-            <div className="rp-prompt lsi-card" role="dialog" aria-modal="false" aria-labelledby="lsi-title" aria-describedby="lsi-desc">
+            <div className={`rp-prompt lsi-card${gpu ? ' lsi-card--gpu' : ''}`} role="dialog" aria-modal="false" aria-labelledby="lsi-title" aria-describedby="lsi-desc">
                 <div className="rp-prompt-head">
                     <div className="rp-tile" style={{ width: 38, height: 38, borderRadius: 12 }} aria-hidden><MonitorUp size={18} /></div>
                     <div style={{ minWidth: 0 }}>
-                        <h3 id="lsi-title">Screen sharing on Linux is new<span className="lsi-new">New</span></h3>
+                        <h3 id="lsi-title">{gpu ? 'Help us make screen sharing smoother' : 'Screen sharing on Linux is new'}<span className="lsi-new">New</span></h3>
                     </div>
                 </div>
                 <button type="button" className="rp-close" onClick={onDismiss} aria-label="Close"><X size={17} aria-hidden /></button>
@@ -119,16 +129,33 @@ export const LinuxShareIntroCardView: React.FC<LinuxShareIntroCardViewProps> = (
                 </div>
 
                 <div id="lsi-desc">
-                    <p className="lsi-body">
-                        It’s tested on <b>NVIDIA</b> graphics cards, less so on <b>AMD</b> and <b>Intel</b>. We need test data to make it smoother and sharper.
-                    </p>
-                    <div className={`lsi-backend lsi-backend--${backend}`} data-tone={line.tone}>
-                        <Cpu size={14} aria-hidden />
-                        <span>{line.text}</span>
-                    </div>
-                    <p className="lsi-body">
-                        If something looks wrong, send a report from the share menu, as the video shows.
-                    </p>
+                    {gpu ? (
+                        <>
+                            <p className="lsi-body">
+                                Screen sharing is tuned most on <b>NVIDIA</b> graphics cards. We need more data from <b>AMD</b> and <b>Intel</b> to make it smoother and sharper.
+                            </p>
+                            <div className="lsi-backend lsi-backend--gpu" data-tone="new">
+                                <Cpu size={14} aria-hidden />
+                                <span>{vendor ? `Your ${vendor} graphics are what we need more data on.` : 'Your reports help the most.'}</span>
+                            </div>
+                            <p className="lsi-body">
+                                If something looks off (stutter, blur, lag), send a report from the share menu, as the video shows.
+                            </p>
+                        </>
+                    ) : (
+                        <>
+                            <p className="lsi-body">
+                                It’s tested on <b>NVIDIA</b> graphics cards, less so on <b>AMD</b> and <b>Intel</b>. We need test data to make it smoother and sharper.
+                            </p>
+                            <div className={`lsi-backend lsi-backend--${backend}`} data-tone={line.tone}>
+                                <Cpu size={14} aria-hidden />
+                                <span>{line.text}</span>
+                            </div>
+                            <p className="lsi-body">
+                                If something looks wrong, send a report from the share menu, as the video shows.
+                            </p>
+                        </>
+                    )}
                 </div>
 
                 <div className="lsi-foot">
@@ -162,7 +189,7 @@ function useWindowAttended(active: boolean): boolean {
     return attended;
 }
 
-/** The live card. Mounted once (Dashboard); renders nothing until a first Linux share made it pending. */
+/** The live card. Mounted once (Dashboard); renders nothing until a first Linux share (or a first AMD/Intel share on Windows/macOS) made it pending. */
 export const LinuxShareIntroCard: React.FC = () => {
     const intro = useLinuxShareIntro();
     const waiting = !!intro && !intro.shown;
@@ -172,7 +199,7 @@ export const LinuxShareIntroCard: React.FC = () => {
     }, [waiting, attended]);
     if (!intro?.shown) return null;
     return createPortal(
-        <LinuxShareIntroCardView backend={intro.backend} onDismiss={dismissLinuxShareIntro} />,
+        <LinuxShareIntroCardView backend={intro.backend} variant={shareIntroVariant(intro)} vendor={intro.gpuVendor} onDismiss={dismissLinuxShareIntro} />,
         document.body,
     );
 };

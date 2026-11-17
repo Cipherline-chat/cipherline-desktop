@@ -66,7 +66,7 @@
  */
 import { useEffect } from 'react';
 import { useRoomContext } from '@livekit/components-react';
-import { RoomEvent, Track, RemoteVideoTrack, type Room, type RemoteTrackPublication } from 'livekit-client';
+import { RoomEvent, Track, RemoteVideoTrack, type Room, type RemoteTrackPublication, type RemoteParticipant, type TrackPublication } from 'livekit-client';
 import { logCallEvent, markCallStart, markCallEnd, trackPlaceholder } from '../../utils/callEventLog';
 import { resetAvSyncMonitor } from '../../utils/avSyncMonitor';
 import { iceRouteFromStats, layerStateString, type StatsLike } from '../../utils/callEventStats';
@@ -85,6 +85,7 @@ import { RxDecoderLostWatch, isDecoderDead, withdrawH265Decode } from '../../uti
 import { ShareRxStallRecovery } from '../../utils/shareRxStallRecovery';
 import { pauseRemoteVideoBriefly } from '../../utils/remoteVideoDemand';
 import { resolveShareRef } from '../../utils/shareRef';
+import { RemoteCameraGapTracker } from '../../utils/remoteCameraGap';
 import { measureDisplayHz } from '../../utils/displayRefresh';
 import { capKbpsFromEncodings } from '../../utils/shareNetStats';
 import { setShareSnapProvider, type ShareSnapTarget } from '../../utils/shareSnapshot';
@@ -153,6 +154,23 @@ export const CallEventMonitor: React.FC = () => {
         room.on(RoomEvent.Reconnected, onReconnected);
         const onDecryptError = (err: unknown) => logCallEvent('e2ee_decrypt_error', { reason: decryptErrorReason(err) });
         room.on(RoomEvent.EncryptionError, onDecryptError);
+
+        // Remote camera lifecycle (utils/remoteCameraGap.ts): why a friend's camera tile went away.
+        const gaps = new RemoteCameraGapTracker(() => Date.now(), g => logCallEvent('rx_video_gap', { track: g.track, reason: g.reason, ms: g.ms }));
+        const isCam = (pub: TrackPublication) => pub.source === Track.Source.Camera;
+        const gapName = (pub: TrackPublication) => trackPlaceholder(pub.trackSid, 'remote-video');
+        const onGapUnpublished = (pub: RemoteTrackPublication, p: RemoteParticipant) => { if (isCam(pub)) gaps.lost(p.identity, 'unpublished', gapName(pub)); };
+        const onGapUnsubscribed = (_t: unknown, pub: RemoteTrackPublication, p: RemoteParticipant) => { if (isCam(pub)) gaps.lost(p.identity, 'unsubscribed', gapName(pub)); };
+        const onGapMuted = (pub: TrackPublication, p: { identity: string }) => { if (isCam(pub) && p.identity !== room.localParticipant.identity) gaps.lost(p.identity, 'muted', gapName(pub)); };
+        const onGapBackSub = (_t: unknown, pub: RemoteTrackPublication, p: RemoteParticipant) => { if (isCam(pub)) gaps.back(p.identity); };
+        const onGapBackUnmute = (pub: TrackPublication, p: { identity: string }) => { if (isCam(pub)) gaps.back(p.identity); };
+        const onGapLeft = (p: RemoteParticipant) => gaps.drop(p.identity);
+        room.on(RoomEvent.TrackUnpublished, onGapUnpublished);
+        room.on(RoomEvent.TrackUnsubscribed, onGapUnsubscribed);
+        room.on(RoomEvent.TrackMuted, onGapMuted);
+        room.on(RoomEvent.TrackSubscribed, onGapBackSub);
+        room.on(RoomEvent.TrackUnmuted, onGapBackUnmute);
+        room.on(RoomEvent.ParticipantDisconnected, onGapLeft);
 
         const ice = new Map<string, string>();
         const qlr = new Map<string, { reason: string; since: number }>();
@@ -492,6 +510,13 @@ export const CallEventMonitor: React.FC = () => {
             room.off(RoomEvent.Reconnecting, onReconnecting);
             room.off(RoomEvent.Reconnected, onReconnected);
             room.off(RoomEvent.EncryptionError, onDecryptError);
+            room.off(RoomEvent.TrackUnpublished, onGapUnpublished);
+            room.off(RoomEvent.TrackUnsubscribed, onGapUnsubscribed);
+            room.off(RoomEvent.TrackMuted, onGapMuted);
+            room.off(RoomEvent.TrackSubscribed, onGapBackSub);
+            room.off(RoomEvent.TrackUnmuted, onGapBackUnmute);
+            room.off(RoomEvent.ParticipantDisconnected, onGapLeft);
+            gaps.clear();
             logCallEvent('call_leave', { participants: count() });
             markCallEnd();
             resetAvSyncMonitor();

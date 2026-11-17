@@ -5,8 +5,9 @@ import { API_BASE } from '../../../constants';
 import { useToast } from '../../../contexts/ToastContext';
 import { SettingsDisclosure } from '../SettingsDisclosure';
 import { SteamConnect } from './SteamConnect';
-import { SteamShowcase } from '../../integrations/SteamShowcase';
-import { forgetSteamCard, useSteamCard, type SteamCard } from '../../../hooks/useProfileRelations';
+import { SteamPrivateNotice, SteamShowcase } from '../../integrations/SteamShowcase';
+import { forgetSteamCard, refreshSteamCard, useSteamCard, type SteamCard } from '../../../hooks/useProfileRelations';
+import { steamNeedsOwnerNotice } from '../../../utils/integrations/api';
 import { useMyIntegrations } from '../../../hooks/useIntegrations';
 import { patchErrorMessage } from '../../../utils/patchErrorMessage';
 // SteamConnect's rows (ps-steam), the settings rows (su-row) and the stats preview (ig-*) live in these sheets.
@@ -56,6 +57,9 @@ export const ProfileSteamSection: React.FC<{
                 {linked && available && !available.steamData && (
                     <p className="su-hint" data-testid="steam-stats-unavailable">Steam stats (level, games, hours) are not switched on for this Cipherline server yet. Your verified Steam account still shows.</p>
                 )}
+                {linked && steamCard?.activity && steamNeedsOwnerNotice(steamCard.activity) && (
+                    <SteamPrivateNotice activity={steamCard.activity} onCheckAgain={token && userId ? () => refreshSteamCard(userId, token) : undefined} />
+                )}
                 {linked && available?.steamData && userId && (
                     <SteamStatsSection token={token} userId={userId} card={steamCard} />
                 )}
@@ -98,7 +102,7 @@ const SteamStatsSection: React.FC<{ token: string | null; userId: string; card: 
             {card?.activity ? (
                 <div data-state={on ? 'shown' : 'hidden'} className="ig-steam-preview">
                     {!on && <p className="su-hint" style={{ margin: 0 }}>Hidden. Only you can see this preview.</p>}
-                    <SteamShowcase activity={card.activity} token={token} isSelf personaName={card.persona_name} avatar={card.avatar} />
+                    {!steamNeedsOwnerNotice(card.activity) && <SteamShowcase activity={card.activity} token={token} isSelf personaName={card.persona_name} avatar={card.avatar} />}
                 </div>
             ) : (
                 <p className="su-hint" style={{ margin: 0 }}>{card ? 'Steam did not answer just now. Your stats show again once it does.' : 'Loading your Steam stats…'}</p>

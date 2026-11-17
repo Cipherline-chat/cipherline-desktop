@@ -39,11 +39,13 @@ import {
     Camera, Image as ImageIcon, Crown,
     ChevronDown, ChevronUp, Clock,
     Smile, Upload, Pencil, HardDrive, Sparkles,
+    UserPlus, UserMinus, VolumeX, Tag, BadgeCheck, Hash, Folder, LayoutList, Minus, KeyRound,
+    Pin, Bookmark, Phone, Info,
 } from 'lucide-react';
 import type { ServerInfo } from '../../hooks/useServers';
 import { useAttachments } from '../../hooks/useAttachments';
 import { IMAGE_ACCEPT_ATTR, validateImageUpload, validateEmojiUpload } from '../../utils/imageUploadValidation';
-import { AVATAR_OUTPUT, BANNER_OUTPUT } from '../../utils/imageCrop';
+import { AVATAR_OUTPUT, BANNER_OUTPUT, cssAspectRatio } from '../../utils/imageCrop';
 import { serverSettingsTabVisibility, type ServerSettingsTab } from '../../utils/serverSettingsAccess';
 import { Permissions, hasPermission, formatBytes } from '@cipherline/shared';
 import { ServerIcon } from './ServerIcon';
@@ -68,7 +70,12 @@ import { useUnsavedChangesGuard, useReportDirty } from '../../hooks/useUnsavedCh
 import { useEscape } from '../../hooks/useEscape';
 import { writeToClipboard } from '../../utils/clipboard';
 import { MemberActionDialog, type MemberActionKind } from './MemberActionDialog';
+import { useRolePicker } from '../../contexts/RolePickerContext';
+import { useServerRoster } from '../../hooks/useServerRoster';
+import { refreshRoster } from '../../utils/serverRosterCache';
+import { MemberRoleChipRow } from './roles/MemberRoleChipRow';
 import { requestMoment } from '../../utils/moments';
+import { describeAuditEntry, AUDIT_FILTER_OPTIONS, type AuditIcon, type AuditTone } from './auditLog';
 import { EMOJI_NAME_RE, sanitizeEmojiNameInput, toShortcode } from '../../utils/emojiNames';
 
 // ── Helper Types ─────────────────────────────────────────────────────────────
@@ -119,6 +126,10 @@ interface AuditEntry {
     target_username: string | null;
     target_role_id: string | null;
     target_channel_id: string | null;
+    // Current display names the API resolved for the role / channel / categories / users this row mentions.
+    target_role_name?: string | null;
+    target_channel_name?: string | null;
+    names?: Record<string, string> | null;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     data_jsonb: any;
     created_at: string;
@@ -161,6 +172,12 @@ interface Props {
 
 const sectionLabel = 'text-[11px] font-mono font-semibold uppercase tracking-widest text-cl-faint mb-2';
 
+/** The banner preview's shape: exactly the crop's (see cssAspectRatio). */
+const BANNER_ASPECT = cssAspectRatio(BANNER_OUTPUT);
+/** Same width as ClImageCropper's wide frame, so the preview is the size the
+ *  user just positioned it at; narrower panes shrink it, keeping the shape. */
+const BANNER_PREVIEW_MAX_W = 420;
+
 // ── Tab definitions ──────────────────────────────────────────────────────────
 
 type Tab = ServerSettingsTab;
@@ -182,7 +199,7 @@ const TABS: { id: Tab; label: string; icon: React.ReactNode; description?: strin
     { id: 'invites',   label: 'Invites',    icon: <Link size={18} />,          description: 'Every invite, active and past' },
     { id: 'emojis',    label: 'Emojis',     icon: <Smile size={18} />,         description: 'Custom emojis for this server' },
     { id: 'bans',      label: 'Bans',       icon: <Ban size={18} />,           description: 'Banned users' },
-    { id: 'audit',     label: 'Audit Log',  icon: <ClipboardList size={18} />, description: 'Moderation history' },
+    { id: 'audit',     label: 'Audit Log',  icon: <ClipboardList size={18} />, description: 'Admin and moderation history' },
 ];
 
 // ── Overview Tab ─────────────────────────────────────────────────────────────
@@ -389,17 +406,29 @@ function OverviewTab({ server, token, onServerUpdated, canManageServer, isOwner,
 
     return (
         <div className="space-y-6">
-            {/* Identity card — banner is the wide image strip, the icon overlays
-                it at the bottom-left (like Discord), name sits alongside. One
-                card: these three read as a single "who this server is" group,
-                not three independent sections. */}
-            <div className="dock-card rounded-[14px] border border-cl-border/40 bg-cl-surface/40 p-5 space-y-5">
-                <div>
+            {/* Identity card — banner, icon and name read as a single "who
+                this server is" group, not three independent sections.
+
+                The banner preview is EXACTLY the crop's shape (BANNER_ASPECT,
+                derived from BANNER_OUTPUT — the same numbers ClImageCropper
+                frames and exports), capped at the cropper's 420px frame width.
+                It used to be a full-width, fixed-height (h-32) strip: ~4.5:1+
+                in this pane, so `object-cover` cut the top and bottom off the
+                2.5:1 image the user had just positioned. The icon + name column
+                sits beside the banner and wraps underneath it when the pane is
+                too narrow for both. */}
+            <div className="dock-card rounded-[14px] border border-cl-border/40 bg-cl-surface/40 p-5">
+              <div className="flex flex-wrap items-start gap-x-6 gap-y-5">
+                <div className="w-full min-w-0" style={{ maxWidth: BANNER_PREVIEW_MAX_W }}>
                     <p className={sectionLabel}>Banner</p>
                     <div className="relative">
-                        <div
-                            className="w-full h-32 rounded-xl bg-cl-surface overflow-hidden border border-cl-border cursor-pointer group relative"
+                        <button
+                            type="button"
+                            data-testid="server-banner-preview"
+                            className="block w-full p-0 rounded-xl bg-cl-surface overflow-hidden border border-cl-border cursor-pointer group relative focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cl-lume"
+                            style={{ aspectRatio: BANNER_ASPECT }}
                             onClick={() => bannerInputRef.current?.click()}
+                            aria-label={bannerAttachment || bannerPreview ? 'Change server banner' : 'Upload server banner'}
                         >
                             {bannerPreview ? (
                                 <img src={bannerPreview} alt="Banner preview" className="w-full h-full object-cover" />
@@ -417,13 +446,13 @@ function OverviewTab({ server, token, onServerUpdated, canManageServer, isOwner,
                             ) : (
                                 <div className="w-full h-full flex items-center justify-center text-cl-faint group-hover:text-cl-muted transition-colors">
                                     <ImageIcon size={28} />
-                                    <span className="ml-2 text-xs">Upload banner ({BANNER_OUTPUT.width}×{BANNER_OUTPUT.height})</span>
+                                    <span className="ml-2 text-xs">Upload banner</span>
                                 </div>
                             )}
-                            <div className="absolute inset-0 flex items-center justify-center bg-black/0 group-hover:bg-black/40 transition-colors">
-                                <Camera size={20} className="opacity-0 group-hover:opacity-100 text-cl-text transition-opacity" />
+                            <div className="absolute inset-0 flex items-center justify-center bg-black/0 group-hover:bg-black/40 group-focus-visible:bg-black/40 transition-colors">
+                                <Camera size={20} className="opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100 text-cl-text transition-opacity" />
                             </div>
-                        </div>
+                        </button>
                         {(bannerAttachment || bannerPreview) && (
                             <ClButton
                                 icon
@@ -441,6 +470,9 @@ function OverviewTab({ server, token, onServerUpdated, canManageServer, isOwner,
                             </ClButton>
                         )}
                     </div>
+                    <p className="mt-2 mb-0 text-[11px] text-cl-faint">
+                        Cropped to 2.5:1 · {BANNER_OUTPUT.width}×{BANNER_OUTPUT.height}
+                    </p>
                     <input
                         ref={bannerInputRef}
                         type="file"
@@ -450,8 +482,8 @@ function OverviewTab({ server, token, onServerUpdated, canManageServer, isOwner,
                     />
                 </div>
 
-                {/* Icon (square 512x512) + name on one row */}
-                <div className="flex items-start gap-4">
+                {/* Icon (square 512x512) above the name, beside the banner */}
+                <div className="flex-1 min-w-[220px] flex flex-col gap-5">
                     <div className="shrink-0">
                         <p className={sectionLabel}>Icon</p>
                         {/* Wrapper is the positioning box for the corner X: the
@@ -504,7 +536,7 @@ function OverviewTab({ server, token, onServerUpdated, canManageServer, isOwner,
                         />
                     </div>
 
-                    <div className="flex-1">
+                    <div className="w-full">
                         <p className={sectionLabel}>Server Name</p>
                         <ClInput
                             type="text"
@@ -520,6 +552,7 @@ function OverviewTab({ server, token, onServerUpdated, canManageServer, isOwner,
                         />
                     </div>
                 </div>
+              </div>
             </div>
 
             {/* Description card */}
@@ -716,6 +749,28 @@ function MembersTab({ server, token, userId, onServerUpdated, proMemberIds, proO
     /** Kick/ban target awaiting confirmation (same dialog as the member list). */
     const [memberAction, setMemberAction] = useState<{ kind: MemberActionKind; member: Member } | null>(null);
 
+    // Roles, from the same picker the member list and profile card use (owner,
+    // 2026-11-16: "change roles on people from the members view"). The picker
+    // owns hierarchy rules and the writes; this tab only shows chips and opens it.
+    const rolePicker = useRolePicker();
+    const roster = useServerRoster(server.server_id);
+    useEffect(() => {
+        refreshRoster(server.server_id, token ?? null).catch(() => { /* no chips; picker still loads its own */ });
+    }, [server.server_id, token]);
+    const canAssignRoles = !!rolePicker?.canAssignRoles(server.server_id);
+    const openRoles = (m: Member, e: React.MouseEvent<HTMLButtonElement>) => {
+        if (!rolePicker) return;
+        const r = e.currentTarget.getBoundingClientRect();
+        rolePicker.open({
+            serverId: server.server_id,
+            userId: m.user_id,
+            anchor: { x: r.right + 6, y: r.top },
+            displayName: m.nickname || m.username || undefined,
+            fallbackRoleIds: roster?.members.find(x => x.user_id === m.user_id)?.role_ids,
+            returnFocusTo: e.currentTarget,
+        });
+    };
+
     const load = useCallback(async () => {
         if (!token) return;
         try {
@@ -852,6 +907,7 @@ function MembersTab({ server, token, userId, onServerUpdated, proMemberIds, proO
                             {m.muted_until && new Date(m.muted_until) > new Date() && (
                                 <p className="text-xs text-cl-glow/70">Muted until {new Date(m.muted_until).toLocaleTimeString()}</p>
                             )}
+                            <MemberRoleChipRow serverId={server.server_id} userId={m.user_id} />
                         </div>
                         {m.user_id === server.owner_user_id && (
                             <span className="flex items-center gap-1 text-[10px] text-amber-400/80 bg-amber-400/10 px-2 py-0.5 rounded-full shrink-0">
@@ -862,6 +918,19 @@ function MembersTab({ server, token, userId, onServerUpdated, proMemberIds, proO
                             <span data-pro-member={m.user_id} className="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full shrink-0" style={{ color: 'var(--cl-lume)', background: 'rgba(37,224,200,0.12)' }}>
                                 <Sparkles size={9} />Pro
                             </span>
+                        )}
+                        {canAssignRoles && muteTarget !== m.user_id && (
+                            <ClButton
+                                size="sm"
+                                variant="ghost"
+                                onClick={e => openRoles(m, e)}
+                                tooltip="Add or remove roles"
+                                active={rolePicker?.openFor?.serverId === server.server_id && rolePicker.openFor.userId === m.user_id}
+                                className="shrink-0"
+                            >
+                                <Shield size={11} />
+                                Roles
+                            </ClButton>
                         )}
                         {m.user_id !== userId && m.user_id !== server.owner_user_id && (
                             <div className="flex items-center gap-1.5 shrink-0">
@@ -1632,10 +1701,28 @@ function BansTab({ server, token }: { server: ServerInfo; token: string | null }
 
 // ── Audit Log Tab ─────────────────────────────────────────────────────────────
 
+const AUDIT_ICONS: Record<AuditIcon, React.ReactNode> = {
+    userPlus: <UserPlus size={14} />, userMinus: <UserMinus size={14} />, ban: <Ban size={14} />,
+    mute: <VolumeX size={14} />, nickname: <Tag size={14} />, shield: <Shield size={14} />,
+    role: <BadgeCheck size={14} />, hash: <Hash size={14} />, folder: <Folder size={14} />,
+    layout: <LayoutList size={14} />, divider: <Minus size={14} />, permissions: <KeyRound size={14} />,
+    server: <Server size={14} />, crown: <Crown size={14} />, link: <Link size={14} />,
+    smile: <Smile size={14} />, pin: <Pin size={14} />, save: <Bookmark size={14} />,
+    phone: <Phone size={14} />, info: <Info size={14} />,
+};
+
+const AUDIT_TONE_CLASS: Record<AuditTone, string> = {
+    ok: 'text-cl-ok',
+    danger: 'text-cl-flash',
+    accent: 'text-cl-lume',
+    neutral: 'text-cl-muted',
+};
+
 function AuditTab({ server, token }: { server: ServerInfo; token: string | null }) {
     const [entries, setEntries] = useState<AuditEntry[]>([]);
     const [loading, setLoading] = useState(true);
     const [hasMore, setHasMore] = useState(false);
+    const [actionFilter, setActionFilter] = useState('');
     const toast = useToast();
 
     const load = useCallback(async (before?: string) => {
@@ -1644,7 +1731,9 @@ function AuditTab({ server, token }: { server: ServerInfo; token: string | null 
         try {
             // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
             const params: any = { limit: 50 };
+            // The cursor is the last row's created_at (an ISO timestamp), never its id.
             if (before) params.before = before;
+            if (actionFilter) params.action = actionFilter;
             const res = await axios.get(apiUrl`/servers/${server.server_id}/audit_log`, {
                 headers: { Authorization: `Bearer ${token}` },
                 params,
@@ -1656,56 +1745,49 @@ function AuditTab({ server, token }: { server: ServerInfo; token: string | null 
         } catch (e: any) { toast.push({ kind: 'error', message: e?.response?.data?.message ?? 'Failed to load audit log' }); }
         finally { setLoading(false); }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- toast is the provider value object, re-created each provider render (push/dismiss inside are stable); adding it would re-run this on every toast
-    }, [server.server_id, token]);
+    }, [server.server_id, token, actionFilter]);
 
     useEffect(() => { load(); }, [load]);
 
     const loadMore = () => {
         const last = entries[entries.length - 1];
-        if (last) load(last.id);
+        if (last) load(last.created_at);
     };
-
-    const actionColor: Record<string, string> = {
-        'member.kick': 'text-cl-flash',
-        'member.ban': 'text-cl-flash',
-        'member.unban': 'text-cl-ok',
-        'member.mute': 'text-cl-glow',
-        'channel.create': 'text-cl-lume',
-        'channel.delete': 'text-cl-flash',
-        'role.create': 'text-cl-lume',
-        'role.delete': 'text-cl-flash',
-        'server.update': 'text-cl-lume',
-    };
-
-    if (loading && entries.length === 0) return <div className="flex justify-center py-8"><div className="w-5 h-5 border-2 border-cl-border border-t-cl-lume rounded-full animate-spin" /></div>;
 
     return (
         <div className="space-y-2">
-            <div className="dock-card rounded-[14px] border border-cl-border/40 bg-cl-surface/40 p-2 space-y-1 max-h-[420px] overflow-y-auto custom-scrollbar">
-                {entries.map(e => (
-                    <div key={e.id} className="flex items-start gap-3 px-3 py-2 bg-cl-raise/15 border border-cl-border rounded-xl">
-                        <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-2">
-                                <span className={`text-xs font-semibold ${actionColor[e.action] ?? 'text-cl-muted'}`}>{e.action}</span>
-                                <span className="text-[10px] text-cl-faint/60">{new Date(e.created_at).toLocaleString()}</span>
+            <ClSelect
+                options={AUDIT_FILTER_OPTIONS}
+                value={actionFilter}
+                onChange={(v) => { setEntries([]); setActionFilter(v); }}
+                style={{ width: '100%' }}
+            />
+            {loading && entries.length === 0 ? (
+                <div className="flex justify-center py-8"><div className="w-5 h-5 border-2 border-cl-border border-t-cl-lume rounded-full animate-spin" /></div>
+            ) : (
+                <div className="dock-card rounded-[14px] border border-cl-border/40 bg-cl-surface/40 p-2 space-y-1 max-h-[420px] overflow-y-auto custom-scrollbar">
+                    {entries.map(e => {
+                        const d = describeAuditEntry(e);
+                        return (
+                            <div key={e.id} className="flex items-start gap-3 px-3 py-2 bg-cl-raise/15 border border-cl-border rounded-xl">
+                                <span className={`mt-0.5 shrink-0 ${AUDIT_TONE_CLASS[d.tone]}`} aria-hidden="true">{AUDIT_ICONS[d.icon] ?? AUDIT_ICONS.info}</span>
+                                <div className="flex-1 min-w-0">
+                                    <p className="text-xs font-semibold text-cl-muted break-words">{d.sentence}</p>
+                                    {d.details.map((line, i) => (
+                                        <p key={i} className="text-[11px] text-cl-faint break-words mt-0.5">{line}</p>
+                                    ))}
+                                    <p className="text-[10px] text-cl-faint/60 mt-0.5">{new Date(e.created_at).toLocaleString()}</p>
+                                </div>
                             </div>
-                            <p className="text-xs text-cl-faint truncate mt-0.5">
-                                actor: <span className="text-cl-muted font-medium">
-                                    {e.actor_username ?? 'Unknown User'}
-                                </span>
-                                {e.target_user_id && <>
-                                    {' · '}target: <span className="text-cl-muted font-medium">
-                                        {e.target_username ?? 'Unknown User'}
-                                    </span>
-                                </>}
-                            </p>
-                        </div>
-                    </div>
-                ))}
-                {entries.length === 0 && !loading && (
-                    <p className="text-sm text-cl-faint text-center py-8">No audit log entries yet.</p>
-                )}
-            </div>
+                        );
+                    })}
+                    {entries.length === 0 && !loading && (
+                        <p className="text-sm text-cl-faint text-center py-8">
+                            {actionFilter ? 'No entries for that action.' : 'No audit log entries yet.'}
+                        </p>
+                    )}
+                </div>
+            )}
             {hasMore && (
                 <ClButton variant="ghost" fullWidth disabled={loading} loading={loading} onClick={loadMore}>Load more</ClButton>
             )}

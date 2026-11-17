@@ -1,0 +1,91 @@
+/* ============================================================================
+   The WYSIWYG message box (components/composer/RichComposer.tsx).
+
+   It previews a message the way the feed renders it (styles/formatting.css):
+   bold / italic / underline / strike look like themselves, list items get a
+   real bullet or number (drawn by CSS, so the marker is never text you can
+   put the caret in), code is monospace on the code background, a spoiler is
+   blurred but still readable for its author, headings are weight and colour,
+   never size. The message font and size preview here too: the box's
+   font-size is the message's, times --cl-msg-scale.
+   ============================================================================ */
+
+.rc-root{
+  position:relative;display:block;outline:none;
+  font-size:calc(14.5px * var(--cl-msg-scale, 1));
+  line-height:1.52;
+  min-height:22px;max-height:260px;overflow-y:auto;overflow-x:hidden;
+  white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;
+  scrollbar-width:none;
+  -webkit-user-select:text;user-select:text;
+}
+.rc-root::-webkit-scrollbar{display:none}
+.rc-root[aria-disabled="true"]{cursor:not-allowed}
+.rc-root[data-empty]::before{
+  content:attr(data-placeholder);position:absolute;left:4px;top:2px;right:4px;
+  color:rgba(255,255,255,.25);pointer-events:none;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.rc-root[aria-disabled="true"][data-empty]::before{color:rgba(255,255,255,.3);font-style:italic}
+
+.rc-b{min-height:1.52em}
+
+/* Lists: the marker sits in the padding, outside the editable text. */
+.rc-ul,.rc-ol{position:relative;padding-left:calc(1.35em + var(--rc-ind, 0) * 1.35em)}
+.rc-ul::before,.rc-ol::before{
+  position:absolute;left:calc(var(--rc-ind, 0) * 1.35em);width:1.1em;
+  color:var(--cl-muted);pointer-events:none;-webkit-user-select:none;user-select:none;
+}
+.rc-ul::before{content:'\2022';text-align:center}
+.rc-ul[data-ind="1"]::before,.rc-ul[data-ind="4"]::before{content:'\25E6'}
+.rc-ul[data-ind="2"]::before,.rc-ul[data-ind="5"]::before{content:'\25AA'}
+.rc-ol::before{content:attr(data-n);text-align:right;font-variant-numeric:tabular-nums;width:1.15em}
+
+/* Headings: the feed's look (structure, not size). */
+.rc-h1{font-family:var(--cl-font-display);font-weight:600;letter-spacing:.012em;color:var(--cl-text)}
+.rc-h2{font-weight:800;color:var(--cl-lume)}
+.rc-h3{font-weight:800;color:var(--cl-muted);text-transform:uppercase;letter-spacing:.07em}
+.rc-sub{color:var(--cl-faint);font-weight:600}
+
+/* Quote: one bar down the left of consecutive quoted lines. */
+.rc-q{border-left:3px solid var(--cl-border);padding-left:11px}
+.rc-q.rc-ul,.rc-q.rc-ol{padding-left:calc(11px + 1.35em + var(--rc-ind, 0) * 1.35em)}
+.rc-q.rc-ul::before,.rc-q.rc-ol::before{left:calc(11px + var(--rc-ind, 0) * 1.35em)}
+
+/* Code block: the feed's dark well, monospace, wraps in the box. */
+.rc-code{
+  position:relative;
+  font-family:var(--cl-font-mono);font-size:calc(12.5px * var(--cl-msg-scale, 1));line-height:1.55;
+  font-variant-ligatures:none;tab-size:4;color:#DCE3F5;
+  background:var(--cl-abyss);border:1px solid rgba(255,255,255,.07);border-radius:10px;
+  padding:6px 10px;margin:2px 0;
+}
+.rc-code[data-lang]{padding-top:18px}
+.rc-code[data-lang]::before{
+  content:attr(data-lang);position:absolute;top:3px;left:11px;
+  font-size:calc(10.5px * var(--cl-msg-scale, 1));letter-spacing:.06em;text-transform:uppercase;color:var(--cl-faint);
+  pointer-events:none;-webkit-user-select:none;user-select:none;
+}
+.rc-q.rc-code{border-left:3px solid var(--cl-border)}
+
+/* Text size spans (`[small]` / `[large]`): relative to the box's text, so the
+   preview matches the feed's 0.875x / 1.5x; inline code inside scales too.
+   A large span keeps a comfortable line: its own line-height stays 1.52 of
+   its size, mixed sizes share one baseline (plain inline boxes). */
+.rc-sm{font-size:.875em}
+.rc-lg{font-size:1.5em}
+
+/* Inline styles (the feed's classes come from formatting.css). */
+.rc-icode{
+  font-family:var(--cl-font-mono);font-size:.86em;font-variant-ligatures:none;
+  background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.08);border-radius:5px;padding:.04em .32em;
+  color:var(--cl-text);
+}
+/* A spoiler in your own box: the pill and a light blur, but you can still read it. */
+.rc-spoiler{
+  background:rgba(94,107,143,.45);border-radius:4px;padding:0 .12em;
+  box-decoration-break:clone;-webkit-box-decoration-break:clone;
+  filter:blur(.55px);
+}
+.rc-root[data-msg-font] .rc-icode,.rc-root[data-msg-font] .rc-code{font-family:var(--cl-font-mono)}
+@media (prefers-reduced-motion:reduce){.rc-root *{transition:none}}

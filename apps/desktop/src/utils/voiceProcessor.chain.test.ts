@@ -167,7 +167,7 @@ function FakeWorkletNode(this: unknown, ctx: FakeCtx, name: string) {
 const track = () => ({ applyConstraints: async () => {} }) as unknown as MediaStreamTrack;
 const SETTINGS = {
     noiseSuppression: false, noiseSuppressionMode: 'strong' as 'strong' | 'light', volumeNormalization: true, voiceGate: true, voiceGateThreshold: -45,
-    pushToTalk: false, pushToTalkKey: null, micDeviceId: '', speakerDeviceId: '', cameraDeviceId: '',
+    pushToTalk: false, pushToTalkKey: null, pushToMuteKey: null, micDeviceId: '', speakerDeviceId: '', cameraDeviceId: '',
     micVolume: 100, speakerVolume: 100, eqEnabled: false, eqBands: [0, 0, 0, 0, 0],
     cameraBrightness: 100, cameraContrast: 100, cameraSaturation: 100,
 };

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
-import { PassThrough } from 'node:stream';
+import { PassThrough, Writable } from 'node:stream';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import {
@@ -672,6 +672,34 @@ describe('MediaSessionReader (Windows)', () => {
             r.stop();
         } finally {
             vi.useRealTimers();
+        }
+    });
+
+    it('EPIPE on the helper\'s stdin (helper already exited) is not an uncaught error: the read answers empty and the next read respawns', async () => {
+        // write() succeeds, the failure arrives LATER as an async 'error' event: exactly what killed main in 0.1.0.
+        const deadStdin = new Writable({ write(_c, _e, cb) { cb(Object.assign(new Error('write EPIPE'), { code: 'EPIPE', syscall: 'write' })); } });
+        const dead = Object.assign(new EventEmitter(), { stdin: deadStdin, stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn() });
+        const alive = fakeChild([answer()]);
+        const kids = [dead, alive.child];
+        let n = 0;
+        const spawnFn = vi.fn(() => kids[n++] as never);
+        let t = 0;
+        const r = new MediaSessionReader('win32', vi.fn(), spawnFn, () => (t += 10_000));
+        const uncaught: unknown[] = [];
+        const onUncaught = (e: unknown) => uncaught.push(e);
+        process.on('uncaughtException', onUncaught);
+        try {
+            const a = await r.read(false);
+            await new Promise((res) => setTimeout(res, 20));   // let any stray async 'error' surface
+            expect(a).toEqual({ supported: true, playing: null, issue: null });
+            expect(uncaught).toEqual([]);
+            expect(dead.kill).toHaveBeenCalled();
+            const b = await r.read(false);
+            expect(b).toMatchObject({ playing: { title: 'Teardrop' }, issue: null });
+            expect(spawnFn).toHaveBeenCalledTimes(2);
+        } finally {
+            process.off('uncaughtException', onUncaught);
+            r.stop();
         }
     });
 

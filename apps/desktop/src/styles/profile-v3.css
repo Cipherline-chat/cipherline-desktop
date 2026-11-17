@@ -198,6 +198,11 @@ button.pfa-row:hover .pfa-ext, button.pfa-row:focus-visible .pfa-ext { opacity: 
 .pfa-bar { height: 4px; border-radius: 999px; overflow: hidden; background: rgba(255, 255, 255, .1); }
 .pfa-bar > i { display: block; height: 100%; background: var(--cl-text, #F4F7FF); transform-origin: left center; transition: transform 1s linear; }
 .pfa-time { display: flex; justify-content: space-between; font: 600 11px/1 var(--cl-font-mono, monospace); color: var(--cl-muted, #A7B3D4); font-variant-numeric: tabular-nums; }
+/* A game's Rich Presence lines (round / score / party + clock) under its title. */
+.pfa-rich { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.pfa-stack { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.pfa-row[data-opens-profile] > .pfa-stack { position: relative; z-index: 1; pointer-events: none; }
+.pfa-meta { font-size: 11.5px; color: var(--cl-muted, #A7B3D4); font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* A reportable row (a friend's end-to-end encrypted cover): reported from its right-click menu. */
 .pfa-item { display: flex; align-items: center; min-width: 0; }
 .pfa-item > .pfa-row { flex: 1; min-width: 0; }

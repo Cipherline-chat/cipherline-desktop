@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import axios from 'axios';
-import { MessageSquare, Pencil, MoreVertical, PhoneCall, Server, UserPlus, UserMinus, Ban, AtSign, Check, X, Flag, Share2 } from 'lucide-react';
-import { apiUrl } from '../utils/apiPath';
+import type { GameDetail } from '../utils/richPresence';
+import { MessageSquare, Pencil, MoreVertical, PhoneCall, Server, UserPlus, UserMinus, Ban, AtSign, Check, X, Flag, Share2, Plus } from 'lucide-react';
 import { ImageLightbox } from './ImageLightbox';
 
 import type { FriendStatusEntry, UserStatus } from '../hooks/useUserStatus';
@@ -33,6 +32,14 @@ import { cleanInterests } from '../utils/profileExtras';
 import { anniversaryYearsFor } from '../utils/profileMoments';
 import { useMutuals, useSteamCard } from '../hooks/useProfileRelations';
 import { useOpenProfile } from '../contexts/ProfileOpenContext';
+import { useRolePicker } from '../contexts/RolePickerContext';
+import { useToast } from '../contexts/ToastContext';
+import { useServerRoster } from '../hooks/useServerRoster';
+import { refreshRoster } from '../utils/serverRosterCache';
+import { sortRolesForDisplay } from './server/roles/roleOrder';
+import { canToggleRole } from './server/roles/rolePickerModel';
+import { roleToggleErrorMessage, setMemberRole, useMemberRoleIds } from './server/roles/memberRoleMutation';
+import '../styles/role-picker.css';
 
 export interface ProfileModalProps {
     userId: string;
@@ -44,6 +51,8 @@ export interface ProfileModalProps {
     /** Own status when viewing own profile */
     myStatus?: UserStatus;
     myGame?: string | null;
+    /** Own game's Rich Presence detail lines (shown to you always; utils/richPresence.ts). */
+    myGameDetail?: GameDetail | null;
     /** Own custom status when viewing own profile (the cached profile can be stale after an edit). */
     myCustom?: { text: string; emoji: string; expiresAt: string | null };
     onMessage?: (userId: string) => void;
@@ -116,6 +125,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
     friendStatuses,
     myStatus,
     myGame,
+    myGameDetail,
     myCustom,
     onMessage,
     onSendFriendRequest,
@@ -214,9 +224,19 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
 
     const needsLazyFetch = !!serverId && !serverRoles && !memberRoleIds;
 
-    // Effective values — props take priority (pre-fetched by caller), lazy-fetch fills in when missing.
-    const effectiveServerRoles = serverRoles ?? fetchedRoles ?? undefined;
-    const effectiveMemberRoleIds = memberRoleIds ?? fetchedMemberRoleIds ?? undefined;
+    // The server's live roster (shared cache, utils/serverRosterCache) wins
+    // over the snapshot the opener passed in: a role added or removed — here,
+    // from a menu, or by another moderator — shows on the open card at once.
+    const liveRoster = useServerRoster(serverId ?? null);
+    const rosterRoles = React.useMemo(
+        () => (liveRoster ? sortRolesForDisplay(liveRoster.roles.filter(r => !r.is_everyone)) : undefined),
+        [liveRoster],
+    );
+    const rosterHasMember = !!liveRoster && liveRoster.members.some(m => m.user_id === userId);
+
+    // Effective values — the live roster, then props (pre-fetched by caller), then the lazy fetch.
+    const effectiveServerRoles = rosterRoles ?? serverRoles ?? fetchedRoles ?? undefined;
+    const effectiveMemberRoleIds = useMemberRoleIds(serverId, userId, memberRoleIds ?? fetchedMemberRoleIds ?? undefined);
     // currentNickname prop takes priority; fetchedNickname fills in when opened from a call.
     const effectiveNickname = currentNickname !== undefined ? currentNickname : fetchedNickname;
 
@@ -225,15 +245,12 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
         let cancelled = false;
         const fetchServerCtx = async () => {
             try {
-                const [rolesRes, membersRes] = await Promise.all([
-                    axios.get(apiUrl`/servers/${serverId}/roles`, { headers: { Authorization: `Bearer ${token}` } }),
-                    axios.get(apiUrl`/servers/${serverId}/members`, { headers: { Authorization: `Bearer ${token}` } }),
-                ]);
-                if (cancelled) return;
-                const roles: Array<{ role_id: string; name: string; color: number; is_everyone?: boolean }> = rolesRes.data;
-                // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped cast across a dynamic boundary (REST/WS payload, DOM, or third-party type gap)
-                const member = (membersRes.data as any[]).find(m => m.user_id === userId);
-                setFetchedRoles(roles.filter(r => !r.is_everyone));
+                // Through the shared roster cache: one request pair, shared
+                // with the member list and the role picker.
+                const roster = await refreshRoster(serverId!, token);
+                if (cancelled || !roster) return;
+                const member = roster.members.find(m => m.user_id === userId);
+                setFetchedRoles(roster.roles.filter(r => !r.is_everyone));
                 setFetchedMemberRoleIds(member?.role_ids ?? []);
                 setFetchedNickname(member?.nickname ?? null);
             } catch {
@@ -243,6 +260,12 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
         fetchServerCtx();
         return () => { cancelled = true; };
     }, [needsLazyFetch, serverId, userId, token]);
+    // Opened with a server but only a placeholder role snapshot (a chat name
+    // click): make sure the roster is there so the roles can show.
+    useEffect(() => {
+        if (!serverId || !token || needsLazyFetch) return;
+        refreshRoster(serverId, token).catch(() => { /* no role chips; the card still works */ });
+    }, [serverId, token, needsLazyFetch]);
     // Profile-modal "More" menu — uses useContextMenu so the dropdown
     // portals to body (the modal itself caps width at max-w-md, and the
     // dropdown sat at right-0 inside the absolute-positioned trigger;
@@ -364,6 +387,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
               custom_status_emoji: myCustom ? (myCustom.emoji || null) : (profile?.custom_status_emoji ?? null),
               custom_status_expires_at: myCustom ? myCustom.expiresAt : (profile?.custom_status_expires_at ?? null),
               current_game: myGame ?? null,
+              current_game_detail: myGame ? (myGameDetail ?? null) : null,
           }
         : (friendStatuses[userId] ?? {
               status: profile?.status ?? 'offline',
@@ -394,6 +418,8 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
     const mutuals = useMutuals(isOwnProfile ? null : userId, token);
     const steamCard = useSteamCard(profile?.steam?.steam_id ? userId : null, token);
     const openProfile = useOpenProfile();
+    const rolePicker = useRolePicker();
+    const toast = useToast();
 
     // Everything the card draws, from the profile response (the server already
     // withheld whatever this viewer may not see).
@@ -445,7 +471,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
     };
 
     // What they are doing right now, and their connected accounts (integration seams: INTEGRATION_SLOTS.md).
-    const activities = useProfileActivity({ userId, isSelf: isOwnProfile, profile, liveGame: playingNow ? liveEntry.current_game ?? null : null, status: liveEntry.status });
+    const activities = useProfileActivity({ userId, isSelf: isOwnProfile, profile, liveGame: playingNow ? liveEntry.current_game ?? null : null, liveGameDetail: playingNow ? liveEntry.current_game_detail ?? null : null, status: liveEntry.status });
     const connections = useProfileConnections({ userId, isSelf: isOwnProfile, profile, steamPersona: steamCard?.persona_name ?? null });
     const [shareOpen, setShareOpen] = useState(false);
 
@@ -494,15 +520,50 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
         </ProfileCardSection>
     ) : null;
 
-    const rolesSection = assignedRoles.length > 0 ? (
-        <ProfileCardSection title={`Roles · ${assignedRoles.length}`} testId="profile-roles">
+    // ── Roles: chips, plus (for role managers) "+" → the shared role picker and
+    // an × on each chip they may remove. UX mirror only — MANAGE_ROLES /
+    // ADMINISTRATOR and "below your highest role" are enforced by the API.
+    const canEditRoles = !!serverId && rosterHasMember && !!rolePicker?.canAssignRoles(serverId);
+    const myHighestRole = canEditRoles ? rolePicker!.actorHighest(serverId) : -1;
+    const rolePositions = React.useMemo(
+        () => new Map((liveRoster?.roles ?? []).map(r => [r.role_id, r] as const)),
+        [liveRoster],
+    );
+    const [removingRoles, setRemovingRoles] = useState<ReadonlySet<string>>(() => new Set());
+    const removeRole = (roleId: string) => {
+        if (!serverId || removingRoles.has(roleId)) return;
+        setRemovingRoles(prev => new Set(prev).add(roleId));
+        setMemberRole({ serverId, userId, roleId, assign: false, token, fallbackIds: effectiveMemberRoleIds })
+            .catch(err => toast.push({ kind: 'error', title: 'Could not remove role', message: roleToggleErrorMessage(err) }))
+            .finally(() => setRemovingRoles(prev => { const n = new Set(prev); n.delete(roleId); return n; }));
+    };
+    const pickerOpenHere = !!rolePicker?.openFor && rolePicker.openFor.serverId === serverId && rolePicker.openFor.userId === userId;
+    const openRolePicker = (e: React.MouseEvent<HTMLButtonElement>) => {
+        e.stopPropagation();
+        if (!serverId || !rolePicker) return;
+        const r = e.currentTarget.getBoundingClientRect();
+        rolePicker.open({
+            serverId, userId,
+            anchor: { x: r.right + 6, y: r.top },
+            displayName: effectiveNickname || profile?.username || undefined,
+            fallbackRoleIds: effectiveMemberRoleIds,
+            returnFocusTo: e.currentTarget,
+        });
+    };
+
+    const rolesSection = assignedRoles.length > 0 || canEditRoles ? (
+        <ProfileCardSection title={assignedRoles.length > 0 ? `Roles · ${assignedRoles.length}` : 'Roles'} testId="profile-roles">
             <ul className="pcd-chips">
                 {assignedRoles.map(r => {
                     const hex = roleColorHexFromInt(r.color);
+                    const full = rolePositions.get(r.role_id);
+                    const removable = canEditRoles && !!full && canToggleRole(full, myHighestRole);
+                    const busy = removingRoles.has(r.role_id);
                     return (
                         <li
                             key={r.role_id}
                             className="pcd-role"
+                            aria-busy={busy || undefined}
                             style={{
                                 color: hex ?? 'rgba(244,247,255,0.8)',
                                 backgroundColor: hex ? `${hex}1f` : 'rgba(255,255,255,0.06)',
@@ -510,9 +571,38 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                         >
                             <i style={{ backgroundColor: hex ?? 'rgba(255,255,255,0.35)' }} aria-hidden="true" />
                             {r.name}
+                            {removable && (
+                                <button
+                                    type="button"
+                                    className="pcd-role-x"
+                                    onClick={(e) => { e.stopPropagation(); removeRole(r.role_id); }}
+                                    disabled={busy}
+                                    aria-label={`Remove role ${r.name}`}
+                                    title={`Remove ${r.name}`}
+                                    data-testid="profile-role-remove"
+                                >
+                                    <X size={11} strokeWidth={2.6} aria-hidden="true" />
+                                </button>
+                            )}
                         </li>
                     );
                 })}
+                {canEditRoles && (
+                    <li>
+                        <button
+                            type="button"
+                            className="pcd-role-add"
+                            onClick={openRolePicker}
+                            aria-label="Add roles"
+                            title="Add roles"
+                            aria-haspopup="dialog"
+                            aria-expanded={pickerOpenHere}
+                            data-testid="profile-role-add"
+                        >
+                            <Plus size={14} strokeWidth={2.4} aria-hidden="true" />
+                        </button>
+                    </li>
+                )}
             </ul>
         </ProfileCardSection>
     ) : null;

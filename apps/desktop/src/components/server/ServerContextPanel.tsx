@@ -15,7 +15,7 @@ import { getGroupRowPosition, getGroupRowRoundingClass, type GroupRowPosition } 
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import axios from 'axios';
-import { Volume2, MoreVertical, ChevronDown, ChevronRight, User, MessageSquare, PhoneCall, UserMinus, UserPlus, Ban, Flag, Link as LinkIcon, LogOut, Radio, Edit3, Folder, Plus, Pencil, Trash2, Crown, Shield, VolumeX, Gavel, Lock, Pin, X, Search, MicOff, VideoOff, MonitorOff, HeadphoneOff, PencilOff, PenLine, PhoneOff, Music } from 'lucide-react';
+import { Minus, Volume2, MoreVertical, ChevronDown, ChevronRight, User, MessageSquare, PhoneCall, UserMinus, UserPlus, Ban, Flag, Link as LinkIcon, LogOut, Radio, Edit3, Folder, Plus, Pencil, Trash2, Crown, Shield, VolumeX, Gavel, Lock, Pin, X, Search, MicOff, VideoOff, MonitorOff, HeadphoneOff, PencilOff, PenLine, PhoneOff, Music } from 'lucide-react';
 import {
     annotationStore, ownedGrantTracks, selectCanGrantAnnotation, selectGrantTarget, isScreenShareTrack,
 } from '../../utils/annotationStore';
@@ -30,7 +30,13 @@ import {
     verticalListSortingStrategy, arrayMove,
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import type { ChannelInfo, HuddleCallInfo, CategoryInfo, ServerInfo } from '../../hooks/useServers';
+import type { ChannelInfo, HuddleCallInfo, CategoryInfo, ServerInfo, DividerInfo } from '../../hooks/useServers';
+import { buildChannelTree, dividerVisibility, dividerAriaLabel, type TreeLeaf } from './channelTree';
+import { DividerHitArea } from './ChannelDividerRow';
+import { DividerFormDialog } from './DividerFormDialog';
+import { SortableCallsDivider } from './callsDividers';
+import { useCallsDividers } from './useCallsDividers';
+import { planCallsDrop, callsDividerKey, callsChannelKey, orderForContainer, CALLS_DIVIDER_PREFIX } from './callsLayout';
 import {
     PT_PREFIX, CALL_DROP_PREFIX, HUDDLE_DROP_PREFIX,
     parseParticipantDragId, parseMoveDropTarget,
@@ -38,6 +44,7 @@ import {
 } from './moveDrag';
 import { API_BASE } from '../../constants';
 import { apiUrl } from '../../utils/apiPath';
+import { revealChannelRow } from '../../utils/channelRefs';
 import { EncryptedAvatar } from '../EncryptedAvatar';
 import { HoverPlayRow } from './HoverPlayRow';
 import { StatusIcon } from '../StatusPicker';
@@ -52,10 +59,10 @@ import { HuddleButton } from './HuddleButton';
 import { HuddleCallCard } from './HuddleCallCard';
 import { ChannelMessageSearch, type SearchableMessage } from './ChannelMessageSearch';
 import { CategoryFormDialog } from './CategoryFormDialog';
-import { ChannelSettingsDialog } from './ChannelSettingsDialog';
+import { ChannelSettingsDialog, type ChannelOptimism } from './ChannelSettingsDialog';
 import { ConfirmDialog, type ConfirmOptions } from '../primitives/ConfirmDialog';
 import { RenameCallDialog, NicknameDialog } from './ServerTextPromptDialogs';
-import { cleanCallName } from '../../utils/callName';
+import { callNameDraftError, cleanCallName } from '../../utils/callName';
 import { MemberActionDialog, type MemberActionKind } from './MemberActionDialog';
 import {
     canOfferDisconnect, disconnectConfirmCopy, disconnectErrorToast, hasManageCallMembers, hasModerateCallMedia,
@@ -89,6 +96,9 @@ import { callNamingOf, canRenameHuddleCall, liveCallTitle, type CallNamingSettin
 import { nudges } from '../../utils/firstWeekNudgeStore';
 import { refreshRoster, type RosterMember, type RosterRole } from '../../utils/serverRosterCache';
 import { useServerRoster } from '../../hooks/useServerRoster';
+import { useRolePicker } from '../../contexts/RolePickerContext';
+import { getRoleOverride } from './roles/memberRoleMutation';
+import { rolesMenuItem } from './roles/rolesMenuItem';
 import { useChannelMemberFilter } from '../../hooks/useChannelMemberFilter';
 import { filterMembers } from '../../utils/channelViewerCache';
 import { useIncrementalRows } from '../../hooks/useIncrementalRows';
@@ -100,6 +110,7 @@ import { listMoveDestinations } from '../../utils/callMoveDestinations';
 import { noteGuestMove } from '../../utils/guestCallKey';
 import { PresenceRoster } from '../call/presenceMotion';
 import { CALL_CARD_ENTER, CALL_CARD_EXIT } from '../call/presenceVariants';
+import { VOICE_JOIN_DENIED_MESSAGE } from '../../utils/voiceJoinGate';
 
 // ── Sortable wrappers for Huddle DnD ────────────────────────────────────────
 
@@ -277,7 +288,7 @@ interface Props {
     voiceParticipants: Record<string, string[]>;
 
     // Status / presence
-    friendStatuses: Record<string, { status: string; current_game?: string | null; on_mobile?: boolean; custom_status_text?: string | null; custom_status_emoji?: string | null; custom_status_expires_at?: string | null }>;
+    friendStatuses: Record<string, { status: string; current_game?: string | null; current_game_detail?: import('../../utils/richPresence').GameDetail | null; on_mobile?: boolean; custom_status_text?: string | null; custom_status_emoji?: string | null; custom_status_expires_at?: string | null }>;
     /** True once a complete presence snapshot has been applied: from then on
      *  a member absent from `friendStatuses` is offline, not whatever the
      *  roster said when it was fetched (see utils/presenceState.ts). */
@@ -343,11 +354,19 @@ interface Props {
     /** Called when the user clicks Leave on the active-self call card. */
     onLeaveHuddleCall?: () => void;
     /** Called when the user renames a call (spawner or MANAGE_CHANNELS). */
-    onRenameHuddleCall?: (callId: string, name: string) => void;
+    /** May return a promise; a rejection is shown in the rename dialog (e.g. an older API refusing an emoji). */
+    onRenameHuddleCall?: (callId: string, name: string) => void | Promise<unknown>;
     /** Called when the user clicks a search hit — jumps to that message in ChatPane. */
     onJumpToMessage?: (messageId: string) => void;
     /** Called after any category/channel mutation so Dashboard can reload. */
     onChannelsChanged?: () => void;
+    /** Every divider of this server (text list AND Calls panel); this panel draws the `calls` ones. */
+    dividers?: DividerInfo[];
+    /** Apply a change to the parent's divider state at once (optimistic). */
+    onApplyDividers?: (update: (list: DividerInfo[]) => DividerInfo[]) => void;
+    /** Apply a change to this server's channel list in the parent's state at
+     *  once, without a refetch (optimistic create / edit / delete). */
+    onApplyChannels?: (update: (list: ChannelInfo[]) => ChannelInfo[]) => void;
     /**
      * Called whenever the member→role-color map changes so siblings (ChatPane,
      * CallPane) can colour sender / participant names without fetching roles
@@ -432,6 +451,9 @@ export const ServerContextPanel: React.FC<Props> = ({
     callCooldownSecs = 0,
     categories = [],
     onChannelsChanged,
+    dividers: serverDividers,
+    onApplyDividers,
+    onApplyChannels,
     onMemberRoleColorsChange,
     onMemberAvatarMapChange,
     onMemberNicknamesChange,
@@ -529,10 +551,27 @@ export const ServerContextPanel: React.FC<Props> = ({
     /** Rename-call dialog (replaces the old native window.prompt). */
     const [renameCall, setRenameCall] = useState<{ callId: string; name: string } | null>(null);
     const [renameDraft, setRenameDraft] = useState('');
+    const [renameServerError, setRenameServerError] = useState<string | null>(null);
     const commitRenameCall = () => {
         if (!renameCall) return;
+        if (callNameDraftError(renameDraft)) return; // the dialog shows why; nothing is stripped
         const next = cleanCallName(renameDraft);
-        if (next && next !== renameCall.name) onRenameHuddleCall?.(renameCall.callId, next);
+        if (!next || next === renameCall.name) { setRenameCall(null); return; }
+        setRenameServerError(null);
+        const result = onRenameHuddleCall?.(renameCall.callId, next);
+        if (result && typeof (result as Promise<unknown>).then === 'function') {
+            // Keep the dialog open on a refusal and show the server's reason
+            // (the API is the source of truth for the name rule; an older API
+            // still on the plain-text rule answers 400 to an emoji).
+            (result as Promise<unknown>).then(
+                () => setRenameCall(null),
+                (e: unknown) => {
+                    const m = (e as { response?: { data?: { message?: unknown } } })?.response?.data?.message;
+                    setRenameServerError(typeof m === 'string' ? m : Array.isArray(m) && typeof m[0] === 'string' ? m[0] : 'Could not rename the call');
+                },
+            );
+            return;
+        }
         setRenameCall(null);
     };
     /** Per-huddle-category collapse state. */
@@ -595,13 +634,10 @@ export const ServerContextPanel: React.FC<Props> = ({
     };
     // Member context menu — single hook owns one menu, items rebuilt per row.
     const memberMenu = useContextMenu();
-    // Optimistic role ids: while the flyout is open we track local toggles here
-    // so the checkbox flips instantly without waiting for loadMembers() to finish.
-    const optimisticRoleIdsRef = useRef<Record<string, string[]>>({});
-    // Always-fresh ref to buildMemberMenu so onSelect closures can rebuild items.
-    const buildMemberMenuRef = useRef<
-        ((m: ServerMember, displayName: string, roleIdsOverride?: string[]) => ContextMenuItem[]) | null
-    >(null);
+    const rolePicker = useRolePicker();
+    const openMemberMenu = (e: React.MouseEvent, m: ServerMember, displayName: string) => {
+        memberMenu.open(e, buildMemberMenu(m, displayName), displayName);
+    };
     // Voice-channel-row context menu (right-click on a voice channel name).
     const voiceMenu = useContextMenu();
     // Huddle / call right-click menu.
@@ -624,10 +660,6 @@ export const ServerContextPanel: React.FC<Props> = ({
     );
     const canBan = !!userId && (
         hasPermission(myPermissions, Permissions.BAN_MEMBERS) ||
-        hasPermission(myPermissions, Permissions.ADMINISTRATOR)
-    );
-    const canManageRoles = !!userId && (
-        hasPermission(myPermissions, Permissions.MANAGE_ROLES) ||
         hasPermission(myPermissions, Permissions.ADMINISTRATOR)
     );
     const canChangeOwnNick = !!userId && (
@@ -1026,7 +1058,18 @@ export const ServerContextPanel: React.FC<Props> = ({
     );
     const localHuddlesRef = useRef(localHuddles);
     const localHuddleCatsRef = useRef(localHuddleCats);
-    const huddleBackupRef = useRef({ huddles: localHuddles, cats: localHuddleCats });
+    const callsDiv = useCallsDividers({
+        serverId: server.server_id, token, dividers: serverDividers, onApplyDividers, onChanged: onChannelsChanged, toast,
+    });
+    const localDividers = callsDiv.dividers;
+    const localDividersRef = callsDiv.ref;
+    const huddleBackupRef = useRef({ huddles: localHuddles, cats: localHuddleCats, dividers: localDividers });
+    /** Add / edit a Calls divider (null container = the top of the Calls list). */
+    const [dividerDialog, setDividerDialog] = useState<
+        | { mode: 'create'; container: string | null }
+        | { mode: 'edit'; divider: DividerInfo }
+        | null
+    >(null);
 
     useEffect(() => {
         const sorted = allChannels.filter(c => c.kind === 'huddle').sort((a, b) => a.position - b.position);
@@ -1053,6 +1096,59 @@ export const ServerContextPanel: React.FC<Props> = ({
         useSensor(KeyboardSensor),
     );
 
+    /** The Calls container (category id, or null for the top) a drag-over target sits in. */
+    function containerOfKey(overId: string, fallback: string | null): string | null {
+        if (overId.startsWith('hd:')) {
+            const h = localHuddlesRef.current.find(x => x.channel_id === overId.slice(3));
+            return h ? (h.parent_category_id ?? null) : fallback;
+        }
+        if (overId.startsWith(CALLS_DIVIDER_PREFIX)) {
+            const d = localDividersRef.current.find(x => x.divider_id === overId.slice(CALLS_DIVIDER_PREFIX.length));
+            return d ? (d.parent_category_id ?? null) : fallback;
+        }
+        if (overId.startsWith('hcat:')) return overId.slice(5);
+        return fallback;
+    }
+
+    /**
+     * A drag that involves a Calls divider (or a container that holds one):
+     * the legacy slot-preserving channel reorder cannot place an item next to a
+     * divider, so write the destination (and source) container's full order
+     * through the layout endpoint instead.
+     */
+    function commitCallsLayoutDrop(dragId: string, overId: string | null) {
+        const backup = huddleBackupRef.current;
+        const dragKey = dragId;
+        const isDiv = dragId.startsWith(CALLS_DIVIDER_PREFIX);
+        const was = isDiv
+            ? backup.dividers.find(d => callsDividerKey(d.divider_id) === dragId)?.parent_category_id ?? null
+            : backup.huddles.find(h => callsChannelKey(h.channel_id) === dragId)?.parent_category_id ?? null;
+        const now = isDiv
+            ? localDividersRef.current.find(d => callsDividerKey(d.divider_id) === dragId)?.parent_category_id ?? null
+            : localHuddlesRef.current.find(h => callsChannelKey(h.channel_id) === dragId)?.parent_category_id ?? null;
+        if (overId === null && was === now) return; // dropped where it started: nothing to write
+        const plan = planCallsDrop(localHuddlesRef.current, localDividersRef.current, dragKey, overId, was, now);
+        if (!plan) return;
+        // Optimistic: renumber every listed container.
+        const posOf = new Map(plan.containers.flatMap(c => c.items.map(i => [i.key, i.position] as const)));
+        const nextH = localHuddlesRef.current.map(h => (posOf.has(callsChannelKey(h.channel_id)) ? { ...h, position: posOf.get(callsChannelKey(h.channel_id))! } : h));
+        const nextD = localDividersRef.current.map(d => (posOf.has(callsDividerKey(d.divider_id)) ? { ...d, position: posOf.get(callsDividerKey(d.divider_id))! } : d));
+        setLocalHuddles(nextH); localHuddlesRef.current = nextH;
+        callsDiv.setLocal(nextD); localDividersRef.current = nextD;
+        axios.patch(apiUrl`/servers/${server.server_id}/channel-layout`, {
+            containers: plan.containers.map(c => ({
+                parent_category_id: c.parent, list_kind: 'calls',
+                items: c.items.map(i => ({ kind: i.kind, id: i.id })),
+            })),
+        }, { headers: { Authorization: `Bearer ${token}` } })
+            .then(() => onChannelsChanged?.())
+            .catch(() => {
+                setLocalHuddles(backup.huddles); localHuddlesRef.current = backup.huddles;
+                callsDiv.setLocal(backup.dividers); localDividersRef.current = backup.dividers;
+                toast.push({ kind: 'error', message: "Couldn't move that. It's back where it was." });
+            });
+    }
+
     function onHuddleDragStart({ active }: DragStartEvent) {
         const pt = parseParticipantDragId(active.id as string);
         if (pt) {
@@ -1064,6 +1160,7 @@ export const ServerContextPanel: React.FC<Props> = ({
         huddleBackupRef.current = {
             huddles: localHuddlesRef.current,
             cats: localHuddleCatsRef.current,
+            dividers: localDividersRef.current,
         };
     }
 
@@ -1072,6 +1169,22 @@ export const ServerContextPanel: React.FC<Props> = ({
         if (parseParticipantDragId(dragId)) return; // move drags need no reflow
         setHuddleOverId(over ? (over.id as string) : null);
         if (!over || !canManage) return;
+
+        // A Calls divider dragged across categories reflows optimistically
+        // (the same way a Calls channel does below).
+        if (dragId.startsWith(CALLS_DIVIDER_PREFIX)) {
+            const did = dragId.slice(CALLS_DIVIDER_PREFIX.length);
+            const dvs = localDividersRef.current;
+            const activeDv = dvs.find(d => d.divider_id === did);
+            if (!activeDv) return;
+            const target = containerOfKey(over.id as string, activeDv.parent_category_id ?? null);
+            if (target === (activeDv.parent_category_id ?? null)) return;
+            const end = orderForContainer(localHuddlesRef.current, dvs, target).reduce((m, i) => Math.max(m, i.position), 0) + 1000;
+            const moved = dvs.map(d => (d.divider_id === did ? { ...d, parent_category_id: target, position: end } : d));
+            callsDiv.setLocal(moved);
+            localDividersRef.current = moved;
+            return;
+        }
         if (!dragId.startsWith('hd:')) return;
 
         const huddleId = dragId.slice(3);
@@ -1082,13 +1195,7 @@ export const ServerContextPanel: React.FC<Props> = ({
         const currentCatId = activeHd.parent_category_id ?? null;
         const overId = over.id as string;
 
-        let targetCatId: string | null = currentCatId;
-        if (overId.startsWith('hd:')) {
-            const overHd = hds.find(h => h.channel_id === overId.slice(3));
-            if (overHd) targetCatId = overHd.parent_category_id ?? null;
-        } else if (overId.startsWith('hcat:')) {
-            targetCatId = overId.slice(5);
-        }
+        const targetCatId: string | null = containerOfKey(overId, currentCatId);
 
         if (targetCatId === currentCatId) return;
 
@@ -1140,6 +1247,8 @@ export const ServerContextPanel: React.FC<Props> = ({
         setHuddleOverId(null);
 
         if (!over || !canManage) {
+            callsDiv.setLocal(huddleBackupRef.current.dividers);
+            localDividersRef.current = huddleBackupRef.current.dividers;
             setLocalHuddles(huddleBackupRef.current.huddles);
             localHuddlesRef.current = huddleBackupRef.current.huddles;
             setLocalHuddleCats(huddleBackupRef.current.cats);
@@ -1149,7 +1258,30 @@ export const ServerContextPanel: React.FC<Props> = ({
 
         const dragId = active.id as string;
         const overId = over.id as string;
-        if (dragId === overId) return;
+
+        // ── Calls dividers: a divider is dragged, dropped on, or sits in the
+        //    container a channel is moving in/out of → layout endpoint. ──
+        if (!dragId.startsWith('hcat:')) {
+            const hasDividers = (parent: string | null) => localDividersRef.current.some(d => (d.parent_category_id ?? null) === parent);
+            const dragIsDiv = dragId.startsWith(CALLS_DIVIDER_PREFIX);
+            const dragged = dragIsDiv ? null : localHuddlesRef.current.find(h => callsChannelKey(h.channel_id) === dragId);
+            const was = dragged ? (huddleBackupRef.current.huddles.find(h => h.channel_id === dragged.channel_id)?.parent_category_id ?? null) : null;
+            const now = dragged ? (dragged.parent_category_id ?? null) : null;
+            if (dragIsDiv || (dragged && (hasDividers(now) || hasDividers(was)))) {
+                if (dragId === overId && !dragIsDiv && was === now) return;
+                commitCallsLayoutDrop(dragId, dragId === overId ? null : overId);
+                return;
+            }
+        }
+        if (dragId === overId) {
+            // Released over itself: a no-op ONLY if it is still in the category
+            // it started in. After onDragOver moved it to another category the
+            // row sits under the pointer, so over === self there too, and
+            // returning here silently dropped the move (never PATCHed).
+            const was = huddleBackupRef.current.huddles.find(h => `hd:${h.channel_id}` === dragId);
+            const now = localHuddlesRef.current.find(h => `hd:${h.channel_id}` === dragId);
+            if (!was || !now || (was.parent_category_id ?? null) === (now.parent_category_id ?? null)) return;
+        }
 
         const hds = localHuddlesRef.current;
         const hcats = localHuddleCatsRef.current;
@@ -1327,6 +1459,58 @@ export const ServerContextPanel: React.FC<Props> = ({
         }
         return { uncategorized, byCat };
     }, [localHuddles]);
+    // The Calls list as a tree (Calls channels + dividers, in display order) and
+    // which dividers to draw: the same rule as the text list - a divider never
+    // advertises a section the viewer cannot see; managers see every divider,
+    // the would-be-hidden ones marked (not dimmed).
+    const callsTree = useMemo(
+        () => buildChannelTree(localHuddles, localHuddleCats, localDividers),
+        [localHuddles, localHuddleCats, localDividers],
+    );
+    const callsDividerVis = useMemo(() => dividerVisibility(callsTree, canManage), [callsTree, canManage]);
+    const callsItemsOf = (catId: string | null): TreeLeaf[] => (
+        catId === null
+            ? callsTree.top
+            : (callsTree.categories.find(c => c.category.category_id === catId)?.items ?? []).filter((i): i is TreeLeaf => i.kind !== 'subcategory')
+    );
+    const callsKeyOf = (leaf: TreeLeaf) => (leaf.kind === 'channel' ? callsChannelKey(leaf.id) : callsDividerKey(leaf.id));
+    const callsVisibleItems = (catId: string | null) =>
+        callsItemsOf(catId).filter(l => l.kind === 'channel' || callsDividerVis.shown.has(l.id));
+    const buildCallsDividerMenu = (d: DividerInfo): ContextMenuItem[] => (canManage && !d.divider_id.startsWith('pending:') ? [
+        { icon: <Pencil />, label: 'Edit Divider', onSelect: () => setDividerDialog({ mode: 'edit', divider: d }) },
+        {
+            icon: <Trash2 />, label: 'Delete Divider', danger: true,
+            onSelect: () => setPendingConfirm({
+                title: d.label ? `Delete the "${d.label}" divider?` : 'Delete this divider?',
+                message: 'Only the divider goes; Calls channels stay where they are.',
+                confirmLabel: 'Delete',
+                onConfirm: () => callsDiv.remove(d),
+            }),
+        },
+    ] : []);
+    const renderCallsDivider = (d: DividerInfo) => {
+        const pending = d.divider_id.startsWith('pending:');
+        const menu = buildCallsDividerMenu(d);
+        return (
+            <DividerHitArea
+                divider={d}
+                interactive={canManage}
+                pending={pending}
+                hiddenFromMembers={callsDividerVis.faded.has(d.divider_id)}
+                ariaLabel={dividerAriaLabel(d)}
+                tabIndex={canManage && !pending ? 0 : undefined}
+                onContextMenu={menu.length ? (e) => { e.stopPropagation(); catMenu.open(e, menu, d.label ? `Divider · ${d.label}` : 'Divider'); } : undefined}
+                onDoubleClick={canManage && !pending ? () => setDividerDialog({ mode: 'edit', divider: d }) : undefined}
+                onKeyDown={canManage && !pending ? (e) => {
+                    if (e.key === 'Enter') { e.preventDefault(); setDividerDialog({ mode: 'edit', divider: d }); }
+                } : undefined}
+            />
+        );
+    };
+    /** Where a newly added Calls divider lands: the end of its container. */
+    const callsEndOf = (catId: string | null) =>
+        orderForContainer(localHuddles, localDividers, catId).reduce((m, i) => Math.max(m, i.position), 0) + 1000;
+
     // ── Huddle drop-line helper ──────────────────────────────────────────
     const getHuddleDropLine = (
         itemKey: string,
@@ -1423,59 +1607,19 @@ export const ServerContextPanel: React.FC<Props> = ({
     // ── Member tile ─────────────────────────────────────────────────────────
     // Build the per-member context menu items. Called fresh each open so the
     // friend / pending state is always current.
-    const buildMemberMenu = (m: ServerMember, displayName: string, roleIdsOverride?: string[]) => {
+    const buildMemberMenu = (m: ServerMember, displayName: string) => {
         const isSelf = m.user_id === userId;
         const isFriend = !!globalFriends?.accepted.some(f => f.user_id === m.user_id);
         const isIgnored = ignoredUsers.has(m.user_id);
         const isOwner = m.user_id === server.owner_user_id;
 
-        // Effective role ids: prefer the override passed in (optimistic state),
-        // then any pending optimistic value in the ref, then the real member data.
-        const effectiveRoleIds: string[] =
-            roleIdsOverride ??
-            optimisticRoleIdsRef.current[m.user_id] ??
-            m.role_ids ?? [];
-
-        // Role submenu — one item per non-everyone role, ticked if already assigned.
-        const assignableRoles = serverRoles.filter(r => !r.is_everyone);
-        const roleSubmenu = assignableRoles.map(r => {
-            const assigned = effectiveRoleIds.includes(r.role_id);
-            return {
-                label: r.name,
-                checked: assigned,
-                onSelect: async () => {
-                    // P12: re-check MANAGE_ROLES at click-time. The submenu only
-                    // builds when canManageRoles was true; this guard catches the
-                    // edge case where the user lost the permission between menu
-                    // open and item click (rare, but eliminates the silent 403).
-                    if (!canManageRoles) return;
-                    // Optimistic flip — compute new ids and immediately rebuild the menu.
-                    const newIds = assigned
-                        ? effectiveRoleIds.filter(id => id !== r.role_id)
-                        : [...effectiveRoleIds, r.role_id];
-                    optimisticRoleIdsRef.current[m.user_id] = newIds;
-                    if (buildMemberMenuRef.current) {
-                        memberMenu.updateItems(buildMemberMenuRef.current(m, displayName, newIds));
-                    }
-                    // API call; on completion clear the optimistic state.
-                    try {
-                        if (assigned) {
-                            await axios.delete(apiUrl`/servers/${server.server_id}/members/${m.user_id}/roles/${r.role_id}`, { headers: { Authorization: `Bearer ${token}` } });
-                        } else {
-                            await axios.put(apiUrl`/servers/${server.server_id}/members/${m.user_id}/roles/${r.role_id}`, {}, { headers: { Authorization: `Bearer ${token}` } });
-                        }
-                        delete optimisticRoleIdsRef.current[m.user_id];
-                        loadMembers();
-                    } catch {
-                        // Revert on failure.
-                        delete optimisticRoleIdsRef.current[m.user_id];
-                        if (buildMemberMenuRef.current) {
-                            memberMenu.updateItems(buildMemberMenuRef.current(m, displayName));
-                        }
-                    }
-                },
-            };
-        });
+        // Role ids as every surface shows them: an in-flight toggle from the
+        // shared role picker wins over the roster row.
+        const effectiveRoleIds: string[] = [...(getRoleOverride(server.server_id, m.user_id) ?? m.role_ids ?? [])];
+        // Managers get "Roles ▸" → the shared picker in a hover flyout (search,
+        // scroll, hierarchy mirror, optimistic toggles). Gated on MANAGE_ROLES/ADMINISTRATOR and
+        // at least one role below the viewer's highest — the API enforces both.
+        const canEditRoles = !!rolePicker && rolePicker.canAssignRoles(server.server_id);
 
         const assignedRoles = serverRoles.filter(r => !r.is_everyone && effectiveRoleIds.includes(r.role_id));
         const roleCtx = { roleIds: effectiveRoleIds, roles: serverRoles.filter(r => !r.is_everyone) };
@@ -1545,17 +1689,18 @@ export const ServerContextPanel: React.FC<Props> = ({
                 }] : []),
             ] : []),
             // ── Roles section ───────────────────────────────────────────
-            // Managers see the full interactive submenu (assign / unassign).
+            // Managers get "Roles ▸": the shared role picker as a hover flyout.
             // Everyone else sees a read-only list of the member's assigned roles.
-            ...(canManageRoles && assignableRoles.length > 0 ? [
+            ...(canEditRoles ? [
                 { divider: true as const },
-                {
-                    icon: <Shield />,
-                    label: 'Roles',
-                    onSelect: () => {},
-                    submenu: roleSubmenu,
-                },
-            ] : !canManageRoles && assignedRoles.length > 0 ? [
+                // Hover / → opens the role picker as a flyout beside this menu.
+                rolesMenuItem({
+                    serverId: server.server_id,
+                    userId: m.user_id,
+                    displayName,
+                    fallbackRoleIds: effectiveRoleIds,
+                }),
+            ] : !canEditRoles && assignedRoles.length > 0 ? [
                 { divider: true as const },
                 {
                     icon: <Shield />,
@@ -1619,9 +1764,6 @@ export const ServerContextPanel: React.FC<Props> = ({
         items.push(...buildVoiceModerationItems(m.user_id));
         return items;
     };
-    // Keep the ref always pointing at the latest closure so onSelect can
-    // call buildMemberMenu after the component has re-rendered.
-    buildMemberMenuRef.current = buildMemberMenu;
 
     // PERF: a render FUNCTION, not a component. It used to be declared as a
     // component (`const MemberTile = (...) => ...`, rendered as JSX) inside
@@ -1673,9 +1815,7 @@ export const ServerContextPanel: React.FC<Props> = ({
                     });
                 }}
                 onContextMenu={(e) => {
-                    // Clear any stale optimistic role state from a previous open.
-                    delete optimisticRoleIdsRef.current[m.user_id];
-                    memberMenu.open(e, buildMemberMenu(m, displayName), displayName);
+                    openMemberMenu(e, m, displayName);
                 }}
             >
                 {(playing) => (<>
@@ -1727,7 +1867,7 @@ export const ServerContextPanel: React.FC<Props> = ({
                         <StatusLine
                             entry={isMe
                                 ? { status, custom_status_text: myCustom?.text ?? null, custom_status_emoji: myCustom?.emoji ?? null, custom_status_expires_at: myCustom?.expiresAt ?? null, current_game: game }
-                                : { status, custom_status_text: friendStatuses[m.user_id]?.custom_status_text ?? null, custom_status_emoji: friendStatuses[m.user_id]?.custom_status_emoji ?? null, custom_status_expires_at: friendStatuses[m.user_id]?.custom_status_expires_at ?? null, current_game: game, on_mobile: onMobile }}
+                                : { status, custom_status_text: friendStatuses[m.user_id]?.custom_status_text ?? null, custom_status_emoji: friendStatuses[m.user_id]?.custom_status_emoji ?? null, custom_status_expires_at: friendStatuses[m.user_id]?.custom_status_expires_at ?? null, current_game: game, current_game_detail: game ? friendStatuses[m.user_id]?.current_game_detail ?? null : null, on_mobile: onMobile }}
                             userId={m.user_id}
                             renderGame={g => g}
                             className="text-[12px] text-white/45 leading-tight mt-0.5"
@@ -1742,8 +1882,7 @@ export const ServerContextPanel: React.FC<Props> = ({
                         aria-label="Member options"
                         onClick={(e) => {
                             e.stopPropagation();
-                            delete optimisticRoleIdsRef.current[m.user_id];
-                            memberMenu.open(e, buildMemberMenu(m, displayName), displayName);
+                            openMemberMenu(e, m, displayName);
                         }}
                         className="opacity-0 group-hover:opacity-100"
                     >
@@ -1756,12 +1895,38 @@ export const ServerContextPanel: React.FC<Props> = ({
     };
 
     // ── Huddle channel delete ───────────────────────────────────────────────
+    // Optimistic: gone from the list at once; restored with a toast if the
+    // server refuses (a 404 means it is already gone, which is success).
     const deleteHuddleApi = async (h: ChannelInfo) => {
         if (!token) return;
-        await axios.delete(apiUrl`/servers/${server.server_id}/channels/${h.channel_id}`, {
-            headers: { Authorization: `Bearer ${token}` },
-        });
+        onApplyChannels?.(list => list.filter(c => c.channel_id !== h.channel_id));
+        try {
+            await axios.delete(apiUrl`/servers/${server.server_id}/channels/${h.channel_id}`, {
+                headers: { Authorization: `Bearer ${token}` },
+            });
+        } catch (e) {
+            if (!(axios.isAxiosError(e) && e.response?.status === 404)) {
+                console.error('[ServerContextPanel] delete huddle:', e);
+                onApplyChannels?.(list => (list.some(c => c.channel_id === h.channel_id) ? list : [...list, h]));
+                toast.push({ kind: 'error', message: `Couldn't delete ${h.name}. It's back in the list.` });
+                return;
+            }
+        }
         onChannelsChanged?.();
+    };
+
+    // Optimistic create / edit for the Calls-channel dialogs. Calls channels
+    // have no placeholder row (the dialog just closes and the row appears when
+    // the server answers); edits show immediately and roll back on refusal.
+    const huddleOptimism: ChannelOptimism = {
+        addPending: () => { /* no placeholder for Calls channels */ },
+        settle: (_tempId, saved) => onApplyChannels?.(list => (list.some(c => c.channel_id === saved.channel_id)
+            ? list.map(c => (c.channel_id === saved.channel_id ? { ...c, ...saved } : c))
+            : [...list, saved])),
+        dropPending: () => { /* nothing was added */ },
+        patch: (channelId, patch) => onApplyChannels?.(list => list.map(c => (c.channel_id === channelId ? { ...c, ...patch } : c))),
+        committed: () => onChannelsChanged?.(),
+        fail: (message) => toast.push({ kind: 'error', message }),
     };
 
     // ── Per-huddle category delete ──────────────────────────────────────────
@@ -1781,6 +1946,10 @@ export const ServerContextPanel: React.FC<Props> = ({
                 onSelect: () => {
                     setCreateHuddleSettings({ defaultCategoryId: cat.category_id });
                 },
+            },
+            {
+                icon: <Minus />, label: 'Add Divider Here',
+                onSelect: () => setDividerDialog({ mode: 'create', container: cat.category_id }),
             },
             { divider: true as const },
             {
@@ -1904,10 +2073,7 @@ export const ServerContextPanel: React.FC<Props> = ({
                                 title: `Delete "${h.name}"?`,
                                 message: 'This channel will be permanently removed.',
                                 confirmLabel: 'Delete',
-                                onConfirm: async () => {
-                                    try { await deleteHuddleApi(h); }
-                                    catch (err) { console.error('[ServerContextPanel] delete huddle:', err); }
-                                },
+                                onConfirm: () => { void deleteHuddleApi(h); },
                             }),
                         },
                         { divider: true as const },
@@ -2048,7 +2214,7 @@ export const ServerContextPanel: React.FC<Props> = ({
                                                             // Fall back to the compact call menu only if the member
                                                             // record hasn't loaded yet.
                                                             if (m) {
-                                                                memberMenu.open(e, buildMemberMenu(m, displayName), displayName);
+                                                                openMemberMenu(e, m, displayName);
                                                             } else {
                                                                 callParticipantMenu.open(
                                                                     e,
@@ -2276,6 +2442,10 @@ export const ServerContextPanel: React.FC<Props> = ({
                             icon: <Folder />, label: 'Create Calls Category',
                             onSelect: () => setCategoryDialog({ mode: 'create' }),
                         },
+                        {
+                            icon: <Minus />, label: 'Add Divider',
+                            onSelect: () => setDividerDialog({ mode: 'create', container: null }),
+                        },
                     ]);
                 }}
             >
@@ -2335,9 +2505,18 @@ export const ServerContextPanel: React.FC<Props> = ({
                                                 {canManage && (
                                                     <div className="opacity-0 group-hover:opacity-100 flex items-center gap-0.5 transition-all shrink-0">
                                                         <FlatIconBtn
-                                                            title="Create Calls channel here"
-                                                            aria-label="Create Calls channel here"
-                                                            onClick={(e) => { e.stopPropagation(); setCreateHuddleSettings({ defaultCategoryId: cat.category_id }); }}
+                                                            title="Add to this category"
+                                                            aria-label="Add to this category"
+                                                            aria-haspopup="menu"
+                                                            onClick={(e) => {
+                                                                e.stopPropagation();
+                                                                const r = e.currentTarget.getBoundingClientRect();
+                                                                // Calls has no sub-categories: a channel or a divider.
+                                                                catMenu.open({ clientX: r.left, clientY: r.bottom + 2 }, [
+                                                                    { icon: <Plus />, label: 'Create Calls Channel', onSelect: () => setCreateHuddleSettings({ defaultCategoryId: cat.category_id }) },
+                                                                    { icon: <Minus />, label: 'Add Divider', onSelect: () => setDividerDialog({ mode: 'create', container: cat.category_id }) },
+                                                                ], cat.name);
+                                                            }}
                                                         >
                                                             <Plus />
                                                         </FlatIconBtn>
@@ -2372,30 +2551,42 @@ export const ServerContextPanel: React.FC<Props> = ({
                                                     );
                                                 }
 
-                                                // Normal expanded state — render all huddles with DnD.
+                                                // Normal expanded state — render all huddles (and dividers) with DnD.
+                                                const shown = callsVisibleItems(cat.category_id);
+                                                const keys = shown.map(callsKeyOf);
                                                 return (
                                                     <div className="space-y-1.5">
-                                                        <SortableContext
-                                                            items={catHuddles.map(h => `hd:${h.channel_id}`)}
-                                                            strategy={verticalListSortingStrategy}
-                                                        >
-                                                            {catHuddles.map(h => {
-                                                                const hKey  = `hd:${h.channel_id}`;
-                                                                const hKeys = catHuddles.map(x => `hd:${x.channel_id}`);
+                                                        <SortableContext items={keys} strategy={verticalListSortingStrategy}>
+                                                            {shown.map(leaf => {
+                                                                const key = callsKeyOf(leaf);
+                                                                if (leaf.kind === 'divider') {
+                                                                    return (
+                                                                        <SortableCallsDivider
+                                                                            key={key}
+                                                                            id={leaf.id}
+                                                                            disabled={!canManage || leaf.id.startsWith('pending:')}
+                                                                            isDragging={huddleActiveId === key}
+                                                                            dropLine={(() => { const l = getHuddleDropLine(key, keys); return l ? <HuddleDropIndicator position={l} /> : null; })()}
+                                                                        >
+                                                                            {renderCallsDivider(leaf.divider)}
+                                                                        </SortableCallsDivider>
+                                                                    );
+                                                                }
+                                                                const h = leaf.channel;
                                                                 return (
                                                                     <SortableHuddleItem
                                                                         key={h.channel_id}
                                                                         huddle={h}
                                                                         disabled={!canManage}
-                                                                        isDragging={huddleActiveId === hKey}
-                                                                        dropLine={getHuddleDropLine(hKey, hKeys)}
+                                                                        isDragging={huddleActiveId === key}
+                                                                        dropLine={getHuddleDropLine(key, keys)}
                                                                     >
                                                                         {renderHuddle(h)}
                                                                     </SortableHuddleItem>
                                                                 );
                                                             })}
                                                         </SortableContext>
-                                                        {catHuddles.length === 0 && (
+                                                        {shown.length === 0 && catHuddles.length === 0 && (
                                                             <p className="text-[11px] text-cl-faint px-1 py-1">No huddles yet — click + to add one</p>
                                                         )}
                                                     </div>
@@ -2408,31 +2599,46 @@ export const ServerContextPanel: React.FC<Props> = ({
                         })}
                     </SortableContext>
 
-                    {/* Uncategorized huddles */}
-                    {huddleGroups.uncategorized.length > 0 && (
-                        <div className="space-y-1.5">
-                            <SortableContext
-                                items={huddleGroups.uncategorized.map(h => `hd:${h.channel_id}`)}
-                                strategy={verticalListSortingStrategy}
-                            >
-                                {huddleGroups.uncategorized.map(h => {
-                                    const hKey  = `hd:${h.channel_id}`;
-                                    const hKeys = huddleGroups.uncategorized.map(x => `hd:${x.channel_id}`);
-                                    return (
-                                        <SortableHuddleItem
-                                            key={h.channel_id}
-                                            huddle={h}
-                                            disabled={!canManage}
-                                            isDragging={huddleActiveId === hKey}
-                                            dropLine={getHuddleDropLine(hKey, hKeys)}
-                                        >
-                                            {renderHuddle(h)}
-                                        </SortableHuddleItem>
-                                    );
-                                })}
-                            </SortableContext>
-                        </div>
-                    )}
+                    {/* Uncategorized huddles (+ the Calls list's top-level dividers) */}
+                    {(() => {
+                        const shown = callsVisibleItems(null);
+                        if (shown.length === 0) return null;
+                        const keys = shown.map(callsKeyOf);
+                        return (
+                            <div className="space-y-1.5">
+                                <SortableContext items={keys} strategy={verticalListSortingStrategy}>
+                                    {shown.map(leaf => {
+                                        const key = callsKeyOf(leaf);
+                                        if (leaf.kind === 'divider') {
+                                            return (
+                                                <SortableCallsDivider
+                                                    key={key}
+                                                    id={leaf.id}
+                                                    disabled={!canManage || leaf.id.startsWith('pending:')}
+                                                    isDragging={huddleActiveId === key}
+                                                    dropLine={(() => { const l = getHuddleDropLine(key, keys); return l ? <HuddleDropIndicator position={l} /> : null; })()}
+                                                >
+                                                    {renderCallsDivider(leaf.divider)}
+                                                </SortableCallsDivider>
+                                            );
+                                        }
+                                        const h = leaf.channel;
+                                        return (
+                                            <SortableHuddleItem
+                                                key={h.channel_id}
+                                                huddle={h}
+                                                disabled={!canManage}
+                                                isDragging={huddleActiveId === key}
+                                                dropLine={getHuddleDropLine(key, keys)}
+                                            >
+                                                {renderHuddle(h)}
+                                            </SortableHuddleItem>
+                                        );
+                                    })}
+                                </SortableContext>
+                            </div>
+                        );
+                    })()}
 
                     <DragOverlay dropAnimation={null}>
                         {huddleActiveId?.startsWith('hd:') && (() => {
@@ -2440,6 +2646,14 @@ export const ServerContextPanel: React.FC<Props> = ({
                             return h ? (
                                 <div className="opacity-75 pointer-events-none shadow-2xl text-[13px] font-semibold text-cl-muted bg-cl-deep rounded-xl border border-white/[0.1] px-3 py-2">
                                     {h.name}
+                                </div>
+                            ) : null;
+                        })()}
+                        {huddleActiveId?.startsWith(CALLS_DIVIDER_PREFIX) && (() => {
+                            const d = localDividers.find(x => x.divider_id === huddleActiveId.slice(CALLS_DIVIDER_PREFIX.length));
+                            return d ? (
+                                <div className="opacity-80 pointer-events-none shadow-2xl bg-cl-deep rounded-md border border-white/[0.1]">
+                                    <DividerHitArea divider={d} interactive={false} ariaLabel={dividerAriaLabel(d)} />
                                 </div>
                             ) : null;
                         })()}
@@ -2521,7 +2735,7 @@ export const ServerContextPanel: React.FC<Props> = ({
                                                 }
                                                 ${isMine ? 'bg-green-500/[0.08]' : isActive ? 'bg-green-500/[0.04]' : ''}
                                             `}
-                                            onClick={() => { if (vcCanJoin) onJoinVoiceChannel?.(vc); }}
+                                            onClick={() => { if (vcCanJoin) onJoinVoiceChannel?.(vc); else toast.push({ kind: 'error', message: VOICE_JOIN_DENIED_MESSAGE }); }}
                                             onContextMenu={(e) => voiceMenu.open(e, [
                                                 ...(vcCanJoin ? [{
                                                     icon: isMine ? <LogOut /> : <Volume2 />,
@@ -2722,9 +2936,10 @@ export const ServerContextPanel: React.FC<Props> = ({
             <RenameCallDialog
                 open={!!renameCall}
                 draft={renameDraft}
-                onDraftChange={setRenameDraft}
+                onDraftChange={v => { setRenameDraft(v); setRenameServerError(null); }}
                 onSubmit={commitRenameCall}
-                onClose={() => setRenameCall(null)}
+                onClose={() => { setRenameCall(null); setRenameServerError(null); }}
+                error={renameServerError}
             />
 
             {/* Huddle create dialog — right-click blank space / category + button. */}
@@ -2743,6 +2958,13 @@ export const ServerContextPanel: React.FC<Props> = ({
                     onClose={() => setCreateHuddleSettings(null)}
                     onSaved={() => { setCreateHuddleSettings(null); onChannelsChanged?.(); }}
                     onCreatedKeepOpen={() => onChannelsChanged?.()}
+                    // Create another unchecked: select the new Calls channel (scroll +
+                    // flash its row, expanded). Never joins a call - that stays deliberate.
+                    onNavigateToCreated={(ch) => {
+                        setHuddleExpanded(prev => ({ ...prev, [ch.channel_id]: true }));
+                        requestAnimationFrame(() => requestAnimationFrame(() => { revealChannelRow(ch.channel_id, document); }));
+                    }}
+                    optimism={onApplyChannels ? huddleOptimism : undefined}
                 />
             )}
 
@@ -2760,10 +2982,8 @@ export const ServerContextPanel: React.FC<Props> = ({
                     channels={allChannels}
                     onClose={() => setHuddleSettings(null)}
                     onSaved={() => { setHuddleSettings(null); onChannelsChanged?.(); }}
-                    onDelete={canManage ? async (ch) => {
-                        try { await deleteHuddleApi(ch); setHuddleSettings(null); }
-                        catch (e) { console.error('[ServerContextPanel] delete huddle:', e); }
-                    } : undefined}
+                    onDelete={canManage ? (ch) => { setHuddleSettings(null); void deleteHuddleApi(ch); } : undefined}
+                    optimism={onApplyChannels ? huddleOptimism : undefined}
                 />
             )}
 
@@ -2828,6 +3048,21 @@ export const ServerContextPanel: React.FC<Props> = ({
                 panel overflow or stacking contexts. */}
             {memberMenu.menu}
             {voiceMenu.menu}
+            {dividerDialog && (
+                <DividerFormDialog
+                    divider={dividerDialog.mode === 'edit' ? dividerDialog.divider : null}
+                    containerName={(() => {
+                        const id = dividerDialog.mode === 'create' ? dividerDialog.container : dividerDialog.divider.parent_category_id;
+                        return id ? (categories.find(c => c.category_id === id)?.name ?? null) : null;
+                    })()}
+                    onClose={() => setDividerDialog(null)}
+                    onSubmit={(v) => {
+                        if (dividerDialog.mode === 'create') callsDiv.create(dividerDialog.container, v, callsEndOf(dividerDialog.container));
+                        else callsDiv.update(dividerDialog.divider, v);
+                    }}
+                    onDelete={dividerDialog.mode === 'edit' ? () => callsDiv.remove(dividerDialog.divider) : undefined}
+                />
+            )}
             {huddleMenu.menu}
             {catMenu.menu}
             {createMenu.menu}

@@ -281,8 +281,8 @@ export const SafetyNumberEmbed: React.FC<Props> = ({
         }
     }, [onShareBack]);
 
-    /** The busy button is disabled and the sent one is replaced, and either drops
-     *  keyboard focus to the page. Put it back on what is there now. */
+    /** The busy button is disabled, which drops keyboard focus to the page. Put
+     *  it back on the row (the "you shared yours" line once sent). */
     useEffect(() => {
         if (shareBack === 'sending' || !restoreShareFocus.current) return;
         restoreShareFocus.current = false;
@@ -630,29 +630,29 @@ export const SafetyNumberEmbed: React.FC<Props> = ({
 
                     {offerShareBack && (
                         <div ref={shareRowRef} className="cl-sn-share">
-                            {sharedBack ? (
+                            {sharedBack && (
                                 <div className="cl-sn-shared" role="status" tabIndex={-1}>
                                     <Check size={13} className="shrink-0" aria-hidden="true" />
                                     <span>You shared yours, so {senderName} can check it too.</span>
                                 </div>
-                            ) : (
-                                <>
-                                    <ClButton
-                                        size="sm"
-                                        variant="ghost"
-                                        fullWidth
-                                        pressAnim="send"
-                                        loading={shareBack === 'sending'}
-                                        onClick={handleShareBack}
-                                    >
-                                        <Send size={14} className="ico" /> Share mine back
-                                    </ClButton>
-                                    {shareBack === 'failed' && (
-                                        <span className="cl-sn-share-error" role="alert">
-                                            Could not send. Check your connection and try again.
-                                        </span>
-                                    )}
-                                </>
+                            )}
+                            {/* Stays after a share (owner, 2026-11-16): sharing once
+                                must not be forever. They may have reinstalled, lost the
+                                message, or verified on a device that has since gone. */}
+                            <ClButton
+                                size="sm"
+                                variant="ghost"
+                                fullWidth
+                                pressAnim="send"
+                                loading={shareBack === 'sending'}
+                                onClick={handleShareBack}
+                            >
+                                <Send size={14} className="ico" /> {sharedBack ? 'Send mine again' : 'Share mine back'}
+                            </ClButton>
+                            {shareBack === 'failed' && (
+                                <span className="cl-sn-share-error" role="alert">
+                                    Could not send. Check your connection and try again.
+                                </span>
                             )}
                         </div>
                     )}

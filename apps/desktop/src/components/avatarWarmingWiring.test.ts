@@ -21,6 +21,7 @@ const read = (f: string) => readFileSync(join(__dirname, f), 'utf8');
 const dashboard = read('Dashboard.tsx');
 const chatPane = read('ChatPane.tsx');
 const homePanel = read('HomePanel.tsx');
+const homeCallsTile = read('HomeCallsTile.tsx');
 
 describe('the warmer is actually mounted', () => {
     it('Dashboard imports and CALLS useAvatarWarming, not merely imports it', () => {
@@ -159,9 +160,12 @@ describe('ChatPane seeds its author maps from the session identity cache', () =>
         // FIRST, so the cache only ever fills the two slots the network fetch
         // used to fill. Pin that the resolution order is unchanged and that no
         // nickname is ever handed to a remember* call.
-        expect(chatPane).toContain(
-            "const resolvedName = (activeChannel && msg.sender_user_id && serverMemberNicknames?.[msg.sender_user_id])",
-        );
+        // The order lives in utils/senderDisplayName.ts since 2026-11-16 (shared
+        // with the reply quote); ChatPane hands it the nickname PROP.
+        expect(chatPane).toContain('const resolvedName = senderDisplayName(msg, nameCtx);');
+        expect(chatPane).toContain('inServerChannel: !!activeChannel, nicknames: serverMemberNicknames,');
+        const helper = readFileSync(join(__dirname, '../utils/senderDisplayName.ts'), 'utf8');
+        expect(helper).toMatch(/return \(ctx\.inServerChannel && uid && ctx\.nicknames\?\.\[uid\]\)\s*\|\| \(uid \? ctx\.userIdToUsername\[uid\] : null\)/);
         for (const call of [...chatPane.matchAll(/remember(?:UserName|DeviceName|Identities)\(([^;]*)/g)]) {
             expect(call[1]).not.toContain('nickname');
             expect(call[1]).not.toContain('serverMemberNicknames');
@@ -180,7 +184,10 @@ describe('"Happening now" can show avatars for a server never opened this sessio
      * already did.
      */
     it('the deck falls back to the cross-server presence avatar map', () => {
-        expect(homePanel).toContain(
+        // The call rows live in HomeCallsTile; HomePanel hands both maps down.
+        expect(homePanel).toContain('voiceUserAvatarIds={voiceUserAvatarIds}');
+        expect(homePanel).toContain('serverMemberAvatarMaps={serverMemberAvatarMaps}');
+        expect(homeCallsTile).toContain(
             'attachmentId={serverMemberAvatarMaps?.[call.server.server_id]?.[uid] ?? voiceUserAvatarIds?.[uid] ?? null}',
         );
     });

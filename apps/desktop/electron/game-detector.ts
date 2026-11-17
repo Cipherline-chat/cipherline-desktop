@@ -4,7 +4,10 @@
  * Priority stack (first match wins):
  *   1. User Custom Games   — manually tagged executables
  *   2. Steam Library Scan  — auto-discovered from installed Steam games
- *   3. Curated Database     — 300+ hardcoded executable→name mappings
+ *   3. Curated Database     — 300+ hardcoded executable→name mappings, plus a
+ *                             few anchored name PATTERNS for build-numbered
+ *                             executables (FiveM / RedM) and "mod runtime
+ *                             alongside the base game" qualifiers
  *
  * Core detection method: executable name → display name mapping.
  */
@@ -588,6 +591,28 @@ const GAME_DB: Record<string, string | null> = {
     'rdr2':                             'Red Dead Redemption 2',
     'maxpayne3':                        'Max Payne 3',
     'launchermc':                       'Midnight Club: Los Angeles',
+    // Multiplayer-mod launchers / helpers. The GAME of a mod is detected by
+    // PATTERN_GAMES (FiveM, RedM) or by qualifying GTA5.exe (alt:V, RAGE MP),
+    // see below. These stay open at menus with no game running, so they are
+    // never a game on their own. Sources in the PATTERN_GAMES comment.
+    'fivem':                            null,  // Cfx.re launcher / master process (also alive at its main menu)
+    'redm':                             null,
+    'fivem_chromebrowser':              null,
+    'fivem_steamchild':                 null,
+    'fivem_roslauncher':                null,
+    'fivem_rosservice':                 null,
+    'fivem_rossubprocess':              null,
+    'fivem_dumpserver':                 null,
+    'altv':                             null,  // alt:V client launcher
+    'altv-webengine':                   null,
+    'ragemp_v':                         null,  // RAGE Multiplayer launcher
+    'ragemp_game_ui':                   null,  // RAGE MP in-game CEF UI sub-process
+    'ragemp_ui':                        null,
+    // FACEIT is a competitive PLATFORM (client + anti-cheat), not a game. Its
+    // presence only qualifies a running CS2, see PROCESS_QUALIFIERS.
+    'faceit':                           null,
+    'faceitclient':                     null,
+    'faceitservice':                    null,  // anti-cheat service: resident from boot, so NOT a FACEIT-in-use signal
 
     // ── FromSoftware ───────────────────────────────────────────────────
     'eldenring':                        'Elden Ring',
@@ -983,6 +1008,14 @@ const GAME_DB: Record<string, string | null> = {
     // ── Roblox ─────────────────────────────────────────────────────────
     'robloxplayerbeta':                 'Roblox',
     'robloxplayer':                     'Roblox',
+    // Roblox's other executables are never the game (RobloxPlayerBeta is the
+    // only game client; the rest are crash handler / installer / launcher /
+    // Studio). Explicit nulls so no heuristic can ever credit them.
+    'robloxcrashhandler':               null,
+    'robloxplayerinstaller':            null,
+    'robloxplayerlauncher':             null,
+    'robloxstudiobeta':                 null,
+    'robloxstudiolauncherbeta':         null,
 
     // ── Additional Popular Games ───────────────────────────────────────
     'genshinimpact':                    'Genshin Impact',
@@ -1076,6 +1109,89 @@ const GAME_DB: Record<string, string | null> = {
 // process per poll) and, on Linux, in a shell loop that forked head/tr/basename
 // once per running process (hundreds of forks of a large Electron process per
 // poll; measured as 0.27–0.48 s main-process stalls labelled game:detect).
+// ═══════════════════════════════════════════════════════════════════════════
+// Layer 3b: build-numbered executables + "mod runtime alongside the base game"
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Executables whose name carries a CHANGING build number, so no exact-name DB
+ * entry can ever be current. A small, explicit, anchored list, never user
+ * input. Matched against the lowercase process name (no .exe).
+ *
+ * Cfx.re (FiveM / RedM) names every sub-process
+ *   <Product>_[cl2_][fxdk_][b<gameBuild>_]<ProcessType>.exe
+ * where Product is `FiveM_` / `RedM_` and the build part is added only for
+ * the game origin. Source: citizenfx/fivem code/client/shared/CfxSubProcess.h
+ * (productName = L"FiveM_" / L"RedM_", `productName += L"cl2_"` / `L"fxdk_"`,
+ * `productName += fmt::sprintf(L"b%d_", buildNumber)`), and the crash handler
+ * code/client/launcher/MiniDump.cpp, which identifies the GAME sub-process by
+ * `wcsstr(imageName, L"GTAProcess")`. Real names seen in public reports:
+ * FiveM_b2189_GTAProcess.exe (forum.cfx.re crash threads),
+ * FiveM_b2802_ / b3095_GTAProcess.exe (elitepvpers / hybrid-analysis strings),
+ * FiveM_GTAProcess.exe (no build, processchecker.com), and for RedM
+ * RedM_b1491_GTAProcess.exe (forum.cfx.re "RedM Crashes" thread). RedM reuses
+ * the GTAProcess type; "RedM_GameProcess" appears in no public source, so it
+ * is NOT matched. The sibling helpers (FiveM_ChromeBrowser, FiveM_SteamChild,
+ * FiveM_ROSLauncher / ROSService / ROSSubProcess, the FiveM.exe / RedM.exe
+ * launcher) share the prefix but not the process type, so the anchors below
+ * leave them unmatched (and GAME_DB lists them as null).
+ *
+ * The display name follows the same "<base game> (<mod>)" convention as the
+ * qualifiers below, so a friend reads "Grand Theft Auto V (FiveM)" rather than
+ * a bare "FiveM" that does not say what is being played.
+ */
+const PATTERN_GAMES: ReadonlyArray<{ re: RegExp; name: string }> = [
+    { re: /^fivem_(?:cl2_)?(?:fxdk_)?(?:b\d{1,6}_)?gtaprocess$/, name: 'Grand Theft Auto V (FiveM)' },
+    { re: /^redm_(?:cl2_)?(?:fxdk_)?(?:b\d{1,6}_)?gtaprocess$/, name: 'Red Dead Redemption 2 (RedM)' },
+];
+
+/** Pure; exported for tests. Display name for a build-numbered game executable, or null. */
+export function matchPatternGame(proc: string): string | null {
+    for (const p of PATTERN_GAMES) if (p.re.test(proc)) return p.name;
+    return null;
+}
+
+/**
+ * A game that is one executable on its own but is being played through a
+ * platform / mod runtime that runs next to it. The base game keeps its
+ * identity (and processName, so ignore lists and icons keep working); only
+ * the display name gains a qualifier.
+ *
+ *  - CS2 + FACEIT: FACEIT is a platform, never a game, so its client alone
+ *    shows nothing. `faceit` / `faceitclient` only. The FACEIT anti-cheat
+ *    SERVICE (FACEITService.exe) is deliberately not a trigger: it is a
+ *    boot-time Windows service, so it would label every Valve-matchmaking
+ *    session as FACEIT. Residual risk: the FACEIT client left open while
+ *    playing a non-FACEIT CS2 match reads as FACEIT; telling the two apart
+ *    needs window or command-line inspection, which is not worth it here.
+ *    Names per file.net / uninstaller listings (faceitclient.exe,
+ *    FACEITService.exe) and a Steam-forum report (FACEIT.exe); FACEIT
+ *    publishes no process list, so these are third-party sources.
+ *  - GTA5.exe + alt:V / RAGE MP: both mods run the stock GTA5.exe (alt:V
+ *    docs tell users to put altv.exe, altv-webengine.exe AND gta5.exe on the
+ *    same GPU; RAGE MP's installer lists the ragemp_v.exe launcher, and
+ *    ragemp_game_ui.exe is its in-game UI sub-process). The launcher alone
+ *    (menus, no game) is not a game, so the signal is the base game running
+ *    WITH the mod runtime.
+ */
+const PROCESS_QUALIFIERS: Readonly<Record<string, ReadonlyArray<{ anyOf: readonly string[]; label: string }>>> = {
+    cs2: [{ anyOf: ['faceit', 'faceitclient'], label: 'FACEIT' }],
+    gta5: [
+        { anyOf: ['altv', 'altv-webengine'], label: 'alt:V' },
+        { anyOf: ['ragemp_v', 'ragemp_game_ui'], label: 'RAGE MP' },
+    ],
+};
+
+/** Pure; exported for tests. `running` is the lowercase process-name set. */
+export function qualifyGameName(proc: string, name: string, running: ReadonlySet<string>): string {
+    const rules = Object.prototype.hasOwnProperty.call(PROCESS_QUALIFIERS, proc) ? PROCESS_QUALIFIERS[proc] : undefined;
+    if (!rules) return name;
+    for (const r of rules) {
+        if (r.anyOf.some(p => running.has(p))) return `${name} (${r.label})`;
+    }
+    return name;
+}
+
 const CHILD_OPTS = { timeout: 5000, windowsHide: true, maxBuffer: 4 * 1024 * 1024 } as const;
 
 /** Parse `tasklist /FO CSV /NH` output into lowercase names without `.exe`. */
@@ -1249,6 +1365,46 @@ async function isProcessSuspendedWin32(procName: string): Promise<boolean> {
     }
 }
 
+/**
+ * Processes that can outlive the game while having no window. Roblox's
+ * RobloxPlayerBeta.exe is the documented case: after the player is closed (or
+ * crashes) the client process routinely stays alive, windowless, in the task
+ * list (DevForum: "Roblox staying open after application is closed", "Roblox
+ * client process carries on in background when closed after crash"). A bare
+ * process-name match then reads as "Playing Roblox" with the Player closed.
+ * For these, a match additionally needs a visible top-level window.
+ */
+export const REQUIRES_VISIBLE_WINDOW = new Set(['robloxplayerbeta', 'robloxplayer']);
+
+/**
+ * Windows: does any process with this name own a visible main window?
+ * Fails OPEN (true) on any error or unexpected output so a PowerShell hiccup
+ * cannot hide a genuinely running game. Cached like the suspended check.
+ */
+async function hasVisibleWindowWin32(procName: string): Promise<boolean> {
+    const safe = procName.replace(/[^a-z0-9 ._-]/gi, '');
+    if (!safe) return true;
+    const cached = windowVerdicts.get(safe);
+    const now = Date.now();
+    if (cached && now - cached.at < WINDOW_CHECK_TTL_MS) return cached.hasWindow;
+    try {
+        const { stdout } = await execFileAsync('powershell', [
+            '-NoProfile', '-NonInteractive', '-Command',
+            `$ps = Get-Process -Name '${safe}' -ErrorAction SilentlyContinue;` +
+            ' if (-not $ps -or ($ps | Where-Object { $_.MainWindowHandle -ne 0 })) { \'WINDOW\' } else { \'NOWINDOW\' }',
+        ], CHILD_OPTS);
+        const hasWindow = stdout.trim() !== 'NOWINDOW';
+        windowVerdicts.set(safe, { at: now, hasWindow });
+        if (windowVerdicts.size > 64) windowVerdicts.delete(windowVerdicts.keys().next().value as string);
+        return hasWindow;
+    } catch {
+        return true; // fail open
+    }
+}
+
+const WINDOW_CHECK_TTL_MS = 15_000;
+const windowVerdicts = new Map<string, { at: number; hasWindow: boolean }>();
+
 const SUSPENDED_CHECK_TTL_MS = 60_000;
 const suspendedVerdicts = new Map<string, { at: number; suspended: boolean }>();
 
@@ -1352,13 +1508,15 @@ export function __resetGameDetectorForTests(): void {
     steamCacheTime = 0;
     steamDirStamp = '';
     suspendedVerdicts.clear();
+    windowVerdicts.clear();
     heuristicSessions.clear();
 }
 
 async function detectCurrentGameOnce(): Promise<DetectedGame | null> {
     const procs = await getRunningProcessNames();
     const now = Date.now();
-    pruneHeuristicSessions(new Set(procs));
+    const running = new Set(procs);
+    pruneHeuristicSessions(running);
 
     // Refresh Steam cache if stale — but only re-walk the libraries when they
     // actually changed (a game installed or removed rewrites the steamapps
@@ -1382,6 +1540,7 @@ async function detectCurrentGameOnce(): Promise<DetectedGame | null> {
     // ghost (see isProcessSuspendedWin32) keeps scanning instead of matching.
     const liveMatch = async (name: string, proc: string): Promise<DetectedGame | null> => {
         if (process.platform === 'win32' && await isProcessSuspendedWin32(proc)) return null;
+        if (process.platform === 'win32' && REQUIRES_VISIBLE_WINDOW.has(proc) && !(await hasVisibleWindowWin32(proc))) return null;
         return { name, processName: proc };
     };
 
@@ -1409,7 +1568,7 @@ async function detectCurrentGameOnce(): Promise<DetectedGame | null> {
             const m = await liveMatch(steamCache.get(proc)!, proc);
             // A match that has been "playing" far longer than any session is
             // resident software (see HEURISTIC_MAX_ACTIVE_MS), not a game.
-            if (m && heuristicWithinBudget(proc, now)) return m;
+            if (m && heuristicWithinBudget(proc, now)) return { ...m, name: qualifyGameName(proc, m.name, running) };
             continue;
         }
 
@@ -1418,6 +1577,13 @@ async function detectCurrentGameOnce(): Promise<DetectedGame | null> {
             const name = GAME_DB[proc];
             if (name !== null && name !== undefined) {
                 const m = await liveMatch(name, proc);
+                if (m) return { ...m, name: qualifyGameName(proc, m.name, running) };
+            }
+        } else {
+            // Build-numbered executables (FiveM / RedM), see PATTERN_GAMES.
+            const patternName = matchPatternGame(proc);
+            if (patternName) {
+                const m = await liveMatch(patternName, proc);
                 if (m) return m;
             }
         }
@@ -1431,6 +1597,44 @@ async function detectCurrentGameOnce(): Promise<DetectedGame | null> {
         return { name: 'Minecraft', processName: 'java' };
     }
     return null;
+}
+
+/**
+ * What this computer's detection calls a process (custom game, Steam library,
+ * curated database), or null. For naming a Rich Presence sender by its pid
+ * (electron/rich-presence.ts). Honours the curated exclusions; does not check
+ * the ignore list (see isProcessIgnored).
+ */
+export function gameNameForProcess(proc: string): string | null {
+    const p = proc.toLowerCase().replace(/\.exe$/, '');
+    const custom = customGames.get(p);
+    if (custom) return custom;
+    if (DEFAULT_EXCLUDED_PROCESSES.has(p)) return null;
+    if (Object.prototype.hasOwnProperty.call(GAME_DB, p) && GAME_DB[p] === null) return null;
+    const steam = steamCache.get(p);
+    if (steam) return steam;
+    if (Object.prototype.hasOwnProperty.call(GAME_DB, p)) return GAME_DB[p] ?? null;
+    return null;
+}
+
+/** Is this entry (an executable name, or an `rpc:<application id>` key) on the user's ignore list? */
+export function isProcessIgnored(proc: string): boolean {
+    return ignoredProcesses.has(proc.toLowerCase());
+}
+
+/**
+ * Does the ignore list hold an executable this computer names `name`? So
+ * ignoring "r6-siege" also hides Rainbow Six Siege when it arrives over Rich
+ * Presence instead of from the process scan. `key` normalises the comparison.
+ */
+export function isGameNameIgnored(name: string, key: (n: string) => string): boolean {
+    if (ignoredProcesses.size === 0) return false;
+    const want = key(name);
+    for (const proc of ignoredProcesses) {
+        const n = gameNameForProcess(proc);
+        if (n && key(n) === want) return true;
+    }
+    return false;
 }
 
 /** Returns deduplicated sorted list of running process names (for settings UI). */

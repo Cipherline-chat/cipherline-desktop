@@ -17,6 +17,9 @@ const invalidate = vi.hoisted(() => vi.fn());
 vi.mock('../../utils/profileCache', () => ({ invalidateProfile: invalidate }));
 vi.mock('../../utils/apiPath', () => ({ apiUrl: (s: TemplateStringsArray, ...v: unknown[]) => 'http://x' + String.raw({ raw: s }, ...v) }));
 
+const noteFive = vi.hoisted(() => vi.fn());
+vi.mock('../../utils/achievements/tracker', () => ({ noteAchievementHighFive: noteFive }));
+
 import { HighFiveButton, __resetHighFiveSession } from './HighFiveButton';
 
 const h = React.createElement as (...a: any[]) => React.ReactElement;
@@ -30,7 +33,7 @@ const press = async () => { await act(async () => { btn().click(); }); };
 const httpErr = (status: number, data: unknown) => Object.assign(new Error('x'), { response: { status, data } });
 
 beforeEach(() => {
-    __resetHighFiveSession(); post.mockReset(); invalidate.mockReset();
+    __resetHighFiveSession(); post.mockReset(); invalidate.mockReset(); noteFive.mockReset();
     host = document.createElement('div'); document.body.appendChild(host); root = createRoot(host);
 });
 afterEach(() => { act(() => root.unmount()); host.remove(); });
@@ -63,6 +66,22 @@ describe('HighFiveButton pressed state', () => {
         await act(async () => { root.unmount(); }); root = createRoot(host);
         await mount({ alreadyToday: false });
         expect(btn().getAttribute('aria-pressed')).toBe('true');
+    });
+
+    it('counts toward the high-five achievement only when the server accepts it (2xx), never on an "already" 429 or an error', async () => {
+        await mount();
+        post.mockResolvedValueOnce({ status: 200, data: { ok: true } });
+        await press();
+        expect(noteFive).toHaveBeenCalledTimes(1);
+        __resetHighFiveSession();
+        await mount({ userId: 'u2' });
+        post.mockRejectedValueOnce(httpErr(429, { statusCode: 429, message: 'High-fived today.', code: 'HIGH_FIVED_TODAY' }));
+        await press();
+        __resetHighFiveSession();
+        await mount({ userId: 'u3' });
+        post.mockRejectedValueOnce(httpErr(500, {}));
+        await press();
+        expect(noteFive).toHaveBeenCalledTimes(1);
     });
 
     it('a repeat press answered 429 {code: HIGH_FIVED_TODAY} flips to pressed with no error, and uses retry_after for the tooltip', async () => {

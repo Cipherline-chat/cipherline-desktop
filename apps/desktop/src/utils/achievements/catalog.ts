@@ -101,6 +101,12 @@ export const ACHIEVEMENTS: readonly AchievementDef[] = [
       description: 'Play a single game for 200 hours.', progress: t => at(t.bestGameHours, 200) },
     { id: 'games-15', name: 'Variety Pack', tier: 'bronze', secret: false, icon: 'gamepad', unit: 'count',
       description: 'Play 15 different games for at least an hour each.', progress: t => at(t.gamesPlayed, 15) },
+    { id: 'fives-10', name: 'Fin Five', tier: 'bronze', secret: false, icon: 'hand', unit: 'count',
+      description: 'Give out 10 high fives.', progress: t => at(t.highFives, 10) },
+    { id: 'fives-100', name: 'Flipper Slap', tier: 'silver', secret: false, icon: 'hand', unit: 'count',
+      description: 'Give out 100 high fives.', progress: t => at(t.highFives, 100) },
+    { id: 'fives-1000', name: 'Starfish', tier: 'gold', secret: false, icon: 'hand', unit: 'count',
+      description: 'Give out 1,000 high fives.', progress: t => at(t.highFives, 1000) },
     // Secret: shown as "???" until unlocked.
     { id: 'night-shift', name: 'Night Shift', tier: 'silver', secret: true, icon: 'moon', unit: 'hours',
       description: 'Spend 10 hours in calls between 2 and 5 in the morning.', progress: t => at(t.lateNightHours, 10) },

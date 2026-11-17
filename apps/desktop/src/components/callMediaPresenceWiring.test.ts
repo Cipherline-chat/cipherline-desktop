@@ -19,6 +19,7 @@ const realtime = read('../hooks/useRealtime.ts');
 const servers = read('../hooks/useServers.ts');
 const panel = read('server/ServerContextPanel.tsx');
 const home = read('HomePanel.tsx');
+const homeCallsTile = read('HomeCallsTile.tsx');
 
 describe('reporting MY state', () => {
     it('Dashboard mounts the reporter inside CallProvider with the realtime sender and both call kinds', () => {
@@ -72,6 +73,8 @@ describe('rendering', () => {
     });
 
     it('Home "Happening now" shows the summary for each live call', () => {
-        expect(home).toContain('<CallMediaSummary');
+        // One tile, a line per call (HomeCallsTile), each with the summary.
+        expect(home).toContain('<HomeCallsTile');
+        expect(homeCallsTile).toContain('<CallMediaSummary');
     });
 });

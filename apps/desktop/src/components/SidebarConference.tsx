@@ -1,4 +1,6 @@
 import { useSpeakerPromotion } from '../hooks/useSpeakerPromotion';
+import { useEchoDetection } from '../hooks/useEchoDetection';
+import { ECHO_PROMPT_COPY } from '../utils/echoPrompt';
 import { applyPromotion as applyPromotionShared } from '../utils/overflowPriority';
 import React from 'react';
 import { setOwnCallMedia, OWN_MEDIA_OFF } from '../utils/keysBeats';
@@ -72,6 +74,8 @@ import {
     hasHevcFailed, markHevcFailed, hasHevcGpuLost, parseDecodeCaps, type HevcMode,
 } from '../utils/hevcNegotiation';
 import { swapShareCodec, type ShareParticipantLike } from '../utils/shareRepublish';
+import { CAPTURE_RETRY_DELAYS_MS } from '../utils/shareCaptureRetry';
+import { noteUserCameraAction, noteDeliberateShareChange } from '../utils/mediaSelfStop';
 import { shareAudioUnavailableReason, windowAudioUnresolvedNotice } from '../utils/sharePlatformSupport';
 import { shareAudioEventDetail, type ShareAudioInput } from '../utils/shareAudioEvent';
 import { installShareLowLayerControl, type ShareTrackLike } from '../utils/shareLowLayer';
@@ -167,7 +171,7 @@ import { isDesktopOverlayCaptured, onDesktopOverlayCapturedChange, getOverlaySta
 import { capturedAttributePatch, overlayStateAttributePatch } from '../utils/annotationOverlayCapture';
 import { ScreenChoiceDialog } from './call/ScreenChoiceDialog';
 import { useSharerOverlayNote } from '../hooks/useSharerOverlayNote';
-import { useLinuxShareIntroTrigger } from '../utils/linuxShareIntro';
+import { useLinuxShareIntroTrigger, useGpuShareIntroTrigger } from '../utils/linuxShareIntro';
 import { useQueuedCallOfferSlot } from '../hooks/useCallNoticeLayer';
 import { parseParticipantMetadata, type ParticipantMeta } from '../utils/participantMetadata';
 import {
@@ -212,6 +216,8 @@ import { flatRecordEqual } from '../utils/flatRecordEqual';
 import { ROSTER_ONLY } from '../utils/callRosterEvents';
 import { setCallParticipantSpeaking, clearCallSpeaking } from '../utils/callSpeakingStore';
 import { isKeyComboClaimed } from '../utils/keyClaims';
+import { HoldMicController } from '../utils/holdMic';
+import { getPttUiState, setPttUiState, resetPttUiState, subscribePttUiState, usePttUiState, selfMicShownMuted, pttPressed, pttReleased } from '../utils/pushToTalk';
 import { canPublishMicrophone } from '../utils/livekitPublishGrants';
 import { useScreenShareAudioSubscriptions } from '../hooks/useScreenShareAudioSubscriptions';
 
@@ -555,7 +561,8 @@ export const SidebarConference = ({
                     // Mirror the mic mute state so ServerContextPanel participant rows
                     // can show a red MicOff badge for self-muted participants without
                     // needing to be inside the LiveKit room themselves.
-                    isMuted:        !p.isMicrophoneEnabled,
+                    // Your OWN entry follows push-to-talk (idle is not "muted"); everyone else's is the track.
+                    isMuted:        p.isLocal ? selfMicShownMuted(getPttUiState(), p.isMicrophoneEnabled) : !p.isMicrophoneEnabled,
                 };
                 metas[p.identity] = parseParticipantMetadata(p.metadata);
             }
@@ -591,7 +598,11 @@ export const SidebarConference = ({
                 setCallParticipantSpeaking(p.identity, speaking);
             }));
         }
+        // A push-to-talk state change (key down/up, Mute pressed) moves no LiveKit event when it only flips the
+        // indicator, so the snapshot subscribes to it directly.
+        const unsubscribePtt = subscribePttUiState(push);
         return () => {
+            unsubscribePtt();
             for (const p of participants) {
                 p.off(ParticipantEvent.TrackMuted,                push);
                 p.off(ParticipantEvent.TrackUnmuted,               push);
@@ -655,7 +666,9 @@ export const SidebarConference = ({
     //   speaking  → bright teal dot    muted     → amber dot
     //   silent    → dim teal dot       deafened  → purple dot  (highest priority)
     const localIdentity = localParticipant?.identity;
-    const localIsMuted     = !localParticipant?.isMicrophoneEnabled;
+    // Push-to-talk: waiting for the key is NOT "muted" (utils/pushToTalk.ts); only a deliberate Mute is.
+    const pttUi = usePttUiState();
+    const localIsMuted     = selfMicShownMuted(pttUi, !!localParticipant?.isMicrophoneEnabled);
 
     // Lift speaking state into React so a unified push effect can combine it
     // with mute/deafen without needing a ref.
@@ -1324,6 +1337,17 @@ export const SidebarConference = ({
     const isLocalDeafened = localDeafened || baseLocalDeafened;
     const isDeafenedForUi = isLocalDeafened || baseServerDeafened;
 
+    // Echo detection (only while echo cancellation is off): if the mic is carrying a delayed copy of
+    // what we play, offer to turn echo cancellation on. localIsMuted covers push-to-talk with the key
+    // up (the mic is disabled then), so neither case can prompt. Turning it on is a user choice and
+    // goes through the same live path as the Settings toggle.
+    const echoSetter = voice?.setEchoCancellation;
+    const turnOnEchoCancellation = React.useCallback(() => { echoSetter?.(true); }, [echoSetter]);
+    const echo = useEchoDetection({
+        room, aecOn: echoCancellation, micOpen: !localIsMuted, deafened: isDeafenedForUi,
+        turnOnEchoCancellation,
+    });
+
     // Publish MY mute / deafen (the user's own choice - not push-to-talk, not a
     // moderator's server-mute, not a missing SPEAK permission) so the next call
     // this user is put into - by themselves or by a moderator's move - starts with
@@ -1863,6 +1887,8 @@ export const SidebarConference = ({
     const sharerOverlayCardUp = useQueuedCallOfferSlot(SHARER_OVERLAY_SLOT, sharerOverlayCard !== null);
     // Linux: the one-time "screen sharing on Linux is new" card (utils/linuxShareIntro.ts), told which encoder engaged.
     useLinuxShareIntroTrigger(!!localScreenShare, () => nativePipeRef.current?.encoder);
+    // Windows/macOS on AMD or Intel graphics: the one-time "help us make screen sharing smoother" card (same module, own flag).
+    useGpuShareIntroTrigger(!!localScreenShare);
 
     // H.264 High for the screen share when that is this GPU's hardware H.264
     // (decideScreenShareCodec — the NVIDIA case). Set per publish; read by the
@@ -3146,6 +3172,17 @@ export const SidebarConference = ({
 
     const toggleMic = () => {
         if (!localParticipant) return;
+        holdMicRef.current?.userToggled();   // a push-to-mute in progress no longer restores: the mic is the user's now
+        // Push-to-talk: the key decides when the mic is open, so Mute means "ignore the key until I unmute"
+        // (shown red), not "open the mic". Unmuting only lifts that; the mic still opens on the key.
+        if (getPttUiState().active) {
+            const muting = !getPttUiState().manualMuted;
+            if (!muting && (!canSpeak || !canPublishMicrophone(localParticipant))) return;
+            setPttUiState({ manualMuted: muting });
+            if (muting && localParticipant.isMicrophoneEnabled) localParticipant.setMicrophoneEnabled(false).catch(() => {});
+            playSound(muting ? 'mute' : 'unmute', soundsPrefs());
+            return;
+        }
         // P13: SPEAK gate — block UN-mute when the user lacks SPEAK on this
         // channel. Mute is always allowed (you can always go quiet). LiveKit
         // also enforces, but the UI should never even attempt the publish.
@@ -3162,6 +3199,7 @@ export const SidebarConference = ({
     };
     const toggleCamera = () => {
         if (!localParticipant) return;
+        noteUserCameraAction(); // a mute that follows is the press, not a self-stop (utils/mediaSelfStop.ts)
         const willEnable = !localParticipant.isCameraEnabled;
         // P13: VIDEO gate — block enable when denied; allow disable.
         if (willEnable && !canVideo) { setCameraError("You don't have permission to use video here."); return; }
@@ -3213,6 +3251,7 @@ export const SidebarConference = ({
         // button is disabled; this covers the keybind).
         if (shareStartRef.current?.starting) return;
         if (localParticipant.isScreenShareEnabled) {
+            noteDeliberateShareChange();
             shareRepublishSignal.cancel(localParticipant);
             stopNativeWindowAudio();
             localParticipant.setScreenShareEnabled(false);
@@ -4385,6 +4424,7 @@ export const SidebarConference = ({
         }
         if (localParticipant.isScreenShareEnabled) {
             const tTeardown = performance.now();
+            noteDeliberateShareChange(); // the unpublish below is ours (utils/mediaSelfStop.ts)
             await stopNativeWindowAudio();
             const tAudioStopped = performance.now();
             try {
@@ -4830,6 +4870,19 @@ export const SidebarConference = ({
                         if (portalCap && !st.first) throw portalChooserClosedError();
                     },
                     ...(portalCap ? { waitOptions: PORTAL_FIRST_FRAME_WAIT } : {}),
+                    // A share that was live was torn down above and this re-acquires the same source: the OS capturer
+                    // can still be letting go, and one NotReadableError there used to END the share (utils/shareCaptureRetry.ts).
+                    // The grant the failed attempt spent is renewed before each retry.
+                    retryDelaysMs: isAdjustment ? CAPTURE_RETRY_DELAYS_MS : [],
+                    beforeRetry: async () => {
+                        await mintShareGrant(options);
+                        pendingScreenShareRef.current = pendingShare(options, useNativeAudio ? false : options.audio);
+                    },
+                    onRetry: (n, err) => {
+                        // The DOMException type only, like reportShareStartError.
+                        const errType = String((err as { name?: unknown } | null)?.name ?? 'unknown').slice(0, 40);
+                        logCallEvent('share_start', { verdict: 'retry', why: errType, n });
+                    },
                 },
             );
           }
@@ -5805,13 +5858,51 @@ export const SidebarConference = ({
     // (portal target moving) doesn't tear the processor down. See the comment
     // on the settings-push effect above.
 
-    // ── Push to Talk ──────────────────────────────────────────────────────────
-    // When PTT is enabled: mic stays muted unless the configured key is held.
+    // ── Push to Talk / Push to Mute ───────────────────────────────────────────
+    // Two HOLD keys, one state machine (utils/holdMic.ts):
+    //  - push-to-talk (PTT mode on): the mic stays muted unless the key is held;
+    //  - push-to-mute (PTT mode off): the mic is muted while the key is held, and returns to what it was.
+    //
+    // Each key is watched TWICE, on purpose:
+    //  - system-wide, by the main process (electron/global-ptt.ts): works while another program has focus,
+    //    the window is minimized or in the tray (Windows and Linux X11 through a native key-state watcher,
+    //    native Wayland through the GlobalShortcuts portal's press/release). This is the one that matters -
+    //    a renderer keydown listener only ever sees keys while this window is focused, which is why
+    //    push-to-talk used to die the moment you alt-tabbed to a game;
+    //  - by window keydown/keyup: covers sessions with no system-wide path (macOS, XWayland, older builds).
+    // Both feed the same idempotent press/release calls, so a key seen by both is harmless. A bare modifier
+    // (the default PTT key, Alt) is a valid key. Nothing is intercepted: the key still goes to whatever app
+    // has focus.
+    const pttOn = !!voice?.settings.pushToTalk;
+    const pttKeySetting = voice?.settings.pushToTalkKey || null;
+    const muteKeySetting = voice?.settings.pushToMuteKey || null;
+    const localParticipantRef = React.useRef(localParticipant);
+    localParticipantRef.current = localParticipant;
+    const deafenedRef = React.useRef(isLocalDeafened);
+    deafenedRef.current = isLocalDeafened;
+    const soundsPrefsRef = React.useRef(soundsPrefs);
+    soundsPrefsRef.current = soundsPrefs;
+    const holdMicRef = React.useRef<HoldMicController | null>(null);
+    if (!holdMicRef.current) {
+        holdMicRef.current = new HoldMicController({
+            isEnabled: () => !!localParticipantRef.current?.isMicrophoneEnabled,
+            set: (on) => localParticipantRef.current?.setMicrophoneEnabled(on),
+            canOpen: () => !!localParticipantRef.current && canPublishMicrophone(localParticipantRef.current),
+            canRestore: () => !!localParticipantRef.current && !deafenedRef.current && !wasMutedBeforeDeafenRef.current && canPublishMicrophone(localParticipantRef.current),
+            // Push-to-mute plays the Mute button's own sounds (press = mute, release = unmute), respecting the
+            // user's notification-sound prefs. Read through a ref: this controller is created once.
+            cue: (kind) => playSound(kind, soundsPrefsRef.current()),
+        });
+    }
     React.useEffect(() => {
-        if (!voice?.settings.pushToTalk || !localParticipant) {
-            // PTT turned off — restore mic unless deafened or the user was
-            // manually muted before they deafened (wasMutedBeforeDeafenRef).
-            if (!voice?.settings.pushToTalk && localParticipant && !isLocalDeafened) {
+        if (!pttOn || !localParticipant) {
+            // PTT turned off — restore mic unless deafened, unless the user was
+            // manually muted before they deafened (wasMutedBeforeDeafenRef), or
+            // unless they pressed Mute while in push-to-talk (that was deliberate).
+            const mutedOnPurpose = getPttUiState().manualMuted;
+            holdMicRef.current?.pttRelease();
+            resetPttUiState();
+            if (!pttOn && localParticipant && !isLocalDeafened && !mutedOnPurpose) {
                 if (!localParticipant.isMicrophoneEnabled && !wasMutedBeforeDeafenRef.current && canPublishMicrophone(localParticipant)) {
                     localParticipant.setMicrophoneEnabled(true).catch(() => {});
                 }
@@ -5824,44 +5915,77 @@ export const SidebarConference = ({
             localParticipant.setMicrophoneEnabled(false);
         }
 
-        const pttKey = voice.settings.pushToTalkKey;
+        const pttKey = pttKeySetting;
+        // From here the key, not Mute, decides when the mic is open: the call UI reads this to show
+        // "waiting for the key" (grey) / "transmitting" (green) instead of "muted" (red). With NO key bound
+        // it is the same grey and the mic simply stays closed: it can never be left hot.
+        setPttUiState({ active: true, keyDown: false });
+        holdMicRef.current?.enteredPttMode();
         if (!pttKey) return;
 
-        const matchesKey = (e: KeyboardEvent): boolean => {
-            // Build a comparable combo from the event
-            const parts: string[] = [];
-            if (e.ctrlKey || e.metaKey) parts.push('ctrl');
-            if (e.altKey) parts.push('alt');
-            if (e.shiftKey) parts.push('shift');
-            let key = e.key.toLowerCase();
-            if (['control', 'meta', 'alt', 'shift'].includes(key)) return false;
-            if (key === ' ') key = 'space';
-            parts.push(key);
-            return parts.join('+') === pttKey;
-        };
-
-        const onDown = (e: KeyboardEvent) => {
-            // A surface that owns the keyboard has claimed this combo (the
-            // Home game plays on Space; utils/keyClaims): never open the mic
-            // for it. Key-up still closes it, which is always safe.
+        const press = () => {
+            // A surface that owns the keyboard has claimed this combo (the Home game plays on Space;
+            // utils/keyClaims): never open the mic for it. Key-up still closes it, which is always safe.
             if (isKeyComboClaimed(pttKey)) return;
-            if (matchesKey(e) && !localParticipant.isMicrophoneEnabled && canPublishMicrophone(localParticipant)) {
-                localParticipant.setMicrophoneEnabled(true).catch(() => {});
-            }
+            holdMicRef.current?.pttPress();
         };
-        const onUp = (e: KeyboardEvent) => {
-            if (matchesKey(e) && localParticipant.isMicrophoneEnabled) {
-                localParticipant.setMicrophoneEnabled(false);
-            }
-        };
+        const release = () => holdMicRef.current?.pttRelease();
+        const onDown = (e: KeyboardEvent) => { if (pttPressed(e, pttKey)) press(); };
+        const onUp = (e: KeyboardEvent) => { if (pttReleased(e, pttKey)) release(); };
+        // Without a system-wide watcher a key-up that happens in another window is never seen.
+        let systemWide = false;
+        const onBlur = () => { if (!systemWide) release(); };
+
+        const api = window.electronAPI;
+        let unsubGlobal: (() => void) | undefined;
+        if (api?.setGlobalHoldKey && api.onGlobalHoldState) {
+            unsubGlobal = api.onGlobalHoldState((slot, isDown) => { if (slot === 'push-to-talk') { if (isDown) press(); else release(); } });
+            api.setGlobalHoldKey('push-to-talk', pttKey).then((r) => { systemWide = r.ok && r.watching; }).catch(() => { systemWide = false; });
+        }
 
         window.addEventListener('keydown', onDown);
         window.addEventListener('keyup', onUp);
+        window.addEventListener('blur', onBlur);
         return () => {
             window.removeEventListener('keydown', onDown);
             window.removeEventListener('keyup', onUp);
+            window.removeEventListener('blur', onBlur);
+            unsubGlobal?.();
+            api?.setGlobalHoldKey?.('push-to-talk', null).catch(() => {});
+            release();
         };
-    }, [voice?.settings.pushToTalk, voice?.settings.pushToTalkKey, localParticipant, isLocalDeafened]);
+    }, [pttOn, pttKeySetting, localParticipant, isLocalDeafened]);
+
+    // Push-to-mute: only in normal (voice-activity) mode. Inert while push-to-talk is on.
+    React.useEffect(() => {
+        if (pttOn || !muteKeySetting || !localParticipant) return;
+        const muteKey = muteKeySetting;
+        const press = () => { if (!isKeyComboClaimed(muteKey)) holdMicRef.current?.mutePress(); };
+        const release = () => holdMicRef.current?.muteRelease();
+        const onDown = (e: KeyboardEvent) => { if (pttPressed(e, muteKey)) press(); };
+        const onUp = (e: KeyboardEvent) => { if (pttReleased(e, muteKey)) release(); };
+        let systemWide = false;
+        const onBlur = () => { if (!systemWide) release(); };
+        const api = window.electronAPI;
+        let unsubGlobal: (() => void) | undefined;
+        if (api?.setGlobalHoldKey && api.onGlobalHoldState) {
+            unsubGlobal = api.onGlobalHoldState((slot, isDown) => { if (slot === 'push-to-mute') { if (isDown) press(); else release(); } });
+            api.setGlobalHoldKey('push-to-mute', muteKey).then((r) => { systemWide = r.ok && r.watching; }).catch(() => { systemWide = false; });
+        }
+        window.addEventListener('keydown', onDown);
+        window.addEventListener('keyup', onUp);
+        window.addEventListener('blur', onBlur);
+        return () => {
+            window.removeEventListener('keydown', onDown);
+            window.removeEventListener('keyup', onUp);
+            window.removeEventListener('blur', onBlur);
+            unsubGlobal?.();
+            api?.setGlobalHoldKey?.('push-to-mute', null).catch(() => {});
+            release();   // a key held while the setting changes must not leave the mic muted
+        };
+    }, [pttOn, muteKeySetting, localParticipant]);
+    // The call ended: push-to-talk's display state (and a deliberate Mute) must not leak into the next call.
+    React.useEffect(() => () => { resetPttUiState(); holdMicRef.current?.reset(); }, []);
 
     // No speaker-volume effect here — removed as part of the call-audio
     // reliability pass. This used to run a MutationObserver on the whole
@@ -5951,6 +6075,7 @@ export const SidebarConference = ({
                 if (!localParticipant) return;
                 if (shareStartRef.current?.starting) return;
                 if (localParticipant.isScreenShareEnabled) {
+                    noteDeliberateShareChange();
                     shareRepublishSignal.cancel(localParticipant);
                     stopNativeWindowAudio();
                     localParticipant.setScreenShareEnabled(false);
@@ -6253,6 +6378,28 @@ export const SidebarConference = ({
                         onClick={() => setMicError(null)}
                         className="ml-auto"
                     >✕</ClButton>
+                </motion.div>
+            )}
+
+            {/* Echo detected (utils/echoDetector.ts): small and non-blocking; never shown with echo
+                cancellation on, while muted / deafened, or after a dismissal in this call. */}
+            {echo.prompt && (
+                <motion.div
+                    variants={sidebarPillVariants}
+                    initial="initial"
+                    animate="animate"
+                    role="status"
+                    className="mx-3 mb-1 flex flex-wrap items-center gap-2 px-3 py-2 bg-cl-deep border border-cl-flash/40 rounded-xl text-[11px] text-cl-muted"
+                >
+                    <Mic className="w-3 h-3 text-cl-flash shrink-0" />
+                    <span className="text-cl-text flex-1 min-w-[10rem]">
+                        <strong>{ECHO_PROMPT_COPY.title}</strong> — {ECHO_PROMPT_COPY.body}
+                    </span>
+                    <ClButton size="sm" onClick={echo.accept}>{ECHO_PROMPT_COPY.turnOn}</ClButton>
+                    <ClButton size="sm" variant="ghost" onClick={echo.dismiss}>{ECHO_PROMPT_COPY.dismiss}</ClButton>
+                    {echo.prompt.offerNever && (
+                        <ClButton size="sm" variant="ghost" onClick={echo.neverAskAgain}>{ECHO_PROMPT_COPY.never}</ClButton>
+                    )}
                 </motion.div>
             )}
 

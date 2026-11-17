@@ -5,8 +5,9 @@
       # share_power.cc is platform-neutral (its Win32 half is #ifdef _WIN32; elsewhere
       # every export is a no-op), so it stays in the list on mac too (the mac
       # block below only swaps audio_capture.cc / window_geometry.cc). The same
-      # holds for hdr_capture.cc (HDR screen capture + tone map; no-op off Windows).
-      "sources": [ "src-native/audio_capture.cc", "src-native/window_geometry.cc", "src-native/share_power.cc", "src-native/hdr_capture.cc" ],
+      # holds for hdr_capture.cc (HDR screen capture + tone map; no-op off Windows) and
+      # key_state.cc (push-to-talk key watcher; registers nothing off Windows).
+      "sources": [ "src-native/audio_capture.cc", "src-native/window_geometry.cc", "src-native/share_power.cc", "src-native/hdr_capture.cc", "src-native/key_state.cc", "src-native/audio_output_kind.cc" ],
       "conditions": [
         [
           "OS=='win'",
@@ -58,6 +59,7 @@
                 "-weak_framework ScreenCaptureKit",
                 "-framework CoreMedia",
                 "-framework CoreGraphics",
+                "-framework CoreAudio",
                 "-framework AppKit",
                 "-framework Foundation"
               ]

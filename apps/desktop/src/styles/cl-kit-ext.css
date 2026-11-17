@@ -463,6 +463,18 @@
 .sel{min-width:0}
 .selt>span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
 
+/* ── Searchable select (ClSelect `search`) ──────────────────────────────────
+   Same .selm panel; the guide's .srch field is pinned at the top and the rows
+   scroll in their own .selm-list beneath it. Height is fixed inline by
+   ClSelect so the menu doesn't jump while matches come and go. Unscoped for
+   the same @scope/display:contents reason as the block above — every
+   selector is qualified by .selm--search, so plain selects are untouched. */
+.selm.selm--search{display:flex;flex-direction:column;overflow:hidden}
+.selm--search .selm-search{flex:none;padding:2px 2px 6px}
+.selm--search .selm-search .inp{padding-top:9px;padding-bottom:9px;font-size:13.5px;user-select:text;-webkit-user-select:text}
+.selm--search .selm-list{flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain}
+.selm--search .selm-empty{padding:16px 12px;font-size:13px;font-weight:600;color:var(--faint, #5E6B8F);text-align:center}
+
 /* ── Segmented control — full-width tab-strip variant ───────────────────────
    The kit's .seg is inline-flex sized to its labels; as a modal tab strip it
    needs to span the card with evenly-sized segments. Unscoped (like the

@@ -44,6 +44,8 @@ export interface DeviceCounters {
     lateNightMs: number;
     /** Messages the server accepted from this device (not self-notes). */
     messages: number;
+    /** High fives this device sent that the server accepted (its 24 h per-person rule is the farming cap). Never who. */
+    highFives: number;
     longestCallMs: number;
     /** Most people seen in any call. */
     peakCallPeople: number;
@@ -68,7 +70,7 @@ export interface AchievementsState {
 }
 
 export const emptyCounters = (): DeviceCounters => ({
-    voiceMs: 0, aloneMs: 0, lateNightMs: 0, messages: 0, longestCallMs: 0, peakCallPeople: 0, hostedPeak: 0, gameMs: {},
+    voiceMs: 0, aloneMs: 0, lateNightMs: 0, messages: 0, highFives: 0, longestCallMs: 0, peakCallPeople: 0, hostedPeak: 0, gameMs: {},
 });
 
 export const emptyState = (): AchievementsState => ({
@@ -130,7 +132,7 @@ function cleanCounters(v: unknown): DeviceCounters {
     }
     return {
         voiceMs: num(o.voiceMs, MAX_MS), aloneMs: num(o.aloneMs, MAX_MS), lateNightMs: num(o.lateNightMs, MAX_MS),
-        messages: num(o.messages, MAX_COUNT), longestCallMs: num(o.longestCallMs, MAX_MS),
+        messages: num(o.messages, MAX_COUNT), highFives: num(o.highFives, MAX_COUNT), longestCallMs: num(o.longestCallMs, MAX_MS),
         peakCallPeople: num(o.peakCallPeople, 100_000), hostedPeak: num(o.hostedPeak, 100_000), gameMs: gm,
     };
 }
@@ -178,7 +180,7 @@ function mergeCounters(a: DeviceCounters, b: DeviceCounters): DeviceCounters {
     for (const [k, v] of Object.entries(b.gameMs)) gameMs[k] = Math.max(gameMs[k] ?? 0, v);
     return {
         voiceMs: Math.max(a.voiceMs, b.voiceMs), aloneMs: Math.max(a.aloneMs, b.aloneMs),
-        lateNightMs: Math.max(a.lateNightMs, b.lateNightMs), messages: Math.max(a.messages, b.messages),
+        lateNightMs: Math.max(a.lateNightMs, b.lateNightMs), messages: Math.max(a.messages, b.messages), highFives: Math.max(a.highFives, b.highFives),
         longestCallMs: Math.max(a.longestCallMs, b.longestCallMs), peakCallPeople: Math.max(a.peakCallPeople, b.peakCallPeople),
         hostedPeak: Math.max(a.hostedPeak, b.hostedPeak), gameMs,
     };
@@ -238,6 +240,8 @@ export interface Totals {
     peakCallPeople: number;
     hostedPeak: number;
     messages: number;
+    /** High fives given, summed over the account's devices. */
+    highFives: number;
     bestStreak: number;
     verified: number;
     servers: number;
@@ -276,20 +280,20 @@ export const hasCustomProfile = (u: {
     !!u && (!!u.banner_url || !!u.profile_theme || !!u.avatar_decoration || !!u.profile_effect);
 
 export function computeTotals(s: AchievementsState, ctx: TotalsContext): Totals {
-    let voice = 0, alone = 0, late = 0, msgs = 0, longest = 0, peak = 0, hosted = 0, active = 0;
+    let voice = 0, alone = 0, late = 0, msgs = 0, fives = 0, longest = 0, peak = 0, hosted = 0, active = 0;
     const games: Record<string, number> = {};
     for (const c of Object.values(s.devices)) {
-        voice += c.voiceMs; alone += c.aloneMs; late += c.lateNightMs; msgs += c.messages;
+        voice += c.voiceMs; alone += c.aloneMs; late += c.lateNightMs; msgs += c.messages; fives += c.highFives;
         longest = Math.max(longest, c.longestCallMs);
         peak = Math.max(peak, c.peakCallPeople);
         hosted = Math.max(hosted, c.hostedPeak);
         for (const [g, ms] of Object.entries(c.gameMs)) games[g] = (games[g] ?? 0) + ms;
-        if (c.voiceMs > 0 || c.messages > 0 || Object.keys(c.gameMs).length > 0) active++;
+        if (c.voiceMs > 0 || c.messages > 0 || c.highFives > 0 || Object.keys(c.gameMs).length > 0) active++;
     }
     const gm = Object.values(games);
     return {
         voiceHours: voice / H, voiceMinutes: voice / 60_000, aloneHours: alone / H, lateNightHours: late / H, longestCallHours: longest / H,
-        peakCallPeople: peak, hostedPeak: hosted, messages: msgs,
+        peakCallPeople: peak, hostedPeak: hosted, messages: msgs, highFives: fives,
         bestStreak: Math.max(s.bestStreak, longestStreak(s.days)),
         verified: s.verified.length, servers: s.servers.length, eggs: ctx.eggCount,
         accountAgeDays: ctx.accountCreatedMs ? Math.max(0, (ctx.now - ctx.accountCreatedMs) / DAY_MS) : 0,
@@ -319,6 +323,11 @@ export function addMessage(s: AchievementsState, deviceId: string, serverId: str
         next = { ...next, servers: [...next.servers, serverId].sort() };
     }
     return markDay(next, day);
+}
+
+/** A high five the server accepted (2xx). A 429 "high-fived today" never reaches here, so one person counts once per 24 h. */
+export function addHighFive(s: AchievementsState, deviceId: string): AchievementsState {
+    return withDevice(s, deviceId, c => ({ ...c, highFives: Math.min(c.highFives + 1, MAX_COUNT) }));
 }
 
 export interface CallTick {
