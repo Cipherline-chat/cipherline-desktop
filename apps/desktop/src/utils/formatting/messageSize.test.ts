@@ -57,7 +57,7 @@ describe('edits carry the size like the font (replace, or clear when absent)', (
         const dash = readFileSync(join(__dirname, '..', '..', 'components', 'Dashboard.tsx'), 'utf8');
         expect(dm).toContain('withEditFont({ ...currentThread[i].content, text: m.content.text }, m.content.font, m.content.size)');
         expect(dash).toContain('withEditFont({ ...currentThread[targetIdx].content, text: m.content.text }, m.content.font, m.content.size)');
-        expect(dash).toContain('editedContent(thread[idx].content, content.text, content.channel_refs, content.font, content.size)');
+        expect(dash).toContain('editedContent(thread[idx].content, content.text, content.channel_refs, content.font, content.size, content)');
     });
 });
 

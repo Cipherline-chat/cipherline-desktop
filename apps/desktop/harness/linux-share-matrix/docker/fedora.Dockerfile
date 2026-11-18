@@ -1,6 +1,6 @@
 # Linux share matrix: Fedora (latest). Intel VA-API encode needs `intel-media-driver`, which Fedora cannot ship
 # (patents); it comes from RPM Fusion Free, exactly what a Fedora user with an Intel iGPU installs. Recorded in the report.
-FROM fedora:latest
+FROM fedora:latest@sha256:a7d72ba2745b100a3351087472e5ee7b2450af7cf331e7673007e3817612839c
 RUN dnf -y install --setopt=install_weak_deps=False --skip-unavailable \
       dbus-daemon dbus-tools procps-ng psmisc coreutils util-linux xz curl python3 libsndfile \
       pipewire pipewire-utils pipewire-pulseaudio wireplumber pulseaudio-utils \

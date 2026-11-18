@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { describeSystem, heapHint, hitchProbeEnabled, loafPhases } from './firewallHitchProbe';
+import { describeSystem, glClass, heapHint, hitchCadence, hitchProbeEnabled, loafPhases, probeRows } from './firewallHitchProbe';
 import type { SystemInfo } from '../utils/diagnostics/reportTypes';
 
 // The probe must reach testers on
@@ -62,5 +62,65 @@ describe('describeSystem', () => {
         expect(out).toContain('0x1002:0x6995,'.replace(',', '') );
         expect(out).toContain('gpu_compositing=enabled');
         expect(out).toContain('2560x1440@120p');
+    });
+});
+
+describe('hitchCadence', () => {
+    it('reads the 2026-11-12 report as a steady ~3.1 s clock', () => {
+        // The six hitches' times (ms), rebuilt from their pillar offsets with the game's rules.
+        const c = hitchCadence([1428, 4507, 7580, 10670, 13756, 16838]);
+        expect(c).not.toBeNull();
+        expect(c!.gaps).toBe(5);
+        expect(c!.medianMs).toBeGreaterThan(3070);
+        expect(c!.medianMs).toBeLessThan(3095);
+        expect(c!.steady).toBe(true);
+    });
+    it('calls scattered hitches irregular', () => {
+        expect(hitchCadence([0, 900, 3100, 3500, 7000])!.steady).toBe(false);
+    });
+    it('needs three hitches', () => {
+        expect(hitchCadence([])).toBeNull();
+        expect(hitchCadence([0, 3000])).toBeNull();
+    });
+});
+
+describe('glClass', () => {
+    it('reduces a renderer string to a vendor word', () => {
+        expect(glClass('ANGLE (NVIDIA, NVIDIA GeForce RTX 2080 Ti (0x00001E07) Direct3D11 vs_5_0 ps_5_0, D3D11) (powerPreference high-performance)')).toBe('nvidia');
+        expect(glClass('ANGLE (AMD, AMD Radeon RX 6600 Direct3D11)')).toBe('amd');
+        expect(glClass('ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero)))')).toBe('swiftshader');
+        expect(glClass('ANGLE (Microsoft, Microsoft Basic Render Driver Direct3D11)')).toBe('warp');
+        expect(glClass('')).toBe('unknown');
+    });
+});
+
+describe('probeRows', () => {
+    const LABEL = /^[a-z][a-z0-9_.:-]{0,63}$/i; // freezeLog's LABEL_RE: main drops a row with any other label
+    const hitch = (gap: number, pillar: number) => ({ gap, pillar, score: pillar - 1, loafs: [{ dur: 70.4, scripts: 0, phases: { tasks: 4, raf: 0.6, render: 65.8 } }] });
+    it('writes a summary row and one row per hitch, every label log-safe', () => {
+        const at = [1428, 4507, 7580, 10670];
+        const rows = probeRows([hitch(61, 1), hitch(61, 3), hitch(73, 4), hitch(73, 6)], at,
+            { r: { frames: 900, ms: 6000, fps: 149.8, busyAvgMs: 0.4, maxGapMs: 73.2 }, gl: 'ANGLE (NVIDIA, NVIDIA GeForce RTX 2080 Ti)' }, 165, 4);
+        expect(rows).toHaveLength(5);
+        for (const r of rows) {
+            expect(r.activity.length).toBeLessThanOrEqual(300);
+            for (const l of r.activity.split(', ')) expect(l).toMatch(LABEL);
+        }
+        expect(rows[0].activity).toContain('firewall:probe');
+        expect(rows[0].activity).toContain('fw:gl:nvidia');
+        expect(rows[0].activity).toContain('fw:split:render');
+        expect(rows[0].activity).toMatch(/fw:cadence:30\d\d/);
+        expect(rows[0].ms).toBe(73);
+        expect(rows[3].activity).toBe('firewall:hitch, fw:p:4, fw:score:3, fw:loaf:70, fw:scripts:0, fw:tasks:4, fw:raf:1, fw:render:66');
+    });
+    it('caps the per-hitch rows', () => {
+        const many = Array.from({ length: 40 }, (_, i) => hitch(40, i + 1));
+        expect(probeRows(many, many.map((_, i) => i * 3000), null, 60, 0)).toHaveLength(13);
+    });
+    it('a run with no hitches is one summary row', () => {
+        const rows = probeRows([], [], null, 60, 0);
+        expect(rows).toHaveLength(1);
+        expect(rows[0].activity).toContain('fw:cadence:none');
+        for (const l of rows[0].activity.split(', ')) expect(l).toMatch(LABEL);
     });
 });

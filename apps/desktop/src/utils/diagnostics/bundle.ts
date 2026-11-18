@@ -30,7 +30,7 @@ import {
 } from './reportTypes';
 import type { CallEventInput } from './callEventsSource';
 import type { NetTimingSnapshot } from '../netTiming';
-import { SHARE_CONTEXT_KINDS } from '../callEventLog';
+import { REPORT_CONTEXT_KINDS } from '../callEventLog';
 import type { ScreenShareOptions } from '../../components/ScreenSharePickerModal';
 
 // ── Category matrix ──────────────────────────────────────────────────────────
@@ -392,10 +392,11 @@ export function fitPayload(p: DiagnosticPayload, max: number): string[] {
         } else if (p.net_timing && p.net_timing.endpoints.length > 8) {
             p.net_timing.endpoints = p.net_timing.endpoints.slice(0, Math.ceil(p.net_timing.endpoints.length / 2));
             trimmed.add('net_timing');
-        } else if (p.call_events && p.call_events.length > 60 && p.call_events.some(e => !SHARE_CONTEXT_KINDS.has(e.event))) {
-            // The share context (start / codec / decoder / display / snapshot) is what makes the
-            // rest readable: drop the oldest half of everything ELSE first.
-            const idx = p.call_events.flatMap((e, i) => (SHARE_CONTEXT_KINDS.has(e.event) ? [] : [i]));
+        } else if (p.call_events && p.call_events.length > 60 && p.call_events.some(e => !REPORT_CONTEXT_KINDS.has(e.event))) {
+            // The share context (start / codec / decoder / display / snapshot) and the voice context
+            // (voice_settings / mic_capture) are what make the rest readable: drop the oldest half of
+            // everything ELSE first.
+            const idx = p.call_events.flatMap((e, i) => (REPORT_CONTEXT_KINDS.has(e.event) ? [] : [i]));
             const drop = new Set(idx.slice(0, Math.ceil(idx.length / 2)));
             p.call_events = p.call_events.filter((_, i) => !drop.has(i));
             trimmed.add('call_events');

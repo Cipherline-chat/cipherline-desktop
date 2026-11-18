@@ -1,0 +1,145 @@
+/* ── Card style editor (components/messageCard/CardStyleEditor.tsx) ───────
+   "Glow in the deep": deep panels, hairline borders, lume for selection.
+   A roomy, two-column editor under a real-width live preview.            */
+.cse-dialog { max-height: calc(100vh - 48px); display: flex; flex-direction: column; }
+.cse-dialog-head { padding: 2px 4px 12px; }
+.cse-dialog-head h3 { font-family: var(--cl-font-display); font-weight: 600; font-size: 20px; color: var(--cl-text); margin: 0; }
+.cse-dialog-head p { margin: 4px 0 0; font-size: 12.5px; color: var(--cl-muted); }
+.cse-dialog-foot { display: flex; align-items: center; gap: 8px; padding-top: 12px; border-top: 1px solid rgba(255, 255, 255, .06); margin-top: 12px; }
+
+.cse { display: flex; flex-direction: column; gap: 12px; min-height: 0; flex: 1; }
+.cse-preview {
+  border-radius: 14px; border: 1px solid var(--cl-border); background: var(--cl-abyss);
+  padding: 14px 16px 16px; max-height: 300px; overflow: auto;
+}
+.cse-preview-row { display: flex; gap: 12px; }
+.cse-preview-avatar {
+  width: 40px; height: 40px; border-radius: 50%; flex: none; display: grid; place-items: center;
+  background: linear-gradient(135deg, #1f4f63, #243056); color: var(--cl-text); font-weight: 800;
+}
+.cse-preview-main { min-width: 0; flex: 1; display: flex; flex-direction: column; }
+.cse-preview-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 2px; }
+.cse-preview-head b { font-size: 14px; color: var(--cl-lume); font-weight: 600; }
+.cse-preview-head span { font-size: 11px; color: var(--cl-faint); }
+.cse-preview-body { color: rgba(255, 255, 255, .9); font-size: 15px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.cse-note { display: flex; gap: 6px; align-items: center; margin: -4px 2px 0; font-size: 12px; color: var(--cl-glow); }
+
+.cse-body { display: grid; grid-template-columns: 250px minmax(0, 1fr); gap: 14px; min-height: 0; flex: 1; }
+.cse--compact .cse-body { grid-template-columns: minmax(0, 1fr); }
+.cse-start, .cse-edit {
+  min-height: 0; overflow: auto; max-height: 52vh; border-radius: 14px;
+  border: 1px solid rgba(42, 53, 88, .7); background: rgba(19, 26, 48, .55); padding: 12px;
+}
+.cse-start h4, .cse-sec h4 {
+  margin: 4px 0 8px; font-size: 10.5px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; color: var(--cl-faint);
+}
+.cse-tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 14px; }
+.cse-tile {
+  border: 0; padding: 4px; border-radius: 12px; background: rgba(11, 15, 30, .6); cursor: pointer; text-align: left;
+  outline: 1px solid transparent; transition: outline-color .12s ease, background-color .12s ease;
+}
+.cse-tile:hover { background: rgba(11, 15, 30, .95); }
+.cse-tile[aria-pressed="true"] { outline: 2px solid var(--cl-lume); }
+.cse-tile:focus-visible { outline: 2px solid var(--cl-lume); }
+.cse-tile .cl-msg-card.cse-tile-card { width: 100%; font-size: 12px; font-weight: 700; color: var(--cl-text); padding: 10px 10px !important; overflow-wrap: normal; hyphens: auto; line-height: 1.25; }
+.cse-empty { font-size: 12px; color: var(--cl-faint); margin: 0 0 8px; }
+.cse-lib { list-style: none; margin: 0 0 8px; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.cse-lib li { display: flex; align-items: center; gap: 4px; border-radius: 9px; padding: 2px; }
+.cse-lib li[data-active] { background: var(--cl-lume-tint); }
+.cse-lib-apply { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; border: 0; background: none; color: var(--cl-text); cursor: pointer; padding: 6px; border-radius: 8px; font-size: 13px; text-align: left; }
+.cse-lib-apply span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cse-lib-apply:hover { background: rgba(255, 255, 255, .06); }
+.cse-lib-rename { display: flex; flex: 1; gap: 4px; }
+.cse-lib-rename input, .cse-save input {
+  flex: 1; min-width: 0; height: 30px; border-radius: 8px; border: 1px solid var(--cl-border); background: var(--cl-surface);
+  color: var(--cl-text); padding: 0 9px; font: inherit; font-size: 13px;
+}
+.cse-save { display: flex; gap: 6px; align-items: center; }
+.cse-icon-btn {
+  display: inline-grid; place-items: center; width: 28px; height: 28px; border-radius: 8px; border: 0; background: none;
+  color: var(--cl-muted); cursor: pointer; flex: none;
+}
+.cse-icon-btn:hover { background: rgba(255, 255, 255, .07); color: var(--cl-text); }
+.cse-icon-btn:focus-visible, .cse-chip:focus-visible, .cse-token:focus-visible, .cse-add:focus-visible, .cse-lib-apply:focus-visible { outline: 2px solid var(--cl-lume); outline-offset: 1px; }
+
+.cse-edit { display: flex; flex-direction: column; gap: 10px; }
+/* The pane scrolls; its children never shrink (a shrunken flex child clips
+   its own content instead of letting the pane scroll). */
+.cse-edit > *, .cse-start > * { flex-shrink: 0; }
+/* One tidy row per gradient stop: colour swatches, position, remove. */
+.cse-stop { display: grid; grid-template-columns: 56px minmax(0, 1fr) 150px 28px; gap: 8px; align-items: center; }
+.cse-stop-label { font-size: 12px; font-weight: 700; color: var(--cl-muted); }
+.cse-stop .cse-color { flex: none; }
+.cse-stop .cse-slider { min-width: 0; }
+.cse-stops { display: flex; flex-direction: column; gap: 6px; }
+.cse-design { display: flex; flex-direction: column; gap: 6px; }
+.cse-sec { padding: 8px 2px 10px; border-bottom: 1px solid rgba(255, 255, 255, .05); display: flex; flex-direction: column; gap: 8px; }
+.cse-sec:last-child { border-bottom: 0; }
+.cse-sub { display: flex; flex-direction: column; gap: 6px; padding: 6px 0 4px 10px; border-left: 2px solid rgba(42, 53, 88, .8); }
+.cse-row { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 10px; align-items: start; }
+.cse-row-label { display: flex; flex-direction: column; font-size: 12.5px; color: var(--cl-muted); font-weight: 700; padding-top: 5px; }
+.cse-row-label small { font-weight: 600; font-size: 11px; color: var(--cl-faint); }
+.cse-row-ctl { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
+.cse-slider { flex: 1 1 160px; min-width: 120px; margin-inline: 9px; } /* the thumb overhangs the track by half its width */
+.cse-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.cse-chip {
+  height: 28px; padding: 0 11px; border-radius: 9px; border: 1px solid var(--cl-border); background: rgba(28, 37, 66, .6);
+  color: var(--cl-muted); font: inherit; font-size: 12.5px; font-weight: 700; cursor: pointer;
+}
+.cse-chip:hover:not(:disabled) { color: var(--cl-text); border-color: rgba(37, 224, 200, .4); }
+.cse-chip[aria-checked="true"] { color: var(--cl-lume); background: var(--cl-lume-tint); border-color: rgba(37, 224, 200, .55); }
+.cse-chip:disabled { opacity: .4; cursor: not-allowed; }
+.cse-check { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--cl-muted); cursor: pointer; }
+.cse-add { align-self: flex-start; border: 1px dashed var(--cl-border); background: none; color: var(--cl-muted); border-radius: 9px; padding: 5px 10px; font: inherit; font-size: 12.5px; font-weight: 700; cursor: pointer; }
+.cse-add:hover { color: var(--cl-lume); border-color: rgba(37, 224, 200, .5); }
+
+.cse-color { display: flex; flex-direction: column; gap: 6px; flex: 1 1 auto; min-width: 0; }
+.cse-color-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.cse-token { width: 22px; height: 22px; border-radius: 50%; border: 2px solid rgba(11, 15, 30, .9); box-shadow: 0 0 0 1px rgba(255, 255, 255, .12); cursor: pointer; padding: 0; }
+.cse-token[aria-pressed="true"] { box-shadow: 0 0 0 2px var(--cl-lume); }
+.cse-color-sep { width: 1px; height: 18px; background: var(--cl-border); margin: 0 2px; }
+.cse-custom-on { box-shadow: 0 0 0 2px var(--cl-lume); border-radius: 50%; }
+
+.cse-css { display: flex; flex-direction: column; gap: 8px; }
+.cse-css-label { font-size: 12.5px; font-weight: 700; color: var(--cl-muted); display: flex; gap: 8px; align-items: baseline; }
+.cse-css-label small { font-weight: 600; color: var(--cl-faint); }
+.cse-css-input {
+  min-height: 170px; resize: vertical; border-radius: 10px; border: 1px solid var(--cl-border); background: var(--cl-abyss);
+  color: var(--cl-text); font-family: var(--cl-font-mono); font-size: 12.5px; line-height: 1.55; padding: 10px 12px;
+}
+.cse-css-input:focus-visible { outline: 2px solid var(--cl-lume); outline-offset: 1px; }
+.cse-report { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.cse-report li {
+  display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; gap: 2px 8px; align-items: baseline;
+  padding: 6px 8px; border-radius: 8px; background: rgba(11, 15, 30, .55); font-size: 12px;
+}
+.cse-report code { font-family: var(--cl-font-mono); color: var(--cl-text); overflow-wrap: anywhere; }
+.cse-report-icon { display: inline-grid; place-items: center; }
+.cse-report-status { font-weight: 800; font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase; }
+.cse-report-reason { grid-column: 2 / 4; color: var(--cl-muted); }
+.cse-report li[data-status="accepted"] .cse-report-icon, .cse-report li[data-status="accepted"] .cse-report-status { color: var(--cl-ok); }
+.cse-report li[data-status="adjusted"] .cse-report-icon, .cse-report li[data-status="adjusted"] .cse-report-status { color: var(--cl-glow); }
+.cse-report li[data-status="ignored"] .cse-report-icon, .cse-report li[data-status="ignored"] .cse-report-status { color: var(--cl-flash); }
+.cse-report li[data-status="overridden"] { opacity: .65; }
+.cse-report-empty, .cse-report-error { font-size: 12px; color: var(--cl-faint); margin: 0; display: flex; gap: 6px; align-items: center; }
+.cse-report-error { color: var(--cl-flash); }
+.cse-report-empty code { font-family: var(--cl-font-mono); color: var(--cl-muted); }
+
+@media (max-width: 860px) {
+  .cse-body { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* Short windows (the app's minimum is 720px tall): the editing panes get the
+   room; the preview stays usable at a smaller height and scrolls. */
+@media (max-height: 820px) {
+  .cse-preview { max-height: 150px; padding: 10px 12px; }
+  .cse-dialog-head { padding-bottom: 8px; }
+  .cse-dialog-head p { display: none; }
+}
+
+/* Settings: Appearance, Message styles (MessageStylesSettings.tsx) */
+.mss-empty { margin: 0 0 8px 46px; font-size: 12.5px; color: var(--cl-faint); }
+.mss-list { list-style: none; margin: 0 0 6px 46px; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; }
+.mss-list li { display: flex; flex-direction: column; gap: 6px; }
+.mss-list .cl-msg-card.mss-card { width: 100%; font-weight: 700; font-size: 13px; color: var(--cl-text); min-height: 52px; }
+.mss-actions { display: flex; gap: 2px; }

@@ -229,6 +229,30 @@ describe('voice chain — the gate with noise suppression OFF', () => {
         await vp.destroy();
     });
 
+    // Owner 2026-11-18: "make sure the audio pipeline is in the order that makes sense". The order is pinned above; this
+    // pins what that order relies on: the mic-volume slider is the gain node AFTER the gate (it can never push noise over
+    // the threshold, and the threshold stays in mic dBFS), and nothing after the AGC (whose look-ahead limiter is the
+    // last level-changing stage) changes the level: the compressor node is ratio 1 and the node after it is unity.
+    it('mic volume sits after the gate and EQ, in front of the AGC; nothing after the AGC changes the level', async () => {
+        const { vp, ctx } = await build({ noiseSuppression: true, voiceGate: true, micVolume: 200 });
+        const kinds = path(ctx);
+        const nodes: FakeNode[] = [];
+        for (let n: FakeNode | undefined = ctx.source; n; n = n.out[0]) nodes.push(n);
+        const gateAt = kinds.indexOf('gate'), agcAt = kinds.indexOf('agc');
+        const micVol = nodes[agcAt - 1];
+        expect(micVol.kind).toBe('gain');
+        expect(gateAt).toBeLessThan(agcAt - 1);
+        expect(kinds.slice(gateAt + 1, agcAt - 1).every(k => k === 'eq')).toBe(true);
+        expect((micVol.gain as { value: number }).value).toBeGreaterThan(1); // the 200 % boost lives on this node
+        const comp = nodes[agcAt + 1], after = nodes[agcAt + 2];
+        expect(comp.kind).toBe('compressor');
+        expect((comp.ratio as { value: number }).value).toBe(1);
+        expect(after.kind).toBe('gain');
+        expect((after.gain as { value: number }).value).toBe(1);
+        expect(kinds.slice(agcAt + 3)).toEqual(['analyser', 'destination']);
+        await vp.destroy();
+    });
+
     it('a gate that cannot load drops only itself — NS and AGC still run', async () => {
         const { vp, ctx } = await build({ noiseSuppression: true }, ['gate-worklet']);
         expect(path(ctx)).toEqual([
@@ -253,11 +277,10 @@ describe('voice chain — the gate with noise suppression OFF', () => {
         expect(rnnoise.msgs.at(-1)).toEqual({ type: 'toggle', enabled: false });
         // The gate was not touched by the NS toggles.
         expect(gate.msgs.at(-1)).toEqual({ type: 'gate', enabled: true });
-        vp.updateSettings({ ...SETTINGS, voiceGate: true, voiceGateThreshold: -38, voiceGateAuto: false } as never);
-        expect(gate.msgs.at(-2)).toEqual({ type: 'threshold', value: -38 });
-        expect(gate.msgs.at(-1)).toEqual({ type: 'auto', value: false }); // Automatic off: the user's threshold is never auto
-        vp.updateSettings({ ...SETTINGS, voiceGate: true, voiceGateThreshold: -38, voiceGateAuto: true } as never);
-        expect(gate.msgs.at(-1)).toEqual({ type: 'auto', value: true }); // Automatic on, whatever the manual value
+        vp.updateSettings({ ...SETTINGS, voiceGate: true, voiceGateThreshold: -38 } as never);
+        expect(gate.msgs.at(-1)).toEqual({ type: 'threshold', value: -38 });
+        // The automatic mode is gone (2026-11-17): the gate is never sent an 'auto' message.
+        expect(gate.msgs.some(m => (m as { type?: string }).type === 'auto')).toBe(false);
         expect(path(ctx)).toEqual(before);
         await vp.destroy();
     });
@@ -270,8 +293,8 @@ describe('voice chain — the gate with noise suppression OFF', () => {
         await vp.init({ track: track(), audioContext: ctx as unknown as AudioContext });
         const gate = gateNode()!;
         expect(gate.msgs).toContainEqual({ type: 'report', ms: 50 });
-        (gate.port as { onmessage: (e: { data: unknown }) => void }).onmessage({ data: { type: 'level', rms: lin(-41), open: true, thr: -47 } });
-        expect(onGateLevel).toHaveBeenCalledWith(expect.closeTo(-41, 3), true, -47);
+        (gate.port as { onmessage: (e: { data: unknown }) => void }).onmessage({ data: { type: 'level', rms: lin(-41), open: true } });
+        expect(onGateLevel).toHaveBeenCalledWith(expect.closeTo(-41, 3), true);
         await vp.destroy();
 
         workletNodes.length = 0;

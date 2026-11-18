@@ -1,7 +1,7 @@
 # Linux share matrix: Ubuntu 24.04 (noble). One image carries every session type; optional stacks (KDE, GNOME) are
 # best-effort and leave a marker file under /opt/clm/ when they install, so a missing package marks a cell
 # "not packaged" instead of failing the whole image.
-FROM ubuntu:24.04
+FROM ubuntu:24.04@sha256:73b999393d07f2bf65a40373778a44dc9a6d54ad7718d29247d8ff9413c4d6a8
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update -qq && apt-get install -y --no-install-recommends \
       ca-certificates dbus dbus-user-session dbus-x11 procps psmisc libsndfile1 python3 coreutils util-linux xz-utils curl \

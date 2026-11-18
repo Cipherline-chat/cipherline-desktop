@@ -116,6 +116,10 @@ const isObj = (v: unknown): v is Obj => typeof v === 'object' && v !== null && !
 const obj = (v: unknown): Obj => (isObj(v) ? v : {});
 const str = (v: unknown): string | null => (typeof v === 'string' && v.length > 0 ? v : null);
 const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+/** Server setting "Message styles" (card styles in channels), as the settings UI names it. */
+function messageStylesLabel(v: unknown): string {
+    return v === 'off' ? 'Off' : v === 'no_animation' ? 'No animation' : 'On';
+}
 const strs = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []);
 
 let LABELS: Map<string, string> | null = null;
@@ -297,6 +301,10 @@ function describe(e: AuditEntryLike): AuditDescription {
         case 'category.create': return out('folder', 'ok', `${actor} created the category "${str(d.name) ?? catName(d.category_id)}"`);
         case 'category.update': return categoryEdit('category', actor, d, nameOf, details, out);
         case 'category.delete': {
+            if (d.with_contents === true) {
+                contentsLines(details, d);
+                return out('folder', 'danger', `${actor} deleted the category "${str(d.name) ?? catName(d.category_id)}" and everything in it`);
+            }
             const subs = num(d.promoted_subcategories);
             if (subs) details.push(`${subs} sub-categor${subs === 1 ? 'y' : 'ies'} moved up to the top level`);
             return out('folder', 'danger', `${actor} deleted the category "${str(d.name) ?? catName(d.category_id)}"`);
@@ -331,6 +339,10 @@ function describe(e: AuditEntryLike): AuditDescription {
             return out('folder', 'accent', `${actor} moved the sub-category "${n}" into ${containerName(to)}`);
         }
         case 'subcategory.delete': {
+            if (d.with_contents === true) {
+                contentsLines(details, d);
+                return out('folder', 'danger', `${actor} deleted the sub-category "${str(d.name) ?? catName(d.category_id, 'a sub-category')}" and everything in it`);
+            }
             const parent = str(d.parent_category_id);
             if (parent) details.push(`Its contents moved up into ${containerName(parent)}`);
             return out('folder', 'danger', `${actor} deleted the sub-category "${str(d.name) ?? catName(d.category_id, 'a sub-category')}"`);
@@ -380,6 +392,7 @@ function describe(e: AuditEntryLike): AuditDescription {
                 else if (k === 'icon_attachment') details.push(after[k] ? 'Icon changed' : 'Icon removed');
                 else if (k === 'banner_attachment') details.push(after[k] ? 'Banner changed' : 'Banner removed');
                 else if (k === 'default_notification_level') details.push(`Default notifications: ${String(before[k])} to ${String(after[k])}`);
+                else if (k === 'message_styles') details.push(`Message styles: ${messageStylesLabel(before[k])} to ${messageStylesLabel(after[k])}`);
                 else if (k === 'system_channel_id') details.push(after[k] ? `System messages now go to ${channelLabel(nameOf(after[k], 'a channel'))}` : 'System messages turned off');
             }
             return out('server', 'accent', `${actor} changed the server settings`);
@@ -476,6 +489,24 @@ function pushMoves(
     if (total && total > moves.length) details.push(`...and ${total - moves.length} more`);
 }
 
+/** What a "delete with contents" took with it: counts, then the channel names. */
+function contentsLines(details: string[], d: Obj): void {
+    const parts = [
+        [num(d.channels_deleted), 'channel', 'channels'],
+        [num(d.subcategories_deleted), 'sub-category', 'sub-categories'],
+        [num(d.dividers_deleted), 'divider', 'dividers'],
+    ] as const;
+    const said = parts.filter(([n]) => !!n).map(([n, one, many]) => `${n} ${n === 1 ? one : many}`);
+    if (said.length) details.push(`Deleted ${said.join(', ')}`);
+    const chans = Array.isArray(d.channels) ? d.channels : [];
+    for (const c of chans) { const n = str(obj(c).name); if (n) details.push(`#${n}`); }
+    if (d.truncated === true) details.push('…and more');
+    const saved = num(d.server_saved_destroyed);
+    if (saved) details.push(`${saved} server-saved message${saved === 1 ? '' : 's'} destroyed`);
+    const calls = num(d.calls_ended);
+    if (calls) details.push(`${calls} live call${calls === 1 ? '' : 's'} ended`);
+}
+
 function categoryEdit(
     kind: 'category' | 'sub-category', actor: string, d: Obj,
     nameOf: (id: unknown, alt: string) => string,
@@ -489,5 +520,12 @@ function categoryEdit(
         return out('folder', 'accent', `${actor} renamed the ${kind} "${String(before.name)}" to "${String(after.name)}"`);
     }
     if (JSON.stringify(before.icon_name ?? null) !== JSON.stringify(after.icon_name ?? null)) details.push('Icon changed');
+    // Divider categories: the header look.
+    const styleBefore = str(before.header_style);
+    const styleAfter = str(after.header_style);
+    if (!styleBefore && styleAfter) details.push(`Now a divider category (${styleAfter} style)`);
+    else if (styleBefore && !styleAfter) details.push('Now an ordinary category');
+    else if (styleBefore && styleAfter && styleBefore !== styleAfter) details.push(`Divider style changed from ${styleBefore} to ${styleAfter}`);
+    if (styleBefore && styleAfter && JSON.stringify(before.header_color ?? null) !== JSON.stringify(after.header_color ?? null)) details.push('Divider colour changed');
     return out('folder', 'accent', `${actor} edited the ${kind} "${now}"`);
 }

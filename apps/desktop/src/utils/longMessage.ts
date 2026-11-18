@@ -22,15 +22,14 @@
  * 100 000-character cap and the server's limit use.
  */
 
-/** A message strictly LONGER than this collapses. 5 000 itself does not. */
-export const LONG_MESSAGE_THRESHOLD = 5_000;
 /**
- * A message of MORE lines than this collapses too, however short each line:
- * a pasted 60-line code block is a tall message even at 1 500 characters.
- * Lines are `\n`-separated (a code block's lines, list items, paragraphs);
- * wrapping of a long line is covered by the character threshold.
+ * A message strictly LONGER than this collapses; 3 000 itself does not. This is
+ * the ONLY rule (owner, 2026-11-18: "change the limit ... to do that at 3k").
+ * There used to be a second rule (30+ lines collapsed however short), which made
+ * ~1k-character rules posts and lists collapse; it was removed on request, so a
+ * tall message under 3 000 characters always shows in full.
  */
-export const LONG_MESSAGE_MAX_LINES = 30;
+export const LONG_MESSAGE_THRESHOLD = 3_000;
 /** Target preview length when collapsed. */
 export const LONG_MESSAGE_PREVIEW_CHARS = 700;
 /** The cut is never moved further back than this (so a preview is never a stub). */
@@ -43,14 +42,7 @@ const WORDS_PER_MINUTE = 200;
 export interface TextSpan { start: number; end: number }
 
 export function isLongMessage(text: unknown): text is string {
-    if (typeof text !== 'string') return false;
-    if (text.length > LONG_MESSAGE_THRESHOLD) return true;
-    // More than LONG_MESSAGE_MAX_LINES lines = at least that many line breaks.
-    let breaks = 0;
-    for (let at = text.indexOf('\n'); at >= 0; at = text.indexOf('\n', at + 1)) {
-        if (++breaks >= LONG_MESSAGE_MAX_LINES) return true;
-    }
-    return false;
+    return typeof text === 'string' && text.length > LONG_MESSAGE_THRESHOLD;
 }
 
 // The inline constructs the renderer turns into something other than text.
@@ -164,18 +156,12 @@ export function readMinutes(text: string): number {
 export interface LongMessageStats {
     chars: number;
     minutes: number;
-    /** Set when the message is long because of its LINES (it is under the character threshold). */
+    /** Optional line count shown first in the label. Not set any more: only characters make a message long. */
     lines?: number;
 }
 
 export function longMessageStats(text: string): LongMessageStats {
-    const stats: LongMessageStats = { chars: text.length, minutes: readMinutes(text) };
-    if (text.length <= LONG_MESSAGE_THRESHOLD) {
-        let lines = 1;
-        for (let at = text.indexOf('\n'); at >= 0; at = text.indexOf('\n', at + 1)) lines++;
-        stats.lines = lines;
-    }
-    return stats;
+    return { chars: text.length, minutes: readMinutes(text) };
 }
 
 /** "Long message · 12,345 characters · ~3 min read" (and "· 64 lines" first for a message long by lines) */

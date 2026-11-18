@@ -5,6 +5,7 @@ import type { GifSettingsHook } from '../../../hooks/useGifSettings';
 import { useSeasonalEffects } from '../../../hooks/useSeasonalEffects';
 import { useAmbientMotion } from '../../../hooks/useAmbientMotion';
 import { BACKUP_RESTORED_EVENT } from '../../../services/backupRegistry';
+import { MessageStylesSettings } from './MessageStylesSettings';
 import {
     INITIAL_START_MINIMIZED, INITIAL_MINIMIZE_TO_TRAY, loginToggleLabel, loginToggleDesc,
     startMinimizedDesc, minimizeToTrayDesc, loginStateAfterSet, type LoginItemView,
@@ -143,6 +144,10 @@ export const AppearancePane: React.FC<AppearancePaneProps> = ({ gif }) => {
                     </div>
                 </div>
             </div>
+
+            {/* Message styles: how other people's styled messages show, and
+                "My styles" (the card editor's saved library). */}
+            <MessageStylesSettings />
         </>
     );
 };

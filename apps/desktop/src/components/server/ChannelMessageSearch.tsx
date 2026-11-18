@@ -29,13 +29,18 @@ interface Props {
     /** Decrypted messages from the active channel. */
     messages: SearchableMessage[];
     onJumpToMessage: (messageId: string) => void;
+    /** Focus the field when it mounts (opened from the channel header's Search button). */
+    autoFocus?: boolean;
+    /** Escape on an already-empty field (the header-opened search closes on it). */
+    onEscapeEmpty?: () => void;
 }
 
 const MAX_HITS = 8;
 
-export const ChannelMessageSearch: React.FC<Props> = ({ channelId, messages, onJumpToMessage }) => {
+export const ChannelMessageSearch: React.FC<Props> = ({ channelId, messages, onJumpToMessage, autoFocus = false, onEscapeEmpty }) => {
     const [query, setQuery] = useState('');
     const inputRef = useRef<HTMLInputElement>(null);
+    useEffect(() => { if (autoFocus) inputRef.current?.focus(); }, [autoFocus]);
 
     // Reset query whenever the user switches channels.
     useEffect(() => { setQuery(''); }, [channelId]);
@@ -94,7 +99,10 @@ export const ChannelMessageSearch: React.FC<Props> = ({ channelId, messages, onJ
                     value={query}
                     onChange={(e) => setQuery(e.target.value)}
                     onKeyDown={(e) => {
-                        if (e.key === 'Escape') { setQuery(''); inputRef.current?.blur(); }
+                        if (e.key === 'Escape') {
+                            if (query === '' && onEscapeEmpty) { onEscapeEmpty(); return; }
+                            setQuery(''); inputRef.current?.blur();
+                        }
                     }}
                     className="text-[13px]"
                     style={{ paddingTop: 8, paddingBottom: 8, borderRadius: 11, paddingRight: 32 }}

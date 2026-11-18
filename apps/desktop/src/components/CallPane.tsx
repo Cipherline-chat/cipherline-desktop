@@ -32,6 +32,7 @@ import type { VoiceSettingsHook } from '../hooks/useVoiceSettings';
 import * as voiceProcessorManager from '../utils/voiceProcessorManager';
 import { NoiseFloorWatcher, noisePromptApplies, noisePromptAllowed, snoozeNoisePrompt } from '../utils/noiseFloorPrompt';
 import { recordMicLevelSecond, resetMicLevelLog } from '../utils/micLevelLog';
+import { publishGateCutSecond } from '../utils/gateCut';
 import * as audioHealth from '../utils/audioHealth';
 import { setCurrentPipelineDbfs, resetPipelineDbfs } from '../utils/micLevelRegistry';
 import { decideDisconnectHandling } from '../utils/callTransition';
@@ -918,6 +919,8 @@ export const CallPane = ({
             onNsStats: (stats) => audioHealth.recordNsStats(stats),
             onAgcStats: (stats) => audioHealth.recordAgcStats(stats),
             onMicLevelStats: (stats) => recordMicLevelSecond(stats),
+            // The gate's voice-vs-gate counts, for the "your voice gate may be cutting you off" prompt (useGateCutPrompt).
+            onGateCut: (sec) => publishGateCutSecond(sec),
         });
     }, [voice, toast]);
 

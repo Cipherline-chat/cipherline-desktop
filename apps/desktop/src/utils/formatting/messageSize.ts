@@ -73,6 +73,24 @@ export function sizeField(size: MessageSize | null | undefined): { size?: Messag
     return size && isMessageSize(size) ? { size } : {};
 }
 
+/**
+ * The chat row's message body text: 15px at normal size, line-height
+ * 'normal'. The ONE source for ChatPane's row body and the composer's live
+ * card preview (components/messageCard/ComposerCardSurface), so the preview's
+ * text can't drift from the posted message's.
+ */
+export const MESSAGE_BODY_PX = 15;
+export const MESSAGE_BODY_LINE_HEIGHT = 'normal';
+
+/**
+ * The chat row's message body element classes (ChatPane's row body; harnesses
+ * draw the same element). `cl-msg-body` (styles/formatting.css) clips only
+ * SIDEWAYS: an inline emoji (1.25em in a line sized for 1em text) draws a few
+ * px above its line, and the old `overflow-hidden` cut the top off every emoji
+ * on a message's first line (owner, 2026-11-18). Line spacing is unchanged.
+ */
+export const MESSAGE_BODY_CLASS = 'text-white/90 break-words whitespace-pre-wrap cl-msg-body';
+
 /** The message body's font size for a base px size and a message size (15px -> 13.125 / 15 / 22.5). */
 export function scaledPx(basePx: number, size: MessageSize | null | undefined): string {
     return `${+(basePx * sizeScaleFor(size)).toFixed(3)}px`;

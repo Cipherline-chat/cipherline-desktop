@@ -6,7 +6,8 @@
 // migration when we add things like `MANAGE_THREADS`, `USE_APPLICATION`, etc.
 //
 // Layout:
-//   0–15  : server-wide permissions (apply across the whole server)
+//   0–15  : server-wide permissions (apply across the whole server);
+//           14 = STYLE_MESSAGES, which is overridable per channel too
 //   16–23 : per-channel permissions (resolved against ChannelOverride)
 //   24–31 : voice-channel permissions (31 = START_CALLS)
 //   30    : SAVE_MESSAGES — a per-channel permission that lives here only
@@ -48,6 +49,18 @@ const PermissionBits = {
     // USING an emoji needs nothing new — SEND_MESSAGES and ADD_REACTIONS
     // already gate posting and reacting.
     MANAGE_EMOJIS:        1n << 13n,
+    // STYLE_MESSAGES — post a message with a card style ("Style your own
+    // message card", 2026-11-17; packages/shared/card-style.ts). OFF for
+    // @everyone (not in DEFAULT_EVERYONE_PERMISSIONS): servers grant it to the
+    // roles that write #rules / #announcements, and can allow or deny it per
+    // channel or category like any other bit (the resolver applies overrides
+    // to every bit, whatever block it sits in). ADMINISTRATOR and the owner
+    // have it implicitly. Bit 14 (free; below 32, so no JS-number or >31-bit
+    // serialisation concerns anywhere). Content is E2EE, so the API enforces
+    // it on the plaintext `styled` flag the client sets on a channel message
+    // (the `mentions_everyone` pattern), and readers render a card only on a
+    // row whose flag the server accepted. DMs and groups need no permission.
+    STYLE_MESSAGES:       1n << 14n,
 
     // Per-channel (bits 16–23) — resolved against ChannelOverride allow/deny
     VIEW_CHANNEL:         1n << 16n,

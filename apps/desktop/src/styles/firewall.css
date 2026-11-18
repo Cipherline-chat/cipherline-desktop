@@ -38,6 +38,13 @@
   border: 1px solid var(--cl-border);
 }
 
+/* What the opaque overlay covers (FirewallOverlay coverRef: Dashboard's content
+   column), once it has faded in: not rendered at all while the game is open.
+   See FW_COVER_AFTER_MS in FirewallOverlay.tsx: the hidden view's animations and
+   paint compete with the game for the main thread and the GPU. Layout, scroll and
+   state are kept. */
+[data-fw-covered] { content-visibility: hidden; }
+
 .fw-stage { position: absolute; inset: 0; }
 .fw-canvas {
   position: absolute;

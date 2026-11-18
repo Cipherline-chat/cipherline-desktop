@@ -1,6 +1,8 @@
 import { useSpeakerPromotion } from '../hooks/useSpeakerPromotion';
 import { useEchoDetection } from '../hooks/useEchoDetection';
 import { ECHO_PROMPT_COPY } from '../utils/echoPrompt';
+import { useGateCutPrompt } from '../hooks/useGateCutPrompt';
+import { GATE_CUT_PROMPT_COPY } from '../utils/gateCutPrompt';
 import { applyPromotion as applyPromotionShared } from '../utils/overflowPriority';
 import React from 'react';
 import { setOwnCallMedia, OWN_MEDIA_OFF } from '../utils/keysBeats';
@@ -198,14 +200,21 @@ import {
 } from '../utils/deviceSwitch';
 import {
     createMicDeviceSync,
+    readCaptureTrack,
     setRoomEchoCancellation,
     type MicDeviceSync,
     type MicTrackLike,
+    type RawCaptureTrackLike,
 } from '../utils/micDeviceSync';
+import { logMicCapture } from '../utils/voiceDiagLog';
 import { useNotificationPrefs } from '../contexts/NotificationContext';
 import { playSound } from '../utils/notificationSounds';
 import { LocalScreenShareTile } from './call/LocalScreenShareTile';
 import { useToast } from '../contexts/ToastContext';
+import {
+    callMediaCarry, decideCarriedMedia, carryStoppedToast, canPublishSource, stopCapture,
+    PROTO_SOURCE_CAMERA, PROTO_SOURCE_SCREEN_SHARE, type LiveMediaSnapshot,
+} from '../utils/callMediaCarry';
 import { reapplyOutputDevice, setOutputDeviceFallbackHandler } from '../utils/audioOutput';
 import type { DeviceHint } from '../utils/deviceResolve';
 import { SilenceWatchdog, type SilenceWatchdogState } from '../utils/audioSilenceWatchdog';
@@ -388,6 +397,11 @@ const sidebarPillVariants = {
     animate: { opacity: 1, transition: { duration: 0.24, ease: [0.22, 1, 0.36, 1] as const } },
     exit:    { opacity: 0, transition: { duration: 0.16, ease: [0.4, 0, 1, 1] as const } },
 };
+
+/** How a share start was asked for. `fresh`: a new publication (new sender, new encoder).
+ *  `carried`: a moderator's move brought this capture over from the previous call
+ *  (utils/callMediaCarry.ts) - publish it instead of capturing again. */
+interface ShareStartOpts { fresh?: boolean; carried?: MediaStreamTrack | null }
 
 /** GPU vendors from main (for the NVIDIA rule in decideCameraCodec), time-boxed. */
 function cameraGpuVendors(): Promise<readonly { vendor: string }[] | null> {
@@ -1346,6 +1360,19 @@ export const SidebarConference = ({
     const echo = useEchoDetection({
         room, aecOn: echoCancellation, micOpen: !localIsMuted, deafened: isDeafenedForUi,
         turnOnEchoCancellation,
+    });
+
+    // "Your voice gate may be cutting you off": the fixed gate closing on the user's own voiced speech (useGateCutPrompt).
+    // Never while the gate is off, muted (incl. push-to-talk with the key up) or deafened; once per call at most.
+    const gateCutNoop = React.useCallback(() => {}, []);
+    const gateCut = useGateCutPrompt({
+        room,
+        gateOn: !!voice?.settings.voiceGate,
+        thresholdDb: voice?.settings.voiceGateThreshold ?? -45,
+        micOpen: !localIsMuted,
+        deafened: isDeafenedForUi,
+        setThreshold: voice?.setVoiceGateThreshold ?? gateCutNoop,
+        setGate: voice?.setVoiceGate ?? gateCutNoop,
     });
 
     // Publish MY mute / deafen (the user's own choice - not push-to-talk, not a
@@ -3819,7 +3846,7 @@ export const SidebarConference = ({
         });
     };
 
-    const handleScreenShareSelect = async (requested: ScreenShareOptions | null, startOpts?: { fresh?: boolean }) => {
+    const handleScreenShareSelect = async (requested: ScreenShareOptions | null, startOpts?: ShareStartOpts) => {
         // A brand-new share (nothing live, not an internal restart) starts with a clean "which screen?" answer; a restart of the live one keeps it.
         if (!startOpts?.fresh && !currentShareRef.current) forgetScreenAnswer();
         // Every start and restart comes through here: nothing asks a window for more than it can deliver.
@@ -3843,12 +3870,14 @@ export const SidebarConference = ({
         }
         setIsScreenSharePickerOpen(false);
         if (!options || !localParticipant) {
+            stopCapture(startOpts?.carried); // a capture carried across a move that nothing will publish
             window.electronAPI?.resolveDesktopSource(null);
             return;
         }
         const tracker = shareStartRef.current!;
         const attempt = tracker.begin();
         if (attempt === null) {
+            stopCapture(startOpts?.carried);
             console.info('[ScreenShare] a share is already starting — ignoring this selection');
             return;
         }
@@ -4173,7 +4202,7 @@ export const SidebarConference = ({
     // published the video (that ends the button's loading state); returns the
     // outcome for the paths that never get there.
     const startScreenShareFrom = async (
-        options: ScreenShareOptions, onPublished: () => void, startOpts?: { fresh?: boolean }, republishRun?: RepublishRun,
+        options: ScreenShareOptions, onPublished: () => void, startOpts?: ShareStartOpts, republishRun?: RepublishRun,
     ): Promise<ShareStartOutcome> => {
         if (!localParticipant) return 'cancelled';
         // A fallback that must change the ENCODER (codec, size) asks for a
@@ -4382,7 +4411,19 @@ export const SidebarConference = ({
         // there to answer it, and a person answering is time the viewers' hold
         // (utils/shareHold.ts, 6 s) does not have. See sharePlatformSupport.canReuseLiveCapture.
         let reusedCapture: MediaStreamTrack | null = acquiredCapture;
-        let reusedHow: 'acquired_first' | 'live_clone' | 'crop_source' = 'acquired_first';
+        let reusedHow: 'acquired_first' | 'live_clone' | 'crop_source' | 'move_carry' = 'acquired_first';
+        // A moderator's move (utils/callMediaCarry.ts): the previous call's capture, cloned before
+        // that call's room stopped its tracks. Published here, in THIS room, under THIS room's key.
+        const carriedCapture = !reusedCapture && startOpts?.carried && startOpts.carried.readyState === 'live' ? startOpts.carried : null;
+        if (startOpts?.carried && !carriedCapture && startOpts.carried !== acquiredCapture) stopCapture(startOpts.carried); // ended meanwhile: capture again below
+        if (carriedCapture) {
+            reusedCapture = carriedCapture;
+            reusedHow = 'move_carry';
+            reuseCloneRef.current = carriedCapture; // stopped by handleScreenShareSelect if nothing took it
+            // The kept capture never reaches main's resolve step: continue the live source's consent
+            // (the same source only) so its native audio can start again without a dialog.
+            await continueShareGrant(options);
+        }
         if (!reusedCapture && localParticipant.isScreenShareEnabled && (fresh || portalSameSource)) {
             const viaPortalNow = await captureViaPortal();
             const liveCapture = localParticipant.getTrackPublication(Track.Source.ScreenShare)?.track?.mediaStreamTrack;
@@ -4658,7 +4699,7 @@ export const SidebarConference = ({
             nativePipe = await tryStartNativeShare(box, captureFps, Math.min(maxBitrate, 30_000_000), viaPortalStart, options.resolution, options.sourceId,
                 fresh === true && currentShareRef.current?.sourceId === options.sourceId);
         }
-        if (!sliceLayout && !isWindowSource) {
+        if (!sliceLayout && !isWindowSource && !carriedCapture) {
             const hdr = await tryStartHdrShare(options, box, captureFps);
             hdrPipe = hdr.pipe;
             if (!hdrPipe && hdr.spent) {
@@ -5125,11 +5166,13 @@ export const SidebarConference = ({
         };
         currentShareRef.current = recorded;
         setCurrentShare(recorded);
+        callMediaCarry.noteShare(recorded, localParticipant.getTrackPublication(Track.Source.ScreenShare)?.trackSid ?? null);
         return 'published';
     };
     React.useEffect(() => {
         republishShareRef.current = (o: ScreenShareOptions, opts?: { fresh?: boolean }) => { void handleScreenShareSelect(o, opts); };
     });
+
     React.useEffect(() => { adjustScreenShareQualityRef.current = adjustScreenShareQuality; });
 
     const toggleDeafen = () => {
@@ -5227,7 +5270,11 @@ export const SidebarConference = ({
         const micTrack = localParticipant.getTrackPublication(Track.Source.Microphone)?.track;
         if (!(micTrack instanceof LocalAudioTrack)) return;
 
+        // What the capture device delivers (rate, channels, the browser flags it got, device kind), for reports.
+        logMicCapture(readCaptureTrack(micTrack as unknown as MicTrackLike) as (RawCaptureTrackLike & { label?: string }) | null);
         const onRestarted = () => {
+            // A restart opens a new capture (device switch, recovery): log what that one delivers.
+            logMicCapture(readCaptureTrack(micTrack as unknown as MicTrackLike) as (RawCaptureTrackLike & { label?: string }) | null);
             // Checked on the RAW capture track (readCaptureTrack inside the
             // follower), not `micTrack.mediaStreamTrack`: with the voice
             // processor attached that getter is the processor's WebAudio
@@ -5800,6 +5847,97 @@ export const SidebarConference = ({
         const off = subscribeWindowBackground(() => sampler.noteFocusChange());
         return () => { alive = false; clearInterval(txIv); offSession(); off(); sampler.dispose(); };
     }, [localParticipant, ssTrackSid, currentShare]);
+
+    // ── A moderator's move keeps the share and camera (utils/callMediaCarry.ts) ──
+    // The record of the live share survives this component's remounts (portal moves),
+    // keyed to its publication so a stale record is never mistaken for the live one.
+    React.useEffect(() => {
+        if (currentShare && ssTrackSid) callMediaCarry.noteShare(currentShare, ssTrackSid);
+    }, [currentShare, ssTrackSid]);
+    // What is live right now, for the Dashboard's force_move flow to snapshot just
+    // before this call's pane unmounts. Re-registered every render: always this render's refs.
+    React.useEffect(() => callMediaCarry.register(() => {
+        const lp = localParticipant;
+        if (!lp) return null;
+        let share: LiveMediaSnapshot['share'] = null;
+        const ssPub = lp.getTrackPublication(Track.Source.ScreenShare);
+        const options = lp.isScreenShareEnabled
+            ? (currentShareRef.current ?? callMediaCarry.notedShareFor(ssPub?.trackSid))
+            : null;
+        if (options) {
+            let capture: MediaStreamTrack | null = null;
+            // A generated track (Linux hardware path, HDR tone-map) dies with its pipeline: capture again instead.
+            if (!nativePipeRef.current && !hdrPipelineRef.current) {
+                if (cropPipelineRef.current) {
+                    capture = cropPipelineRef.current.cloneSource();
+                } else {
+                    const live = ssPub?.track?.mediaStreamTrack;
+                    if (live && live.readyState === 'live') { try { capture = live.clone(); } catch { capture = null; } }
+                }
+            }
+            share = { options: { ...options }, capture };
+        }
+        return { share, camera: lp.isCameraEnabled };
+    }));
+    // The destination side: collect what a move carried here, once, and publish it under
+    // this room's key - or stop it and say why. Never in the clear (decideCarriedMedia).
+    const carryCheckedRef = React.useRef(false);
+    React.useEffect(() => {
+        if (carryCheckedRef.current || !localParticipant || !sessionId) return;
+        carryCheckedRef.current = true;
+        const carry = callMediaCarry.take(sessionId);
+        if (!carry) return;
+        const lp = localParticipant;
+        const e2eeActive = lp.isE2EEEnabled === true;
+        const callName = carry.toCallName;
+        if (carry.camera) {
+            const d = decideCarriedMedia({
+                e2eeActive, channelAllows: canVideo, moderatorDisabled: localServerMutedVideo,
+                grantAllows: canPublishSource(lp, PROTO_SOURCE_CAMERA),
+            });
+            console.info(`[MoveCarry] camera: ${d.action === 'publish' ? 'publish' : `stop (${d.reason})`}`);
+            if (d.action === 'publish') {
+                // After this commit, like a press of the camera button (not a render-time state cascade).
+                queueMicrotask(() => {
+                    setIsCameraEnabling(true);
+                    setCameraError(null);
+                    startCamera(asCameraParticipant(lp), {
+                        ...cameraStartOptions(),
+                        single: initialLayering(remoteParticipants.length) === 'single',
+                    }).catch(err => {
+                        console.warn('[MoveCarry] camera restart failed:', err);
+                        setIsCameraEnabling(false);
+                        toast.push(carryStoppedToast('camera', 'failed', callName));
+                    });
+                });
+            } else {
+                toast.push(carryStoppedToast('camera', d.reason, callName));
+            }
+        }
+        if (carry.share) {
+            const share = carry.share;
+            const d = decideCarriedMedia({
+                e2eeActive, channelAllows: canScreenShare, moderatorDisabled: localServerMutedScreenShare,
+                grantAllows: canPublishSource(lp, PROTO_SOURCE_SCREEN_SHARE),
+            });
+            console.info(`[MoveCarry] share: ${d.action === 'publish' ? 'publish' : `stop (${d.reason})`} (capture ${share.capture ? 'kept' : 'to re-acquire'})`);
+            if (d.action === 'publish' && lp.isScreenShareEnabled) {
+                stopCapture(share.capture); // already sharing here: the live share stays as it is
+            } else if (d.action === 'publish') {
+                void (async () => {
+                    try { await handleScreenShareSelect(share.options, { fresh: true, carried: share.capture }); }
+                    catch (err) { console.warn('[MoveCarry] share restart threw:', err); }
+                    if (!lp.isScreenShareEnabled) toast.push(carryStoppedToast('share', 'failed', callName));
+                })();
+            } else {
+                stopCapture(share.capture);
+                toast.push(carryStoppedToast('share', d.reason, callName));
+            }
+        }
+    // Once per mounted call UI: the carry is single-use and bound to this call id.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [localParticipant, sessionId]);
+
     // A suggestion made for a setting that has since changed (or a share that ended) is stale.
     React.useEffect(() => () => { closeOverloadOffer(); }, [ssTrackSid, currentShare]);
     // The keep-alive stage goes with the publication / setting it was engaged for (a republish, a swap, the share's end).
@@ -6399,6 +6537,31 @@ export const SidebarConference = ({
                     <ClButton size="sm" variant="ghost" onClick={echo.dismiss}>{ECHO_PROMPT_COPY.dismiss}</ClButton>
                     {echo.prompt.offerNever && (
                         <ClButton size="sm" variant="ghost" onClick={echo.neverAskAgain}>{ECHO_PROMPT_COPY.never}</ClButton>
+                    )}
+                </motion.div>
+            )}
+
+            {/* "Your voice gate may be cutting you off" - same pill as the echo prompt above (useGateCutPrompt). */}
+            {gateCut.prompt && (
+                <motion.div
+                    variants={sidebarPillVariants}
+                    initial="initial"
+                    animate="animate"
+                    role="status"
+                    data-testid="gate-cut-prompt"
+                    className="mx-3 mb-1 flex flex-wrap items-center gap-2 px-3 py-2 bg-cl-deep border border-cl-flash/40 rounded-xl text-[11px] text-cl-muted"
+                >
+                    <Mic className="w-3 h-3 text-cl-flash shrink-0" />
+                    <span className="text-cl-text flex-1 min-w-[10rem]">
+                        <strong>{GATE_CUT_PROMPT_COPY.title}</strong> — {GATE_CUT_PROMPT_COPY.body(gateCut.prompt.detection.thresholdDb)}
+                    </span>
+                    {gateCut.prompt.detection.suggestDb !== null && (
+                        <ClButton size="sm" onClick={gateCut.lower}>{GATE_CUT_PROMPT_COPY.lower(gateCut.prompt.detection.suggestDb)}</ClButton>
+                    )}
+                    <ClButton size="sm" variant={gateCut.prompt.detection.suggestDb !== null ? 'ghost' : undefined} onClick={gateCut.turnOff}>{GATE_CUT_PROMPT_COPY.turnOff}</ClButton>
+                    <ClButton size="sm" variant="ghost" onClick={gateCut.dismiss}>{GATE_CUT_PROMPT_COPY.dismiss}</ClButton>
+                    {gateCut.prompt.offerNever && (
+                        <ClButton size="sm" variant="ghost" onClick={gateCut.neverAskAgain}>{GATE_CUT_PROMPT_COPY.never}</ClButton>
                     )}
                 </motion.div>
             )}

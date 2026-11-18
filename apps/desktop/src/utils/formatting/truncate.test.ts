@@ -5,7 +5,7 @@
 import { describe, it, expect } from 'vitest';
 import { parseMessage, type BlockNode, type InlineNode } from './markdown';
 import { truncateBlocks, previewSource, safeCut, PREVIEW_SOURCE_MAX } from './truncate';
-import { isLongMessage, longMessageStats, longMessageLabel, LONG_MESSAGE_MAX_LINES } from '../longMessage';
+import { isLongMessage, longMessageStats, longMessageLabel } from '../longMessage';
 
 const lines = (n: number, f: (i: number) => string) => Array.from({ length: n }, (_, i) => f(i)).join('\n');
 const CODE60 = '```ts\n' + lines(60, i => `const v${i} = ${i};`) + '\n```';
@@ -22,20 +22,20 @@ function flat(blocks: readonly BlockNode[]): InlineNode[] {
 }
 const textOf = (blocks: readonly BlockNode[]) => flat(blocks).filter(n => n.t === 'text').map(n => (n as { v: string }).v).join('');
 
-describe('isLongMessage counts lines, not just characters', () => {
-    it(`more than ${LONG_MESSAGE_MAX_LINES} lines collapses, however short`, () => {
-        expect(isLongMessage(lines(30, () => 'x'))).toBe(false);
-        expect(isLongMessage(lines(31, () => 'x'))).toBe(true);
+describe('isLongMessage counts characters only (owner, 2026-11-18)', () => {
+    it('a tall message under 3,000 characters never collapses, however many lines', () => {
+        expect(isLongMessage(lines(31, () => 'x'))).toBe(false);
+        expect(isLongMessage(lines(200, () => 'rule line'))).toBe(false);
         expect(CODE60.length).toBeLessThan(1500);
-        expect(isLongMessage(CODE60)).toBe(true);
+        expect(isLongMessage(CODE60)).toBe(false);
     });
-    it('the character rule is unchanged', () => {
-        expect(isLongMessage('x'.repeat(5000))).toBe(false);
-        expect(isLongMessage('x'.repeat(5001))).toBe(true);
+    it('the character rule is 3,000', () => {
+        expect(isLongMessage('x'.repeat(3000))).toBe(false);
+        expect(isLongMessage('x'.repeat(3001))).toBe(true);
     });
-    it('the footer names the lines when lines made it long', () => {
-        expect(longMessageLabel(longMessageStats(CODE60))).toMatch(/^Long message · 62 lines · [\d,]+ characters · ~1 min read$/);
+    it('the footer names characters (no line count any more)', () => {
         expect(longMessageLabel(longMessageStats('x '.repeat(3000)))).toMatch(/^Long message · 6,000 characters/);
+        expect(longMessageLabel(longMessageStats(CODE60))).not.toMatch(/lines/);
     });
 });
 

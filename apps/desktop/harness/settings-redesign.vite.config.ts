@@ -4,6 +4,7 @@
 // Fakes: the network (axios adapter in -main), useAuth + avatar decrypt (aliases), window.electronAPI (partial).
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+import { whatsNewPlugin } from '../vite-plugin-whats-new'
 import * as path from 'path'
 import * as os from 'os'
 import { fileURLToPath } from 'url'
@@ -12,7 +13,8 @@ const app = path.resolve(__dirname, '..')
 export default defineConfig({
   root: app,
   cacheDir: process.env.SR_CACHE ?? path.join(os.tmpdir(), 'vite-settings-redesign'),
-  plugins: [react()],
+  // virtual:whats-new (src/utils/whatsNew.ts) is served by the app's own plugin.
+  plugins: [whatsNewPlugin(), react()],
   server: { host: '127.0.0.1', port: Number(process.env.SR_PORT ?? 5311), strictPort: true, open: false },
   define: {
     'import.meta.env.VITE_APP_VERSION': JSON.stringify('1.0.23'),

@@ -1,7 +1,7 @@
 # Linux share matrix: Arch Linux (rolling) — the closest container to the owner's CachyOS tester (same package versions
 # modulo CachyOS's rebuilt x86-64-v3 binaries; cachyos.Dockerfile tries the real thing).
 # pacman aborts the whole transaction on one unknown name, so packages go in one at a time and a miss is just logged.
-FROM archlinux:latest
+FROM archlinux:latest@sha256:d4594bb2300cba11f41c2f27923eb56f63d9988909c402f9c95517d1e362c899
 RUN cat > /usr/local/bin/pac <<'EOS'
 #!/bin/sh
 for p in "$@"; do if out=$(pacman -Sy --noconfirm --needed "$p" 2>&1); then echo "pac ok   $p"; else echo "pac MISS $p :: $(echo "$out" | tail -2 | tr "\n" " ")"; fi; done

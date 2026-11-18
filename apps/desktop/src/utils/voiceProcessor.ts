@@ -85,7 +85,9 @@ import type { VoiceSettings } from '../hooks/useVoiceSettings';
 import { loadInlineRnnoiseWorkletSource, loadRnnoiseWorkletSource } from './rnnoiseSources';
 import { loadSpeexLightWorkletSource, loadSpeexWasmBytes } from './speexSources';
 import { AGC_WORKLET_SOURCE } from './agcWorkletSource';
+import { gateCutSecondFrom, type GateCutSecond } from './gateCut';
 import agcKernelSrc from '../audio/agcKernel.js?raw';
+import gateCutMeterSrc from '../audio/gateCutMeter.js?raw';
 import { registerCtxForUnlock } from './audioUnlock';
 import { workletModuleUrl, forgetWorkletModuleUrl } from './workletModuleUrl';
 import { planVoiceChain, type VoiceChainAvailability, type VoiceChainPlan } from './voiceChain';
@@ -245,65 +247,19 @@ const registeredWorkletProcessors = new WeakMap<BaseAudioContext, Set<string>>()
 //   4. Otherwise → ramp gate closed (slow release so words don't get cut).
 export const GATE_WORKLET_SOURCE = `
 ${agcKernelSrc.replace(/^export /gm, '')}
-
+${gateCutMeterSrc.replace(/^import .*$/gm, '').replace(/^export /gm, '')}
+// The fixed-threshold gate as it was before the automatic mode (d6c6ef7f, 2026-11-11), restored 2026-11-17 on the
+// owner's call ("leave out the auto part and go back to the way it was"): the user's threshold (default -45 dBFS),
+// 150 ms hold, ~0.7 ms attack, 50 ms release. Later additions, none of which affects what the gate passes: the
+// quietest-block report (minDb, for the background-noise prompt) and GateCutMeter (gateCutMeter.js: how much of the
+// user's voiced speech the gate closes on, for the "your voice gate may be cutting you off" prompt; detection only,
+// the threshold never moves by itself). Its pitch analysis runs only while the gate is on.
 class GateWorklet extends AudioWorkletProcessor {
     constructor() {
         super();
         // Default: disabled (pass-through)
         this.enabled   = false;
         this.threshold = Math.pow(10, -45 / 20); // linear, -45 dBFS default
-        // Auto mode (the user's "Automatic" voice-gate toggle, on by default): the effective threshold sits
-        // AUTO_SPEECH_RATIO (40%) of the way (in dB) from the measured noise floor up to the measured speech level,
-        // but at least AUTO_MARGIN_DB and at most AUTO_MAX_MARGIN_DB above the floor, clamped to
-        // [AUTO_MIN_DB, AUTO_MAX_DB]. Owner 2026-11-12: on a very low-noise mic "floor + 7 dB" sat around -60 and
-        // let breathing and movement through. Since 2026-11-13 it is also never more than AUTO_HEADROOM_DB (8) under the
-        // speech level, whichever of the two rules is higher wins. Examples: -30 speech over a -70 floor -> ~-38 (was -46; breathing at -50 is
-        // gated); -25 over -52 -> ~-36; a quiet talker, -45 over -52 -> the 7 dB minimum, -45 (still opens). Floor tracker: the AGC's pattern (falls fast to the quietest blocks, creeps up slowly).
-        // Owner 2026-11-16 ("auto voicegate sucks - it is too high"): the speech tracker follows the LOUD syllables, so
-        // the 60% / -8 dB rules (floor + up to 30) put the threshold within a few dB of ordinary speech and quiet syllables, consonants and
-        // word tails were chopped. Now 40% of the way, at least AUTO_HEADROOM_DB (12) under the speech level, never more
-        // than AUTO_MAX_MARGIN_DB (22) over the floor, clamped to at most AUTO_MAX_DB (-36, was -38, and -30 in 0.1.0; a noisy room lifts the cap to floor + AUTO_MARGIN_DB so noise stays gated), and in auto mode
-        // the hold is at least AUTO_HOLD_MS (350, was 150) with a 100 ms release (was 50). Manual mode is unchanged.
-        // Speech tracker: rises fast toward loud blocks (well above the floor), decays slowly.
-        // Both start where the default threshold would be, so nothing moves until it has heard a pause.
-        this.auto      = false;
-        this.floorDb   = -52;
-        this.effDb     = -45; // the auto threshold in force (dBFS), reported to the Settings row
-        this.speechDb  = -45; // placeholder until speech is heard (was -38; with the headroom rule below that would chop a -55 talker for a minute)
-        this.AUTO_MARGIN_DB = 6;
-        this.AUTO_MAX_MARGIN_DB = 22;
-        this.AUTO_SPEECH_RATIO = 0.4;
-        this.AUTO_MIN_DB = -60;
-        this.AUTO_MAX_DB = -36; // was -38 (-30 in 0.1.0): a loud talker's keyboard clicks and breaths no longer sit above the cap (data tune 2026-11-16); costs loud talkers ~0.1% of voiced syllables
-        // Second rule (owner 2026-11-13: "still too low all the time"): the threshold also never sits more than
-        // AUTO_HEADROOM_DB below the measured speech level. The floor-based rule above reads the floor AFTER noise
-        // suppression, where it is often -75..-90, so a real talker (raw speech around -45..-40 dBFS, not the
-        // -30..-20 the first tuning assumed) got a gate 15-20 dB under their voice, low enough for breathing.
-        this.AUTO_HEADROOM_DB = 12;
-        // Auto mode only: longer hold and slower release so word tails and quiet syllables are not cut (manual untouched).
-        this.AUTO_HOLD_SAMPLES = Math.round(0.350 * sampleRate);
-        this.AUTO_RELEASE_RATE = 1 / Math.round(0.100 * sampleRate);
-        // Voice rescue (auto mode only; owner 2026-11-16, report pair c03022d3 / a663d053 "robotic, intermittent"): a level
-        // gate cannot tell a quiet syllable of a real talker from room noise, and the speech tracker follows the LOUD
-        // syllables, so the threshold sits above the talker's own quiet ones and chops them (word starts, consonants, a
-        // whole quiet phrase). The AGC's pitch detector (VoiceDetector, voiced = periodic 70-500 Hz; breaths, clicks, fans and
-        // hiss are not) now also holds the gate open: a block counts as voice when pitch is heard, it is at least
-        // VOICE_RESCUE_DB over the tracked floor, not under VOICE_RESCUE_MIN_DB (-58: the AGC no longer boosts below -62 and tapers from -55),
-        // and not more than VOICE_RESCUE_RANGE_DB under the talker's own speech level (a voiced whisper or a TV across
-        // the room far under the speaker stays gated). Level alone still decides everything else.
-        this.vd = new VoiceDetector(sampleRate);
-        this.VOICE_RESCUE_DB = 3.5;
-        this.VOICE_RESCUE_MIN_DB = -58;
-        // Range 28 (was 18; 2026-11-16 data tune, docs/worklog/entries/2026-11-16-gate-data-tune.md): speechDb follows the
-        // LOUD syllables, so it sits several dB above the talker's average and an 18 dB window was really ~10 dB under their
-        // mean: a talker who is loud and then quiet (the real windows swing 10-25 dB; a663d053's by 7 dB sd) lost the quiet
-        // phrase. Modelled on the real windows: voiced-syllable cut 2.2% -> 0.5% (typical dynamics), 7.6% -> 1.5% (stress).
-        // A second voice more than 28 dB under the talker (a TV across the room) is still gated.
-        this.VOICE_RESCUE_RANGE_DB = 28;
-        this.VOICE_RESCUE_SCORE = 0.55;
-        this.VOICE_HANGOVER_SEC = 0.12;
-        this.voicedLeft = 0;
-        this.rescueBlocks = 0;  // blocks this second where ONLY the voice rule held the gate open
         // Hold: how many samples to stay open after level drops below threshold.
         // 150 ms × 48000 = 7200 samples.
         this.holdTotal  = Math.round(0.150 * sampleRate);
@@ -329,16 +285,16 @@ class GateWorklet extends AudioWorkletProcessor {
         // Quietest block of the current second, for the "high background noise" prompt: speech cannot lift
         // a minimum, so it reads the room even while someone talks. Reported with each gateStats.
         this.tallyMin    = Infinity;
+        this.cut = new GateCutMeter(sampleRate);
 
         this.port.onmessage = ({ data }) => {
             if (data.type === 'gate') {
                 this.enabled = data.enabled;
+                this.cut.clearState();
                 if (!data.enabled) {
                     this.gain    = 1; // immediately pass-through when gate is off
                     this.holdLeft = 0;
                 }
-            } else if (data.type === 'auto') {
-                this.auto = !!data.value; // false = the user's own threshold, never moved
             } else if (data.type === 'threshold') {
                 // Receive threshold in dBFS, store as linear amplitude
                 this.threshold = Math.pow(10, data.value / 20);
@@ -358,13 +314,9 @@ class GateWorklet extends AudioWorkletProcessor {
         this.port.postMessage({
             type: 'gateStats', open: this.tallyOpen, total: this.tallyEvery,
             minDb: this.tallyMin < Infinity ? 20 * Math.log10(Math.max(this.tallyMin, 1e-12)) : null,
-            // Auto mode only (null otherwise): the threshold in force, the tracked floor, and how many blocks of the second
-            // ONLY the voice rule kept open. Diagnostic reports carry them next to the speech level (micLevelLog.ts).
-            thrDb: this.enabled && this.auto ? this.effDb : null,
-            floorDb: this.enabled && this.auto ? this.floorDb : null,
-            rescued: this.rescueBlocks,
+            // GateCutMeter's counts for the second (all zero while the gate is off), see gateCutMeter.js.
+            cut: this.cut.take(),
         });
-        this.rescueBlocks = 0;
         this.tallyLeft = this.tallyEvery;
         this.tallyOpen = 0;
         this.tallyMin = Infinity;
@@ -378,7 +330,6 @@ class GateWorklet extends AudioWorkletProcessor {
             type: 'level',
             rms: this.reportPeak,
             open: !this.enabled || this.holdLeft > 0 || this.gain > 0.5,
-            thr: this.enabled && this.auto ? Math.round(this.effDb) : null,
         });
         this.reportLeft = this.reportEvery;
         this.reportPeak = 0;
@@ -404,37 +355,8 @@ class GateWorklet extends AudioWorkletProcessor {
             return true;
         }
 
-        let threshold = this.threshold;
-        if (this.auto) {
-            const rdb = 20 * Math.log10(Math.max(rms, 1e-12));
-            if (rdb < this.floorDb) this.floorDb += (rdb - this.floorDb) * 0.25;
-            else this.floorDb += 2 * (inp.length / sampleRate);
-            this.floorDb = Math.min(-35, Math.max(-90, this.floorDb));
-            // Speech level: only blocks clearly above the floor count as speech.
-            const dt = inp.length / sampleRate;
-            // Rises quickly toward louder speech; otherwise only drifts down slowly (0.3 dB/s), so breathing or
-            // movement just above the floor can never drag the speech estimate (and with it the gate) down.
-            if (rdb > this.floorDb + 10 && rdb > this.speechDb) this.speechDb += (rdb - this.speechDb) * 0.05;
-            else this.speechDb -= 0.3 * dt;
-            this.speechDb = Math.max(this.floorDb, Math.min(0, this.speechDb));
-            const margin = Math.min(this.AUTO_MAX_MARGIN_DB, Math.max(this.AUTO_MARGIN_DB, (this.speechDb - this.floorDb) * this.AUTO_SPEECH_RATIO));
-            const byFloor = this.floorDb + margin;
-            const bySpeech = this.speechDb - this.AUTO_HEADROOM_DB;
-            this.effDb = Math.min(Math.max(this.AUTO_MAX_DB, this.floorDb + this.AUTO_MARGIN_DB), Math.max(this.AUTO_MIN_DB, Math.max(byFloor, bySpeech)));
-            threshold = Math.pow(10, this.effDb / 20);
-        }
-        let rescued = false;
-        if (this.auto) {
-            const rdb2 = 20 * Math.log10(Math.max(rms, 1e-12));
-            const inRange = rdb2 >= this.floorDb + this.VOICE_RESCUE_DB && rdb2 >= this.VOICE_RESCUE_MIN_DB && rdb2 >= this.speechDb - this.VOICE_RESCUE_RANGE_DB;
-            // The pitch analysis (the only costly part) runs only for a block the level rule would NOT already open.
-            if (this.vd.push(inp, inRange && rms < threshold) && this.vd.score >= this.VOICE_RESCUE_SCORE) this.voicedLeft = this.VOICE_HANGOVER_SEC;
-            else if (this.voicedLeft > 0) this.voicedLeft -= inp.length / sampleRate;
-            rescued = inRange && this.voicedLeft > 0 && rms < threshold;
-        }
-        if (rms >= threshold || rescued) {
-            if (rescued) this.rescueBlocks++;
-            this.holdLeft = this.auto ? Math.max(this.holdTotal, this.AUTO_HOLD_SAMPLES) : this.holdTotal; // voice detected — reset hold timer
+        if (rms >= this.threshold) {
+            this.holdLeft = this.holdTotal; // voice detected — reset hold timer
         } else if (this.holdLeft > 0) {
             this.holdLeft -= inp.length;    // still in hold period
         }
@@ -447,10 +369,11 @@ class GateWorklet extends AudioWorkletProcessor {
                 this.gain = Math.min(1, this.gain + this.attackRate);
             } else {
                 // Slow release: ramp down so trailing words aren't chopped
-                this.gain = Math.max(0, this.gain - (this.auto ? Math.min(this.releaseRate, this.AUTO_RELEASE_RATE) : this.releaseRate));
+                this.gain = Math.max(0, this.gain - this.releaseRate);
             }
             out[i] = inp[i] * this.gain;
         }
+        this.cut.push(inp, rms, this.gain >= 0.5, rms >= this.threshold);
         this.tally(gateOpen);
         this.meter(rms);
         return true;
@@ -477,8 +400,13 @@ export interface MicLevelSecond {
     micGainDb: number;
     /** Share of the second the voice gate was open (0..1); null before its first report. */
     gateOpenFrac: number | null;
-    /** Auto gate only (null otherwise): its threshold and tracked floor (dBFS) and the share of the second held open ONLY by the voice rule. */
-    gateThrDb?: number | null; gateFloorDb?: number | null; gateRescuedFrac?: number | null;
+    /** Share of the second the gate PASSED audible sound that was not the talker's voice (key clicks, a loud room;
+     *  GateCutMeter `noise` / `blocks`, 0..1); null while the gate is off or before its first report. */
+    gateNoiseFrac?: number | null;
+    /** That second's quietest 128-sample block at the gate's input (dBFS): the room, after noise suppression. */
+    gateMinDb?: number | null;
+    /** Threshold crossings away from voice that no voice followed this second (GateCutMeter `bursts`: key clicks). */
+    gateBursts?: number;
     /** Mean-square of the raw capture / the noise suppressor's output over the polls that
      *  landed while voice was heard; null when none did. */
     rawMs: number | null;
@@ -510,12 +438,17 @@ export interface VoiceProcessorCallbacks {
     /** Once a second: the quietest moment of the signal at the gate (dBFS; after noise
      *  suppression when it is on), or null when there was no input. Local only; feeds the
      *  "lots of background noise" prompt (noiseFloorPrompt.ts). */
-    onNoiseFloor?: (minDb: number | null) => void;
+    /** Once a second from the gate: its quietest block (dBFS) and how many seconds of NON-voice sound it passed (key
+     *  clicks, a loud room; null while the gate is off). Both feed the background-noise prompt (noiseFloorPrompt.ts). */
+    onNoiseFloor?: (minDb: number | null, passedSec?: number | null) => void;
+    /** Once a second while the gate is on: how much of the user's voiced speech the gate closed on (GateCutMeter,
+     *  gateCut.ts). Numbers only. Feeds the "your voice gate may be cutting you off" prompt. */
+    onGateCut?: (sec: GateCutSecond) => void;
     /** The gate's own detector, for a meter (only when constructed with
      *  `gateMeterMs`): the loudest 128-sample block RMS of each interval in
      *  dBFS — the exact quantity compared against the threshold — and whether
      *  the gate is open. See GATE_METER_REPORT_MS in voiceChain.ts. */
-    onGateLevel?: (dbfs: number, open: boolean, autoThresholdDb: number | null) => void;
+    onGateLevel?: (dbfs: number, open: boolean) => void;
     /** Once per call: the audio render thread kept missing its deadlines with
      *  Strong (RNNoise) running, so Light (Speex) took over — nsLoadGuard.ts. */
     onNsLoadFallback?: (info: { underrunMs: number; underrunEvents: number }) => void;
@@ -566,9 +499,9 @@ export class CipherlineVoiceProcessor {
     private gateWorkletNode?: AudioWorkletNode; // gate runs in audio thread — no JS timer jitter
     /** Fraction of the last second the gate was open (gate worklet 'gateStats'); null before the first report. */
     private gateOpenFrac: number | null = null;
-    private gateThrDb: number | null = null;
-    private gateFloorDb: number | null = null;
-    private gateRescuedFrac: number | null = null;
+    private gateNoiseFrac: number | null = null;
+    private gateMinDb: number | null = null;
+    private gateBursts = 0;
     /** Level taps for diagnostics only: the raw capture and the noise suppressor's output. */
     private rawTap?: AnalyserNode;
     private nsTap?: AnalyserNode;
@@ -821,7 +754,6 @@ export class CipherlineVoiceProcessor {
             });
             gate.port.postMessage({ type: 'gate',      enabled: this._settings.voiceGate });
             gate.port.postMessage({ type: 'threshold', value: this._settings.voiceGateThreshold });
-            gate.port.postMessage({ type: 'auto', value: this._settings.voiceGateAuto !== false });
             gate.port.postMessage({ type: 'hold',      ms: 150 });
             if (this.gateMeterMs > 0) {
                 // The Settings meter under the threshold slider reads the gate's
@@ -831,13 +763,19 @@ export class CipherlineVoiceProcessor {
             gate.port.onmessage = ({ data }: MessageEvent) => {
                 if (data?.type === 'gateStats') {
                     this.gateOpenFrac = data.total > 0 ? data.open / data.total : null;
-                    this.gateThrDb = typeof data.thrDb === 'number' ? data.thrDb : null;
-                    this.gateFloorDb = typeof data.floorDb === 'number' ? data.floorDb : null;
-                    this.gateRescuedFrac = data.total > 0 && typeof data.rescued === 'number' ? data.rescued / data.total : null;
-                    this._callbacks.onNoiseFloor?.(typeof data.minDb === 'number' ? data.minDb : null);
+                    this.gateMinDb = typeof data.minDb === 'number' && Number.isFinite(data.minDb) ? data.minDb : null;
+                    const c = data.cut as { noise?: unknown; blocks?: unknown; bursts?: unknown } | undefined;
+                    // summed until the next mic-level second takes them (the two reports are not in lock step)
+                    if (c && typeof c.bursts === 'number' && Number.isFinite(c.bursts) && c.bursts >= 0) this.gateBursts += c.bursts;
+                    this.gateNoiseFrac = c && typeof c.noise === 'number' && typeof c.blocks === 'number' && c.blocks > 0
+                        ? Math.min(1, Math.max(0, c.noise / c.blocks)) : null;
+                    // gateStats come once a second, so the share is also the seconds of non-voice passed (null: gate off)
+                    this._callbacks.onNoiseFloor?.(typeof data.minDb === 'number' ? data.minDb : null, this.gateNoiseFrac);
+                    const cut = gateCutSecondFrom(data);
+                    if (cut && cut.voiced > 0) this._callbacks.onGateCut?.(cut);
                 } else if (data?.type === 'level' && this.gateMeterMs > 0) {
                     const dbfs = data.rms > 0 ? 20 * Math.log10(data.rms) : -Infinity;
-                    this._callbacks.onGateLevel?.(dbfs, !!data.open, typeof data.thr === 'number' ? data.thr : null);
+                    this._callbacks.onGateLevel?.(dbfs, !!data.open);
                 }
             };
             this.gateWorkletNode = gate;
@@ -1047,11 +985,14 @@ export class CipherlineVoiceProcessor {
                             peak: data.peak ?? 0, held: data.held ?? 0, clip: data.clip ?? 0,
                             micGainDb: this.micGainDb(),
                             gateOpenFrac: this.gateOpenFrac,
-                            gateThrDb: this.gateThrDb, gateFloorDb: this.gateFloorDb, gateRescuedFrac: this.gateRescuedFrac,
+                            gateNoiseFrac: this.gateNoiseFrac,
+                            gateMinDb: this.gateMinDb,
+                            gateBursts: this.gateBursts,
                             rawMs: n > 0 ? this.tapRawMs / n : null,
                             nsMs: n > 0 ? this.tapNsMs / n : null,
                         });
                         this.tapRawMs = 0; this.tapNsMs = 0; this.tapN = 0;
+                        this.gateBursts = 0;
                     }
                 }
             };
@@ -1247,7 +1188,10 @@ export class CipherlineVoiceProcessor {
         this.rawTap = undefined;
         this.nsTap = undefined;
         this.lastVoiceActive = false;
-        this.gateOpenFrac = null; this.gateThrDb = null; this.gateFloorDb = null; this.gateRescuedFrac = null;
+        this.gateOpenFrac = null;
+        this.gateNoiseFrac = null;
+        this.gateMinDb = null;
+        this.gateBursts = 0;
         this.tapRawMs = 0; this.tapNsMs = 0; this.tapN = 0;
         if (this.gateWorkletNode) {
             this.gateWorkletNode.port.onmessage = null;
@@ -1350,9 +1294,6 @@ export class CipherlineVoiceProcessor {
             }
             if (prev.voiceGateThreshold !== settings.voiceGateThreshold) {
                 this.gateWorkletNode.port.postMessage({ type: 'threshold', value: settings.voiceGateThreshold });
-            }
-            if (prev.voiceGateThreshold !== settings.voiceGateThreshold || prev.voiceGateAuto !== settings.voiceGateAuto) {
-                this.gateWorkletNode.port.postMessage({ type: 'auto', value: settings.voiceGateAuto !== false });
             }
         }
     }

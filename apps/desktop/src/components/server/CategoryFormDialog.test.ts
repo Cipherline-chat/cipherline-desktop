@@ -172,3 +172,57 @@ describe('CategoryFormDialog', () => {
         );
     });
 });
+
+describe('CategoryFormDialog: divider categories (2026-11-17)', () => {
+    const typeName = async (v: string) => {
+        const input = document.querySelector('input[aria-label="Category name"]') as HTMLInputElement;
+        await act(async () => {
+            Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, v);
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+        });
+        return input;
+    };
+    const btn = (t: string) => [...document.querySelectorAll('button')].find(b => b.textContent?.trim() === t);
+
+    it('create: "Looks like" offers Category / Divider category; a divider category POSTs its style and colour', async () => {
+        await mount({});
+        expect(document.querySelector('[data-testid="category-look"]')).not.toBeNull();
+        // An ordinary category has no colour option at all.
+        expect(document.querySelector('[aria-label^="Colour #"]')).toBeNull();
+        const input = await typeName('Games');
+        await click(btn('Divider category'));
+        await click(document.querySelector('[data-style="pill"]'));
+        await click(document.querySelector('[aria-label="Colour #25e0c8"]'));
+        await act(async () => { input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); });
+        await flush(30);
+        expect(calls.filter(c => c[0] === 'POST')).toEqual([['POST', '/servers/s1/categories',
+            { name: 'Games', kind: 'text', icon_name: null, header_style: 'pill', header_color: '#25e0c8' }]]);
+    });
+
+    it('create: switching back to Category sends no header fields', async () => {
+        await mount({});
+        const input = await typeName('Plain');
+        await click(btn('Divider category'));
+        await click(btn('Category'));
+        await act(async () => { input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); });
+        await flush(30);
+        expect(calls.filter(c => c[0] === 'POST')[0][2]).toEqual({ name: 'Plain', kind: 'text', icon_name: null });
+    });
+
+    it('edit: a divider category can be turned back into an ordinary one (style and colour cleared)', async () => {
+        const category = { category_id: CAT, server_id: 's1', name: 'Games', position: 1000, kind: 'text', icon_name: null, parent_category_id: null, header_style: 'pill', header_color: '#25e0c8' };
+        await mount({ category });
+        expect((document.querySelector('[data-style="pill"]') as HTMLElement).getAttribute('aria-checked')).toBe('true');
+        await click(btn('Category'));
+        await click(btn('Save'));
+        await flush(30);
+        const patch = calls.find(c => c[0] === 'PATCH' && c[1] === `/servers/s1/categories/${CAT}`);
+        expect(patch?.[2]).toMatchObject({ header_style: null, header_color: null });
+    });
+
+    it('a sub-category has no "Looks like" choice', async () => {
+        const parent = { category_id: CAT, server_id: 's1', name: 'Crafting', position: 1000, kind: 'text', icon_name: null, parent_category_id: null };
+        await mount({ parentCategoryId: CAT, categories: [parent] });
+        expect(document.querySelector('[data-testid="category-look"]')).toBeNull();
+    });
+});

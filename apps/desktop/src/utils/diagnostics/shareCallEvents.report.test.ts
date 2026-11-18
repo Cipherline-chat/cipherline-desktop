@@ -98,6 +98,21 @@ describe('size trimming keeps the share context', () => {
         expect(p.call_events!.length).toBeLessThan(283);
         expect([...SHARE_CONTEXT_KINDS].every(k => /^share_/.test(k))).toBe(true);
     });
+
+    it('fitPayload also keeps the voice context (voice_settings / mic_capture) while it drops ordinary events', () => {
+        const filler = Array.from({ length: 280 }, (_, i) => ({ t_s: -2_000 + i, event: 'camera_codec', detail: { n: i, pad: 'x'.repeat(60) } }));
+        const voice = [
+            { t_s: -5_000, event: 'voice_settings', detail: { reason: 'join', ns: 'strong', gate: true, thr_db: -45, agc: true } },
+            { t_s: -4_999, event: 'mic_capture', detail: { sample_rate: 16000, channels: 1, bus: 'bluetooth' } },
+        ];
+        const p = { generated_at: 'x', trigger: 'manual', system: SYSTEM, settings: {}, call_events: [...voice, ...filler] } as unknown as DiagnosticPayload;
+        const trimmed = fitPayload(p, Math.floor(JSON.stringify(p).length / 3));
+        expect(trimmed).toContain('call_events');
+        const kinds = p.call_events!.map(e => e.event);
+        expect(kinds).toContain('voice_settings');
+        expect(kinds).toContain('mic_capture');
+        expect(p.call_events!.length).toBeLessThan(282);
+    });
 });
 
 describe('PRIVACY: a hostile producer cannot smuggle addresses, candidates, SIDs or names into the new events', () => {

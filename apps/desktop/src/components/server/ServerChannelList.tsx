@@ -72,7 +72,10 @@ import { usePrefersReducedMotion } from '../../hooks/usePrefersReducedMotion';
 import { buildUnreadModel, channelBadgeKind, channelKey, categoryKey, strongerKind, type UnreadKind } from './offscreenUnread';
 import { useOffscreenUnread } from './useOffscreenUnread';
 import { OffscreenUnreadPill } from './OffscreenUnreadPill';
-import { categoryDeleteConfirm, categoryRestrictsView } from './categoryDelete';
+import { categoryDeleteConfirm, categoryRestrictsView, categoryContents, expectedCounts, type CategoryContents, type CategoryDeleteConfirm } from './categoryDelete';
+import { CategoryDeleteDialog } from './CategoryDeleteDialog';
+import { CategoryHeading } from './CategoryHeading';
+import { categoryDividerLook, CATEGORY_HEADER_ACTIONS_CLASS } from './categoryHeadingStyle';
 import { overrideFromWire, roleFromWire } from './channelPerms/effectivePermissions';
 
 // ── Sortable wrappers (defined at module level — no re-creation on render) ──
@@ -253,6 +256,10 @@ interface Props {
     onApplyDividers?: (update: (list: DividerInfo[]) => DividerInfo[]) => void;
     onDeleteChannelApi?: (channel: ChannelInfo) => Promise<void>;
     onDeleteCategoryApi?: (category: CategoryInfo) => Promise<void>;
+    /** Delete a category AND everything in it (one server transaction; the
+     *  counts are the ones the dialog showed). Absent = only "delete category
+     *  only" is offered. */
+    onDeleteCategoryWithContentsApi?: (category: CategoryInfo, expected: ReturnType<typeof expectedCounts>) => Promise<void>;
     onOpenInvite?: () => void;
     /** Fired after a successful text/voice channel create (not edit). */
     onChannelCreated?: (channel: ChannelInfo) => void | Promise<void>;
@@ -272,7 +279,7 @@ export const ServerChannelList: React.FC<Props> = ({
     mutedChannelIds, onMarkChannelRead, unreadCounts,
     mentionCounts, serverNotifMode = 'all',
     onChannelsChanged, onApplyChannels, onApplyCategories, onApplyDividers,
-    onDeleteChannelApi, onDeleteCategoryApi, onOpenInvite,
+    onDeleteChannelApi, onDeleteCategoryApi, onDeleteCategoryWithContentsApi, onOpenInvite,
     onChannelCreated,
 }) => {
     const ctx = useContextMenu();
@@ -478,6 +485,10 @@ export const ServerChannelList: React.FC<Props> = ({
         | null
     >(null);
     const [pendingConfirm, setPendingConfirm] = useState<ConfirmOptions | null>(null);
+    /** The two-choice category delete (CategoryDeleteDialog). */
+    const [categoryDelete, setCategoryDelete] = useState<{
+        cat: CategoryInfo; isSub: boolean; only: CategoryDeleteConfirm; contents: CategoryContents;
+    } | null>(null);
 
     const createMenu = useContextMenu();
 
@@ -696,11 +707,14 @@ export const ServerChannelList: React.FC<Props> = ({
     });
 
     /** Rolled-up unread state of a collapsed sub-category: strongest kind and a count. */
-    const subUnread = (sub: TreeSub): { kind: UnreadKind; count: number } | null => {
+    const subUnread = (sub: TreeSub): { kind: UnreadKind; count: number } | null => rolledUnread(channelsIn(sub.items));
+
+    /** Rolled-up unread state of any set of channels (a collapsed category or sub-category). */
+    const rolledUnread = (inside: ChannelInfo[]): { kind: UnreadKind; count: number } | null => {
         let kind: UnreadKind | null = null;
         let unread = 0;
         let mentions = 0;
-        for (const ch of channelsIn(sub.items)) {
+        for (const ch of inside) {
             const k = channelBadgeKind({
                 unread: unreadCounts?.[ch.channel_id] ?? 0,
                 mentions: mentionCounts?.[ch.channel_id] ?? 0,
@@ -759,6 +773,20 @@ export const ServerChannelList: React.FC<Props> = ({
             });
     };
 
+    /** The whole subtree in ONE request - never channel by channel. A refusal
+     *  (someone else's channel inside, or the contents changed) shows the
+     *  server's message; nothing was deleted then. */
+    const deleteCategoryWithContentsNow = (cat: CategoryInfo, contents: CategoryContents) => {
+        if (!onDeleteCategoryWithContentsApi) return;
+        void onDeleteCategoryWithContentsApi(cat, expectedCounts(contents))
+            .then(() => onChannelsChanged?.())
+            .catch(e => {
+                console.error('[ServerChannelList] delete category with contents:', e);
+                toast.push({ kind: 'error', message: errMsg(e) ?? `Couldn't delete ‘${cat.name}’.` });
+                onChannelsChanged?.();
+            });
+    };
+
     /**
      * Open the delete confirm for a category. A top-level category that still
      * holds sub-categories is checked first: if it is PRIVATE the server would
@@ -785,6 +813,14 @@ export const ServerChannelList: React.FC<Props> = ({
         const confirm = categoryDeleteConfirm({
             name: cat.name, isSub, parentName: categoryName(cat.parent_category_id), hasSubcategories, isPrivate,
         });
+        if (onDeleteCategoryWithContentsApi) {
+            // Two choices: contents move up a level, or go with it.
+            const contents = categoryContents(cat.category_id, {
+                categories: localCategoriesRef.current, channels: localChannelsRef.current, dividers: localDividersRef.current,
+            });
+            setCategoryDelete({ cat, isSub, only: confirm, contents });
+            return;
+        }
         setPendingConfirm({
             ...confirm,
             confirmLabel: 'Delete',
@@ -1110,8 +1146,8 @@ export const ServerChannelList: React.FC<Props> = ({
                                 />
                             )}
                             <span
-                                className={`truncate text-[13px] leading-none font-medium transition-colors ${collapsed ? 'text-cl-faint' : 'text-cl-muted'} group-hover:text-cl-text`}
-                                style={{ fontFamily: 'var(--cl-font-display)' }}
+                                data-testid="subcat-label"
+                                className={`truncate text-[13px] leading-none font-normal transition-colors ${collapsed ? 'text-cl-faint' : 'text-cl-muted'} group-hover:text-cl-text`}
                             >
                                 {cat.name}
                             </span>
@@ -1133,6 +1169,8 @@ export const ServerChannelList: React.FC<Props> = ({
                             )}
                             {canManage && (
                                 <HoverActions
+                                    // Out of the layout until hover / focus (categoryHeadingStyle.ts).
+                                    className={CATEGORY_HEADER_ACTIONS_CLASS}
                                     actions={[
                                         {
                                             icon: <Plus />, label: 'Add to this sub-category',
@@ -1344,6 +1382,7 @@ export const ServerChannelList: React.FC<Props> = ({
                                                         role="button"
                                                         tabIndex={0}
                                                         aria-expanded={!collapsed}
+                                                        aria-label={`${cat.name}, ${categoryDividerLook(cat) ? 'divider category' : 'category'}`}
                                                         className={`group flex items-center gap-2 w-full px-2 py-px ${canManage ? 'min-h-[24px]' : 'min-h-[18px]'} rounded relative transition-colors outline-none focus-visible:ring-1 focus-visible:ring-cl-lume/60 ${
                                                             activeId && !activeId.startsWith('cat:') && overId === catKey ? 'bg-cl-lume/10' : 'hover:bg-cl-raise/40'
                                                         } ${canManage ? 'cursor-grab active:cursor-grabbing select-none touch-none' : 'cursor-pointer'}`}
@@ -1363,26 +1402,17 @@ export const ServerChannelList: React.FC<Props> = ({
                                                             else if (isMenuKey(e)) { e.preventDefault(); ctx.open(anchorOf(e.currentTarget), buildCategoryMenu(cat), cat.name); }
                                                         }}
                                                     >
-                                                        <span className="shrink-0 text-cl-faint group-hover:text-cl-text transition-colors w-4 h-4 flex items-center justify-center">
-                                                            {collapsed
-                                                                ? <ChevronRight size={16} />
-                                                                : <ChevronDown  size={16} />}
-                                                        </span>
-                                                        {cat.icon_name && (
-                                                            <ChannelIconRenderer
-                                                                name={cat.icon_name}
-                                                                size={13}
-                                                                className="shrink-0 block text-cl-faint group-hover:text-cl-muted transition-colors"
-                                                            />
-                                                        )}
-                                                        <span
-                                                            className="truncate flex-1 text-[10px] leading-none font-semibold uppercase text-cl-faint group-hover:text-cl-muted transition-colors"
-                                                            style={{ fontFamily: 'var(--cl-font-mono)', letterSpacing: '1.1px' }}
-                                                        >
-                                                            {cat.name}
-                                                        </span>
+                                                        {/* Ordinary label (the TOP level, never quieter than a
+                                                            sub-category) or, for a divider category, the divider. */}
+                                                        <CategoryHeading
+                                                            category={cat}
+                                                            collapsed={collapsed}
+                                                            rolled={collapsed ? rolledUnread(channelsIn(items)) : null}
+                                                        />
                                                         {canManage && (
                                                             <HoverActions
+                                                                // Out of the layout until hover / focus (categoryHeadingStyle.ts).
+                                                                className={CATEGORY_HEADER_ACTIONS_CLASS}
                                                                 actions={[
                                                                     {
                                                                         icon: <Plus />, label: 'Add to this category',
@@ -1446,7 +1476,6 @@ export const ServerChannelList: React.FC<Props> = ({
                                 className={`opacity-80 shadow-2xl px-2 py-0.5 text-[12px] font-medium text-cl-muted bg-cl-deep rounded border ${
                                     overRefused ? 'border-cl-flash' : 'border-cl-border'
                                 }`}
-                                style={activeParsed?.kind === 'subcategory' ? { fontFamily: 'var(--cl-font-display)' } : undefined}
                             >
                                 {activeCat.name}
                             </div>
@@ -1533,6 +1562,22 @@ export const ServerChannelList: React.FC<Props> = ({
                     icon={<CornerDownRight size={18} strokeWidth={2.2} />}
                     onConfirm={() => setSubcatRefusal(false)}
                     onCancel={() => setSubcatRefusal(false)}
+                />
+            )}
+
+            {categoryDelete && (
+                <CategoryDeleteDialog
+                    name={categoryDelete.cat.name}
+                    isSub={categoryDelete.isSub}
+                    only={categoryDelete.only}
+                    contents={categoryDelete.contents}
+                    onCancel={() => setCategoryDelete(null)}
+                    onConfirm={(choice) => {
+                        const { cat, contents } = categoryDelete;
+                        setCategoryDelete(null);
+                        if (choice === 'everything') deleteCategoryWithContentsNow(cat, contents);
+                        else deleteCategoryNow(cat);
+                    }}
                 />
             )}
 

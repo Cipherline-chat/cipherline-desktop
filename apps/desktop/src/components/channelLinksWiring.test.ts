@@ -37,8 +37,8 @@ describe('send / edit carry channel_refs (server channels only)', () => {
     });
     it('channel text message and edit include them', () => {
         // (followed by the message font, and a size field only for a one-size message: richWire.extractUniformSize)
-        expect(chatPane).toContain("...(channelRefs.length > 0 ? { channel_refs: channelRefs } : {}), ...fontField(composerFont), ...sizeField(sized.size) };");
-        expect(chatPane).toContain("dispatchAction({ type: 'edit', target_id: editingId, text: wireText, ...(channelRefs.length > 0 ? { channel_refs: channelRefs } : {}), ...fontField(composerFont), ...sizeField(sized.size) })");
+        expect(chatPane).toContain("...(channelRefs.length > 0 ? { channel_refs: channelRefs } : {}), ...fontField(composerFont), ...sizeField(sized.size), ...cardStyleSendField(outgoingCard) };");
+        expect(chatPane).toContain("dispatchAction({ type: 'edit', target_id: editingId, text: wireText, ...(channelRefs.length > 0 ? { channel_refs: channelRefs } : {}), ...fontField(composerFont), ...sizeField(sized.size), ...cardStyleEditField(editCardTouched, outgoingCard) })");
     });
     it('negative control: the DM content literal does not carry channel_refs', () => {
         const dm = chatPane.split('\n').find(l => l.includes("const content: ClientContent = bareInviteCode"));
@@ -53,10 +53,10 @@ describe('send / edit carry channel_refs (server channels only)', () => {
         // The own-send path inline; the live receive path and the history
         // fold both go through applyChannelEditDelete (F3 authorization).
         // (fourth / fifth arguments: the edit's message font and size)
-        expect(dashboard.match(/editedContent\(thread\[idx\]\.content, content\.text, content\.channel_refs, content\.font, content\.size\)/g)).toHaveLength(1);
+        expect(dashboard.match(/editedContent\(thread\[idx\]\.content, content\.text, content\.channel_refs, content\.font, content\.size, content\)/g)).toHaveLength(1);
         expect(dashboard).toContain('applyChannelEditDelete(thread, liveAction, { moderatorDeleteTargets })');
         expect(dashboard).not.toMatch(/editedContent\([^)]*content\.text\)/);
-        expect(historyMerge).toContain('editedContent(next[idx].content, c.text, c.channel_refs, (c as { font?: unknown }).font, (c as { size?: unknown }).size)');
+        expect(historyMerge).toContain('editedContent(next[idx].content, c.text, c.channel_refs, (c as { font?: unknown }).font, (c as { size?: unknown }).size, c)');
     });
 });
 

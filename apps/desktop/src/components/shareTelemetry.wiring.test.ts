@@ -108,7 +108,10 @@ describe('report (collect / bundle / modal)', () => {
     });
     it('the builder merges them into call_events under the cap, and trimming protects the context', () => {
         expect(BUNDLE).toContain('if (spec.callEvents) raw.call_events = mergeCallEvents(input, now);');
-        expect(BUNDLE).toContain('SHARE_CONTEXT_KINDS.has(e.event)');
+        // Trimming protects REPORT_CONTEXT_KINDS (2026-11-18: share context + the voice_settings / mic_capture
+        // voice context). The share context must stay inside it.
+        expect(BUNDLE).toContain('REPORT_CONTEXT_KINDS.has(e.event)');
+        expect(src('../utils/callEventLog.ts')).toMatch(/REPORT_CONTEXT_KINDS: ReadonlySet<string> = new Set\(\[\.\.\.SHARE_CONTEXT_KINDS, \.\.\.VOICE_CONTEXT_KINDS\]\)/);
     });
     it('the modal rebuilds once when the snapshot completes (so Save / Send carry all of it)', () => {
         expect(MODAL).toContain('void h.done.then(() => { if (alive) setSnapshotTick(n => n + 1); });');

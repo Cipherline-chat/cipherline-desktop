@@ -74,6 +74,11 @@ export const KV_RULES: KvRule[] = [
     // survive a reinstall.
     { pattern: 'cipherline_server_rail_layout_{uid}',   match: 'exact',  include: true,  why: 'Server rail layout: order + server folders (name, colour, members)' },
     { pattern: 'cipherline_category_collapsed_{uid}_',  match: 'prefix', include: true,  why: 'Collapsed channel categories and sub-categories (one map per server)' },
+    // Same kind of preference as the collapsed categories above (and the
+    // sidebar ratios below), so the same call: it travels. Ids are role ids /
+    // 'online' / 'offline' — nothing about who is in a group.
+    { pattern: 'cipherline_member_groups_collapsed_{uid}_', match: 'prefix', include: true, why: 'Collapsed member-list groups (role / Online / Offline), one list per server' },
+    { pattern: 'cipherline_member_list_hidden_{uid}',   match: 'exact',  include: false, why: 'Legacy: the member-list hide switch was removed; the key is no longer read, so it must not travel' },
     { pattern: 'cipherline_ignored_{uid}_',             match: 'prefix', include: true,  why: 'Ignored/blocked server members (safety)' },
     // ── Excluded: TRUST state never travels in a backup or history transfer (F2) ──
     // Safety-number pins, unresolved sender warnings and the own-device ledger
@@ -99,6 +104,9 @@ export const KV_RULES: KvRule[] = [
     { pattern: 'cipherline_screenlock_settings',        match: 'exact',  include: true,  why: 'Screen-lock PIN verifier (user-set)' },
     { pattern: 'cipherline_gif_settings',               match: 'exact',  include: true,  why: 'GIF picker prefs incl. the KLIPY opt-in (a preference, not media)' },
     { pattern: 'cipherline_ambient_motion',             match: 'exact',  include: true,  why: 'Appearance' },
+    { pattern: 'cipherline_message_styles_mode',        match: 'exact',  include: true,  why: 'Appearance: Message styles (show all / without animation / plain)' },
+    { pattern: 'cipherline_card_styles_{uid}',          match: 'exact',  include: true,  why: 'Message styles: "My styles" library of named card styles (re-validated on read)' },
+    { pattern: 'cipherline_card_styles_meta_{uid}',     match: 'exact',  include: true,  why: 'Message styles sync stamps (per-style created/at + delete tombstones) so a restore keeps delete history; re-stamped on restore' },
     { pattern: 'cipherline_seasonal_effects',           match: 'exact',  include: true,  why: 'Appearance' },
     { pattern: 'cipherline_left_sidebar_ratio',         match: 'exact',  include: true,  why: 'Layout' },
     { pattern: 'cipherline_right_sidebar_ratio',        match: 'exact',  include: true,  why: 'Layout' },
@@ -239,6 +247,7 @@ export const KV_RULES: KvRule[] = [
     { pattern: 'cipherline_voice_settings',             match: 'exact',  include: false, why: 'vault.voiceSettings' },
     { pattern: 'cipherline_keybinds',                   match: 'exact',  include: false, why: 'vault.keybinds' },
     { pattern: 'cipherline_echo_prompt_v1',                 match: 'exact',  include: false, why: 'in-call echo prompt nag state (dismissal count / never); per device, not worth restoring' },
+    { pattern: 'cipherline_gate_cut_prompt_v1',             match: 'exact',  include: false, why: 'in-call "voice gate may be cutting you off" prompt nag state (dismissal count / never); not worth restoring' },
     { pattern: 'cipherline_voice_defaults_migrated_v1', match: 'exact',  include: false, why: 'one-time voice-defaults migration marker (Light NS, echo off); per device' },
     { pattern: 'cipherline_keybinds_migrated_v1',       match: 'exact',  include: false, why: 'one-time keybind migration marker; per device, like the binds it guards' },
     { pattern: 'cipherline_keybinds_migrated_v2',       match: 'exact',  include: false, why: 'one-time camera keybind migration marker (Ctrl+Shift+V); per device, like v1' },
@@ -299,6 +308,7 @@ export const KV_RULES: KvRule[] = [
     { pattern: 'cipherline_friend_anniversaries_{uid}', match: 'exact', include: false, why: 'Which friend anniversaries this DEVICE already toasted this year (utils/profileMoments.ts) — a per-device nudge ledger, restoring it would only suppress or repeat a toast' },
     { pattern: 'cipherline_server_rail_sync_ts_{uid}',   match: 'exact',  include: false, why: 'Server-rail sync bookkeeping (when THIS device last changed its rail layout, for last-write-wins — device-specific, must not restore)' },
     { pattern: 'cipherline_server_rail_sync_view_{uid}', match: 'exact',  include: false, why: 'Server-rail sync bookkeeping (what this DEVICE knows about the server_rail slot, for anti-entropy — device-specific, must not restore)' },
+    { pattern: 'cipherline_card_styles_sync_view_{uid}', match: 'exact', include: false, why: 'Message-styles sync bookkeeping (what this DEVICE knows about the card_styles slot, for anti-entropy — device-specific, must not restore)' },
     { pattern: 'cipherline_saves_sync_view_{uid}',      match: 'exact',  include: false, why: 'Saves-sync bookkeeping (what this DEVICE knows about the personal_saves slot — device-specific, must not restore)' },
     { pattern: 'cipherline_local_channel_pin_ledger_{uid}', match: 'exact', include: false, why: 'Channel-save sync bookkeeping (LWW ledger; the saves themselves are vault.localChannelPins)' },
     { pattern: 'cipherline_last_activity_{uid}',        match: 'exact',  include: false, why: 'Derived from history' },

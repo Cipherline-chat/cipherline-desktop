@@ -18,9 +18,15 @@
  *   CLAIMING (offline, call, gaming, dnd, asleep, camo, box, safe): what he
  *   is doing owns his body. Every click is that state's: a beat, or (clicks
  *   landing on a beat still in flight) a small nudge that blends into it, and
- *   the burst ends on the finale. The Firewall-game streak (keysBurst /
- *   keysSpam) is off in these states: you cannot start a game mid-call, at a
- *   TV, asleep...
+ *   the burst ends on the finale. EXCEPT `call` (OWNS_CLICKS), the Firewall-game
+ *   streak (keysBurst / keysSpam) still runs in these states, exactly as in
+ *   neutral: owner, 2026-11-18, "if I am in DND and I spam click the keys
+ *   mascot it never takes me into the firewall game". They then behave like
+ *   a GARNISH for the streak: the state's beat plays on the streak's first
+ *   click, its finale lands on the sixth as a one-shot flourish (no body
+ *   gesture over a running show, and no hold: the DND wall pops and goes,
+ *   it never waits), and the show carries on and opens the game. Only a live
+ *   call keeps the clicks (the game cannot open mid-call: homeGameVerdict).
  *
  *   GARNISH (pile, coffee, lantern, crown): something he has or wears while
  *   he is otherwise himself. The neutral egg keeps working untouched: the
@@ -54,6 +60,9 @@ export const PLAY_STATES = [
 export type PlayState = (typeof PLAY_STATES)[number] | 'neutral';
 
 export const CLAIMING: ReadonlySet<PlayState> = new Set<PlayState>(['offline', 'call', 'gaming', 'dnd', 'asleep', 'camo', 'box', 'safe']);
+/** The states whose clicks never feed the Firewall-game streak: a live call
+ *  (the game cannot open mid-call). Every other state streams into the game. */
+export const OWNS_CLICKS: ReadonlySet<PlayState> = new Set<PlayState>(['call']);
 export const GARNISH: ReadonlySet<PlayState> = new Set<PlayState>(['pile', 'coffee', 'lantern', 'crown']);
 
 /** Which state answers a click, by precedence (the strongest claim on him). */

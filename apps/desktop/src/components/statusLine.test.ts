@@ -15,12 +15,15 @@ const entry = (over: Partial<FriendStatusEntry>): FriendStatusEntry => ({
 });
 
 describe('StatusLine — custom status with a game', () => {
-    it('shows the custom status with a controller whose tooltip says Playing <game>', () => {
+    it('custom status + game: no controller after the status (the avatar has one); Playing <game> is on the tooltip', () => {
+        // Owner, 2026-11-18: "people who are in game but have a custom status I don't think we need to have a game
+        // controller after the status. it looks bad because we already have one on their profile".
         const out = html(h(StatusLine, { entry: entry({ custom_status_text: 'grinding', custom_status_emoji: '🔥', current_game: 'Marvel Rivals' }) }));
         expect(out).toContain('grinding');
         expect(out).toContain('🔥');
-        expect(out).toContain('data-testid="status-line-game"');
-        expect(out).toContain('title="Playing Marvel Rivals"');
+        expect(out).not.toContain('status-line-game');
+        expect(out).not.toMatch(/<svg/);
+        expect(out).toMatch(/title="🔥 grinding\nPlaying Marvel Rivals"/);
     });
     it('truncates with the full text as the tooltip', () => {
         const out = html(h(StatusLine, { entry: entry({ custom_status_text: 'a long one', custom_status_emoji: '🍕' }) }));

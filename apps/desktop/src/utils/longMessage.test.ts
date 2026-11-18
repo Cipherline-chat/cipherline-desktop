@@ -19,12 +19,12 @@ const prose = (n: number) => {
     return out.slice(0, n);
 };
 
-describe('isLongMessage: the 5,000-character threshold', () => {
-    it('collapses strictly MORE than 5,000 characters', () => {
-        expect(LONG_MESSAGE_THRESHOLD).toBe(5000);
-        expect(isLongMessage('x'.repeat(4999))).toBe(false);
-        expect(isLongMessage('x'.repeat(5000))).toBe(false);
-        expect(isLongMessage('x'.repeat(5001))).toBe(true);
+describe('isLongMessage: the 3,000-character threshold', () => {
+    it('collapses strictly MORE than 3,000 characters', () => {
+        expect(LONG_MESSAGE_THRESHOLD).toBe(3000);
+        expect(isLongMessage('x'.repeat(2999))).toBe(false);
+        expect(isLongMessage('x'.repeat(3000))).toBe(false);
+        expect(isLongMessage('x'.repeat(3001))).toBe(true);
         expect(isLongMessage('x'.repeat(100_000))).toBe(true);
     });
 

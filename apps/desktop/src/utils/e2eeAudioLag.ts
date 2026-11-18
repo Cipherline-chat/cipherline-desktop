@@ -32,10 +32,39 @@
  * concealed packets are far better than conversational audio a second (or a
  * minute) late.
  *
- * If dropping does NOT bring the excess down within REBASE_AFTER_MS (frames
- * keep arriving at real-time pace with the same offset — a timestamp jump
- * after a source pause, or lag that happened upstream of us), the offset is
- * not a queue we can drain: the baseline is re-based and the drop stops.
+ * Dropping only helps if frames are waiting in a queue in front of us, so the
+ * tracker checks that instead of assuming it:
+ *   - Every drop is a probe. If a queue stands in front of us, the frame after
+ *     a dropped one was already waiting and reaches us at once (well under one
+ *     frame period later); if not, it arrives at the media's own pace.
+ *     PROBES_TO_REBASE drops in a row with nothing waiting = the offset is not
+ *     a queue we can drain (a capture stall that left the RTP timeline behind
+ *     the wall clock for good, a timestamp jump, lag upstream of us): re-base,
+ *     after ~60 ms of dropped audio.
+ *   - "The next frame came at once" can also be the network handing us packets
+ *     in clumps. So every PASS_PROBE_EVERY-th over-cap frame is let through
+ *     instead (a pass probe): behind a real backlog, the frame after a PASSED
+ *     one has to wait for its processing, so it comes later than after a drop.
+ *     If it comes at once anyway (PASS_PROBES_TO_REBASE times), our drops are
+ *     not what makes frames come early: not our queue, re-base. A pass probe
+ *     that had to wait, after drops whose followers did not, is a backlog: the
+ *     state is marked as one, the pass probes stop, and it keeps being dropped
+ *     while it is over the cap, exactly as before.
+ *   - A draining burst (a blocked worker releasing what queued) is never
+ *     re-based by the pass probes: its frames are stale and are dropped until
+ *     the excess is back under the cap.
+ *
+ * 2026-11-18 (claude/call-audio-e2e-test, a real two-peer LiveKit round trip):
+ * the old rule (drop for REBASE_AFTER_MS, then re-base unless the excess fell)
+ * turned a 600 ms capture stall into 2180 ms of lost speech, and a 1500 ms one
+ * into 5080 ms (the send AND the receive stage each dropped 2 s). And because
+ * any frame back under the cap restarted that 2 s clock, an offset sitting at
+ * the receive cap with jitter around it was never re-based: 59-92 % of frames
+ * dropped for a whole minute with 0 packets lost. The over-cap state now ends
+ * only when the excess is really drained (under CLEAR_FRACTION of the cap),
+ * never on a jittery dip, so neither the probes nor the REBASE_AFTER_MS
+ * backstop are reset by one. The backstop never fires on a state the probes
+ * marked as a backlog: that is what this cap exists to bound.
  *
  * Video frames are never touched (dropping one breaks the decode chain until
  * the next keyframe). Frame CONTENT is never read — only the timestamp.
@@ -47,7 +76,18 @@ export const AUDIO_LAG_CAP_MS = 300;
 /** Incoming (decrypt → NetEq): network jitter also lands in the offset, so the
  *  cap is looser — NetEq absorbs ordinary jitter; this only stops a backlog. */
 export const AUDIO_LAG_CAP_RECV_MS = 1_000;
+/** Backstop: re-base an over-cap state this old whose excess has not come down, unless the probes marked it a backlog. */
 export const REBASE_AFTER_MS = 2_000;
+/** Drops in a row after which the next frame was NOT already waiting: not a queue, re-base. 3 x 20 ms of audio. */
+export const PROBES_TO_REBASE = 3;
+/** Every this-many-th over-cap frame of a state not yet known to be a backlog is passed, as a pass probe. */
+export const PASS_PROBE_EVERY = 4;
+/** Pass probes whose next frame came at once anyway (not our queue): re-base. */
+export const PASS_PROBES_TO_REBASE = 2;
+/** ...but only once the state has lasted this long: a draining burst is over well before. */
+export const PASS_PROBE_MIN_STATE_MS = 200;
+/** The over-cap state ends only once the excess is back under this share of the cap (hysteresis: a dip is not a drain). */
+export const CLEAR_FRACTION = 0.5;
 /** An "excess" beyond this is a timestamp discontinuity, not a backlog: re-base at once, drop nothing. */
 export const IMPLAUSIBLE_LAG_MS = 300_000;
 /** Baseline creep allowed for clock drift: 500 ppm = 30 ms per minute. */
@@ -65,9 +105,22 @@ export class AudioLagTracker {
     private extTs = 0;
     private baseline: number | null = null;
     private baselineAt = 0;
-    private dropSince: number | null = null;
-    private dropStartExcess = 0;
     private lastExcess = 0;
+    private lastOffset: number | null = null;
+    /** The over-cap state: when it started, the excess then, and what its probes have shown. */
+    private overSince: number | null = null;
+    private overStartExcess = 0;
+    private sincePassProbe = 0;
+    /** The previous frame was a probe: 'drop' (dropped) or 'pass' (an over-cap frame let through). */
+    private probePending: 'drop' | 'pass' | null = null;
+    private dropProbes = 0;
+    private dropProbesQuick = 0;
+    /** Drop probes in a row whose next frame came at the media's pace (nothing was waiting). */
+    private notWaitingRun = 0;
+    private passProbes = 0;
+    private passProbesQuick = 0;
+    /** The probes showed a backlog that our drops drain: keep dropping, no more pass probes, no backstop. */
+    private backlog = false;
 
     private readonly capMs: number;
     private readonly clockHz: number;
@@ -80,15 +133,21 @@ export class AudioLagTracker {
     /** One audio frame: its 32-bit RTP timestamp and the time it reached us (ms). */
     observe(rtpTs: number, nowMs: number): AudioLagVerdict {
         const ts = rtpTs >>> 0;
+        let dTicks = 0;
         if (this.lastTs === null) {
             this.extTs = ts;
         } else {
             let d = (ts - this.lastTs) >>> 0;
             if (d > 0x7fffffff) d -= 0x100000000; // a reordered / older timestamp
             this.extTs += d;
+            dTicks = d;
         }
         this.lastTs = ts;
         const offset = nowMs - (this.extTs / this.clockHz) * 1000;
+        const prevOffset = this.lastOffset;
+        this.lastOffset = offset;
+        const probe = this.probePending;
+        this.probePending = null;
         if (this.baseline === null) {
             this.baseline = offset;
             this.baselineAt = nowMs;
@@ -109,27 +168,70 @@ export class AudioLagTracker {
             // restarted its clock). Re-base NOW. Waiting out REBASE_AFTER_MS
             // first dropped 100 frames = 2 s of the speaker's audio every time
             // (staging.178-187: five inbound windows, lag "41,566,318 ms").
-            this.baseline = offset;
-            this.dropSince = null;
-            this.lastExcess = 0;
+            this.rebase(offset);
             return { excessMs: 0, drop: false, rebased: true };
         }
         this.lastExcess = excess;
-        if (excess <= this.capMs) {
-            this.dropSince = null;
+        // What the last probe showed: did the frame after it come at once (about a
+        // frame lower offset: it was already waiting, or arrived in the same clump)
+        // or at the media's pace (same offset)?
+        if (probe && prevOffset !== null && dTicks > 0) {
+            const quick = offset - prevOffset < -((dTicks / this.clockHz) * 1000) / 2;
+            if (probe === 'drop') {
+                this.dropProbes++;
+                if (quick) { this.dropProbesQuick++; this.notWaitingRun = 0; } else this.notWaitingRun++;
+            } else {
+                this.passProbes++;
+                if (quick) this.passProbesQuick++;
+            }
+            // Followers come at once after a drop but have to wait after a pass: our drops drain a backlog.
+            if (!this.backlog && this.dropProbes >= 2 && this.passProbes >= 2
+                && this.dropProbesQuick >= 0.75 * this.dropProbes && this.passProbesQuick <= 0.25 * this.passProbes) this.backlog = true;
+        }
+        if (this.overSince !== null && excess <= this.capMs * CLEAR_FRACTION) this.leaveOver(); // really drained
+        if (this.overSince !== null) {
+            const age = nowMs - this.overSince;
+            const draining = excess <= this.overStartExcess - this.capMs / 2;
+            // Dropping drains nothing (no frame waits behind a dropped one); or frames come
+            // at once whether we drop or pass them (clumps, not our queue); or, failing a
+            // readable answer, REBASE_AFTER_MS over the cap without it coming down.
+            if (this.notWaitingRun >= PROBES_TO_REBASE
+                || (!this.backlog && !draining && this.passProbesQuick >= PASS_PROBES_TO_REBASE)
+                || (!this.backlog && !draining && age >= REBASE_AFTER_MS && excess > this.capMs)) {
+                this.rebase(offset);
+                return { excessMs: excess, drop: false, rebased: true };
+            }
+        }
+        if (excess <= this.capMs) return { excessMs: excess, drop: false, rebased: false };
+        if (this.overSince === null) {
+            this.overSince = nowMs;
+            this.overStartExcess = excess;
+        } else if (!this.backlog && nowMs - this.overSince >= PASS_PROBE_MIN_STATE_MS && ++this.sincePassProbe >= PASS_PROBE_EVERY) {
+            // A pass probe (never in the first PASS_PROBE_MIN_STATE_MS: a draining burst is over by then).
+            this.sincePassProbe = 0;
+            this.probePending = 'pass';
             return { excessMs: excess, drop: false, rebased: false };
         }
-        if (this.dropSince === null) {
-            this.dropSince = nowMs;
-            this.dropStartExcess = excess;
-        } else if (nowMs - this.dropSince >= REBASE_AFTER_MS && excess > this.dropStartExcess - this.capMs / 2) {
-            // Dropping has not drained anything: not our queue. Re-base.
-            this.baseline = offset;
-            this.dropSince = null;
-            this.lastExcess = 0;
-            return { excessMs: excess, drop: false, rebased: true };
-        }
+        this.probePending = 'drop';
         return { excessMs: excess, drop: true, rebased: false };
+    }
+
+    private leaveOver(): void {
+        this.overSince = null;
+        this.sincePassProbe = 0;
+        this.dropProbes = 0;
+        this.dropProbesQuick = 0;
+        this.notWaitingRun = 0;
+        this.passProbes = 0;
+        this.passProbesQuick = 0;
+        this.backlog = false;
+    }
+
+    private rebase(offset: number): void {
+        this.baseline = offset;
+        this.lastExcess = 0;
+        this.probePending = null;
+        this.leaveOver();
     }
 }
 

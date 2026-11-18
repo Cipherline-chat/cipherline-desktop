@@ -22,11 +22,17 @@ export const RX_LEVEL_MIN_NEW_SPEECH_SEC = 3;
  * getSynchronizationSources() is built from) and "the readings are stale" all looked the same:
  * silence. The tally below counts what each poll got, so a window with no speech still says
  * which of those it was (`rx_level` with `reason` instead of `wire_db`).
+ *
+ * 2026-11-17: it was "no_source" — LiveKit's SFU does not forward the header extension at all
+ * (not E2EE). The leveler now falls back to the receiver's getStats() energy (rxStatsLevel.ts);
+ * rx_level says which source it used (`lvl_src`), and a window with stats readings is "quiet",
+ * never "no_source".
  */
 import { pickRtpLevel, type RtpSourceLike } from './incomingLeveler';
 
-export interface RxPollTally { polls: number; withLevel: number; fresh: number }
-export const newRxPollTally = (): RxPollTally => ({ polls: 0, withLevel: 0, fresh: 0 });
+/** `stats` = readings that came from the receiver's getStats() instead (rxStatsLevel.ts: no RTP header level). */
+export interface RxPollTally { polls: number; withLevel: number; fresh: number; stats?: number }
+export const newRxPollTally = (): RxPollTally => ({ polls: 0, withLevel: 0, fresh: 0, stats: 0 });
 
 /** Count one poll of getSynchronizationSources() and return the fresh level (or undefined). Pure but for `t`. */
 export function tallyRxPoll(t: RxPollTally, sources: readonly RtpSourceLike[] | undefined, nowMs: number): number | undefined {
@@ -42,6 +48,7 @@ export type RxNoSpeechReason = 'no_source' | 'stale' | 'quiet';
 /** Which of the three it was, for a window that heard no speech. null = nothing was polled. */
 export function rxNoSpeechReason(t: RxPollTally): RxNoSpeechReason | null {
     if (t.polls <= 0) return null;
+    if ((t.stats ?? 0) > 0) return 'quiet'; // getStats gave levels: the leveler just did not call them speech
     if (t.withLevel === 0) return 'no_source';
     if (t.fresh === 0) return 'stale';
     return 'quiet';

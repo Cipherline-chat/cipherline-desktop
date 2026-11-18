@@ -4,7 +4,7 @@
 # plus: grim (sway screenshots), imagemagick (X11 `import`), x11-apps/xdotool (X11 input), socat/iproute2 (debug).
 # Optional stacks (KDE, GNOME) leave a marker under /opt/cle2e/ so a missing package marks a desktop "not packaged"
 # instead of failing the image. node and Electron are mounted from the host (nothing but system libraries lives here).
-FROM ubuntu:24.04
+FROM ubuntu:24.04@sha256:73b999393d07f2bf65a40373778a44dc9a6d54ad7718d29247d8ff9413c4d6a8
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update -qq && apt-get install -y --no-install-recommends \
       ca-certificates dbus dbus-user-session dbus-x11 procps psmisc libsndfile1 python3 coreutils util-linux xz-utils curl iproute2 socat \

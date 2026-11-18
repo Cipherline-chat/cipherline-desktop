@@ -35,8 +35,14 @@ vi.hoisted(() => {
 const post = vi.fn();
 const get = vi.fn();
 const del = vi.fn();
+// The pending-session revoke deliberately uses a FRESH instance (no global
+// interceptors) — `create` hands back this separate `post` so the tests can
+// tell the two apart.
+const isolatedPost = vi.fn();
+const create = vi.fn((..._a: unknown[]) => ({ post: (...a: unknown[]) => isolatedPost(...a) }));
 vi.mock('axios', () => ({
     default: {
+        create: (...a: unknown[]) => create(...a),
         post: (...a: unknown[]) => post(...a),
         get: (...a: unknown[]) => get(...a),
         delete: (...a: unknown[]) => del(...a),
@@ -50,6 +56,12 @@ vi.mock('../../contexts/AuthContext', () => ({
     useAuth: () => ({ login, token: 'TOKEN', deviceId: 'DEVICE-1' }),
 }));
 const registerOrReuseDevice = vi.fn(async () => ({ deviceId: 'NEW-DEVICE', requiresPairing: false }));
+// The desktop's CURRENTLY signed-in session (as if another account were
+// signed in) — the revoke must never touch it.
+const currentRefresh = vi.fn((): string | null => 'CURRENT-SIGNED-IN-REFRESH');
+vi.mock('../../utils/secureLocalStore', () => ({
+    secureLocalStore: { getItem: (k: string) => (k === 'cipherline_refresh_token' ? currentRefresh() : null) },
+}));
 vi.mock('../../utils/deviceRegistration', () => ({
     registerOrReuseDevice: (...a: unknown[]) => registerOrReuseDevice(...(a as [])),
 }));
@@ -107,6 +119,7 @@ const qrImg = () => container.querySelector('img[src^="data:image/png"]');
 beforeEach(() => {
     vi.useRealTimers();
     post.mockReset(); get.mockReset(); del.mockReset();
+    isolatedPost.mockReset(); create.mockClear();
     login.mockClear(); registerOrReuseDevice.mockClear();
     Object.values(electronAPI).forEach((f) => { if (typeof f === 'function') f.mockClear(); });
     (window as unknown as { electronAPI: unknown }).electronAPI = electronAPI;
@@ -160,6 +173,75 @@ describe('QrSignInPanel under StrictMode', () => {
         await click('Continue');
         expect(registerOrReuseDevice).toHaveBeenCalledWith('USER-1', 'NEW-ACCESS', 'QR');
         expect(login).toHaveBeenCalledWith('NEW-ACCESS', 'USER-1', 'NEW-DEVICE', false, 'NEW-REFRESH');
+    }, 10_000);
+
+    it('"This isn\'t my account" revokes the PENDING pair via /auth/logout on an isolated client, with no Authorization header', async () => {
+        post.mockResolvedValue({ data: { link_id: LINK_ID, ttl_s: 120, expires_at: new Date(Date.now() + 120_000).toISOString() } });
+        get.mockImplementation(async (url: string) => {
+            if (url.endsWith('/auth/me')) return { data: { username: 'stranger', discriminator: 9 } };
+            return { data: { state: 'granted', envelope_b64: 'ENVELOPE' } };
+        });
+        // Offline: the revoke never settles — the UI must not wait for it.
+        isolatedPost.mockImplementation(() => new Promise(() => {}));
+
+        await mount(React.createElement(QrSignInPanel));
+        await click('Show a code');
+        await flush(2_100);
+        expect(container.textContent).toContain('@stranger#0009');
+
+        await click("This isn't my account");
+
+        expect(container.textContent).toContain('Sign-in failed');
+        expect(isolatedPost).toHaveBeenCalledTimes(1);
+        const [url, body, config] = isolatedPost.mock.calls[0] as [string, unknown, { headers?: Record<string, string> } | undefined];
+        expect(url).toMatch(/\/auth\/logout$/);
+        expect(body).toEqual({ refresh_token: 'NEW-REFRESH' });
+        expect(config?.headers?.Authorization).toBeUndefined();
+        // The global (interceptor-carrying) client was never used for it.
+        expect(post.mock.calls.some(c => String(c[0]).endsWith('/auth/logout'))).toBe(false);
+        expect(JSON.stringify(isolatedPost.mock.calls)).not.toContain('CURRENT-SIGNED-IN-REFRESH');
+        expect(login).not.toHaveBeenCalled();
+    }, 10_000);
+
+    it('closing the panel on the confirm screen revokes the pending pair too', async () => {
+        post.mockResolvedValue({ data: { link_id: LINK_ID, ttl_s: 120, expires_at: new Date(Date.now() + 120_000).toISOString() } });
+        get.mockImplementation(async (url: string) => {
+            if (url.endsWith('/auth/me')) return { data: { username: 'dawson', discriminator: 7 } };
+            return { data: { state: 'granted', envelope_b64: 'ENVELOPE' } };
+        });
+        isolatedPost.mockRejectedValue(Object.assign(new Error('429'), { isAxiosError: true, response: { status: 429 } }));
+
+        await mount(React.createElement(QrSignInPanel));
+        await click('Show a code');
+        await flush(2_100);
+        expect(container.textContent).toContain('@dawson#0007');
+
+        await act(async () => { root!.unmount(); });
+        root = null;
+        await flush(10);
+
+        expect(isolatedPost).toHaveBeenCalledTimes(1);
+        expect(isolatedPost.mock.calls[0][1]).toEqual({ refresh_token: 'NEW-REFRESH' });
+    }, 10_000);
+
+    it('after "Continue" signs in, unmounting revokes nothing', async () => {
+        post.mockResolvedValue({ data: { link_id: LINK_ID, ttl_s: 120, expires_at: new Date(Date.now() + 120_000).toISOString() } });
+        get.mockImplementation(async (url: string) => {
+            if (url.endsWith('/auth/me')) return { data: { username: 'dawson', discriminator: 7 } };
+            return { data: { state: 'granted', envelope_b64: 'ENVELOPE' } };
+        });
+        del.mockResolvedValue({ data: { success: true } });
+
+        await mount(React.createElement(QrSignInPanel));
+        await click('Show a code');
+        await flush(2_100);
+        await click('Continue');
+        expect(login).toHaveBeenCalled();
+
+        await act(async () => { root!.unmount(); });
+        root = null;
+        await flush(10);
+        expect(isolatedPost).not.toHaveBeenCalled();
     }, 10_000);
 
     it('unmounting still discards the main-process key', async () => {

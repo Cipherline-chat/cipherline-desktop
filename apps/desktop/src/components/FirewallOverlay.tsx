@@ -54,7 +54,37 @@ export interface FirewallOverlayProps {
      *  shell's content area (right of the rail, below the titlebar), for the
      *  single instance Dashboard mounts so it opens from any view. */
     placement?: 'pane' | 'shell';
+    /**
+     * What the overlay covers (Dashboard: the content column right of the rail).
+     * Once the overlay has faded in and is opaque, that element stops rendering
+     * (`data-fw-covered`: content-visibility hidden) until it closes: see
+     * FW_COVER_AFTER_MS for why.
+     */
+    coverRef?: React.RefObject<HTMLElement | null>;
 }
+
+/**
+ * When the view under the game stops rendering: just after the overlay's 220 ms fade-in
+ * (fw-in in firewall.css), so the fade still shows what it is covering.
+ *
+ * WHY. The overlay is opaque, but everything under it kept rendering at the display's rate:
+ * the Home deck's decoration (Keys' articulated SVG, ambient motes, live tiles), a chat's
+ * animated avatars, any CSS loop. That is main-thread style and paint every frame plus GPU
+ * raster for pixels nobody can see, on the same GPU process that draws and composites the
+ * game's worker canvas. The owner's hitch report (2026-11-12) fits that: every dropped game
+ * frame sat under a 67-80 ms main-thread frame with NO script in it, and the hitches were
+ * evenly spaced (~3.1 s, which reads as "every other pillar"), not tied to pillars or
+ * points. Measured in headless Chromium (harness/firewall-hitch*, docs/worklog 2026-11-18):
+ * behind the real Home this cuts the main thread's time under a run 3-6x and its style
+ * recalcs from one a frame to almost none; behind a heavier animated page it also removes
+ * the no-script long frames and the game's dropped frames. Not proven on the owner's GPU.
+ * content-visibility keeps the covered view's layout, scroll and state; it only skips
+ * rendering it, and CSS animations in it stop ticking. The column's size is set from
+ * outside (flex: 1, height 100%), so the size containment it implies changes nothing.
+ */
+export const FW_COVER_AFTER_MS = 260;
+/** The attribute firewall.css turns into content-visibility: hidden. */
+export const FW_COVERED_ATTR = 'data-fw-covered';
 
 type Gl = 'starting' | 'ok' | 'failed';
 
@@ -66,7 +96,7 @@ const isEditable = (t: EventTarget | null): boolean => {
 
 const Kbd: React.FC<{ children: React.ReactNode }> = ({ children }) => <kbd className="fw-kbd">{children}</kbd>;
 
-export const FirewallOverlay: React.FC<FirewallOverlayProps> = ({ userId, onClose, placement = 'pane' }) => {
+export const FirewallOverlay: React.FC<FirewallOverlayProps> = ({ userId, onClose, placement = 'pane', coverRef }) => {
     const rootRef = useRef<HTMLDivElement>(null);
     const stageRef = useRef<HTMLDivElement>(null);
     const workerRef = useRef<WorkerLike | null>(null);
@@ -113,7 +143,8 @@ export const FirewallOverlay: React.FC<FirewallOverlayProps> = ({ userId, onClos
     const motionActive = useRef(true);
     const trophyRef = useRef<HTMLButtonElement>(null);
     // Dev and staging builds: the hitch probe (firewallHitchProbe.ts). Its game-over "Copy hitch report" button was
-    // removed (owner 2026-11-13); the probe still logs its summary to the console and window.__fwHitchReport on close.
+    // removed (owner 2026-11-13); on close the probe writes the run to the Performance log (Report a problem → Performance
+    // sends it), and in dev builds also to the console and window.__fwHitchReport.
     const [probeOn] = useState(hitchProbeEnabled);
     const probeRef = useRef<HitchProbe | null>(null);
 
@@ -277,6 +308,21 @@ export const FirewallOverlay: React.FC<FirewallOverlayProps> = ({ userId, onClos
             window.removeEventListener('keydown', onKey, true);
             window.removeEventListener('keyup', onKey, true);
         };
+    }, []);
+
+    // Stop rendering what the overlay covers once it is opaque (FW_COVER_AFTER_MS).
+    // Declared BEFORE the focus effect on purpose: unmount cleanups run in order, so
+    // the covered view is rendering again before focus goes back into it.
+    useEffect(() => {
+        const el = coverRef?.current;
+        if (!el) return;
+        const t = setTimeout(() => el.setAttribute(FW_COVERED_ATTR, ''), FW_COVER_AFTER_MS);
+        return () => {
+            clearTimeout(t);
+            el.removeAttribute(FW_COVERED_ATTR);
+        };
+        // The covered element is fixed for the overlay's life.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
     // Focus: into the overlay on open (so Space is ours, not a focused

@@ -6,6 +6,7 @@ import { API_BASE } from '../../constants';
 import { apiUrl } from '../../utils/apiPath';
 import { useAuth } from '../../contexts/AuthContext';
 import { registerOrReuseDevice } from '../../utils/deviceRegistration';
+import { secureLocalStore } from '../../utils/secureLocalStore';
 import { buildLinkQr } from '../../utils/linkQr';
 import { formatCountdown } from '../../utils/formatCountdown';
 import { ClButton } from '../ClButton';
@@ -122,6 +123,22 @@ function realDeps(login: (t: string, u: string, d: string, p: boolean, r?: strin
                 avatar_url: res.data.avatar_url ?? null,
             };
         },
+        // Revoke a claimed-but-rejected/abandoned pair server-side (see the
+        // controller's QrSignInDeps.revokeSession doc). Deliberately a FRESH
+        // axios instance, not the global one: the global instance carries the
+        // Dashboard's response interceptor, whose 401 path refreshes and
+        // retries with the CURRENTLY signed-in account's token — and on a
+        // failed refresh signs that account out. This request carries only
+        // the pending pair's own refresh token in the body and no
+        // Authorization header. `/auth/logout` is @SkipAttestation +
+        // @SkipVersionCheck, so the headers the global interceptors would add
+        // are not needed. Short timeout: nothing waits on it, but it should
+        // not linger either.
+        revokeSession: async (refreshToken: string) => {
+            const client = axios.create({ timeout: 10_000 });
+            await client.post(`${API_BASE}/auth/logout`, { refresh_token: refreshToken });
+        },
+        getCurrentRefreshToken: () => secureLocalStore.getItem('cipherline_refresh_token'),
         registerDevice: (userId: string, accessToken: string) => registerOrReuseDevice(userId, accessToken, 'QR'),
         login,
         renderQr: (text: string) => QRCode.toDataURL(text, { errorCorrectionLevel: 'M', margin: 2, width: 256 }),

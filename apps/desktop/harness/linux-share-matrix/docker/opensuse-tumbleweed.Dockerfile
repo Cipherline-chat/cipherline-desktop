@@ -1,6 +1,6 @@
 # Linux share matrix: openSUSE Tumbleweed. zypper installs what it can find and reports the rest, so the lists are
 # loose; markers are set from the binaries that really landed.
-FROM opensuse/tumbleweed:latest
+FROM opensuse/tumbleweed:latest@sha256:0951acf558ae96a8b6b55d2ee66ad4e7aba1e2741ac545f8ff309bca9bd963e8
 RUN zypper -n --gpg-auto-import-keys ref >/dev/null 2>&1; \
     zypper -n in --no-recommends \
       dbus-1 dbus-1-daemon dbus-1-tools procps psmisc coreutils util-linux xz curl python3 libsndfile1 shadow \

@@ -1,5 +1,4 @@
 import React from 'react';
-import { GameControllerIcon } from './GameControllerIcon';
 import { customStatusLabel, parseStatusEmoji, statusLineModel } from '../utils/customStatus';
 import type { FriendStatusEntry } from '../utils/userStatusModel';
 import { personalStatusEmoji } from './personalStatusEmoji';
@@ -41,8 +40,10 @@ interface StatusLineProps {
 }
 
 /**
- * The line under a name. Custom status wins over the game; when there is also
- * a game, a small controller sits next to it ("Playing <game>" on hover). The
+ * The line under a name. Custom status wins over the game. When there is also
+ * a game, NO controller is drawn after the status (owner, 2026-11-18: the avatar
+ * already carries the controller badge, two looked bad); "Playing <game>" is on
+ * the line's tooltip instead. The
  * decision itself is `statusLineModel` (utils/customStatus.ts); this only draws
  * it, truncated, with the full text as the tooltip.
  */
@@ -77,11 +78,13 @@ export const StatusLine: React.FC<StatusLineProps> = ({ entry, className, style,
         return <span className={className} style={style} title={m.gameTooltip ?? undefined}>{renderGame ? renderGame(m.game!) : `Playing ${m.game}`}</span>;
     }
     const label = customStatusLabel(m);
+    // custom+game: the game rides on the tooltip, under the status text.
+    const tip = [label, m.kind === 'custom+game' ? m.gameTooltip : null].filter(Boolean).join('\n');
     return (
         <span
             className={['flex items-center gap-1 min-w-0', className ?? ''].filter(Boolean).join(' ')}
             style={style}
-            title={label || undefined}
+            title={tip || undefined}
             data-testid="status-line"
         >
             <StatusEmoji value={m.emoji} className="shrink-0" renderCustom={personalStatusEmoji(userId, animate)} />
@@ -89,11 +92,6 @@ export const StatusLine: React.FC<StatusLineProps> = ({ entry, className, style,
             {m.kind === 'custom' && heard && (
                 <span className="shrink-0 inline-flex items-center text-cl-ok" title={listeningTip ?? undefined} data-testid="status-line-listening">
                     <ActivitySourceIcon kind={heard.kind} source={heard.source} size={iconSize} />
-                </span>
-            )}
-            {m.kind === 'custom+game' && (
-                <span className="shrink-0 inline-flex items-center text-cl-ok" title={m.gameTooltip ?? undefined} data-testid="status-line-game">
-                    <GameControllerIcon size={iconSize} />
                 </span>
             )}
         </span>

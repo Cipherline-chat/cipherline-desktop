@@ -250,7 +250,8 @@ describe('the card line, the channel setting and the voice default', () => {
         expect(voiceSettings).not.toContain('endCallOnCreatorLeaveDefault?:');
         expect(voiceSettings).not.toContain('endCallOnCreatorLeaveDefault: false');
         expect(voiceSettings).not.toContain('setEndCallOnCreatorLeaveDefault');
-        expect(voiceSettings).toContain("export const RETIRED_VOICE_SETTING_KEYS = ['endCallOnCreatorLeaveDefault'] as const;");
+        // (voiceGateAuto joined the list 2026-11-17 when the automatic voice gate was removed.)
+        expect(voiceSettings).toMatch(/export const RETIRED_VOICE_SETTING_KEYS = \[[^\]]*'endCallOnCreatorLeaveDefault'[^\]]*\] as const;/);
         expect(voiceSettings).toContain('delete (merged as Record<string, unknown>)[k]');
         // the blob key itself must not change
         expect(voiceSettings).toContain("export const VOICE_SETTINGS_STORAGE_KEY = 'cipherline_voice_settings';");

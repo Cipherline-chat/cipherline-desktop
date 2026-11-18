@@ -32,7 +32,6 @@ const settings: VoiceSettings = {
     normalizeIncomingVolume: true,
     voiceGate: true,
     voiceGateThreshold: -45,
-    voiceGateAuto: true,
     pushToTalk: false,
     pushToTalkKey: null,
     pushToMuteKey: null,

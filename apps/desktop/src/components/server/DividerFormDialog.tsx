@@ -14,14 +14,14 @@
  */
 
 import React, { useEffect, useRef, useState } from 'react';
-import { Minus, X, Trash2, Save, Plus, RotateCcw } from 'lucide-react';
+import { Minus, X, Trash2, Save, Plus } from 'lucide-react';
 import {
-    DIVIDER_STYLES, isLabelDividerStyle, DIVIDER_COLOR_PRESETS, DIVIDER_DEFAULT_COLOR, DIVIDER_LABEL_MAX,
+    DIVIDER_STYLES, isLabelDividerStyle, DIVIDER_LABEL_MAX,
     dividerLabelError, DISPLAY_NAME_MAX_UNITS_PER_GRAPHEME, normalizeDividerColor, type DividerStyle,
 } from '@cipherline/shared';
 import { ClButton, ClModal, ClInput } from '../cl';
 import { useModalExit } from '../../hooks/useModalExit';
-import { ColourSwatchButton } from '../settings/ui/ColourPicker';
+import { LayoutColorPicker } from './LayoutColorPicker';
 import { ChannelDividerVisual } from './ChannelDividerRow';
 import type { DividerInfo } from '../../hooks/useServers';
 
@@ -169,39 +169,7 @@ export const DividerFormDialog: React.FC<Props> = ({ divider, containerName, onC
                             </div>
                             <div>
                                 <div className={sectionLabel}>Colour</div>
-                                <div className="flex items-center gap-2 flex-wrap">
-                                    {DIVIDER_COLOR_PRESETS.map(hex => {
-                                        const current = (color ?? DIVIDER_DEFAULT_COLOR) === hex;
-                                        return (
-                                            <button
-                                                key={hex}
-                                                type="button"
-                                                className="w-6 h-6 rounded-full border-2 border-solid focus-visible:outline focus-visible:outline-2 focus-visible:outline-cl-lume"
-                                                style={{ background: hex, borderColor: current ? 'var(--cl-text)' : 'transparent' }}
-                                                aria-label={`Colour ${hex}${hex === DIVIDER_DEFAULT_COLOR ? ' (default)' : ''}`}
-                                                aria-pressed={current}
-                                                onClick={() => setColor(hex === DIVIDER_DEFAULT_COLOR ? null : hex)}
-                                            />
-                                        );
-                                    })}
-                                    <ColourSwatchButton
-                                        value={color ?? DIVIDER_DEFAULT_COLOR}
-                                        label="Divider colour"
-                                        presets={DIVIDER_COLOR_PRESETS}
-                                        size={24}
-                                        triggerLabel="Pick a custom divider colour"
-                                        onChange={(hex) => setColor(normalizeDividerColor(hex))}
-                                        onCommit={(hex) => setColor(normalizeDividerColor(hex))}
-                                        className={color && !DIVIDER_COLOR_PRESETS.includes(color) ? undefined : 'cp-trigger--dashed'}
-                                    >
-                                        {color && !DIVIDER_COLOR_PRESETS.includes(color) ? undefined : <span aria-hidden="true">+</span>}
-                                    </ColourSwatchButton>
-                                    {color && (
-                                        <button type="button" className="text-[11px] text-cl-faint hover:text-cl-lume inline-flex items-center gap-1" onClick={() => setColor(null)}>
-                                            <RotateCcw size={11} /> Default
-                                        </button>
-                                    )}
-                                </div>
+                                <LayoutColorPicker value={color} onChange={setColor} label="Divider colour" />
                             </div>
                         </>
                     )}

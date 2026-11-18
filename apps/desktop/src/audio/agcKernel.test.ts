@@ -799,24 +799,31 @@ describe('AgcProcessor - mic-volume slider in FRONT of the AGC (2026-11-11), ful
         }
     });
 
-    it('CONTROL: the old placement at 200 % had the limiter on ~every peak (-8.5 dBFS ceiling)', () => {
-        expect(measure(spiky(-43), 7.5, true).heldPct).toBeGreaterThan(55);
+    // Corrected 2026-11-17 (audit): this and the uncapped-boost case below used to read 55-98 % "held". Most of
+    // that was the limiter's stuck peak (see "look-ahead limiter lets go after a peak"): one rounded-down peak
+    // over the ceiling and the limiter stayed down for the rest of the run, so every later voiced block counted
+    // as held. With the peak released they read ~2 %. Kept as the measured facts, not as controls.
+    it('old placement at 200 % (-8.5 dBFS ceiling): the limiter/compressor hold few voiced blocks once the peak is released', () => {
+        expect(measure(spiky(-43), 7.5, true).heldPct).toBeLessThan(10);
     });
 
-    it('200 %: the slider never pushes into the limiter - lim_pct <= 20 %, no louder than ~1 dB over 100 %, never over -1 dBFS', () => {
-        expect(MIC_BOOST_TARGET_MAX_DB).toBe(1);
+    // PROPOSAL 2026-11-17 (needs owner approval): the 1 dB cap existed because the limiter read as "on 90 %+ of peaks"
+    // at 200 %, which was the stuck-peak bug. With the peak released, 200 % can be the +4-6 dB louder the owner asked
+    // for on 2026-11-11 without living in the limiter.
+    it('200 %: about +4-5 dB louder than 100 %, lim_pct <= 25 %, never over -1 dBFS', () => {
+        expect(MIC_BOOST_TARGET_MAX_DB).toBe(5);
         for (const db of [-45, -30, -18]) {
             const a = measure(spiky(db), 0);
             const b = measure(spiky(db), 7.5);
             expect(b.peakDb).toBeLessThanOrEqual(DEFAULT_LIMITER_CEILING_DB + 0.01);
             expect(b.heldPct).toBeLessThan(25);
-            expect(b.outDb).toBeLessThan(a.outDb + 1.5);
-            expect(b.outDb).toBeGreaterThan(a.outDb - 0.5);
+            expect(b.outDb).toBeGreaterThan(a.outDb + 3.5);
+            expect(b.outDb).toBeLessThan(a.outDb + 5.5);
         }
     });
 
-    it('CONTROL: without the cap (target +5 dB at 200 %, the previous behaviour) the limiter is on most peaks', () => {
-        expect(measure(spiky(-30), 7.5, false, true).heldPct).toBeGreaterThan(60);
+    it('without the cap (target +5 dB at 200 %, the previous behaviour) the limiter/compressor still hold few voiced blocks (was read as 60 %+, see above)', () => {
+        expect(measure(spiky(-30), 7.5, false, true).heldPct).toBeLessThan(10);
     });
 
     it('a very quiet mic (-58 dBFS, in the taper) IS lifted by the slider: its pre-gain moves it into the compensated range', () => {
@@ -857,5 +864,135 @@ describe('AgcProcessor - mic-volume slider in FRONT of the AGC (2026-11-11), ful
         const t = run(agc, room(20, -50, 4));
         expect(agc.gainDb).toBe(0);
         expect(Math.abs(activeLevelDb(t.out, at(5), at(20)) - -50)).toBeLessThan(3);
+    });
+});
+
+describe('look-ahead limiter lets go after a peak (audit 2026-11-17)', () => {
+    // The limiter tracks the loudest |sample| in its 1 ms ring and rescans only when the sample leaving the ring
+    // "was the peak". It kept the peak as a float64 but the ring is a Float32Array: whenever rounding to float32
+    // went down, the leaving sample compared SMALLER than the peak, no rescan happened, and that peak stayed in
+    // force for good. The limiter then held ceiling / peak (-1.3 dB after a 1.04 peak, -19 dB after an +18 dBFS
+    // driver burst) on everything that followed, until a louder sample came along and lowered it further.
+    function burstThenQuiet(seed: number, burstAmp: number) {
+        // bypass: only the limiter acts. Its internals are not part of the typed surface (agcKernel.d.ts).
+        const agc = new AgcProcessor({ sampleRate: SR, enabled: false }) as AgcProcessor & {
+            _applyGainAndLimiter(inp: Float32Array, out: Float32Array, fromDb: number, toDb: number, ramp: boolean): void;
+            _peak: number;
+        };
+        const r = rng(seed);
+        const blocks: Float32Array[] = [];
+        for (let b = 0; b < Math.round((0.25 * SR) / QUANTUM); b++) {
+            const x = new Float32Array(QUANTUM);
+            for (let i = 0; i < QUANTUM; i++) x[i] = (r() * 2 - 1) * burstAmp;
+            blocks.push(x);
+        }
+        for (let b = 0; b < Math.round(SR / QUANTUM); b++) {
+            const x = new Float32Array(QUANTUM);
+            for (let i = 0; i < QUANTUM; i++) x[i] = 0.0316 * Math.sin((2 * Math.PI * 300 * (b * QUANTUM + i)) / SR);
+            blocks.push(x);
+        }
+        const o = new Float32Array(QUANTUM);
+        let last = 0;
+        for (const x of blocks) {
+            // a 1.1 dB gain in front of the limiter (what the AGC's gain does in a call), so samples are not float32-exact
+            agc._applyGainAndLimiter(x, o, 1.1, 1.1, false);
+            last = 0;
+            for (const v of o) last = Math.max(last, Math.abs(v));
+        }
+        return { limiterGain: agc.limiterGain, peak: agc._peak, lastPeak: last };
+    }
+
+    it('after an over-range burst the limiter is back to unity within 1 s of quiet speech (40 seeds, two burst sizes)', () => {
+        for (const amp of [1.2, 8]) {
+            for (let seed = 1; seed <= 40; seed++) {
+                const res = burstThenQuiet(seed, amp);
+                expect(res.limiterGain, `amp ${amp} seed ${seed}`).toBeGreaterThan(0.99);
+                expect(res.peak, `amp ${amp} seed ${seed}`).toBeLessThan(0.05);
+                // the quiet tone leaves at its own level (+1.1 dB), not turned down
+                expect(res.lastPeak, `amp ${amp} seed ${seed}`).toBeGreaterThan(0.0316 * dbToLinear(1.1) * 0.97);
+            }
+        }
+    });
+});
+
+// Owner report 5ffa77e6 (2026-11-18): "my room wasn't that loud, it was boosting it up; when I would talk it sounded fine".
+// The slow gain holds between words (it only adapts on speech) and used to be APPLIED there too: a quiet laptop voice sat at
+// +26..29 dB, and the room through the gate's hold, a key click and the room after it, all left that much louder.
+describe('AgcProcessor - the boost is for speech, not for the room between words', () => {
+    const rmsDbOf = (x: Float32Array, a: number, b: number) => {
+        let s = 0;
+        for (let i = a; i < b; i++) s += x[i] * x[i];
+        return 10 * Math.log10(Math.max(s / Math.max(1, b - a), 1e-24));
+    };
+    const trained = (opts: Record<string, unknown> = {}) => {
+        const agc = new AgcProcessor({ sampleRate: SR, ...opts });
+        run(agc, concat(room(0.5, -62), voice(4, -40)));
+        return agc;
+    };
+
+    it('the room after a sentence leaves at its own level; the learned gain is kept for the next word', () => {
+        const agc = trained();
+        const learned = agc.gainDb;
+        expect(learned).toBeGreaterThan(15); // a quiet talker really has a big boost to withhold
+        const r = room(3, -56, 4);
+        const t = run(agc, r);
+        expect(rmsDbOf(t.out, at(1), at(3)) - rmsDbOf(r, at(1), at(3))).toBeLessThan(1);
+        expect(agc.gainDb).toBe(learned);
+    });
+
+    it('CONTROL: with the boost applied between words (speechOnlyBoost: false) the same room leaves 15+ dB louder', () => {
+        const agc = trained({ speechOnlyBoost: false });
+        const r = room(3, -56, 4);
+        const t = run(agc, r);
+        expect(rmsDbOf(t.out, at(1), at(3)) - rmsDbOf(r, at(1), at(3))).toBeGreaterThan(15);
+    });
+
+    it('the boost is gone within the voice hold + release after the last syllable', () => {
+        const agc = new AgcProcessor({ sampleRate: SR });
+        const t = run(agc, concat(room(0.5, -62), voice(4, -40), room(1, -56, 4)));
+        // voice() ends its last syllable at 3.9 s of 4 s (0.3 s on, 0.1 s off)
+        expect(t.totalDb[blk(0.5 + 3.9 + 0.45)]).toBeLessThan(0.5);
+        expect(t.totalDb[blk(0.5 + 3.9 + 0.05)]).toBeGreaterThan(10); // still boosted right after it: word tails keep the gain
+    });
+
+    it('a word after a pause (the gate closed: digital silence) gets the learned gain from its first block', () => {
+        for (const [opts, ok] of [[{}, true], [{ onsetGraceSec: 0 }, false]] as const) {
+            const agc = trained(opts);
+            const word = voice(1.2, -40);
+            const t = run(agc, concat(new Float32Array(at(1.5)), word));
+            const o = at(1.5);
+            // first 40 ms of the first syllable vs the third syllable, each against its input
+            const first = rmsDbOf(t.out, o, o + at(0.04)) - rmsDbOf(word, 0, at(0.04));
+            const steady = rmsDbOf(t.out, o + at(0.85), o + at(1.05)) - rmsDbOf(word, at(0.85), at(1.05));
+            if (ok) expect(first - steady).toBeGreaterThan(-1);
+            else expect(first - steady).toBeLessThan(-6); // CONTROL: without the onset grace the word start swells in
+        }
+    });
+
+    it('a key click after a pause stays as loud as at the mic relative to the voice, and the room after it is not boosted', () => {
+        const agc = trained();
+        const x = concat(new Float32Array(at(1)), mix(click(-34), room(0.4, -60, 8)));
+        const t = run(agc, x);
+        const c = at(1);
+        // room 150-350 ms after the click (the boost has released: grace + 300 dB/s): at its own level, not +N dB
+        expect(rmsDbOf(t.out, c + at(0.15), c + at(0.35)) - rmsDbOf(x, c + at(0.15), c + at(0.35))).toBeLessThan(1);
+        const old = trained({ speechOnlyBoost: false });
+        const t2 = run(old, x);
+        expect(rmsDbOf(t2.out, c + at(0.15), c + at(0.35)) - rmsDbOf(x, c + at(0.15), c + at(0.35))).toBeGreaterThan(15);
+    });
+
+    it('steady speech is levelled exactly as before (output level and gain within 0.3 dB)', () => {
+        for (const lvl of [-40, -30, -16]) {
+            const a = run(new AgcProcessor({ sampleRate: SR }), concat(room(0.4, -62), voice(5, lvl)));
+            const b = run(new AgcProcessor({ sampleRate: SR, speechOnlyBoost: false }), concat(room(0.4, -62), voice(5, lvl)));
+            expect(Math.abs(activeLevelDb(a.out, at(2), at(5.4)) - activeLevelDb(b.out, at(2), at(5.4)))).toBeLessThan(0.3);
+            expect(Math.abs(a.gainDb[blk(5)] - b.gainDb[blk(5)])).toBeLessThan(0.3);
+        }
+    });
+
+    it('cuts are never withheld: a loud talker is turned down between words as before', () => {
+        const agc = new AgcProcessor({ sampleRate: SR });
+        const t = run(agc, concat(room(0.4, -62), voice(3, -6), room(1, -40, 3)));
+        expect(t.totalDb[blk(0.4 + 3 + 0.6)]).toBeLessThan(-5);
     });
 });

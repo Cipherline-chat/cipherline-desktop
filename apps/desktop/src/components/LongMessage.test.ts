@@ -115,9 +115,9 @@ describe('collapsed', () => {
     });
 
     it('a message at exactly the threshold is not collapsed at all', async () => {
-        await mount(React.createElement(Row, { text: 'x'.repeat(5000) }));
+        await mount(React.createElement(Row, { text: 'x'.repeat(3000) }));
         expect(q('[data-long-message]')).toBeNull();
-        await mount(React.createElement(Row, { text: 'x'.repeat(5001) }));
+        await mount(React.createElement(Row, { text: 'x'.repeat(3001) }));
         expect(q('[data-long-message]')).toBeTruthy();
     });
 });
@@ -261,11 +261,11 @@ describe('editing across the threshold', () => {
         await mount(React.createElement(Row, { text: LONG }));
         expect(q('[data-long-message]')).toBeTruthy();
 
-        await mount(React.createElement(Row, { text: words(4999) }));
+        await mount(React.createElement(Row, { text: words(2999) }));
         expect(q('[data-long-message]')).toBeNull();
-        expect(q('#row')!.textContent!.length).toBe(4999);
+        expect(q('#row')!.textContent!.length).toBe(2999);
 
-        await mount(React.createElement(Row, { text: words(5001) }));
+        await mount(React.createElement(Row, { text: words(3001) }));
         expect(q('[data-long-message]')!.getAttribute('data-state')).toBe('collapsed');
 
         await click(btn('Expand'));

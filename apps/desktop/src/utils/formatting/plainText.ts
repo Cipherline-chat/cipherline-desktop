@@ -76,16 +76,19 @@ function trimUrl(u: string): string {
     }
 }
 
-function collectInline(nodes: readonly InlineNode[], out: string[], angle = false): void {
+/** One link the collector found: `bare` = typed as plain text, else a masked / `<url>` link. */
+export interface LinkHit { url: string; bare: boolean }
+
+function collectInline(nodes: readonly InlineNode[], out: LinkHit[], angle = false): void {
     for (const n of nodes) {
         switch (n.t) {
             case 'text':
-                for (const m of n.v.matchAll(URL_RE)) out.push(trimUrl(m[0]));
+                for (const m of n.v.matchAll(URL_RE)) out.push({ url: trimUrl(m[0]), bare: true });
                 break;
             case 'link':
                 // A masked link embeds its real destination (so the card shows
                 // where it actually goes). `<url>` is the sender opting out.
-                if (n.kind === 'masked' || angle) out.push(n.url);
+                if (n.kind === 'masked' || angle) out.push({ url: n.url, bare: false });
                 break;
             case 'code':
             case 'codeBlock':
@@ -99,7 +102,7 @@ function collectInline(nodes: readonly InlineNode[], out: string[], angle = fals
     }
 }
 
-function collectBlocks(blocks: readonly BlockNode[], out: string[], angle = false): void {
+function collectBlocks(blocks: readonly BlockNode[], out: LinkHit[], angle = false): void {
     for (const b of blocks) {
         if (b.t === 'quote') collectBlocks(b.c, out, angle);
         else if (b.t === 'list') {
@@ -116,9 +119,21 @@ function collectBlocks(blocks: readonly BlockNode[], out: string[], angle = fals
  */
 export function sharedLinksOf(text: string): string[] {
     if (typeof text !== 'string' || text.length === 0) return [];
-    const out: string[] = [];
+    const out: LinkHit[] = [];
     collectBlocks(parseMessage(text), out, true);
-    return [...new Set(out)];
+    return [...new Set(out.map(h => h.url))];
+}
+
+/**
+ * Embed links in document order, NOT deduplicated, each tagged bare vs masked
+ * (the invite-link hider needs to know which occurrences were typed as plain
+ * text). Same inclusion rules as `embedUrlsOf`.
+ */
+export function embedLinkHitsOf(text: string): LinkHit[] {
+    if (typeof text !== 'string' || text.length === 0) return [];
+    const out: LinkHit[] = [];
+    collectBlocks(parseMessage(text), out);
+    return out;
 }
 
 /**
@@ -127,8 +142,5 @@ export function sharedLinksOf(text: string): string[] {
  * spoiler, inside a link's label, or written as `<url>`.
  */
 export function embedUrlsOf(text: string): string[] {
-    if (typeof text !== 'string' || text.length === 0) return [];
-    const out: string[] = [];
-    collectBlocks(parseMessage(text), out);
-    return [...new Set(out)];
+    return [...new Set(embedLinkHitsOf(text).map(h => h.url))];
 }

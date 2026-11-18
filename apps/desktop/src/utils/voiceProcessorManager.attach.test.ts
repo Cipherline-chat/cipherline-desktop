@@ -20,7 +20,7 @@ import type { VoiceSettings } from '../hooks/useVoiceSettings';
  */
 
 const ALL_OFF: VoiceSettings = {
-    noiseSuppression: false, noiseSuppressionMode: 'strong', echoCancellation: false, echoCancellationAuto: false, volumeNormalization: false, normalizeIncomingVolume: true, voiceGate: false, voiceGateThreshold: -45, voiceGateAuto: true,
+    noiseSuppression: false, noiseSuppressionMode: 'strong', echoCancellation: false, echoCancellationAuto: false, volumeNormalization: false, normalizeIncomingVolume: true, voiceGate: false, voiceGateThreshold: -45,
     pushToTalk: false, pushToTalkKey: null, pushToMuteKey: null, micDeviceId: '', speakerDeviceId: '', cameraDeviceId: '',
     micVolume: 100, speakerVolume: 100, eqEnabled: false, eqBands: [0, 0, 0, 0, 0],
     cameraBrightness: 100, cameraContrast: 100, cameraSaturation: 100,

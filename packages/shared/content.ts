@@ -1,4 +1,5 @@
 import type { KlipyGifMedia } from './klipy';
+import type { CardStyle } from './card-style';
 
 /**
  * Embedded mention tokens stored in message text (encrypted):
@@ -137,8 +138,21 @@ export function isMessageSize(v: unknown): v is MessageSize {
     return typeof v === 'string' && (MESSAGE_SIZES as readonly string[]).includes(v);
 }
 
+/**
+ * The message's card style (additive, optional, cosmetic; 2026-11-17).
+ *
+ * A typed, versioned object (card-style.ts, contract in
+ * docs/message-card-style.md) describing the box around ONE text message:
+ * background, border, radius, padding preset, glow, text colour and an
+ * app-defined animation. Never CSS, never a class name, never a URL. Lives
+ * inside the encrypted content, so the server never sees it. Every reader
+ * runs `normalizeCardStyle` on it (the sender is untrusted) and renders only
+ * the result; an unknown version, an oversize object (> CARD_STYLE_MAX_BYTES)
+ * or a malformed one renders plain. A client that predates it (desktop
+ * <= 0.1.1, mobile) ignores the field and shows the message plain.
+ */
 export type ClientContent =
-    | { client_msg_id?: string; type: 'text'; text: string; reply_to_id?: string; mentions?: MentionEntry[]; channel_refs?: ChannelRef[]; personal_emojis?: PersonalEmojiPayload[]; font?: MessageFont; size?: MessageSize }
+    | { client_msg_id?: string; type: 'text'; text: string; reply_to_id?: string; mentions?: MentionEntry[]; channel_refs?: ChannelRef[]; personal_emojis?: PersonalEmojiPayload[]; font?: MessageFont; size?: MessageSize; card_style?: CardStyle }
     | {
         client_msg_id?: string;
         type: 'attachment';
@@ -190,7 +204,9 @@ export type ClientContent =
     }
     /** An edit carries the complete new text AND its complete `channel_refs`
      *  (absent = the edited text names no channel). See ChannelRef. */
-    | { client_msg_id?: string; type: 'edit'; target_id: string; text: string; channel_refs?: ChannelRef[]; personal_emojis?: PersonalEmojiPayload[]; font?: MessageFont; size?: MessageSize }
+    /** `card_style` on an edit: absent = keep the original's style; `null` =
+     *  remove it; a valid style = replace it (card-style.ts withEditCardStyle). */
+    | { client_msg_id?: string; type: 'edit'; target_id: string; text: string; channel_refs?: ChannelRef[]; personal_emojis?: PersonalEmojiPayload[]; font?: MessageFont; size?: MessageSize; card_style?: CardStyle | null }
     | { client_msg_id?: string; type: 'delete'; target_id: string }
     | { client_msg_id?: string; type: 'reaction'; target_id: string; emoji: string; action: 'add' | 'remove'; personal_emojis?: PersonalEmojiPayload[] }
     /**
@@ -244,6 +260,16 @@ export type ClientContent =
     }
     | { client_msg_id?: string; type: 'system'; kind: string; data: any }
     | { client_msg_id?: string; type: 'server_invite'; code: string }
+    /**
+     * ── A gifted Pro period (gift subscriptions) ────────────────────────────
+     *
+     * Sent by the BUYER into the recipient's DM after the server confirmed the
+     * payment. Carries the gift id ONLY (see `proGiftProblem` in gifts.ts):
+     * the card fetches the gift's state by id from the buyer/recipient-only
+     * read, so the payload can never claim a price, a length or a state, and
+     * the server learns nothing from the message it did not already know.
+     */
+    | { client_msg_id?: string; type: 'pro_gift'; gift_id: string }
     /**
      * ── A GIF from KLIPY, sent as a REFERENCE ─────────────────────────────────
      *

@@ -1,3 +1,4 @@
+import { emitGiftUpdated } from '../components/billing/gifts/giftEvents';
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import type { WireGameDetail } from '../utils/richPresence';
 import { presenceBus, type WirePresence } from '../utils/presenceState';
@@ -78,6 +79,8 @@ export interface ChannelMessageEvent {
     signature_b64: string;
     reply_to_id: string | null;
     mentions_everyone: boolean;
+    /** True only when the API checked the sender's STYLE_MESSAGES (absent on an older API). */
+    styled?: boolean;
     created_at: string;
     /** Message franking: the relay's {c, t, kid, ts} for this row (additive; see utils/franking.ts). */
     franking?: { c: string; t: string; kid: string; ts: number };
@@ -1078,6 +1081,12 @@ export const useRealtime = (token: string | null, onNewMessage?: () => void, onC
                         if (!isOwnAnswerEcho(msg.data?.device_id, deviceId)) {
                             setAnsweredElsewhereEvent({ session_id: msg.data.session_id });
                         }
+                    }
+                    // A gift this account bought or received changed state
+                    // (paid / accepted / refunded). Id only; the card and the
+                    // Settings list re-fetch it through the API.
+                    if (msg.event === 'gift:updated') {
+                        emitGiftUpdated(msg.data?.gift_id);
                     }
                     if (msg.event === 'friend:accepted') {
                         setFriendAcceptedEvent({

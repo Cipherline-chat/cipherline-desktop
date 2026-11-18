@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { getCallEvents, clearCallEvents, validateCallEvent } from './callEventLog';
-import { recordMicLevelSecond, resetMicLevelLog, summarizeMicLevel, MIC_LEVEL_LOG_MS, MIC_LEVEL_MIN_VOICED_BLOCKS } from './micLevelLog';
+import { recordMicLevelSecond, resetMicLevelLog, summarizeMicLevel, summarizeMicNoise, MIC_LEVEL_LOG_MS, MIC_LEVEL_MIN_VOICED_BLOCKS } from './micLevelLog';
 import type { MicLevelSecond } from './voiceProcessor';
 
 const lin = (db: number) => Math.pow(10, db / 20);
@@ -63,28 +63,45 @@ describe('mic_level call event', () => {
         expect(d.mic_gain_db).toBeCloseTo(4.4, 1);
     });
 
-    it('logs a gate_level event beside mic_level for the auto gate: threshold, floor, speech, share held open by the voice rule', () => {
-        for (let i = 0; i < MIC_LEVEL_LOG_MS / 1000; i++) {
-            recordMicLevelSecond(second({ inDb: -46.7, gateThrDb: -42, gateFloorDb: -58, gateRescuedFrac: 0.2 }));
-        }
-        const ev = getCallEvents().filter(e => e.kind === 'gate_level');
-        expect(ev).toHaveLength(1);
-        expect(ev[0].detail).toEqual({ thr_db: -42, speech_db: -46.7, floor_db: -58, voice_pct: 20 });
-        expect(validateCallEvent(ev[0])).toEqual([]);
-        // speech_db - thr_db is the number that says "the gate sits on the voice"
-        expect((ev[0].detail!.speech_db as number) - (ev[0].detail!.thr_db as number)).toBeLessThan(0);
-    });
-
-    it('no gate_level for a manual gate (no threshold of ours) and mic_level keeps its key budget', () => {
-        for (let i = 0; i < MIC_LEVEL_LOG_MS / 1000; i++) recordMicLevelSecond(second({ gateThrDb: null, gateFloorDb: null, gateRescuedFrac: null }));
-        expect(getCallEvents().filter(e => e.kind === 'gate_level')).toEqual([]);
-        expect(getCallEvents().filter(e => e.kind === 'mic_level')).toHaveLength(1);
-    });
-
     it('skips a window with only a cough in it', () => {
         expect(summarizeMicLevel({
             sec: 30, blocks: 11250, voiced: MIC_LEVEL_MIN_VOICED_BLOCKS - 1, inMs: 1, outMs: 1, peak: 0.1, held: 0, clip: 0,
-            gainSum: 0, gainN: 0, gateSum: 0, gateN: 0, rawMs: 0, nsMs: 0, tapN: 0, micGainDb: 0,
+            gainSum: 0, gainN: 0, gateSum: 0, gateN: 0, noiseSum: 0, noiseN: 0, bursts: 0, roomSum: 0, roomN: 0, rawMs: 0, nsMs: 0, tapN: 0, micGainDb: 0,
+        })).toBeNull();
+    });
+});
+
+// Owner report 5ffa77e6 (2026-11-18): what else the gate let through, next to each mic_level window.
+describe('mic_noise call event', () => {
+    it('reports the share the gate passed non-voice sound, key-click bursts per minute and the room at the gate', () => {
+        for (let i = 0; i < MIC_LEVEL_LOG_MS / 1000; i++) {
+            recordMicLevelSecond(second({ gateNoiseFrac: i < 15 ? 0.4 : 0, gateBursts: i < 15 ? 4 : 0, gateMinDb: i % 2 ? -60 : -64 }));
+        }
+        const ev = getCallEvents().filter(e => e.kind === 'mic_noise');
+        expect(ev).toHaveLength(1);
+        const d = ev[0].detail!;
+        expect(d.noise_pct).toBe(20);       // 15 s at 40 % of a 30 s window
+        expect(d.bursts_min).toBeCloseTo(120, 1); // 60 bursts in half a minute
+        expect(d.room_db).toBeCloseTo(-62, 1);
+        expect(validateCallEvent(ev[0])).toEqual([]);
+        // mic_level itself is unchanged and still fits its slots
+        const lvl = getCallEvents().find(e => e.kind === 'mic_level')!;
+        expect(Object.keys(lvl.detail!)).not.toContain('noise_pct');
+    });
+
+    it('a muted second (-240 dBFS minimum) does not drag the room down; the gate off reports no noise share', () => {
+        for (let i = 0; i < MIC_LEVEL_LOG_MS / 1000; i++) recordMicLevelSecond(second({ gateNoiseFrac: null, gateMinDb: i < 10 ? -240 : -58 }));
+        const d = getCallEvents().find(e => e.kind === 'mic_noise')!.detail!;
+        expect(d.room_db).toBeCloseTo(-58, 1);
+        expect(d.noise_pct).toBeUndefined();
+    });
+
+    it('nothing without speech in the window (same rule as mic_level)', () => {
+        for (let i = 0; i < MIC_LEVEL_LOG_MS / 1000; i++) recordMicLevelSecond(second({ talk: 0, gateNoiseFrac: 0.5, gateMinDb: -50 }));
+        expect(getCallEvents().filter(e => e.kind === 'mic_noise')).toEqual([]);
+        expect(summarizeMicNoise({
+            sec: 30, blocks: 11250, voiced: 0, inMs: 0, outMs: 0, peak: 0, held: 0, clip: 0, gainSum: 0, gainN: 0, gateSum: 0, gateN: 0,
+            noiseSum: 15, noiseN: 30, bursts: 9, roomSum: -1500, roomN: 30, rawMs: 0, nsMs: 0, tapN: 0, micGainDb: 0,
         })).toBeNull();
     });
 });

@@ -34,7 +34,7 @@ export function isBigRoom(memberCount: number | null | undefined): boolean {
 export interface EveryoneConfirmInput {
     /** Mention entries parsed from the wire text (the same parse the send uses). */
     mentions: ReadonlyArray<{ type: MentionKind | string }>;
-    /** Total server members (the live roster), or null when it isn't loaded. */
+    /** Members who can see the channel, minus the sender (mentionAudienceCount), or null when unknown. */
     memberCount: number | null | undefined;
     /** Only server channels have @everyone semantics. */
     isServerChannel: boolean;
@@ -48,6 +48,34 @@ export interface EveryoneConfirmInput {
 }
 
 /** Should this send stop and ask "Mention everyone?" first. */
+/**
+ * How many OTHER people an @everyone / @here in this channel can reach: the
+ * members who can SEE the channel, minus the sender. A server's full roster
+ * is the wrong number for a restricted channel (owner, 2026-11-17: a channel
+ * with a handful of people warned about pinging all 1,000 members).
+ *
+ * `filter` is the same per-channel viewer filter the member sidebar uses
+ * (utils/channelViewerCache `memberFilterFor`): 'all' for a public channel,
+ * 'subset' with the server's answer for a restricted one, and 'loading'
+ * before a never-seen restricted channel has an answer, where the full roster
+ * is the only safe upper bound (the dialog must not vanish while loading).
+ * Returns null when the roster itself isn't loaded.
+ */
+export function mentionAudienceCount(
+    members: ReadonlyArray<{ user_id: string }> | null | undefined,
+    filter: { readonly kind: 'all' } | { readonly kind: 'loading' } | { readonly kind: 'subset'; readonly ids: ReadonlySet<string> },
+    selfUserId: string | null | undefined,
+): number | null {
+    if (!members || members.length === 0) return null;
+    let n = 0;
+    for (const m of members) {
+        if (m.user_id === selfUserId) continue;
+        if (filter.kind === 'subset' && !filter.ids.has(m.user_id)) continue;
+        n++;
+    }
+    return n;
+}
+
 export function needsEveryoneConfirm(i: EveryoneConfirmInput): boolean {
     if (i.alreadyConfirmed || i.isEdit || !i.isServerChannel || !i.canMention) return false;
     if (!massMentionOf(i.mentions)) return false;

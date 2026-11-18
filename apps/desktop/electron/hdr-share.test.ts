@@ -226,7 +226,8 @@ describe('wiring', () => {
     });
     it('the renderer tries the HDR capture only for a whole-screen share, re-mints after a spent attempt, and tears it down with the crop pipeline', () => {
         const SC = read('src/components/SidebarConference.tsx');
-        expect(SC).toMatch(/if \(!sliceLayout && !isWindowSource\) \{\s*const hdr = await tryStartHdrShare\(options, box, captureFps\);/);
+        // (not for a capture carried across a moderator's move either: that one is published as it is - utils/callMediaCarry.ts)
+        expect(SC).toMatch(/if \(!sliceLayout && !isWindowSource && !carriedCapture\) \{\s*const hdr = await tryStartHdrShare\(options, box, captureFps\);/);
         expect(SC).toMatch(/if \(!hdrPipe && hdr\.spent\) \{\s*await mintShareGrant\(options\);\s*pendingScreenShareRef\.current = pendingShare\(/);
         expect(SC).toMatch(/const hdr = hdrPipelineRef\.current;\s*hdrPipelineRef\.current = null;\s*try \{ hdr\?\.stop\(\); \}/);
         expect(SC).toContain("publishTrack(new LocalVideoTrack(pipe.track, undefined, true), { source: Track.Source.ScreenShare, ...publishOptions })");

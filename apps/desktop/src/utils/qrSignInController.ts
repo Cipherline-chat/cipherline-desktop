@@ -138,6 +138,32 @@ export interface QrSignInDeps {
      * the victim.
      */
     whoAmI: (accessToken: string) => Promise<{ user_id: string; username: string; discriminator: number | null; avatar_url: string | null }>;
+    /**
+     * Best-effort SERVER-SIDE revocation of a token pair this device obtained
+     * (claimed for v2, unsealed for v1) but never adopted — the user said
+     * "This isn't my account", cancelled, closed the panel, or the flow failed
+     * after the claim. Without it the pair simply falls out of memory and
+     * stays live on the server for the refresh token's whole 30-day life.
+     * `POST /v1/auth/logout { refresh_token }`: revokes that one refresh row
+     * AND, via `sid`, its paired access token — nothing else.
+     *
+     * Called with the PENDING session's refresh token and nothing else. The
+     * real implementation must send no `Authorization` header and bypass the
+     * global axios interceptors (whose 401 path would refresh-and-retry with
+     * the CURRENTLY signed-in account's token). Never awaited by the
+     * controller; a rejection is swallowed — it must never block or delay the
+     * reject/cancel UI, and it is never retried.
+     */
+    revokeSession: (refreshToken: string) => Promise<void>;
+    /**
+     * The refresh token of the session this desktop is CURRENTLY signed into,
+     * or null. Read immediately before every revoke as an explicit guard: if
+     * it equals the token about to be revoked (i.e. that pair has been
+     * adopted after all), the revoke is skipped — revoking it would sign the
+     * user out. A throw also skips the revoke: when the guard cannot be
+     * evaluated, leaving one unadopted session to expire is the safe failure.
+     */
+    getCurrentRefreshToken: () => string | null;
     /** Renders a QR data URL LOCALLY from a string this module already built —
      *  see `buildQrText` below for why the string itself must never come from
      *  the server. */
@@ -204,6 +230,14 @@ function describeError(err: unknown): string {
     return 'Something went wrong. Please try again.';
 }
 
+/** A token pair this device holds but has not handed to AuthContext. Kept
+ *  as a mutable object (not copied around) so `discardClaimed` can blank the
+ *  strings in the one place they live. */
+interface ClaimedTokens {
+    access_token: string;
+    refresh_token: string;
+}
+
 /** What `openGrant` holds between the confirm screen and `confirmAccount`:
  *  a REAL token pair (claimed for v2, unsealed for v1) that nothing has
  *  persisted yet. */
@@ -232,6 +266,14 @@ export class QrSignInController {
      *  with anything other than the session sitting here, and only from
      *  `confirmAccount()`. */
     private pending: PendingSession | null = null;
+    /** The token pair from the moment it exists (claim/unseal) until it is
+     *  either ADOPTED (handed to `deps.login` — ownership passes to
+     *  AuthContext and this goes null without a revoke) or DISCARDED
+     *  (`discardClaimed` — revoked server-side, best effort). Wider than
+     *  `pending`: it also covers the window between the claim and the
+     *  confirm screen, and `confirmAccount`'s register step after `pending`
+     *  has been cleared. */
+    private claimed: ClaimedTokens | null = null;
     /** The verification code for the CURRENT session, generated in `begin`.
      *  Mirrored into the snapshot as `verificationCode` (the view shows it
      *  only from `scanned` on). */
@@ -275,6 +317,49 @@ export class QrSignInController {
         try { await this.deps.linkEnd(); } catch { /* best-effort */ }
     }
 
+    /**
+     * Drop the unadopted token pair and revoke it on the server. Fire and
+     * forget: never awaited, never retried, failures swallowed — an offline
+     * box, a 401 or a 429 must not hold up the reject/cancel the user asked
+     * for. The pair is revoked with ITS OWN refresh token only; see
+     * `QrSignInDeps.revokeSession` / `getCurrentRefreshToken` for the
+     * wrong-account guard. Allowed after `dispose()` on purpose: like
+     * `linkEnd`, this is cleanup of something the flow created, not a new
+     * action — skipping it on unmount is exactly the leak it exists to close.
+     */
+    private discardClaimed(): void {
+        const tokens = this.claimed;
+        this.claimed = null;
+        if (this.pending) {
+            this.pending.access_token = '';
+            this.pending.refresh_token = '';
+            this.pending = null;
+        }
+        if (!tokens) return;
+        const refreshToken = tokens.refresh_token;
+        // JS strings are immutable — this drops this controller's references
+        // so nothing here can reach the pair again; it cannot scrub memory.
+        tokens.access_token = '';
+        tokens.refresh_token = '';
+        if (!refreshToken) return;
+
+        let current: string | null;
+        try {
+            current = this.deps.getCurrentRefreshToken();
+        } catch {
+            return; // guard unevaluable — do not risk revoking the live session
+        }
+        if (current && current === refreshToken) return; // adopted after all — never sign the user out
+
+        let request: Promise<void>;
+        try {
+            request = this.deps.revokeSession(refreshToken);
+        } catch {
+            return;
+        }
+        void Promise.resolve(request).catch(() => { /* best-effort; the pair expires on its own */ });
+    }
+
     /** Never call the outside world (main process, network) after dispose. */
     private guard(): boolean {
         return !this.disposed;
@@ -312,11 +397,16 @@ export class QrSignInController {
             if (grant.v === 2) {
                 // A4: nothing exists yet. Redeem the secret — exactly once —
                 // and the server mints the pair for THIS device's request.
+                // (Disposed while the claim was in flight: the guard just
+                // below the if/else revokes what it minted.)
                 tokens = await this.deps.claimSession(linkId, grant.claim_secret);
-                if (!this.guard()) return;
             } else {
                 tokens = { access_token: grant.access_token, refresh_token: grant.refresh_token, user_id: grant.user_id };
             }
+            // From here the pair exists server-side. Every exit below that is
+            // not `confirmAccount` adopting it must go through discardClaimed.
+            this.claimed = { access_token: tokens.access_token, refresh_token: tokens.refresh_token };
+            if (!this.guard()) { this.discardClaimed(); return; }
 
             // QR-1: resolve the AUTHORITATIVE identity for the NEW token —
             // never the grant's own fields, which the approving device wrote
@@ -332,7 +422,7 @@ export class QrSignInController {
                 await this.rejectGrant();
                 return;
             }
-            if (!this.guard()) return;
+            if (!this.guard()) { this.discardClaimed(); return; }
 
             this.pending = {
                 link_id: linkId,
@@ -352,6 +442,7 @@ export class QrSignInController {
                 },
             });
         } catch (err) {
+            this.discardClaimed();
             await this.stopSession();
             this.fail(err);
         }
@@ -366,8 +457,13 @@ export class QrSignInController {
      * AuthContext's login(), best-effort purge the server-side session.
      */
     async confirmAccount(): Promise<void> {
-        const session = this.pending;
-        if (!session || !this.guard()) return;
+        const pending = this.pending;
+        const claimed = this.claimed;
+        if (!pending || !claimed || !this.guard()) return;
+        // Copy out before `pending` is released: discardClaimed blanks the
+        // strings in place, and a racing reject/dispose must not be able to
+        // hand `login` an emptied token.
+        const session = { ...pending };
         this.pending = null;
         this.set({ phase: 'opening', confirmIdentity: null });
         try {
@@ -378,7 +474,17 @@ export class QrSignInController {
                 // half-approved if the server ever disagrees.
                 throw new Error('This device still needs approval. Please sign in with your password instead.');
             }
-            if (!this.guard()) return;
+            // Disposed, rejected or cancelled while registering: that path
+            // already revoked this pair, so it must NOT be persisted now — a
+            // revoked refresh token presented later reads as token theft and
+            // the server would revoke every session the account has.
+            if (!this.guard() || this.claimed !== claimed) return;
+
+            // ADOPTION: from this line the pair belongs to AuthContext, and
+            // nothing in this class may revoke it. Cleared BEFORE the call so
+            // even a `login` that throws part-way (after persisting) is never
+            // followed by a revoke of what may now be the live session.
+            this.claimed = null;
 
             // QR-1: this is the persist call site — the ONLY place in this
             // file `deps.login` is ever called. It sits downstream of an
@@ -399,6 +505,9 @@ export class QrSignInController {
 
             if (this.guard()) this.set({ phase: 'success' });
         } catch (err) {
+            // Registration failed (or the server wanted pairing): the pair
+            // was never adopted — revoke it. No-op once `login` was reached.
+            this.discardClaimed();
             await this.stopSession();
             this.fail(err);
         }
@@ -411,14 +520,16 @@ export class QrSignInController {
      * shown copy that names the hazard rather than a generic failure.
      */
     async rejectAccount(): Promise<void> {
-        this.pending = null;
         await this.rejectGrant();
     }
 
     /** Shared by an explicit rejection and a `whoAmI` failure — both mean
-     *  "no confirmed identity to proceed on," so both discard the same way. */
+     *  "no confirmed identity to proceed on," so both discard the same way:
+     *  the claimed pair is revoked server-side (best effort, not awaited)
+     *  rather than left alive for 30 days. */
     private async rejectGrant(): Promise<void> {
         this.active = false;
+        this.discardClaimed();
         await this.stopSession();
         this.fail(null, ACCOUNT_MISMATCH_MESSAGE);
     }
@@ -483,6 +594,7 @@ export class QrSignInController {
      *  (mirrors `beginLinkSession`'s own "discard, don't pool" stance on the
      *  main-process side). */
     async begin(): Promise<void> {
+        this.discardClaimed(); // a previous attempt's unadopted pair, if any
         this.set({ ...emptySnapshot, phase: 'starting' });
         try {
             // 1. Mint the ephemeral keypair BEFORE the server-issued link_id
@@ -558,7 +670,7 @@ export class QrSignInController {
 
     /** "Cancel" — back to the idle prompt without generating a new code. */
     async cancel(): Promise<void> {
-        this.pending = null;
+        this.discardClaimed();
         await this.stopSession();
         if (this.guard()) this.set({ ...emptySnapshot, phase: 'idle' });
     }
@@ -570,7 +682,7 @@ export class QrSignInController {
         if (this.disposed) return;
         this.clearTimers();
         this.active = false;
-        this.pending = null;
+        this.discardClaimed();
         this.code = null;
         this.disposed = true;
         void this.deps.linkEnd().catch(() => { /* best-effort */ });

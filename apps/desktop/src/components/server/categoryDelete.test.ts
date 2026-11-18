@@ -2,8 +2,73 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { Permissions as P, DEFAULT_EVERYONE_PERMISSIONS } from '@cipherline/shared';
-import { categoryRestrictsView, categoryDeleteConfirm, privateParentMessage } from './categoryDelete';
+import {
+    categoryRestrictsView, categoryDeleteConfirm, privateParentMessage,
+    categoryContents, contentsSummary, deleteEverythingLabel, expectedCounts, isEmptyContents,
+} from './categoryDelete';
 import type { PermOverride, PermRole } from './channelPerms/effectivePermissions';
+
+describe('delete with contents: counts and copy (2026-11-17)', () => {
+    const cats = [
+        { category_id: 'games', parent_category_id: null },
+        { category_id: 'wood', parent_category_id: 'games' },
+        { category_id: 'print', parent_category_id: 'games' },
+        { category_id: 'other', parent_category_id: null },
+        { category_id: 'pending:x', parent_category_id: 'games' },
+    ];
+    const chans = [
+        { channel_id: 'lobby', parent_category_id: 'games' },
+        { channel_id: 'joinery', parent_category_id: 'wood' },
+        { channel_id: 'press', parent_category_id: 'print' },
+        { channel_id: 'general', parent_category_id: null },
+        { channel_id: 'elsewhere', parent_category_id: 'other' },
+        { channel_id: 'pending:new', parent_category_id: 'games' },
+    ];
+    const divs = [
+        { divider_id: 'd1', parent_category_id: 'games' },
+        { divider_id: 'd2', parent_category_id: 'wood' },
+        { divider_id: 'd3', parent_category_id: null },
+        { divider_id: 'd4', parent_category_id: 'other' },
+    ];
+
+    it('a top-level category counts its own items AND its sub-categories\' (never pending, never others)', () => {
+        const c = categoryContents('games', { categories: cats, channels: chans, dividers: divs });
+        expect(c).toEqual({ channels: 3, subcategories: 2, dividers: 2, channelIds: ['lobby', 'joinery', 'press'] });
+        expect(expectedCounts(c)).toEqual({ expected_channels: 3, expected_subcategories: 2, expected_dividers: 2 });
+    });
+
+    it('a sub-category counts only its own items', () => {
+        expect(categoryContents('wood', { categories: cats, channels: chans, dividers: divs }))
+            .toEqual({ channels: 1, subcategories: 0, dividers: 1, channelIds: ['joinery'] });
+    });
+
+    it('summary and button wording', () => {
+        expect(contentsSummary({ channels: 3, subcategories: 2, dividers: 2 })).toBe('3 channels, 2 sub-categories and 2 dividers');
+        expect(contentsSummary({ channels: 1, subcategories: 0, dividers: 1 })).toBe('1 channel and 1 divider');
+        expect(contentsSummary({ channels: 0, subcategories: 0, dividers: 0 })).toBe('nothing');
+        expect(deleteEverythingLabel({ channels: 1 })).toBe('Delete 1 channel');
+        expect(deleteEverythingLabel({ channels: 0 })).toBe('Delete everything');
+        expect(isEmptyContents({ channels: 0, subcategories: 0, dividers: 0 })).toBe(true);
+    });
+
+    it('"category only" in the Calls panel says where the channels go (the old copy wrongly said they were deleted)', () => {
+        const c = categoryDeleteConfirm({ name: 'Lounges', isSub: false, hasSubcategories: false, isPrivate: null, panel: 'calls' });
+        expect(c.message).toBe('Its Calls channels and dividers move to the top of the Calls panel, outside any category.');
+        const panel = readFileSync(resolve(__dirname, 'ServerContextPanel.tsx'), 'utf8');
+        expect(panel).not.toContain('All Calls channels inside will also be deleted');
+    });
+
+    it('wiring: both panels delete the subtree in ONE request, never channel by channel', () => {
+        const list = readFileSync(resolve(__dirname, 'ServerChannelList.tsx'), 'utf8');
+        const panel = readFileSync(resolve(__dirname, 'ServerContextPanel.tsx'), 'utf8');
+        const dash = readFileSync(resolve(__dirname, '../Dashboard.tsx'), 'utf8');
+        expect(dash).toContain('/categories/${cat.category_id}/delete-with-contents');
+        expect(panel).toContain('/categories/${cat.category_id}/delete-with-contents');
+        const withContents = list.slice(list.indexOf('const deleteCategoryWithContentsNow'), list.indexOf('const requestDeleteCategory'));
+        expect(withContents).toContain('onDeleteCategoryWithContentsApi(cat, expectedCounts(contents))');
+        expect(withContents).not.toMatch(/for \(|\.forEach\(|onDeleteChannelApi/);
+    });
+});
 
 // Owner decision 2026-11-16: a PRIVATE top-level category that still holds
 // sub-categories cannot be deleted (server: 409). The client says so up front.

@@ -186,4 +186,60 @@ describe('SubscriptionContext → ProWelcome trigger', () => {
         await refresh();
         expect(latest!.proCelebration).toBe(false);
     });
+    // Owner 2026-11-18: the Pro welcome for an accepted GIFT must come after the
+    // gift card's unwrap. The card calls refresh() and celebratePro() only once
+    // the unwrap has finished — but refresh() is also what flips
+    // effective_status to active, so this rule must NOT be able to pop the
+    // welcome on its own (early, or on the recipient's other devices, which see
+    // the same flip on their next focus / poll refresh). A gifted grant has no
+    // Stripe subscription and leaves subscription_status as it was
+    // (apps/api billing.service getStatus: has_subscription =
+    // !!stripe_subscription_id; gifts.service writes only gift_pro_until).
+    describe('an accepted gift (Pro TIME) never raises the welcome from a status flip', () => {
+        const gifted = (subscription_status: string, has_subscription = false) =>
+            ({ subscription_status, has_subscription, effective_status: 'active', gift_pro_until: '2026-12-18T16:00:00Z' }) as Status;
+
+        it('free (expired) account: expired -> gifted active is not a celebration', async () => {
+            server.status = S('expired', false);
+            await mount();
+            expect(store.get('cipherline_pro_seen_u1')).toBe('free');
+            server.status = gifted('expired');
+            await refresh();
+            expect(latest!.isPaid).toBe(true); // the flip really happened
+            expect(latest!.proCelebration).toBe(false);
+            await refresh(); // the 5-minute poll / focus refresh / another device
+            expect(latest!.proCelebration).toBe(false);
+            expect(store.get('cipherline_pro_seen_u1')).toBe('free');
+        });
+
+        it('trialing account: trial -> gifted active is not a celebration', async () => {
+            server.status = S('trial', false);
+            await mount();
+            server.status = gifted('trial');
+            await refresh();
+            expect(latest!.proCelebration).toBe(false);
+        });
+
+        it('another device signing in fresh on a gifted account is not a celebration', async () => {
+            server.status = gifted('expired');
+            await mount();
+            expect(latest!.proCelebration).toBe(false);
+        });
+
+        it('a subscriber who is cancelling gets gifted time: still not a celebration', async () => {
+            server.status = S('canceled_pending');
+            await mount();
+            server.status = gifted('canceled_pending', true);
+            await refresh();
+            expect(latest!.proCelebration).toBe(false);
+        });
+
+        it('positive control: the same harness DOES celebrate a real free -> Stripe-active edge', async () => {
+            server.status = S('expired', false);
+            await mount();
+            server.status = S('active');
+            await refresh();
+            expect(latest!.proCelebration).toBe(true);
+        });
+    });
 });

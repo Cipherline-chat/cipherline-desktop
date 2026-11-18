@@ -1,15 +1,12 @@
 /**
- * Offline replay harness for the AUTO voice gate (the `GATE_WORKLET_SOURCE` worklet in voiceProcessor.ts).
+ * Offline replay helpers for the voice gate (the `GATE_WORKLET_SOURCE` worklet in voiceProcessor.ts): load the REAL
+ * worklet source with the messages init() sends (`loadGate`), and synthetic speech-over-noise signals with labelled
+ * nuclei / consonants / breath and key-click events (`synth`). Built by the 2026-11-16 gate-data-tune round for the
+ * automatic gate; since that gate was removed (2026-11-17) only these generic parts remain, used by the call-audio audit
+ * harness (src/audio/audit/).
  *
- * It feeds the REAL worklet source (loaded the way voiceGateAuto.test.ts does) synthetic speech-over-noise signals
- * that are parameterised by the statistics a diagnostic `mic_level` window exports (speech level `speech_db`, voiced
- * duty cycle `talk_pct`) plus an ASSUMED noise floor (the floor is not exported by 0.1.0), and scores what the gate
- * did: how much speech it cut (false close) and how much noise it passed (false open).
- *
- * Honest limits (see docs/worklog/entries/2026-11-16-gate-data-tune.md): real windows are 30 s aggregates, so the
- * per-syllable dynamics here are a MODEL (syllable level N(0, 3.5 dB) clipped to +-9 dB, consonants ~14 dB under the
- * nucleus, word-final syllables 4-8 dB lower, 3 dB declination per phrase), not measured; the floor is a grid.
- * The harness is for ranking constants against each other, not for predicting an absolute cut rate.
+ * The speech model is a MODEL (syllable level N(0, 3.5 dB) clipped to +-9 dB, consonants ~14 dB under the nucleus,
+ * word-final syllables 4-8 dB lower, 3 dB declination per phrase), not measured speech.
  *
  * Test-only: nothing in the app imports this file.
  */
@@ -30,7 +27,7 @@ export interface LoadedGate {
     run(x: Float32Array): Float32Array;
 }
 
-/** Build a gate from worklet source. `overrides` set own properties after construction (AUTO_* constants etc.). */
+/** Build a gate from worklet source. `overrides` set own properties after construction (e.g. holdTotal, releaseRate). */
 export function loadGate(source: string, msgs: Array<Record<string, unknown>>, overrides: Record<string, number> = {}): LoadedGate {
     let Ctor: (new () => GateNode) | undefined;
     const posted: Array<Record<string, unknown>> = [];
@@ -210,99 +207,6 @@ export function synth(spec: WindowSpec): Synth {
         since[b] = last === -Infinity ? Infinity : (b - last) * Q / SR;
     }
     return { x, speech: sp, event: evm, sinceSpeech: since, blocks };
-}
-
-export interface WindowResult {
-    /** Share of voiced-nucleus blocks the gate had mostly closed (block gain < 0.5): the false-close rate. */
-    cutNucleus: number;
-    /** Same for consonant / transition blocks (word starts, fricatives, tails). */
-    cutCons: number;
-    /** All speech blocks: share cut, and energy lost (1 - out/in energy) in dB. */
-    cutSpeech: number;
-    lossDb: number;
-    /** Steady-noise pass: share of far-gap blocks (>= 0.7 s after speech, no event) with block gain > 0.5. */
-    passSteady: number;
-    /** Event pass: output/input energy ratio over breath / key-click blocks in far gaps (0..1); NaN when none. */
-    passEvent: number;
-    /** Gate open share of the whole window after warm-up, as the worklet's own gateStats tally reports it (compare with `gate_pct`). */
-    gateOpen: number;
-    /** Mean threshold in force, tracked floor and tracked speech level (dBFS) after warm-up. */
-    effDb: number; floorTr: number; speechTr: number;
-    nNuc: number; nCons: number; nGap: number; nEvt: number;
-}
-
-export function runWindow(source: string, msgs: Array<Record<string, unknown>>, overrides: Record<string, number>, spec: WindowSpec, warmSec = 8): WindowResult {
-    const s = synth(spec);
-    const g = loadGate(source, msgs, overrides);
-    // Run in 1 s chunks so the tracker state (floor, speech estimate, threshold in force) can be sampled.
-    const y = new Float32Array(s.blocks * Q);
-    let trF = 0, trS = 0, trT = 0, trN = 0;
-    for (let c = 0; c * SR < y.length; c++) {
-        const a = c * SR, b = Math.min(y.length, a + SR);
-        y.set(g.run(s.x.subarray(a, b)), a);
-        if (c >= warmSec) { trF += g.node.floorDb as number; trS += g.node.speechDb as number; trT += g.node.effDb as number; trN++; }
-    }
-    let nN = 0, cN = 0, nC = 0, cC = 0, eIn = 0, eOut = 0, nG = 0, pG = 0, evIn = 0, evOut = 0, nE = 0;
-    const b0 = Math.round(warmSec * SR / Q);
-    for (let b = b0; b < s.blocks; b++) {
-        let ei = 0, eo = 0;
-        for (let i = b * Q; i < (b + 1) * Q; i++) { ei += s.x[i] * s.x[i]; eo += y[i] * y[i]; }
-        const gain = Math.sqrt(eo / Math.max(ei, 1e-20));
-        const m = s.speech[b];
-        if (m === 2) { nN++; if (gain < 0.5) cN++; }
-        else if (m === 1) { nC++; if (gain < 0.5) cC++; }
-        if (m) { eIn += ei; eOut += eo; }
-        if (!m && s.sinceSpeech[b] >= 0.7) {
-            if (s.event[b]) { evIn += ei; evOut += eo; nE++; }
-            else { nG++; if (gain > 0.5) pG++; }
-        }
-    }
-    const stats = g.posted.filter(m => m.type === 'gateStats') as Array<{ open: number; total: number }>;
-    const st = stats.slice(Math.round(warmSec));
-    const gateOpen = st.length ? st.reduce((a, m) => a + m.open / m.total, 0) / st.length : NaN;
-    const effDb = trN ? trT / trN : NaN;
-    return {
-        cutNucleus: nN ? cN / nN : NaN, cutCons: nC ? cC / nC : NaN,
-        cutSpeech: nN + nC ? (cN + cC) / (nN + nC) : NaN,
-        lossDb: eIn > 0 ? 10 * Math.log10(Math.max(eOut / eIn, 1e-6)) : NaN,
-        passSteady: nG ? pG / nG : NaN,
-        passEvent: nE ? evOut / Math.max(evIn, 1e-20) : NaN,
-        gateOpen, effDb, floorTr: trN ? trF / trN : NaN, speechTr: trN ? trS / trN : NaN, nNuc: nN, nCons: nC, nGap: nG, nEvt: nE,
-    };
-}
-
-/** Voiced bursts (glottal-ish, 25 harmonics, 125 Hz) of 0.3 s every 0.4 s at `db` RMS over the burst. */
-export function voicedBursts(sec: number, db: number): Float32Array {
-    const y = new Float32Array(Math.round(sec * SR));
-    let ph = 0;
-    for (let i = 0; i < y.length; i++) {
-        ph += 125 / SR; ph -= Math.floor(ph);
-        let v = 0; for (let h = 1; h <= 25; h++) v += Math.sin(2 * Math.PI * h * ph) / h;
-        const k = (i / SR) % 0.4;
-        y[i] = k < 0.3 ? v * Math.min(1, Math.min(k, 0.3 - k) / 0.02) : 0;
-    }
-    let s = 0, n = 0; for (let i = 0; i < y.length; i++) if (y[i] !== 0) { s += y[i] * y[i]; n++; }
-    const g = dbToLin(db) / Math.sqrt(s / n);
-    for (let i = 0; i < y.length; i++) y[i] *= g;
-    return y;
-}
-
-/**
- * A talker at `speechDb` for 12 s, then ONLY a second voice `offsetDb` under them for 6 s (a TV, a person across the
- * room), over a steady floor. Returns the share of the second voice's energy the gate passed (0..1) after 1 s.
- */
-export function backgroundVoicePass(source: string, overrides: Record<string, number>, speechDb: number, offsetDb: number, floorDb: number): number {
-    const r = rng(5);
-    const talk = voicedBursts(12, speechDb), bg = voicedBursts(6, speechDb - offsetDb);
-    const n1 = steadyNoise(talk.length, floorDb, r), n2 = steadyNoise(bg.length, floorDb, r);
-    const x = new Float32Array(talk.length + bg.length);
-    for (let i = 0; i < talk.length; i++) x[i] = talk[i] + n1[i];
-    for (let i = 0; i < bg.length; i++) x[talk.length + i] = bg[i] + n2[i];
-    const g = loadGate(source, [{ type: 'gate', enabled: true }, { type: 'threshold', value: -45 }, { type: 'auto', value: true }], overrides);
-    const y = g.run(x);
-    let ei = 0, eo = 0;
-    for (let i = talk.length + SR; i < y.length; i++) { ei += x[i] * x[i]; eo += y[i] * y[i]; }
-    return eo / Math.max(ei, 1e-20);
 }
 
 export { linToDb };

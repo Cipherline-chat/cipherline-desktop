@@ -24,6 +24,12 @@
  *   - it reads ~1.4 dB under the true RMS (measured: a sawtooth swept
  *     -60..-10 dBFS RMS read back -61.5..-11.5 through a loopback
  *     RTCPeerConnection in Chromium); RTP_LEVEL_BIAS_DB corrects for it.
+ * BUT LiveKit's SFU (v1.9.12, measured 2026-11-17) does not forward that header
+ * extension to subscribers, so in our calls there is no such level. The caller
+ * then reads the receiver's getStats() energy instead (utils/rxStatsLevel.ts:
+ * the DECODED audio, after E2EE decryption, still before any gain of ours, so
+ * still open loop) mapped onto this same RTP scale; every constant below is
+ * unchanged and still means what it says.
  *
  * -- Behaviour --------------------------------------------------------------
  *   - Only speech counts: a packet is speech if it is above an absolute floor

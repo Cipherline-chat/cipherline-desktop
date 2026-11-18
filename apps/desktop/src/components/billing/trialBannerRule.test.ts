@@ -18,6 +18,10 @@ describe('isTrialBannerEligible', () => {
             expect(isTrialBannerEligible({ ...base, subscription_status: st })).toBe(false);
         }
     });
+    it('hides for a gifted account whose raw status still reads trial', () => {
+        expect(isTrialBannerEligible({ ...base, gift_pro_until: '2099-01-01T00:00:00.000Z' })).toBe(false);
+        expect(isTrialBannerEligible({ ...base, gift_pro_until: null })).toBe(true);
+    });
     it('tolerates a server that omits is_comp (older API)', () => {
         expect(isTrialBannerEligible({ subscription_status: 'trial', effective_status: 'active' })).toBe(true);
     });

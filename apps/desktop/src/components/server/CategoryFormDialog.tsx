@@ -12,6 +12,16 @@
  * "Sits in" picker (another top-level category; a NEW sub-category can never sit at top level), and the
  * parent's overrides shown as the tier it inherits - the cascade is
  * category -> sub-category -> channel, resolved by the server.
+ *
+ * DIVIDER CATEGORIES (owner, 2026-11-17): a top-level category can be drawn
+ * as a labelled divider instead of the usual category label ("Looks like").
+ * It is still a category in every other way. Its look is a divider label
+ * style (label / header / pill / text) plus the divider colour, picked with
+ * the same tiles and LayoutColorPicker the divider dialog uses. Edit can
+ * switch it either way and change style / colour. Ordinary categories have
+ * no colour (owner). Sub-categories are always ordinary: picking a parent in
+ * "Sits in" drops the divider look (the server refuses it on a sub-category),
+ * and "Sits in" is hidden while the divider look is on.
  */
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
@@ -33,6 +43,11 @@ import { roleFromWire } from './channelPerms/effectivePermissions';
 import { countTargets, draftFromRows, draftsEqual, type DraftMap } from './channelPerms/overrideDraft';
 import { describeFailures, saveOverrideDiff } from './channelPerms/saveOverrides';
 import { channelNameDraftError, CHANNEL_NAME_INPUT_MAX_UNITS } from '../../utils/displayName';
+import { DIVIDER_LABEL_STYLES, isLabelDividerStyle, normalizeDividerColor, type DividerStyle } from '@cipherline/shared';
+import { ChannelDividerVisual } from './ChannelDividerRow';
+import { LayoutColorPicker } from './LayoutColorPicker';
+
+const HEADER_STYLE_NAMES: Record<string, string> = { label: 'Centred', header: 'Header', pill: 'Pill', text: 'Text' };
 
 type Tab = 'overview' | 'permissions';
 
@@ -86,6 +101,14 @@ export const CategoryFormDialog: React.FC<Props> = ({
         return ok ? parentCategoryId : '';
     });
     const isSub = !!pickedParent;
+    // Divider category look (top-level only). null = an ordinary category.
+    const [headerStyle, setHeaderStyle] = useState<string | null>(
+        isLabelDividerStyle(category?.header_style) ? category!.header_style! : null,
+    );
+    const [headerColor, setHeaderColor] = useState<string | null>(normalizeDividerColor(category?.header_color));
+    /** What the row will be saved as: never a divider look on a sub-category. */
+    const effectiveHeaderStyle = isSub ? null : headerStyle;
+    const effectiveHeaderColor = effectiveHeaderStyle ? headerColor : null;
     // Calls categories and sub-categories carry an icon from the approved set.
     const hasIcon = isHuddle || isSub;
     const parentCat = isSub ? (categories ?? []).find(c => c.category_id === pickedParent) ?? null : null;
@@ -134,8 +157,12 @@ export const CategoryFormDialog: React.FC<Props> = ({
     const overrideCount = countTargets(editor.draft, mask);
 
     const parentDirty = isEdit && pickedParent !== (editing!.parent_category_id ?? '');
+    const headerDirty = isEdit && (
+        effectiveHeaderStyle !== (editing!.header_style ?? null)
+        || effectiveHeaderColor !== (normalizeDividerColor(editing!.header_color) ?? null)
+    );
     const overviewDirty = isEdit
-        ? name.trim() !== editing!.name || (hasIcon && (iconName ?? null) !== (editing!.icon_name ?? null)) || parentDirty
+        ? name.trim() !== editing!.name || (hasIcon && (iconName ?? null) !== (editing!.icon_name ?? null)) || parentDirty || headerDirty
         : name.trim().length > 0;
     const permsDirty = !draftsEqual(baseline, editor.draft);
     const dirty = overviewDirty || permsDirty;
@@ -179,6 +206,7 @@ export const CategoryFormDialog: React.FC<Props> = ({
             {
                 name: name.trim(), kind: effectiveKind, icon_name: hasIcon ? (iconName || null) : null,
                 ...(isSub ? { parent_category_id: pickedParent } : {}),
+                ...(effectiveHeaderStyle ? { header_style: effectiveHeaderStyle, header_color: effectiveHeaderColor } : {}),
             },
             auth,
         );
@@ -206,10 +234,15 @@ export const CategoryFormDialog: React.FC<Props> = ({
             // Free-emoji icons are retired: clear any left over from before.
             if (cat.icon_emoji) body.icon_emoji = '';
             if (parentDirty) body.parent_category_id = pickedParent; // '' = top level
+            if (headerDirty) {
+                body.header_style = effectiveHeaderStyle;
+                body.header_color = effectiveHeaderColor;
+            }
             const res = await axios.patch(apiUrl`/servers/${serverId}/categories/${cat.category_id}`, body, auth);
             saved = {
                 ...cat, ...(res.data ?? {}),
                 name: name.trim(), icon_name: iconPayload, icon_emoji: null, parent_category_id: pickedParent || null,
+                header_style: effectiveHeaderStyle, header_color: effectiveHeaderColor,
             };
             setEditing(saved);
         }
@@ -364,7 +397,61 @@ export const CategoryFormDialog: React.FC<Props> = ({
                                     </div>
                                     {nameError && <div id="category-name-error" role="alert" className="cl-fmsg">{nameError}</div>}
                                 </div>
-                                {(isEdit ? (!isHuddle && (isSub || !hasSubs) && parentOptions.length > 1) : (isSub && parentOptions.length > 2)) && (
+                                {!isSub && (
+                                    <div data-testid="category-look">
+                                        <div className={sectionLabel}>Looks like</div>
+                                        <ClSegment<'category' | 'divider'>
+                                            value={headerStyle ? 'divider' : 'category'}
+                                            onChange={(v) => setHeaderStyle(v === 'divider' ? (headerStyle ?? 'header') : null)}
+                                            options={[
+                                                { value: 'category', label: 'Category' },
+                                                { value: 'divider', label: 'Divider category' },
+                                            ]}
+                                        />
+                                        <div className="text-[11px] text-cl-faint mt-1.5">
+                                            {headerStyle
+                                                ? 'Drawn as a divider you can collapse. It still holds channels and sub-categories, with its own permissions.'
+                                                : 'The usual category heading.'}
+                                        </div>
+                                        {headerStyle && (
+                                            <div className="mt-3 space-y-3">
+                                                <div className="grid grid-cols-4 gap-2" role="radiogroup" aria-label="Divider style">
+                                                    {DIVIDER_LABEL_STYLES.map(st => {
+                                                        const selected = st === headerStyle;
+                                                        return (
+                                                            <button
+                                                                key={st}
+                                                                type="button"
+                                                                role="radio"
+                                                                aria-checked={selected}
+                                                                data-style={st}
+                                                                onClick={() => setHeaderStyle(st)}
+                                                                className={`text-left rounded-[9px] border border-solid px-2 pt-2.5 pb-2 transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-cl-lume ${
+                                                                    selected ? 'border-cl-lume bg-cl-abyss' : 'border-cl-border bg-cl-abyss hover:border-cl-lume/40'
+                                                                }`}
+                                                                style={selected ? { boxShadow: '0 0 0 1px var(--cl-lume) inset' } : undefined}
+                                                            >
+                                                                <div className="min-h-[24px] flex flex-col justify-center pointer-events-none">
+                                                                    <ChannelDividerVisual compact divider={{ style: st as DividerStyle, label: 'Label', color: headerColor }} />
+                                                                </div>
+                                                                <div className="text-[12px] font-bold text-cl-faint mt-1.5 pl-1">{HEADER_STYLE_NAMES[st]}</div>
+                                                            </button>
+                                                        );
+                                                    })}
+                                                </div>
+                                                <div>
+                                                    <div className={sectionLabel}>Colour</div>
+                                                    <LayoutColorPicker value={headerColor} onChange={setHeaderColor} label="Divider colour" />
+                                                </div>
+                                                <div className="rounded-[10px] border border-solid border-cl-border px-2 py-1" style={{ background: 'var(--cl-deep)' }} aria-hidden="true">
+                                                    <ChannelDividerVisual divider={{ style: headerStyle as DividerStyle, label: name.trim() || (isHuddle ? 'Calls' : 'Channels'), color: headerColor }} />
+                                                    <div className="px-2 py-1 text-[13px] text-cl-muted font-medium"># general</div>
+                                                </div>
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
+                                {!headerStyle && (isEdit ? (!isHuddle && (isSub || !hasSubs) && parentOptions.length > 1) : (isSub && parentOptions.length > 2)) && (
                                     <div className="sm:w-72">
                                         <div className={sectionLabel}>Sits in</div>
                                         <ClSelect

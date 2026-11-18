@@ -29,6 +29,7 @@ import { FounderCancelPrompt } from './FounderCancelPrompt';
 import { FounderStatusPanel } from './FounderStatusPanel';
 import { IntervalSwitch } from './IntervalSwitch';
 import { canSwitchInterval, currentInterval, planNameWithInterval, yearlyUpsellLabel } from './planInterval';
+import { GiftsSection } from './gifts/GiftsSection';
 
 /**
  * Standalone-field date. Returns the em-dash placeholder ONLY where that reads
@@ -297,14 +298,24 @@ export const BillingTab: React.FC = () => {
     // effective_status or a trial that ran out never reads as expired.
     const isPastDue = status.subscription_status === 'past_due';
     const isExpired = status.effective_status === 'expired' && !isPastDue;
+    // Gifted Pro: a friend paid for a period (server-side gift_pro_until). It
+    // can sit on ANY raw status (a lapsed trial, a free account, even a live
+    // trial it was stacked after), so it is checked before the trial copy.
+    // A paid subscriber's gift became renewal credit instead, never time.
+    const giftUntil = status.gift_pro_until ?? null;
+    const giftLive = !!giftUntil && !isExpired && status.is_comp !== true
+        && status.subscription_status !== 'active' && status.subscription_status !== 'past_due';
+    const giftDaysLeft = giftUntil ? Math.max(0, Math.ceil((new Date(giftUntil).getTime() - Date.now()) / 86_400_000)) : 0;
     // A comp is never on a trial, whatever the raw column says (trialBannerRule.ts).
-    const trialLive = status.subscription_status === 'trial' && !isExpired && status.is_comp !== true;
+    const trialLive = status.subscription_status === 'trial' && !isExpired && status.is_comp !== true && !giftLive;
     // extendTrial revives a lapsed trial server-side (GREATEST(ends, NOW())+3d),
     // so the extend offer stays visible after expiry too.
     const showExtend = status.subscription_status === 'trial' && !status.trial_extended && status.is_comp !== true;
     // past_due is deliberately NOT an upgrade state — a new checkout would
     // stack a second subscription; the fix is updating the card (portal).
-    const canUpgrade = trialLive || isExpired;
+    // While a gift runs, subscribing would only bill alongside time a friend
+    // already paid for, so the offer appears for the gift's last week.
+    const canUpgrade = trialLive || isExpired || (giftLive && giftDaysLeft <= 7);
     // Complimentary (admin-granted) account: status reads 'active' but there is
     // no Stripe subscription and usually no Stripe customer at all.
     const isComp = status.is_comp === true;
@@ -337,6 +348,7 @@ export const BillingTab: React.FC = () => {
     const showSwitch = canSwitchInterval(status) && !isPastDue;
     const planName =
         isComp ? 'Cipherline Pro — complimentary'
+        : giftLive ? 'Cipherline Pro — gift'
         : status.subscription_status === 'active' ? planNameWithInterval('Cipherline Pro', interval, true)
         : trialLive ? 'Free trial'
         : status.subscription_status === 'canceled_pending' && !isExpired ? 'Pro — cancelled'
@@ -385,10 +397,11 @@ export const BillingTab: React.FC = () => {
 
                 {/* Status */}
                 <div className="flex items-center gap-4 mt-2 mb-1">
-                    <span className={`sd-tile${
+                    <span className={`sd-tile${giftLive ? ' sd-tile--warm' : ''}${
                         (isPastDue || isExpired) ? ' sd-tile--flash'
                         : status.subscription_status === 'canceled_pending' ? ' sd-tile--warm' : ''}`}>
                         {(isPastDue || isExpired) ? <AlertTriangle size={17} />
+                        : giftLive ? <Gift size={17} />
                         : status.subscription_status === 'active' ? <CheckCircle2 size={17} />
                         : trialLive ? <Clock size={17} />
                         : status.subscription_status === 'canceled_pending' ? <Clock size={17} />
@@ -407,13 +420,14 @@ export const BillingTab: React.FC = () => {
                                     ? <>Complimentary access until {formatDate(status.comp_expires_at)}. Nothing to pay, and no card on file.</>
                                     : <>Complimentary access, with no expiry. Nothing to pay, and no card on file.</>
                             )}
+                            {giftLive && <>A friend gifted you Pro. It runs until {formatDate(giftUntil)}, with nothing to pay and nothing that renews.</>}
                             {trialLive && <>Ends {formatDate(status.trial_ends_at)} — {status.trial_days_left} day{status.trial_days_left === 1 ? '' : 's'} left</>}
-                            {status.subscription_status === 'canceled_pending' && !isExpired && <>Active until {formatDate(status.current_period_end)} — resubscribe anytime before then to keep access uninterrupted.</>}
+                            {status.subscription_status === 'canceled_pending' && !isExpired && !giftLive && <>Active until {formatDate(status.current_period_end)} — resubscribe anytime before then to keep access uninterrupted.</>}
                             {isPastDue && <>Retrying your card — see above to fix it now.</>}
                             {isExpired && (hadPro
                                 ? <>Your Pro subscription ended {status.current_period_end ? <>on {formatDate(status.current_period_end)}</> : null} — you’re on the free tier now. Text, audio calls, and encrypted backups keep working; video, screen share and big uploads are paused until you resubscribe, and servers you own keep a flat 25 MB of saved storage.</>
                                 : <>Your trial ended {status.trial_ends_at ? <>on {formatDate(status.trial_ends_at)}</> : null} — you’re on the free tier now. Text, audio calls, and encrypted backups keep working.</>)}
-                            {(status.subscription_status !== 'active' && !trialLive && status.subscription_status !== 'canceled_pending' && !isPastDue && !isExpired) && <>Messaging &amp; audio calls are free. Pro adds video, 2 GB uploads, bigger server storage &amp; custom #0001 tags.</>}
+                            {(status.subscription_status !== 'active' && !trialLive && !giftLive && status.subscription_status !== 'canceled_pending' && !isPastDue && !isExpired) && <>Messaging &amp; audio calls are free. Pro adds video, 2 GB uploads, bigger server storage &amp; custom #0001 tags.</>}
                         </div>
                     </div>
                 </div>
@@ -566,6 +580,9 @@ export const BillingTab: React.FC = () => {
                     </p>
                 )}
             </div>
+
+            {/* ── Gift Pro: buy for a friend; sent + received gifts ──────── */}
+            <GiftsSection />
 
             {/* ── Payment method & history ─────────────────────────────────
                 Only for accounts that actually have a Stripe customer. A comp

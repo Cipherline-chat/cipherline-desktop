@@ -43,7 +43,7 @@ describe('receiving a call_key_request', () => {
     });
     it('never becomes a thread row, an unread count or a notification', () => {
         // The unread/notify loop counts only these content types.
-        expect(dashboard).toContain("(isPlaceholder || ['text', 'attachment', 'server_invite', 'safety_number', 'klipy_gif'].includes(m.content.type))");
+        expect(dashboard).toContain("(isPlaceholder || ['text', 'attachment', 'server_invite', 'safety_number', 'klipy_gif', 'pro_gift'].includes(m.content.type))");
     });
 });
 

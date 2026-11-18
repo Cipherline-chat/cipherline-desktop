@@ -37,10 +37,7 @@ export interface VoiceSettings {
     // auto gain control. Default ON; applied live. See utils/incomingLeveler.ts.
     normalizeIncomingVolume: boolean;
     voiceGate: boolean;
-    voiceGateThreshold: number; // dBFS, range -60 to -20 — the MANUAL threshold, used only when voiceGateAuto is false
-    /** Gate "Automatic" (default ON): the gate follows the measured noise floor and speech level (see GATE_WORKLET_SOURCE) and
-     *  voiceGateThreshold is ignored (but kept, for when the user switches Automatic off). */
-    voiceGateAuto: boolean;
+    voiceGateThreshold: number; // dBFS, range -60 to -20; the gate's fixed threshold (default -45)
     pushToTalk: boolean;
     pushToTalkKey: string | null;
     /** Hold this key to be muted (normal voice-activity mode only; inert while push-to-talk is on). null = off. */
@@ -73,7 +70,9 @@ export interface VoiceSettings {
  * (Calls channel settings -> Call behavior), so a saved value is ignored and
  * dropped on load instead of being carried (and re-saved) forever.
  */
-export const RETIRED_VOICE_SETTING_KEYS = ['endCallOnCreatorLeaveDefault'] as const;
+// voiceGateAuto: the automatic voice gate was removed 2026-11-17 (owner: back to the fixed threshold). A saved
+// flag is dropped; the saved voiceGateThreshold (default -45, i.e. exactly the pre-auto default) is what the gate uses.
+export const RETIRED_VOICE_SETTING_KEYS = ['endCallOnCreatorLeaveDefault', 'voiceGateAuto'] as const;
 
 export const VOICE_SETTINGS_STORAGE_KEY = 'cipherline_voice_settings';
 
@@ -96,7 +95,6 @@ export const DEFAULT_VOICE_SETTINGS: VoiceSettings = {
     normalizeIncomingVolume: true,
     voiceGate: true,
     voiceGateThreshold: -45,
-    voiceGateAuto: true,
     pushToTalk: false,
     // No default key (owner decision 2026-11-16): the user picks one when they turn push-to-talk on. Until
     // then the mic stays closed. Any key, including a bare modifier such as Alt, can be bound.
@@ -143,10 +141,6 @@ export function loadVoiceSettings(): VoiceSettings {
         // -> Strong, the engine every existing user has been on. NOT the new-install default
         // (Light): that only applies when nothing was ever saved, so no one's audio flips.
         if (!isNoiseSuppressionMode(saved?.noiseSuppressionMode)) merged.noiseSuppressionMode = 'strong';
-        // One-time migration by absence: a blob saved before the flag existed has no voiceGateAuto, so it
-        // takes the default (ON) for everyone, and the saved voiceGateThreshold stays as the manual value
-        // for when Automatic is switched off (not read as a deliberate choice — it may be an old default).
-        if (typeof saved?.voiceGateAuto !== 'boolean') merged.voiceGateAuto = true;
         // Push-to-talk on with no key stays unbound (the UI asks for a key; the mic stays closed). A saved key, Alt included, is kept.
         if (typeof merged.pushToTalkKey !== 'string' || merged.pushToTalkKey === '') merged.pushToTalkKey = null;
         for (const k of RETIRED_VOICE_SETTING_KEYS) delete (merged as Record<string, unknown>)[k];
@@ -201,7 +195,6 @@ export function useVoiceSettings(userId?: string | null) {
     const setVolumeNormalization = useCallback((v: boolean) => update({ volumeNormalization: v }), [update]);
     const setNormalizeIncomingVolume = useCallback((v: boolean) => update({ normalizeIncomingVolume: v }), [update]);
     const setVoiceGate           = useCallback((v: boolean) => update({ voiceGate: v }), [update]);
-    const setVoiceGateAuto       = useCallback((v: boolean) => update({ voiceGateAuto: v }), [update]);
     const setVoiceGateThreshold  = useCallback((v: number) => update({ voiceGateThreshold: Math.max(-60, Math.min(-20, v)) }), [update]);
     const setPushToTalk          = useCallback((v: boolean) => update({ pushToTalk: v }), [update]);
     const setPushToTalkKey       = useCallback((v: string | null) => update({ pushToTalkKey: v }), [update]);
@@ -320,7 +313,6 @@ export function useVoiceSettings(userId?: string | null) {
         setVolumeNormalization,
         setNormalizeIncomingVolume,
         setVoiceGate,
-        setVoiceGateAuto,
         setVoiceGateThreshold,
         setPushToTalk,
         setPushToTalkKey,
@@ -347,7 +339,7 @@ export function useVoiceSettings(userId?: string | null) {
         setEchoCancellationAuto,
         setVolumeNormalization,
         setNormalizeIncomingVolume,
-        setVoiceGate, setVoiceGateAuto, setVoiceGateThreshold,
+        setVoiceGate, setVoiceGateThreshold,
         setPushToTalk, setPushToTalkKey, setPushToMuteKey,
         setMicDeviceId, setSpeakerDeviceId, setCameraDeviceId,
         setMicVolume, setSpeakerVolume,

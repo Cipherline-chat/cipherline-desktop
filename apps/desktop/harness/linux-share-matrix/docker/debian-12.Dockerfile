@@ -1,6 +1,6 @@
 # Linux share matrix: Debian 12 (bookworm). Optional stacks are best-effort; /opt/clm/has-* markers are set from what
 # actually ended up installed, so a missing package marks a cell "not packaged" instead of failing the image.
-FROM debian:12
+FROM debian:12@sha256:268fb24c39bca92d326dd83ea3abebe4a3f7751c804ffef23bb6d857dd343ff8
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update -qq && apt-get install -y --no-install-recommends \
       ca-certificates dbus dbus-user-session dbus-x11 procps psmisc libsndfile1 python3 coreutils util-linux xz-utils curl \

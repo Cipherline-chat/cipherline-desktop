@@ -170,7 +170,7 @@ describe('honest placeholders, tombstones, stale-epoch sends (owner report 2026-
         // The own-send path inline; the live receive path goes through
         // applyChannelEditDelete (F3), which applies editedContent itself.
         // (fourth argument: the edit's message font)
-        expect(dash.split('editedContent(thread[idx].content, content.text, content.channel_refs, content.font, content.size)').length - 1).toBe(1);
+        expect(dash.split('editedContent(thread[idx].content, content.text, content.channel_refs, content.font, content.size, content)').length - 1).toBe(1);
         expect(dash).toContain('applyChannelEditDelete(thread, liveAction, { moderatorDeleteTargets })');
         expect(dash).not.toContain('content: { ...thread[idx].content, text: content.text }');
     });

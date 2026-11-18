@@ -63,9 +63,10 @@ import { notePlaybackPath, noteWebAudioContext, slotFor } from '../utils/avSyncM
 import { logCallEvent } from '../utils/callEventLog';
 import {
     RX_LEVEL_LOG_MS, RX_LEVEL_MIN_NEW_SPEECH_SEC, RX_LEVEL_DIAG_REPEAT_MS,
-    newRxPollTally, tallyRxPoll, rxNoSpeechReason, rxPollFields,
+    newRxPollTally, rxNoSpeechReason, rxPollFields,
     type RxPollTally, type RxNoSpeechReason,
 } from '../utils/rxLevelLog';
+import { newRxLevelPoll, pollRxLevel, type RxLevelPoll, type RxLevelSrc } from '../utils/rxStatsLevel';
 import { ReceiveLeveler, dbToLinear, stepBoostLatch, type ReceiveLevelerSnapshot } from '../audio/receiveLeveler.js';
 import {
     LEVELER_POLL_MS, boostNeedsWebAudio, isIncomingLevelerEnabled, subscribeIncomingLeveler,
@@ -366,7 +367,9 @@ function pathFor(identity: string, type: 'mic' | 'screen', nsEnabled: boolean): 
 // ── Incoming-volume leveler (Settings → Voice & Video → "Normalize voice volume") ──
 // Per remote MICROPHONE chain: read the talker's level from the RTP
 // ssrc-audio-level header extension (RTCRtpReceiver.getSynchronizationSources,
-// ~50 ms poll), feed audio/receiveLeveler.js, and fold its small slow gain into
+// ~50 ms poll) or, when the SFU does not forward that (LiveKit does not), from
+// the receiver's decoded-audio energy in getStats every 250 ms
+// (utils/rxStatsLevel.ts), feed audio/receiveLeveler.js, and fold its small slow gain into
 // the chain's volume (applyChainVolume). Nothing sits in the audio path for it:
 // no tap, no extra node, no latency. It is a cut on the element path; only a
 // SUSTAINED boost that the element cannot play (volume tops out at 1) latches
@@ -401,57 +404,70 @@ function logRxNoSpeech(chain: MicChain, identity: string, now: number): void {
 
 function pollLevelers(): void {
     const now = performance.now();
-    const masterLinear = masterSliderToGain(getMasterSlider());
     micChains.forEach((chain, identity) => {
         const receiver = chain.pub.track?.receiver;
-        if (!receiver || typeof receiver.getSynchronizationSources !== 'function') return;
+        if (!receiver) return;
         const dt = chain.levelPollAtMs > 0 ? Math.min(0.5, (now - chain.levelPollAtMs) / 1000) : LEVELER_POLL_MS / 1000;
         chain.levelPollAtMs = now;
-        const level = tallyRxPoll(chain.rxTally, receiver.getSynchronizationSources(), now);
-        if (level === undefined) { logRxNoSpeech(chain, identity, now); return; } // no fresh reading = a pause: gain holds
-        const gainDb = chain.leveler.pushLinear(level, dt);
-        // Diagnostics: what this talker sends us, what the leveler did to it, and what that
-        // adds up to (before the listener's own sliders). Per call-local placeholder, levels only.
-        if (now - chain.rxLoggedAtMs >= RX_LEVEL_LOG_MS
-            && chain.leveler.activeSec - chain.rxLoggedActiveSec >= RX_LEVEL_MIN_NEW_SPEECH_SEC) {
-            chain.rxLoggedAtMs = now;
-            chain.rxLoggedActiveSec = chain.leveler.activeSec;
-            const wire = chain.leveler.levelDb;
-            if (Number.isFinite(wire)) {
-                logCallEvent('rx_level', {
-                    slot: slotFor(identity),
-                    wire_db: Math.round(wire * 10) / 10,
-                    rx_gain_db: Math.round(gainDb * 10) / 10,
-                    heard_db: Math.round((wire + gainDb) * 10) / 10,
-                    ...rxPollFields(chain.rxTally),
-                });
-            }
-            chain.rxTally = newRxPollTally();
-        } else {
-            logRxNoSpeech(chain, identity, now);
-        }
-        const linear = dbToLinear(gainDb);
-        if (Math.abs(gainDb - chain.levelGainDb) >= 0.05) {
-            chain.levelGainDb = gainDb;
-            chain.levelGain = linear;
-            applyChainVolume(chain);
-            // Whole-dB milestones only, and no identity: this is for checking a
-            // two-person call from DevTools, not a log of who talks.
-            if (Math.abs(gainDb - chain.levelLoggedDb) >= 1) {
-                chain.levelLoggedDb = gainDb;
-                console.info(`[leveler] gain ${gainDb >= 0 ? '+' : ''}${gainDb.toFixed(1)} dB (talker active level ${chain.leveler.levelDb.toFixed(1)} dBFS, path ${chain.path})`);
-            }
-        }
-        if (chain.path === 'element' && !levelBoostLatched.has(identity)) {
-            const wants = boostNeedsWebAudio(chain.perUserGain, masterLinear, gainDb);
-            const step = stepBoostLatch(chain.boostAccumSec, wants, dt);
-            chain.boostAccumSec = step.accumSec;
-            if (step.latched) {
-                levelBoostLatched.add(identity);
-                notifyLevelBoost();
-            }
-        }
+        // The RTP header level when the receiver has one; else (LiveKit's SFU does not forward it) the
+        // decoded level from getStats, delivered asynchronously every RX_STATS_POLL_MS (rxStatsLevel.ts).
+        const rxPoll = chain.rxPoll;
+        const delivered = pollRxLevel(receiver, rxPoll, () => chain.rxTally, now, dt, (db, readingDt, src) => {
+            // The chain may have been rebuilt / reset while getStats ran: that reading is not its.
+            if (micChains.get(identity) !== chain || chain.rxPoll !== rxPoll || !isIncomingLevelerEnabled()) return;
+            applyLevelReading(chain, identity, db, readingDt, src);
+        });
+        if (!delivered) logRxNoSpeech(chain, identity, now); // no reading now = a pause (or one in flight): gain holds
     });
+}
+
+/** One level reading (RTP header scale, dB) for one talker: feed the leveler, log, apply the gain, step the boost latch. */
+function applyLevelReading(chain: MicChain, identity: string, levelDb: number, dt: number, src: RxLevelSrc): void {
+    const now = performance.now();
+    const masterLinear = masterSliderToGain(getMasterSlider());
+    const gainDb = chain.leveler.push(levelDb, dt);
+    // Diagnostics: what this talker sends us, what the leveler did to it, and what that
+    // adds up to (before the listener's own sliders). Per call-local placeholder, levels only.
+    if (now - chain.rxLoggedAtMs >= RX_LEVEL_LOG_MS
+        && chain.leveler.activeSec - chain.rxLoggedActiveSec >= RX_LEVEL_MIN_NEW_SPEECH_SEC) {
+        chain.rxLoggedAtMs = now;
+        chain.rxLoggedActiveSec = chain.leveler.activeSec;
+        const wire = chain.leveler.levelDb;
+        if (Number.isFinite(wire)) {
+            logCallEvent('rx_level', {
+                slot: slotFor(identity),
+                wire_db: Math.round(wire * 10) / 10,
+                rx_gain_db: Math.round(gainDb * 10) / 10,
+                heard_db: Math.round((wire + gainDb) * 10) / 10,
+                lvl_src: src,
+                ...rxPollFields(chain.rxTally),
+            });
+        }
+        chain.rxTally = newRxPollTally();
+    } else {
+        logRxNoSpeech(chain, identity, now);
+    }
+    const linear = dbToLinear(gainDb);
+    if (Math.abs(gainDb - chain.levelGainDb) >= 0.05) {
+        chain.levelGainDb = gainDb;
+        chain.levelGain = linear;
+        applyChainVolume(chain);
+        // Whole-dB milestones only, and no identity: this is for checking a
+        // two-person call from DevTools, not a log of who talks.
+        if (Math.abs(gainDb - chain.levelLoggedDb) >= 1) {
+            chain.levelLoggedDb = gainDb;
+            console.info(`[leveler] gain ${gainDb >= 0 ? '+' : ''}${gainDb.toFixed(1)} dB (talker active level ${chain.leveler.levelDb.toFixed(1)} dBFS, ${src} level, path ${chain.path})`);
+        }
+    }
+    if (chain.path === 'element' && !levelBoostLatched.has(identity)) {
+        const wants = boostNeedsWebAudio(chain.perUserGain, masterLinear, gainDb);
+        const step = stepBoostLatch(chain.boostAccumSec, wants, dt);
+        chain.boostAccumSec = step.accumSec;
+        if (step.latched) {
+            levelBoostLatched.add(identity);
+            notifyLevelBoost();
+        }
+    }
 }
 
 /** Run the poll timer exactly while the setting is on and there is a chain. */
@@ -474,6 +490,7 @@ function resetLeveler(chain: MicChain, applied: boolean): void {
     chain.levelGain = applied ? dbToLinear(chain.leveler.gainDb) : 1;
     chain.boostAccumSec = 0;
     chain.levelPollAtMs = 0;
+    chain.rxPoll = newRxLevelPoll(); // a reading still in flight belongs to the old state (pollLevelers checks)
 }
 
 // A talker whose chain is rebuilt mid-call (tile layout change, fullscreen
@@ -572,6 +589,8 @@ interface MicChain extends PlaybackChainBase {
     rxLoggedActiveSec: number;
     /** What the last window's polls got (rxLevelLog.ts), and the last no-speech reason logged. */
     rxTally: RxPollTally;
+    /** Where the level comes from when the RTP header has none: getStats energy (rxStatsLevel.ts). */
+    rxPoll: RxLevelPoll;
     rxDiagReason: RxNoSpeechReason | null;
     rxDiagAtMs: number;
 }
@@ -778,6 +797,8 @@ async function acquireMicChain(p: RemoteParticipant, nsEnabled: boolean): Promis
                     teardownMicInternals({ ...internals, pub });
                     throw new Error('[audio] mic chain released during rebuild');
                 }
+                // Another track = another receiver: its stats counters start over (rxStatsLevel.ts).
+                if (existing.track !== track) existing.rxPoll = newRxLevelPoll();
                 existing.track = track;
                 existing.nsEnabled = nsEnabled;
                 existing.pub = pub;
@@ -812,6 +833,7 @@ async function acquireMicChain(p: RemoteParticipant, nsEnabled: boolean): Promis
                 rxLoggedAtMs: performance.now(),
                 rxLoggedActiveSec: 0,
                 rxTally: newRxPollTally(),
+                rxPoll: newRxLevelPoll(),
                 rxDiagReason: null,
                 rxDiagAtMs: 0,
                 silenced: false,

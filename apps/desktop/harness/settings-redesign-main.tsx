@@ -38,6 +38,23 @@ axios.defaults.adapter = async (config: any) => {
         { id: 'in_2', number: 'CL-0002', created: iso(39), amount_paid: 250, amount_due: 250, currency: 'usd', status: 'paid', hosted_invoice_url: 'https://example.invalid' },
     ] });
     if (url.startsWith('/billing/referral')) return reply(config, { code: 'DAWSON-7Q', url: 'https://cipherline.chat/ref/DAWSON-7Q', referred: 1, rewarded_days: 30 });
+    // Gift Pro (GIFTS_ENABLED forced on here; the window-size check shoots the section).
+    if (url === '/billing/gifts/config') return reply(config, {
+        enabled: true, refund_after_days: 90, publishable_key: 'pk_test_harness', automatic_tax: true, payment_method_types: ['card', 'link'],
+        offers: [{ months: 1, amount: 499, currency: 'usd' }, { months: 12, amount: 4999, currency: 'usd' }],
+    });
+    if (url === '/billing/gifts') {
+        const g = (n: number, o: Record<string, unknown>) => ({
+            gift_id: `11111111-1111-4111-8111-${String(n).padStart(12, '0')}`, months: 1, status: 'paid', role: 'sender', other_user_id: 'user-mira',
+            created_at: iso(3), paid_at: iso(3), redeemed_at: null, redemption_kind: null, amount_subtotal: 499, amount_tax: 35, amount_total: 534,
+            currency: 'usd', grant_end: null, credit_amount: null, ended_reason: null, ...o,
+        });
+        return reply(config, {
+            sent: [g(1, {}), g(2, { months: 12, status: 'redeemed', amount_total: 5349 }), g(3, { status: 'void', ended_reason: 'expired', other_user_id: 'user-jonas' })],
+            received: [g(4, { role: 'recipient', status: 'redeemed', redemption_kind: 'time', grant_end: iso(-30), amount_total: null })],
+            pro_until: iso(-30),
+        });
+    }
     if (url.startsWith('/devices/presence')) return reply(config, { devices: [{ device_id: 'dev-1', online: true }, { device_id: 'dev-2', online: true }] });
     if (url === '/devices') return reply(config, [
         { device_id: 'dev-1', device_name: 'Desk PC', platform: 'win32', created_at: iso(120), last_seen_at: iso(0) },

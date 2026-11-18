@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -74,6 +74,10 @@ function deps(over: Partial<PreflightDeps>): PreflightDeps {
     return { exec: bus({}), showNotice: fakeNotice(210), legacyShouldAnnounce: () => true, appId: 'Cipherline', ...over };
 }
 
+const madeDirs: string[] = [];
+/** A fresh temp user-data dir, removed in afterAll. */
+function tempDir(): string { const d = fs.mkdtempSync(path.join(os.tmpdir(), 'cl-keyring-')); madeDirs.push(d); return d; }
+
 let store: SecureStore;
 const keyFile = () => path.join(ud.dir, 'store.key');
 
@@ -82,7 +86,7 @@ beforeEach(() => {
     safeStorageMock.available = true;
     safeStorageMock.isEncryptionAvailable.mockClear();
     safeStorageMock.getSelectedStorageBackend.mockReturnValue('kwallet6');
-    ud.dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cl-keyring-'));
+    ud.dir = tempDir();
     setPlatform('linux');
     delete process.env.CIPHERLINE_SMOKE_TEST;
     store = new SecureStore();
@@ -90,7 +94,12 @@ beforeEach(() => {
 afterEach(() => {
     setPlatform(realPlatform);
     vi.useRealTimers();
-    fs.rmSync(ud.dir, { recursive: true, force: true });
+});
+// Temp dirs are removed once, after the whole file, not after each test: a test that leaves a probe hanging on
+// purpose (the "never answers" bus) can still have store I/O in flight when it ends, and deleting its dir under it
+// made that late write fail with ENOENT as an unhandled error (seen on the public stable runner, 2026-11-18).
+afterAll(() => {
+    for (const d of madeDirs) fs.rmSync(d, { recursive: true, force: true });
 });
 
 /** Only setTimeout is faked: the store's real file I/O and worker still run. */
@@ -169,7 +178,7 @@ describe('ordering: the notice is PRESENTED before safeStorage is called', () =>
         await init(deps({ exec: never }));
         expect(events).toContain('notice:create:unlock:immediate');
         expect(events.indexOf('safeStorage.isEncryptionAvailable')).toBeGreaterThan(events.indexOf('notice:presented'));
-        events.length = 0; store = new SecureStore(); ud.dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cl-keyring-'));
+        events.length = 0; store = new SecureStore(); ud.dir = tempDir();
         await init(deps({ exec: never, legacyShouldAnnounce: () => false }));
         expect(events.some(e => e.startsWith('notice:'))).toBe(false);
     });
@@ -178,7 +187,7 @@ describe('ordering: the notice is PRESENTED before safeStorage is called', () =>
         useTimers();
         await init(deps({ exec: bus({}) }));
         expect(events).toContain('notice:create:unlock:delayed');
-        events.length = 0; store = new SecureStore(); ud.dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cl-keyring-'));
+        events.length = 0; store = new SecureStore(); ud.dir = tempDir();
         await init(deps({ exec: bus({}), legacyShouldAnnounce: () => false }));
         expect(events.some(e => e.startsWith('notice:'))).toBe(false);
     });

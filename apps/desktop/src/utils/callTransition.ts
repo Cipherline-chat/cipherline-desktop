@@ -317,6 +317,14 @@ export interface ForceMoveFlowPorts<A = unknown> {
     beginJoin(ev: ForceMoveEventData): A;
     /** The join "request" is answered. false = superseded or cancelled meanwhile. */
     settleJoin(attempt: A): boolean;
+    /**
+     * Snapshot what this device is publishing (screen share, camera) so the
+     * destination can publish it again (utils/callMediaCarry.ts). Called after
+     * the join is settled and BEFORE `enter`: entering swaps activeCall, which
+     * unmounts the old pane and stops its tracks, so this is the last moment the
+     * live capture can still be cloned.
+     */
+    carryMedia?(ev: ForceMoveEventData): void;
     /** Commit the destination call (the four state setters). */
     enter(selection: HuddleSelection): void;
     /** Cue + toast ("You were moved to X by Y"). */
@@ -350,6 +358,7 @@ export function runForceMove<A>(
     }
     const attempt = ports.beginJoin(ev);
     if (!ports.settleJoin(attempt)) return 'superseded';
+    ports.carryMedia?.(ev);
     ports.enter(buildHuddleSelection({
         callId: ev.call_id,
         huddleId: ev.huddle_id,

@@ -23,7 +23,7 @@
 
 import React from 'react';
 import { EyeOff } from 'lucide-react';
-import { DIVIDER_DEFAULT_COLOR, normalizeDividerColor } from '@cipherline/shared';
+import { DIVIDER_DEFAULT_COLOR, isLabelDividerStyle, normalizeDividerColor } from '@cipherline/shared';
 import type { DividerInfo } from '../../hooks/useServers';
 
 const dividerColor = (d: Pick<DividerInfo, 'color'>): string => normalizeDividerColor(d.color) ?? DIVIDER_DEFAULT_COLOR;
@@ -124,7 +124,18 @@ interface HitProps {
     onKeyDown?: React.KeyboardEventHandler<HTMLDivElement>;
 }
 
-export const HIDDEN_FROM_MEMBERS_TITLE = 'Hidden from members: nothing visible next to it';
+/**
+ * Tooltip for a divider members don't see. It names the rule that actually hid
+ * it (channelTree.ts `dividerVisibility`), so the manager knows how to make it
+ * show. A labelled divider heads the channels UNDER it, so a channel above it
+ * doesn't count; the old wording ("nothing visible next to it") was wrong
+ * whenever a visible channel sat right above the divider.
+ */
+export function hiddenFromMembersTitle(style: string): string {
+    return isLabelDividerStyle(style)
+        ? 'Hidden from members: no channel below it in this category. A labelled divider only shows when it has channels under it.'
+        : 'Hidden from members: no channel above or below it in this category.';
+}
 
 /**
  * The row wrapper. For managers it has a `DIVIDER_HIT_MIN_PX` minimum height
@@ -146,7 +157,7 @@ export const DividerHitArea: React.FC<HitProps> = ({
         className={`relative rounded-[6px] outline-none focus-visible:ring-1 focus-visible:ring-cl-lume/60 ${
             interactive ? 'flex flex-col justify-center min-h-[24px] cursor-grab active:cursor-grabbing hover:bg-cl-lume/[0.07]' : ''
         } ${pending ? 'opacity-60 motion-safe:animate-pulse' : ''}`}
-        title={hiddenFromMembers ? HIDDEN_FROM_MEMBERS_TITLE : undefined}
+        title={hiddenFromMembers ? hiddenFromMembersTitle(divider.style) : undefined}
         onContextMenu={onContextMenu}
         onDoubleClick={onDoubleClick}
         onKeyDown={onKeyDown}
@@ -156,7 +167,7 @@ export const DividerHitArea: React.FC<HitProps> = ({
             <span
                 className="absolute right-1.5 top-1/2 -translate-y-1/2 text-cl-faint pointer-events-none"
                 role="img"
-                aria-label={HIDDEN_FROM_MEMBERS_TITLE}
+                aria-label={hiddenFromMembersTitle(divider.style)}
                 data-testid="divider-hidden-mark"
             >
                 <EyeOff size={12} />

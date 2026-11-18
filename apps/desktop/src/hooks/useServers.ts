@@ -61,6 +61,10 @@ export interface ServerInfo {
     /** Channel where system events (join/leave/kick/ban) are posted.
      *  Null or absent = system messages disabled. */
     system_channel_id?: string | null;
+    /** Message card styles in this server's channels (Server Settings →
+     *  Overview): 'on' | 'no_animation' | 'off'. Absent / null = 'on'
+     *  (older API, or never changed). Clients honour it in channels only. */
+    message_styles?: import('@cipherline/shared').ServerMessageStyles | null;
     /** LEGACY. Used to mark a server in a 60-day lapsed-owner deletion grace
      *  period. That policy was retired 2026-10-04 (every plan may own servers);
      *  the API now always sends null and nothing renders it. */
@@ -129,6 +133,12 @@ export interface CategoryInfo {
     parent_category_id?: string | null;
     /** @deprecated Retired (free emoji icons); ignored. Sub-categories use `icon_name`. */
     icon_emoji?: string | null;
+    /** DIVIDER CATEGORY (top-level only): its header is drawn as a labelled
+     *  divider in this style ('label' | 'header' | 'pill' | 'text'). null /
+     *  absent = an ordinary category. */
+    header_style?: string | null;
+    /** The divider colour of a divider category (`#rrggbb`); null = default gold. */
+    header_color?: string | null;
 }
 
 /** A decorative divider in the channel list (purely visual; no permissions).

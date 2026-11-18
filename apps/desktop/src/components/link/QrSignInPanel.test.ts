@@ -56,6 +56,8 @@ function makeDeps(overrides: Partial<QrSignInDeps> = {}): QrSignInDeps {
         destroySession: vi.fn().mockResolvedValue(undefined),
         whoAmI: vi.fn().mockResolvedValue({ user_id: 'USER1', username: 'dawson', discriminator: 1234, avatar_url: null }),
         registerDevice: vi.fn().mockResolvedValue({ deviceId: 'DEVICE1', requiresPairing: false }),
+        revokeSession: vi.fn().mockResolvedValue(undefined),
+        getCurrentRefreshToken: vi.fn(() => null),
         login: vi.fn().mockResolvedValue(undefined),
         renderQr: vi.fn().mockResolvedValue('data:image/png;base64,FAKE'),
         buildQrText: vi.fn(buildLinkQr),
@@ -497,6 +499,388 @@ describe('2026-09-28 hardening — verification code (A1) and claim-then-mint (A
             expect(snap.deniedReason).toBe('locked');
             expect(snap.verificationCode).toBeNull();
             expect(deps.linkEnd).toHaveBeenCalledTimes(1);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+});
+
+describe('revoking a claimed-but-not-adopted session (reject / cancel / abandon)', () => {
+    // The pair the server minted for THIS desktop's claim — what must be
+    // revoked when the user does not adopt it.
+    const PENDING_REFRESH = 'CLAIMED-REFRESH';
+    // The session the desktop is ALREADY signed into (if any) — must never be
+    // touched by anything in this flow.
+    const CURRENT_REFRESH = 'CURRENT-SIGNED-IN-REFRESH';
+    const CURRENT_ACCESS = 'CURRENT-SIGNED-IN-ACCESS';
+
+    async function drain(): Promise<void> {
+        for (let i = 0; i < 6; i++) await vi.advanceTimersByTimeAsync(0);
+    }
+
+    function v2Deps(overrides: Partial<QrSignInDeps> = {}): QrSignInDeps {
+        return makeDeps({
+            pollSession: vi.fn().mockResolvedValue({ state: 'granted', envelope_b64: 'SEALED_ENVELOPE' }),
+            linkOpen: vi.fn().mockResolvedValue({
+                type: 'link_grant', v: 2, link_id: LINK_ID, user_id: 'USER1', claim_secret: CLAIM_SECRET,
+                approved_by_device_id: 'DEV_APPROVER', approved_by_device_name: 'Pixel', issued_at: new Date().toISOString(),
+            }),
+            getCurrentRefreshToken: vi.fn(() => CURRENT_REFRESH),
+            ...overrides,
+        });
+    }
+
+    async function driveToConfirm(controller: QrSignInController): Promise<void> {
+        await controller.begin();
+        await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
+        await drain();
+        expect(controller.getSnapshot().phase).toBe('confirm');
+    }
+
+    /** Every argument any network-facing dep was ever called with, flattened —
+     *  used to prove the signed-in session's tokens never left this module. */
+    function everyArgSent(deps: QrSignInDeps): unknown[] {
+        const fns = [deps.revokeSession, deps.destroySession, deps.whoAmI, deps.registerDevice, deps.claimSession, deps.login];
+        return fns.flatMap(f => (f as ReturnType<typeof vi.fn>).mock.calls.flat());
+    }
+
+    function claimedState(controller: QrSignInController): { claimed: unknown; pending: unknown } {
+        const c = controller as unknown as { claimed: unknown; pending: unknown };
+        return { claimed: c.claimed, pending: c.pending };
+    }
+
+    it('reject after claim revokes the PENDING session\'s refresh token — once, and nothing else', async () => {
+        vi.useFakeTimers();
+        try {
+            const deps = v2Deps();
+            const controller = new QrSignInController(deps);
+            await driveToConfirm(controller);
+            expect(deps.revokeSession).not.toHaveBeenCalled(); // showing the account revokes nothing
+
+            await controller.rejectAccount();
+
+            expect(deps.revokeSession).toHaveBeenCalledTimes(1);
+            expect(deps.revokeSession).toHaveBeenCalledWith(PENDING_REFRESH);
+            expect(controller.getSnapshot().phase).toBe('error');
+            expect(deps.login).not.toHaveBeenCalled();
+            // Token strings are dropped from controller state.
+            expect(claimedState(controller)).toEqual({ claimed: null, pending: null });
+
+            // Never retried.
+            await vi.advanceTimersByTimeAsync(60_000);
+            expect(deps.revokeSession).toHaveBeenCalledTimes(1);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('reject of a v1 grant (tokens inside the envelope) revokes that grant\'s refresh token', async () => {
+        vi.useFakeTimers();
+        try {
+            const deps = makeDeps({
+                pollSession: vi.fn().mockResolvedValue({ state: 'granted', envelope_b64: 'SEALED_ENVELOPE' }),
+            });
+            const controller = new QrSignInController(deps);
+            await driveToConfirm(controller);
+            await controller.rejectAccount();
+            expect(deps.revokeSession).toHaveBeenCalledTimes(1);
+            expect(deps.revokeSession).toHaveBeenCalledWith('REFRESH1');
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('cancel after claim revokes the pending session too', async () => {
+        vi.useFakeTimers();
+        try {
+            const deps = v2Deps();
+            const controller = new QrSignInController(deps);
+            await driveToConfirm(controller);
+
+            await controller.cancel();
+
+            expect(deps.revokeSession).toHaveBeenCalledTimes(1);
+            expect(deps.revokeSession).toHaveBeenCalledWith(PENDING_REFRESH);
+            expect(controller.getSnapshot().phase).toBe('idle');
+            expect(claimedState(controller)).toEqual({ claimed: null, pending: null });
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('closing the panel (dispose / unmount) after claim revokes the pending session', async () => {
+        vi.useFakeTimers();
+        try {
+            const deps = v2Deps();
+            const controller = new QrSignInController(deps);
+            await driveToConfirm(controller);
+
+            controller.dispose();
+
+            expect(deps.revokeSession).toHaveBeenCalledTimes(1);
+            expect(deps.revokeSession).toHaveBeenCalledWith(PENDING_REFRESH);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('starting a new code after claim revokes the previous attempt\'s pair', async () => {
+        vi.useFakeTimers();
+        try {
+            const deps = v2Deps();
+            const controller = new QrSignInController(deps);
+            await driveToConfirm(controller);
+            await controller.begin();
+            expect(deps.revokeSession).toHaveBeenCalledTimes(1);
+            expect(deps.revokeSession).toHaveBeenCalledWith(PENDING_REFRESH);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('disposed while the claim was in flight: the pair the claim minted is revoked when it lands', async () => {
+        vi.useFakeTimers();
+        try {
+            let resolveClaim!: (v: { access_token: string; refresh_token: string; user_id: string }) => void;
+            const deps = v2Deps({
+                claimSession: vi.fn(() => new Promise<{ access_token: string; refresh_token: string; user_id: string }>(r => { resolveClaim = r; })),
+            });
+            const controller = new QrSignInController(deps);
+            await controller.begin();
+            await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
+            await drain();
+            expect(deps.claimSession).toHaveBeenCalledTimes(1);
+
+            controller.dispose();
+            expect(deps.revokeSession).not.toHaveBeenCalled(); // nothing minted yet
+
+            resolveClaim({ access_token: 'CLAIMED-ACCESS', refresh_token: PENDING_REFRESH, user_id: 'USER1' });
+            await drain();
+
+            expect(deps.revokeSession).toHaveBeenCalledTimes(1);
+            expect(deps.revokeSession).toHaveBeenCalledWith(PENDING_REFRESH);
+            expect(deps.whoAmI).not.toHaveBeenCalled();
+            expect(deps.login).not.toHaveBeenCalled();
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('a whoAmI failure after the claim revokes the claimed pair (fails closed like a rejection)', async () => {
+        vi.useFakeTimers();
+        try {
+            const deps = v2Deps({ whoAmI: vi.fn().mockRejectedValue(new Error('network down')) });
+            const controller = new QrSignInController(deps);
+            await controller.begin();
+            await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
+            await drain();
+            expect(controller.getSnapshot().phase).toBe('error');
+            expect(deps.revokeSession).toHaveBeenCalledWith(PENDING_REFRESH);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('a device-registration failure on "Continue" revokes the never-adopted pair', async () => {
+        vi.useFakeTimers();
+        try {
+            const deps = v2Deps({ registerDevice: vi.fn().mockRejectedValue(new Error('register failed')) });
+            const controller = new QrSignInController(deps);
+            await driveToConfirm(controller);
+            await controller.confirmAccount();
+            expect(controller.getSnapshot().phase).toBe('error');
+            expect(deps.login).not.toHaveBeenCalled();
+            expect(deps.revokeSession).toHaveBeenCalledTimes(1);
+            expect(deps.revokeSession).toHaveBeenCalledWith(PENDING_REFRESH);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('reject BEFORE any claim (QR still showing / scanned) calls no revoke at all', async () => {
+        vi.useFakeTimers();
+        try {
+            const deps = v2Deps({ pollSession: vi.fn().mockResolvedValue({ state: 'scanned' }) });
+            const controller = new QrSignInController(deps);
+            await controller.begin();
+            await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
+            expect(controller.getSnapshot().phase).toBe('scanned');
+
+            await controller.rejectAccount();
+            await controller.cancel();
+            await controller.begin();
+            controller.dispose();
+
+            expect(deps.claimSession).not.toHaveBeenCalled();
+            expect(deps.revokeSession).not.toHaveBeenCalled();
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('a failed claim (no pair minted) calls no revoke', async () => {
+        vi.useFakeTimers();
+        try {
+            const deps = v2Deps({ claimSession: vi.fn().mockRejectedValue(new Error('already claimed')) });
+            const controller = new QrSignInController(deps);
+            await controller.begin();
+            await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
+            await drain();
+            expect(controller.getSnapshot().phase).toBe('error');
+            controller.dispose();
+            expect(deps.revokeSession).not.toHaveBeenCalled();
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('a logout failure (rejection, synchronous throw, or a request that never settles) neither throws nor blocks the reject/cancel UI', async () => {
+        vi.useFakeTimers();
+        try {
+            const unhandled: unknown[] = [];
+            const onUnhandled = (e: unknown) => { unhandled.push(e); };
+            process.on('unhandledRejection', onUnhandled);
+            try {
+                for (const revokeSession of [
+                    vi.fn().mockRejectedValue(Object.assign(new Error('Request failed with status code 429'), { isAxiosError: true, response: { status: 429 } })),
+                    vi.fn().mockRejectedValue(Object.assign(new Error('Network Error'), { isAxiosError: true })),
+                    vi.fn(() => { throw new Error('sync boom'); }),
+                    vi.fn(() => new Promise<void>(() => { /* offline: never settles */ })),
+                ]) {
+                    const deps = v2Deps({ revokeSession });
+                    const controller = new QrSignInController(deps);
+                    await driveToConfirm(controller);
+                    await expect(controller.rejectAccount()).resolves.toBeUndefined();
+                    expect(controller.getSnapshot().phase).toBe('error');
+                    expect(controller.getSnapshot().error).toMatch(/someone else's account/i);
+
+                    const c2 = new QrSignInController(v2Deps({ revokeSession }));
+                    await driveToConfirm(c2);
+                    await expect(c2.cancel()).resolves.toBeUndefined();
+                    expect(c2.getSnapshot().phase).toBe('idle');
+                    expect(() => c2.dispose()).not.toThrow();
+                }
+                await drain();
+                expect(unhandled).toEqual([]);
+            } finally {
+                process.off('unhandledRejection', onUnhandled);
+            }
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('the CURRENTLY signed-in session\'s tokens are never sent anywhere by this flow', async () => {
+        vi.useFakeTimers();
+        try {
+            const deps = v2Deps();
+            const controller = new QrSignInController(deps);
+            await driveToConfirm(controller);
+            await controller.rejectAccount();
+
+            const c2 = new QrSignInController(deps);
+            await driveToConfirm(c2);
+            await c2.cancel();
+
+            const c3 = new QrSignInController(deps);
+            await driveToConfirm(c3);
+            c3.dispose();
+
+            const revokeCalls = (deps.revokeSession as ReturnType<typeof vi.fn>).mock.calls;
+            expect(revokeCalls).toEqual([[PENDING_REFRESH], [PENDING_REFRESH], [PENDING_REFRESH]]);
+            const sent = everyArgSent(deps);
+            expect(sent).not.toContain(CURRENT_REFRESH);
+            expect(sent).not.toContain(CURRENT_ACCESS);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('explicit guard: a pending token equal to the signed-in session\'s refresh token is NEVER revoked', async () => {
+        vi.useFakeTimers();
+        try {
+            // E.g. the pair was adopted after all (login persisted it) and a
+            // stray discard runs afterwards — revoking would sign the user out.
+            const deps = v2Deps({ getCurrentRefreshToken: vi.fn(() => PENDING_REFRESH) });
+            const controller = new QrSignInController(deps);
+            await driveToConfirm(controller);
+            await controller.rejectAccount();
+            expect(deps.getCurrentRefreshToken).toHaveBeenCalled();
+            expect(deps.revokeSession).not.toHaveBeenCalled();
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('explicit guard: if the signed-in session cannot be read, the revoke is skipped (fail safe)', async () => {
+        vi.useFakeTimers();
+        try {
+            const deps = v2Deps({ getCurrentRefreshToken: vi.fn(() => { throw new Error('store locked'); }) });
+            const controller = new QrSignInController(deps);
+            await driveToConfirm(controller);
+            await expect(controller.rejectAccount()).resolves.toBeUndefined();
+            expect(deps.revokeSession).not.toHaveBeenCalled();
+            expect(controller.getSnapshot().phase).toBe('error');
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('an ADOPTED session is never revoked: Continue → login → unmount leaves it alone', async () => {
+        vi.useFakeTimers();
+        try {
+            const deps = v2Deps();
+            const controller = new QrSignInController(deps);
+            await driveToConfirm(controller);
+            await controller.confirmAccount();
+            expect(controller.getSnapshot().phase).toBe('success');
+            expect(deps.login).toHaveBeenCalledWith('CLAIMED-ACCESS', 'USER1', 'DEVICE1', false, PENDING_REFRESH);
+
+            controller.dispose(); // the parent swaps the panel out on success
+            await controller.cancel();
+            await controller.rejectAccount();
+            expect(deps.revokeSession).not.toHaveBeenCalled();
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('a login() that throws part-way is not followed by a revoke (it may already have persisted the pair)', async () => {
+        vi.useFakeTimers();
+        try {
+            const deps = v2Deps({ login: vi.fn().mockRejectedValue(new Error('persist failed')) });
+            const controller = new QrSignInController(deps);
+            await driveToConfirm(controller);
+            await controller.confirmAccount();
+            expect(controller.getSnapshot().phase).toBe('error');
+            expect(deps.revokeSession).not.toHaveBeenCalled();
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('reject racing "Continue" (reject lands while the device registers): revoked once and NEVER persisted', async () => {
+        vi.useFakeTimers();
+        try {
+            let resolveRegister!: (v: { deviceId: string; requiresPairing: boolean }) => void;
+            const deps = v2Deps({
+                registerDevice: vi.fn(() => new Promise<{ deviceId: string; requiresPairing: boolean }>(r => { resolveRegister = r; })),
+            });
+            const controller = new QrSignInController(deps);
+            await driveToConfirm(controller);
+
+            const confirming = controller.confirmAccount();
+            await controller.rejectAccount();
+            expect(deps.revokeSession).toHaveBeenCalledTimes(1);
+            expect(deps.revokeSession).toHaveBeenCalledWith(PENDING_REFRESH);
+
+            resolveRegister({ deviceId: 'DEVICE1', requiresPairing: false });
+            await confirming;
+            // Persisting a revoked refresh token would make its first refresh
+            // read as token reuse — the server's theft response revokes EVERY
+            // session the account has.
+            expect(deps.login).not.toHaveBeenCalled();
+            expect(deps.revokeSession).toHaveBeenCalledTimes(1);
         } finally {
             vi.useRealTimers();
         }

@@ -13,9 +13,15 @@ export interface TrialBannerStatus {
     subscription_status: string;
     effective_status: string;
     is_comp?: boolean;
+    /** A running gifted Pro period (a friend paid for it). */
+    gift_pro_until?: string | null;
 }
 
 export function isTrialBannerEligible(s: TrialBannerStatus): boolean {
     if (s.is_comp === true) return false;
+    // A gifted account is on Pro a friend paid for, not on a trial countdown:
+    // its raw status can still read 'trial' (a lapsed trial, or a gift stacked
+    // after a live one), and "0 days left" / "subscribe" nags would be wrong.
+    if (s.gift_pro_until) return false;
     return s.subscription_status === 'trial' && s.effective_status === 'active';
 }

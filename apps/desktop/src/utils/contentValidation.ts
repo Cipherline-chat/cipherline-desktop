@@ -23,7 +23,7 @@
  * and mobile send (cipherline-mobile `src/features/messages/content.ts`).
  */
 
-import { klipyGifProblem } from '@cipherline/shared';
+import { klipyGifProblem, proGiftProblem } from '@cipherline/shared';
 import { MAX_SIZE_TAGS } from './formatting/messageSize';
 
 /** utils/dmInbound.ts UNDECRYPTABLE_KIND (a test pins the two together). */
@@ -241,6 +241,10 @@ const VARIANTS: Record<string, Check> = {
         return null;
     },
     server_invite: c => (isId(c.code) ? null : 'server_invite.code must be a string'),
+    // A gift card carries the gift id and nothing else (the card fetches the
+    // gift's state from the buyer/recipient-only API read), so anything more
+    // is refused rather than rendered.
+    pro_gift: c => proGiftProblem(c),
     // A KLIPY GIF names a URL the RECIPIENT's client will load, so it is held
     // to the full shared contract (exact KLIPY media-host allowlist, https,
     // dims, mime) — a bad one becomes a placeholder, never a request.
@@ -303,7 +307,7 @@ export function contentProblem(content: unknown): string | null {
  * control rows an old build kept, local system rows, anything a newer build
  * wrote — are left exactly as they are.
  */
-const RENDERED_VARIANTS = new Set(['text', 'attachment', 'klipy_gif', 'safety_number', 'server_invite']);
+const RENDERED_VARIANTS = new Set(['text', 'attachment', 'klipy_gif', 'safety_number', 'server_invite', 'pro_gift']);
 
 /**
  * Why a STORED row's content cannot be rendered, or null. Narrower than

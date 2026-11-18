@@ -22,6 +22,61 @@ bakes it in at build time and shows it as the "What's new in X.Y.Z" dialog on th
 
 ### Security
 
+## [0.1.2] - 2026-11-18
+
+### What's new
+
+- **Gift Pro to a friend.** Settings -> Subscription -> Gift Pro buys 1 or 12 months of Pro for a friend. The gift arrives as a card in your DM, and they unwrap it with one click.
+- **Style a message.** Make rules, announcements and welcome posts stand out: "Style this message" in the formatting bar gives that one message a card with your own background, border, colours and fonts. Servers choose who can style messages, and your saved styles follow you to your other devices.
+- **See what your message will look like.** While you type, the message box shows the exact card your styled message will get.
+- **Tidier channel lists.** Category labels read clearly as the top level, a new divider category groups categories under a line, and a category can be deleted together with everything in it.
+- **Collapsible member lists.** Fold a role, Online or Offline group in a server's member list; the right-hand panel can also be made narrower.
+- **Clearer calls.** Background noise and typing are no longer boosted between your words, your voice no longer gets quieter after one loud moment, a mic hiccup no longer costs seconds of speech, and the app suggests a gate setting if it keeps cutting you off.
+- **Smoother chat.** Saving or pinning a message no longer makes the chat jump, emoji next to text are no longer cut off at the top, and long messages only collapse past 3,000 characters.
+
+### Changes
+
+#### Messages
+- Style this message: a card editor with templates, a visual editor and a CSS box, a "Style messages" server permission, styling in DMs, and a "My styles" library that syncs between your devices.
+- The message box takes the card's exact look as you type a styled message.
+- Long messages collapse into a preview only past 3,000 characters.
+- Saving, unsaving, pinning, unpinning and "Save for me" no longer make the chat jump.
+- Emoji sent alongside text are no longer cut off at the top.
+- A server invite link in a message is replaced by its invite card (a link you format as a hyperlink stays visible).
+- The "Mention everyone?" warning counts only the people who can see the channel.
+- Hovering a system line (joined, left, kicked, banned, call started or ended) shows when it happened.
+
+#### Servers
+- Category labels read as the top level, divider categories, and "delete category and everything in it".
+- Hovering a Calls category no longer shifts the calls below it; a divider category's line fills the row right after you click it.
+- The tooltip on a divider members can't see explains the real rule.
+- Member list groups fold and stay folded per server; the "Hide member list" button is gone and anyone who had hidden the list gets it back.
+- The right-hand panel can be dragged down to 240 px; the left and right resize handles match.
+- No second game controller after a custom status.
+
+#### Calls
+- Background noise and typing are no longer boosted when you are not talking (the automatic gain boosts speech only).
+- Your voice no longer stays quieter after one loud moment; mic volume at 200 % is louder again.
+- The voice gate is the fixed threshold again (default -45 dBFS), with a prompt to lower it if it keeps cutting you off.
+- A short mic hiccup no longer drops 2-5 seconds of your voice in encrypted calls, and "Normalize voice volume" works again.
+- When a moderator moves you to another call, your screen share and camera come with you.
+
+#### Gifts and Pro
+- Gift Pro: buy 1 or 12 months for a friend (full price, one-time, nothing renews); they accept it from a card in your DM, with the friend's picture shown in the picker and at checkout.
+- Accepting a gift always plays the unwrap before the Pro welcome, including with animations turned off (a gentle fade).
+
+#### Security and sign-in
+- QR sign-in signs out, on the server, a session it received but did not use (you rejected the account, cancelled, closed the panel or started a new code).
+
+#### Other
+- Keys opens the Firewall game in Do Not Disturb and his other busy poses (not during a call), and the view behind the game stops drawing while it is open.
+- Font and text-size menus stay on screen in a narrow window; several small-window layout fixes.
+
+### Security
+
+- GHSA-4528-x5fx-h6hg (joi, fixed in 18.3.1)
+- GHSA-g3hv-75wg-m249 (minimatch, fixed in 11.0.1)
+
 ## [0.1.1] - 2026-11-17
 
 ### What's new

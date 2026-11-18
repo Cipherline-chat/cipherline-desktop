@@ -121,7 +121,7 @@ describe('slider default wiring', () => {
     it('custom (non-ClSlider) sliders reset too: gate threshold and every EQ band', () => {
         const vv = read('components/VoiceVideoSettings.tsx');
         // Manual only: in Automatic the gate has no slider to reset (voice-gate-auto-toggle, owner 2026-11-11).
-        expect(vv).toMatch(/onDoubleClick=\{\(\) => \{ if \(!disabled && !locked\) onChange\(GATE_DEFAULT_THRESHOLD\); \}\}/);
+        expect(vv).toMatch(/onDoubleClick=\{\(\) => \{ if \(!disabled\) onChange\(GATE_DEFAULT_THRESHOLD\); \}\}/);
         expect(vv).toMatch(/const GATE_DEFAULT_THRESHOLD = DEFAULT_VOICE_SETTINGS\.voiceGateThreshold;/);
         expect(vv).toMatch(/onDoubleClick=\{\(\) => onChange\(EQ_BAND_DEFAULT_GAIN\)\}/);
         expect(vv).toMatch(/const EQ_BAND_DEFAULT_GAIN = DEFAULT_VOICE_SETTINGS\.eqBands\[0\];/);

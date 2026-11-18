@@ -233,11 +233,7 @@ export const callNameError = (raw: unknown): string | null =>
  */
 export function stripHiddenCharacters(s: string): string {
     // Tag characters survive only as a complete tag sequence on a pictograph.
-    const pre = s.replace(
-        /(?<![\p{Extended_Pictographic}\u{E0020}-\u{E007F}])[\u{E0020}-\u{E007F}]+|[\u{E0020}-\u{E007E}]+(?![\u{E0020}-\u{E007F}])|(?<![\u{E0020}-\u{E007E}])\u{E007F}/gu,
-        '',
-    );
-    const cps = Array.from(pre, ch => ch.codePointAt(0) as number);
+    const cps = vetTagRuns(Array.from(s, ch => ch.codePointAt(0) as number));
     let out = '';
     let prevKept: number | undefined;
     for (let i = 0; i < cps.length; i++) {
@@ -250,4 +246,47 @@ export function stripHiddenCharacters(s: string): string {
         if (keep) { out += ch; prevKept = c; }
     }
     return out.replace(/\s+/g, ' ').trim();
+}
+
+const isTagOrCancel = (cp: number): boolean => cp >= TAG_FIRST && cp <= TAG_CANCEL;
+
+/**
+ * Drop every tag character (U+E0020..U+E007F) that is not part of a tag
+ * sequence on a pictograph, in ONE linear pass over each maximal run of tag
+ * characters:
+ *   - a run that does not directly follow an Extended_Pictographic is dropped;
+ *   - on a pictograph, everything after the run's LAST cancel tag (U+E007F) is
+ *     dropped (an unterminated sequence), and so is a cancel tag that opens the
+ *     run or follows another cancel tag; the rest is kept.
+ *
+ * This replaces the regex
+ *   /(?<![\p{Extended_Pictographic}\u{E0020}-\u{E007F}])[\u{E0020}-\u{E007F}]+
+ *    |[\u{E0020}-\u{E007E}]+(?![\u{E0020}-\u{E007F}])
+ *    |(?<![\u{E0020}-\u{E007E}])\u{E007F}/gu
+ * which produced exactly this output but backtracked quadratically on a long
+ * run of tags followed by a cancel tag (CodeQL js/polynomial-redos: 16k code
+ * points took ~2.3 s), reachable from third-party text such as a Discord
+ * template's channel names on the API. `displayName.test.ts` pins the
+ * equivalence against that regex on random and adversarial input.
+ */
+function vetTagRuns(cps: number[]): number[] {
+    const out: number[] = [];
+    let i = 0;
+    while (i < cps.length) {
+        if (!isTagOrCancel(cps[i])) { out.push(cps[i]); i++; continue; }
+        let end = i;
+        let lastCancel = -1;
+        while (end < cps.length && isTagOrCancel(cps[end])) {
+            if (cps[end] === TAG_CANCEL) lastCancel = end;
+            end++;
+        }
+        if (i > 0 && isPict(cps[i - 1])) {
+            for (let j = i; j <= lastCancel; j++) {
+                if (cps[j] === TAG_CANCEL && (j === i || cps[j - 1] === TAG_CANCEL)) continue;
+                out.push(cps[j]);
+            }
+        }
+        i = end;
+    }
+    return out;
 }

@@ -201,10 +201,10 @@ describe('channel override editor tables are derived from PERMISSION_GROUPS', ()
         }
     });
 
-    it('text: the nine per-channel text bits', () => {
+    it('text: the ten per-channel text bits (STYLE_MESSAGES added 2026-11-17)', () => {
         expect(channelPermissionRows('text').map(r => r.key).sort()).toEqual([
             'ADD_REACTIONS', 'ATTACH_FILES', 'EMBED_LINKS', 'MANAGE_MESSAGES',
-            'MENTION_EVERYONE', 'READ_MESSAGE_HISTORY', 'SAVE_MESSAGES', 'SEND_MESSAGES', 'VIEW_CHANNEL',
+            'MENTION_EVERYONE', 'READ_MESSAGE_HISTORY', 'SAVE_MESSAGES', 'SEND_MESSAGES', 'STYLE_MESSAGES', 'VIEW_CHANNEL',
         ]);
     });
 

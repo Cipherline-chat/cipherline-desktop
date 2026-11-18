@@ -28,7 +28,9 @@ const { LongMessageBody } = await import('../LongMessage');
 const { renderFormatted, renderFormattedPreview } = await import('./FormattedText');
 const { isLongMessage, longMessageExpansion } = await import('../../utils/longMessage');
 
-const CODE = '```ts\n' + Array.from({ length: 60 }, (_, i) => `const v${i} = ${i}; // line ${i}`).join('\n') + '\n```';
+// 120 lines (~3,500 characters): long by CHARACTERS since 2026-11-18 (the 30-line rule is gone; threshold 3,000).
+const CODE_LINES = 120;
+const CODE = '```ts\n' + Array.from({ length: CODE_LINES }, (_, i) => `const v${i} = ${i}; // line ${i}`).join('\n') + '\n```';
 const MSG = `the whole module, **as asked**:\n${CODE}`;
 
 const opts = {
@@ -62,8 +64,8 @@ const click = (el: Element) => act(() => { el.dispatchEvent(new MouseEvent('clic
 const button = (label: string, root: ParentNode = document) => [...root.querySelectorAll('button')].find(b => b.textContent?.includes(label))!;
 
 describe('a long code message', () => {
-    it('collapses by its lines and previews the first lines of the block, clipped', () => {
-        expect(MSG.length).toBeLessThan(2500);
+    it('collapses (over 3,000 characters) and previews the first lines of the block, clipped', () => {
+        expect(MSG.length).toBeGreaterThan(3000);
         expect(isLongMessage(MSG)).toBe(true);
         mount(MSG);
         const lm = host.querySelector('[data-long-message]')!;
@@ -76,7 +78,7 @@ describe('a long code message', () => {
         expect(lines.length).toBeGreaterThanOrEqual(3);
         expect(lines.length).toBeLessThan(12);
         expect(lm.textContent).not.toContain('```');
-        expect(lm.querySelector('.lm-meta')?.textContent).toMatch(/Long message · 63 lines/);
+        expect(lm.querySelector('.lm-meta')?.textContent).toMatch(/Long message · [\d,]+ characters/);
     });
 
     it('Expand shows the whole block, highlighted, with its copy button', async () => {
@@ -84,7 +86,7 @@ describe('a long code message', () => {
         click(button('Expand', host));
         const pre = host.querySelector('.cl-fmt-pre')!;
         expect(pre.hasAttribute('data-clipped')).toBe(false);
-        expect(pre.querySelector('code')!.textContent!.split('\n')).toHaveLength(60);
+        expect(pre.querySelector('code')!.textContent!.split('\n')).toHaveLength(CODE_LINES);
         expect(pre.querySelector('.cl-hl-kw')?.textContent).toBe('const');
         click(pre.querySelector('.cl-fmt-pre-copy')!);
         await settle();
@@ -97,7 +99,7 @@ describe('a long code message', () => {
         await settle(120);
         const reader = document.querySelector('[role="dialog"] .lm-reader-text')!;
         expect(reader.querySelector('strong')?.textContent).toBe('as asked');
-        expect(reader.querySelector('.cl-fmt-pre code')!.textContent!.split('\n')).toHaveLength(60);
+        expect(reader.querySelector('.cl-fmt-pre code')!.textContent!.split('\n')).toHaveLength(CODE_LINES);
         click(button('Copy text', document.querySelector('[role="dialog"]')!));
         await settle();
         expect(writeToClipboard).toHaveBeenCalledWith(MSG);

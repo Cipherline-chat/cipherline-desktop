@@ -22,3 +22,10 @@ export function avatarCacheStats() { return { entries: 0, bytes: 0 }; }
 export function __resetAvatarCaches(): void {}
 export function warmAvatarsFromDiskCache(): void {}
 export function preloadAvatarsBackground(): void {}
+export const avatarUrlMime = (url: string | null | undefined): string | null => {
+    const m = url ? /^data:([^;,]+)/i.exec(url) : null;
+    return m ? m[1].toLowerCase() : null;
+};
+export const __preloadTuning = {};
+export function __preloadInFlightCount(): number { return 0; }
+export function __warmNetworkClaims(): number { return 0; }

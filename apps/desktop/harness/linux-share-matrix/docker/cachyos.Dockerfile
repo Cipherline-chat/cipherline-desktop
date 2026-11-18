@@ -1,7 +1,7 @@
 # Linux share matrix: CachyOS (Arch-based; the owner's RTX 5070 tester runs CachyOS KDE). Same package set as arch.Dockerfile, from CachyOS repos.
 # modulo CachyOS's rebuilt x86-64-v3 binaries; cachyos.Dockerfile tries the real thing).
 # pacman aborts the whole transaction on one unknown name, so packages go in one at a time and a miss is just logged.
-FROM cachyos/cachyos:latest
+FROM cachyos/cachyos:latest@sha256:a8bb34493c7765031a2f8a29da5b0ca52eb29bf805f56a725fcdc093bba79b8b
 RUN cat > /usr/local/bin/pac <<'EOS'
 #!/bin/sh
 for p in "$@"; do if out=$(pacman -Sy --noconfirm --needed "$p" 2>&1); then echo "pac ok   $p"; else echo "pac MISS $p :: $(echo "$out" | tail -2 | tr "\n" " ")"; fi; done

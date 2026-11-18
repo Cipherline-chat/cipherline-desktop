@@ -5,6 +5,35 @@ const e = (over: Partial<AuditEntryLike>): AuditEntryLike => ({
     id: 'e1', action: 'member.kick', actor_username: 'Alice', created_at: '2026-11-16T10:00:00.000Z', ...over,
 });
 
+describe('2026-11-17: divider categories and delete-with-contents', () => {
+    it('category.update records turning into / out of a divider category, and its style / colour', () => {
+        const to = describeAuditEntry(e({ action: 'category.update', data_jsonb: { name: 'Games', before: { name: 'Games', header_style: null }, after: { name: 'Games', header_style: 'pill', header_color: '#25e0c8' } } }));
+        expect(to.sentence).toBe('Alice edited the category "Games"');
+        expect(to.details).toContain('Now a divider category (pill style)');
+        const back = describeAuditEntry(e({ action: 'category.update', data_jsonb: { name: 'Games', before: { header_style: 'pill' }, after: { header_style: null } } }));
+        expect(back.details).toContain('Now an ordinary category');
+        const restyle = describeAuditEntry(e({ action: 'category.update', data_jsonb: { name: 'Games', before: { header_style: 'pill', header_color: null }, after: { header_style: 'label', header_color: '#ff6b5e' } } }));
+        expect(restyle.details).toEqual(expect.arrayContaining(['Divider style changed from pill to label', 'Divider colour changed']));
+    });
+
+    it('category.delete with contents says "and everything in it" with the counts and channel names', () => {
+        const d = describeAuditEntry(e({ action: 'category.delete', data_jsonb: {
+            name: 'Games', with_contents: true, channels_deleted: 2, subcategories_deleted: 1, dividers_deleted: 2,
+            channels: [{ id: 'a', name: 'lobby' }, { id: 'b', name: 'joinery' }], server_saved_destroyed: 3, calls_ended: 1,
+        } }));
+        expect(d.sentence).toBe('Alice deleted the category "Games" and everything in it');
+        expect(d.details).toEqual(['Deleted 2 channels, 1 sub-category, 2 dividers', '#lobby', '#joinery', '3 server-saved messages destroyed', '1 live call ended']);
+        expect(d.tone).toBe('danger');
+    });
+
+    it('subcategory.delete with contents, and the plain deletes are unchanged', () => {
+        expect(describeAuditEntry(e({ action: 'subcategory.delete', data_jsonb: { name: 'Wood', with_contents: true, channels_deleted: 1 } })).sentence)
+            .toBe('Alice deleted the sub-category "Wood" and everything in it');
+        expect(describeAuditEntry(e({ action: 'category.delete', data_jsonb: { name: 'Games' } })).sentence)
+            .toBe('Alice deleted the category "Games"');
+    });
+});
+
 describe('describeAuditEntry: owner-facing sentences', () => {
     it('role given: who, to whom, which role', () => {
         const d = describeAuditEntry(e({

@@ -63,3 +63,16 @@ describe('sub-category header icon', () => {
         expect(dlg).toContain('fallbackIcon={<CornerDownRight size={16} />}');
     });
 });
+
+describe('ServerChannelList: sub-category label weight', () => {
+    // Owner, 2026-11-17: "I don't like how sub categories have bold text". The label was the
+    // rounded display font at medium weight, which reads bold; it now matches channel names.
+    it('the sub-category label is plain: normal weight, body font, no display font', () => {
+        const label = between('data-testid="subcat-label"', '{cat.name}');
+        expect(label).toContain('font-normal');
+        expect(label).not.toMatch(/font-(medium|semibold|bold|extrabold)|cl-font-display/);
+    });
+    it('the drag preview of a sub-category does not switch to the display font', () => {
+        expect(src).not.toContain("activeParsed?.kind === 'subcategory' ? { fontFamily: 'var(--cl-font-display)' }");
+    });
+});

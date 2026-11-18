@@ -215,6 +215,37 @@ export const DEFAULT_LEVEL_VOICE_HOLD_SEC = 0.02;
 // resumes). A word's own tail is far shorter than the wait; the first admitted block ends it.
 export const DEFAULT_LEVEL_STALE_SEC = 0.4;
 export const DEFAULT_LEVEL_STALE_FALL_DB_PER_SEC = 20;
+// ── Speech-only boost (owner report 5ffa77e6, 2026-11-18: "my room wasn't that loud, it was boosting it up; when I would
+// talk it sounded fine") ──
+// The slow gain HOLDS between words (it only adapts on voiced speech), and it used to be APPLIED between words too: a quiet
+// laptop voice (~-40 dBFS) sat at +26..29 dB, so the room through the gate's 150 ms hold after every phrase, a key click and
+// the room after it, or a room just over the gate threshold all left +26..29 dB louder than they reached the mic. The boost
+// part of the gain (never a cut) now applies only around speech:
+//   - while voiced speech is heard: SPEECH_BOOST_VOICED_RUN pitch analyses in a row (as the gate-cut meter: Light's fan
+//     residual makes isolated "voiced" frames), and SPEECH_BOOST_HOLD_SEC after the last one;
+//   - for ONSET_GRACE_SEC after an onset, on the blocks whose 12 ms energy is within ONSET_RANGE_DB of the learned speech
+//     level, so a word start gets the learned gain at once (two voiced analyses take ~30-40 ms of vowel) instead of swelling
+//     in. An onset = the energy rises ONSET_RISE_DB over its mean of the ONSET_LOOKBACK_SEC before (out of the gate's
+//     silence, or out of a room the gate stays open on; the mean, not the quietest moment, so Light's bubbling residual is
+//     not a rise), or a single voiced analysis. The level test keeps the room after a key click and Light's fan residual
+//     out; a click as loud as the voice still gets the boost, i.e. stays as loud relative to the voice as at the mic. There
+//     is no look-ahead (it would add latency), so this is a trade: measured on the owner's speech (worklog 2026-11-18-owner-
+//     noise-report), a rise of 9 dB withheld more room but cost up to 4.7 dB of word starts with NS Off in a loud room; 6 dB
+//     keeps word starts (first 80 ms) within 0.2 dB on Light and costs at most 1.5 dB (Strong, a -40 dBFS talker) and 2.1 dB
+//     (NS Off, a room only 10 dB under a -40 dBFS talker);
+//   - otherwise the boost falls to NONSPEECH_MAX_BOOST_DB (unity) at NONSPEECH_RELEASE_DB_PER_SEC, and comes back in one
+//     block (ramped over the block, as any rising gain) at the next voice or onset.
+// The learned slow gain itself is untouched (it is what the next word gets), as are the target, compressor and limiter.
+// `speechOnlyBoost: false` restores the old always-applied boost (tests' control, before/after harness rows).
+export const DEFAULT_SPEECH_BOOST_VOICED_RUN = 2;
+export const DEFAULT_SPEECH_BOOST_RUN_GAP_SEC = 0.05;
+export const DEFAULT_SPEECH_BOOST_HOLD_SEC = 0.15;
+export const DEFAULT_ONSET_GRACE_SEC = 0.08;
+export const DEFAULT_ONSET_LOOKBACK_SEC = 0.1;
+export const DEFAULT_ONSET_RISE_DB = 6;
+export const DEFAULT_ONSET_RANGE_DB = 12;
+export const DEFAULT_NONSPEECH_MAX_BOOST_DB = 0;
+export const DEFAULT_NONSPEECH_RELEASE_DB_PER_SEC = 300;
 // Peak compressor (catches loud syllables), applied after the gain and before
 // the limiter. It lives HERE, not in a DynamicsCompressorNode, because a Web
 // Audio compressor silently adds an automatic make-up gain to everything below
@@ -222,10 +253,11 @@ export const DEFAULT_LEVEL_STALE_FALL_DB_PER_SEC = 20;
 // below the threshold.
 // Share of a slider BOOST (dB) that raises the AGC target (see setMicGainDb).
 export const MIC_BOOST_TARGET_SHARE = 0.67;
-// ...but never more than this: above it, typical-crest speech sits on the -1 dBFS ceiling and the
-// limiter takes over (lim_pct 90 %+). The slider above 100 % still lifts a very quiet mic (its pre-gain
-// moves the input into the compensated range); it just stops raising the loudness target.
-export const MIC_BOOST_TARGET_MAX_DB = 1;
+// ...but never more than this. It was 1 dB (2026-11-11) because 200 % read as "limiter on 90 %+ of peaks";
+// that was the limiter's stuck peak (fixed 2026-11-17, see _applyGainAndLimiter). Measured since: 200 % is
+// +4.5..+4.8 dB louder than 100 % with the compressor/limiter holding 2.5-3 % of voiced blocks.
+// PROPOSAL 2026-11-17, owner approval needed (the owner asked for +4-6 dB at 200 % on 2026-11-11).
+export const MIC_BOOST_TARGET_MAX_DB = 5;
 export const DEFAULT_COMP_THRESHOLD_DB = -4; // was -8 (moved with the target, see DEFAULT_TARGET_DB)
 export const DEFAULT_COMP_RATIO = 3;
 export const DEFAULT_COMP_KNEE_DB = 8;
@@ -376,6 +408,17 @@ export class AgcProcessor {
         this.voiceHangoverSec =
             opts.voiceHangoverSec != null ? opts.voiceHangoverSec : DEFAULT_VOICE_HANGOVER_SEC;
 
+        this.speechOnlyBoost = opts.speechOnlyBoost !== false;
+        this.boostVoicedRun = opts.boostVoicedRun != null ? opts.boostVoicedRun : DEFAULT_SPEECH_BOOST_VOICED_RUN;
+        this.boostHoldSec = opts.boostHoldSec != null ? opts.boostHoldSec : DEFAULT_SPEECH_BOOST_HOLD_SEC;
+        this.onsetGraceSec = opts.onsetGraceSec != null ? opts.onsetGraceSec : DEFAULT_ONSET_GRACE_SEC;
+        this.onsetRiseDb = opts.onsetRiseDb != null ? opts.onsetRiseDb : DEFAULT_ONSET_RISE_DB;
+        this.voicedOnsetGrace = opts.voicedOnsetGrace !== false;
+        this.onsetRangeDb = opts.onsetRangeDb != null ? opts.onsetRangeDb : DEFAULT_ONSET_RANGE_DB;
+        this.nonSpeechMaxBoostDb = opts.nonSpeechMaxBoostDb != null ? opts.nonSpeechMaxBoostDb : DEFAULT_NONSPEECH_MAX_BOOST_DB;
+        this.nonSpeechReleaseDbPerSec =
+            opts.nonSpeechReleaseDbPerSec != null ? opts.nonSpeechReleaseDbPerSec : DEFAULT_NONSPEECH_RELEASE_DB_PER_SEC;
+
         // `levelStaleSec: Infinity` restores the pre-fix ratchet (tests' control).
         this.levelStaleLimitSec = opts.levelStaleSec != null ? opts.levelStaleSec : DEFAULT_LEVEL_STALE_SEC;
 
@@ -434,6 +477,16 @@ export class AgcProcessor {
         this.voicedHoldSec = 0;
         this.levelHoldSec = 0;
         this.levelStaleSec = 0; // voiced seconds in a row in which no block was admitted to the level estimate
+        // Speech-only boost state (see DEFAULT_SPEECH_BOOST_*).
+        this.voicedRun = 0; // voiced analyses in a row
+        this.sinceVoicedAnalysis = Infinity; // seconds since the last voiced analysis
+        this.boostLeftSec = 0; // seconds the boost stays allowed by voice
+        this.graceLeftSec = 0; // seconds left of the current onset's grace
+        // Per-block activity power over the last DEFAULT_ONSET_LOOKBACK_SEC: an onset is a rise over its mean.
+        this.recentPow = new Float64Array(Math.max(1, Math.ceil((DEFAULT_ONSET_LOOKBACK_SEC * this.sampleRate) / 128)));
+        this.recentSum = 0;
+        this.recentPos = 0;
+        this.withheldDb = 0; // boost withheld right now (<= 0 dB)
 
         this._compGain = 1; // compressor gain (linear), ramped between evaluations
         this._ring = new Float32Array(this.lookahead);
@@ -543,12 +596,30 @@ export class AgcProcessor {
         const energyActive = actRms >= Math.max(this.floorRms, dbToLinear(this.noiseFloorDb + this.noiseMarginDb));
 
         // ── Voice (pitch periodicity) ── only voiced speech arms the gain.
+        this.sinceVoicedAnalysis += dt;
         if (inp) {
-            if (this.detector.push(inp, energyActive) && this.detector.score >= this.voicedThreshold) {
-                this.voicedHoldSec = this.voiceHangoverSec;
-                this.levelHoldSec = DEFAULT_LEVEL_VOICE_HOLD_SEC;
+            if (this.detector.push(inp, energyActive)) {
+                if (this.detector.score >= this.voicedThreshold) {
+                    this.voicedHoldSec = this.voiceHangoverSec;
+                    this.levelHoldSec = DEFAULT_LEVEL_VOICE_HOLD_SEC;
+                    this.voicedRun = this.sinceVoicedAnalysis <= DEFAULT_SPEECH_BOOST_RUN_GAP_SEC ? this.voicedRun + 1 : 1;
+                    this.sinceVoicedAnalysis = 0;
+                    if (this.voicedRun >= this.boostVoicedRun) this.boostLeftSec = Math.max(this.boostLeftSec, this.boostHoldSec);
+                    // one voiced analysis is not enough to HOLD the boost (Light's fan residual makes isolated ones), but it
+                    // is an onset like an energy rise: the level test below still has to pass
+                    else if (this.voicedOnsetGrace) this.graceLeftSec = Math.max(this.graceLeftSec, this.onsetGraceSec);
+                } else {
+                    this.voicedRun = 0;
+                }
             }
         }
+        // A sound rising out of quiet may be a word start: give it the learned gain at once (see DEFAULT_ONSET_GRACE_SEC).
+        const recentDb = 10 * Math.log10(Math.max(this.recentSum / this.recentPow.length, 1e-24));
+        if (energyActive && rmsDb >= recentDb + this.onsetRiseDb) this.graceLeftSec = this.onsetGraceSec;
+        this.recentSum += this.actPower - this.recentPow[this.recentPos];
+        if (this.recentSum < 0) this.recentSum = 0; // float drift
+        this.recentPow[this.recentPos] = this.actPower;
+        this.recentPos = this.recentPos + 1 === this.recentPow.length ? 0 : this.recentPos + 1;
         if (this.voicedHoldSec > 0) this.voicedHoldSec = Math.max(0, this.voicedHoldSec - dt);
         if (this.levelHoldSec > 0) this.levelHoldSec = Math.max(0, this.levelHoldSec - dt);
         const speech = energyActive && this.voicedHoldSec > 0;
@@ -618,7 +689,20 @@ export class AgcProcessor {
         const cutDb = Math.min(0, targetDb + this.fastMarginDb - (fastDb + gainDb));
         this.cutDb = cutDb;
 
-        const totalDb = gainDb + cutDb;
+        // ── Speech-only boost ── the boost part of the gain is withheld away from speech (see DEFAULT_SPEECH_BOOST_*).
+        if (this.speechOnlyBoost) {
+            const speechLevelDb = this.levelPower > 0 ? 10 * Math.log10(this.levelPower) : -Infinity;
+            const allowed = this.boostLeftSec > 0 || (this.graceLeftSec > 0 && rmsDb >= speechLevelDb - this.onsetRangeDb);
+            if (this.boostLeftSec > 0) this.boostLeftSec = Math.max(0, this.boostLeftSec - dt);
+            if (this.graceLeftSec > 0) this.graceLeftSec = Math.max(0, this.graceLeftSec - dt);
+            const want = allowed ? 0 : Math.min(0, this.nonSpeechMaxBoostDb - Math.max(0, gainDb + cutDb));
+            if (want >= this.withheldDb) this.withheldDb = want; // back at once (the block ramps it)
+            else this.withheldDb = Math.max(want, this.withheldDb - this.nonSpeechReleaseDbPerSec * dt);
+        } else {
+            this.withheldDb = 0;
+        }
+
+        const totalDb = gainDb + cutDb + this.withheldDb;
         this._applyGainAndLimiter(inp, out, this._appliedDb, totalDb, true);
         this._appliedDb = totalDb;
         this.gain = dbToLinear(totalDb);
@@ -694,7 +778,12 @@ export class AgcProcessor {
 
             // Peak of the look-ahead window, rescanned only when the sample that
             // just left WAS the peak (otherwise a new sample can only raise it).
-            const as = s < 0 ? -s : s;
+            // Compared in the ring's own precision (float32): a float64 peak whose
+            // float32 copy rounded down never matched the leaving sample, so it was
+            // never rescanned and the limiter held ceiling / peak for the rest of
+            // the call (audit 2026-11-17; the field's lim_pct ~100 % windows).
+            const fs = Math.fround(s);
+            const as = fs < 0 ? -fs : fs;
             if (as >= peak) {
                 peak = as;
             } else if ((delayed < 0 ? -delayed : delayed) >= peak) {

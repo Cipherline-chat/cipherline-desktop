@@ -11,7 +11,7 @@ import { BROWS } from '../../utils/keysBrain';
 import type { Gear } from '../../utils/keysMirror';
 import { ParallaxController, tiltAngles, layerShift, type Rect } from '../../utils/keysParallax';
 import {
-    playStateFor, PLAYS, CLAIMING, GARNISH, FinaleGate, VariationBag, finaleEggId, fxFor, NUDGE, NUDGE_GAP_MS, RARE_BEATS,
+    playStateFor, PLAYS, CLAIMING, OWNS_CLICKS, FinaleGate, VariationBag, finaleEggId, fxFor, NUDGE, NUDGE_GAP_MS, RARE_BEATS,
     type PlayState, type PlayCtx, type PlayMove, type PlayFace, type PlayTarget, type GearTarget, type FxTarget, type Beat, type Finale,
 } from '../../utils/keysPlay';
 import {
@@ -51,7 +51,9 @@ export type { HomeKeysMirror };
  *    they move; React does not re-render. Off under reduced motion.
  *  - Clicks while he mirrors an activity: that activity's own reactions,
  *    three per state, and a finale for spamming him (utils/keysPlay.ts).
- *    Neutral Keys keeps the poke ladder and the spam egg below; a garnish
+ *    Neutral Keys keeps the poke ladder and the spam egg below; so does every
+ *    state but a live call (DND, asleep, gaming...: spam him and the game
+ *    still opens, the state's beat and finale playing on top). A garnish
  *    (crown, coffee, lantern, the pile) plays on top of it without taking
  *    the egg away.
  *  - Rare: Shiny Keys (one launch in 500), and now and then a juggle or a
@@ -394,18 +396,24 @@ export const HomeKeys: React.FC<HomeKeysProps> = ({ userId, signal, speech, live
         later(() => { if (finaleRun.current?.state === run.state && !finaleRun.current.hold) finaleRun.current = null; }, rel.ms, false);
     }, [later, playBeat]);
 
-    /** A state's finale. Claiming states own the clicks while it plays;
-     *  a garnish's plays alongside the neutral show. Counts as its egg. */
+    /** A state's finale. `call` owns the clicks while it plays; every other
+     *  state's plays alongside the neutral show as a flourish (no hold, no
+     *  body gesture over a running show). Counts as its egg. */
     const playFinale = useCallback((ps: Exclude<PlayState, 'neutral'>, now: number) => {
         let f: Finale = PLAYS[ps].finale(ctxRef.current);
         // A garnish's finale over a running show is a prop flourish only:
         // the show's own lines keep the bubble.
-        if (!CLAIMING.has(ps) && showRef.current) f = { ...f, line: undefined };
+        if (!OWNS_CLICKS.has(ps)) {
+            // A claiming state's finale flourish must not hold (the DND wall
+            // waits for a click) or swallow the streak.
+            f = { ...f, hold: undefined, moves: f.moves.map(m => (m.hold ? { ...m, hold: false } : m)) };
+            if (showRef.current) f = { ...f, line: undefined, ...(CLAIMING.has(ps) ? { body: undefined } : {}) };
+        }
         playBeat(f, now);
         recordEggFound(finaleEggId(ps));
         latest.current.onReact?.();
         if (f.moveBed) later(() => setBedMoved(b => !b), 500, false);
-        if (!CLAIMING.has(ps)) return;
+        if (!OWNS_CLICKS.has(ps)) return;
         const live = !reducedMotion() && !unseen();
         finaleRun.current = { state: ps, until: now + f.ms };
         later(() => {
@@ -514,15 +522,16 @@ export const HomeKeys: React.FC<HomeKeysProps> = ({ userId, signal, speech, live
         lastClickAt.current = now;
         // What he is mirroring decides who answers (utils/keysPlay.ts).
         const ps = playStateRef.current;
-        if (ps !== 'neutral' && CLAIMING.has(ps)) {
+        if (ps !== 'neutral' && OWNS_CLICKS.has(ps)) {
             claimClick(ps, now, prevClick);
             return 'none';
         }
         // A garnish's finale lands on the burst's sixth click, on top of
         // whatever the neutral egg is doing (it never stops the egg).
-        const garnish = ps !== 'neutral' && GARNISH.has(ps) ? ps : null;
+        const garnish = ps !== 'neutral' ? ps : null;
         const garnishFinale = garnish !== null && gateFor(garnish).click(now);
         if (garnish && garnishFinale) playFinale(garnish, now);
+        // (A claiming state's finale also counts as its reaction.)
         // Mid-finale: he's busy. The clicks that are still coming in must not
         // start a new streak (that would cut the finale off).
         if (now < busyUntil.current || payoffRun.current) return 'none';
@@ -549,8 +558,11 @@ export const HomeKeys: React.FC<HomeKeysProps> = ({ userId, signal, speech, live
             if (garnish && !garnishFinale) {
                 const beats = PLAYS[garnish].beats(ctxRef.current);
                 playBeat(beats[bagFor(garnish).next(Math.random)], now);
+                if (CLAIMING.has(garnish)) latest.current.onReact?.();
             }
-            return null;
+            // A claiming state answers in its own language: no poke ladder
+            // over it (the streak itself still runs, and opens the game).
+            return garnish && CLAIMING.has(garnish) ? 'none' : null;
         }
 
         const id = showRef.current ?? 'dance';
@@ -617,7 +629,7 @@ export const HomeKeys: React.FC<HomeKeysProps> = ({ userId, signal, speech, live
         const at = inputTime(e.timeStamp, performance.now());
         // A claiming state's burst (he sidesteps and tiptoes too): a click
         // in his zone right after one on him still counts.
-        if (CLAIMING.has(playStateRef.current) && at - lastClickAt.current <= NUDGE_GAP_MS * 2) { interceptPoke(e.timeStamp); return; }
+        if (OWNS_CLICKS.has(playStateRef.current) && at - lastClickAt.current <= NUDGE_GAP_MS * 2) { interceptPoke(e.timeStamp); return; }
         const s = streak.current;
         if (!s || isBroken(s, at)) return;
         interceptPoke(e.timeStamp);

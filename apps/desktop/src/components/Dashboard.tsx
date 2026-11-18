@@ -9,7 +9,9 @@ import { decorationLook } from '../utils/decorationLook';
 import { invalidateProfile } from '../utils/profileCache';
 import { usePersonalEmojiSync } from '../hooks/usePersonalEmojiSync';
 import { useServerRailSync } from '../hooks/useServerRailSync';
+import { useCardStyleSync } from '../hooks/useCardStyleSync';
 import secureLocalStore from '../utils/secureLocalStore';
+import { memberGroupsCollapsedKey } from '../utils/memberGroupCollapse';
 import { toPlainText } from '../utils/messagePreviewText';
 import { withEditFont } from '../utils/formatting/messageFont';
 import { RowErrorBoundary } from './RowErrorBoundary';
@@ -18,6 +20,7 @@ import { fetchChannelSaveState, withId, withoutId, asSaveRequestError, type Chan
 import { unpinChannelMessage, unsaveChannelMessage, type ChannelSaveActionDeps } from '../utils/channelSaveActions';
 import { quotaExceededMessage } from '../utils/serverStorageCopy';
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { GiftActionsProvider, type GiftActions, type GiftFriend } from './billing/gifts/GiftActionsContext';
 import { AnimatePresence, motion } from 'framer-motion';
 import axios from 'axios';
 import { useAuth } from '../contexts/AuthContext';
@@ -113,7 +116,7 @@ import { beginChannelOpen, beginChannelPageDecrypt, noteChannelKeyReceived, note
 import { splitReusableChannelRows } from '../utils/channelRowReuse';
 import { isRawSystemRow, isMemberEventContent, memberEventFromHistory, memberEventFromLive, memberEventFromLegacy, addMemberEventRow, addEphemeralMemberEventRow, dropShadowedEphemeralRows, decideChannelSystemRow, memberEventIsMine } from '../utils/systemMessages';
 import {
-    HISTORY_PAGE_SIZE, addCoveredRange, rangeForPage, demoteLiveTop, shrinkToCached, reachesHistoryStart, historyGaps, proofWindow, isUuid,
+    HISTORY_PAGE_SIZE, addCoveredRange, rangeForPage, demoteLiveTop, reachesHistoryStart, historyGaps, proofWindow, isUuid,
     type ChannelCoverage, type CoveredSegment, type HistoryGap, type PageRequest,
 } from '../utils/channelHistoryCoverage';
 import { findOrphanActions, addOrphans, readyOrphans, applyOrphans } from '../utils/channelOrphanActions';
@@ -184,6 +187,7 @@ import { FriendshipContext, type FriendshipCheckFn } from '../contexts/Friendshi
 import { CallServerCtx } from '../contexts/CallServerCtx';
 import { leaveEndsCallForOthers, endsWhenNotice, shouldHoldTeardownForLeaveAck, waitForLeaveAck, type EndOnLeaveCall } from '../utils/endCallOnLeave';
 import { selfCallIntent, resolveCarriedIntent, shouldWarmMic } from '../utils/selfCallIntent';
+import { callMediaCarry, carryStoppedToast } from '../utils/callMediaCarry';
 import { hasManageCallMembers, requestDisconnect, disconnectErrorToast, type DisconnectTarget } from '../utils/callMemberDisconnect';
 import { ReportOpenContext } from '../contexts/ReportOpenContext';
 import { liftSealedFranking, buildStoredFranking, frankForSend, frankingHeaders, type StoredFranking, type ReportedMessageRef } from '../utils/franking';
@@ -265,6 +269,7 @@ import { ConversationPreviewText } from './ConversationPreviewText';
 import { useServers, type ChannelInfo, type ServerInfo, type HuddleCallInfo } from '../hooks/useServers';
 import { useCoalescedPersist } from '../hooks/useCoalescedPersist';
 import { usePersonalSavesSync } from '../hooks/usePersonalSavesSync';
+import { useRetentionCoverageShrink } from '../hooks/useRetentionCoverageShrink';
 import { useAchievementSignals } from '../hooks/useAchievementSignals';
 import { useProfileMoments } from '../hooks/useProfileMoments';
 import { useGifLibrarySync } from '../hooks/useGifLibrarySync';
@@ -272,7 +277,7 @@ import type { SavesLocalBinding } from '../services/personalSavesSyncEnv';
 import { addedSaves, mergeScope } from '../utils/personalSavesSync';
 import { withPersonalChannelSaves, attachmentIdsOf } from '../utils/personalChannelSaves';
 import * as messageStore from '../utils/messageStore';
-import { Permissions, hasPermission } from '@cipherline/shared';
+import { Permissions, hasPermission, withEditCardStyle, gateCardStyleByFlag } from '@cipherline/shared';
 import {
     resolveQuickReplyTarget,
     normalizeQuickReplyText,
@@ -404,6 +409,10 @@ interface RawChannelRow {
     // time. Used for sleep-resync Phase 4's mention reconciliation, which
     // needs it alongside the decrypted text (see reconcileChannelMentions).
     mentions_everyone?: boolean;
+    // Plaintext metadata flag — the server accepted `styled: true` only from a
+    // sender holding STYLE_MESSAGES in the channel. A card style on a row
+    // without it is dropped at ingest (gateCardStyleByFlag).
+    styled?: boolean;
     // A deleted message: the server cleared its ciphertext (tombstone).
     // Removed from the thread without decrypting (ingestChannelRows).
     deleted?: boolean;
@@ -2018,14 +2027,19 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
      */
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
     const sendInviteCodeMessage = React.useCallback(async (code: string, conversationId: string): Promise<any | null> => {
+        const safeUUID = typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : `invite-${Date.now()}`;
+        return sendE2eeContentRef.current({ client_msg_id: safeUUID, type: 'server_invite', code }, conversationId);
+    }, []);
+
+    /**
+     * Encrypt `content` for every device in `conversationId` and send it (the
+     * signal_chat path server invites have always used). Returns the content on
+     * success, null on any failure. Shared by invites and gift cards.
+     */
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped REST/WS payload or third-party shape; modelling it is tracked typing debt
+    const sendE2eeContent = React.useCallback(async (content: Record<string, any> & { client_msg_id: string; type: string }, conversationId: string): Promise<any | null> => {
         if (!token || !deviceId) return null;
         try {
-            const safeUUID = typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : `invite-${Date.now()}`;
-            const content = {
-                client_msg_id: safeUUID,
-                type: 'server_invite',
-                code,
-            };
             // claim_otp=1: consume a one-time prekey per recipient device (per-message forward secrecy)
             const devicesRes = await axios.get(
                 apiUrl`/conversations/${conversationId}/devices?claim_otp=1`,
@@ -2052,11 +2066,14 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
             );
             return content;
         } catch (e) {
-            console.error('[Dashboard] sendInviteCodeMessage failed:', e);
+            console.error('[Dashboard] E2EE content send failed:', e);
             return null;
         }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- dependency list is intentionally the session identity (token/deviceId); userId only changes together with them on an account switch
     }, [token, deviceId]);
+    // Read through a ref by sendInviteCodeMessage (declared above it).
+    const sendE2eeContentRef = useRef(sendE2eeContent);
+    sendE2eeContentRef.current = sendE2eeContent;
 
     /**
      * Create a FRESH invite for `serverId` (server defaults) and send it into
@@ -2127,6 +2144,70 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
         return true;
     // eslint-disable-next-line react-hooks/exhaustive-deps -- userId only changes together with token/deviceId on an account switch
     }, [token, deviceId, conversations, sendInviteCodeMessage]);
+
+    /**
+     * Gift Pro: send the E2EE `pro_gift` card (gift id ONLY) into the DM with
+     * a friend, opening the DM if needed (the API allows that only for accepted
+     * friends), and append it to the thread optimistically. Idempotent from the
+     * user's point of view: a re-sent card is the same gift, fetched by id.
+     */
+    const sendGiftCardToFriend = React.useCallback(async (targetUserId: string, giftId: string): Promise<boolean> => {
+        if (!token || !deviceId) return false;
+        let convId: string | null = conversations.find(c => c.type === 'dm' && c.other_user_id === targetUserId)?.conversation_id ?? null;
+        if (!convId) {
+            try {
+                const res = await axios.post(
+                    `${API_BASE}/conversations/dm`,
+                    { other_user_id: targetUserId },
+                    { headers: { Authorization: `Bearer ${token}`, 'x-device-id': deviceId } },
+                );
+                convId = res.data.conversation_id ?? null;
+            } catch (e) {
+                console.error('[Dashboard] sendGiftCardToFriend: could not open DM:', e);
+                return false;
+            }
+        }
+        if (!convId) return false;
+        const cId = convId;
+        const safeUUID = typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : `gift-${Date.now()}`;
+        const sentContent = await sendE2eeContent({ client_msg_id: safeUUID, type: 'pro_gift', gift_id: giftId }, cId);
+        if (!sentContent) return false;
+        setMessagesState(prev => {
+            const thread = [...(prev[cId] || [])];
+            if (!thread.find(t => t.id === sentContent.client_msg_id)) {
+                thread.push({
+                    id: sentContent.client_msg_id,
+                    content: sentContent,
+                    sender_device_id: deviceId,
+                    timestamp: new Date().toISOString(),
+                    conversation_id: cId,
+                });
+            }
+            return { ...prev, [cId]: thread };
+        });
+        try {
+            const convsRes = await axios.get(`${API_BASE}/conversations`, { headers: { Authorization: `Bearer ${token}` } });
+            setConversations(labelSelfConversations(convsRes.data, userId));
+        } catch { /* non-critical: the card is already sent */ }
+        return true;
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- userId only changes together with token/deviceId on an account switch
+    }, [token, deviceId, conversations, sendE2eeContent]);
+
+    /** Everything the gift UI (Settings → Subscription, the chat card) needs from here. */
+    const giftActions = React.useMemo<GiftActions>(() => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- FriendsPayload entries are untyped
+        const accepted = (globalFriends?.accepted ?? []) as any[];
+        const friends: GiftFriend[] = accepted
+            .filter(f => typeof f?.user_id === 'string')
+            .map(f => ({ user_id: f.user_id, username: f.username ?? null, discriminator: f.discriminator ?? null, avatar_url: f.avatar_url ?? null }));
+        const byId = new Map(friends.map(f => [f.user_id, f.username]));
+        return {
+            friends,
+            sendGiftCard: sendGiftCardToFriend,
+            nameFor: (id) => (id ? (byId.get(id) ?? null) : null),
+        };
+    }, [globalFriends, sendGiftCardToFriend]);
+
 
     /**
      * Returns a submenu items array for "Invite to Server ▸" targeting `targetUserId`.
@@ -2991,6 +3072,9 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
         callTransitions.clearMove();
         // Leaving for good: the next join starts clean (a switch never comes through here).
         selfCallIntent.clear();
+        // A share / camera carried into a move that ended up here (the
+        // destination failed, or the user left) is released, capture stopped.
+        callMediaCarry.discard();
         // Disconnecting from LiveKit locally natively removes us from the room.
         // If we were the last person (or if we explicitly terminated the call), suppress the trailing ghost banner.
         if (wasLastPerson) {
@@ -3227,9 +3311,11 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
     // sidebar still looks proportional instead of hugging the drag limit.
     const SIDEBAR_MIN_PX = 200;
     // The right context panel packs denser content (Shared tiles, storage rows,
-    // retention selects) than the chat list, so it gets a higher floor — below
-    // this its labels/tiles start wrapping.
-    const RIGHT_PANEL_MIN_PX = 280;
+    // retention selects) than the chat list, so it gets a higher floor than the
+    // left sidebar. 240 (was 280): member rows, group headers, search, the DM
+    // profile card and the call section were measured clean at 240 at every
+    // window size (harness/member-panel-narrow-shots.mjs); names ellipsize.
+    const RIGHT_PANEL_MIN_PX = 240;
     const sidebarMaxPx = (winW: number) => Math.max(500, Math.round(winW * 0.35));
 
     const DEFAULT_LEFT_RATIO  = 0.18; // ~18% of window
@@ -3917,7 +4003,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                             // must not buzz — it would be the very bug where the second
                             // PC shows unread what the first one read.
                             if (isReadByCursor(dmReadCursorsRef.current, cId, m)) continue;
-                            if (!isSilentIncoming({ senderUserId: m.sender_user_id, myUserId: userId, convIsSelf }) && (isPlaceholder || ['text', 'attachment', 'server_invite', 'safety_number', 'klipy_gif'].includes(m.content.type))) {
+                            if (!isSilentIncoming({ senderUserId: m.sender_user_id, myUserId: userId, convIsSelf }) && (isPlaceholder || ['text', 'attachment', 'server_invite', 'safety_number', 'klipy_gif', 'pro_gift'].includes(m.content.type))) {
                                 const mode: NotifMode = notifPrefs[cId] ?? 'all';
                                 const text = isPlaceholder ? `🔒 ${placeholderText(m.content.data?.reason)}`
                                     : m.content.type === 'text' ? (m.content.text ?? '')
@@ -3928,6 +4014,9 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                                     // verification ceremony, and it is time-sensitive in the
                                     // one case that matters (they are on a call with you).
                                     : m.content.type === 'safety_number' ? '🔐 Shared their safety code'
+                                    // Says only that a gift arrived, never what it is: the
+                                    // card itself fetches that from the API.
+                                    : m.content.type === 'pro_gift' ? '🎁 Sent you a gift'
                                     : 'New message';
                                 const decision = resolveNotification({
                                     text,
@@ -4805,6 +4894,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
     // Server rail layout (order + folders): whole-layout LWW through the
     // `server_rail` slot, so the mobile app and other desktops stay in step.
     useServerRailSync({ userId, deviceId, token });
+    useCardStyleSync({ userId, deviceId, token });
     const gifSyncAtRef = useRef(0);
     useEffect(() => {
         if (!savesRestored) return;
@@ -5216,7 +5306,8 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                     messageId: evt.message_id,
                 });
             }
-            const content = problem ? unshowablePlaceholderContent() : parsedContent;
+            // A card style counts only on a row the server checked (STYLE_MESSAGES).
+            const content = problem ? unshowablePlaceholderContent() : gateCardStyleByFlag(parsedContent, { isServerChannel: true, styledFlag: evt.styled });
             // A live message just decrypted fine — this channel has recovered
             // (or never lost) its key, so stop the retry timer from sweeping it.
             undecryptableChannelsRef.current.delete(evt.channel_id);
@@ -7500,21 +7591,14 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
     // a debounced doorbell. (The first sweep after login is still held by the
     // device-storage gate inside `run`.)
     useEffect(() => {
-        // A widened window can bring back rows a history page dropped at the
-        // door as expired under the old one: un-cover what isn't cached so
-        // those stretches become fillable gaps again.
-        setChannelCoverage(cov => {
-            let changed = false;
-            const next: Record<string, ChannelCoverage> = {};
-            for (const [cid, segs] of Object.entries(cov)) {
-                next[cid] = shrinkToCached(segs, channelMessagesRef.current[cid] ?? []);
-                if (next[cid] !== segs) changed = true;
-            }
-            return changed ? next : cov;
-        });
         const t = window.setTimeout(() => { void sweepRunRef.current?.(); }, 1500);
         return () => window.clearTimeout(t);
     }, [retention.policy, channelRetentionVersion, convRetentionVersion]);
+    // A widened window can bring back rows a history page dropped at the door:
+    // un-cover what isn't cached. On a WINDOW change only, never on a save or
+    // unsave (that pulled a fully loaded channel off its first message and
+    // made "Save for me" jump the chat; see the hook).
+    useRetentionCoverageShrink(retention.policy, `${channelRetentionVersion}:${convRetentionVersion}`, setChannelCoverage, channelMessagesRef);
 
     // Topology-driven re-sweep: when the conversation list or server channel
     // map populates for the first time after mount, fire the sweep again so
@@ -8188,7 +8272,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                 if (targetIdx !== -1) {
                     currentThread[targetIdx] = {
                         ...currentThread[targetIdx],
-                        content: withEditFont({ ...currentThread[targetIdx].content, text: m.content.text }, m.content.font, m.content.size),
+                        content: withEditCardStyle(withEditFont({ ...currentThread[targetIdx].content, text: m.content.text }, m.content.font, m.content.size), m.content),
                         edited: true
                     };
                 }
@@ -8507,7 +8591,8 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
             }
             return {
                 id: m.id,
-                content: problem ? unshowablePlaceholderContent() : parsedContent,
+                // A card style counts only on a row the server checked (STYLE_MESSAGES).
+                content: problem ? unshowablePlaceholderContent() : gateCardStyleByFlag(parsedContent, { isServerChannel: true, styledFlag: m.styled }),
                 sender_device_id: m.sender_device_id,
                 sender_user_id: m.sender_user_id ?? null,
                 timestamp: m.created_at,
@@ -9598,6 +9683,11 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                 });
             },
             settleJoin: attempt => settleCallJoin(attempt),
+            // Screen share / camera follow the member into the destination
+            // (utils/callMediaCarry.ts): snapshot them now, while the old pane
+            // and its live capture still exist; the new pane publishes them
+            // under ITS room key or stops them with a notice.
+            carryMedia: e => { callMediaCarry.capture(e.call_id, e.call_name); },
             enter: sel => applyHuddleSelection(sel),
             // Cue + toast, once per move and never for a move we made ourselves.
             // The cue goes through playSound, so master mute, the "Moved to another
@@ -9613,6 +9703,15 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
     // toast is a stable context value; re-running on it would re-fire the move.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [huddleForceMoveEvent]);
+    // A share / camera carried by a move whose destination never connected in time:
+    // its capture is stopped (utils/callMediaCarry.ts) - say so instead of losing it silently.
+    useEffect(() => {
+        callMediaCarry.onExpire(c => {
+            if (c.share) toast.push(carryStoppedToast('share', 'failed', c.toCallName));
+            if (c.camera) toast.push(carryStoppedToast('camera', 'failed', c.toCallName));
+        });
+        return () => callMediaCarry.onExpire(null);
+    }, [toast]);
 
     // ── Guest call room keys (utils/guestCallKey) ───────────────────────────
     // A holder (us) hands a moved-in guest the CURRENT room key of a call: as
@@ -12205,6 +12304,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
         // as the explicit Leave Server flow above.
         if (userId) {
             try { secureLocalStore.removeItem(`cipherline_server_retention_${userId}_${server_id}`); } catch { /* best-effort; failure is non-fatal and intentionally ignored */ }
+            try { secureLocalStore.removeItem(memberGroupsCollapsedKey(userId, server_id)); } catch { /* best-effort UI preference */ }
         }
         // Reload servers list so the removed server disappears from the nav rail.
         loadServers();
@@ -12325,6 +12425,9 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
     // right-click spam (Mascot -> handleRailGameSpam), from whatever view this is.
     const firewall = useFirewallGame(!!activeCall || !!activeVoiceChannelId || !!activeHuddleCallId);
     const { tryOpen: tryOpenFirewall } = firewall;
+    // The content column the game covers: it stops rendering while the game is up
+    // (FirewallOverlay coverRef / FW_COVER_AFTER_MS).
+    const contentColumnRef = useRef<HTMLDivElement>(null);
     const handleRailGameSpam = useCallback(() => {
         const msg = railGameRefusal(tryOpenFirewall());
         if (msg) toast.push({ kind: 'info', message: msg });
@@ -12927,7 +13030,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
             if (content?.type === 'edit') {
                 const idx = thread.findIndex(t => t.id === content.target_id || t.content?.client_msg_id === content.target_id);
                 if (idx !== -1) {
-                    thread[idx] = { ...thread[idx], content: editedContent(thread[idx].content, content.text, content.channel_refs, content.font, content.size), edited: true };
+                    thread[idx] = { ...thread[idx], content: editedContent(thread[idx].content, content.text, content.channel_refs, content.font, content.size, content), edited: true };
                 }
                 return { ...prev, [cid]: thread };
             }
@@ -13328,6 +13431,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
         [token, callServerInfo, activeHuddleCallId],
     );
 
+
     const divider2El = (
         <div
             key="divider2-stable"
@@ -13342,7 +13446,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
             style={{ width: 4, flexShrink: 0, cursor: 'col-resize', background: 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 20 }}
             className="group relative app-div2"
         >
-            <div className="w-[2px] h-16 rounded-full group-hover:bg-cl-lume/40 transition-colors" />
+            <div data-drag-pill="right" className="w-[2px] h-16 rounded-full group-hover:bg-cl-lume/40 transition-colors" />
         </div>
     );
 
@@ -14433,6 +14537,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
         <RolePickerContext.Provider value={rolePicker.api}>
         <CallServerCtx.Provider value={callServerCtxValue}>
         <ReportOpenContext.Provider value={openReportAt}>
+        <GiftActionsProvider value={giftActions}>
         <FriendshipContext.Provider value={isFriendOrSelf}>
         <div ref={containerRef} data-layout="drift" className="w-screen h-screen flex flex-col bg-cl-abyss text-white overflow-hidden font-sans relative">
             {/* Screen Lock — full-viewport gate (see useScreenLock.ts). Highest
@@ -14443,7 +14548,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
             {/* Easter-egg game (useFirewallGame): the one instance, over the content
                 area (not the rail or titlebar) whichever view is open. A call
                 starting closes it (the hook). */}
-            {firewall.open && <FirewallOverlay key={userId} userId={userId || ''} placement="shell" onClose={firewall.closeGame} />}
+            {firewall.open && <FirewallOverlay key={userId} userId={userId || ''} placement="shell" onClose={firewall.closeGame} coverRef={contentColumnRef} />}
 
             {/* Focus suspender — Friends AND Home: both render a full-width pane with no
                 #call-focus-root, so both must collapse a focused stream back
@@ -14946,7 +15051,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
             </nav>
 
             {/* Main Content Area */}
-            <div data-banner-column="" style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, height: '100%', overflow: 'hidden' }}>
+            <div data-banner-column="" ref={contentColumnRef} style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, height: '100%', overflow: 'hidden' }}>
 
                 {/* Top-of-app notices. Every banner below renders through ClBanner and
                     registers with this stack, which orders them by priority (danger
@@ -15318,6 +15423,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                                                 else if (lastMsg.content.type === 'call_end') prevText = 'Call ended';
                                                 else if (lastMsg.content.type === 'safety_number') prevText = 'Shared a safety code';
                                                 else if (lastMsg.content.type === 'klipy_gif') prevText = 'Sent a GIF';
+                                                else if (lastMsg.content.type === 'pro_gift') prevText = 'Sent a gift';
                                                 else prevText = 'Sent a message';
                                                 if (youPrefix && lastMsg.content.type !== 'text') prevText = `${youPrefix}${prevText as string}`;
                                             }
@@ -15653,6 +15759,17 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                                                         headers: { Authorization: `Bearer ${token}` },
                                                     });
                                                 }}
+                                                // The category AND everything in it: one server transaction.
+                                                onDeleteCategoryWithContentsApi={async (cat, expected) => {
+                                                    const res = await axios.post(
+                                                        apiUrl`/servers/${srv.server_id}/categories/${cat.category_id}/delete-with-contents`,
+                                                        expected,
+                                                        { headers: { Authorization: `Bearer ${token}` } },
+                                                    );
+                                                    const gone: string[] = res.data?.channel_ids ?? [];
+                                                    // Same as a single channel delete: drop the selection if it went.
+                                                    if (activeChannel && gone.includes(activeChannel.channel_id)) setActiveChannel(null);
+                                                }}
                                             />
                                             </>
                                         );
@@ -15682,7 +15799,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                     >
                         <div className="w-full h-full bg-white/[0.04]"></div>
                         <div className="absolute top-0 bottom-0 -left-1 -right-1 z-30" />
-                        <div className="absolute top-1/2 -translate-y-1/2 left-1/2 -translate-x-1/2 w-1 h-32 rounded-full opacity-0 group-hover:opacity-100 bg-cl-lume/40 transition-opacity z-40 pointer-events-none" />
+                        <div data-drag-pill="left" className="absolute top-1/2 -translate-y-1/2 left-1/2 -translate-x-1/2 w-[2px] h-16 rounded-full opacity-0 group-hover:opacity-100 bg-cl-lume/40 transition-opacity z-40 pointer-events-none" />
                     </div>
 
                         {/* Right section: Pane 3 — always row 2, column 3. The
@@ -16775,6 +16892,8 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
                                 // them up since serverChannelsRef no longer covers them.
                                 if (userId) {
                                     try { secureLocalStore.removeItem(`cipherline_server_retention_${userId}_${sid}`); } catch { /* best-effort; failure is non-fatal and intentionally ignored */ }
+                                    // Collapsed member-list groups of a server we left.
+                                    try { secureLocalStore.removeItem(memberGroupsCollapsedKey(userId, sid)); } catch { /* best-effort UI preference */ }
                                 }
                             },
                             reconcile: () => { void loadServers(); },
@@ -16913,6 +17032,7 @@ const Dashboard: React.FC<DashboardProps> = ({ initialDeepLinkInviteCode, deepLi
             )}
         </div >
         </FriendshipContext.Provider>
+        </GiftActionsProvider>
         </ReportOpenContext.Provider>
         </CallServerCtx.Provider>
         </RolePickerContext.Provider>

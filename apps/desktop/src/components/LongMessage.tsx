@@ -14,8 +14,8 @@ import {
 import '../styles/long-message.css';
 
 /**
- * A text message past LONG_MESSAGE_THRESHOLD characters or
- * LONG_MESSAGE_MAX_LINES lines (utils/longMessage isLongMessage), collapsed.
+ * A text message past LONG_MESSAGE_THRESHOLD (3 000) characters, collapsed
+ * (characters only since 2026-11-18; utils/longMessage isLongMessage).
  *
  *   collapsed  a ~700-character preview (utils/longMessage.collapsedPreview)
  *              with a fade-out, and a footer: "Long message · 12,345

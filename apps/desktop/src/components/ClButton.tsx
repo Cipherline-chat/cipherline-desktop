@@ -54,6 +54,10 @@ interface ClButtonProps {
     row?: boolean;
     /** Forwarded to the underlying native `<button>` — focuses it on mount. */
     autoFocus?: boolean;
+    /** Toggle buttons: forwarded as `aria-pressed` on the native `<button>`. */
+    ariaPressed?: boolean;
+    /** Accessible name for icon-only buttons (the tooltip is only a description). */
+    ariaLabel?: string;
 }
 
 /**
@@ -65,7 +69,7 @@ interface ClButtonProps {
 export const ClButton: React.FC<ClButtonProps> = ({
     children, onClick, disabled, loading,
     variant = 'primary', size, icon, fullWidth, row, chip, type = 'button', className, style, pressAnim,
-    tooltip, tooltipSide, active, autoFocus,
+    tooltip, tooltipSide, active, autoFocus, ariaPressed, ariaLabel,
 }) => {
     const nodeRef = useRef<HTMLSpanElement | null>(null);
     const cleanupRef = useRef<(() => void) | null>(null);
@@ -124,6 +128,8 @@ export const ClButton: React.FC<ClButtonProps> = ({
                 aria-disabled={disabled || undefined}
                 aria-busy={loading || undefined}
                 aria-describedby={describedBy}
+                aria-pressed={ariaPressed}
+                aria-label={ariaLabel}
                 onClick={!isDisabled ? onClick : undefined}
                 className="cap"
                 data-anim={pressAnim}

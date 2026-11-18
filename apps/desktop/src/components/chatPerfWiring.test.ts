@@ -25,10 +25,12 @@ describe('ChatPane render path', () => {
         expect(chat).toMatch(/<MemoRow key=\{rowKey\} deps=\{rowDeps\} render=\{\(\) => \{/);
         expect(chat).toMatch(/const rowKey = rowKeys\[index\];/);
         const deps = chat.slice(chat.indexOf('const rowDeps = ['), chat.indexOf('];', chat.indexOf('const rowDeps = [')));
-        for (const d of ['...rowGlobals', 'msg', 'hoveredMsgId === msg.id', 'objectUrls[msg.id]', 'replyTarget']) expect(deps).toContain(d);
+        // The row's own saved / pinned / personal-save state is a PER-ROW dep (rowSaveKey), so
+        // a save re-renders only that row (messageRowSaveScope.wiring.test.ts).
+        for (const d of ['...rowGlobals', 'msg', 'hoveredMsgId === msg.id', 'objectUrls[msg.id]', 'replyTarget', 'rowSaveKey(rowSaveIndex, msg.id,']) expect(deps).toContain(d);
         // What render-time helpers read must be in the globals, or a skipped row would show stale state.
         const globals = chat.slice(chat.indexOf('const rowGlobals = ['), chat.indexOf('];', chat.indexOf('const rowGlobals = [')));
-        for (const g of ['stRetentionPolicy', 'stablePinnedMsgIds', 'stServerSavedIds', 'canSaveMessages', 'hasServerSave',
+        for (const g of ['stRetentionShared', 'canSaveMessages', 'hasServerSave',
             'channelMessageRetention', 'channelAttachmentRetention', 'convType', 'userIdToUsername', 'deviceToUsername', 'nowTick']) {
             expect(globals).toContain(g);
         }

@@ -47,6 +47,17 @@ export interface AgcProcessorOptions {
     minSnrDb?: number;
     /** Voiced seconds with no block admitted to the level estimate before it decays (Infinity = never; tests). */
     levelStaleSec?: number;
+    /** Apply the boost only around speech (default true; false = the boost also applies between words, as before 2026-11-18). */
+    speechOnlyBoost?: boolean;
+    boostVoicedRun?: number;
+    boostHoldSec?: number;
+    onsetGraceSec?: number;
+    onsetRiseDb?: number;
+    onsetRangeDb?: number;
+    /** A single voiced analysis also starts an onset grace (default true). */
+    voicedOnsetGrace?: boolean;
+    nonSpeechMaxBoostDb?: number;
+    nonSpeechReleaseDbPerSec?: number;
     sampleRate?: number;
     targetRms?: number;
     floorRms?: number;
@@ -106,7 +117,8 @@ export class VoiceDetector {
     /** Normalized autocorrelation peak (70-500 Hz) of the latest analysed frame. */
     score: number;
     /** Feed samples; true when a new frame was analysed. */
-    push(block: Float32Array): boolean;
+    /** `analyse` = false skips the pitch analysis for a quiet block (the ring still advances). */
+    push(block: Float32Array, analyse?: boolean): boolean;
 }
 
 export class AgcProcessor {
@@ -136,6 +148,9 @@ export class AgcProcessor {
     louderJumpSec: number;
     voicedThreshold: number;
     voiceHangoverSec: number;
+    speechOnlyBoost: boolean;
+    /** Boost withheld right now (<= 0 dB; see DEFAULT_SPEECH_BOOST_*). */
+    withheldDb: number;
     compThresholdDb: number;
     compRatio: number;
     compKneeDb: number;
@@ -175,6 +190,15 @@ export class AgcProcessor {
 }
 export const DEFAULT_LEVEL_STALE_SEC: number;
 export const DEFAULT_LEVEL_STALE_FALL_DB_PER_SEC: number;
+export const DEFAULT_SPEECH_BOOST_VOICED_RUN: number;
+export const DEFAULT_SPEECH_BOOST_RUN_GAP_SEC: number;
+export const DEFAULT_SPEECH_BOOST_HOLD_SEC: number;
+export const DEFAULT_ONSET_GRACE_SEC: number;
+export const DEFAULT_ONSET_LOOKBACK_SEC: number;
+export const DEFAULT_ONSET_RISE_DB: number;
+export const DEFAULT_ONSET_RANGE_DB: number;
+export const DEFAULT_NONSPEECH_MAX_BOOST_DB: number;
+export const DEFAULT_NONSPEECH_RELEASE_DB_PER_SEC: number;
 export const DEFAULT_MIN_SNR_DB: number;
 export const MIC_BOOST_TARGET_SHARE: number;
 export const MIC_BOOST_TARGET_MAX_DB: number;

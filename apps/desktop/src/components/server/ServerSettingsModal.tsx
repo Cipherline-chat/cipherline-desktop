@@ -47,7 +47,7 @@ import { useAttachments } from '../../hooks/useAttachments';
 import { IMAGE_ACCEPT_ATTR, validateImageUpload, validateEmojiUpload } from '../../utils/imageUploadValidation';
 import { AVATAR_OUTPUT, BANNER_OUTPUT, cssAspectRatio } from '../../utils/imageCrop';
 import { serverSettingsTabVisibility, type ServerSettingsTab } from '../../utils/serverSettingsAccess';
-import { Permissions, hasPermission, formatBytes } from '@cipherline/shared';
+import { Permissions, hasPermission, formatBytes, type ServerMessageStyles } from '@cipherline/shared';
 import { ServerIcon } from './ServerIcon';
 import { EmojiImage } from './EmojiImage';
 import { useServerEmojis, type ServerEmoji } from '../../hooks/useServerEmojis';
@@ -224,6 +224,8 @@ function OverviewTab({ server, token, onServerUpdated, canManageServer, isOwner,
     const [systemChannelId, setSystemChannelId] = useState<string | null>(
         server.system_channel_id ?? null
     );
+    /** Message card styles in this server's channels (packages/shared/card-style.ts). */
+    const [messageStyles, setMessageStyles] = useState<ServerMessageStyles>(server.message_styles ?? 'on');
     /** Text channels available for system message routing. Fetched on mount. */
     const [textChannels, setTextChannels] = useState<Array<{ channel_id: string; name: string }>>([]);
     const [iconAttachment, setIconAttachment] = useState(server.icon_attachment);
@@ -289,7 +291,8 @@ function OverviewTab({ server, token, onServerUpdated, canManageServer, isOwner,
         iconAttachment !== server.icon_attachment ||
         bannerAttachment !== server.banner_attachment ||
         defaultNotifLevel !== (server.default_notification_level ?? 'all') ||
-        systemChannelId !== (server.system_channel_id ?? null);
+        systemChannelId !== (server.system_channel_id ?? null) ||
+        messageStyles !== (server.message_styles ?? 'on');
     useReportDirty(dirty, onDirtyChange);
 
     /** Hand a picked file to the cropper; the cropped blob comes back via onConfirm. */
@@ -377,6 +380,9 @@ function OverviewTab({ server, token, onServerUpdated, canManageServer, isOwner,
             if (systemChannelId !== (server.system_channel_id ?? null)) {
                 patch.system_channel_id = systemChannelId ?? '';
             }
+            if (messageStyles !== (server.message_styles ?? 'on')) {
+                patch.message_styles = messageStyles;
+            }
             await axios.patch(
                 apiUrl`/servers/${server.server_id}`,
                 patch,
@@ -393,6 +399,7 @@ function OverviewTab({ server, token, onServerUpdated, canManageServer, isOwner,
                 banner_nonce_b64: bannerNonceB64,
                 default_notification_level: defaultNotifLevel,
                 system_channel_id: systemChannelId,
+                message_styles: messageStyles,
             });
             setSaved(true);
             setTimeout(() => setSaved(false), 2000);
@@ -612,6 +619,33 @@ function OverviewTab({ server, token, onServerUpdated, canManageServer, isOwner,
                             onChange={(v) => setSystemChannelId(v || null)}
                             style={{ width: '100%' }}
                         />
+                    </div>
+
+                    {/* Message card styles: members can give their messages a
+                        card ("Style your own message card"). This turns the
+                        styling off, or just its animation, for everyone in
+                        this server's channels. DMs are unaffected, and the
+                        styles themselves stay encrypted: this is a display
+                        rule, not something the server reads. */}
+                    <div className="p-5" data-testid="server-message-styles">
+                        <p className={sectionLabel}>Message Styles</p>
+                        <p className="text-[11px] text-cl-faint mb-3">
+                            Members with the Style Messages permission (Roles, or per channel) can give a message a card: rules,
+                            announcements, events. Choose how cards show in this server's channels for everyone. Each member can still go plainer for themselves.
+                        </p>
+                        <div className="flex gap-2 flex-wrap" aria-label="Message styles">
+                            {([['on', 'On'], ['no_animation', 'No animation'], ['off', 'Off']] as const).map(([v, label]) => (
+                                <ClButton
+                                    key={v}
+                                    onClick={() => setMessageStyles(v)}
+                                    active={messageStyles === v}
+                                    variant="ghost"
+                                    className="clb--chip"
+                                >
+                                    {label}
+                                </ClButton>
+                            ))}
+                        </div>
                     </div>
                 </div>
             )}

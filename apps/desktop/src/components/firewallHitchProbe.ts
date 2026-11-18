@@ -14,11 +14,13 @@
  *      net:  calls/status (xmlhttprequest) done -12ms
  *
  * A hitch with nothing on the main thread points at the GPU / compositor side.
- * report() is the summary (odd vs even pillars, how many hitches had main-thread
- * work under them, the scripts seen most); the game-over card offers it as "Copy
- * hitch report", because a packaged build closes DevTools as soon as it opens
- * (electron/main.ts). Dev builds also log each hitch to the console and leave
- * the summary in `window.__fwHitchReport` on close.
+ * report() is the summary (how evenly the hitches are spaced, odd vs even pillars,
+ * how many hitches had main-thread work under them, the scripts seen most). The
+ * game-over "Copy hitch report" button was removed (owner 2026-11-13) and a packaged
+ * build closes DevTools as soon as it opens (electron/main.ts), so on close the run
+ * goes into the Performance log as label-only rows (probeRows), which "Report a
+ * problem → Performance" sends. Dev builds also log each hitch to the console and
+ * leave the full text summary in `window.__fwHitchReport` on close.
  *
  * On only where hitchProbeEnabled() says so: dev builds and staging builds
  * (version `x.y.z-staging.N`). A stable build never starts it. It records
@@ -29,6 +31,7 @@
 import type { ProbeMsg } from '../workers/loadingScreenProtocol';
 import { parseSystemInfoReply } from '../utils/diagnostics/ipc';
 import { rateLine, type RunRate } from '../utils/firewallRate';
+import { recordTimingRow } from '../utils/freezeLog';
 import type { SystemInfo } from '../utils/diagnostics/reportTypes';
 
 interface Span { at: number; end: number }
@@ -89,6 +92,77 @@ export function describeSystem(sys: SystemInfo, hz: { displayFrequency: number; 
     return [`GPUs (* = in use): ${gpus} · hw accel ${sys.hardware_acceleration ? 'on' : 'OFF'}`, `GPU features: ${feat}`, `Displays: ${disp}`];
 }
 
+const median = (sorted: number[]): number => {
+    const n = sorted.length, m = n >> 1;
+    return n % 2 ? sorted[m] : (sorted[m - 1] + sorted[m]) / 2;
+};
+
+/** How evenly a run's hitches are spaced: the median gap between them and its spread (median absolute deviation). */
+export interface Cadence { gaps: number; medianMs: number; madMs: number; steady: boolean }
+
+/**
+ * Hitches on a CLOCK (evenly spaced while the pillars speed up) come from something
+ * periodic in the app, not from the game: the 2026-11-12 report's six hitches were
+ * 3.07-3.09 s apart while the pillars went from 1.73 s to 1.47 s apart, which players
+ * read as "every other pillar". Needs three hitches (two gaps). `at` in ms, ascending.
+ */
+export function hitchCadence(at: number[]): Cadence | null {
+    if (at.length < 3) return null;
+    const iv = at.slice(1).map((t, i) => t - at[i]).sort((a, b) => a - b);
+    const med = median(iv);
+    const mad = median(iv.map(x => Math.abs(x - med)).sort((a, b) => a - b));
+    return { gaps: iv.length, medianMs: Math.round(med), madMs: Math.round(mad), steady: mad <= Math.max(40, med * 0.05) };
+}
+
+/** The GL renderer string, reduced to its vendor (a label-safe word for the perf log). */
+export function glClass(gl: string): string {
+    if (!gl) return 'unknown';
+    if (/swiftshader/i.test(gl)) return 'swiftshader';
+    if (/microsoft basic|warp/i.test(gl)) return 'warp';
+    if (/nvidia|geforce|quadro|rtx/i.test(gl)) return 'nvidia';
+    if (/amd|radeon|ati/i.test(gl)) return 'amd';
+    if (/intel/i.test(gl)) return 'intel';
+    if (/apple/i.test(gl)) return 'apple';
+    return 'other';
+}
+
+/** One hitch, as far as the perf-log rows need it. */
+export interface HitchLite { gap: number; pillar: number; score: number; loafs: { dur: number; phases: LoafPhases | null; scripts: number }[] }
+
+const MAX_HITCH_ROWS = 12;
+const n0 = (x: number) => Math.max(0, Math.round(x));
+
+/**
+ * The run's summary as Performance-log rows (utils/freezeLog.ts recordTimingRow), so a
+ * staging tester's "Report a problem → Performance" carries it: the game-over copy button
+ * is gone (owner 2026-11-13) and a packaged build has no DevTools. Every label is a static
+ * word plus numbers (main drops anything failing freezeLog's LABEL_RE): timings, counts and
+ * a GPU vendor word only, nothing a user typed or received, no names or paths.
+ */
+export function probeRows(hitches: HitchLite[], at: number[], rate: { r: RunRate; gl: string } | null, displayHz: number, withMain: number): { activity: string; ms: number }[] {
+    const c = hitchCadence(at);
+    const split = { tasks: 0, raf: 0, render: 0 };
+    for (const h of hitches) for (const l of h.loafs) if (l.phases) { split.tasks += l.phases.tasks; split.raf += l.phases.raf; split.render += l.phases.render; }
+    const top = split.tasks + split.raf + split.render > 0 ? (Object.keys(split) as (keyof typeof split)[]).sort((a, b) => split[b] - split[a])[0] : 'none';
+    const summary = [
+        'firewall:probe', `fw:late:${hitches.length}`, `fw:hz:${n0(displayHz)}`,
+        `fw:fps:${rate ? n0(rate.r.fps) : 0}`, `fw:worst:${rate ? n0(rate.r.maxGapMs) : 0}`, `fw:gl:${glClass(rate?.gl ?? '')}`,
+        `fw:main-busy:${withMain}`, `fw:split:${top}`,
+        c ? `fw:cadence:${c.medianMs}` : 'fw:cadence:none', c ? `fw:cadence-mad:${c.madMs}` : 'fw:cadence-mad:none',
+    ];
+    const rows = [{ activity: summary.join(', '), ms: hitches.reduce((m, h) => Math.max(m, n0(h.gap)), 0) }];
+    for (const h of hitches.slice(-MAX_HITCH_ROWS)) {
+        const l = h.loafs.slice().sort((a, b) => b.dur - a.dur)[0];
+        const labels = ['firewall:hitch', `fw:p:${h.pillar}`, `fw:score:${h.score}`];
+        if (l) {
+            labels.push(`fw:loaf:${n0(l.dur)}`, `fw:scripts:${l.scripts}`);
+            if (l.phases) labels.push(`fw:tasks:${n0(l.phases.tasks)}`, `fw:raf:${n0(l.phases.raf)}`, `fw:render:${n0(l.phases.render)}`);
+        } else labels.push('fw:loaf:none');
+        rows.push({ activity: labels.join(', '), ms: n0(h.gap) });
+    }
+    return rows;
+}
+
 const phaseText = (l: Loaf): string => {
     const p = l.phases;
     return (p ? `tasks ${p.tasks.toFixed(0)} · rAF/RO ${p.raf.toFixed(0)} · render ${p.render.toFixed(0)}` : 'no phase marks')
@@ -103,6 +177,14 @@ const splitLine = (hitches: Hitch[]): string => {
     const top = (Object.keys(t) as (keyof typeof t)[]).sort((a, b) => t[b] - t[a])[0];
     const hint = { tasks: 'tasks/GC/decode before rendering', raf: 'rAF / ResizeObserver callbacks', render: 'style/layout/paint/commit (compositor or GPU wait)' }[top];
     return `Where the long frames' time went (${n} frames): tasks ${t.tasks.toFixed(0)} ms, rAF/RO ${t.raf.toFixed(0)} ms, render ${t.render.toFixed(0)} ms -> mostly ${hint}`;
+};
+/** Steady hitches against the pillars' own rhythm: a clock that only LOOKS like "every other pillar". */
+const cadenceLine = (c: Cadence | null, pillarAt: number[]): string => {
+    if (!c) return 'Hitch spacing: fewer than 3 hitches';
+    const pc = hitchCadence(pillarAt);
+    const pillars = pc ? ` (pillars came every ${(pc.medianMs / 1000).toFixed(2)} s)` : '';
+    return `Hitch spacing: every ${(c.medianMs / 1000).toFixed(2)} s ±${c.madMs} ms over ${c.gaps} gaps${pillars} -> `
+        + (c.steady ? 'a steady clock: something periodic in the app or the GPU, not the pillars' : 'irregular');
 };
 const whereText = (w: Where): string => `@${w.x},${w.y} on ${w.w}x${w.h} ${w.dpr}x`;
 
@@ -268,6 +350,7 @@ export function startHitchProbe(): HitchProbe {
                 + ` · first hitch window ${hitches[0] ? whereText(hitches[0].where) : 'n/a'}`,
             rateLine(rate ? rate.r : null, 1000 / frameIv, rate ? rate.gl : ''),
             splitLine(hitches),
+            cadenceLine(hitchCadence(hitches.map(h => h.at)), pillars.map(p => p.at)),
             `Within 700 ms of a pillar entering: odd ${odd}, even ${even}`,
             `Main thread busy under the hitch: ${withMain} of ${hitches.length}`,
             `Main thread over the whole run: ${loafCount} long frames (${loafMs.toFixed(0)} ms), ${mainGapCount} late frames`,
@@ -291,7 +374,12 @@ export function startHitchProbe(): HitchProbe {
             stopped = true;
             cancelAnimationFrame(raf);
             for (const o of observers) o.disconnect();
-            if (!import.meta.env.DEV || (!hitches.length && !pillars.length && !rate)) return;
+            if (!hitches.length && !rate) return;
+            // Into the Performance log, so "Report a problem → Performance" carries it (staging included).
+            const withMain = hitches.filter(h => h.loafs.length || h.mainGaps.length).length;
+            const lite = hitches.map(h => ({ gap: h.gap, pillar: h.pillar, score: h.score, loafs: h.loafs.map(l => ({ dur: l.dur, phases: l.phases, scripts: l.scripts.length })) }));
+            for (const row of probeRows(lite, hitches.map(h => h.at), rate, 1000 / frameIv, withMain)) recordTimingRow(row.activity, row.ms);
+            if (!import.meta.env.DEV) return;
             const text = report();
             (window as unknown as { __fwHitchReport?: string }).__fwHitchReport = text;
             console.log(`${text}\n\n(copy it: copy(__fwHitchReport))`);

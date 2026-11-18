@@ -50,11 +50,11 @@ const ends: (() => void)[] = [];
 
 const NEUTRAL: HomeKeysMirror = { status: 'online', gaming: false, inCall: false, unread: 0, pro: false };
 
-function render(mirror: Partial<HomeKeysMirror> = {}, extra: { onPoke?: () => void; onReact?: () => void; random?: () => number } = {}) {
+function render(mirror: Partial<HomeKeysMirror> = {}, extra: { onPoke?: () => void; onReact?: () => void; random?: () => number; canPlay?: () => 'ok' | 'call' | 'unavailable'; onPlay?: () => void } = {}) {
     act(() => {
         root!.render(React.createElement(HomeKeys, { random: extra.random ?? BARE,
             userId: 'u', signal: 'idle', speech: null, lively: false,
-            onPoke: extra.onPoke ?? (() => {}), onReact: extra.onReact, canPlay: () => 'call' as const, onPlay: () => {},
+            onPoke: extra.onPoke ?? (() => {}), onReact: extra.onReact, canPlay: extra.canPlay ?? (() => 'call' as const), onPlay: extra.onPlay ?? (() => {}),
             mirror: { ...NEUTRAL, ...mirror },
         }));
     });
@@ -185,36 +185,22 @@ describe('HomeKeys: the spam finale', () => {
         expect(eggs.filter(e => e === finaleEggId(state))).toHaveLength(2); // recordEggFound itself dedupes
     });
 
-    it('DND: the wall goes up and waits; your next click knocks it over', () => {
+    it('DND: the finale is a flourish now: the wall pops and goes, it never holds and never waits for a click', () => {
         render({ status: 'dnd' });
         clicks(6, 150);
         expect(beat()).toBe('wall');
-        expect(speech()).toBe('No.');
-        advance(800); // up and holding
+        advance(800);
         const wall = host.querySelector('.hkp-wall')!;
         const up = recs.filter(r => r.el === wall);
         expect(up).toHaveLength(1);
-        expect(up[0].opts.fill).toBe('both');
-        click();
-        expect(beat()).toBe('wallDown');
-        const down = recs.filter(r => r.el === wall);
-        expect(down).toHaveLength(2);
-        expect(up[0].cancelled).toBe(true);
-        // it started from where the wall was, and falls over
-        expect(String(down[1].frames[down[1].frames.length - 1].transform)).toContain('rotateX(-90deg)');
-        advance(600);
-        expect(speech()).toBe('Rude.');
+        expect(up[0].opts.fill).not.toBe('both'); // not held
+        advance(WALL_WAIT_MS + 500);
+        expect(beat()).toBe('wall'); // nothing released it: there was nothing to release
+        expect(recs.filter(r => r.el === wall)).toHaveLength(1);
     });
 
-    it('DND: left alone, the wall comes down by itself', () => {
-        render({ status: 'dnd' });
-        clicks(6, 150);
-        advance(PLAYS.dnd.finale({ video: false, sharing: false }).ms + WALL_WAIT_MS + 50);
-        expect(beat()).toBe('wallDown');
-    });
-
-    it('a rapid click on a beat still playing is a nudge, blended by the runner', () => {
-        render({ gaming: true });
+    it('a rapid click on a beat still playing is a nudge, blended by the runner (a live call: no game to stream into)', () => {
+        render({ inCall: true });
         click();
         const first = beat();
         advance(200);
@@ -352,5 +338,50 @@ describe('HomeKeys: the hover parallax', () => {
         expect(hk().classList.contains('is-tilt')).toBe(false);
         expect((host.querySelector('.hk-par') as HTMLElement).style.transform).toBe('');
         expect(rafQ).toHaveLength(0);
+    });
+});
+
+describe('HomeKeys: the Firewall-game streak runs in every state but a live call', () => {
+    const SPAM_MS = 100;
+    /** 5.2 s of unbroken spam, one click per SPAM_MS. */
+    const spam = () => clicks(52, SPAM_MS);
+    const OPEN: [string, Partial<HomeKeysMirror>, (() => () => void)?][] = [
+        ['dnd', { status: 'dnd' }],
+        ['asleep', { status: 'away' }],
+        ['gaming', { gaming: true }],
+        ['camo', { status: 'offline' }],
+        ['box', {}, () => beginKeysActivity('transfer')],
+        ['safe', {}, () => beginKeysActivity('backup')],
+    ];
+
+    it.each(OPEN)('%s: sustained spam opens the game, through the state\'s own finale', (state, mirror, setup) => {
+        if (setup) ends.push(setup());
+        const onPlay = vi.fn();
+        render(mirror, { canPlay: () => 'ok', onPlay });
+        expect(hk().dataset.play).toBe(state);
+        spam();
+        expect(hk().getAttribute('data-spam')).not.toBeNull();
+        advance(1000); // the host's PLAY_DELAY
+        expect(onPlay).toHaveBeenCalledTimes(1);
+        expect(eggs).toContain(finaleEggId(state as Exclude<PlayState, 'neutral'>)); // the finale still played alongside
+    });
+
+    it('dnd: a wall already standing does not swallow the streak', () => {
+        const onPlay = vi.fn();
+        render({ status: 'dnd' }, { canPlay: () => 'ok', onPlay });
+        clicks(6, 150); // the finale flourish
+        advance(WALL_WAIT_MS + 2000);
+        spam();
+        advance(1000);
+        expect(onPlay).toHaveBeenCalledTimes(1);
+    });
+
+    it('call: still no game (and the call\'s own finale still owns the clicks)', () => {
+        const onPlay = vi.fn();
+        render({ inCall: true }, { canPlay: () => 'ok', onPlay });
+        spam();
+        advance(2000);
+        expect(hk().getAttribute('data-spam')).toBeNull();
+        expect(onPlay).not.toHaveBeenCalled();
     });
 });

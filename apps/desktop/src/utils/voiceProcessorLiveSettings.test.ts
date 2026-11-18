@@ -14,11 +14,11 @@ describe('mic-chain settings apply live (owner 2026-11-13: Light <-> Strong need
         expect(read.size).toBeGreaterThan(6);
         for (const k of read) expect(LIVE_PROCESSOR_SETTING_KEYS as readonly string[], k).toContain(k);
     });
-    it('POSITIVE CONTROL: the key changes for Strong<->Light, the gate Automatic flag, and a field left out of it would not', () => {
+    it('POSITIVE CONTROL: the key changes for Strong<->Light, the gate threshold, and a field left out of it would not', () => {
         const base = DEFAULT_VOICE_SETTINGS;
         const k0 = liveProcessorSettingsKey(base);
         expect(liveProcessorSettingsKey({ ...base, noiseSuppressionMode: 'strong' })).not.toBe(k0);
-        expect(liveProcessorSettingsKey({ ...base, voiceGateAuto: !base.voiceGateAuto })).not.toBe(k0);
+        expect(liveProcessorSettingsKey({ ...base, voiceGateThreshold: base.voiceGateThreshold - 5 })).not.toBe(k0);
         expect(liveProcessorSettingsKey({ ...base, eqBands: [1, 0, 0, 0, 0] })).not.toBe(k0);
         // a setting the processor does not read must not retrigger it
         expect(liveProcessorSettingsKey({ ...base, speakerVolume: 150 } as typeof base)).toBe(k0);

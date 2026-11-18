@@ -21,7 +21,7 @@ describe('Firewall game wiring', () => {
 
     it('exactly ONE FirewallOverlay is mounted in the app, in Dashboard, with the userId key and the hook\'s close', () => {
         expect(count(dash, /<FirewallOverlay\b/g)).toBe(1);
-        expect(dash).toMatch(/<FirewallOverlay key=\{userId\} userId=\{userId \|\| ''\} placement="shell" onClose=\{firewall\.closeGame\} \/>/);
+        expect(dash).toMatch(/<FirewallOverlay key=\{userId\} userId=\{userId \|\| ''\} placement="shell" onClose=\{firewall\.closeGame\} coverRef=\{contentColumnRef\} \/>/);
         expect(count(home, /<FirewallOverlay\b/g)).toBe(0);
         expect(home).not.toMatch(/gameOpen|setGameOpen/);
     });

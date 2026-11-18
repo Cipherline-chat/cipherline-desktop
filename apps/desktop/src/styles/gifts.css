@@ -1,0 +1,377 @@
+/* ── Gift Pro (components/billing/gifts/*) ─────────────────────────────────
+ *
+ * Three surfaces: the chat card (.gft-card), the Settings section (.gft-sec,
+ * inside BillingTab's .sd-card) and the purchase modal (.gft-modal), plus the
+ * box art they share (.gb, GiftBox.tsx).
+ *
+ * Colour roles: the box is Lume (it is Pro, the app's primary), the ribbon and
+ * crown are Glow (warmth). Flash is never used for the gift itself; only for
+ * errors, as everywhere else.
+ *
+ * Motion: every keyframe animates transform / opacity only. Each moving state
+ * rests on its final pose (fill: both), so with animations removed — reduced
+ * motion, the media query at the bottom — the state is simply shown.
+ */
+
+/* ── Box art ─────────────────────────────────────────────────────────────── */
+.gb { position: relative; flex: none; display: inline-block; line-height: 0; }
+.gb svg { display: block; overflow: visible; }
+.gb svg g, .gb svg rect, .gb svg ellipse { transform-box: view-box; }
+
+.gb-rig { transform-origin: 60px 110px; }
+.gb-lid { transform-origin: 60px 56px; }
+.gb-loop, .gb-knot { transform-origin: 60px 46px; }
+.gb-ribbon-v { transform-origin: 60px 108px; }
+.gb-halo { transform-origin: 60px 44px; opacity: 0; }
+.gb-crown { transform-origin: 60px 58px; opacity: 0; transform: translate(0, 30px) scale(.55); }
+.gb-inside { opacity: 0; }
+.gb-shadow { transform-origin: 60px 111px; }
+.gb-sparks circle { opacity: 0; transform-box: view-box; transform-origin: 60px 42px; }
+.gb-star { opacity: 0; transform-box: fill-box; transform-origin: center; transform: scale(0); }
+
+/* open (and unwrapping, as its resting pose) */
+.gb[data-state="open"] .gb-lid, .gb[data-state="unwrapping"] .gb-lid,
+.gb[data-state="open"] .gb-loop, .gb[data-state="unwrapping"] .gb-loop,
+.gb[data-state="open"] .gb-knot, .gb[data-state="unwrapping"] .gb-knot,
+.gb[data-state="open"] .gb-ribbon-v, .gb[data-state="unwrapping"] .gb-ribbon-v { opacity: 0; }
+.gb[data-state="open"] .gb-inside, .gb[data-state="unwrapping"] .gb-inside { opacity: 1; }
+.gb[data-state="open"] .gb-crown, .gb[data-state="unwrapping"] .gb-crown { opacity: 1; transform: translate(0, -6px); }
+.gb[data-state="open"] .gb-halo, .gb[data-state="unwrapping"] .gb-halo { opacity: .8; }
+
+.gb[data-state="muted"] svg { filter: grayscale(1); opacity: .42; }
+
+/* idle: shine sweep + wiggle + twinkles, alternating ~every 3 s */
+.gb[data-state="idle"] .gb-rig { animation: gb-wiggle 6s ease-in-out 1.2s infinite; }
+.gb[data-state="idle"] .gb-shine { animation: gb-shine 6s cubic-bezier(.45, 0, .3, 1) 4.2s infinite; }
+.gb[data-state="idle"] .gb-star-1 { animation: gb-twinkle 6s ease-in-out .5s infinite; }
+.gb[data-state="idle"] .gb-star-2 { animation: gb-twinkle 6s ease-in-out 2.6s infinite; }
+.gb[data-state="idle"] .gb-star-3 { animation: gb-twinkle 6s ease-in-out 4.6s infinite; }
+@keyframes gb-wiggle {
+  0%, 84%, 100% { transform: rotate(0); }
+  87% { transform: rotate(-5deg); }
+  90% { transform: rotate(4deg); }
+  93% { transform: rotate(-2.5deg); }
+  96% { transform: rotate(1deg); }
+}
+@keyframes gb-shine {
+  0% { transform: skewX(-18deg) translateX(0); }
+  22%, 100% { transform: skewX(-18deg) translateX(165px); }
+}
+@keyframes gb-twinkle {
+  0%, 18%, 100% { transform: scale(0); opacity: 0; }
+  9% { transform: scale(1); opacity: .95; }
+}
+
+/* open: the glow breathes, slowly */
+.gb[data-state="open"] .gb-halo { animation: gb-breathe 5s ease-in-out infinite; }
+@keyframes gb-breathe { 0%, 100% { opacity: .8; transform: scale(1); } 50% { opacity: .6; transform: scale(.94); } }
+
+/* unwrapping (~1.3 s; GiftBox UNWRAP_MS must match the last end: halo 440 + 860 = sparks 800 + 500;
+   GiftBox UNWRAP_END_KEYFRAME = gb-halo-in is the end the card waits for) */
+.gb[data-state="unwrapping"] .gb-rig { animation: gb-squash 380ms ease-out both; }
+.gb[data-state="unwrapping"] .gb-loop-l { animation: gb-loop-fall-l 600ms cubic-bezier(.45, 0, .8, .5) 120ms both; }
+.gb[data-state="unwrapping"] .gb-loop-r { animation: gb-loop-fall-r 600ms cubic-bezier(.45, 0, .8, .5) 140ms both; }
+.gb[data-state="unwrapping"] .gb-knot { animation: gb-knot-fall 520ms cubic-bezier(.45, 0, .8, .5) 160ms both; }
+.gb[data-state="unwrapping"] .gb-lid { animation: gb-lid-off 760ms cubic-bezier(.3, .7, .4, 1) 150ms both; }
+.gb[data-state="unwrapping"] .gb-ribbon-v { animation: gb-rib-drop 420ms ease-in 200ms both; }
+.gb[data-state="unwrapping"] .gb-inside { animation: gb-fade-in 260ms ease-out 280ms both; }
+.gb[data-state="unwrapping"] .gb-halo { animation: gb-halo-in 860ms ease-out 440ms both; }
+.gb[data-state="unwrapping"] .gb-crown { animation: gb-crown-rise 820ms cubic-bezier(.3, 1.4, .5, 1) 460ms both; }
+.gb[data-state="unwrapping"] .gb-sparks circle { animation: gb-spark 500ms ease-out 800ms both; }
+@keyframes gb-squash {
+  0% { transform: scale(1, 1); }
+  40% { transform: scale(1.07, .9); }
+  75% { transform: scale(.98, 1.04); }
+  100% { transform: scale(1, 1); }
+}
+@keyframes gb-loop-fall-l {
+  0% { transform: none; opacity: 1; }
+  25% { transform: translate(-9px, -10px) rotate(-16deg); opacity: 1; }
+  55% { opacity: 1; }
+  100% { transform: translate(-48px, 42px) rotate(-100deg); opacity: 0; }
+}
+@keyframes gb-loop-fall-r {
+  0% { transform: none; opacity: 1; }
+  25% { transform: translate(9px, -10px) rotate(16deg); opacity: 1; }
+  55% { opacity: 1; }
+  100% { transform: translate(48px, 42px) rotate(100deg); opacity: 0; }
+}
+@keyframes gb-knot-fall {
+  0% { transform: none; opacity: 1; }
+  40% { opacity: 1; }
+  100% { transform: translate(4px, 30px) rotate(40deg); opacity: 0; }
+}
+@keyframes gb-lid-off {
+  0% { transform: none; opacity: 1; }
+  28% { transform: translate(0, -26px) rotate(-8deg); opacity: 1; }
+  60% { opacity: 1; }
+  100% { transform: translate(56px, -66px) rotate(34deg); opacity: 0; }
+}
+@keyframes gb-rib-drop {
+  0% { transform: none; opacity: 1; }
+  100% { transform: scale(1, 0); opacity: 0; }
+}
+@keyframes gb-fade-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes gb-halo-in {
+  0% { transform: scale(.2); opacity: 0; }
+  55% { transform: scale(1.15); opacity: 1; }
+  100% { transform: scale(1); opacity: .8; }
+}
+@keyframes gb-crown-rise {
+  0% { transform: translate(0, 30px) scale(.55); opacity: 0; }
+  22% { opacity: 1; }
+  100% { transform: translate(0, -6px) scale(1); opacity: 1; }
+}
+@keyframes gb-spark {
+  0% { transform: translate(0, 0) scale(1); opacity: 0; }
+  12% { opacity: 1; }
+  100% { transform: translate(var(--sx), var(--sy)) scale(.3); opacity: 0; }
+}
+
+/* tying (~1.1 s) — the purchase success */
+.gb[data-state="tying"] .gb-rig { animation: gb-pop-in 440ms cubic-bezier(.34, 1.56, .64, 1) both; }
+.gb[data-state="tying"] .gb-lid { animation: gb-lid-drop 480ms cubic-bezier(.55, 0, .45, 1) 200ms both; }
+.gb[data-state="tying"] .gb-ribbon-v { transform-origin: 60px 62px; animation: gb-rib-draw 280ms ease-out 560ms both; }
+.gb[data-state="tying"] .gb-loop-l { animation: gb-bow-pop-l 460ms cubic-bezier(.34, 1.56, .64, 1) 700ms both; }
+.gb[data-state="tying"] .gb-loop-r { animation: gb-bow-pop-r 460ms cubic-bezier(.34, 1.56, .64, 1) 720ms both; }
+.gb[data-state="tying"] .gb-knot { animation: gb-knot-pop 320ms cubic-bezier(.34, 1.56, .64, 1) 660ms both; }
+.gb[data-state="tying"] .gb-halo { animation: gb-tie-glow 820ms ease-out 660ms both; }
+@keyframes gb-pop-in { 0% { transform: scale(.6); opacity: 0; } 100% { transform: scale(1); opacity: 1; } }
+@keyframes gb-lid-drop {
+  0% { transform: translate(0, -46px) rotate(-10deg); opacity: 0; }
+  35% { opacity: 1; }
+  70% { transform: translate(0, 2px) rotate(1deg); opacity: 1; }
+  85% { transform: translate(0, -3px) rotate(0); }
+  100% { transform: none; opacity: 1; }
+}
+@keyframes gb-rib-draw { from { transform: scale(1, 0); } to { transform: scale(1, 1); } }
+@keyframes gb-bow-pop-l { 0% { transform: scale(0) rotate(-35deg); } 100% { transform: none; } }
+@keyframes gb-bow-pop-r { 0% { transform: scale(0) rotate(35deg); } 100% { transform: none; } }
+@keyframes gb-knot-pop { 0% { transform: scale(0); } 100% { transform: none; } }
+@keyframes gb-tie-glow {
+  0% { transform: translate(0, 30px) scale(.4); opacity: 0; }
+  35% { transform: translate(0, 30px) scale(1.15); opacity: .9; }
+  100% { transform: translate(0, 30px) scale(1.4); opacity: 0; }
+}
+
+/* confetti (tying + burst) — a layer centred on the box */
+.gb-burst { position: absolute; left: 50%; top: 52%; width: 0; height: 0; pointer-events: none; }
+.gb-c {
+  position: absolute; left: 0; top: 0; display: block;
+  opacity: 0;
+  animation: gb-fly 760ms cubic-bezier(.15, .7, .3, 1) calc(640ms + var(--d, 0ms)) both;
+}
+.gb-c--strip { width: 11px; height: 4px; margin: -2px 0 0 -5.5px; border-radius: 2px; background: var(--c); }
+.gb-c--dot { width: 6px; height: 6px; margin: -3px 0 0 -3px; border-radius: 50%; background: var(--c); }
+.gb-c--curl { width: 13px; height: 8px; margin: -4px 0 0 -6.5px; border: 2.5px solid var(--c); border-color: var(--c) transparent transparent transparent; border-radius: 50%; }
+@keyframes gb-fly {
+  0% { transform: translate(0, 0) rotate(0) scale(calc(var(--s, 1) * .4)); opacity: 0; }
+  8% { opacity: 1; }
+  55% { transform: translate(var(--dx), var(--dy)) rotate(calc(var(--rot) * .6)) scale(var(--s, 1)); opacity: 1; }
+  100% { transform: translate(calc(var(--dx) * 1.15), calc(var(--dy) + var(--fall))) rotate(var(--rot)) scale(var(--s, 1)); opacity: 0; }
+}
+
+/* ── Chat card ───────────────────────────────────────────────────────────── */
+.gft-card {
+  position: relative; width: 340px; max-width: 100%;
+  background: var(--cl-surface);
+  border: 1px solid var(--cl-border);
+  border-radius: 16px; overflow: hidden;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, .3);
+  font-family: var(--cl-font-body);
+  transition: border-color .5s ease;
+}
+.gft-card[data-kind="unopened"] { border-color: rgba(255, 201, 77, .38); }
+.gft-card[data-kind="opened"], .gft-card[data-kind="sent_accepted"] { border-color: rgba(37, 224, 200, .38); }
+.gft-stage {
+  position: relative; height: 128px; display: flex; align-items: flex-end; justify-content: center;
+  padding-bottom: 6px;
+  background:
+    radial-gradient(ellipse 60% 70% at 50% 92%, rgba(37, 224, 200, .14), transparent 70%),
+    radial-gradient(circle at 18% 22%, rgba(255, 255, 255, .5) 0 .8px, transparent 1.4px),
+    radial-gradient(circle at 82% 30%, rgba(255, 255, 255, .4) 0 .7px, transparent 1.3px),
+    radial-gradient(circle at 70% 12%, rgba(255, 255, 255, .35) 0 .6px, transparent 1.2px),
+    radial-gradient(circle at 30% 60%, rgba(255, 255, 255, .25) 0 .6px, transparent 1.2px),
+    linear-gradient(180deg, #18224A 0%, #131A30 100%);
+  border-bottom: 1px solid rgba(42, 53, 88, .7);
+}
+.gft-card[data-kind="unopened"] .gft-stage {
+  background:
+    radial-gradient(ellipse 60% 70% at 50% 92%, rgba(255, 201, 77, .14), transparent 70%),
+    radial-gradient(circle at 18% 22%, rgba(255, 255, 255, .5) 0 .8px, transparent 1.4px),
+    radial-gradient(circle at 82% 30%, rgba(255, 255, 255, .4) 0 .7px, transparent 1.3px),
+    radial-gradient(circle at 70% 12%, rgba(255, 255, 255, .35) 0 .6px, transparent 1.2px),
+    radial-gradient(circle at 30% 60%, rgba(255, 255, 255, .25) 0 .6px, transparent 1.2px),
+    linear-gradient(180deg, #1B2350 0%, #131A30 100%);
+}
+.gft-card[data-muted="true"] .gft-stage { background: linear-gradient(180deg, #161D36 0%, #131A30 100%); }
+.gft-body { padding: 11px 15px 14px; }
+.gft-eyebrow {
+  display: flex; align-items: center; gap: 5px;
+  font-size: 10.5px; font-weight: 800; letter-spacing: .07em; text-transform: uppercase;
+  color: var(--cl-glow);
+}
+.gft-card[data-muted="true"] .gft-eyebrow, .gft-card[data-kind="loading"] .gft-eyebrow { color: var(--cl-faint); }
+.gft-card[data-kind="opened"] .gft-eyebrow, .gft-card[data-kind="sent_accepted"] .gft-eyebrow { color: var(--cl-lume); }
+.gft-title {
+  margin-top: 3px;
+  font-family: var(--cl-font-display); font-weight: 600; font-size: 17px; line-height: 1.25;
+  color: var(--cl-text); overflow-wrap: anywhere;
+}
+.gft-card[data-muted="true"] .gft-title { color: var(--cl-muted); font-size: 15px; }
+.gft-detail { margin-top: 2px; font-size: 12.5px; font-weight: 600; line-height: 1.45; color: var(--cl-muted); }
+.gft-actions { margin-top: 12px; }
+.gft-err { margin-top: 8px; display: flex; gap: 6px; align-items: flex-start; font-size: 12.5px; font-weight: 700; color: var(--cl-flash); }
+.gft-link {
+  background: none; border: 0; padding: 0; cursor: pointer;
+  font: inherit; font-weight: 800; color: var(--cl-lume);
+  border-radius: 4px;
+}
+.gft-link:hover { text-decoration: underline; }
+.gft-link:focus-visible, .gft-card:focus-visible { outline: 2px solid var(--cl-lume); outline-offset: 2px; }
+.gft-link:disabled { opacity: .5; cursor: default; text-decoration: none; }
+/* The opened card's text lands after the crown rises. */
+.gft-card[data-reveal="true"] .gft-body > * { animation: gft-rise 420ms cubic-bezier(.3, 1.3, .5, 1) both; }
+.gft-card[data-reveal="true"] .gft-body > :nth-child(2) { animation-delay: 60ms; }
+.gft-card[data-reveal="true"] .gft-body > :nth-child(3) { animation-delay: 120ms; }
+@keyframes gft-rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+.gft-skel { display: flex; flex-direction: column; gap: 8px; }
+
+/* ── Settings section ────────────────────────────────────────────────────── */
+.gft-sec-head { display: flex; align-items: center; gap: 12px; }
+.gft-sec-head .gft-sec-cta { margin-left: auto; flex: none; }
+.gft-until {
+  margin-top: 16px; display: flex; align-items: center; gap: 12px;
+  padding: 10px 14px; border-radius: 14px;
+  background: linear-gradient(90deg, rgba(255, 201, 77, .12), rgba(37, 224, 200, .08));
+  border: 1px solid rgba(255, 201, 77, .3);
+}
+.gft-until b { font-family: var(--cl-font-display); font-weight: 600; font-size: 16px; color: var(--cl-text); }
+.gft-until span { display: block; font-size: 12px; font-weight: 600; color: var(--cl-muted); }
+.gft-list-h {
+  margin: 18px 0 2px; font-size: 10.5px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; color: var(--cl-faint);
+}
+.gft-row-ico {
+  flex: none; width: 34px; height: 34px; border-radius: 10px; display: flex; align-items: center; justify-content: center;
+  background: var(--cl-surface); border: 1px solid var(--cl-border);
+}
+.gft-chip { display: inline-flex; align-items: center; height: 18px; padding: 0 7px; border-radius: 6px; font-size: 9.5px; font-weight: 800; letter-spacing: .8px; text-transform: uppercase; }
+.gft-chip--warm { background: rgba(255, 201, 77, .13); color: var(--cl-glow); }
+.gft-chip--lume { background: rgba(37, 224, 200, .14); color: var(--cl-lume); }
+.gft-chip--muted { background: rgba(94, 107, 143, .18); color: var(--cl-muted); }
+.gft-resend-note { font-size: 11.5px; font-weight: 700; color: var(--cl-muted); }
+.gft-resend-note--ok { color: var(--cl-ok); }
+.gft-resend-note--bad { color: var(--cl-flash); }
+.gft-empty { margin-top: 14px; padding: 16px; border-radius: 14px; border: 1px dashed var(--cl-border); text-align: center; font-size: 12.5px; font-weight: 700; color: var(--cl-faint); }
+
+/* ── Purchase modal ──────────────────────────────────────────────────────── */
+/* Two classes: beats the kit's `@scope (.cl-kit) .mcard` padding/width. */
+.mcard.gft-mcard {
+  position: relative; padding: 0; width: calc(100% - 32px); max-width: 460px;
+  max-height: calc(100vh - 48px); display: flex; flex-direction: column; overflow: hidden;
+}
+.gft-modal { display: flex; flex-direction: column; min-height: 0; flex: 1 1 auto; font-family: var(--cl-font-body); }
+.gft-m-head { display: flex; align-items: center; gap: 14px; padding: 22px 24px 6px; }
+.gft-m-title { font-family: var(--cl-font-display); font-weight: 600; font-size: 21px; line-height: 1.2; color: var(--cl-text); }
+.gft-m-sub { margin-top: 2px; font-size: 12.5px; font-weight: 600; color: var(--cl-muted); line-height: 1.45; }
+.gft-m-body { padding: 10px 24px 16px; overflow-y: auto; min-height: 0; flex: 1 1 auto; }
+.gft-m-foot { padding: 12px 24px 20px; border-top: 1px solid rgba(42, 53, 88, .6); background: var(--cl-deep); }
+.gft-m-label { margin: 12px 0 8px; font-size: 10.5px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; color: var(--cl-faint); }
+.gft-friends {
+  margin-top: 8px; max-height: 212px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px;
+  padding: 4px; border-radius: 14px; background: var(--cl-sink); border: 1px solid var(--cl-border);
+}
+.gft-friend {
+  display: flex; align-items: center; gap: 10px; width: 100%; padding: 7px 10px; border-radius: 10px;
+  background: none; border: 1px solid transparent; cursor: pointer; text-align: left;
+  color: var(--cl-text); font: inherit; font-size: 14px; font-weight: 700;
+  transition: background-color .15s ease, border-color .15s ease;
+}
+.gft-friend:hover { background: rgba(255, 255, 255, .04); }
+.gft-friend:focus-visible { outline: 2px solid var(--cl-lume); outline-offset: -2px; }
+.gft-friend[aria-checked="true"] { background: var(--cl-lume-tint); border-color: rgba(37, 224, 200, .45); }
+.gft-friend .gft-tag { color: var(--cl-faint); font-weight: 700; font-size: 12px; }
+.gft-friend .gft-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gft-av {
+  flex: none; width: 30px; height: 30px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+  font-family: var(--cl-font-display); font-weight: 600; font-size: 14px; color: var(--cl-on-lume);
+}
+.gft-radio {
+  flex: none; width: 18px; height: 18px; border-radius: 50%; border: 2px solid var(--cl-border);
+  display: flex; align-items: center; justify-content: center; transition: border-color .15s ease, background-color .15s ease;
+}
+.gft-friend[aria-checked="true"] .gft-radio { border-color: var(--cl-lume); background: var(--cl-lume); color: var(--cl-on-lume); }
+.gft-friends-empty { padding: 18px 10px; text-align: center; font-size: 12.5px; font-weight: 700; color: var(--cl-faint); }
+.gft-len { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.gft-len[data-count="1"] { grid-template-columns: 1fr; }
+.gft-len-opt {
+  position: relative; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 11px 14px;
+  border-radius: 14px; border: 1.5px solid var(--cl-border); background: var(--cl-surface);
+  cursor: pointer; text-align: left; font: inherit; color: var(--cl-text);
+  transition: border-color .15s ease, background-color .15s ease, transform .2s var(--cl-spring);
+}
+.gft-len-opt:hover { border-color: rgba(37, 224, 200, .4); }
+.gft-len-opt:active { transform: scale(.98); }
+.gft-len-opt:focus-visible { outline: 2px solid var(--cl-lume); outline-offset: 2px; }
+.gft-len-opt[aria-checked="true"] { border-color: var(--cl-lume); background: var(--cl-lume-tint); box-shadow: var(--cl-glow-lume); }
+.gft-len-opt b { font-family: var(--cl-font-display); font-weight: 600; font-size: 16px; }
+.gft-len-opt span { font-size: 12.5px; font-weight: 700; color: var(--cl-muted); }
+.gft-len-opt:disabled { cursor: default; opacity: .6; }
+.gft-fine { margin-top: 10px; font-size: 11.5px; font-weight: 600; line-height: 1.5; color: var(--cl-faint); text-align: center; }
+.gft-secured { margin-top: 6px; display: flex; align-items: center; justify-content: center; gap: 5px; font-size: 11px; font-weight: 700; color: var(--cl-faint); }
+.gft-alert { margin-bottom: 10px; display: flex; gap: 6px; align-items: flex-start; font-size: 13px; font-weight: 700; color: var(--cl-flash); }
+.gft-for {
+  display: flex; align-items: center; gap: 12px; padding: 10px 12px; margin-bottom: 14px;
+  border-radius: 14px; background: var(--cl-surface); border: 1px solid var(--cl-border);
+}
+.gft-for b { display: block; font-size: 14px; font-weight: 800; color: var(--cl-text); }
+.gft-for span { display: block; font-size: 12.5px; font-weight: 600; color: var(--cl-muted); }
+.gft-total { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; padding: 8px 14px; border-radius: 14px; background: var(--cl-surface); }
+.gft-total small { display: block; font-size: 10.5px; font-weight: 800; letter-spacing: .07em; text-transform: uppercase; color: var(--cl-faint); }
+.gft-total span { display: block; font-size: 12px; font-weight: 600; color: var(--cl-muted); }
+.gft-total b { font-family: var(--cl-font-display); font-size: 24px; font-weight: 600; color: var(--cl-text); }
+.gft-meter { height: 6px; border-radius: 99px; overflow: hidden; background: var(--cl-surface); margin-bottom: 12px; }
+.gft-meter i { display: block; height: 100%; width: 92%; border-radius: 99px; transform-origin: left; background: linear-gradient(90deg, var(--cl-lume-deep), var(--cl-lume)); animation: gft-meter 2.4s ease-in-out both; }
+@keyframes gft-meter { 0% { transform: scaleX(.08); } 60% { transform: scaleX(.75); } 100% { transform: scaleX(1); } }
+.gft-done { display: flex; flex-direction: column; align-items: center; text-align: center; padding: 26px 24px 4px; }
+.gft-done-stage { position: relative; width: 100%; height: 170px; display: flex; align-items: flex-end; justify-content: center; }
+.gft-done-stage::before {
+  content: ""; position: absolute; left: 50%; bottom: -30px; width: 300px; height: 180px; transform: translateX(-50%);
+  background: radial-gradient(ellipse 50% 50% at 50% 50%, rgba(37, 224, 200, .16), transparent 100%); pointer-events: none;
+}
+/* The recipient's name is in both lines: a long one wraps instead of running out of the modal. */
+.gft-done h2 { margin: 16px 0 4px; font-family: var(--cl-font-display); font-weight: 600; font-size: 24px; color: var(--cl-text); overflow-wrap: anywhere; }
+.gft-done .gft-done-sub { font-size: 13.5px; font-weight: 600; color: var(--cl-muted); line-height: 1.5; max-width: 340px; overflow-wrap: anywhere; }
+.gft-done[data-play="true"] .gft-done-copy { animation: gft-rise 460ms cubic-bezier(.3, 1.3, .5, 1) 900ms both; }
+.gft-wait { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 8px; padding: 30px 8px 12px; }
+.gft-wait b { font-family: var(--cl-font-display); font-weight: 600; font-size: 19px; color: var(--cl-text); }
+.gft-wait span { font-size: 13px; font-weight: 600; color: var(--cl-muted); line-height: 1.5; max-width: 340px; }
+
+/* ── Reduced motion ──────────────────────────────────────────────────────── */
+.gb[data-motion="still"], .gb[data-motion="still"] * { animation: none !important; }
+@media (prefers-reduced-motion: reduce) {
+  .gb, .gb *, .gft-card[data-reveal="true"] .gft-body > *, .gft-done[data-play="true"] .gft-done-copy, .gft-meter i { animation: none !important; }
+  .gft-meter i { transform: none; }
+  .gft-len-opt, .gft-friend, .gft-card { transition: none; }
+}
+/* Reduced-motion unwrap (GiftBox data-motion="fade", owner 2026-11-18): the box
+   still visibly opens before the Pro welcome, as a cross-fade from the wrapped
+   pose to the open pose. OPACITY ONLY: the open pose's resting transforms (the
+   crown's -6px) are already applied statically by the state rules above, so
+   nothing squashes, falls, rises, rotates or sparks. Out of the blanket rule
+   above by specificity (both !important). GiftBox UNWRAP_FADE_MS = 900 and
+   UNWRAP_FADE_END_KEYFRAME = gb-xfade-in must match. */
+.gb[data-motion="fade"][data-state="unwrapping"] .gb-lid,
+.gb[data-motion="fade"][data-state="unwrapping"] .gb-loop,
+.gb[data-motion="fade"][data-state="unwrapping"] .gb-knot,
+.gb[data-motion="fade"][data-state="unwrapping"] .gb-ribbon-v { animation: gb-xfade-out 900ms ease-in-out both !important; }
+.gb[data-motion="fade"][data-state="unwrapping"] .gb-inside,
+.gb[data-motion="fade"][data-state="unwrapping"] .gb-halo,
+.gb[data-motion="fade"][data-state="unwrapping"] .gb-crown { animation: gb-xfade-in 900ms ease-in-out both !important; }
+.gb[data-motion="fade"][data-state="unwrapping"] .gb-rig,
+.gb[data-motion="fade"][data-state="unwrapping"] .gb-sparks circle,
+.gb[data-motion="fade"][data-state="unwrapping"] .gb-shine,
+.gb[data-motion="fade"][data-state="unwrapping"] .gb-star { animation: none !important; }
+/* `to` is each part's resting opacity in the unwrapping (= open) pose. */
+@keyframes gb-xfade-out { from { opacity: 1; } }
+@keyframes gb-xfade-in { from { opacity: 0; } }

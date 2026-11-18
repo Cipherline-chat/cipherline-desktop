@@ -222,8 +222,7 @@ export const CALL_EVENT_KINDS = [
     // And what a listener gets from ONE remote talker (placeholder `slot`): the wire level
     // they send, the gain the listener's leveler applied and the level heard (useParticipantAudio).
     // Numbers only, never audio.
-    // `gate_level`: the AUTO voice gate's threshold / floor / share held open by its pitch rule for the same window (micLevelLog.ts).
-    'mic_level', 'gate_level', 'rx_level',
+    'mic_level', 'rx_level',
     'load_trigger', 'offer_shown', 'offer_answer',
     // H.265 was latched off by a failure and its retry window (hevcNegotiation.ts HEVC_RETRY_MS) ended.
     'h265_caps', 'h265_switch', 'h265_retry',
@@ -308,6 +307,20 @@ export const CALL_EVENT_KINDS = [
     //   echo_prompt  - the user's answer to the in-call prompt: action = shown|turn_on|dismiss|never.
     //   aec_stats    - Chromium's own echo figures while AEC runs (erl_db, erle_db).
     'output_kind', 'echo_detected', 'echo_prompt', 'aec_stats',
+    // The fixed voice gate closing on the user's own voice (gateCutMeter.js, gateCut.ts, useGateCutPrompt.ts):
+    //   gate_cut        - voiced seconds judged, % of voiced blocks gated, phrase starts and how many clipped, mid-phrase
+    //                     cuts per voiced minute, the voice level and room floor at the gate (dBFS), the threshold and the
+    //                     suggested one (-1 = unknown / none). Numbers only.
+    //   gate_cut_prompt - the user's answer: action = shown|lower|gate_off|dismiss|never (to_db with lower).
+    'gate_cut', 'gate_cut_prompt',
+    // What else the gate let through, with each mic_level window (micLevelLog.ts; GateCutMeter): noise_pct (share of the
+    // window the gate passed audible non-voice sound), bursts_min (threshold crossings no voice followed: key clicks),
+    // room_db (the gate input's quietest block, mean, dBFS). Numbers only.
+    'mic_noise',
+    // voice_settings: the send-side voice settings in force during the call (join, then each settled change) - enums,
+    // booleans, the gate threshold and the mic-volume percent; mic_capture: the raw capture's rate / channels / latency,
+    // the browser processing flags it really got, and a device-kind enum (voiceDiagLog.ts; never a device name or id).
+    'voice_settings', 'mic_capture',
 ] as const;
 export type CallEventKind = (typeof CALL_EVENT_KINDS)[number];
 
@@ -330,11 +343,15 @@ const NOISY: ReadonlySet<string> = new Set(['dynacast_layers', 'quality_limitati
  * with the log (sign-out) and at the next call start - NOT at call end, so a
  * report filed right after leaving still explains the share.
  */
-export const PINNED_KINDS: ReadonlySet<string> = new Set([
-    'share_start', 'share_codec', 'share_clamp', 'share_display', 'share_crop', 'share_rx_start',
-]);
-/** Kinds the report keeps through size trimming (pins + the report-time snapshots). */
-export const SHARE_CONTEXT_KINDS: ReadonlySet<string> = new Set([...PINNED_KINDS, 'share_rx_snap', 'share_tx_snap']);
+const SHARE_PINNED_KINDS = ['share_start', 'share_codec', 'share_clamp', 'share_display', 'share_crop', 'share_rx_start'] as const;
+/** The call's voice settings and capture format (voiceDiagLog.ts): a long call would rotate the join-time entries out, and
+ *  they are what makes every later mic_level window readable. Pinned and kept through size trimming like the share context. */
+export const VOICE_CONTEXT_KINDS: ReadonlySet<string> = new Set(['voice_settings', 'mic_capture']);
+export const PINNED_KINDS: ReadonlySet<string> = new Set([...SHARE_PINNED_KINDS, ...VOICE_CONTEXT_KINDS]);
+/** The share's context the report keeps through size trimming (share pins + the report-time snapshots). */
+export const SHARE_CONTEXT_KINDS: ReadonlySet<string> = new Set([...SHARE_PINNED_KINDS, 'share_rx_snap', 'share_tx_snap']);
+/** Everything the report keeps through size trimming: the share context and the voice context. */
+export const REPORT_CONTEXT_KINDS: ReadonlySet<string> = new Set([...SHARE_CONTEXT_KINDS, ...VOICE_CONTEXT_KINDS]);
 export const PIN_PER_GROUP = 3;
 export const PIN_MAX = 40;
 

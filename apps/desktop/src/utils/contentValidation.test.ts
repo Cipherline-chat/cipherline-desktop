@@ -40,6 +40,8 @@ const FIXTURES: Record<string, Record<string, unknown>> = {
     'text (empty)': { client_msg_id: UUID, type: 'text', text: '' },
     'text (at receive cap)': { client_msg_id: UUID, type: 'text', text: 'x'.repeat(MAX_RECEIVED_TEXT_LENGTH) },
     'server_invite': { client_msg_id: UUID, type: 'server_invite', code: 'aB3dE5fG' },
+    // desktop Dashboard sendGiftCardToFriend (gift id ONLY)
+    'pro_gift': { client_msg_id: UUID, type: 'pro_gift', gift_id: UUID2 },
     // desktop ChatPane attachment send
     'attachment (desktop)': {
         client_msg_id: UUID, type: 'attachment', attachment_id: UUID2, filename: 'report.pdf', byte_size: 1048576,
@@ -336,5 +338,16 @@ describe('reaction emoji cannot be an Object.prototype name', () => {
         // and the thread with nothing to fix keeps its identity
         const clean = { t: [{ ...row, reactions: { '👍': ['u3'] } }] as unknown[] };
         expect(sanitizeStoredThreads(clean)).toBe(clean);
+    });
+});
+
+describe('pro_gift (gift card) boundary', () => {
+    it('accepts a gift id, ignores transport extras, refuses anything that is not a uuid', () => {
+        expect(contentProblem({ type: 'pro_gift', gift_id: UUID2 })).toBeNull();
+        expect(contentProblem({ type: 'pro_gift', gift_id: UUID2, _fk: { v: 1 } })).toBeNull();
+        expect(contentProblem({ type: 'pro_gift', gift_id: '../../billing/gifts' })).not.toBeNull();
+        expect(contentProblem({ type: 'pro_gift', gift_id: 42 })).not.toBeNull();
+        expect(contentProblem({ type: 'pro_gift' })).not.toBeNull();
+        expect(storedContentProblem({ type: 'pro_gift', gift_id: 7 })).not.toBeNull();
     });
 });

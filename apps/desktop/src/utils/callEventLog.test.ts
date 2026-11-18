@@ -170,10 +170,16 @@ const ALLOWED_KEYS = new Set([
     'speech_db', 'gain_db',
     // output_kind / echo_detected / echo_prompt / aec_stats: enums, a correlation, a delay, seconds, dB figures.
     'via', 'corr', 'delay_ms', 'aec_on', 'speech_s', 'action', 'erl_db', 'erle_db',
+    // gate_cut / gate_cut_prompt (useGateCutPrompt.ts): voiced seconds, shares, phrase-start counts, dBFS levels and
+    // thresholds; the prompt's action enum and the threshold a "Lower" wrote.
+    'voiced_s', 'gated_pct', 'starts', 'starts_clipped', 'cuts_per_min', 'thr_db', 'floor_db', 'suggest_db', 'to_db',
     // mic_level / rx_level (micLevelLog.ts, useParticipantAudio): dBFS levels, percentages and a
-    // clipped-sample count - never audio. (`slot` above is the remote-av-N placeholder.)
-    'raw_db', 'ns_db', 'out_db', 'peak_db', 'clip', 'lim_pct', 'talk_pct', 'gate_pct', 'mic_gain_db', 'wire_db', 'rx_gain_db', 'heard_db', 'src_pct', 'fresh_pct', 'vf_fps', 'pres_fps', 'gap_p95_ms', 'gap_max_ms', 'late_pct',
+    // clipped-sample count - never audio; lvl_src = rtp|stats, where the level came from (rxStatsLevel.ts). (`slot` above is the remote-av-N placeholder.)
+    'raw_db', 'ns_db', 'out_db', 'peak_db', 'clip', 'lim_pct', 'talk_pct', 'gate_pct', 'mic_gain_db', 'wire_db', 'rx_gain_db', 'heard_db', 'src_pct', 'fresh_pct', 'lvl_src', 'vf_fps', 'pres_fps', 'gap_p95_ms', 'gap_max_ms', 'late_pct',
     'after_s',
+    // voice_settings / mic_capture (voiceDiagLog.ts): setting enums and booleans, the gate threshold, the mic-volume
+    // percent; the capture's channel count, latency, a device-kind enum and the browser flags it applied (on|off|na).
+    'gate', 'agc', 'ec_auto', 'mic_pct', 'eq', 'ptt', 'channels', 'lat_ms', 'bus', 'os_ec', 'os_agc', 'os_ns',
     // camera_stop / camera_track / share_end / share_start retry (mediaSelfStop.ts, LocalMediaStopGuard): reason enum
     // (`reason`, above), the capture track's readyState enum, ms since a track `ended`, a state enum, a retry count, a boolean.
     'ready', 'ended_ms', 'state', 'n', 'camera', 'kept_old',

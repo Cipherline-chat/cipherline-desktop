@@ -2,6 +2,7 @@ import { CipherlineVoiceProcessor, type VoiceProcessorCallbacks, RNNOISE_SAMPLE_
 import type { VoiceSettings } from '../hooks/useVoiceSettings';
 import { registerCtxForUnlock } from './audioUnlock';
 import { voiceChainNeedsProcessor } from './voiceChain';
+import { VoiceSettingsLogger } from './voiceDiagLog';
 
 /**
  * Call-lifetime singleton owning the CipherlineVoiceProcessor.
@@ -72,7 +73,8 @@ const stableCallbacks: VoiceProcessorCallbacks = {
     onAgcStats: (stats) => latestCallbacks.onAgcStats?.(stats),
     onMicLevelStats: (stats) => latestCallbacks.onMicLevelStats?.(stats),
     onNsUnavailable: () => latestCallbacks.onNsUnavailable?.(),
-    onNoiseFloor: (db) => latestCallbacks.onNoiseFloor?.(db),
+    onNoiseFloor: (db, passed) => latestCallbacks.onNoiseFloor?.(db, passed),
+    onGateCut: (sec) => latestCallbacks.onGateCut?.(sec),
     onNsLoadFallback: (info) => latestCallbacks.onNsLoadFallback?.(info),
     onAudioRender: (w) => latestCallbacks.onAudioRender?.(w),
 };
@@ -130,6 +132,7 @@ export function updateCallbacks(callbacks: VoiceProcessorCallbacks): void {
  */
 export function updateSettings(settings: VoiceSettings): void {
     latestSettings = { ...settings };
+    voiceSettingsLog.change(settings);
     current?.processor.updateSettings(settings);
     if (bound) scheduleReconcile();
 }
@@ -163,6 +166,8 @@ interface BoundTrack {
 
 let bound: BoundTrack | null = null;
 let latestSettings: VoiceSettings | null = null;
+/** `voice_settings` call events: the settings in force when the mic is bound, then each settled change (voiceDiagLog.ts). */
+const voiceSettingsLog = new VoiceSettingsLogger();
 let reconcileChain: Promise<void> = Promise.resolve();
 let reconcileQueued = false;
 
@@ -180,6 +185,7 @@ export function bindMicTrack(
 ): Promise<void> {
     latestSettings = { ...settings };
     bound = { callId, track, run };
+    voiceSettingsLog.join(settings);
     return scheduleReconcile();
 }
 
@@ -239,7 +245,7 @@ async function reconcile(): Promise<void> {
 /** Tear down the processor for this call. Safe to call even if it's already
  *  gone, or if `callId` doesn't match the currently-held one (no-op). */
 export async function destroyForCall(callId: string): Promise<void> {
-    if (bound?.callId === callId) bound = null;
+    if (bound?.callId === callId) { bound = null; voiceSettingsLog.reset(); }
     if (!current || current.callId !== callId) return;
     const toDestroy = current.processor;
     current = null;

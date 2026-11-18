@@ -2,7 +2,7 @@
 # VAEntrypointEncSlice, not just EncSliceLP), for the hardware-encode run.  LAB_IMAGE=cle2e-arch run.sh desktop=sway vaapi
 # Package set adapted from harness/linux-share-matrix/docker/arch.Dockerfile (branch claude/linux-share-matrix) plus the lab's tools.
 # pacman aborts a whole transaction on one unknown name, so packages go in one at a time and a miss is only logged.
-FROM archlinux:latest
+FROM archlinux:latest@sha256:d4594bb2300cba11f41c2f27923eb56f63d9988909c402f9c95517d1e362c899
 RUN printf '#!/bin/sh\nfor p in "$@"; do if out=$(pacman -Sy --noconfirm --needed "$p" 2>&1); then echo "pac ok   $p"; else echo "pac MISS $p :: $(echo "$out" | tail -2 | tr "\\n" " ")"; fi; done\n' > /usr/local/bin/pac && chmod +x /usr/local/bin/pac
 RUN pacman -Syu --noconfirm >/dev/null 2>&1; \
     pac dbus procps-ng psmisc coreutils util-linux xz curl python libsndfile iproute2 socat \

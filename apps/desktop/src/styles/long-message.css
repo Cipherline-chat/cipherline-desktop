@@ -16,8 +16,15 @@
    ~700-character slice (utils/longMessage), so the clip only has to tame a
    preview made of many short lines. mask-image rather than a gradient overlay:
    it works over any row background (hover tint, mention highlight). */
+/* The clip has to cut the BOTTOM only. An inline emoji on the first line draws
+   up to ~0.4em above its line (styles/formatting.css .cl-msg-body), so the box
+   starts --lm-ink above the text (padding) and is pulled up by the same amount
+   (negative margin): the text, the visible height (11.5em of text) and the fade
+   stay exactly where they were, and the clip / mask edge sits above the ink. */
 .lm-text--clipped{
-  max-height:11.5em;overflow:hidden;
+  --lm-ink:.5em;
+  max-height:calc(11.5em + var(--lm-ink));overflow:hidden;
+  padding-top:var(--lm-ink);margin-top:calc(-1 * var(--lm-ink));
   -webkit-mask-image:linear-gradient(to bottom,#000 calc(100% - 3.4em),transparent);
           mask-image:linear-gradient(to bottom,#000 calc(100% - 3.4em),transparent);
 }

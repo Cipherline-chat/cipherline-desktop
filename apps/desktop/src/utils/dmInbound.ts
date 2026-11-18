@@ -39,6 +39,7 @@ import { secureLocalStore } from './secureLocalStore';
 import { serverOrderIndex } from './messageOrder';
 import { frankingFieldsAfterEdit, withoutFranking } from './franking';
 import { withEditFont } from './formatting/messageFont';
+import { withEditCardStyle } from '@cipherline/shared';
 
 export type ThreadMap = messageStore.ThreadMap;
 /** One stored DM row (the shape the thread arrays hold). */
@@ -237,7 +238,7 @@ export function applyIncomingDmMessages(threads: ThreadMap, incoming: ThreadMap)
                     // never the original's (utils/franking.ts frankingFieldsAfterEdit).
                     currentThread[i] = {
                         ...withoutFranking(currentThread[i]),
-                        content: withEditFont({ ...currentThread[i].content, text: m.content.text }, m.content.font, m.content.size),
+                        content: withEditCardStyle(withEditFont({ ...currentThread[i].content, text: m.content.text }, m.content.font, m.content.size), m.content),
                         edited: true,
                         ...frankingFieldsAfterEdit(m),
                     };

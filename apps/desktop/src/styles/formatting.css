@@ -47,6 +47,16 @@
 [data-msg-font="marker"] .cl-fmt-b,[data-msg-font="typewriter"] .cl-fmt-b{-webkit-text-stroke:.35px currentColor;font-weight:400}
 
 
+/* The chat row's message body (ChatPane; utils/formatting/messageSize.ts
+   MESSAGE_BODY_CLASS). Clips SIDEWAYS only. An inline emoji is 1.25em in a
+   line sized for 1em text (line-height: normal), so its glyph draws ~0.2em
+   above the line box (more with Windows' Segoe UI Emoji); the old
+   `overflow: hidden` cut the top off every emoji on a message's first line.
+   `overflow-y: visible` never changes layout, so line spacing is exactly as
+   before; `flow-root` keeps the block formatting context `hidden` gave (child
+   margins stay inside, as before); `overflow-x: clip` keeps the sideways clip. */
+.cl-msg-body{display:flow-root;overflow-x:clip;overflow-y:visible}
+
 .cl-fmt{display:block;min-width:0}
 .cl-fmt-p{min-width:0}
 
@@ -243,3 +253,33 @@ ol.cl-fmt-list{list-style:decimal outside}
   .fmt-bar,.fmt-menu,.fmt-paste{animation:none}
   .fmt-toggle-chev,.fmt-btn{transition:none}
 }
+
+/* ── "Style this message" (FormatToolbar `card`; utils/cardStyle/composerCardStyle.ts) ── */
+.fmt-card-swatch{display:inline-flex;align-items:center;justify-content:center;width:22px;height:16px;flex:none}
+.fmt-card-swatch .cl-msg-card--swatch{width:20px;height:14px}
+.fmt-btn-card{gap:6px}
+.fmt-btn-card[data-card-active]{color:var(--cl-text)}
+/* This message is styled: a quiet chip beside Aa while the bar is closed. */
+.cmp-card-chip{min-width:0;flex-shrink:1;
+  display:inline-flex;align-items:center;height:26px;margin:0 2px;flex:0 1 auto;
+  border-radius:9px;border:1px solid rgba(37,224,200,.22);background:rgba(37,224,200,.06);overflow:hidden;
+}
+.cmp-card-chip-open,.cmp-card-chip-x{
+  display:inline-flex;align-items:center;gap:6px;height:100%;border:0;background:none;cursor:pointer;
+  color:var(--cl-muted);font-family:var(--cl-font-body);font-size:11.5px;font-weight:700;
+  transition:color .12s ease,background-color .12s ease;
+}
+.cmp-card-chip-open{padding:0 6px 0 5px;border-radius:9px 0 0 9px;min-width:0;overflow:hidden}
+.cmp-card-chip-x{flex:none}
+.cmp-card-chip-x{padding:0 6px;border-radius:0 9px 9px 0}
+.cmp-card-chip-open:hover,.cmp-card-chip-x:hover{color:var(--cl-text);background:rgba(37,224,200,.12)}
+.cmp-card-chip-open:focus-visible,.cmp-card-chip-x:focus-visible{outline:2px solid var(--cl-lume);outline-offset:-2px}
+.cmp-card-chip-label{max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* A card preview is on (ChatPane / ComposerCardSurface, data-card-preview):
+   the card takes the whole first line, like a message in the feed, and the
+   controls (attach, Aa, the style chip | emoji, GIF, send) share the line
+   under it. The left controls are rendered AFTER the box in this mode, so
+   DOM order = visual order = tab order (no CSS `order`). */
+.cl-composer[data-card-preview]{flex-wrap:wrap;row-gap:6px}
+.cl-composer[data-card-preview] > .cl-composer-card-frame{flex:1 1 100%}
+.cmp-preview-controls{display:flex;align-items:center;gap:4px;flex:1 1 auto;min-width:0}

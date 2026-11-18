@@ -80,6 +80,17 @@ describe('backupRegistry — classification', () => {
         expect(collectIncludedKv(store, UID)).toEqual({});
     });
 
+    it('member-list collapse keys are classified (written through a generic hook the source scan cannot see)', () => {
+        // hooks/useCollapsedGroups.ts writes `secureLocalStore.setItem(key, …)`
+        // with a key built by utils/memberGroupCollapse.ts, so the literal-head
+        // scan below never sees these. Asserted by hand instead.
+        expect(classifyKvKey(`cipherline_member_groups_collapsed_${UID}_srv-1`, UID)).toBe('include');
+        // legacy key of the removed hide-member-list switch: classified, never carried
+        expect(classifyKvKey(`cipherline_member_list_hidden_${UID}`, UID)).toBe('exclude');
+        // control: another account's key is not ours to carry
+        expect(classifyKvKey('cipherline_member_list_hidden_other-user', UID)).toBe('unknown');
+    });
+
     it('a new field inside the notification prefs blob rides along in the backup', () => {
         // Notification prefs are one JSON object under one key, so `sound_groups`
         // — the collapsed "App sounds" enable + volume — is backed up by the

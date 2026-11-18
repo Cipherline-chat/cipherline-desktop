@@ -1,5 +1,5 @@
 # Linux share matrix: Ubuntu 22.04 (jammy). See ubuntu-24.04.Dockerfile for the layout.
-FROM ubuntu:22.04
+FROM ubuntu:22.04@sha256:9abcaffc92a5279fff3a6a41635c0800ea33e528425fb389658806476e7defde
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update -qq && apt-get install -y --no-install-recommends \
       ca-certificates dbus dbus-user-session dbus-x11 procps psmisc libsndfile1 python3 coreutils util-linux xz-utils curl \

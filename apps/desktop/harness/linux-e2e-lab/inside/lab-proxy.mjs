@@ -39,10 +39,13 @@ proxy.listen(13005, '127.0.0.1', () => console.log('lab proxy on 127.0.0.1:13005
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.svg': 'image/svg+xml',
   '.png': 'image/png', '.jpg': 'image/jpeg', '.woff2': 'font/woff2', '.woff': 'font/woff', '.wasm': 'application/wasm', '.mp3': 'audio/mpeg', '.ogg': 'audio/ogg', '.wav': 'audio/wav', '.ico': 'image/x-icon' };
 if (dist) {
+  const root = path.resolve(dist);
   http.createServer((req, res) => {
-    let p = decodeURIComponent(req.url.split('?')[0]);
-    let f = path.join(dist, path.normalize(p));
-    if (!f.startsWith(dist)) { res.writeHead(403); return res.end(); }
+    let p;
+    try { p = decodeURIComponent(req.url.split('?')[0]); } catch { res.writeHead(400); return res.end(); }
+    // Resolve, then confine to the dist root (a bare startsWith(dist) also admitted a sibling like "<dist>-other").
+    let f = path.resolve(root, '.' + path.posix.normalize('/' + p));
+    if (f !== root && !f.startsWith(root + path.sep)) { res.writeHead(403); return res.end(); }
     if (!fs.existsSync(f) || fs.statSync(f).isDirectory()) f = path.join(dist, 'index.html');
     res.writeHead(200, { 'content-type': MIME[path.extname(f)] || 'application/octet-stream', 'cache-control': 'no-store' });
     fs.createReadStream(f).pipe(res);

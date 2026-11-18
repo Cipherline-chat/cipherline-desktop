@@ -5,7 +5,7 @@
 #   mutter (GNOME)   - mutter --headless --virtual-monitor   (no layer-shell: XWayland experiment)
 # plus a C toolchain, wayland-scanner (only to cross-check the hand-written protocol tables), and
 # the X11 libs for the XWayland override-redirect experiment.
-FROM debian:trixie
+FROM debian:trixie@sha256:9c6e381421d0f48d1b8133e573f33c185ee16cbf505eda9c4a8a4791b25ea8a6
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update -qq \
  && apt-get install -y --no-install-recommends \

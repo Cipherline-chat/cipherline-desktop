@@ -2,6 +2,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -156,5 +158,21 @@ describe('ProWelcome — the celebration layer', () => {
         act(() => { cta().click(); });
         act(() => { vi.advanceTimersByTime(PRO_WELCOME_EXIT_REDUCED_MS); });
         expect(onClose).toHaveBeenCalledTimes(1);
+    });
+});
+
+/** Reduced motion: the welcome may only FADE in (owner 2026-11-18, the gift flow). */
+describe('pro-celebration.css reduced motion', () => {
+    const pcss = readFileSync(join(__dirname, '../styles/pro-celebration.css'), 'utf8');
+    it('stills every part and fades the layer with opacity only', () => {
+        const at = pcss.indexOf('@media (prefers-reduced-motion: reduce)');
+        expect(at).toBeGreaterThanOrEqual(0);
+        const block = pcss.slice(at, pcss.indexOf('\n}', at));
+        expect(block).toMatch(/\.pcel \*, \.pcel \*::before, \.pcel \*::after \{ animation: none !important; transition: none !important; \}/);
+        const m = block.match(/\.pcel \{ animation: ([\w-]+) /);
+        expect(m?.[1]).toBe('pcel-fade');
+        const kf = pcss.match(/@keyframes pcel-fade \{[^}]*\}/)?.[0] ?? '';
+        expect(kf).toMatch(/opacity/);
+        expect(kf).not.toMatch(/transform|translate|scale|rotate/);
     });
 });

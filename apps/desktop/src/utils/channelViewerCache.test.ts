@@ -406,7 +406,8 @@ describe('wiring (source)', () => {
         expect(panel).toMatch(/const listLoading = loading \|\| memberFilter\.kind === 'loading';/);
         expect(panel).toMatch(/\{listLoading \? \(/);
         expect(panel).toMatch(/for \(const m of listMembers\) \{/);
-        expect(panel).toMatch(/useIncrementalRows\(server\.server_id, listMembers\.length\)/);
+        // The row budget sizes the (filtered) groups built from listMembers; collapsed groups count 0.
+        expect(panel).toMatch(/useIncrementalRows\(server\.server_id, expandedRowTotal\(sectionCounts, sectionCollapsed\)\)/);
         // Name colours / nicknames / avatars still come from the FULL roster.
         expect(panel).toMatch(/for \(const m of members\) \{\n\s*map\[m\.user_id\] = getHighestRoleColor/);
         expect(panel).toMatch(/const memberMap = new Map\(members\.map/);

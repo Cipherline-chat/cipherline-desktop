@@ -43,14 +43,20 @@ describe('wiring (source)', () => {
         const panel = read('components/server/ServerContextPanel.tsx');
         // `listMembers` = the list actually shown (filtered to the open channel's
         // viewers, see channelViewerCache) — the budget sizes THAT, not the roster.
-        expect(panel).toMatch(/useIncrementalRows\(server\.server_id, listMembers\.length\)/);
-        expect(panel).toMatch(/\.slice\(0, rowAlloc\[gi\]\)/);
-        expect(panel).toMatch(/onlineNoRole\.slice\(0, onlineAlloc\)/);
-        expect(panel).toMatch(/allOffline\.slice\(0, offlineAlloc\)/);
+        // Collapsible groups (utils/memberGroupCollapse): the budget sizes the
+        // rows of EXPANDED groups only — the sections are built from listMembers.
+        expect(panel).toMatch(/for \(const m of listMembers\)/);
+        expect(panel).toMatch(/sectionCounts = \[\.\.\.roleGroups\.map\(g => g\.members\.length\), onlineNoRole\.length, allOffline\.length\]/);
+        expect(panel).toMatch(/useIncrementalRows\(server\.server_id, expandedRowTotal\(sectionCounts, sectionCollapsed\)\)/);
+        expect(panel).toMatch(/planSections\(sectionCounts, sectionCollapsed, rowBudget\)/);
+        expect(panel).toMatch(/\.slice\(0, sectionPlan\[gi\]\.rows\)/);
+        expect(panel).toMatch(/onlineNoRole\.slice\(0, onlinePlan\.rows\)/);
+        expect(panel).toMatch(/allOffline\.slice\(0, offlinePlan\.rows\)/);
         expect(panel).toMatch(/ref=\{rowSentinelRef\}/);
-        // The section headers still count the FULL list.
-        expect(panel).toMatch(/Offline — \{allOffline\.length\}/);
-        expect(panel).toMatch(/Online — \{onlineNoRole\.length\}/);
+        // The section headers still count the FULL group (also while collapsed).
+        expect(panel).toMatch(/label="Offline"\s+count=\{allOffline\.length\}/);
+        expect(panel).toMatch(/label="Online"\s+count=\{onlineNoRole\.length\}/);
+        expect(panel).toMatch(/label=\{role\.name\}\s+count=\{gMembers\.length\}/);
     });
 
     it('the observer is re-created after each batch (an observer only reports changes) and is rooted at the scroll parent', () => {

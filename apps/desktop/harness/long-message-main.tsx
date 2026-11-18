@@ -9,6 +9,7 @@ import '../src/styles/cl-kit-ext.css';
 import React, { useState } from 'react';
 import { renderTextWithMentions } from '../src/components/ChatPane';
 import { LongMessageBody } from '../src/components/LongMessage';
+import { MESSAGE_BODY_CLASS } from '../src/utils/formatting/messageSize';
 import { isLongMessage, longMessageExpansion } from '../src/utils/longMessage';
 
 /**
@@ -81,7 +82,7 @@ const RowView = ({ r }: { r: Row }) => {
                         <span className="text-[11px] text-cl-faint leading-tight">{r.time}</span>
                     </div>
                 )}
-                <div className="text-white/90 break-words whitespace-pre-wrap overflow-hidden" style={{ fontSize: '15px', lineHeight: 'normal', wordBreak: 'break-word' }}>
+                <div className={MESSAGE_BODY_CLASS} style={{ fontSize: '15px', lineHeight: 'normal', wordBreak: 'break-word' }}>
                     {long
                         ? <LongMessageBody id={r.id} text={r.text} renderText={renderBody} renderDeps={[]} senderName={r.name ?? 'Mira'} timestamp={r.time ?? ''} />
                         : renderBody(r.text)}

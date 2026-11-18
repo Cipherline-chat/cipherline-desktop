@@ -59,6 +59,10 @@ import { HuddleButton } from './HuddleButton';
 import { HuddleCallCard } from './HuddleCallCard';
 import { ChannelMessageSearch, type SearchableMessage } from './ChannelMessageSearch';
 import { CategoryFormDialog } from './CategoryFormDialog';
+import { CategoryDeleteDialog } from './CategoryDeleteDialog';
+import { categoryDeleteConfirm, categoryContents, expectedCounts, type CategoryContents } from './categoryDelete';
+import { CategoryHeading } from './CategoryHeading';
+import { categoryDividerLook, CATEGORY_HEADER_ACTIONS_CLASS } from './categoryHeadingStyle';
 import { ChannelSettingsDialog, type ChannelOptimism } from './ChannelSettingsDialog';
 import { ConfirmDialog, type ConfirmOptions } from '../primitives/ConfirmDialog';
 import { RenameCallDialog, NicknameDialog } from './ServerTextPromptDialogs';
@@ -102,7 +106,13 @@ import { rolesMenuItem } from './roles/rolesMenuItem';
 import { useChannelMemberFilter } from '../../hooks/useChannelMemberFilter';
 import { filterMembers } from '../../utils/channelViewerCache';
 import { useIncrementalRows } from '../../hooks/useIncrementalRows';
-import { allocateRows, ROW_PX_ESTIMATE } from '../../utils/incrementalRows';
+import { ROW_PX_ESTIMATE } from '../../utils/incrementalRows';
+import { useCollapsedGroups } from '../../hooks/useCollapsedGroups';
+import {
+    memberGroupsCollapsedKey, validMemberGroupIds, planSections, expandedRowTotal,
+    roleGroupId, ONLINE_GROUP_ID, OFFLINE_GROUP_ID,
+} from '../../utils/memberGroupCollapse';
+import { MemberGroupSection } from './MemberGroupSection';
 import { canStartCallsIn, isJoinOnlyIn } from '../../utils/startCallsGate';
 import { endsWhenNotice } from '../../utils/endCallOnLeave';
 import { requestMoment } from '../../utils/moments';
@@ -588,6 +598,8 @@ export const ServerContextPanel: React.FC<Props> = ({
     const [huddleSettings, setHuddleSettings] = useState<ChannelInfo | null>(null);
     /** Pending destructive action awaiting styled confirmation. */
     const [pendingConfirm, setPendingConfirm] = useState<ConfirmOptions | null>(null);
+    /** The two-choice Calls-category delete (CategoryDeleteDialog). */
+    const [categoryDelete, setCategoryDelete] = useState<{ cat: CategoryInfo; contents: CategoryContents } | null>(null);
     /** Kick / ban awaiting confirmation (its own dialog — it names the server and explains the consequence). */
     const [memberAction, setMemberAction] = useState<{
         kind: MemberActionKind; userId: string; displayName: string; avatarUrl: string | null; onConfirm: () => void;
@@ -1592,17 +1604,33 @@ export const ServerContextPanel: React.FC<Props> = ({
 
     const { roleGroups, onlineNoRole, allOffline } = memberGroups;
 
+    // ── Collapsible groups ──────────────────────────────────────────────────
+    // Per account, per server, per group (role groups keyed by role_id, so a
+    // rename keeps the state). Ids of roles that were deleted or stopped being
+    // hoisted are pruned once the roster has loaded (`roster` null = unknown,
+    // so nothing is pruned against the empty placeholder role list).
+    const validGroupIds = useMemo(
+        () => (roster ? validMemberGroupIds(serverRoles) : null),
+        [roster, serverRoles],
+    );
+    const groupCollapse = useCollapsedGroups(
+        userId ? memberGroupsCollapsedKey(userId, server.server_id) : null,
+        userId,
+        validGroupIds,
+    );
+    const sectionIds = [...roleGroups.map(g => roleGroupId(g.role.role_id)), ONLINE_GROUP_ID, OFFLINE_GROUP_ID];
+    const sectionCounts = [...roleGroups.map(g => g.members.length), onlineNoRole.length, allOffline.length];
+    const sectionCollapsed = sectionIds.map(id => groupCollapse.collapsed.has(id));
+
     // Only the first batch of rows is mounted; the rest are a spacer that adds
     // the next batch as it nears the viewport (see utils/incrementalRows for the
     // measurements). A server whose roster fits one batch renders as before.
+    // Collapsed groups mount no rows and cost no budget.
     const { budget: rowBudget, hidden: hiddenRows, sentinelRef: rowSentinelRef } =
-        useIncrementalRows(server.server_id, listMembers.length);
-    const rowAlloc = allocateRows(
-        [...roleGroups.map(g => g.members.length), onlineNoRole.length, allOffline.length],
-        rowBudget,
-    );
-    const onlineAlloc = rowAlloc[roleGroups.length];
-    const offlineAlloc = rowAlloc[roleGroups.length + 1];
+        useIncrementalRows(server.server_id, expandedRowTotal(sectionCounts, sectionCollapsed));
+    const sectionPlan = planSections(sectionCounts, sectionCollapsed, rowBudget);
+    const onlinePlan = sectionPlan[roleGroups.length];
+    const offlinePlan = sectionPlan[roleGroups.length + 1];
 
     // ── Member tile ─────────────────────────────────────────────────────────
     // Build the per-member context menu items. Called fresh each open so the
@@ -1938,6 +1966,34 @@ export const ServerContextPanel: React.FC<Props> = ({
         onChannelsChanged?.();
     };
 
+    /** The category AND everything in it - one server transaction, never a
+     *  channel-by-channel loop. A refusal deletes nothing; show its message. */
+    const deleteCategoryWithContentsApi = async (cat: CategoryInfo, contents: CategoryContents) => {
+        if (!token) return;
+        try {
+            await axios.post(
+                apiUrl`/servers/${server.server_id}/categories/${cat.category_id}/delete-with-contents`,
+                expectedCounts(contents),
+                { headers: { Authorization: `Bearer ${token}` } },
+            );
+        } catch (e) {
+            console.error('[ServerContextPanel] delete category with contents:', e);
+            const msg = (e as { response?: { data?: { message?: unknown } } })?.response?.data?.message;
+            toast.push({ kind: 'error', message: typeof msg === 'string' ? msg : `Couldn't delete ‘${cat.name}’.` });
+        }
+        onChannelsChanged?.();
+    };
+
+    /** Open the two-choice delete for a Calls category (menu + edit dialog). */
+    const requestDeleteCategory = (cat: CategoryInfo) => {
+        setCategoryDelete({
+            cat,
+            contents: categoryContents(cat.category_id, {
+                categories: localHuddleCatsRef.current, channels: localHuddlesRef.current, dividers: localDividersRef.current,
+            }),
+        });
+    };
+
     // Build category header context-menu items (only for canManage users).
     const buildCatMenu = (cat: CategoryInfo) => [
         ...(canManage ? [
@@ -1957,16 +2013,11 @@ export const ServerContextPanel: React.FC<Props> = ({
                 onSelect: () => setCategoryDialog({ mode: 'edit', category: cat }),
             },
             {
+                // Two choices (CategoryDeleteDialog). The old confirm here said
+                // every Calls channel inside would be deleted - the plain delete
+                // never did that; it moves them to the top of the Calls panel.
                 icon: <Trash2 />, label: 'Delete Category', danger: true as const,
-                onSelect: () => setPendingConfirm({
-                    title: `Delete "${cat.name}"?`,
-                    message: 'All Calls channels inside will also be deleted. This cannot be undone.',
-                    confirmLabel: 'Delete',
-                    onConfirm: async () => {
-                        try { await deleteCategoryApi(cat); }
-                        catch (e) { console.error('[ServerContextPanel] delete huddle category:', e); }
-                    },
-                }),
+                onSelect: () => requestDeleteCategory(cat),
             },
         ] : []),
     ];
@@ -2481,29 +2532,35 @@ export const ServerContextPanel: React.FC<Props> = ({
                                             <div
                                                 ref={canManage ? setHeaderRef : undefined}
                                                 {...(canManage ? headerDragProps : {})}
-                                                className={`group flex items-center gap-1.5 mb-1.5 px-1 w-full hover:bg-transparent transition-colors ${canManage ? 'cursor-grab active:cursor-grabbing select-none touch-none' : 'cursor-pointer'}`}
+                                                role="button"
+                                                tabIndex={0}
+                                                aria-expanded={!collapsed}
+                                                aria-label={`${cat.name}, ${categoryDividerLook(cat) ? 'divider category' : 'category'}`}
+                                                className={`group flex items-center gap-1.5 mb-1.5 px-1 w-full ${canManage ? 'min-h-[22px]' : ''} rounded outline-none focus-visible:ring-1 focus-visible:ring-cl-lume/60 hover:bg-transparent transition-colors ${canManage ? 'cursor-grab active:cursor-grabbing select-none touch-none' : 'cursor-pointer'}`}
                                                 onClick={() => setCollapsedCats(prev => ({ ...prev, [cat.category_id]: !prev[cat.category_id] }))}
+                                                onKeyDown={(e) => {
+                                                    // Keys on the header's own buttons belong to them.
+                                                    if (e.target !== e.currentTarget) return;
+                                                    if (e.key === 'Enter' || e.key === ' ') {
+                                                        e.preventDefault();
+                                                        setCollapsedCats(prev => ({ ...prev, [cat.category_id]: !prev[cat.category_id] }));
+                                                    }
+                                                }}
                                                 onContextMenu={(e) => {
                                                     e.stopPropagation();
                                                     if (catMenuItems.length > 0) catMenu.open(e, catMenuItems, cat.name);
                                                 }}
                                             >
-                                                {collapsed
-                                                    ? <ChevronRight size={11} className="text-cl-faint group-hover:text-cl-muted transition-colors shrink-0" />
-                                                    : <ChevronDown  size={11} className="text-cl-faint group-hover:text-cl-muted transition-colors shrink-0" />
-                                                }
-                                                {cat.icon_name
-                                                    ? <ChannelIconRenderer name={cat.icon_name} size={15} className="text-white/45 group-hover:text-cl-muted transition-colors shrink-0" />
-                                                    : <Radio size={15} className="text-white/45 group-hover:text-cl-muted transition-colors shrink-0" />
-                                                }
-                                                <span
-                                                    className="truncate flex-1 text-[10px] font-mono font-semibold uppercase text-cl-faint group-hover:text-cl-muted transition-colors"
-                                                    style={{ letterSpacing: '1.1px' }}
-                                                >
-                                                    {cat.name}
-                                                </span>
+                                                {/* Same heading as the text list: the bold top-level
+                                                    label, or the divider of a divider category. */}
+                                                <CategoryHeading
+                                                    category={cat}
+                                                    collapsed={collapsed}
+                                                    iconSize={15}
+                                                    fallbackIcon={<Radio size={15} className="text-cl-muted group-hover:text-cl-text transition-colors shrink-0" />}
+                                                />
                                                 {canManage && (
-                                                    <div className="opacity-0 group-hover:opacity-100 flex items-center gap-0.5 transition-all shrink-0">
+                                                    <div className={`${CATEGORY_HEADER_ACTIONS_CLASS} items-center gap-0.5 shrink-0`}>
                                                         <FlatIconBtn
                                                             title="Add to this category"
                                                             aria-label="Add to this category"
@@ -2880,41 +2937,48 @@ export const ServerContextPanel: React.FC<Props> = ({
                                         group's outer top/bottom corners round (no per-row overflow
                                         wrapper, so the Crown tooltip never gets clipped). Rows sit
                                         flush (no gap) so consecutive rows butt seamlessly. */}
-                                    {roleGroups.map(({ role, members: gMembers }, gi) => rowAlloc[gi] > 0 && (
-                                        <div key={role.role_id}>
-                                            <p className="text-[10px] font-mono font-semibold uppercase tracking-widest text-cl-faint px-1 mb-1.5">
-                                                {role.name} — {gMembers.length}
-                                            </p>
-                                            <div>
-                                                {gMembers.slice(0, rowAlloc[gi]).map((m, i) => renderMemberTile(m, getGroupRowPosition(i, gMembers.length)))}
-                                            </div>
-                                        </div>
+                                    {/* Every group header is a collapse toggle (MemberGroupSection);
+                                        the count stays in the header while collapsed. A group whose
+                                        members all go offline simply has nothing to show — its
+                                        collapsed state is kept for when someone comes back. */}
+                                    {roleGroups.map(({ role, members: gMembers }, gi) => sectionPlan[gi].showHeader && (
+                                        <MemberGroupSection
+                                            key={role.role_id}
+                                            label={role.name}
+                                            count={gMembers.length}
+                                            collapsed={sectionCollapsed[gi]}
+                                            onToggle={() => groupCollapse.toggle(sectionIds[gi])}
+                                        >
+                                            {gMembers.slice(0, sectionPlan[gi].rows).map((m, i) => renderMemberTile(m, getGroupRowPosition(i, gMembers.length)))}
+                                        </MemberGroupSection>
                                     ))}
 
                                     {/* Online members with no hoisted role — flat, no card */}
-                                    {onlineAlloc > 0 && (
-                                        <div>
-                                            <p className="text-[10px] font-mono font-semibold uppercase tracking-widest text-cl-faint px-1 mb-1.5">
-                                                Online — {onlineNoRole.length}
-                                            </p>
-                                            <div className="space-y-0.5">
-                                                {onlineNoRole.slice(0, onlineAlloc).map(m => renderMemberTile(m))}
-                                            </div>
-                                        </div>
+                                    {onlinePlan.showHeader && (
+                                        <MemberGroupSection
+                                            label="Online"
+                                            count={onlineNoRole.length}
+                                            collapsed={sectionCollapsed[roleGroups.length]}
+                                            onToggle={() => groupCollapse.toggle(ONLINE_GROUP_ID)}
+                                            rowsClassName="space-y-0.5"
+                                        >
+                                            {onlineNoRole.slice(0, onlinePlan.rows).map(m => renderMemberTile(m))}
+                                        </MemberGroupSection>
                                     )}
                                 </div>
                             )}
 
                             {/* Offline — flat list, no card regardless of role */}
-                            {offlineAlloc > 0 && (
-                                <div>
-                                    <p className="text-[10px] font-mono font-semibold uppercase tracking-widest text-cl-faint px-1 mb-1.5">
-                                        Offline — {allOffline.length}
-                                    </p>
-                                    <div className="space-y-0.5">
-                                        {allOffline.slice(0, offlineAlloc).map(m => renderMemberTile(m))}
-                                    </div>
-                                </div>
+                            {offlinePlan.showHeader && (
+                                <MemberGroupSection
+                                    label="Offline"
+                                    count={allOffline.length}
+                                    collapsed={sectionCollapsed[roleGroups.length + 1]}
+                                    onToggle={() => groupCollapse.toggle(OFFLINE_GROUP_ID)}
+                                    rowsClassName="space-y-0.5"
+                                >
+                                    {allOffline.slice(0, offlinePlan.rows).map(m => renderMemberTile(m))}
+                                </MemberGroupSection>
                             )}
 
                             {/* Stands in for the rows not mounted yet; entering the viewport
@@ -3001,10 +3065,7 @@ export const ServerContextPanel: React.FC<Props> = ({
                     channels={allChannels}
                     onClose={() => setCategoryDialog(null)}
                     onSaved={() => { setCategoryDialog(null); onChannelsChanged?.(); }}
-                    onDelete={canManage ? async (cat) => {
-                        try { await deleteCategoryApi(cat); }
-                        catch (e) { console.error('[ServerContextPanel] delete category:', e); }
-                    } : undefined}
+                    onDelete={canManage ? (cat) => requestDeleteCategory(cat) : undefined}
                 />
             )}
 
@@ -3036,6 +3097,27 @@ export const ServerContextPanel: React.FC<Props> = ({
             )}
             {/* Styled confirmation dialog — replaces window.confirm() for
                 destructive actions (delete huddle, delete category). */}
+            {categoryDelete && (
+                <CategoryDeleteDialog
+                    name={categoryDelete.cat.name}
+                    isSub={false}
+                    panel="calls"
+                    only={categoryDeleteConfirm({ name: categoryDelete.cat.name, isSub: false, hasSubcategories: false, isPrivate: null, panel: 'calls' })}
+                    contents={categoryDelete.contents}
+                    onCancel={() => setCategoryDelete(null)}
+                    onConfirm={(choice) => {
+                        const { cat, contents } = categoryDelete;
+                        setCategoryDelete(null);
+                        if (choice === 'everything') void deleteCategoryWithContentsApi(cat, contents);
+                        else void deleteCategoryApi(cat).catch(e => {
+                            console.error('[ServerContextPanel] delete huddle category:', e);
+                            const msg = (e as { response?: { data?: { message?: unknown } } })?.response?.data?.message;
+                            toast.push({ kind: 'error', message: typeof msg === 'string' ? msg : `Couldn't delete ‘${cat.name}’.` });
+                        });
+                    }}
+                />
+            )}
+
             {pendingConfirm && (
                 <ConfirmDialog
                     {...pendingConfirm}

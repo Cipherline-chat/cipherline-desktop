@@ -53,6 +53,9 @@ interface BillingStatus extends PlanIntervalStatus {
      *  sets current_period_end to a ~100-year sentinel, so don't render that
      *  as a renewal date when is_comp is true. */
     comp_expires_at?: string | null;
+    /** Gifted Pro (a friend paid for it): when it ends, or null/absent when no
+     *  gifted period is running. Already folded into effective_status. */
+    gift_pro_until?: string | null;
     /** Legacy: the server always sends null (unlimited) since 2026-10-04 —
      *  server creation is open to every plan. Nothing reads it any more. */
     server_limit?: number | null;
@@ -141,6 +144,14 @@ interface SubscriptionContextValue {
      */
     proCelebration: boolean;
     dismissProCelebration: () => void;
+    /**
+     * Play the Pro welcome NOW, for a Pro grant this device just watched happen
+     * that the observed-transition rule cannot see: an accepted GIFT has no
+     * Stripe subscription (`has_subscription` false), so `observeProStatus`
+     * never treats it as a purchase. The gift card calls this exactly once,
+     * after its unwrap animation has finished (owner 2026-11-17).
+     */
+    celebratePro: () => void;
 }
 
 const SubscriptionContext = createContext<SubscriptionContextValue | undefined>(undefined);
@@ -159,6 +170,7 @@ export const SubscriptionProvider: React.FC<{ children: ReactNode }> = ({ childr
     const [upgradePrompt, setUpgradePrompt] = useState<{ reason: UpgradeReason; detail?: string } | null>(null);
     const [proCelebration, setProCelebration] = useState(false);
     const dismissProCelebration = useCallback(() => setProCelebration(false), []);
+    const celebratePro = useCallback(() => setProCelebration(true), []);
 
     const refresh = useCallback(async () => {
         if (!isAuthenticated || !token) {
@@ -400,8 +412,8 @@ export const SubscriptionProvider: React.FC<{ children: ReactNode }> = ({ childr
     const pendingIntervalAt = status?.pending_interval_at ?? null;
 
     const value = useMemo(
-        () => ({ status, statusError, isPaid, isFreeTier, canPublishVideo, maxUploadBytes, planInterval, isYearlyOffered, planPrices, pendingInterval, pendingIntervalAt, previewIntervalChange, changeInterval, refresh, extendTrial, promptUpgrade, openInAppCheckout, setCancellation, fetchPaymentMethod, fetchInvoices, proCelebration, dismissProCelebration }),
-        [status, statusError, isPaid, isFreeTier, canPublishVideo, maxUploadBytes, planInterval, isYearlyOffered, planPrices, pendingInterval, pendingIntervalAt, previewIntervalChange, changeInterval, refresh, extendTrial, promptUpgrade, openInAppCheckout, setCancellation, fetchPaymentMethod, fetchInvoices, proCelebration, dismissProCelebration],
+        () => ({ status, statusError, isPaid, isFreeTier, canPublishVideo, maxUploadBytes, planInterval, isYearlyOffered, planPrices, pendingInterval, pendingIntervalAt, previewIntervalChange, changeInterval, refresh, extendTrial, promptUpgrade, openInAppCheckout, setCancellation, fetchPaymentMethod, fetchInvoices, proCelebration, dismissProCelebration, celebratePro }),
+        [status, statusError, isPaid, isFreeTier, canPublishVideo, maxUploadBytes, planInterval, isYearlyOffered, planPrices, pendingInterval, pendingIntervalAt, previewIntervalChange, changeInterval, refresh, extendTrial, promptUpgrade, openInAppCheckout, setCancellation, fetchPaymentMethod, fetchInvoices, proCelebration, dismissProCelebration, celebratePro],
     );
 
     return (

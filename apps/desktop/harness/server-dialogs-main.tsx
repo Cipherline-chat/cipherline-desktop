@@ -177,8 +177,9 @@ const SCENES: Record<string, () => React.ReactElement> = {
 
 const App = () => {
     const [mounted, setMounted] = useState(true);
-    const scene = SCENES[name];
-    if (!scene) throw new Error(`unknown scene "${name}"`);
+    // `name` comes from the URL: only an own entry of SCENES that is a function may run.
+    const scene = Object.prototype.hasOwnProperty.call(SCENES, name) ? SCENES[name] : undefined;
+    if (typeof scene !== 'function') throw new Error(`unknown scene "${name}"`);
     (window as any).__remount = () => setMounted(false);
     React.useEffect(() => { if (!mounted) setMounted(true); }, [mounted]);
     return <><Backdrop />{mounted && scene()}</>;

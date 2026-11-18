@@ -81,7 +81,7 @@ describe('old client receiving the status-emoji delivery', () => {
     it('is not an unread / notification / preview candidate on an old client', () => {
         const src = readFileSync(join(__dirname, '../../components/Dashboard.tsx'), 'utf8');
         // The pull loop only notifies for these types; profile_update is not one of them.
-        expect(src).toContain("['text', 'attachment', 'server_invite', 'safety_number', 'klipy_gif'].includes(m.content.type)");
+        expect(src).toContain("['text', 'attachment', 'server_invite', 'safety_number', 'klipy_gif', 'pro_gift'].includes(m.content.type)");
         // Retention treats it as a control row, never a visible message.
         const sweeper = readFileSync(join(__dirname, '../retentionSweeper.ts'), 'utf8');
         expect(sweeper).toMatch(/CONTROL_TYPES[\s\S]*'profile_update'/);

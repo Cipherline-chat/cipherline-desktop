@@ -41,8 +41,7 @@ describe('VoiceVideoSettings — the gate meter is the gate', () => {
     it("the threshold slider shows the gate's own detector level and state, not the end-of-chain level", () => {
         expect(src).toMatch(/level=\{gateLevel\.db\}/);
         expect(src).toMatch(/open=\{gateLevel\.open\}/);
-        // The gate also reports its live auto threshold (thr) for the Automatic marker (voice-gate-auto-toggle).
-        expect(src).toMatch(/onGateLevel: \(db, open, thr\) => setGateLevel\(\{ db, open, thr \}\)/);
+        expect(src).toMatch(/onGateLevel: \(db, open\) => setGateLevel\(\{ db, open \}\)/);
         expect(src).toMatch(/\{ gateMeterMs: GATE_METER_REPORT_MS \}/);
     });
 });
@@ -70,7 +69,7 @@ describe('VoiceVideoSettings — the camera preview follows the picked camera', 
     });
 });
 
-describe('VoiceVideoSettings — voice gate: automatic, with a Manual button that drops the slider down (owner, 2026-11-11)', () => {
+describe('VoiceVideoSettings — voice gate: a fixed threshold with its slider always shown (automatic mode removed 2026-11-17)', () => {
     const dir = dirname(fileURLToPath(import.meta.url));
     const vv = readFileSync(join(dir, 'VoiceVideoSettings.tsx'), 'utf8');
     const list = readFileSync(join(dir, 'settings', 'AudioDeviceList.tsx'), 'utf8');
@@ -78,13 +77,15 @@ describe('VoiceVideoSettings — voice gate: automatic, with a Manual button tha
         expect(vv).not.toMatch(/label="Automatic"/);
         expect(list).not.toMatch(/label="Automatic"/);
     });
-    it('the gate row carries a Manual chip that flips voiceGateAuto', () => {
-        expect(vv).toMatch(/active=\{!settings\.voiceGateAuto\}\s*onClick=\{\(\) => voice\.setVoiceGateAuto\(!settings\.voiceGateAuto\)\}[\s\S]{0,200}>\s*Manual\s*<\/ClButton>/);
-        expect(list).toMatch(/onClick=\{\(\) => set\(\{ voiceGateAuto: !s\.voiceGateAuto \}\)\}[\s\S]{0,200}>\s*Manual\s*<\/ClButton>/);
+    it('no Manual chip and no voiceGateAuto anywhere in the gate UI', () => {
+        expect(vv).not.toMatch(/voiceGateAuto/);
+        expect(list).not.toMatch(/voiceGateAuto/);
+        expect(vv).not.toMatch(/>\s*Manual\s*<\/ClButton>/);
+        expect(list).not.toMatch(/>\s*Manual\s*<\/ClButton>/);
     });
-    it('the draggable slider exists only in the drop-down, only when Manual', () => {
-        expect(vv).toMatch(/\{!settings\.voiceGateAuto && \(\s*<div className="vv-gate-drop"[\s\S]{0,80}<GateSlider\s+show="track"/);
+    it('the draggable slider is always shown under the row (no condition)', () => {
+        expect(vv).toMatch(/<\/Row>\s*<div className="vv-gate-drop"[^>]*>\s*<GateSlider\s+show="track"/);
         expect(vv).toMatch(/<GateSlider\s+show="readout"/);
-        expect(list).toMatch(/\{!s\.voiceGateAuto && \(\s*<div className="vv-gate-drop">\s*<ClSlider/);
+        expect(list).toMatch(/<\/VvRow>\s*<div className="vv-gate-drop">\s*<ClSlider/);
     });
 });

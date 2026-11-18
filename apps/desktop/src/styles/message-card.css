@@ -1,0 +1,235 @@
+/* ── Message card style (components/messageCard/MessageCard.tsx) ──────────
+ * The box around a styled message body. Everything a sender controls arrives
+ * as validated inline values (packages/shared/card-style.ts); everything here
+ * is the app's: containment, the stripe and edge chrome, and the only three
+ * keyframes a card can use. Sender data never names a class or keyframes.
+ *
+ * Containment: a card can paint only inside its own box, plus its shadows,
+ * which paint inside an app frame that reserves their reach in the row and
+ * clips there (.cl-msg-card-frame), so they never reach another row. It
+ * can't move (no offsets / transforms / z-index), can't grow past the
+ * message column (max-width + border-box), and sits in the normal flow under
+ * the app-drawn name row.                                                   */
+.cl-msg-card-frame {
+  display: block;
+  min-width: 0;
+  overflow: clip;
+  contain: paint;
+}
+.cl-msg-card {
+  position: relative;          /* anchors the app's own ::before / ::after only */
+  display: block;
+  width: fit-content;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  contain: paint;
+  isolation: isolate;
+  overflow: hidden;
+  /* Long words wrap inside the card rather than widening it. */
+  overflow-wrap: anywhere;
+}
+
+/* The app-drawn edge: every styled card keeps a visible boundary that marks it
+   as user content, even when the sender's border is missing or invisible.
+   An outline (which no card style can set) inside the border box. */
+.cl-msg-card[data-card-edge] {
+  outline: 1px solid rgba(244, 247, 255, 0.10);
+  outline-offset: -1px;
+}
+
+/* The accent stripe: a bar inside the left edge. Its width is added to the
+   left padding inline, so it never covers the text and never changes the
+   card's outer limit (still max-width: 100%). */
+.cl-msg-card[data-card-stripe]::before {
+  content: '';
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: var(--cl-card-stripe-w, 3px);
+  background: var(--cl-card-stripe, transparent);
+  pointer-events: none;
+}
+
+/* ── The app's three animations (intensity is fixed here, not by senders) ── */
+.cl-msg-card[data-card-anim="drift"] {
+  background-size: 220% 220%;
+  animation: cl-card-drift var(--cl-card-anim-dur, 8s) ease-in-out infinite alternate;
+}
+@keyframes cl-card-drift {
+  from { background-position: 0% 50%; }
+  to   { background-position: 100% 50%; }
+}
+
+.cl-msg-card[data-card-anim="pulse"] {
+  animation: cl-card-pulse var(--cl-card-anim-dur, 8s) ease-in-out infinite;
+}
+@keyframes cl-card-pulse {
+  0%, 100% { box-shadow: var(--cl-card-glow); }
+  50%      { box-shadow: var(--cl-card-glow-dim); }
+}
+
+.cl-msg-card[data-card-anim="shimmer"]::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(105deg, transparent 38%, rgba(255, 255, 255, 0.07) 50%, transparent 62%);
+  transform: translateX(-100%);
+  animation: cl-card-shimmer var(--cl-card-anim-dur, 8s) ease-in-out infinite;
+}
+@keyframes cl-card-shimmer {
+  0%        { transform: translateX(-100%); }
+  45%, 100% { transform: translateX(100%); }
+}
+
+/* The OS asked for less motion: no card animation, whatever the mode. */
+@media (prefers-reduced-motion: reduce) {
+  .cl-msg-card,
+  .cl-msg-card::after { animation: none !important; }
+  .cl-msg-card[data-card-anim="shimmer"]::after { display: none; }
+}
+
+/* The composer's "next message is styled" chip swatch and the editor previews
+   reuse the same card; these only size the miniature. */
+.cl-msg-card.cl-msg-card--swatch {
+  width: 18px; height: 14px; padding: 0 !important;
+}
+
+/* ── Formatting inside a card ────────────────────────────────────────────
+   Everything the composer can do renders inside a card unchanged (bold,
+   italic, underline, strike, code, code blocks, quotes, lists, headings,
+   spoilers, masked links, mentions, the message fonts, [small]/[large]).
+   The card never adds layout of its own to them; it only keeps them
+   readable when the card has its own text colour (data-card-fg): their
+   colours are derived from the card's text colour instead of the app's
+   lume / muted defaults, which may vanish on a coloured background.
+   Each rule also names the composer's own block / inline classes
+   (styles/rich-composer.css, `.rc-*`), so the live preview in the composer
+   (ComposerCardSurface) follows the SAME rules as the posted card:
+     .cl-fmt-h ~ .rc-h1/2/3   .cl-fmt-code ~ .rc-icode   .cl-fmt-pre ~ .rc-code
+     .cl-fmt-quote ~ .rc-q    .cl-fmt-sub ~ .rc-sub       li::marker ~ .rc-ul/.rc-ol::before
+     .cl-fmt-pre-lang ~ .rc-code[data-lang]::before                          */
+.cl-msg-card[data-card-heading-align="center"] .cl-fmt-h { text-align: center; }
+.cl-msg-card[data-card-heading-align="right"]  .cl-fmt-h { text-align: right; }
+.cl-msg-card[data-card-heading-align="left"]   .cl-fmt-h { text-align: left; }
+.cl-msg-card[data-card-heading-align="center"] .rc-h1,
+.cl-msg-card[data-card-heading-align="center"] .rc-h2,
+.cl-msg-card[data-card-heading-align="center"] .rc-h3 { text-align: center; }
+.cl-msg-card[data-card-heading-align="right"] .rc-h1,
+.cl-msg-card[data-card-heading-align="right"] .rc-h2,
+.cl-msg-card[data-card-heading-align="right"] .rc-h3 { text-align: right; }
+.cl-msg-card[data-card-heading-align="left"] .rc-h1,
+.cl-msg-card[data-card-heading-align="left"] .rc-h2,
+.cl-msg-card[data-card-heading-align="left"] .rc-h3 { text-align: left; }
+
+.cl-msg-card[data-card-fg] .cl-fmt-link,
+.cl-msg-card[data-card-fg] a {
+  color: inherit;
+  text-decoration-line: underline;
+  text-decoration-color: color-mix(in srgb, currentColor 55%, transparent);
+}
+.cl-msg-card[data-card-fg] .cl-fmt-link:hover { text-decoration-color: currentColor; }
+.cl-msg-card[data-card-fg] .cl-fmt-code,
+.cl-msg-card[data-card-fg] .rc-icode {
+  color: inherit;
+  background: color-mix(in srgb, currentColor 12%, transparent);
+  border-color: color-mix(in srgb, currentColor 22%, transparent);
+}
+.cl-msg-card[data-card-fg] .cl-fmt-pre,
+.cl-msg-card[data-card-fg] .rc-code {
+  background: color-mix(in srgb, currentColor 7%, transparent);
+  border-color: color-mix(in srgb, currentColor 18%, transparent);
+}
+.cl-msg-card[data-card-fg] .cl-fmt-pre-lang,
+.cl-msg-card[data-card-fg] .cl-fmt-sub,
+.cl-msg-card[data-card-fg] .cl-fmt-list li::marker,
+.cl-msg-card[data-card-fg] .rc-code[data-lang]::before,
+.cl-msg-card[data-card-fg] .rc-sub,
+.cl-msg-card[data-card-fg] .rc-ul::before,
+.cl-msg-card[data-card-fg] .rc-ol::before { color: color-mix(in srgb, currentColor 70%, transparent); }
+.cl-msg-card[data-card-fg] .cl-fmt-quote,
+.cl-msg-card[data-card-fg] .rc-q { border-left-color: color-mix(in srgb, currentColor 45%, transparent); }
+.cl-msg-card[data-card-fg] .cl-fmt-spoiler:not([data-revealed]) { background: color-mix(in srgb, currentColor 55%, transparent); }
+.cl-msg-card[data-card-fg] .cl-fmt-spoiler[data-revealed] { background: color-mix(in srgb, currentColor 10%, transparent); }
+.cl-msg-card[data-card-fg] [data-mention] {
+  color: inherit !important;
+  background: color-mix(in srgb, currentColor 16%, transparent) !important;
+}
+/* Wide content (a long code line) scrolls inside its own block, never
+   widening the card past the message column. */
+.cl-msg-card .cl-fmt-pre { max-width: 100%; }
+
+/* ── The composer's live preview (components/messageCard/ComposerCardSurface.tsx) ──
+   While a style is set for the next message, the editable box sits inside the
+   SAME card element (cardElementProps) with these app-owned adjustments for
+   an editor. Unstyled, the frame and its child are plain blocks with no box of
+   their own, so the composer is exactly what it was.                         */
+.cl-composer-card-frame {
+  display: block;
+  flex: 1 1 0%;
+  min-width: 0;
+}
+/* Shadows paint inside this frame (ComposerCardSurface reserves their full
+   reach, as the feed's frame does, borrowing a few px of the pill's padding)
+   and are clipped there: never over the toolbar, the send button or outside
+   the composer. */
+.cl-composer-card-frame[data-composer-card] {
+  overflow: clip;
+  contain: paint;
+}
+.cl-composer-card-plain {
+  display: block;
+  min-width: 0;
+}
+/* WYSIWYG: the SAME card the row draws (class, inline style and every rule
+   above apply unchanged: `.cl-msg-card` is already `width: fit-content`), so
+   it shrink-wraps the text, left-aligned in the input area like a message,
+   and grows as you type up to the width a card gets in the feed (the row's
+   message column, --cl-msg-col-w from components/messageCard/messageColumn.ts),
+   never past the input area. */
+.cl-msg-card.cl-msg-card--composer {
+  max-width: min(100%, var(--cl-msg-col-w, 100%));
+  cursor: text;
+}
+/* Empty: wide enough for the caret and the placeholder (which ellipsizes). */
+.cl-msg-card.cl-msg-card--composer:has(> .rc-root[data-empty]) {
+  min-width: min(100%, 16em);
+}
+/* The text inside takes the row body's metrics (composerTextStyle: the body's
+   font-size / line-height, no padding) and weight; the editable element keeps
+   its own max-height and scrolls inside the card. */
+.cl-msg-card--composer > .rc-root {
+  font-weight: inherit;
+  min-height: 0;
+}
+.cl-msg-card--composer .rc-root .rc-b { min-height: 0; }
+.cl-msg-card--composer .rc-root[data-empty]::before { left: 0; top: 0; right: 0; }
+/* Blocks spaced like the feed's renderer (styles/formatting.css .cl-fmt-*):
+   headings, list indent. The composer's own look elsewhere is unchanged. */
+.cl-msg-card--composer .rc-h1,
+.cl-msg-card--composer .rc-h2,
+.cl-msg-card--composer .rc-h3 { line-height: 1.45; margin: .45em 0 .1em; }
+.cl-msg-card--composer .rc-root > .rc-b:first-child { margin-top: 0; }
+.cl-msg-card--composer .rc-h1 { padding-bottom: .12em; border-bottom: 1px solid rgba(255,255,255,.08); }
+.cl-msg-card--composer .rc-ul,
+.cl-msg-card--composer .rc-ol { padding-left: calc(1.55em + var(--rc-ind, 0) * 1.55em); }
+.cl-msg-card--composer .rc-ul::before,
+.cl-msg-card--composer .rc-ol::before { left: calc(.2em + var(--rc-ind, 0) * 1.55em); }
+/* Caret and placeholder follow the card's text colour (which the shared
+   resolver keeps readable on this background); the selection keeps the app's
+   own high-contrast highlight (index.css ::selection). */
+.cl-msg-card--composer .rc-root { caret-color: currentColor; }
+/* Placeholder: a dimmer share of the text colour. With the app's own (bright)
+   text, 58% keeps it clearly a placeholder; with a card text colour (which
+   may be only the 3:1 floor after a nudge) 78% keeps it at least as readable
+   as the composer's normal placeholder (~2.2:1). */
+.cl-msg-card--composer .rc-root[data-empty]::before {
+  color: color-mix(in srgb, currentColor 58%, transparent);
+}
+.cl-msg-card--composer[data-card-fg] .rc-root[data-empty]::before {
+  color: color-mix(in srgb, currentColor 78%, transparent);
+}
+/* Your own spoiler stays readable for you (the composer never blurs it away). */
+.cl-msg-card--composer[data-card-fg] .rc-spoiler {
+  background: color-mix(in srgb, currentColor 22%, transparent);
+}
